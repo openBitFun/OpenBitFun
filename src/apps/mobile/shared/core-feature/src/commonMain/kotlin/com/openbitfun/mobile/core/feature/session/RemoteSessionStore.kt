@@ -2352,7 +2352,11 @@ internal object RemoteResponseMapper {
         val id = item.id.orEmpty()
         return RemoteSession(
             id = id,
-            title = item.title?.takeIf(String::isNotEmpty) ?: "Session ${id.take(6)}",
+            // A host that named no title has none, and this layer must not invent one:
+            // the id is not a name, and a placeholder in English would be shown to
+            // every reader in every language. Each surface renders a blank title in
+            // its own words.
+            title = item.title?.takeIf(String::isNotEmpty).orEmpty(),
             agentType = item.agentType ?: "code",
             status = item.status ?: "idle",
             updatedAt = item.updatedAt,

@@ -214,10 +214,28 @@ class RemoteResponseMapperTest {
         )
 
         assertEquals("session-1", session.id)
-        assertEquals("Session sessio", session.title)
+        // A host that named no title has none: the id is not a name, and no English
+        // placeholder is fabricated here — the surface renders a blank in its own words.
+        assertEquals("", session.title)
         assertEquals("code", session.agentType)
         assertEquals("idle", session.status)
         assertEquals("1781092800000", session.updatedAt)
         assertEquals(0, session.messageCount)
+    }
+
+    /**
+     * A title is the host's word or nothing. Inventing one in English here meant every
+     * reader in every language was shown a name the host never sent, and the surface
+     * could no longer tell "untitled" from "titled 'Session sessio'".
+     */
+    @Test
+    fun aHostTitleThatIsMissingStaysBlankAndATitledSessionKeepsItsName() {
+        fun mapped(title: String?) = RemoteResponseMapper.session(
+            SessionItemResponse(id = "session-1", title = title),
+        )
+
+        assertEquals("", mapped(null).title)
+        assertEquals("", mapped("").title)
+        assertEquals("Fix the parser", mapped("Fix the parser").title)
     }
 }

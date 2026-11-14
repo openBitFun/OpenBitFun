@@ -49,7 +49,10 @@ class ConversationHeaderTest {
             )
         }
 
-        composeRule.onNodeWithText(string(R.string.conversation_title_default)).assertIsDisplayed()
+        // A host that has not named the session yet sends no title at all, so the
+        // blank case is ordinary. It reads as the same "untitled" the session rows
+        // use.
+        composeRule.onNodeWithText(string(R.string.sidebar_untitled)).assertIsDisplayed()
         composeRule.onNodeWithText("OpenBitFun · main").assertIsDisplayed()
     }
 

@@ -113,7 +113,12 @@ internal fun ConversationHeader(
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 Text(
-                    title.ifBlank { stringResource(R.string.conversation_title_default) },
+                    // A host that has not named a session yet sends no title at
+                    // all (`non_empty_title` on the host side), so the blank case
+                    // is ordinary rather than exceptional. It reads as the same
+                    // "untitled" the session rows use, not as a second, different
+                    // label for the same missing thing.
+                    title.ifBlank { stringResource(R.string.sidebar_untitled) },
                     style = if (hasSubtitle) MobileDesignTypography.ConversationHeaderTitle
                     else MobileDesignTypography.TitleMedium,
                     color = MaterialTheme.colorScheme.onSurface,

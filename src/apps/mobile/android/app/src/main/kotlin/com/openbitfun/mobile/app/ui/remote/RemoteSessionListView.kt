@@ -348,11 +348,18 @@ internal fun RemoteSessionListContent(
                     }
                     val openDetails = { detailsFor = session.id }
                     val delete = { onIntent(RemoteSessionIntent.DeleteSession(session.id)) }
+                    // The store owns the authority update: this only names the
+                    // new title, and the row keeps the old one until the desktop
+                    // answers.
+                    val rename = { newTitle: String ->
+                        onIntent(RemoteSessionIntent.RenameSession(session.id, newTitle))
+                    }
                     if (compact || actionAnchor == null) SessionActionSheet(
                         title = session.title,
                         status = session.status,
                         capabilities = capabilities,
                         onViewDetails = openDetails,
+                        onRename = rename,
                         onDelete = delete,
                         onDismiss = dismissActions,
                     ) else SessionActionPopup(
@@ -361,6 +368,7 @@ internal fun RemoteSessionListContent(
                         status = session.status,
                         capabilities = capabilities,
                         onViewDetails = openDetails,
+                        onRename = rename,
                         onDelete = delete,
                         onDismiss = dismissActions,
                     )
