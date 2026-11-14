@@ -101,6 +101,13 @@ internal fun AppSidebar(
     onAddRemoteWorkspace: (() -> Unit)? = null,
     onWorkspaceTool: (String, String?, Boolean) -> Unit,
     onDeleteRemoteSession: (String) -> Unit,
+    /**
+     * Optional for the same reason the sheet's archive and export are: a shell
+     * that cannot dispatch a rename renders no rename row rather than a row that
+     * does nothing. The session id and the new title travel together because the
+     * store owns the authority update and needs both.
+     */
+    onRenameRemoteSession: ((String, String) -> Unit)? = null,
     onOpenSettings: () -> Unit,
     onOpenAccount: () -> Unit,
     modifier: Modifier,
@@ -203,6 +210,9 @@ internal fun AppSidebar(
                 status = "",
                 capabilities = capabilities,
                 onViewDetails = { remoteDetailsSessionId = session.id },
+                onRename = onRenameRemoteSession?.let { rename ->
+                    { newTitle: String -> rename(session.id, newTitle) }
+                },
                 onDelete = { onDeleteRemoteSession(session.id) },
                 onDismiss = { remoteActionSession = null },
             )
@@ -212,6 +222,9 @@ internal fun AppSidebar(
                 status = "",
                 capabilities = capabilities,
                 onViewDetails = { remoteDetailsSessionId = session.id },
+                onRename = onRenameRemoteSession?.let { rename ->
+                    { newTitle: String -> rename(session.id, newTitle) }
+                },
                 onDelete = { onDeleteRemoteSession(session.id) },
                 onDismiss = { remoteActionSession = null },
             )

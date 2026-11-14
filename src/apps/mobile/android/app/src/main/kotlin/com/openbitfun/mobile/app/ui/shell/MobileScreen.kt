@@ -421,6 +421,7 @@ internal fun MobileScreen(onAccountRestored: (Boolean) -> Unit = {}) {
                 )
             },
             onDeleteRemoteSession = { id -> dispatchActiveSession(RemoteSessionIntent.DeleteSession(id)) },
+            onRenameRemoteSession = { id, title -> dispatchActiveSession(RemoteSessionIntent.RenameSession(id, title)) },
             onOpenSettings = {
                 // The gear and the remote home header open the same page.
                 shell.openSettings()

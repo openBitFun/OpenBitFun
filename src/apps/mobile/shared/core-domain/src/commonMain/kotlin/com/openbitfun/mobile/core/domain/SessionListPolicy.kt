@@ -77,7 +77,14 @@ public object SessionNaming {
     @Suppress("UNUSED_PARAMETER")
     public fun wireSessionName(agentType: String, title: String): String = title.trim()
 
-    /** Compatibility placeholder until a host title is received. */
+    /**
+     * The title of a session the host has not named yet.
+     *
+     * Nothing, on purpose. "New Session" was an English placeholder shown to every
+     * reader in every language, and it also read as a real title the host had sent.
+     * A blank title is the honest answer, and every surface already renders a blank
+     * title in its own words.
+     */
     @Suppress("UNUSED_PARAMETER")
-    public fun fallbackTitle(agentType: String): String = "New Session"
+    public fun fallbackTitle(agentType: String): String = ""
 }

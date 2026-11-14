@@ -334,7 +334,6 @@
     <!-- 8.3 会话界面 -->
     <string name="conversation_back">返回会话列表</string>
     <string name="conversation_settings">会话设置</string>
-    <string name="conversation_title_default">远程会话</string>
     <string name="chat_empty_title">还没有消息</string>
     <string name="chat_empty_hint">可以就这个工作区向智能体提问。</string>
     <string name="chat_empty_loading">正在加载对话…</string>

@@ -348,8 +348,6 @@
     <!-- 8.3 conversation surface -->
     <string name="conversation_back">Back to sessions</string>
     <string name="conversation_settings">Session settings</string>
-    <!-- A session the desktop never titled; see ConversationHeader. -->
-    <string name="conversation_title_default">Remote session</string>
     <string name="chat_empty_title">No messages yet</string>
     <string name="chat_empty_hint">Ask the agent anything about this workspace.</string>
     <string name="chat_empty_loading">Loading conversation…</string>
