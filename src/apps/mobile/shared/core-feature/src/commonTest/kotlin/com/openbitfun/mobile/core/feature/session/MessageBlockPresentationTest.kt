@@ -68,13 +68,15 @@ class MessageBlockPresentationTest {
 
     @Test
     fun subagentStatusPreservesHostVocabularyAndOwnActiveScope() {
-        for (status in listOf("running", "active", "preparing", "pending", "queued", "failed", "error", "timeout", "cancelled", "canceled", "rejected", "completed")) {
+        for (status in listOf("running", "active", "preparing", "pending", "queued", "waiting", "failed", "error", "timeout", "cancelled", "canceled", "rejected", "completed")) {
             val blocks = messageBlocks(message(items = listOf(
                 item(type = "subagent", tool = tool("task", name = "Task", status = status)),
                 item(type = "thinking", content = "child").copy(isSubagent = true),
                 item(type = "text", content = "Parent continues"))), true)
             val child = blocks.first() as MessageBlock.Subagent
-            val running = status in listOf("running", "active", "preparing", "pending", "queued")
+            // `waiting` is the coordinator's word for a queued turn: not working, but
+            // still owed, so the scope stays open the way it does for `queued`.
+            val running = status in listOf("running", "active", "preparing", "pending", "queued", "waiting")
             assertEquals(status, child.status)
             assertEquals(running, child.running)
             assertEquals(running, (child.children.single() as MessageBlock.Thinking).streaming)

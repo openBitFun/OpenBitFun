@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copy for the delegation card only.
+
+  Kept in its own file, and every key prefixed `subagent_`, so that another worker can
+  own `strings.xml` without either side overwriting the other. Fold these two files
+  into `strings.xml` / `values-zh/strings.xml` once no one is editing them.
+-->
+<resources>
+    <!-- A spawned worker's own session could not be read: the card says so, the
+         conversation around it stays on screen. -->
+    <string name="subagent_steps_unavailable">Worker steps unavailable</string>
+    <!-- The desktop has no on-demand session streams at all, so this card's steps
+         cannot be shown however many times it is opened. -->
+    <string name="subagent_steps_unsupported">This desktop cannot share worker steps</string>
+    <!-- The worker's turn is written and it is closing it out. Its own word, not
+         "Done": the result has not arrived yet. -->
+    <string name="subagent_state_finishing">Finishing</string>
+    <!-- The host sent a status this client cannot read. Saying so is the only
+         honest reading; "Done" would be a guess. -->
+    <string name="subagent_state_unknown">Status unknown</string>
+    <!-- The card header is the control that opens the worker's steps. -->
+    <string name="subagent_expand_steps">Show worker steps</string>
+    <string name="subagent_collapse_steps">Hide worker steps</string>
+</resources>

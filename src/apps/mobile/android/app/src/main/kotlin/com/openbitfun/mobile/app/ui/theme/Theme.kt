@@ -124,10 +124,13 @@ private val DarkScheme = darkColorScheme(
  *
  * [success] is the connection dot's "connected" green — it is not `primary`,
  * because primary here is near-black ink and a black dot reads as "off".
+ * [statusWarning] is the same family's amber, used where a state is "held" rather
+ * than working or finished (a queued delegation).
  */
 internal data class OpenBitFunColors(
     val transparent: Color,
     val statusSuccess: Color,
+    val statusWarning: Color,
     val shellScrim: Color,
     val mediaBackground: Color,
     val mediaScrim: Color,
@@ -192,6 +195,7 @@ internal data class CodeSyntaxColors(
 private val LightExtras = OpenBitFunColors(
     transparent = LightTokens.Transparent,
     statusSuccess = LightTokens.StatusSuccess,
+    statusWarning = LightTokens.StatusWarning,
     shellScrim = LightTokens.ShellScrim,
     mediaBackground = LightTokens.MediaBackground,
     mediaScrim = LightTokens.MediaScrim,
@@ -232,6 +236,7 @@ private val LightExtras = OpenBitFunColors(
 private val DarkExtras = OpenBitFunColors(
     transparent = DarkTokens.Transparent,
     statusSuccess = DarkTokens.StatusSuccess,
+    statusWarning = DarkTokens.StatusWarning,
     shellScrim = DarkTokens.ShellScrim,
     mediaBackground = DarkTokens.MediaBackground,
     mediaScrim = DarkTokens.MediaScrim,
