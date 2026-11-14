@@ -20,10 +20,6 @@ class ProcessPresentationTest {
         assertTrue(preview.endsWith("…"))
         assertEquals("answer", subagentPreview("  answer  "))
     }
-    @Test fun statusPreservesFailuresInsteadOfCallingThemDone() {
-        listOf("failed", "ERROR", "timeout", "cancelled", "canceled", "rejected").forEach { assertTrue(subagentFailed(it)) }
-        assertFalse(subagentFailed("completed"))
-    }
     private fun tool(id: String, phase: ToolPhase = ToolPhase.COMPLETED) = ToolCard(
         id, "Read", phase, ToolKind.DOCUMENT, ToolOperation.READ_FILE,
         "file.kt", "", "", "", "", null, emptySet(),

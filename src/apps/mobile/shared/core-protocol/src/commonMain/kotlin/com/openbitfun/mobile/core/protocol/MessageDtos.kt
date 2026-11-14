@@ -20,6 +20,17 @@ public data class RemoteToolStatusResponse(
     @SerialName("error_preview") val errorPreview: String? = null,
     @SerialName("exit_code") val exitCode: Int? = null,
     @SerialName("plan") val plan: JsonElement? = null,
+    /**
+     * The hidden session a delegation tool spawned, when the host named one.
+     *
+     * A host keeps a spawned child agent in its own session, so the child's work
+     * is in that session's stream and nowhere in the parent transcript. The
+     * launching item is the only place the id is written, which is why it has to
+     * survive mapping: it is the key every reader needs to open the child.
+     * Optional — an older host names no child and keeps the plain tool row it
+     * has always sent.
+     */
+    @SerialName("subagent_session_id") val subagentSessionId: String? = null,
 )
 
 @Serializable

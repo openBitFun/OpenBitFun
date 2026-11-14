@@ -47,9 +47,6 @@ internal fun subagentChildren(block: MessageBlock.Subagent): List<MessageBlock> 
     }
 }
 
-internal fun subagentFailed(status: String): Boolean = status.lowercase() in
-    setOf("failed", "error", "timeout", "cancelled", "canceled", "rejected")
-
 internal fun subagentPreview(text: String): String {
     val trimmed = text.trim()
     val count = trimmed.codePointCount(0, trimmed.length)

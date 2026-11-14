@@ -221,7 +221,11 @@ internal class SessionRecordReplica(val sessionId: String) {
             val data = item.getValue("data").jsonObject
             val type = item.string("type")
             val result = data["toolResult"] as? JsonObject
-            ChatMessageItemResponse(type = type, content = data.string("content"), isSubagent = data["isSubagentItem"]?.jsonPrimitive?.booleanOrNull == true || data.string("subagentSessionId").isNotEmpty(),
+            // The child session a delegation tool spawned. It marks the item as a
+            // subagent branch and is also the stream id that branch is read from,
+            // so it is kept on the mapped tool instead of being read and dropped.
+            val childSessionId = data.string("subagentSessionId").takeIf { it.isNotEmpty() }
+            ChatMessageItemResponse(type = type, content = data.string("content"), isSubagent = data["isSubagentItem"]?.jsonPrimitive?.booleanOrNull == true || childSessionId != null,
                 tool = if (type != "tool") null else RemoteToolStatusResponse(
                     id = (data["toolCall"] as? JsonObject)?.string("id")?.takeIf { it.isNotEmpty() } ?: data.string("id"), name = data.string("toolName"),
                     status = data.string("status").takeIf { it.isNotEmpty() }
@@ -230,7 +234,8 @@ internal class SessionRecordReplica(val sessionId: String) {
                     errorPreview = result?.string("error"),
                     startMs = data["startTime"]?.jsonPrimitive?.longOrNull,
                     durationMs = data["durationMs"]?.jsonPrimitive?.longOrNull
-                        ?: result?.get("durationMs")?.jsonPrimitive?.longOrNull))
+                        ?: result?.get("durationMs")?.jsonPrimitive?.longOrNull,
+                    subagentSessionId = childSessionId))
         }
         val superseded = rendered.mapNotNull { it.tool }.filter { it.status in setOf("completed", "failed", "cancelled", "rejected", "skipped") }
         if (superseded.isNotEmpty()) {

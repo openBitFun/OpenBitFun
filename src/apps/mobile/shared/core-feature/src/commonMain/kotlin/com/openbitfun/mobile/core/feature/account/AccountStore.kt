@@ -165,6 +165,29 @@ public class AccountStore internal constructor(
         ).also { it.bindCatalog(catalogChanges(current, target, transport)) }
     }
 
+    /**
+     * The same store, told whether the platform wants delegated children followed.
+     *
+     * A delegation tool's child keeps its work in its own session, and drawing that
+     * work inside the card that launched it is a behaviour a surface has to be able to
+     * finish: ask for a re-attach when a branch lost its slot, and show why a worker
+     * could not be read. Callers that can do neither leave it off — the overload above
+     * does, and so does every client that has not wired the card — and then the store
+     * publishes the host's own transcript, item for item, exactly as before.
+     */
+    public fun createSessionStore(scope: CoroutineScope, followSubagentBranches: Boolean): RemoteSessionStore? {
+        val current = session ?: return null
+        val target = current.targetDeviceId?.let(::authorizedDeviceId) ?: return null
+        val transport = backend.transport(current, target)
+        return RemoteSessionStore.create(
+            scope,
+            transport,
+            deviceKey = target,
+            persistence = persistence,
+            followSubagentBranches = followSubagentBranches,
+        ).also { it.bindCatalog(catalogChanges(current, target, transport)) }
+    }
+
     public fun createWorkspaceStore(scope: CoroutineScope): RemoteWorkspaceStore? {
         val current = session ?: return null
         val target = current.targetDeviceId?.let(::authorizedDeviceId) ?: return null

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅用于委派卡片的文案。
+
+  单独成文件、键名统一加 `subagent_` 前缀，是为了让别人可以改 `strings.xml`
+  而互不覆盖。等两边都不再改时，把这两个文件并入 `strings.xml` / `values-zh/strings.xml`。
+-->
+<resources>
+    <string name="subagent_steps_unavailable">无法读取该子代理的步骤</string>
+    <string name="subagent_steps_unsupported">该桌面端不支持共享子代理步骤</string>
+    <string name="subagent_state_finishing">收尾中</string>
+    <string name="subagent_state_unknown">状态未知</string>
+    <string name="subagent_expand_steps">展开子代理步骤</string>
+    <string name="subagent_collapse_steps">收起子代理步骤</string>
+</resources>

@@ -119,6 +119,15 @@ isolation, run from `shared/` with the Android guide's Java runtime:
 `./gradlew :core-feature:jvmTest --tests '*promptSuggestion*' --tests '*SessionRecordReplicaTest*'`.
 These are simulated host streams, not evidence of a live remote connection.
 
+For a delegation tool's spawned child — child session id retained on the launch
+item, one stream per owner, steps attached to that owner's card, child gap
+re-read, child failure before content, a child failure that keeps the session
+readable instead of failing it, a late child error from a closed session,
+unsupported host, cap and re-attach, session switch — run from `shared/` with the
+Android guide's Java runtime:
+`./gradlew :core-feature:jvmTest --tests '*SubagentBranchCoordinatorTest*'`.
+A child transcript is read on demand and never stored on this device.
+
 Native mobile surfaces are controllers. Desktop and CLI own execution, files, terminals and SSH credentials. Mobile workspace selection may use only connections already saved on the controlled runtime; it must not create an SSH connection or instantiate another runtime. Carry the selected connection identity through every operation, and report missing identity instead of falling back to local files.
 
 ## Offline Mini Apps

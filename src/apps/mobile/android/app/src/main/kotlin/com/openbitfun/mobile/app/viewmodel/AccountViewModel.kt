@@ -153,7 +153,10 @@ internal class AccountViewModel(application: Application) : AndroidViewModel(app
         activeTarget = target
         if (target == null) return
 
-        remoteStore = store.createSessionStore(viewModelScope)?.also { created ->
+        // Android draws the delegation card: opening one asks for its worker to be
+        // followed again, and a worker that cannot be read is reported on that card.
+        // A platform that has not wired both stays on the plain transcript.
+        remoteStore = store.createSessionStore(viewModelScope, followSubagentBranches = true)?.also { created ->
             remoteJob = viewModelScope.launch { created.state.collect {
                 _remoteState.value = it
                 completionNotifier.observe(it, target)

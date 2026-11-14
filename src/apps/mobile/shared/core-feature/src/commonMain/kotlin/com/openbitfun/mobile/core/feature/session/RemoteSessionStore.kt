@@ -89,6 +89,19 @@ public class RemoteSessionStore internal constructor(
     private val transport: RemoteCommandTransport,
     private val deviceKey: String? = null,
     private val persistence: MobilePersistenceStores? = null,
+    /**
+     * Whether this store follows the child sessions a delegation tool names.
+     *
+     * Following a child means opening a second session stream and drawing its records
+     * inside the card that launched it, and that behaviour has two halves a surface
+     * has to be able to finish: the card has to be able to ask for a re-attach, and it
+     * has to be able to show why a worker could not be read. A client missing either
+     * half would hold a released branch's stale prefix with no way back, and record
+     * failures nobody can see, so the follower is opt-in rather than assumed. With the
+     * flag off no child stream is opened at all and the published transcript is the
+     * host's own, item for item — which is what every platform but Android ships.
+     */
+    private val followSubagentBranches: Boolean = false,
 ) {
     private var catalogSubscription: Job? = null
     private var catalogRefresh: Job? = null
@@ -228,6 +241,7 @@ public class RemoteSessionStore internal constructor(
             is RemoteSessionIntent.RespondPermission -> permissionMailbox.respond(intent.requestId, intent.approve, intent.updatedInput)
             RemoteSessionIntent.RefreshPermissionMailbox -> permissionMailbox.invalidate()
             is RemoteSessionIntent.SetForeground -> setForeground(intent.active)
+            is RemoteSessionIntent.EnsureSubagentAttached -> ensureSubagentAttached(intent.ownerToolCallId)
             RemoteSessionIntent.Load, RemoteSessionIntent.Refresh ->
                 load(current?.query.orEmpty(), current?.agentFilter ?: SessionAgentFilter.ALL)
             RemoteSessionIntent.LoadMore -> loadMore()
@@ -1057,6 +1071,15 @@ public class RemoteSessionStore internal constructor(
     private var sessionHistoryHasMore = false
     private var sessionRecords: SessionRecordReplica? = null
 
+    /**
+     * Streams the open session's spawned children into the cards that launched them.
+     *
+     * Null whenever no session is open: a child stream belongs to the session on
+     * screen, and one that outlived its parent would keep publishing records into a
+     * transcript nobody is reading.
+     */
+    private var subagents: SubagentBranchCoordinator? = null
+
     private fun currentPromptSuggestion(sessionId: String?): String? =
         sessionRecords?.takeIf { it.sessionId == sessionId }?.promptSuggestion()
     private var transcriptWrite: Job? = null
@@ -1115,15 +1138,78 @@ public class RemoteSessionStore internal constructor(
         markConnected()
     }
 
+    /**
+     * Asks for one delegation card's worker to be followed again.
+     *
+     * What a reader opening a card asks for, and the only way back for a branch the
+     * concurrency cap released: past the cap a still-running child gives up its slot
+     * to the newest launch, and without this the card would keep the prefix it
+     * published before the slot was taken. It reads nothing itself — the child's
+     * stream is the coordinator's — and it cannot fail the session on screen.
+     */
+    public fun ensureSubagentAttached(ownerToolCallId: String) {
+        if (ownerToolCallId.isEmpty()) return
+        val retried = subagents?.ensureAttached(ownerToolCallId) == true
+        // What was reported about this card describes a stream that is being read
+        // again, so the report is dropped — but only when a read really happened: a
+        // host that cannot serve child streams keeps saying so instead of silently
+        // losing the only explanation the card had.
+        if (retried) clearSubagentFailure(ownerToolCallId)
+    }
+
+    /**
+     * Records that one delegation card's child session could not be read.
+     *
+     * Deliberately not [handleFailure]: a child stream failing is not this
+     * conversation failing. The parent transcript is the host's answer for the
+     * session the reader opened and stays on screen, the launching item keeps its own
+     * status, and nothing about the connection phase or the composer changes because
+     * one worker's stream is unavailable.
+     */
+    private fun reportSubagentFailure(ownerToolCallId: String, error: Throwable) {
+        val current = _state.value as? RemoteSessionUiState.Ready ?: return
+        if (ownerToolCallId.isEmpty()) return
+        val reason = remoteSessionFailure(error).reason
+        if (current.subagentFailures[ownerToolCallId] == reason) return
+        _state.value = current.copy(subagentFailures = current.subagentFailures + (ownerToolCallId to reason))
+    }
+
+    private fun clearSubagentFailure(ownerToolCallId: String) {
+        val current = _state.value as? RemoteSessionUiState.Ready ?: return
+        if (ownerToolCallId !in current.subagentFailures) return
+        _state.value = current.copy(subagentFailures = current.subagentFailures - ownerToolCallId)
+    }
+
+    /** A card that is showing its worker's steps has nothing left to report. */
+    private fun reconcileSubagentFailures(messages: List<ChatMessage>) {
+        val current = _state.value as? RemoteSessionUiState.Ready ?: return
+        if (current.subagentFailures.isEmpty()) return
+        val attached = messages.flatMap { it.items.orEmpty() }
+            .filter { !it.subItems.isNullOrEmpty() }
+            .mapNotNull { it.tool?.id }
+            .toSet()
+        if (attached.isEmpty()) return
+        val remaining = current.subagentFailures - attached
+        if (remaining.size != current.subagentFailures.size) {
+            _state.value = current.copy(subagentFailures = remaining)
+        }
+    }
+
     private fun subscribeSessionUpdates(sessionId: String): CompletableDeferred<Unit> {
         val initialHistory = CompletableDeferred<Unit>()
         permissionMailbox.select(sessionId)
         messageQueue.select(sessionId, "dialog_queue_v1" in hostCapabilities)
+        // Switching sessions closes the previous session's child streams here, not in
+        // the cancelled job: cancellation is cooperative, and a child stream that
+        // outlived its parent even briefly would publish into the new session.
+        subagents?.endSession()
+        subagents = null
         sessionUpdates?.cancel()
         transcriptWrite?.cancel()
         forgetWrittenTranscript()
         sessionHistoryHasMore = false
         sessionUpdates = scope.launch {
+            var branches: SubagentBranchCoordinator? = null
             try {
                 val source = transport as? RemoteSessionStreamTransport ?: error("Durable session transport unavailable")
                 // A host that has not advertised `host_stream_v1` cannot serve
@@ -1146,7 +1232,15 @@ public class RemoteSessionStore internal constructor(
                  */
                 fun render(): ChatSyncPhase {
                     timelineStore.clearActiveTurn()
-                    val messages = records.messages()
+                    // A delegation tool's spawned child keeps its work in its own
+                    // session, so the transcript that is published is the host's own
+                    // plus whatever each launched child has said so far, attached to
+                    // the item that launched it.
+                    val messages = subagents?.decorate(records.messages()) ?: records.messages()
+                    // A card that is drawing its worker's steps has nothing left to
+                    // report, so a failure recorded before the branch was read again
+                    // stops being shown.
+                    reconcileSubagentFailures(messages)
                     val active = messages.lastOrNull()?.takeIf { it.role == "assistant" && it.status == "streaming" }
                     timelineStore.setPersistedMessages(if (active == null) messages else messages.dropLast(1))
                     timelineStore.setActiveTurn(active)
@@ -1162,6 +1256,29 @@ public class RemoteSessionStore internal constructor(
                     timelineStore.setSyncPhase(phase)
                     return phase
                 }
+                /**
+                 * Follows the children this session's own transcript names, where the
+                 * platform opted in with [followSubagentBranches].
+                 *
+                 * Created here because a child stream belongs to the session on
+                 * screen: it is bound to `sessionId` before the parent stream is
+                 * subscribed, and closed in this job's `finally`. Child records
+                 * reach the screen through the same publish the parent's own
+                 * records use, so the UI needs no new state to draw them.
+                 */
+                val coordinator = if (followSubagentBranches) SubagentBranchCoordinator(
+                    scope = scope,
+                    source = source,
+                    publish = {
+                        if (caughtUp && !replayingHistory) {
+                            render()
+                            publishDurableTimeline()
+                        }
+                    },
+                    onError = { ownerToolCallId, error -> reportSubagentFailure(ownerToolCallId, error) },
+                ).also { it.beginSession(sessionId) } else null
+                branches = coordinator
+                subagents = coordinator
                 source.subscribe(sessionId,
                     { handleFailure(it, _state.value as? RemoteSessionUiState.Ready) },
                     {
@@ -1245,6 +1362,12 @@ public class RemoteSessionStore internal constructor(
                 initialHistory.completeExceptionally(error)
                 handleFailure(error, _state.value as? RemoteSessionUiState.Ready)
             } finally {
+                // The parent stream ending ends every child stream with it, so nothing
+                // keeps pushing records into a transcript that is no longer read. The
+                // identity guard keeps a job cancelled during a session switch from
+                // closing the session that replaced it.
+                branches?.endSession()
+                if (subagents === branches) subagents = null
                 initialHistory.cancel()
             }
         }
@@ -2245,6 +2368,9 @@ public class RemoteSessionStore internal constructor(
      * Keep foreground host probes for idle open conversations as well as lists. */
     private fun setForeground(active: Boolean) {
         messageQueue.setForeground(active)
+        // Child streams follow the app's visibility too: a worker's steps are worth
+        // nothing to a backgrounded phone, and its card keeps what it published.
+        subagents?.setForeground(active)
         if (active && healthWork?.isActive == true) return
         val generation = ++healthGeneration
         healthWork?.cancel()
@@ -2292,15 +2418,21 @@ public class RemoteSessionStore internal constructor(
         private const val FILTER_PAGE_SIZE: Int = 100
         private const val DIRECTORY_WORKSPACE_PAGE_SIZE: Int = 50
 
-        internal fun create(scope: CoroutineScope, transport: RemoteCommandTransport): RemoteSessionStore =
-            RemoteSessionStore(scope, transport)
+        internal fun create(
+            scope: CoroutineScope,
+            transport: RemoteCommandTransport,
+            followSubagentBranches: Boolean = false,
+        ): RemoteSessionStore =
+            RemoteSessionStore(scope, transport, followSubagentBranches = followSubagentBranches)
 
         internal fun create(
             scope: CoroutineScope,
             transport: RemoteCommandTransport,
             deviceKey: String?,
             persistence: MobilePersistenceStores?,
-        ): RemoteSessionStore = RemoteSessionStore(scope, transport, deviceKey, persistence)
+            followSubagentBranches: Boolean = false,
+        ): RemoteSessionStore =
+            RemoteSessionStore(scope, transport, deviceKey, persistence, followSubagentBranches)
 
 
     }
@@ -2327,11 +2459,23 @@ private fun toPersisted(sessionId: String, m: ChatMessage): PersistedRemoteMessa
         turnId = m.turnId,
         detail = m.detail,
         tools = m.tools,
-        items = m.items,
+        items = m.items?.map(::withoutChildSteps),
         images = m.images,
         error = m.error,
     )),
 )
+
+/**
+ * One item of the host's transcript, without a child session's steps.
+ *
+ * A spawned child's work is drawn from that child's own stream on demand, so what
+ * is stored here is the launching item and nothing else: the steps were never the
+ * parent's transcript, and a cached copy would be a snapshot of a worker that is
+ * still moving. The child session id stays on the tool, so re-opening the session
+ * from this device's cache still finds the branch and reads it again.
+ */
+internal fun withoutChildSteps(item: ChatMessageItemResponse): ChatMessageItemResponse =
+    if (item.tool?.subagentSessionId != null && item.subItems != null) item.copy(subItems = null) else item
 
 private fun toChatMessage(m: PersistedRemoteMessage): ChatMessage {
     val payload = try {
