@@ -565,6 +565,30 @@ fn resolve_subagent_model_target(
     }
 }
 
+/// Resolve the model target for an internally created (or reused) subagent.
+///
+/// `subagents.enforce_default` is the user's hard guarantee that a delegated
+/// child never lands on another model: it wins over the Task tool's explicit
+/// `model_id`, over `model_id: "inherit"`, over `subagents.fork` and over every
+/// per-builtin or custom-agent override. When the flag is off this is exactly
+/// [`resolve_subagent_model_target`].
+///
+/// Callers must skip this helper for a session that carries an approved
+/// external immutable model binding: such a session keeps its approved model
+/// (the fresh path returns before reaching it, the fork and reuse paths guard
+/// on the binding policy).
+fn resolve_internal_subagent_model_target(
+    defaults: &AgentModelSelections,
+    explicit: Option<&str>,
+    configured: &AgentModelSelection,
+    parent: Option<ModelSelection>,
+) -> OpenBitFunResult<ModelSelection> {
+    if defaults.subagents.enforce_default {
+        return resolve_subagent_model_target(None, &defaults.subagents.default, parent);
+    }
+    resolve_subagent_model_target(explicit, configured, parent)
+}
+
 /// Whether a turn belongs to the review phase of a review child session.
 ///
 /// Only `CodeReview`/`DeepReview` receive the `deep_review_run_manifest`
@@ -12516,7 +12540,8 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 .map(AgentModelSelection::from)
                 .unwrap_or(defaults.builtin(agent_type))
         };
-        let target = resolve_subagent_model_target(
+        let target = resolve_internal_subagent_model_target(
+            &defaults,
             if inherit_parent_model {
                 None
             } else {
@@ -12721,7 +12746,44 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                             task_description = text.clone();
                         }
                     }
-                    let requested_target = if inherit_parent_model {
+                    // A reused child is still an internally created subagent:
+                    // `subagents.enforce_default` also stops `send_input` from
+                    // switching an existing child onto another model. Sessions
+                    // that hold an approved external immutable binding keep
+                    // their own approved model. The probe is best-effort so that
+                    // reading the flag never turns a previously working
+                    // follow-up into a failure.
+                    let enforced_target = match Self::agent_model_defaults().await.ok().as_ref() {
+                        Some(defaults)
+                            if defaults.subagents.enforce_default
+                                && session.config.model_binding_policy
+                                    != SessionModelBindingPolicy::ApprovedImmutable =>
+                        {
+                            Some(
+                                Self::normalize_model_target(
+                                    resolve_internal_subagent_model_target(
+                                        defaults,
+                                        None,
+                                        &defaults.subagents.default,
+                                        // An `inherit` default resolves against
+                                        // the parent session, exactly like the
+                                        // fresh and fork paths: the child may
+                                        // still hold the model this flag exists
+                                        // to exclude.
+                                        Some(Self::model_target_from_config(
+                                            &parent_session.config,
+                                            defaults,
+                                        )?),
+                                    )?,
+                                )
+                                .await?,
+                            )
+                        }
+                        _ => None,
+                    };
+                    let requested_target = if let Some(enforced_target) = enforced_target {
+                        Some(enforced_target)
+                    } else if inherit_parent_model {
                         Some(
                             Self::normalize_model_target(self.parent_model_target(
                                 &parent_session_id,
@@ -12931,18 +12993,33 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 } else {
                     defaults.subagents.fork.clone()
                 };
-                let target = resolve_subagent_model_target(
-                    if inherit_parent_model {
-                        None
-                    } else {
-                        model_id.as_deref()
-                    },
-                    &configured,
-                    Some(Self::model_target_from_config(
-                        &snapshot.session_config,
+                let explicit = if inherit_parent_model {
+                    None
+                } else {
+                    model_id.as_deref()
+                };
+                let forked_parent_target =
+                    Self::model_target_from_config(&snapshot.session_config, &defaults)?;
+                // A fork child clones the parent's session config, so it can
+                // carry an approved external immutable binding and that
+                // binding's fingerprint. Enforcement must not re-pin it: the
+                // approved model would then fail the later binding check.
+                let target = if snapshot.session_config.model_binding_policy
+                    == SessionModelBindingPolicy::ApprovedImmutable
+                {
+                    resolve_subagent_model_target(
+                        explicit,
+                        &configured,
+                        Some(forked_parent_target),
+                    )?
+                } else {
+                    resolve_internal_subagent_model_target(
                         &defaults,
-                    )?),
-                )?;
+                        explicit,
+                        &configured,
+                        Some(forked_parent_target),
+                    )?
+                };
                 let target = Self::normalize_model_target(target).await?;
                 let mut session_config = snapshot.build_child_session_config(None);
                 apply_session_model_target(&mut session_config, target);
@@ -24368,6 +24445,426 @@ pub(crate) mod tests {
                         .await;
                 }
             })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn enforced_subagent_default_wins_over_explicit_inherit_fork_and_builtin_choices() {
+        assert_subagent_default_enforcement(true).await;
+    }
+
+    #[tokio::test]
+    async fn disabled_subagent_default_enforcement_keeps_todays_resolution() {
+        assert_subagent_default_enforcement(false).await;
+    }
+
+    /// `subagents.enforce_default` must pin every internally created (or reused)
+    /// subagent to `subagents.default`; with the flag off every existing rule
+    /// keeps winning instead.
+    async fn assert_subagent_default_enforcement(enforce_default: bool) {
+        let (coordinator, manager) = test_persistent_coordinator();
+        let workspace = tempfile::tempdir().unwrap();
+        let record = crate::service::workspace::legacy_compat::register_local_fixture(
+            workspace.path(),
+            None,
+        )
+        .await;
+        let workspace_path = workspace.path().to_string_lossy().into_owned();
+        let parent = manager
+            .create_session(
+                "Parent".into(),
+                "Standard".into(),
+                SessionConfig {
+                    model_id: Some("primary".into()),
+                    workspace_id: Some(record.id),
+                    workspace_path: Some(workspace_path.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        manager
+            .replace_context_messages(
+                &parent.session_id,
+                vec![Message::user("Inspect the workspace".into())],
+            )
+            .await;
+        let child = coordinator
+            .create_hidden_agent_session(
+                None,
+                "Reused subagent".to_string(),
+                "Standard".to_string(),
+                SessionConfig {
+                    model_id: Some("primary".to_string()),
+                    workspace_path: Some(workspace_path),
+                    ..Default::default()
+                },
+                Some(format!("session-{}", parent.session_id)),
+                SessionKind::Subagent,
+            )
+            .await
+            .unwrap();
+
+        let request = |target_session_id: Option<&str>,
+                       fork: bool,
+                       model_id: Option<&str>,
+                       inherit_parent_model: bool| SubagentExecutionRequest {
+            task_description: "Inspect files".into(),
+            requested_agent_id: None,
+            context_mode: if fork {
+                SubagentContextMode::Fork
+            } else {
+                SubagentContextMode::Fresh
+            },
+            target_session_id: target_session_id.map(str::to_string),
+            subagent_type: if fork || target_session_id.is_some() {
+                None
+            } else {
+                Some("Explore".into())
+            },
+            logical_subagent_type: None,
+            continuation_policy: SessionContinuationPolicy::Reusable,
+            model_binding_policy: SessionModelBindingPolicy::Mutable,
+            workspace_path: None,
+            model_id: model_id.map(str::to_string),
+            inherit_parent_model,
+            subagent_parent_info: SubagentParentInfo {
+                session_id: parent.session_id.clone(),
+                dialog_turn_id: "turn".into(),
+                tool_call_id: "task".into(),
+            },
+            context: HashMap::new(),
+            permission_runtime_ceiling: PermissionRuntimeCeiling::default(),
+            delegation_policy: DelegationPolicy::top_level().spawn_child(),
+            external_generation_lease: None,
+        };
+
+        let mut defaults = AgentModelSelections::default();
+        defaults.subagents.default = AgentModelSelection::Model {
+            model_ref: "fast".into(),
+        };
+        // Both the per-builtin override and the fork default name the model the
+        // user wants kept away from subagents.
+        defaults.subagents.builtin.insert(
+            "Explore".into(),
+            AgentModelSelection::Model {
+                model_ref: "primary".into(),
+            },
+        );
+        defaults.subagents.fork = AgentModelSelection::Model {
+            model_ref: "primary".into(),
+        };
+        defaults.subagents.enforce_default = enforce_default;
+
+        let expected = if enforce_default { "fast" } else { "primary" };
+        let expected_target = || ModelSelection::Model {
+            model_ref: expected.into(),
+        };
+
+        TEST_AGENT_MODEL_DEFAULTS
+            .scope(defaults, async {
+                // (a) An explicit Task model_id is ignored.
+                assert_eq!(
+                    coordinator
+                        .resolve_fresh_subagent_model_target(
+                            Some("primary"),
+                            false,
+                            "Explore",
+                            &parent.session_id,
+                        )
+                        .await
+                        .unwrap(),
+                    expected_target()
+                );
+                // (b) `model_id: "inherit"` is ignored.
+                assert_eq!(
+                    coordinator
+                        .resolve_fresh_subagent_model_target(
+                            None,
+                            true,
+                            "Explore",
+                            &parent.session_id,
+                        )
+                        .await
+                        .unwrap(),
+                    expected_target()
+                );
+                // (c) The per-builtin override is ignored.
+                assert_eq!(
+                    coordinator
+                        .resolve_fresh_subagent_model_target(
+                            None,
+                            false,
+                            "Explore",
+                            &parent.session_id,
+                        )
+                        .await
+                        .unwrap(),
+                    expected_target()
+                );
+                // (d) A fork child ignores `subagents.fork` and its own model_id.
+                let forked = coordinator
+                    .resolve_hidden_subagent_execution_request(request(
+                        None,
+                        true,
+                        Some("primary"),
+                        false,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(forked.session_config.model_id.as_deref(), Some(expected));
+                let inherited_fork = coordinator
+                    .resolve_hidden_subagent_execution_request(request(None, true, None, true))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    inherited_fork.session_config.model_id.as_deref(),
+                    Some(expected)
+                );
+                // (e) `send_input` must not hand an existing child another model.
+                let reused = coordinator
+                    .resolve_hidden_subagent_execution_request(request(
+                        Some(&child.session_id),
+                        false,
+                        Some("primary"),
+                        false,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(reused.session_config.model_id.as_deref(), Some(expected));
+                let reused_without_switch = coordinator
+                    .resolve_hidden_subagent_execution_request(request(
+                        Some(&child.session_id),
+                        false,
+                        None,
+                        false,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    reused_without_switch.session_config.model_id.as_deref(),
+                    Some(expected)
+                );
+                assert_eq!(
+                    manager
+                        .get_session(&child.session_id)
+                        .and_then(|session| session.config.model_id.clone())
+                        .as_deref(),
+                    Some(expected)
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn fork_child_with_an_approved_immutable_binding_skips_default_enforcement() {
+        let (coordinator, manager) = test_persistent_coordinator();
+        let workspace = tempfile::tempdir().unwrap();
+        let record = crate::service::workspace::legacy_compat::register_local_fixture(
+            workspace.path(),
+            None,
+        )
+        .await;
+        let workspace_path = workspace.path().to_string_lossy().into_owned();
+        // A fork child clones its parent's session config, including this
+        // approved external immutable binding and its fingerprint.
+        let parent = manager
+            .create_session(
+                "Approved parent".into(),
+                "Standard".into(),
+                SessionConfig {
+                    model_id: Some("approved-model".into()),
+                    model_binding_policy: SessionModelBindingPolicy::ApprovedImmutable,
+                    model_binding_fingerprint: Some("approved-fingerprint".into()),
+                    workspace_id: Some(record.id),
+                    workspace_path: Some(workspace_path),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        manager
+            .replace_context_messages(
+                &parent.session_id,
+                vec![Message::user("Inspect the workspace".into())],
+            )
+            .await;
+
+        let mut defaults = AgentModelSelections::default();
+        defaults.subagents.default = AgentModelSelection::Model {
+            model_ref: "fast".into(),
+        };
+        defaults.subagents.fork = AgentModelSelection::Model {
+            model_ref: "approved-model".into(),
+        };
+        defaults.subagents.enforce_default = true;
+
+        // An approved external binding always names a concrete configured
+        // model, so the fork target must resolve against a real catalog entry.
+        use crate::service::config::types::{AIConfig, AIModelConfig};
+        let mut ai_config = AIConfig::default();
+        ai_config.models = ["approved-model"]
+            .into_iter()
+            .map(|id| AIModelConfig {
+                id: id.into(),
+                enabled: true,
+                ..Default::default()
+            })
+            .collect();
+
+        TEST_MODEL_RESOLUTION_AI_CONFIG
+            .scope(
+                ai_config,
+                TEST_AGENT_MODEL_DEFAULTS.scope(defaults, async {
+                    let forked = coordinator
+                        .resolve_hidden_subagent_execution_request(SubagentExecutionRequest {
+                            task_description: "Inspect files".into(),
+                            requested_agent_id: None,
+                            context_mode: SubagentContextMode::Fork,
+                            target_session_id: None,
+                            subagent_type: None,
+                            logical_subagent_type: None,
+                            continuation_policy: SessionContinuationPolicy::Reusable,
+                            model_binding_policy: SessionModelBindingPolicy::Mutable,
+                            workspace_path: None,
+                            model_id: None,
+                            inherit_parent_model: false,
+                            subagent_parent_info: SubagentParentInfo {
+                                session_id: parent.session_id.clone(),
+                                dialog_turn_id: "turn".into(),
+                                tool_call_id: "task".into(),
+                            },
+                            context: HashMap::new(),
+                            permission_runtime_ceiling: PermissionRuntimeCeiling::default(),
+                            delegation_policy: DelegationPolicy::top_level().spawn_child(),
+                            external_generation_lease: None,
+                        })
+                        .await
+                        .unwrap();
+                    // The approved binding keeps its own model: pinning the
+                    // child to `subagents.default` would fail later with
+                    // "Approved model binding changed before execution".
+                    assert_eq!(
+                        forked.session_config.model_id.as_deref(),
+                        Some("approved-model")
+                    );
+                    assert_ne!(forked.session_config.model_id.as_deref(), Some("fast"));
+                    assert_eq!(
+                        forked.session_config.model_binding_policy,
+                        SessionModelBindingPolicy::ApprovedImmutable
+                    );
+                    assert_eq!(
+                        forked.session_config.model_binding_fingerprint.as_deref(),
+                        Some("approved-fingerprint")
+                    );
+                }),
+            )
+            .await;
+    }
+
+    #[tokio::test]
+    async fn enforced_inherit_default_resolves_a_reused_child_against_the_parent_model() {
+        let (coordinator, manager) = test_persistent_coordinator();
+        let workspace = tempfile::tempdir().unwrap();
+        let record = crate::service::workspace::legacy_compat::register_local_fixture(
+            workspace.path(),
+            None,
+        )
+        .await;
+        let workspace_path = workspace.path().to_string_lossy().into_owned();
+        let parent = manager
+            .create_session(
+                "Parent".into(),
+                "Standard".into(),
+                SessionConfig {
+                    model_id: Some("primary".into()),
+                    workspace_id: Some(record.id),
+                    workspace_path: Some(workspace_path.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let child = coordinator
+            .create_hidden_agent_session(
+                None,
+                "Expensive reused subagent".to_string(),
+                "Standard".to_string(),
+                SessionConfig {
+                    model_id: Some("expensive-model".to_string()),
+                    workspace_path: Some(workspace_path),
+                    ..Default::default()
+                },
+                Some(format!("session-{}", parent.session_id)),
+                SessionKind::Subagent,
+            )
+            .await
+            .unwrap();
+
+        let mut defaults = AgentModelSelections::default();
+        defaults.subagents.default = AgentModelSelection::Inherit;
+        defaults.subagents.enforce_default = true;
+
+        // The child's previous model is a concrete catalog entry, so resolving
+        // it against the child must succeed before it can be detected.
+        use crate::service::config::types::{AIConfig, AIModelConfig};
+        let mut ai_config = AIConfig::default();
+        ai_config.models = ["expensive-model"]
+            .into_iter()
+            .map(|id| AIModelConfig {
+                id: id.into(),
+                enabled: true,
+                ..Default::default()
+            })
+            .collect();
+
+        TEST_MODEL_RESOLUTION_AI_CONFIG
+            .scope(
+                ai_config,
+                TEST_AGENT_MODEL_DEFAULTS.scope(defaults, async {
+                    let reused = coordinator
+                        .resolve_hidden_subagent_execution_request(SubagentExecutionRequest {
+                            task_description: "Continue the investigation".into(),
+                            requested_agent_id: None,
+                            context_mode: SubagentContextMode::Fresh,
+                            target_session_id: Some(child.session_id.clone()),
+                            subagent_type: None,
+                            logical_subagent_type: None,
+                            continuation_policy: SessionContinuationPolicy::Reusable,
+                            model_binding_policy: SessionModelBindingPolicy::Mutable,
+                            workspace_path: None,
+                            model_id: None,
+                            inherit_parent_model: false,
+                            subagent_parent_info: SubagentParentInfo {
+                                session_id: parent.session_id.clone(),
+                                dialog_turn_id: "turn".into(),
+                                tool_call_id: "task".into(),
+                            },
+                            context: HashMap::new(),
+                            permission_runtime_ceiling: PermissionRuntimeCeiling::default(),
+                            delegation_policy: DelegationPolicy::top_level().spawn_child(),
+                            external_generation_lease: None,
+                        })
+                        .await
+                        .unwrap();
+                    // `inherit` resolves against the parent session, exactly
+                    // like the fresh and fork paths; resolving it against the
+                    // child would keep the expensive model the flag exists to
+                    // exclude.
+                    assert_eq!(reused.session_config.model_id.as_deref(), Some("primary"));
+                    assert_ne!(
+                        reused.session_config.model_id.as_deref(),
+                        Some("expensive-model")
+                    );
+                    assert_eq!(
+                        manager
+                            .get_session(&child.session_id)
+                            .and_then(|session| session.config.model_id.clone())
+                            .as_deref(),
+                        Some("primary")
+                    );
+                }),
+            )
             .await;
     }
 

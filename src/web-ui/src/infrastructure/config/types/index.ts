@@ -474,6 +474,8 @@ export interface AgentModelSelections {
     default: AgentModelTargetSelection;
     builtin: Record<string, AgentModelTargetSelection>;
     fork: AgentModelTargetSelection;
+    /** `ai.agent_model_selections.subagents.enforce_default`; absent means false. */
+    enforce_default?: boolean;
   };
 }
 
@@ -483,6 +485,8 @@ export interface AgentModelDefaultsConfig {
     default: SubagentModelSelection;
     builtin: Record<string, SubagentModelSelection>;
     fork: SubagentModelSelection;
+    /** `ai.agent_model_defaults.subagents.enforce_default`; absent means false. */
+    enforce_default?: boolean;
   };
 }
 

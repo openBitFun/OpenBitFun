@@ -95,6 +95,10 @@ pub struct SubagentModelSelections {
     pub default: AgentModelSelection,
     pub builtin: BTreeMap<String, AgentModelSelection>,
     pub fork: AgentModelSelection,
+    /// Mirrors `ai.agent_model_defaults.subagents.enforce_default`: pin every
+    /// internally created subagent to `default`. Missing data means `false`.
+    #[serde(default)]
+    pub enforce_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +167,7 @@ impl Default for AgentModelSelections {
                     AgentModelSelection::Inherit,
                 )]),
                 fork: AgentModelSelection::Inherit,
+                enforce_default: false,
             },
         }
     }
@@ -183,6 +188,7 @@ impl AgentModelSelections {
                     .map(|(id, choice)| (id.clone(), choice.clone().into()))
                     .collect(),
                 fork: legacy.subagents.fork.clone().into(),
+                enforce_default: legacy.subagents.enforce_default,
             },
         }
     }
@@ -328,6 +334,60 @@ mod tests {
             serde_json::to_value(&ai.agent_model_defaults).unwrap(),
             legacy
         );
+    }
+
+    #[test]
+    fn subagent_enforce_default_is_absent_by_default_and_round_trips() {
+        // A document written before the field existed must deserialize to false.
+        let legacy = json!({
+            "mode": {"kind": "model", "model_ref": "primary"},
+            "subagents": {
+                "default": {"kind": "model", "model_ref": "fast"},
+                "builtin": {},
+                "fork": {"kind": "inherit"}
+            }
+        });
+        let selections: AgentModelSelections = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(!selections.subagents.enforce_default);
+        assert_eq!(
+            serde_json::to_value(&selections).unwrap()["subagents"]["enforce_default"],
+            json!(false)
+        );
+
+        let mut explicit = selections.clone();
+        explicit.subagents.enforce_default = true;
+        let saved = serde_json::to_value(&explicit).unwrap();
+        assert_eq!(saved["subagents"]["enforce_default"], json!(true));
+        assert_eq!(
+            serde_json::from_value::<AgentModelSelections>(saved).unwrap(),
+            explicit
+        );
+
+        // An explicit `false` is still a valid document and keeps today's rules.
+        let mut disabled = legacy;
+        disabled["subagents"]["enforce_default"] = json!(false);
+        assert!(
+            !serde_json::from_value::<AgentModelSelections>(disabled)
+                .unwrap()
+                .subagents
+                .enforce_default
+        );
+    }
+
+    #[test]
+    fn from_legacy_carries_the_enforced_subagent_default_flag() {
+        for enforce_default in [false, true] {
+            let mut legacy = crate::types::AIConfig::default();
+            legacy.agent_model_defaults.subagents.enforce_default = enforce_default;
+            let migrated = AgentModelSelections::from_legacy(&legacy.agent_model_defaults);
+            assert_eq!(migrated.subagents.enforce_default, enforce_default);
+            assert_eq!(
+                migrated.subagents.default,
+                AgentModelSelection::Model {
+                    model_ref: "fast".into()
+                }
+            );
+        }
     }
 
     #[test]

@@ -137,6 +137,17 @@ fn translate_legacy_model_selection_write(
                 SubagentModelSelection,
             >(value)?))?
         }
+        // A raw boolean is not expressible as a legacy model selection, so it is
+        // passed through unchanged instead of being projected through the enum.
+        ".subagents.enforce_default" => {
+            if value.is_boolean() {
+                value
+            } else {
+                return Err(OpenBitFunError::validation(
+                    "ai.agent_model_defaults.subagents.enforce_default must be a boolean",
+                ));
+            }
+        }
         _ if suffix.starts_with(".subagents.builtin.") => {
             if value.is_null() {
                 value
@@ -1260,6 +1271,98 @@ mod tests {
                 .unwrap(),
             legacy
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_subagent_enforce_default_write_lands_on_runtime_selections() {
+        let (service, dir) = test_service("subagent-enforce-default").await;
+        service
+            .add_ai_model(runtime_model("chosen", "fixture-key"))
+            .await
+            .unwrap();
+        let legacy_before: serde_json::Value = service
+            .get_config(Some("ai.agent_model_defaults"))
+            .await
+            .unwrap();
+        assert!(!service
+            .get_config::<bool>(Some("ai.agent_model_selections.subagents.enforce_default"))
+            .await
+            .unwrap());
+
+        assert!(service
+            .set_config_if_changed(
+                "ai.agent_model_defaults.subagents.enforce_default",
+                serde_json::json!(true),
+            )
+            .await
+            .unwrap());
+        assert!(service
+            .get_config::<bool>(Some("ai.agent_model_selections.subagents.enforce_default"))
+            .await
+            .unwrap());
+        let selections: openbitfun_config_contracts::model_pool::AgentModelSelections = service
+            .get_config(Some("ai.agent_model_selections"))
+            .await
+            .unwrap();
+        assert!(selections.subagents.enforce_default);
+        // The frozen legacy surface is read-only and must not be rewritten.
+        assert_eq!(
+            service
+                .get_config::<serde_json::Value>(Some("ai.agent_model_defaults"))
+                .await
+                .unwrap(),
+            legacy_before
+        );
+
+        // Whole-object writes carry the flag through the same translation.
+        service
+            .set_config(
+                "ai.agent_model_defaults.subagents",
+                serde_json::json!({
+                    "default": {"kind": "fixed", "model_id": "chosen"},
+                    "builtin": {},
+                    "fork": {"kind": "inherit"},
+                    "enforce_default": true,
+                }),
+            )
+            .await
+            .unwrap();
+        let selections: openbitfun_config_contracts::model_pool::AgentModelSelections = service
+            .get_config(Some("ai.agent_model_selections"))
+            .await
+            .unwrap();
+        assert!(selections.subagents.enforce_default);
+        assert_eq!(
+            selections.subagents.default,
+            openbitfun_config_contracts::model_pool::AgentModelSelection::Model {
+                model_ref: "chosen".into()
+            }
+        );
+
+        // The flag survives a restart and clearing it restores today's rules.
+        let restarted = restart_test_service(&dir, "subagent-enforce-default").await;
+        assert!(restarted
+            .get_config::<bool>(Some("ai.agent_model_selections.subagents.enforce_default"))
+            .await
+            .unwrap());
+        restarted
+            .set_config(
+                "ai.agent_model_defaults.subagents.enforce_default",
+                serde_json::json!(false),
+            )
+            .await
+            .unwrap();
+        assert!(!restarted
+            .get_config::<bool>(Some("ai.agent_model_selections.subagents.enforce_default"))
+            .await
+            .unwrap());
+        assert!(service
+            .set_config(
+                "ai.agent_model_defaults.subagents.enforce_default",
+                serde_json::json!("true"),
+            )
+            .await
+            .is_err());
     }
 
     fn realtime_voice_fixture() -> VoiceCallConfig {

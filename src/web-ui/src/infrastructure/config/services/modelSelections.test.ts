@@ -13,7 +13,13 @@ describe('typed model preferences', () => {
     expect(result.mode).toEqual({ kind: 'model', model_ref: 'a' });
     expect(result.subagents.default).toEqual({ kind: 'model', model_ref: 'fast' });
     expect(result.subagents.builtin.ResearchSpecialist).toEqual({ kind: 'inherit' });
+    expect(result.subagents.enforce_default).toBe(false);
     expect(legacy.mode).toBe('a');
+  });
+  it('carries the legacy enforcement flag next to the converted selection', () => {
+    const enforced: AgentModelDefaultsConfig = { ...legacy, subagents: { ...legacy.subagents, enforce_default: true } };
+    expect(effectiveModelSelections(enforced, 'ai.agent_model_defaults').subagents.enforce_default).toBe(true);
+    expect(legacy.subagents.enforce_default).toBeUndefined();
   });
   it('rejects malformed selections and read failures instead of falling back', async () => {
     expect(() => effectiveModelSelections({} as any)).toThrow('Invalid');

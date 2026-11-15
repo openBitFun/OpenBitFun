@@ -1066,6 +1066,10 @@ pub struct SubagentModelDefaultsConfig {
     pub builtin: HashMap<String, SubagentModelSelection>,
     /// Default choice for a child created from the parent's context.
     pub fork: SubagentModelSelection,
+    /// When true every internally created subagent uses `default`, ignoring
+    /// explicit requests, `fork` and per-builtin overrides. Absent means false.
+    #[serde(default)]
+    pub enforce_default: bool,
 }
 
 impl Default for SubagentModelDefaultsConfig {
@@ -1077,6 +1081,7 @@ impl Default for SubagentModelDefaultsConfig {
                 SubagentModelSelection::Inherit,
             )]),
             fork: SubagentModelSelection::Inherit,
+            enforce_default: false,
         }
     }
 }
@@ -4135,6 +4140,53 @@ mod tests {
             defaults.builtin_subagent_selection("ResearchSpecialist"),
             SubagentModelSelection::fixed("fast")
         );
+    }
+
+    #[test]
+    fn subagent_enforce_default_defaults_off_and_round_trips() {
+        assert!(!super::SubagentModelDefaultsConfig::default().enforce_default);
+        assert!(
+            !AgentModelDefaultsConfig::default()
+                .subagents
+                .enforce_default
+        );
+
+        // Absent field (older configuration) keeps today's resolution rules.
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"subagents": {}}),
+            serde_json::json!({"subagents": {"default": {"kind": "inherit"}}}),
+        ] {
+            let config: AgentModelDefaultsConfig = serde_json::from_value(payload).unwrap();
+            assert!(!config.subagents.enforce_default);
+        }
+
+        let config: AgentModelDefaultsConfig = serde_json::from_value(serde_json::json!({
+            "subagents": {"enforce_default": true}
+        }))
+        .unwrap();
+        assert!(config.subagents.enforce_default);
+        let saved = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            saved["subagents"]["enforce_default"],
+            serde_json::json!(true)
+        );
+        let reloaded: AgentModelDefaultsConfig = serde_json::from_value(saved).unwrap();
+        assert!(reloaded.subagents.enforce_default);
+
+        // A damaged value must stay an error instead of silently enforcing.
+        for invalid in [
+            serde_json::json!("true"),
+            serde_json::Value::Null,
+            serde_json::json!(1),
+        ] {
+            assert!(
+                serde_json::from_value::<AgentModelDefaultsConfig>(serde_json::json!({
+                    "subagents": {"enforce_default": invalid}
+                }))
+                .is_err()
+            );
+        }
     }
 
     #[test]

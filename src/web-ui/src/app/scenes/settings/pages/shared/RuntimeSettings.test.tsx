@@ -6,15 +6,21 @@ import DeviceControlSettingsPage from '../tools/DeviceControlSettingsPage';
 import ExecutionSettingsPage from '../ai/ExecutionSettingsPage';
 import WorkspaceSearchSection from '../development/WorkspaceSearchSection';
 import { BROWSER_LINK_TARGET_STORAGE_KEY, browserLinkPreferenceStore } from '@/infrastructure/config/services/browserLinkPreference';
+import { activateSurface } from '@/infrastructure/peer-device/deviceSurface';
 
 const mocks = vi.hoisted(() => {
   Object.defineProperty(window, '__TAURI__', { configurable: true, value: {} });
   return {
-    invoke: vi.fn(), setConfig: vi.fn(), setEnabled: vi.fn(), getConfig: vi.fn(), error: vi.fn(),
+    invoke: vi.fn(), setConfig: vi.fn(), setEnabled: vi.fn(), getConfig: vi.fn(), getOptionalConfig: vi.fn(), error: vi.fn(),
     t: (key: string) => key,
     workspace: null as { workspaceKind: string } | null,
   };
 });
+
+/** Same fixture the previous inline mock returned for the runtime model-selection path. */
+const defaultOptionalConfig = async (path: string) => path === 'ai.agent_model_selections'
+  ? { mode: { kind: 'model', model_ref: 'primary' }, subagents: { default: { kind: 'model', model_ref: 'fast' }, builtin: {}, fork: { kind: 'inherit' } } }
+  : true;
 vi.mock('@/infrastructure/config/hooks', () => ({ useAIExperienceSettings: () => ({ settings: { enable_workspace_search: true }, isLoading: false, error: null, reload: vi.fn() }) }));
 vi.mock('@/infrastructure/api', () => ({ globalAPI: {}, workspaceAPI: {} }));
 vi.mock('@/infrastructure/contexts/WorkspaceContext', () => ({ useCurrentWorkspace: () => ({ workspace: mocks.workspace }) }));
@@ -26,7 +32,7 @@ vi.mock('@/infrastructure/i18n', () => ({
 vi.mock('@/infrastructure/api/service-api/ApiClient', () => ({ api: { invoke: mocks.invoke } }));
 vi.mock('@/infrastructure/api/service-api/SystemAPI', () => ({ systemAPI: { getSystemInfo: async () => ({ platform: 'macos' }) } }));
 vi.mock('../../../../../infrastructure/config/services/ConfigManager', () => ({ configManager: { hasCachedConfig: () => false, getCachedConfig: () => undefined,
-  getConfig: mocks.getConfig, getOptionalConfig: async (path: string) => path === 'ai.agent_model_selections' ? { mode: { kind: 'model', model_ref: 'primary' }, subagents: { default: { kind: 'model', model_ref: 'fast' }, builtin: {}, fork: { kind: 'inherit' } } } : true, setConfig: mocks.setConfig,
+  getConfig: mocks.getConfig, getOptionalConfig: mocks.getOptionalConfig, setConfig: mocks.setConfig,
 } }));
 vi.mock('../../../../../infrastructure/config/hooks/useComputerUseEnabled', () => ({ useComputerUseEnabled: () => ({ computerUseEnabled: false, setComputerUseEnabled: mocks.setEnabled }) }));
 vi.mock('../../../../../infrastructure/config/services/AIExperienceConfigService', () => ({ aiExperienceConfigService: { getCachedSettings: () => null, getSettingsAsync: async () => ({ enable_workspace_search: true }) } }));
@@ -68,6 +74,7 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   status = { ...readyStatus };
   mocks.getConfig.mockReset().mockResolvedValue(null);
+  mocks.getOptionalConfig.mockReset().mockImplementation(defaultOptionalConfig);
   mocks.setConfig.mockReset().mockResolvedValue(undefined);
   mocks.error.mockReset();
   mocks.invoke.mockReset().mockImplementation(async (command: string) => {
@@ -302,5 +309,65 @@ describe('Flashgrep settings availability', () => {
     mocks.workspace = { workspaceKind };
     await act(async () => root.render(<WorkspaceSearchSection />));
     expect(container.textContent?.includes('features.workspaceSearch.enable')).toBe(workspaceKind === 'normal');
+  });
+});
+
+describe('Subagent model enforcement', () => {
+  const enforcementRow = () => Array.from(container.querySelectorAll<HTMLElement>('[data-openbitfun-part="row"]'))
+    .find(row => row.querySelector('[data-openbitfun-part="rowLabel"]')?.textContent === 'config.subagentModelEnforcement')!;
+  const enforceSwitch = () => enforcementRow().querySelector<HTMLInputElement>('input[role="switch"]')!;
+  const rowDescription = () => enforcementRow().querySelector<HTMLElement>('[data-openbitfun-part="rowDescription"]')!.textContent;
+
+  function runtimeSelections(subagents: Record<string, unknown>) {
+    return { mode: { kind: 'model', model_ref: 'primary' }, subagents: { default: { kind: 'model', model_ref: 'fast' }, builtin: {}, fork: { kind: 'inherit' }, ...subagents } };
+  }
+
+  it('renders the stored state and writes the runtime path on a local host', async () => {
+    mocks.getOptionalConfig.mockImplementation(async (path: string) => path === 'ai.agent_model_selections'
+      ? runtimeSelections({ enforce_default: true })
+      : defaultOptionalConfig(path));
+    await act(async () => root.render(<ExecutionSettingsPage />));
+    expect(enforceSwitch().checked).toBe(true);
+    expect(rowDescription()).toContain('config.subagentModelEnforcementDesc');
+    mocks.setConfig.mockClear();
+
+    await act(async () => enforceSwitch().click());
+    expect(mocks.setConfig).toHaveBeenCalledExactlyOnceWith('ai.agent_model_selections.subagents.enforce_default', false);
+    expect(enforceSwitch().checked).toBe(false);
+    expect(mocks.error).not.toHaveBeenCalled();
+  });
+
+  it('restores the switch and reports the host error when the write is rejected', async () => {
+    mocks.setConfig.mockRejectedValue(new Error('Host rejected the subagent policy'));
+    await act(async () => root.render(<ExecutionSettingsPage />));
+    await act(async () => enforceSwitch().click());
+    expect(mocks.error).toHaveBeenCalledWith('messages.saveFailed: Host rejected the subagent policy');
+    expect(enforceSwitch().checked).toBe(false);
+  });
+
+  it('reads and writes the legacy typed path on a host without runtime selections', async () => {
+    await act(async () => activateSurface('peer-legacy'));
+    try {
+      mocks.getOptionalConfig.mockImplementation(async (path: string) => path === 'ai.agent_model_defaults'
+        ? { mode: 'primary', subagents: { default: { kind: 'fixed', model_id: 'fast' }, builtin: {}, fork: { kind: 'inherit' }, enforce_default: true } }
+        : defaultOptionalConfig(path));
+      await act(async () => root.render(<ExecutionSettingsPage />));
+      expect(enforceSwitch().checked).toBe(true);
+
+      await act(async () => enforceSwitch().click());
+      expect(mocks.setConfig).toHaveBeenCalledExactlyOnceWith('ai.agent_model_defaults.subagents.enforce_default', false);
+      expect(mocks.error).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => activateSurface('local'));
+    }
+  });
+
+  it('warns when enforcement would leave subagents on the session model', async () => {
+    mocks.getOptionalConfig.mockImplementation(async (path: string) => path === 'ai.agent_model_selections'
+      ? runtimeSelections({ default: { kind: 'inherit' }, enforce_default: true })
+      : defaultOptionalConfig(path));
+    await act(async () => root.render(<ExecutionSettingsPage />));
+    expect(enforceSwitch().checked).toBe(true);
+    expect(rowDescription()).toContain('config.subagentModelEnforcementInheritWarning');
   });
 });

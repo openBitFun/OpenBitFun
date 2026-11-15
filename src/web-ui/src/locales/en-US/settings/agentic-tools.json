@@ -42,7 +42,10 @@
     "subagentModelSettings": "Go to the Agents page to set models for individual subagents",
     "subagentModelInherit": "Inherit parent session",
     "subagentDefaultModel": "Default subagent model",
-    "subagentDefaultModelDesc": "Used by subagents without an individual model override."
+    "subagentDefaultModelDesc": "Used by subagents without an individual model override.",
+    "subagentModelEnforcement": "Always use this model for subagents",
+    "subagentModelEnforcementDesc": "When on, every subagent, including forked child sessions, is locked to the model above: the session's own model and any model requested by a task are ignored",
+    "subagentModelEnforcementInheritWarning": "The model above is set to inherit the parent session, so subagents would still follow the session model. Choose a specific model first"
   },
   "filters": {
     "all": "All",

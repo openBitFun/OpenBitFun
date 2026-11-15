@@ -31,6 +31,9 @@ export function effectiveModelSelections(config?: AgentModelDefaultsConfig | Age
       default: convert(defaults?.subagents?.default ?? { kind: 'fixed', model_id: 'fast' }),
       builtin: Object.fromEntries(Object.entries(defaults?.subagents?.builtin ?? {}).map(([id, choice]) => [id, convert(choice)])),
       fork: convert(defaults?.subagents?.fork ?? { kind: 'inherit' }),
+      // The host copies this flag when it migrates the legacy typed path; mirror
+      // that so readers see the enforcement state on both dialects.
+      enforce_default: defaults?.subagents?.enforce_default === true,
     },
   };
 }

@@ -1013,6 +1013,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enforced_subagent_default_flag_validates_and_is_never_dropped() {
+        // The legacy surface only validates while no runtime selections exist.
+        let mut config = AIConfig::default();
+        config.agent_model_defaults.subagents.enforce_default = true;
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value["agent_model_defaults"]["subagents"]["enforce_default"],
+            serde_json::json!(true)
+        );
+        AIConfigProvider
+            .validate_config(&value)
+            .await
+            .expect("a boolean enforcement flag has nothing to validate");
+        let round_tripped: AIConfig = serde_json::from_value(value).unwrap();
+        assert!(round_tripped.agent_model_defaults.subagents.enforce_default);
+
+        // The runtime surface keeps the flag through validation as well.
+        let mut selections =
+            openbitfun_config_contracts::model_pool::AgentModelSelections::default();
+        selections.subagents.enforce_default = true;
+        let mut config = AIConfig::default();
+        config.set_model_selections(selections).unwrap();
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value["agent_model_selections"]["subagents"]["enforce_default"],
+            serde_json::json!(true)
+        );
+        AIConfigProvider
+            .validate_config(&value)
+            .await
+            .expect("the runtime selections remain valid");
+        let round_tripped: AIConfig = serde_json::from_value(value).unwrap();
+        assert!(
+            round_tripped
+                .effective_model_selections()
+                .unwrap()
+                .subagents
+                .enforce_default
+        );
+    }
+
+    #[tokio::test]
     async fn rejects_invalid_canonical_reasoning_actions() {
         for (action, expected) in [
             (

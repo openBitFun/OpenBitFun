@@ -77,6 +77,7 @@ const ExecutionSettingsPage: React.FC = () => {
   }
   const hasSeededPageData = seed.loaded && Boolean(seededSelections);
   const [subagentDefaultModel, setSubagentDefaultModel] = useState<AgentModelTargetSelection>(() => seededSelections?.subagents.default ?? { kind: 'inherit' });
+  const [enforceSubagentDefaultModel, setEnforceSubagentDefaultModel] = useState(() => seededSelections?.subagents.enforce_default === true);
   const [modelPools, setModelPools] = useState<ModelPoolDefinition[]>(() => {
     const document = seed.get<ModelPoolDocument | null>('ai.model_pools', null);
     return document ? readableModelPools(document) : [];
@@ -224,6 +225,31 @@ const ExecutionSettingsPage: React.FC = () => {
     }
   };
 
+  const handleSubagentModelEnforcementChange = async (checked: boolean) => {
+    const scope = getActiveSurfaceScope();
+    const previousEnforcement = enforceSubagentDefaultModel;
+    setEnforceSubagentDefaultModel(checked);
+    setToolExecConfigLoading(true);
+    try {
+      if (modelSelectionsConfigPath() === 'ai.agent_model_selections') {
+        await configManager.setConfig('ai.agent_model_selections.subagents.enforce_default', checked);
+      } else {
+        await configManager.setConfig('ai.agent_model_defaults.subagents.enforce_default', checked);
+      }
+      if (!scope.isCurrent()) return;
+      notificationService.success(tTools('messages.saveSuccess'), { duration: 2000 });
+    } catch (error) {
+      if (!scope.isCurrent()) return;
+      log.error('Failed to save subagent model enforcement', error);
+      setEnforceSubagentDefaultModel(previousEnforcement);
+      notificationService.error(
+        `${tTools('messages.saveFailed')}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      if (scope.isCurrent()) setToolExecConfigLoading(false);
+    }
+  };
+
   const handleSwarmMaxConcurrencyChange = async (input: number) => {
     if (!Number.isFinite(input)) return;
     const value = Math.min(SWARM_MAX_CONCURRENCY_LIMIT, Math.max(1, Math.round(input)));
@@ -332,6 +358,7 @@ const ExecutionSettingsPage: React.FC = () => {
         supportsModelPools() ? configManager.getOptionalConfig<ModelPoolDocument>('ai.model_pools') : Promise.resolve(undefined),
       ]);
       setSubagentDefaultModel(loadedSubagentDefaultModel.subagents.default);
+      setEnforceSubagentDefaultModel(loadedSubagentDefaultModel.subagents.enforce_default === true);
       setModelPools(poolDocument ? readableModelPools(poolDocument) : []);
       setConfiguredModels(loadedModels ?? []);
       setEnableDeferredToolLoading(deferredToolLoadingEnabled ?? true);
@@ -509,6 +536,21 @@ const ExecutionSettingsPage: React.FC = () => {
                   size="sm"
                   disabled={toolExecConfigLoading}
                   onValueChange={(value) => void handleSubagentDefaultModelChange(value)}
+                />
+              </div>
+            </ConfigPageRow>
+            <ConfigPageRow
+              label={tTools('config.subagentModelEnforcement')}
+              description={enforceSubagentDefaultModel && subagentDefaultModel.kind === 'inherit'
+                ? tTools('config.subagentModelEnforcementInheritWarning')
+                : tTools('config.subagentModelEnforcementDesc')}
+              align="center"
+            >
+              <div className="openbitfun-runtime-settings__row-control" data-openbitfun-component="runtime-settings" data-openbitfun-part="control">
+                <Switch
+                  checked={enforceSubagentDefaultModel}
+                  onChange={(event) => void handleSubagentModelEnforcementChange(event.target.checked)}
+                  disabled={toolExecConfigLoading}
                 />
               </div>
             </ConfigPageRow>

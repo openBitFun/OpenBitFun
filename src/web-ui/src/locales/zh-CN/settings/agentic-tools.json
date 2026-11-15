@@ -42,7 +42,10 @@
     "subagentModelSettings": "前往智能体页面为子智能体单独设置模型",
     "subagentModelInherit": "继承父会话",
     "subagentDefaultModel": "子智能体默认模型",
-    "subagentDefaultModelDesc": "未单独指定模型的子智能体使用此设置。"
+    "subagentDefaultModelDesc": "未单独指定模型的子智能体使用此设置。",
+    "subagentModelEnforcement": "强制子智能体固定使用该模型",
+    "subagentModelEnforcementDesc": "开启后，所有子智能体（含分叉出的子会话）都固定使用上方选择的模型，会话自身模型和任务级模型请求都会被忽略",
+    "subagentModelEnforcementInheritWarning": "上方选择的是“继承父会话”，开启后子智能体仍会跟随会话模型。请先改选一个具体模型"
   },
   "filters": {
     "all": "全部",
