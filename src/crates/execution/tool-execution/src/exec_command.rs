@@ -5,7 +5,7 @@ use std::time::Duration;
 
 pub const EXEC_COMMAND_POWERSHELL_UTF8_OUTPUT_PREFIX: &str =
     "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;\n";
-pub const EXEC_COMMAND_DEFAULT_YIELD_TIME_MS: u64 = 30_000;
+pub const EXEC_COMMAND_DEFAULT_YIELD_TIME_MS: u64 = 180_000;
 pub const REMOTE_EXEC_SHELL_PROBE_TIMEOUT_MS: u64 = 3_000;
 
 const REMOTE_NON_TTY_INTERRUPT_GRACE_SECONDS: u64 = 2;
@@ -1416,7 +1416,7 @@ mod tests {
 
         assert_eq!(parsed.cmd, "  echo ok  ");
         assert!(!parsed.tty);
-        assert_eq!(parsed.yield_time_ms, EXEC_COMMAND_DEFAULT_YIELD_TIME_MS);
+        assert_eq!(parsed.yield_time_ms, 180_000);
         assert_eq!(exec_command_run_input_validation_message(&input), None);
 
         let blank = json!({
@@ -1439,7 +1439,7 @@ mod tests {
         assert_eq!(parsed.session_id, 7);
         assert_eq!(parsed.chars, "");
         assert!(!parsed.append_enter);
-        assert_eq!(parsed.yield_time_ms, EXEC_COMMAND_DEFAULT_YIELD_TIME_MS);
+        assert_eq!(parsed.yield_time_ms, 180_000);
         assert_eq!(write_stdin_input_validation_message(&input), None);
 
         let out_of_range = json!({
@@ -1450,6 +1450,30 @@ mod tests {
             write_stdin_input_validation_message(&out_of_range),
             Some("session_id is required for WriteStdin")
         );
+    }
+
+    #[test]
+    fn exec_command_and_write_stdin_preserve_explicit_yield_time() {
+        for yield_time_ms in [0, 1_000, 600_000] {
+            let input = json!({
+                "cmd": "echo ok",
+                "session_id": 7,
+                "yield_time_ms": yield_time_ms,
+            });
+
+            assert_eq!(
+                exec_command_run_input_from_input(&input)
+                    .expect("cmd should parse")
+                    .yield_time_ms,
+                yield_time_ms
+            );
+            assert_eq!(
+                write_stdin_input_from_input(&input)
+                    .expect("stdin input should parse")
+                    .yield_time_ms,
+                yield_time_ms
+            );
+        }
     }
 
     #[test]

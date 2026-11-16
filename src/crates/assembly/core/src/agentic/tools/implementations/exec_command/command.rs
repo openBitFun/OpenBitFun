@@ -726,7 +726,7 @@ Output:
                 },
                 "yield_time_ms": {
                     "type": "number",
-                    "description": "How long to wait for output before yielding. Defaults to 30000 ms."
+                    "description": "How long to wait for output before yielding. Defaults to 180000 ms."
                 }
             },
             "required": ["cmd"],
