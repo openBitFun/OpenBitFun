@@ -2640,6 +2640,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         connection_id: &str,
         ssh_host: Option<&str>,
         remote_connection_rebind: RemoteConnectionRebind,
+        promote_if_opened: bool,
     ) -> OpenBitFunResult<WorkspaceInfo> {
         let workspace = workspace_service
             .prepare_remote_workspace(path, connection_id, ssh_host)
@@ -2653,7 +2654,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 .and_then(|host| host.as_str()),
         )?;
         workspace_service
-            .open_known_remote_workspace_with_rebind(&workspace, remote_connection_rebind)
+            .open_known_remote_workspace_with_rebind(
+                &workspace,
+                remote_connection_rebind,
+                promote_if_opened,
+            )
             .await
     }
 

@@ -2,13 +2,10 @@
 
 import {
   clearPendingWorkspaceReveal,
-  noteWorkspaceActivated,
-  noteWorkspaceOrderPersisted,
   orderWorkspacesForDisplay,
   prepareWorkspacePromotion,
   requestWorkspaceReveal,
   setWorkspaceDisplayOrder,
-  stableWorkspaceOrder,
 } from './workspaceDisplayOrder';
 import type {
   RemoteWorkspaceSnapshot,
@@ -108,14 +105,7 @@ export interface WorkspaceState {
 
 export type WorkspaceSection = 'all' | 'assistants' | 'projects';
 
-export interface OpenRemoteWorkspaceRequestOptions extends OpenRemoteWorkspaceOptions {
-  /**
-   * Move a record this device already has open to the front of its section.
-   * Explicit selections keep the default; background restore passes false so
-   * reconnecting never rearranges the sidebar.
-   */
-  promoteIfOpened?: boolean;
-}
+export type OpenRemoteWorkspaceRequestOptions = OpenRemoteWorkspaceOptions;
 
 export type WorkspaceReorderPosition = 'before' | 'after';
 
@@ -147,8 +137,6 @@ interface WorkspaceSurfaceContainer {
   catalogResyncInFlight: boolean;
   /** A catalog hint arrived while a re-read (or the bootstrap) was running. */
   catalogResyncPending: boolean;
-  /** Background catalog mutations (e.g. order persistence) still running for this surface. */
-  catalogMutationDepth: number;
 }
 
 function createWorkspaceSurfaceContainer(): WorkspaceSurfaceContainer {
@@ -170,7 +158,6 @@ function createWorkspaceSurfaceContainer(): WorkspaceSurfaceContainer {
     startupLegacyRemoteWorkspace: null,
     catalogResyncInFlight: false,
     catalogResyncPending: false,
-    catalogMutationDepth: 0,
   };
 }
 
@@ -394,20 +381,6 @@ class WorkspaceManager {
       : workspace.workspaceKind !== 'assistant';
   }
 
-  /**
-   * A host list in this surface's display order. The same order the device
-   * catalog applies, so the live list and the device's background projection
-   * never disagree (see `workspaceDisplayOrder`). Ordering by this window's
-   * previous list instead let the two projections adopt each other's order on
-   * every switch.
-   */
-  private preserveOpenedWorkspaceOrder(
-    workspaces: WorkspaceInfo[],
-    surfaceId: DeviceSurfaceId = getActiveSurfaceId(),
-  ): WorkspaceInfo[] {
-    return stableWorkspaceOrder(surfaceId, workspaces);
-  }
-
   private buildReorderedOpenedWorkspaceIds(
     section: WorkspaceSection,
     sourceWorkspaceId: string,
@@ -489,13 +462,14 @@ class WorkspaceManager {
     loading: boolean,
     error: string | null,
     event?: WorkspaceEvent,
-    options?: { surfaceId?: DeviceSurfaceId; preordered?: boolean },
+    options?: { surfaceId?: DeviceSurfaceId },
   ): void {
     const surfaceId = options?.surfaceId ?? getActiveSurfaceId();
-    // Every list a host returns is shown in this surface's one display order.
-    const openedWorkspaceMap = this.buildOpenedWorkspaceMap(
-      options?.preordered ? openedWorkspaces : stableWorkspaceOrder(surfaceId, openedWorkspaces),
+    setWorkspaceDisplayOrder(
+      surfaceId,
+      openedWorkspaces.map(workspace => workspace.id),
     );
+    const openedWorkspaceMap = this.buildOpenedWorkspaceMap(openedWorkspaces);
 
     const resolvedCurrentWorkspace = currentWorkspace
       ? openedWorkspaceMap.get(currentWorkspace.id) ?? currentWorkspace
@@ -751,7 +725,6 @@ class WorkspaceManager {
       !container.isInitialized
       || container.catalogResyncInFlight
       || container.state.loading
-      || container.catalogMutationDepth > 0
     ) {
       // The bootstrap, the running re-read, or this surface's own workspace
       // operation may have started before this change; whichever finishes
@@ -769,7 +742,6 @@ class WorkspaceManager {
       && container.isInitialized
       && !container.catalogResyncInFlight
       && !container.state.loading
-      && container.catalogMutationDepth === 0
     ) {
       void this.resyncWorkspaceCatalog(container);
     }
@@ -821,8 +793,11 @@ class WorkspaceManager {
     openedWorkspaces: WorkspaceInfo[],
   ): void {
     const previousOpened = this.state.openedWorkspaces;
-    const orderedOpened = this.preserveOpenedWorkspaceOrder(openedWorkspaces);
-    const nextOpened = this.buildOpenedWorkspaceMap(orderedOpened);
+    setWorkspaceDisplayOrder(
+      getActiveSurfaceId(),
+      openedWorkspaces.map(workspace => workspace.id),
+    );
+    const nextOpened = this.buildOpenedWorkspaceMap(openedWorkspaces);
 
     const previousActiveId = this.state.activeWorkspaceId;
     const keptActive = previousActiveId ? nextOpened.get(previousActiveId) ?? null : null;
@@ -830,7 +805,7 @@ class WorkspaceManager {
       ?? (hostCurrentWorkspace ? nextOpened.get(hostCurrentWorkspace.id) ?? null : null);
     const activeChanged = (currentWorkspace?.id ?? null) !== previousActiveId;
 
-    const openedNow = orderedOpened.filter(workspace => !previousOpened.has(workspace.id));
+    const openedNow = openedWorkspaces.filter(workspace => !previousOpened.has(workspace.id));
     const closedNow = Array.from(previousOpened.keys()).filter(id => !nextOpened.has(id));
 
     this.updateState({
@@ -1087,84 +1062,47 @@ class WorkspaceManager {
   }
 
   /**
-   * Publish a workspace the host just opened. When the user explicitly added a
-   * project workspace this device already had open, it moves to the front of
-   * the project section (leaving pinned assistants in place) so the add has a
-   * visible effect. The order is shown immediately and persisted in the
-   * background; a host that cannot persist it keeps the shown order for this
-   * window.
+   * Publish a workspace the host just opened. The backend owns workspace
+   * ordering (explicit project opens move to the front of the project slots,
+   * while background restores preserve positions); when an existing project row
+   * moved to slot 0, mounted views snapshot pre-commit rects for FLIP motion
+   * and scroll the row into view after state updates.
    */
   private publishOpenedWorkspace(
     surface: SurfaceCapture,
-    container: WorkspaceSurfaceContainer,
     workspace: WorkspaceInfo,
     recentWorkspaces: WorkspaceInfo[],
     openedWorkspaces: WorkspaceInfo[],
-    promote: boolean,
     reveal: boolean,
   ): void {
     const surfaceId = surface.scope.surfaceId;
-    const orderedOpened = this.preserveOpenedWorkspaceOrder(openedWorkspaces, surfaceId);
     const isProject = this.isWorkspaceInSection(workspace, 'projects');
-    const firstProject = orderedOpened.find(item => this.isWorkspaceInSection(item, 'projects'));
-    const promotedIds = promote && isProject && firstProject && firstProject.id !== workspace.id
-      ? this.buildReorderedOpenedWorkspaceIds('projects', workspace.id, firstProject.id, 'before', orderedOpened)
-      : null;
+    const previousProjects = this.getOpenedWorkspacesList()
+      .filter(item => this.isWorkspaceInSection(item, 'projects'));
+    const nextProjects = openedWorkspaces
+      .filter(item => this.isWorkspaceInSection(item, 'projects'));
+    const previousProjectIndex = previousProjects.findIndex(item => item.id === workspace.id);
+    const wasPromoted = reveal
+      && isProject
+      && previousProjectIndex > 0
+      && nextProjects[0]?.id === workspace.id;
 
-    let finalOpened = orderedOpened;
-    if (promotedIds) {
-      const byId = this.buildOpenedWorkspaceMap(orderedOpened);
-      finalOpened = promotedIds
-        .map(id => byId.get(id))
-        .filter((item): item is WorkspaceInfo => Boolean(item));
-      setWorkspaceDisplayOrder(surfaceId, promotedIds);
+    if (wasPromoted) {
       prepareWorkspacePromotion(surfaceId, workspace.id);
-      container.catalogMutationDepth += 1;
     }
 
     this.updateWorkspaceState(
       workspace,
       recentWorkspaces,
-      finalOpened,
+      openedWorkspaces,
       false,
       null,
       { type: 'workspace:opened', workspace },
-      { surfaceId, preordered: true },
+      { surfaceId },
     );
 
     if (reveal && isProject && this.isSurfaceUnchanged(surface)) {
-      requestWorkspaceReveal(surfaceId, workspace.id, Boolean(promotedIds));
-    }
-
-    if (promotedIds) {
-      void this.persistPromotedWorkspaceOrder(surface, container, workspace.id, promotedIds);
-    }
-  }
-
-  private async persistPromotedWorkspaceOrder(
-    surface: SurfaceCapture,
-    container: WorkspaceSurfaceContainer,
-    workspaceId: string,
-    promotedIds: string[],
-  ): Promise<void> {
-    try {
-      if (!this.isSurfaceUnchanged(surface)) {
-        return;
-      }
-      await globalStateAPI.reorderOpenedWorkspaces(promotedIds);
-      noteWorkspaceOrderPersisted(surface.scope.surfaceId, promotedIds);
-    } catch (error) {
-      if (!isSurfaceChangedError(error) && this.isSurfaceUnchanged(surface)) {
-        log.warn('Failed to persist promoted workspace order', {
-          workspaceId,
-          error,
-        });
-      }
-    } finally {
-      container.catalogMutationDepth = Math.max(0, container.catalogMutationDepth - 1);
-      if (this.isSurfaceUnchanged(surface)) {
-        this.drainPendingCatalogResync();
-      }
+      requestWorkspaceReveal(surfaceId, workspace.id, wasPromoted);
     }
   }
 
@@ -1177,9 +1115,6 @@ class WorkspaceManager {
     const { promoteIfOpened = true } = options;
     const surface = this.captureSurface();
     const container = this.surfaceContainer(surface.scope.surfaceId);
-    // Read before the host call: a list refresh that lands meanwhile may
-    // already contain a workspace this call is adding for the first time.
-    const openedBefore = new Set(this.state.openedWorkspaces.keys());
     try {
       this.setLoading(true);
       this.setError(null);
@@ -1197,11 +1132,9 @@ class WorkspaceManager {
 
       this.publishOpenedWorkspace(
         surface,
-        container,
         workspace,
         recentWorkspaces,
         openedWorkspaces,
-        promoteIfOpened && openedBefore.has(workspace.id),
         promoteIfOpened,
       );
 
@@ -1222,9 +1155,8 @@ class WorkspaceManager {
   }
 
   /**
-   * Open a local folder as a workspace. Every caller is an explicit user open,
-   * so a workspace this device already has open moves to the front of its
-   * section instead of the add appearing to do nothing.
+   * Open a local folder as a workspace. The backend places newly opened and
+   * explicitly re-opened project workspaces at the front of the project slots.
    */
   public async openWorkspace(path: string): Promise<WorkspaceInfo> {
     return this.runOpenWorkspaceFlow(
@@ -1247,7 +1179,7 @@ class WorkspaceManager {
     remotePath: string;
     sshHost?: string;
   }, options: OpenRemoteWorkspaceRequestOptions = {}): Promise<WorkspaceInfo> {
-    const { promoteIfOpened = true, ...hostOptions } = options;
+    const { promoteIfOpened = true } = options;
     return this.runOpenWorkspaceFlow(
       'open remote workspace',
       { promoteIfOpened },
@@ -1259,7 +1191,7 @@ class WorkspaceManager {
           remoteWorkspace.connectionId,
           remoteWorkspace.connectionName,
           remoteWorkspace.sshHost,
-          hostOptions,
+          options,
         );
       },
       error => {
@@ -1586,9 +1518,6 @@ class WorkspaceManager {
         : await globalStateAPI.setActiveWorkspace(workspaceId);
       this.assertSurfaceUnchanged(surface, 'set active workspace');
       clearPendingWorkspaceReveal(surface.scope.surfaceId);
-      // An older host moved it to the front of its opened list; that is not
-      // an arrangement the display order should adopt.
-      noteWorkspaceActivated(surface.scope.surfaceId, workspace.id);
       // The host has switched: show it now, from the lists this window holds.
       // The recent and opened lists are refreshed afterwards, off the path the
       // user waits on (opening a session in another workspace waits on this).
@@ -1599,7 +1528,7 @@ class WorkspaceManager {
       this.updateWorkspaceState(
         workspace,
         this.state.recentWorkspaces,
-        this.preserveOpenedWorkspaceOrder(opened),
+        opened,
         false,
         null,
         { type: 'workspace:switched', workspace }
@@ -1614,7 +1543,7 @@ class WorkspaceManager {
         this.updateWorkspaceState(
           this.state.currentWorkspace,
           recentWorkspaces,
-          this.preserveOpenedWorkspaceOrder(openedWorkspaces),
+          openedWorkspaces,
           false,
           null,
           { type: 'workspace:recent-updated' },
@@ -1676,7 +1605,6 @@ class WorkspaceManager {
     }
 
     const surfaceId = surface.scope.surfaceId;
-    setWorkspaceDisplayOrder(surfaceId, reorderedOpenedWorkspaces.map(workspace => workspace.id));
     this.updateWorkspaceState(
       previousCurrentWorkspace,
       previousRecentWorkspaces,
@@ -1684,13 +1612,12 @@ class WorkspaceManager {
       false,
       null,
       { type: 'workspace:updated', workspace: reorderedEventWorkspace },
-      { surfaceId, preordered: true },
+      { surfaceId },
     );
 
     try {
       this.assertSurfaceUnchanged(surface, 'reorder opened workspaces');
       await globalStateAPI.reorderOpenedWorkspaces(reorderedOpenedWorkspaceIds);
-      noteWorkspaceOrderPersisted(surfaceId, reorderedOpenedWorkspaceIds);
     } catch (error) {
       if (!this.isSurfaceUnchanged(surface)) {
         throw isSurfaceChangedError(error)
@@ -1698,7 +1625,6 @@ class WorkspaceManager {
           : new SurfaceChangedError(surfaceId, surface.scope.epoch, 'reorder opened workspaces');
       }
       const errorMessage = error instanceof Error ? error.message : String(error);
-      setWorkspaceDisplayOrder(surfaceId, previousOpenedWorkspaces.map(workspace => workspace.id));
       const rollbackEventWorkspace = previousCurrentWorkspace
         ?? workspaceMap.get(sourceWorkspaceId)
         ?? previousOpenedWorkspaces[0]
@@ -1710,7 +1636,7 @@ class WorkspaceManager {
         false,
         errorMessage,
         { type: 'workspace:updated', workspace: rollbackEventWorkspace },
-        { surfaceId, preordered: true },
+        { surfaceId },
       );
       this.emit({ type: 'workspace:error', error: errorMessage });
       throw error;

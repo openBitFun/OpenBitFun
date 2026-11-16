@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use openbitfun_core::service::workspace::{
-    remote_workspace_connection_conflict_message, RemoteConnectionRebind,
+    remote_workspace_connection_conflict_message, RemoteConnectionRebind, WorkspaceCreateOptions,
 };
 use openbitfun_runtime_ports::SessionStoragePathRequest;
 use serde_json::{json, Value};
@@ -98,6 +98,8 @@ pub(crate) async fn open_workspace(state: &PeerHostState, args: &Value) -> Resul
     }
     // Explicit new-folder/old-protocol ingress. Existing-workspace selection uses ID.
     let path = get_string(request, "path")?;
+    let create_local = optional_bool(request, "createLocal").unwrap_or(false);
+    let promote_if_opened = optional_bool(request, "promoteIfOpened").unwrap_or(create_local);
     state
         .compatibility
         .ensure_workspace_runtime_ownership(&SessionStoragePathRequest {
@@ -108,7 +110,13 @@ pub(crate) async fn open_workspace(state: &PeerHostState, args: &Value) -> Resul
         .map_err(|error| format!("Agent Runtime ownership is unavailable: {error}"))?;
     let info = state
         .workspace_service
-        .open_workspace(PathBuf::from(path))
+        .open_workspace_with_options(
+            PathBuf::from(path),
+            WorkspaceCreateOptions {
+                promote_if_opened,
+                ..Default::default()
+            },
+        )
         .await
         .map_err(|e| format!("Failed to open workspace: {e}"))?;
 
@@ -137,6 +145,7 @@ pub(crate) async fn open_remote_workspace(
     } else {
         RemoteConnectionRebind::Reject
     };
+    let promote_if_opened = optional_bool(request, "promoteIfOpened").unwrap_or(true);
     let coordinator = openbitfun_core::agentic::coordination::get_global_coordinator()
         .ok_or("Conversation coordinator is unavailable")?;
     let info = coordinator
@@ -146,6 +155,7 @@ pub(crate) async fn open_remote_workspace(
             &connection_id,
             host.as_deref(),
             rebind,
+            promote_if_opened,
         )
         .await
         .map_err(|e| {
