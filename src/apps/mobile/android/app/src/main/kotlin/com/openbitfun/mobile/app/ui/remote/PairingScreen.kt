@@ -272,15 +272,14 @@ internal fun RemoteCompactHome(
                 ) { Text(stringResource(R.string.home_recent_all), fontSize = 12.sp) }
             }
             recent.forEach { session ->
-                Column(Modifier.fillMaxWidth().clickable { onOpen(session.id) }
-                    .padding(vertical = MobileDesignGeometry.RecentHomeRowPadding)) {
-                    Text(session.title, fontSize = 15.sp, maxLines = 2)
-                    val workspace = session.workspaceName?.takeIf { it.isNotBlank() }
-                        ?: session.workspacePath.orEmpty().trimEnd('/').substringAfterLast('/')
-                    Text(listOf(desktopName, workspace).filter { it.isNotBlank() }.joinToString(" · "),
-                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp), maxLines = 1)
-                }
+                val workspace = session.workspaceName?.takeIf { it.isNotBlank() }
+                    ?: session.workspacePath.orEmpty().trimEnd('/').substringAfterLast('/')
+                RemoteRecentRow(
+                    title = session.title,
+                    subtitle = listOf(desktopName, workspace).filter { it.isNotBlank() }
+                        .joinToString(" · "),
+                    onOpen = { onOpen(session.id) },
+                )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
             if (recent.isEmpty() && remoteState !is RemoteSessionUiState.Loading) {
@@ -289,6 +288,49 @@ internal fun RemoteCompactHome(
                     modifier = Modifier.padding(vertical = 18.dp))
             }
         }
+    }
+}
+
+/**
+ * One row of the phone home screen's recent list, ported from the desktop's
+ * recent-session row.
+ *
+ * Split out of [RemoteCompactHome] so the row can be driven from a plain title
+ * in a test: `RemoteSession` lives in `core-domain`, which app sources may not
+ * reference (AGENTS.md, the seam rule), so a fixture `Ready` state cannot be
+ * built here. The contract is the one every other session surface keeps — a real
+ * host title verbatim, a blank one as the shared "untitled" label — and
+ * [RemoteCompactHome] passes `session.title` through untouched.
+ */
+@Composable
+internal fun RemoteRecentRow(
+    title: String,
+    subtitle: String,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.fillMaxWidth().clickable(onClick = onOpen)
+            .padding(vertical = MobileDesignGeometry.RecentHomeRowPadding),
+    ) {
+        Text(
+            // A host that has not named the session yet sends no title at all
+            // (`non_empty_title` on the host side). Rendering the blank string
+            // here would put an empty line on the first screen the user sees —
+            // the fabricated "Session <id>" this replaced was hiding exactly
+            // that, and the list row, rail, header and sheets already show the
+            // localized label instead.
+            title.ifBlank { stringResource(R.string.sidebar_untitled) },
+            fontSize = 15.sp,
+            maxLines = 2,
+        )
+        Text(
+            subtitle,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp),
+            maxLines = 1,
+        )
     }
 }
 

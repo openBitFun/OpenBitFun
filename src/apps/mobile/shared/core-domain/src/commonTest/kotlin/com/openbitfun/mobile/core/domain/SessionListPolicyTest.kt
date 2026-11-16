@@ -114,9 +114,11 @@ class SessionListPolicyTest {
     }
 
     @Test
-    fun fallbackTitleIsIndependentOfMode() {
-        assertEquals("New Session", SessionNaming.fallbackTitle("code"))
-        assertEquals("New Session", SessionNaming.fallbackTitle("cowork"))
-        assertEquals("New Session", SessionNaming.fallbackTitle("assistant"))
+    fun fallbackTitleStaysBlankForEveryMode() {
+        // No placeholder is invented in shared code: a surface that has no title to
+        // show supplies its own localized wording for the blank.
+        assertEquals("", SessionNaming.fallbackTitle("code"))
+        assertEquals("", SessionNaming.fallbackTitle("cowork"))
+        assertEquals("", SessionNaming.fallbackTitle("assistant"))
     }
 }

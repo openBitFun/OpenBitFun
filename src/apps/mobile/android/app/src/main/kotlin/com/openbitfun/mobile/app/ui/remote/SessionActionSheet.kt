@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -62,6 +64,25 @@ import com.openbitfun.mobile.app.ui.theme.generated.MobileDesignGeometry
 internal const val SESSION_ACTIONS_TEST_TAG: String = "session-actions"
 internal const val SESSION_DETAILS_TEST_TAG: String = "session-details"
 
+/** The row that opens the rename step, and the field that step shows. */
+internal const val SESSION_RENAME_ROW_TEST_TAG: String = "session-rename-row"
+internal const val SESSION_RENAME_FIELD_TEST_TAG: String = "session-rename-field"
+
+/**
+ * The longest title this surface will submit.
+ *
+ * The host normalizes a title and refuses only an empty one, so this is not a
+ * protocol limit: it is the client's own guard against pasting a document into
+ * a row that is drawn on one line. Nothing is truncated on the way out — a
+ * draft over the limit simply cannot be submitted.
+ *
+ * A title the host already holds that is longer than this therefore shows Save
+ * disabled with no explanation of its own. `ui/chat/ConversationHeader.TitleEditor`
+ * caps nothing, so the two editors differ here; that inconsistency is known and
+ * accepted rather than fixed by widening this one.
+ */
+private const val SESSION_TITLE_MAX_LENGTH: Int = 120
+
 /**
  * A session row's overflow menu, ported from
  * `pages/components/SessionActionSurface.ets`.
@@ -76,7 +97,7 @@ internal const val SESSION_DETAILS_TEST_TAG: String = "session-details"
  * top of it, as the source does. Two layers of scrim over a bottom sheet gives
  * the confirmation two dismiss gestures with different meanings — tapping
  * outside would cancel the delete or the whole menu depending on how far the
- * finger landed.
+ * finger landed. Renaming is the same kind of step for the same reason.
  *
  * Takes the fields rather than the session: `RemoteSession` lives in
  * `core-domain`, which the app is not allowed to import (design doc §5 rule 3),
@@ -90,6 +111,7 @@ internal fun SessionActionSheet(
     status: String,
     capabilities: SessionActionCapabilities,
     onViewDetails: () -> Unit,
+    onRename: ((String) -> Unit)? = null,
     onArchive: (() -> Unit)? = null,
     onExport: (() -> Unit)? = null,
     onDelete: () -> Unit,
@@ -99,11 +121,15 @@ internal fun SessionActionSheet(
     // sheet that is itself gone after a process death, and restoring "about to
     // delete" without the tap that got there is not a state worth rebuilding.
     var confirmingDelete by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var renameDraft by remember { mutableStateOf("") }
     // Archive and export are local-storage operations a remote session can never
     // offer, so those callbacks are optional: a surface without them renders no
-    // row instead of rendering one that does nothing.
+    // row instead of rendering one that does nothing. Rename is optional for the
+    // same reason — the row is capability-gated *and* callback-gated.
     val showArchive = capabilities.canArchive && onArchive != null
     val showExport = capabilities.canExport && onExport != null
+    val showRename = capabilities.canRename && onRename != null
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -179,6 +205,9 @@ internal fun SessionActionSheet(
 
             HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 8.dp))
 
+            // Pre-existing and out of scope here: this branch reads no capability
+            // either, so an already-open confirmation can still submit after
+            // `busy` flips. Not audited and cleared — see the rename step below.
             if (confirmingDelete) {
                 Text(
                     stringResource(R.string.session_delete_confirm),
@@ -212,10 +241,47 @@ internal fun SessionActionSheet(
                 return@Column
             }
 
+            if (renaming) {
+                RenameStep(
+                    draft = renameDraft,
+                    // The capability is re-read here rather than only at the row
+                    // that opened this step: a command starting while the field
+                    // is open must not let it submit, because the store's
+                    // `beginWork()` cancels whatever is already in flight.
+                    submitEnabled = renameSubmittable(renameDraft, title) && capabilities.canRename,
+                    onDraftChange = { renameDraft = it },
+                    onSave = {
+                        // Gated twice on purpose: the button is disabled, and the
+                        // verdict is re-decided here. Which semantics a disabled
+                        // clickable publishes is a Compose implementation detail,
+                        // so the handler must not rely on the button being the only
+                        // way in.
+                        if (renameSubmittable(renameDraft, title) && capabilities.canRename) {
+                            // The store trims and owns the authority update; this
+                            // surface never retitles the row itself.
+                            onRename?.invoke(renameDraft.trim())
+                            onDismiss()
+                        }
+                    },
+                    onCancel = { renaming = false },
+                )
+                return@Column
+            }
+
             if (capabilities.canViewDetails) {
                 ActionRow(R.drawable.ic_symbol_info_circle, stringResource(R.string.session_view_details)) {
                     onViewDetails()
                     onDismiss()
+                }
+            }
+            if (showRename) {
+                ActionRow(
+                    R.drawable.ic_symbol_square_and_pencil,
+                    stringResource(R.string.session_rename),
+                    modifier = Modifier.testTag(SESSION_RENAME_ROW_TEST_TAG),
+                ) {
+                    renameDraft = title
+                    renaming = true
                 }
             }
             if (showArchive) {
@@ -263,14 +329,18 @@ internal fun SessionActionPopup(
     status: String,
     capabilities: SessionActionCapabilities,
     onViewDetails: () -> Unit,
+    onRename: ((String) -> Unit)? = null,
     onArchive: (() -> Unit)? = null,
     onExport: (() -> Unit)? = null,
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var confirmingDelete by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var renameDraft by remember { mutableStateOf("") }
     val showArchive = capabilities.canArchive && onArchive != null
     val showExport = capabilities.canExport && onExport != null
+    val showRename = capabilities.canRename && onRename != null
     val targetBounds = anchorBounds
     val positionProvider = remember(targetBounds) {
         object : PopupPositionProvider {
@@ -348,6 +418,9 @@ internal fun SessionActionPopup(
                 }
             }
             HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 8.dp))
+            // Pre-existing and out of scope here: this branch reads no capability
+            // either, so an already-open confirmation can still submit after
+            // `busy` flips. Not audited and cleared — see the rename step below.
             if (confirmingDelete) {
                 Text(
                     stringResource(R.string.session_delete_confirm),
@@ -376,10 +449,38 @@ internal fun SessionActionPopup(
                         onDismiss()
                     }
                 }
+            } else if (renaming) {
+                RenameStep(
+                    draft = renameDraft,
+                    // Re-read here for the reason the sheet does: the row that
+                    // opened this step can be withdrawn while it is open.
+                    submitEnabled = renameSubmittable(renameDraft, title) && capabilities.canRename,
+                    onDraftChange = { renameDraft = it },
+                    onSave = {
+                        // Gated twice for the reason the sheet's step is: the
+                        // verdict is re-decided in the handler rather than trusted
+                        // to the button's disabled state alone.
+                        if (renameSubmittable(renameDraft, title) && capabilities.canRename) {
+                            onRename?.invoke(renameDraft.trim())
+                            onDismiss()
+                        }
+                    },
+                    onCancel = { renaming = false },
+                )
             } else {
                 if (capabilities.canViewDetails) {
                     ActionRow(R.drawable.ic_symbol_info_circle, stringResource(R.string.session_view_details)) {
                         onViewDetails(); onDismiss()
+                    }
+                }
+                if (showRename) {
+                    ActionRow(
+                        R.drawable.ic_symbol_square_and_pencil,
+                        stringResource(R.string.session_rename),
+                        modifier = Modifier.testTag(SESSION_RENAME_ROW_TEST_TAG),
+                    ) {
+                        renameDraft = title
+                        renaming = true
                     }
                 }
                 if (showArchive) {
@@ -414,12 +515,109 @@ internal fun SessionActionPopup(
     }
 }
 
+/**
+ * The rename step: a field seeded with the title the row carries now, and the
+ * two verdicts.
+ *
+ * A step inside the menu rather than a dialog over it, for the reason the
+ * delete confirmation is one: a second scrim gives one gesture two meanings.
+ */
+@Composable
+private fun RenameStep(
+    draft: String,
+    submitEnabled: Boolean,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val fieldShape = RoundedCornerShape(8.dp)
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Text(
+            stringResource(R.string.session_rename_label),
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        BasicTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            decorationBox = { field ->
+                // A blank host title seeds an empty draft, which would otherwise
+                // be an empty box with no hint of what belongs in it. Same
+                // pattern, and the same label, as `ui/chat/ConversationHeader`.
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (draft.isEmpty()) {
+                        Text(
+                            stringResource(R.string.session_rename_label),
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    field()
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .height(44.dp)
+                .clip(fieldShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, fieldShape)
+                .padding(horizontal = 12.dp)
+                .testTag(SESSION_RENAME_FIELD_TEST_TAG),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            ConfirmationButton(
+                label = stringResource(R.string.common_cancel),
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+                onClick = onCancel,
+            )
+            ConfirmationButton(
+                label = stringResource(R.string.session_rename_confirm),
+                containerColor = if (submitEnabled) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                contentColor = if (submitEnabled) {
+                    MaterialTheme.colorScheme.onPrimary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.weight(1f),
+                enabled = submitEnabled,
+                onClick = onSave,
+            )
+        }
+    }
+}
+
+/** A draft is worth sending when it says something new and fits the field. */
+private fun renameSubmittable(draft: String, currentTitle: String): Boolean {
+    val trimmed = draft.trim()
+    return trimmed.isNotEmpty() &&
+        trimmed != currentTitle.trim() &&
+        trimmed.length <= SESSION_TITLE_MAX_LENGTH
+}
+
 @Composable
 private fun ConfirmationButton(
     label: String,
     containerColor: androidx.compose.ui.graphics.Color,
     contentColor: androidx.compose.ui.graphics.Color,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Box(
@@ -427,7 +625,7 @@ private fun ConfirmationButton(
             .height(44.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(containerColor)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -449,6 +647,7 @@ private fun ActionRow(
     @DrawableRes icon: Int,
     label: String,
     destructive: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val tint = if (destructive) {
@@ -457,7 +656,7 @@ private fun ActionRow(
         MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
@@ -485,8 +684,13 @@ private fun ActionRow(
 }
 
 @Composable
-private fun ActionRow(@DrawableRes icon: Int, label: String, onClick: () -> Unit) {
-    ActionRow(icon, label, destructive = false, onClick = onClick)
+private fun ActionRow(
+    @DrawableRes icon: Int,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    ActionRow(icon, label, destructive = false, modifier = modifier, onClick = onClick)
 }
 
 /**
