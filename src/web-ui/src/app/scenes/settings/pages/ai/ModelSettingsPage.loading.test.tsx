@@ -580,6 +580,8 @@ describe('ModelSettingsPage loading and provider actions', () => {
     await inputValue(manualName, 'custom-model');
     await act(async () => manualName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     await act(async () => editor()!.querySelector<HTMLButtonElement>('[data-testid="settings-model-capsule-edit"]')!.click());
+    const contextWindow = editor()!.querySelector<HTMLInputElement>(`input[aria-label="${copy('form.contextWindow')}"]`)!;
+    expect(contextWindow.value).toBe(i18nService.formatNumber(200_000, { useGrouping: true }));
     await inputValue(editor()!.querySelector<HTMLInputElement>('[data-testid="settings-model-name-input"]')!, 'renamed-model');
     const save = editor()!.querySelector<HTMLButtonElement>('[data-testid="settings-model-save-btn"]')!;
     expect(save.textContent).toBe(copy('actions.save'));

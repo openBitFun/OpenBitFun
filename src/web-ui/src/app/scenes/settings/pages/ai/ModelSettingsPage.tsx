@@ -168,6 +168,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 const log = createLogger('ModelSettings');
 const MODELS_DEV_DOWNLOAD_URL = 'https://models.dev/api.json';
+const NEW_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
 
 /** Rows the preset picker shows before the user searches or expands the list. */
 const COLLAPSED_PROVIDER_COUNT = 6;
@@ -269,7 +270,7 @@ function createModelDraft(
     modelName: trimmedModelName,
     manualRequestFormat: overrides?.manualRequestFormat ?? baseConfig?.provider,
     category: overrides?.category ?? baseConfig?.category ?? 'general_chat',
-    contextWindow: overrides?.contextWindow ?? baseConfig?.context_window ?? 300000,
+    contextWindow: overrides?.contextWindow ?? baseConfig?.context_window ?? NEW_MODEL_CONTEXT_WINDOW_TOKENS,
     maxTokens: overrides?.maxTokens ?? baseConfig?.max_tokens,
     reasoning,
     requestSettings: overrides?.requestSettings ?? getModelEditorRequestSettings(baseConfig),
@@ -1483,7 +1484,7 @@ const ModelSettingsPage: React.FC = () => {
         api_key: '',
         model_name: '',
         enabled: true,
-        context_window: 300000,
+        context_window: NEW_MODEL_CONTEXT_WINDOW_TOKENS,
         category: 'multimodal',
         capabilities: getCapabilitiesByCategory('multimodal'),
         recommended_for: [],
@@ -1910,7 +1911,7 @@ const ModelSettingsPage: React.FC = () => {
       model_name: '',
       provider: template.format,
       enabled: true,
-      context_window: 300000,
+      context_window: NEW_MODEL_CONTEXT_WINDOW_TOKENS,
       category: 'multimodal',
       capabilities: getCapabilitiesByCategory('multimodal'),
       recommended_for: [],
@@ -1940,7 +1941,7 @@ const ModelSettingsPage: React.FC = () => {
       model_name: '',
       provider: 'openai',
       enabled: true,
-      context_window: 300000,
+      context_window: NEW_MODEL_CONTEXT_WINDOW_TOKENS,
       category: 'multimodal',
       capabilities: getCapabilitiesByCategory('multimodal'),
       recommended_for: [],
@@ -1983,7 +1984,7 @@ const ModelSettingsPage: React.FC = () => {
         model_name: '',
         provider: config.provider,
         enabled: true,
-        context_window: config.context_window || 300000,
+        context_window: config.context_window || NEW_MODEL_CONTEXT_WINDOW_TOKENS,
         max_tokens: config.max_tokens,
         category: config.category || 'general_chat',
         capabilities: config.capabilities || getCapabilitiesByCategory(config.category || 'general_chat'),
