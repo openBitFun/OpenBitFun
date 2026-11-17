@@ -6406,7 +6406,11 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     ) -> OpenBitFunResult<()> {
         let compression_id = format!("compression_{}", uuid::Uuid::new_v4());
         let mut context_window = session.config.max_context_tokens;
-        let result = async {
+        // Preparation and compaction embed the full model/tool-catalog future.
+        // Keep that state on the heap instead of duplicating it through this
+        // task and its callers: even a pre-cancelled turn must enter the poll
+        // stack frame before it can observe cancellation.
+        let result = Box::pin(async {
             let (manual_execution_context, resolved_context_window) =
                 prepare_compression_cancellable(&cancellation_token, async {
                     let manual_workspace_services =
@@ -6468,7 +6472,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     commit_gate,
                 )
                 .await
-        }
+        })
         .await;
         match result {
             Ok(outcome) => {

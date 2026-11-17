@@ -72,24 +72,30 @@ tokio::task_local! {
 
 /// Freeze only tool presentation during one catalog request. Execution always
 /// re-reads the host policy so an already-issued tool call cannot bypass an opt-out.
-pub(crate) async fn with_collaboration_model_policy<F: std::future::Future>(
+pub(crate) fn with_collaboration_model_policy<F: std::future::Future>(
     future: F,
-) -> F::Output {
-    if MODEL_PRESENTATION_POLICY.try_with(|_| ()).is_ok() {
-        return future.await;
+) -> impl std::future::Future<Output = F::Output> {
+    // Box before constructing the async state machine. An async fn would still
+    // retain its inline F argument, and nested catalog scopes multiply both its
+    // size and TaskLocalFuture's debug poll temporaries (especially with PTC).
+    let future = Box::pin(future);
+    async move {
+        if MODEL_PRESENTATION_POLICY.try_with(|_| ()).is_ok() {
+            return future.await;
+        }
+        let policy = ModelOverridePolicy::load().await.unwrap_or_else(|error| {
+            warn!(
+                "Failed to read collaboration presentation policy: {}",
+                error
+            );
+            ModelOverridePolicy { allowed: false }
+        });
+        crate::agentic::tools::registry::get_global_tool_registry()
+            .write()
+            .await
+            .refresh_collaboration_model_policy(policy.allowed);
+        MODEL_PRESENTATION_POLICY.scope(policy, future).await
     }
-    let policy = ModelOverridePolicy::load().await.unwrap_or_else(|error| {
-        warn!(
-            "Failed to read collaboration presentation policy: {}",
-            error
-        );
-        ModelOverridePolicy { allowed: false }
-    });
-    crate::agentic::tools::registry::get_global_tool_registry()
-        .write()
-        .await
-        .refresh_collaboration_model_policy(policy.allowed);
-    MODEL_PRESENTATION_POLICY.scope(policy, future).await
 }
 
 pub(super) async fn model_override_validation(input: &Value) -> Option<ValidationResult> {
@@ -102,4 +108,82 @@ pub(super) async fn model_override_validation(input: &Value) -> Option<Validatio
 #[cfg(test)]
 tokio::task_local! {
     pub(super) static TEST_MODEL_OVERRIDE: bool;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+
+    #[test]
+    fn collaboration_policy_future_size_does_not_grow_with_its_input() {
+        async fn input<const N: usize>() {
+            let buffer = [0u8; N];
+            std::future::pending::<()>().await;
+            std::hint::black_box(buffer);
+        }
+
+        fn future_size<F: Future>(_: impl FnOnce() -> F) -> usize {
+            std::mem::size_of::<F>()
+        }
+
+        // Infer sizes without allocating the large fixture on the test stack.
+        assert!(future_size(input::<65536>) > future_size(input::<1>));
+        assert_eq!(
+            future_size(|| with_collaboration_model_policy(input::<1>())),
+            future_size(|| with_collaboration_model_policy(input::<65536>())),
+            "The policy wrapper must not embed the catalog future's state"
+        );
+        assert_eq!(
+            future_size(|| with_collaboration_model_policy(input::<65536>())),
+            future_size(|| {
+                with_collaboration_model_policy(with_collaboration_model_policy(input::<65536>()))
+            }),
+            "Nested catalog scopes must not multiply the wrapper's state"
+        );
+    }
+
+    #[tokio::test]
+    async fn collaboration_policy_remains_lazy_inherited_and_scoped() {
+        let wrapped = with_collaboration_model_policy(async {
+            assert!(!ModelOverridePolicy::presentation().await.unwrap().allowed);
+            tokio::task::yield_now().await;
+            assert!(!ModelOverridePolicy::presentation().await.unwrap().allowed);
+            TEST_MODEL_OVERRIDE
+                .scope(
+                    true,
+                    with_collaboration_model_policy(async {
+                        // Nested presentation inherits the snapshot, while execution
+                        // policy still reads the current host setting independently.
+                        assert!(!ModelOverridePolicy::presentation().await.unwrap().allowed);
+                        assert!(ModelOverridePolicy::load().await.unwrap().allowed);
+                    }),
+                )
+                .await;
+        });
+        assert!(MODEL_PRESENTATION_POLICY.try_with(|_| ()).is_err());
+        // Select the policy only when polled, after construction outside this scope.
+        TEST_MODEL_OVERRIDE.scope(false, wrapped).await;
+        assert!(MODEL_PRESENTATION_POLICY.try_with(|_| ()).is_err());
+    }
+
+    #[tokio::test]
+    async fn collaboration_policy_pending_and_dropped_future_does_not_leak_scope() {
+        TEST_MODEL_OVERRIDE
+            .scope(false, async {
+                let mut wrapped = Box::pin(with_collaboration_model_policy(async {
+                    assert!(!ModelOverridePolicy::presentation().await.unwrap().allowed);
+                    std::future::pending::<()>().await;
+                }));
+                std::future::poll_fn(|cx| {
+                    assert!(wrapped.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert!(MODEL_PRESENTATION_POLICY.try_with(|_| ()).is_err());
+                drop(wrapped);
+                assert!(MODEL_PRESENTATION_POLICY.try_with(|_| ()).is_err());
+            })
+            .await;
+    }
 }
