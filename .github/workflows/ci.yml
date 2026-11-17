@@ -736,7 +736,7 @@ jobs:
 
       - name: Validate mobile-web build cache contract
         if: needs.build-impact.outputs.frontend_required != 'false'
-        run: node --test scripts/mobile-web-build.test.mjs
+        run: node --test scripts/mobile-web-build.test.mjs scripts/mobile-client-build.contract.test.mjs
 
       - name: Test mobile web account login and reload
         if: needs.build-impact.outputs.frontend_required != 'false'
