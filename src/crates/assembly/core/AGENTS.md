@@ -211,6 +211,19 @@ Narrower local guides already exist for some subtrees:
 
 ## Verification
 
+For WriteStdin steering, port routing, streaming and legacy result compatibility:
+
+```bash
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib agentic::tools::implementations::exec_command::stdin::
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib yieldable_tools_end_normally_for_every_non_none_round_injection_policy
+```
+
+WriteStdin uses the same round-injection yield token as AgentWait. Only the
+output wait ends; submitted stdin is not replayed and process control remains
+explicit. The optional `wait_end_reason: "steered"` result is separate from
+process `completion`; old results without it keep their existing meaning.
+These Core fixtures cover both runtime ports with mocks, not live remote hosts.
+
 For desktop card admission, per-turn Peer origin, recovery context and subagent
 propagation:
 

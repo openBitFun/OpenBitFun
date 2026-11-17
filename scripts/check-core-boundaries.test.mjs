@@ -579,8 +579,8 @@ test('portable contract crates expose only capability-local feature slices', asy
   // Workspace byte readers expose AsyncRead/AsyncSeek without selecting a
   // process, network, scheduler, or full Tokio runtime at the contract layer.
   assert.deepEqual(new Set(runtimePortFeatures['workspace-ports']), new Set(['dep:anyhow', 'dep:tokio-util', 'dep:tokio', 'tokio/io-util']));
-  assert.deepEqual(runtimePortFeatures['terminal-port'], ['dep:tokio']);
-  assert.deepEqual(runtimePortFeatures['remote-exec-port'], ['dep:tokio']);
+  assert.deepEqual(runtimePortFeatures['terminal-port'], ['dep:tokio', 'dep:tokio-util']);
+  assert.deepEqual(runtimePortFeatures['remote-exec-port'], ['dep:tokio', 'dep:tokio-util']);
   assert.deepEqual(
     new Set(runtimePortFeatures['tool-runtime-handles']),
     new Set([
@@ -640,7 +640,7 @@ test('runtime-ports async dependencies stay behind their exact port owners', () 
   );
   assert.deepEqual(
     ownersByDependency.get('tokio-util'),
-    new Set(['permission', 'ts', 'workspace-ports']),
+    new Set(['permission', 'remote-exec-port', 'terminal-port', 'ts', 'workspace-ports']),
   );
   assert.deepEqual(
     ownersByDependency.get('tokio'),
@@ -819,11 +819,11 @@ const RUNTIME_PORT_FEATURE_PROFILES = {
   'plugin-runtime': [],
   'product-search': ['dep:openbitfun-product-domains'],
   'ptc-runtime': [],
-  'remote-exec-port': ['dep:tokio'],
+  'remote-exec-port': ['dep:tokio', 'dep:tokio-util'],
   'remote-workspace-ports': ['dep:openbitfun-core-types'],
   'runtime-event-port': [],
   'script-tool-runtime': [],
-  'terminal-port': ['dep:tokio'],
+  'terminal-port': ['dep:tokio', 'dep:tokio-util'],
   'tool-runtime-handles': ['workspace-ports', 'terminal-port', 'remote-exec-port'],
   ts: [
     'dep:ts-rs',
