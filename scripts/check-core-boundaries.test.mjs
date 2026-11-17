@@ -4024,7 +4024,7 @@ test('split core boundary check keeps self-test execution behavior', () => {
 test('Task execution boundary requires policy-aware child delegation', () => {
   const executionRule = requiredContentRules.find(
     (rule) => rule.path
-      === 'src/crates/assembly/core/src/agentic/tools/implementations/task/execution.rs'
+      === 'src/crates/assembly/core/src/agentic/tools/implementations/agent_collaboration/execution.rs'
       && rule.patterns.some((pattern) => pattern.message.includes('background launches')),
   );
   assert.ok(executionRule, 'Task execution must have a required-content rule');

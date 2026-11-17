@@ -253,10 +253,12 @@ cargo test --locked -p openbitfun-core --no-default-features --features agent-ru
 This fixture verifies default report privacy and resolved host storage with a
 simulated SSH workspace identity; it does not exercise live remote connections.
 
-For Agent name references, enabled-catalog admission, and prompt catalog names:
+`Agent*` tools and the legacy `Task` entry point live in
+`agentic::tools::implementations::agent_collaboration`.
+For Agent name references, enabled-catalog admission, and collaboration tool behavior:
 
 ```bash
-cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib agentic::tools::implementations::task::tests
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib agentic::tools::implementations::agent_collaboration::
 ```
 
 These fixtures cover prompt name mappings and simulated workspace policies;
@@ -399,7 +401,7 @@ listing (including reserved IDs), parent-scoped resolution, and persisted deleti
 (ordinary subagents and Swarm):
 
 ```bash
-cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib -- agent_lifecycle_ agentic::coordination::coordination_store::tests agentic::tools::implementations::agent_list_tool::tests
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib -- agent_lifecycle_ agentic::coordination::coordination_store::tests agentic::tools::implementations::agent_collaboration::agent_list_tool::tests
 ```
 
 These fixtures cover local execution and persistence, not live remote transports.
