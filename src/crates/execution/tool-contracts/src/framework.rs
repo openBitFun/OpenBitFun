@@ -1613,6 +1613,12 @@ impl<Tool: ToolRegistryItem + ?Sized> ToolRegistry<Tool> {
         self.snapshot_generation
     }
 
+    /// Invalidate loaded specifications after an owner changes tool presentation
+    /// without replacing tool instances or their provider registrations.
+    pub fn invalidate_tool_specs(&mut self) {
+        self.snapshot_generation = self.snapshot_generation.saturating_add(1);
+    }
+
     pub async fn materialized_tool_snapshot(&self) -> Result<MaterializedToolSnapshot, String> {
         materialize_tool_snapshot(
             &self.get_all_tools(),

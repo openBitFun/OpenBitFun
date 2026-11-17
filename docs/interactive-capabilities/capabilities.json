@@ -4,8 +4,8 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "4b8a786017df37df61ff4c749771e0af19c851b6be51ed46504425c9bdf992bd",
-  "ownerDigest": "31d6371f7765bde7bee88e22a6a4f03c2c5370e138cf49975bdc88f3c5eeb052",
+  "digest": "fe4be08cb20c2d67857891380d223a77d420345b94e2733d0000d14485027697",
+  "ownerDigest": "1fdb9c49d404c02483c08e1e0fe9effa0aaa4f0f2914578bcaa63e04de16cc16",
   "searchAcceptance": [
     {
       "id": "native-office-generation",
@@ -187,9 +187,9 @@
     "features": 24,
     "settings": 23,
     "userFacing": 47,
-    "documentedItems": 368,
+    "documentedItems": 369,
     "controlCoverage": {
-      "direct": 63,
+      "direct": 64,
       "delegated": 74,
       "interactive": 231,
       "unsupported": 0
@@ -17809,7 +17809,8 @@
         "computer-use",
         "computer-use-permissions",
         "browser-auto-connect",
-        "browser-setup"
+        "browser-setup",
+        "subagent-model-override"
       ],
       "kind": "query",
       "risk": "read",
@@ -18342,6 +18343,50 @@
           "openbitfun",
           "openui"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "static"
+      },
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      }
+    },
+    {
+      "id": "setting.tools.execution:option:subagent-model-override",
+      "capabilityId": "setting.tools.execution",
+      "itemIds": [
+        "subagent-model-override"
+      ],
+      "kind": "option",
+      "risk": "write",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "type": "boolean"
       },
       "outputSchema": {
         "type": "object",
@@ -34993,6 +35038,25 @@
             "reasonZh": "可用浏览器和 CDP 状态来自当前机器且可能要求重启确认；智能体可打开配置入口，实际网页操作则使用统一的 ControlHub 浏览器契约。",
             "reasonEn": "Available browsers and CDP state come from the current machine and may require restart confirmation; the Agent can open setup, while page automation uses the shared ControlHub browser contract."
           }
+        },
+        {
+          "id": "subagent-model-override",
+          "titleZh": "允许 Agent 指定子 Agent 模型",
+          "titleEn": "Allow agents to choose subagent models",
+          "destination": {
+            "kind": "settings",
+            "pageId": "tools.execution",
+            "viewId": "advanced"
+          },
+          "control": {
+            "kind": "direct",
+            "operations": [],
+            "options": [
+              {
+                "id": "subagent-model-override"
+              }
+            ]
+          }
         }
       ],
       "stepsZh": [
@@ -35170,6 +35234,16 @@
               "openui"
             ]
           }
+        },
+        {
+          "id": "subagent-model-override",
+          "titleZh": "允许 Agent 指定子 Agent 模型",
+          "titleEn": "Allow agents to choose subagent models",
+          "descriptionZh": "控制 Agent 能否在启动或继续执行子 Agent 时指定模型。",
+          "descriptionEn": "Control whether agents can override subagent models when launching or continuing work.",
+          "valueSchema": {
+            "type": "boolean"
+          }
         }
       ],
       "searchTerms": [
@@ -35246,6 +35320,8 @@
         "Choose whether OpenBitFun automatically connects to your CDP browser on startup",
         "发现并选择外部浏览器、开启默认 CDP 配置或按需重启连接",
         "Discover and choose an external browser, enable default CDP, or reconnect on demand",
+        "允许 Agent 指定子 Agent 模型",
+        "Allow agents to choose subagent models",
         "开启按需加载工具帮我节省初始上下文",
         "把子智能体最大并发改为 8，任务并行方式设为安全并行",
         "单次工具调用超时改成 600 秒",

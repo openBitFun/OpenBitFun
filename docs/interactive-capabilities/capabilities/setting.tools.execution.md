@@ -94,6 +94,8 @@ Tune tool call and user-question timeouts, subagent default models and concurren
   - Discover and choose an external browser, enable default CDP, or reconnect on demand
   - 说明：前往“工具与集成 → 浏览器与桌面控制”选择 Chrome / Edge 并查看实时 CDP 端口连接状态。
   - Why & how: Opens Tools & Integrations → Browser & Desktop Control to pick Chrome or Edge and manage live CDP connections.
+- **智能体可直接控制 / Direct Agent control** · 允许 Agent 指定子 Agent 模型
+  - Allow agents to choose subagent models
 
 ## 怎么用 / How to use it
 
@@ -129,6 +131,7 @@ Tune tool call and user-question timeouts, subagent default models and concurren
 | 启动时自动连接浏览器 / Auto-connect browser on startup | `boolean` | 控制 OpenBitFun 启动时是否自动尝试连接外部 CDP 浏览器（默认关闭）。 | Choose whether OpenBitFun automatically tries to connect external CDP browser control on launch (off by default). |
 | 工具参数 JSON 安全修复 / Safe tool-argument JSON repair | `boolean` | 在严格安全边界内自动修复模型输出的轻微 JSON 语法瑕疵，减少因格式小错导致的调用失败。 | Automatically repair minor JSON syntax glitches in model tool arguments within strict safety bounds. |
 | 默认生成式 UI 组件库 / Default GenUI component library | `openbitfun` / `openui` | 指定新建交互式 GenUI 应用默认采用的组件库与设计规范（默认 openui）；已有应用保留原有目标身份。 | Select the component library and bound design spec for newly generated GenUI apps (openui by default); existing apps keep their original target. |
+| 允许 Agent 指定子 Agent 模型 / Allow agents to choose subagent models | `boolean` | 控制 Agent 能否在启动或继续执行子 Agent 时指定模型。 | Control whether agents can override subagent models when launching or continuing work. |
 
 ## 可以直接对智能体说 / Try saying
 

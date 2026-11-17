@@ -1,3 +1,4 @@
+import SubagentModelOverrideSection from './SubagentModelOverrideSection';
 import { filterSelectableTextChatModels } from '@/infrastructure/config/services/modelCategory';
 import { getActiveSurfaceScope } from '@/infrastructure/peer-device/deviceSurface';
 import { modelSelectionsConfigPath, effectiveModelSelections, readModelSelections } from '@/infrastructure/config/services/modelSelections';
@@ -512,6 +513,7 @@ const ExecutionSettingsPage: React.FC = () => {
                 />
               </div>
             </ConfigPageRow>
+            <SubagentModelOverrideSection />
             <ConfigPageRow
               label={tTools('config.subagentBatchPolicy.label')}
               align="center"

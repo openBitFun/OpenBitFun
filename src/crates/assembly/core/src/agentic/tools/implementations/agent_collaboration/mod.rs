@@ -47,6 +47,10 @@ mod execution;
 mod input;
 mod launch_review_agent;
 mod legacy_task;
+mod model_policy;
+pub(crate) use model_policy::with_collaboration_model_policy;
+
+use model_policy::{model_override_validation, ModelOverridePolicy};
 mod schema;
 mod validation;
 
@@ -155,7 +159,7 @@ impl Tool for AgentExecutionTool {
     }
 
     async fn description(&self) -> OpenBitFunResult<String> {
-        Ok(self.render_description())
+        Ok(self.render_description(ModelOverridePolicy::presentation().await?.allowed))
     }
 
     async fn is_available_in_context(&self, _context: Option<&ToolUseContext>) -> bool {
@@ -175,18 +179,22 @@ impl Tool for AgentExecutionTool {
         &self,
         _context: Option<&ToolUseContext>,
     ) -> OpenBitFunResult<String> {
-        Ok(self.render_description())
+        Ok(self.render_description(ModelOverridePolicy::presentation().await?.allowed))
     }
 
     fn input_schema(&self) -> Value {
         Self::regular_input_schema()
     }
 
+    async fn input_schema_for_model(&self) -> Value {
+        ModelOverridePolicy::model_schema(self.input_schema()).await
+    }
+
     async fn input_schema_for_model_with_context(
         &self,
         _context: Option<&ToolUseContext>,
     ) -> Value {
-        Self::regular_input_schema()
+        self.input_schema_for_model().await
     }
 
     fn is_readonly(&self) -> bool {
@@ -251,6 +259,9 @@ impl Tool for AgentExecutionTool {
         input: &Value,
         context: Option<&ToolUseContext>,
     ) -> ValidationResult {
+        if let Some(validation) = model_override_validation(input).await {
+            return validation;
+        }
         Self::validate_invocation_input(
             input,
             false,
@@ -296,6 +307,7 @@ impl Tool for AgentExecutionTool {
         input: &Value,
         context: &ToolUseContext,
     ) -> OpenBitFunResult<Vec<ToolResult>> {
+        ModelOverridePolicy::enforce(input).await?;
         self.call_task_impl(input, context).await
     }
 }

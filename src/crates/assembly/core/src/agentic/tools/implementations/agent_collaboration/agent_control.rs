@@ -160,7 +160,7 @@ impl Tool for AgentSpawnTool {
     }
 
     async fn description(&self) -> OpenBitFunResult<String> {
-        Ok(self.render_agent_spawn_description())
+        Ok(self.render_agent_spawn_description(ModelOverridePolicy::presentation().await?.allowed))
     }
 
     fn short_description(&self) -> String {
@@ -169,6 +169,10 @@ impl Tool for AgentSpawnTool {
 
     fn input_schema(&self) -> Value {
         Self::agent_spawn_input_schema()
+    }
+
+    async fn input_schema_for_model(&self) -> Value {
+        ModelOverridePolicy::model_schema(self.input_schema()).await
     }
 
     fn output_schema(&self) -> Value {
@@ -223,6 +227,9 @@ impl Tool for AgentSpawnTool {
         input: &Value,
         _context: Option<&ToolUseContext>,
     ) -> ValidationResult {
+        if let Some(validation) = model_override_validation(input).await {
+            return validation;
+        }
         validate_task_input(Self::task_input(input), self.name())
     }
 
@@ -231,6 +238,7 @@ impl Tool for AgentSpawnTool {
         input: &Value,
         context: &ToolUseContext,
     ) -> OpenBitFunResult<Vec<ToolResult>> {
+        ModelOverridePolicy::enforce(input).await?;
         let results = AgentExecutionTool::new()
             .call_task_impl(&Self::task_input(input)?, context)
             .await?;
@@ -327,6 +335,10 @@ impl Tool for AgentSendInputTool {
         Self::agent_send_input_schema()
     }
 
+    async fn input_schema_for_model(&self) -> Value {
+        ModelOverridePolicy::model_schema(self.input_schema()).await
+    }
+
     fn output_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -371,6 +383,9 @@ impl Tool for AgentSendInputTool {
         input: &Value,
         _context: Option<&ToolUseContext>,
     ) -> ValidationResult {
+        if let Some(validation) = model_override_validation(input).await {
+            return validation;
+        }
         validate_task_input(Self::task_input(input), self.name())
     }
 
@@ -379,6 +394,7 @@ impl Tool for AgentSendInputTool {
         input: &Value,
         context: &ToolUseContext,
     ) -> OpenBitFunResult<Vec<ToolResult>> {
+        ModelOverridePolicy::enforce(input).await?;
         let results = AgentExecutionTool::new()
             .call_task_impl(&Self::task_input(input)?, context)
             .await?;

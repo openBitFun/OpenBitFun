@@ -11214,6 +11214,28 @@
             "command:browser_control_list_browsers",
             "command:browser_control_enable_default_cdp"
           ]
+        },
+        {
+          "id": "subagent-model-override",
+          "titleZh": "允许 Agent 指定子 Agent 模型",
+          "titleEn": "Allow agents to choose subagent models",
+          "destination": {
+            "kind": "settings",
+            "pageId": "tools.execution",
+            "viewId": "advanced"
+          },
+          "control": {
+            "kind": "direct",
+            "operations": [],
+            "options": [
+              {
+                "id": "subagent-model-override"
+              }
+            ]
+          },
+          "evidence": [
+            "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.subagentModelOverride.label"
+          ]
         }
       ],
       "stepsZh": [
@@ -11337,6 +11359,13 @@
           "titleEn": "Default GenUI component library",
           "descriptionZh": "指定新建交互式 GenUI 应用默认采用的组件库与设计规范（默认 openui）；已有应用保留原有目标身份。",
           "descriptionEn": "Select the component library and bound design spec for newly generated GenUI apps (openui by default); existing apps keep their original target."
+        },
+        {
+          "id": "subagent-model-override",
+          "titleZh": "允许 Agent 指定子 Agent 模型",
+          "titleEn": "Allow agents to choose subagent models",
+          "descriptionZh": "控制 Agent 能否在启动或继续执行子 Agent 时指定模型。",
+          "descriptionEn": "Control whether agents can override subagent models when launching or continuing work."
         }
       ]
     },

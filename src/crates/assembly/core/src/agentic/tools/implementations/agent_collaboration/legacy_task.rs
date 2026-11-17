@@ -14,9 +14,9 @@ impl TaskTool {
         Self
     }
 
-    fn render_legacy_description() -> String {
+    fn render_legacy_description(allow_model_override: bool) -> String {
         AgentExecutionTool::new()
-            .render_description()
+            .render_description(allow_model_override)
             .replace("AgentSpawn", "Task")
             .replace("AgentSendInput", "Task")
             .replace("AgentControl", "Task")
@@ -38,7 +38,9 @@ impl Tool for TaskTool {
     }
 
     async fn description(&self) -> OpenBitFunResult<String> {
-        Ok(Self::render_legacy_description())
+        Ok(Self::render_legacy_description(
+            ModelOverridePolicy::presentation().await?.allowed,
+        ))
     }
 
     async fn is_available_in_context(&self, _context: Option<&ToolUseContext>) -> bool {
@@ -53,11 +55,17 @@ impl Tool for TaskTool {
         &self,
         _context: Option<&ToolUseContext>,
     ) -> OpenBitFunResult<String> {
-        Ok(Self::render_legacy_description())
+        Ok(Self::render_legacy_description(
+            ModelOverridePolicy::presentation().await?.allowed,
+        ))
     }
 
     fn input_schema(&self) -> Value {
         AgentExecutionTool::regular_input_schema()
+    }
+
+    async fn input_schema_for_model(&self) -> Value {
+        ModelOverridePolicy::model_schema(self.input_schema()).await
     }
 
     fn output_schema(&self) -> Value {
@@ -78,7 +86,7 @@ impl Tool for TaskTool {
         &self,
         _context: Option<&ToolUseContext>,
     ) -> Value {
-        AgentExecutionTool::regular_input_schema()
+        self.input_schema_for_model().await
     }
 
     fn is_readonly(&self) -> bool {
@@ -102,6 +110,9 @@ impl Tool for TaskTool {
         input: &Value,
         context: Option<&ToolUseContext>,
     ) -> ValidationResult {
+        if let Some(validation) = model_override_validation(input).await {
+            return validation;
+        }
         AgentExecutionTool::validate_invocation_input(
             input,
             false,
@@ -147,6 +158,7 @@ impl Tool for TaskTool {
         input: &Value,
         context: &ToolUseContext,
     ) -> OpenBitFunResult<Vec<ToolResult>> {
+        ModelOverridePolicy::enforce(input).await?;
         AgentExecutionTool::new()
             .call_task_impl(input, context)
             .await

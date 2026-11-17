@@ -44,6 +44,7 @@ vi.mock('../ai/DefaultHarnessSection', () => ({ default: () => <div>default-harn
 vi.mock('../ai/ReviewCapacitySection', () => ({ default: () => null }));
 vi.mock('../ai/GenUILibrarySection', () => ({ default: () => null }));
 vi.mock('../ai/ToolJsonRepairSection', () => ({ default: () => null }));
+vi.mock('../ai/SubagentModelOverrideSection', () => ({ default: () => null }));
 vi.mock('@openbitfun/ui', async (original) => ({
   ...await original<typeof import('@openbitfun/ui')>(),
   Select: ({ value, options, disabled, onValueChange }: { value: string; options: Array<{ value: string; label: string }>; disabled: boolean; onValueChange?: (value: string) => void }) => (

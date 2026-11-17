@@ -2309,3 +2309,221 @@ fn deep_review_retry_scope_prompt_prepend_bounds_review_files() {
     assert!(prompt.contains("- src/crates/assembly/core/src/token.rs"));
     assert!(prompt.ends_with("Continue the security review."));
 }
+
+fn collaboration_model_policy_tools() -> Vec<Box<dyn Tool>> {
+    vec![
+        Box::new(AgentSpawnTool::new()),
+        Box::new(AgentSendInputTool::new()),
+        Box::new(TaskTool::new()),
+        Box::new(LaunchReviewAgentTool::new()),
+        Box::new(AgentExecutionTool::new()),
+    ]
+}
+
+#[tokio::test]
+async fn subagent_model_override_policy_refreshes_all_model_facing_contracts() {
+    use super::model_policy::TEST_MODEL_OVERRIDE;
+    let context = test_tool_context("GeneralPurpose");
+    let tools = collaboration_model_policy_tools();
+    for allowed in [true, false, true] {
+        TEST_MODEL_OVERRIDE
+            .scope(allowed, async {
+                for tool in &tools {
+                    let schema = tool.input_schema_for_model().await;
+                    assert_eq!(
+                        schema["properties"].get("model_id").is_some(),
+                        allowed,
+                        "{}",
+                        tool.name()
+                    );
+                    assert_eq!(schema["additionalProperties"], false);
+                    assert_eq!(
+                        tool.input_schema_for_model_with_context(Some(&context))
+                            .await,
+                        schema
+                    );
+                    let description = tool.description().await.unwrap();
+                    let contextual = tool.description_with_context(Some(&context)).await.unwrap();
+                    if !allowed {
+                        assert!(!description.contains("model_id"), "{}", tool.name());
+                        assert!(!description.contains("ListModels"), "{}", tool.name());
+                        assert!(!contextual.contains("model_id"), "{}", tool.name());
+                    }
+                    // Desktop/CLI catalog projection uses the same runtime definitions.
+                    let expected_schema = schema;
+                    assert_eq!(tool.input_schema_for_model().await, expected_schema);
+                }
+            })
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn subagent_model_override_policy_rejects_raw_arguments_before_side_effects() {
+    use super::model_policy::TEST_MODEL_OVERRIDE;
+    let mut context = test_tool_context("GeneralPurpose");
+    // Controller/context data cannot relax execution-host policy.
+    context
+        .custom_data
+        .insert("allow_subagent_model_override".into(), json!(true));
+    TEST_MODEL_OVERRIDE.scope(false, async {
+        for tool in collaboration_model_policy_tools() {
+            for model in [json!("inherit"), json!("primary"), json!("fast"), json!("custom"), json!(""), serde_json::Value::Null] {
+                let input = json!({"model_id": model});
+                let validation = tool.validate_input(&input, Some(&context)).await;
+                assert!(!validation.result, "{}", tool.name());
+                assert!(validation.message.unwrap().contains("Remove model_id"));
+                let error = tool.call_impl(&input, &context).await.unwrap_err();
+                assert!(error.to_string().contains("Remove model_id"), "{}: {}", tool.name(), error);
+            }
+        }
+        let spawn = json!({"agent_id":"worker", "agent_type":"GeneralPurpose", "prompt":"Inspect the parser"});
+        assert!(AgentSpawnTool::new().validate_input(&spawn, Some(&context)).await.result);
+        let followup = json!({"agent_id":"worker", "prompt":"Continue"});
+        assert!(AgentSendInputTool::new().validate_input(&followup, Some(&context)).await.result);
+        let parsed = AgentSpawnTool::task_input(&spawn).unwrap();
+        assert!(parsed.get("model_id").is_none());
+        assert!(AgentSendInputTool::task_input(&followup).unwrap().get("model_id").is_none());
+    }).await;
+}
+
+#[tokio::test]
+async fn subagent_model_override_presentation_snapshot_does_not_freeze_execution_policy() {
+    use super::model_policy::{ModelOverridePolicy, TEST_MODEL_OVERRIDE};
+    TEST_MODEL_OVERRIDE
+        .scope(
+            true,
+            super::with_collaboration_model_policy(async {
+                TEST_MODEL_OVERRIDE
+                    .scope(false, async {
+                        assert!(
+                            AgentSpawnTool::new().input_schema_for_model().await["properties"]
+                                .get("model_id")
+                                .is_some()
+                        );
+                        assert!(ModelOverridePolicy::enforce(&json!({"model_id":"fast"}))
+                            .await
+                            .is_err());
+                    })
+                    .await;
+            }),
+        )
+        .await;
+}
+
+#[test]
+fn subagent_model_override_policy_invalidates_loaded_specs_only_when_changed() {
+    let mut registry = crate::agentic::tools::registry::create_tool_registry();
+    let names = registry.get_tool_names();
+    let initial = registry.current_snapshot_generation();
+    registry.refresh_collaboration_model_policy(true);
+    assert_eq!(registry.current_snapshot_generation(), initial);
+    registry.refresh_collaboration_model_policy(false);
+    assert!(registry.current_snapshot_generation() > initial);
+    let disabled = registry.current_snapshot_generation();
+    registry.refresh_collaboration_model_policy(false);
+    assert_eq!(registry.current_snapshot_generation(), disabled);
+    registry.refresh_collaboration_model_policy(true);
+    assert!(registry.current_snapshot_generation() > disabled);
+    assert_eq!(registry.get_tool_names(), names);
+}
+
+#[tokio::test]
+async fn subagent_model_override_uses_host_policy_for_remote_and_headless_contexts() {
+    use super::model_policy::TEST_MODEL_OVERRIDE;
+    let mut context = test_tool_context("GeneralPurpose");
+    context.workspace = Some(WorkspaceBinding::new_remote(
+        None,
+        PathBuf::from("/workspace/project"),
+        "connection-1".to_string(),
+        "remote".to_string(),
+        WorkspaceSessionIdentity {
+            workspace_kind: openbitfun_core_types::WorkspaceKind::Remote,
+            hostname: "remote.example".to_string(),
+            logical_workspace_path: "/workspace/project".to_string(),
+            remote_connection_id: Some("connection-1".to_string()),
+        },
+    ));
+    context
+        .custom_data
+        .insert("peer_device_control".into(), json!(true));
+    context
+        .custom_data
+        .insert("user_input_available".into(), json!(false));
+    TEST_MODEL_OVERRIDE
+        .scope(false, async {
+            for tool in collaboration_model_policy_tools() {
+                let schema = tool
+                    .input_schema_for_model_with_context(Some(&context))
+                    .await;
+                assert!(schema["properties"].get("model_id").is_none());
+                let error = tool
+                    .call_impl(&json!({"model_id":"primary"}), &context)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("Remove model_id"));
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn subagent_model_override_policy_reaches_native_and_host_catalogs() {
+    use super::model_policy::TEST_MODEL_OVERRIDE;
+    use crate::agentic::tools::product_runtime::{
+        build_tool_info, resolve_product_resolved_tool_manifest,
+    };
+    let context = test_tool_context("GeneralPurpose");
+    TEST_MODEL_OVERRIDE
+        .scope(false, async {
+            let tool: Arc<dyn Tool> = Arc::new(AgentSpawnTool::new());
+            let info = build_tool_info(&tool).await;
+            assert!(info.input_schema["properties"].get("model_id").is_none());
+            assert!(!info.description.contains("model_id"));
+            let manifest = resolve_product_resolved_tool_manifest(
+                &["AgentSpawn".into(), "AgentSendInput".into()],
+                &Default::default(),
+                &context,
+            )
+            .await;
+            for name in ["AgentSpawn", "AgentSendInput"] {
+                let definition = manifest
+                    .tool_definitions
+                    .iter()
+                    .find(|tool| tool.name == name)
+                    .unwrap();
+                assert!(definition.parameters["properties"]
+                    .get("model_id")
+                    .is_none());
+                assert!(!definition.description.contains("model_id"));
+            }
+        })
+        .await;
+}
+
+#[cfg(feature = "ptc-runtime")]
+#[tokio::test]
+async fn subagent_model_override_policy_reaches_ptc_bindings() {
+    use super::model_policy::TEST_MODEL_OVERRIDE;
+    use crate::agentic::tools::product_runtime::resolve_product_resolved_tool_manifest;
+    let mut context = test_tool_context("GeneralPurpose");
+    context.custom_data.insert(
+        openbitfun_agent_tools::PTC_TOOL_PRESENTATION_CONTEXT_KEY.into(),
+        json!("ptc"),
+    );
+    for allowed in [false, true] {
+        TEST_MODEL_OVERRIDE
+            .scope(allowed, async {
+                let manifest = resolve_product_resolved_tool_manifest(
+                    &["AgentSpawn".into(), "AgentSendInput".into()],
+                    &Default::default(),
+                    &context,
+                )
+                .await;
+                let guide = manifest.ptc_tool_calling_guide.unwrap();
+                assert!(guide.contains("AgentSpawn"));
+                assert_eq!(guide.contains("model_id"), allowed);
+            })
+            .await;
+    }
+}
