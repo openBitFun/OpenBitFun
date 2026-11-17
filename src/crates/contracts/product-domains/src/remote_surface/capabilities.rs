@@ -99,6 +99,8 @@ pub enum PeerHostCapability {
     ToolCatalog,
     /// Workspace-backed pull request context and detail pages are implemented.
     ReviewPlatformV1,
+    /// `terminal_create` can validate an owning workspace and pin the PTY to the host.
+    HostTerminalWorkspaceV1,
     /// Mode/workspace-scoped `get_chat_mcp_catalog` is implemented.
     ChatMcpCatalogV1,
     /// Workspace references can carry the owning host's persisted ID.
@@ -173,6 +175,7 @@ impl PeerHostCapability {
         Self::CancelTool,
         Self::ToolCatalog,
         Self::ReviewPlatformV1,
+        Self::HostTerminalWorkspaceV1,
         Self::ChatMcpCatalogV1,
         Self::WorkspaceIconV1,
         Self::WorkspaceIdReferencesV1,
@@ -230,6 +233,7 @@ impl PeerHostCapability {
             Self::CancelTool => "cancel_tool",
             Self::ToolCatalog => "tool_catalog",
             Self::ReviewPlatformV1 => "review_platform_v1",
+            Self::HostTerminalWorkspaceV1 => "host_terminal_workspace_v1",
             Self::ChatMcpCatalogV1 => "chat_mcp_catalog_v1",
             Self::WorkspaceIconV1 => "workspace_icon_v1",
             Self::WorkspaceIdReferencesV1 => "workspace_id_references_v1",
@@ -294,6 +298,7 @@ const DESKTOP_CAPABILITIES: &[PeerHostCapability] = &[
     PeerHostCapability::CancelTool,
     PeerHostCapability::ToolCatalog,
     PeerHostCapability::ReviewPlatformV1,
+    PeerHostCapability::HostTerminalWorkspaceV1,
     PeerHostCapability::ChatMcpCatalogV1,
     PeerHostCapability::WorkspaceIconV1,
     PeerHostCapability::WorkspaceIdReferencesV1,
@@ -458,8 +463,13 @@ mod tests {
         assert!(!cli.contains_key("product_control_presentation_v1"));
         assert!(!cli.contains_key("whole_session_copy_v1"));
         assert!(!cli.contains_key("review_platform_v1"));
+        assert!(!cli.contains_key("host_terminal_workspace_v1"));
         assert_eq!(
             capability_map(PeerHostKind::Desktop).get("review_platform_v1"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            capability_map(PeerHostKind::Desktop).get("host_terminal_workspace_v1"),
             Some(&Value::Bool(true))
         );
         assert_eq!(

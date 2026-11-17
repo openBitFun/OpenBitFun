@@ -116,6 +116,7 @@ export interface PeerHostCapabilities {
   readonly toolCatalog: boolean | null;
   /** Missing on older hosts: Desktop implements PR details, CLI does not. */
   readonly reviewPlatformV1?: boolean | null;
+  readonly hostTerminalWorkspaceV1?: boolean;
   /** Scoped MCP choices must be explicitly advertised by the host. */
   readonly chatMcpCatalogV1?: boolean;
   readonly sessionReferenceBrowseV1?: boolean;
@@ -268,6 +269,7 @@ const NO_CAPABILITIES: PeerHostCapabilities = {
   cancelTool: null,
   toolCatalog: null,
   reviewPlatformV1: null,
+  hostTerminalWorkspaceV1: false,
   chatMcpCatalogV1: false,
   sessionReferenceBrowseV1: false,
   workspaceIconV1: false,
@@ -740,6 +742,7 @@ export class PeerConnectionManager {
       cancelTool,
       toolCatalog,
       reviewPlatformV1: caps?.review_platform_v1 === undefined ? null : caps.review_platform_v1 === true,
+      hostTerminalWorkspaceV1: caps?.host_terminal_workspace_v1 === true,
       chatMcpCatalogV1: caps?.chat_mcp_catalog_v1 === true,
       sessionReferenceBrowseV1: caps?.session_reference_browse_v1 === true,
       workspaceIconV1: caps?.workspace_icon_v1 === true,

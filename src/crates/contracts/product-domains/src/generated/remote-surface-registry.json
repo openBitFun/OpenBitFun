@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:c080137dac4b6d2e",
+  "digest": "fnv1a64:8732d7ca210f7cf2",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -47,6 +47,7 @@
       "cancel_tool",
       "tool_catalog",
       "review_platform_v1",
+      "host_terminal_workspace_v1",
       "chat_mcp_catalog_v1",
       "workspace_icon_v1",
       "workspace_id_references_v1",
@@ -101,6 +102,7 @@
       "cancel_tool",
       "tool_catalog",
       "review_platform_v1",
+      "host_terminal_workspace_v1",
       "chat_mcp_catalog_v1",
       "workspace_icon_v1",
       "workspace_id_references_v1",
