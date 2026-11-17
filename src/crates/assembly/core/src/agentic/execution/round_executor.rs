@@ -1021,7 +1021,7 @@ impl RoundExecutor {
                 .map_err(|error| OpenBitFunError::AIClient(error.to_string()).with_channel_bound_replay())?;
             let mut usage_context =
                 openbitfun_services_core::token_usage::types::ModelRequestUsageContext {
-                    context_composition: context.context_composition.clone(),
+                    context_composition: None,
                     version: 1,
                     round_id: round_id.clone(),
                     attempt_id: attempt_id.clone(),
@@ -2994,7 +2994,6 @@ pub(super) mod tests {
 
     pub(in crate::agentic::execution) fn test_round_context() -> RoundContext {
         RoundContext {
-            context_composition: None,
             session_id: "session-1".to_string(),
             subagent_parent_info: None,
             permission_delegation: None,
@@ -6717,12 +6716,6 @@ pub(super) mod tests {
             let source = test_account_source(vec![primary.client(), backup.client()], false);
             let mut context = test_round_context();
             context.account_client_source = Some(source);
-            let composition = openbitfun_core_types::UsageContextBreakdown {
-                system_prompt: 3,
-                conversation: 7,
-                ..Default::default()
-            };
-            context.context_composition = Some(composition.clone());
             let mut executor = test_round_executor();
             executor.usage_service = Some(service.clone());
             let result = executor
@@ -6751,7 +6744,7 @@ pub(super) mod tests {
                 .request_context()
                 .unwrap()
                 .context_composition
-                == Some(composition.clone())));
+                .is_none()));
             let failed = records
                 .iter()
                 .find(|record| record.request_context().unwrap().attempt_index == 1)

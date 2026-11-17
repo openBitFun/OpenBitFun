@@ -9,6 +9,7 @@ pub(crate) use external_history::external_history_catalog;
 mod session_catalog;
 mod turn_window_index;
 mod usage_context;
+#[cfg(test)]
 pub(crate) use usage_context::SessionUsageContextSnapshot;
 
 use crate::agentic::core::{
