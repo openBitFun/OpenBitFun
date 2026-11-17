@@ -32,23 +32,14 @@ test('Windows updater uses the signed transactional installer and rejects old pr
   assert.match(run('scripts/collect-tauri-updater-assets.mjs', args).stderr, /signature is missing/);
 });
 
-test('desktop and mobile release metadata are synchronized within their own groups', () => {
+test('desktop release metadata stays synchronized after native extraction', () => {
   const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
   const result = run('scripts/verify-release-version-sync.mjs', [
     '--version', version,
-    '--mobile-version', '1.0.0',
   ]);
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('mobile release metadata rejects drift within the mobile group', () => {
-  const result = run('scripts/verify-release-version-sync.mjs', [
-    '--version', JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
-    '--mobile-version', '1.0.1',
-  ]);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /expected mobile 1\.0\.1/);
-});
 
 test('prepares a versioned custom Windows installer asset', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-manual-installer-'));
