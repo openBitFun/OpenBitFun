@@ -22,6 +22,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -41,9 +42,32 @@ import com.openbitfun.mobile.app.ui.chat.tool.ToolDisclosure
 import com.openbitfun.mobile.app.ui.chat.tool.LocalToolDisclosure
 import com.openbitfun.mobile.core.feature.session.MessageBlock
 import com.openbitfun.mobile.core.feature.session.QuestionAnswer
+import com.openbitfun.mobile.core.feature.session.RemoteSessionFailureReason
 import com.openbitfun.mobile.core.feature.workspace.RemoteFileDownloadUiState
 
 internal const val SUBAGENT_GROUP_TEST_TAG: String = "subagent-group"
+
+/**
+ * Asks the session store to follow a delegation card's worker again.
+ *
+ * A spawned worker lives in its own session, and the store can hold only so many of
+ * those streams at once: past the cap the oldest running child gives up its slot, and
+ * a stream can also have failed. Opening the card is the reader's way of asking for
+ * its steps, so this is the one gesture that re-subscribes. Defaulted so the block
+ * list still draws outside a session (previews, tests).
+ */
+internal val LocalSubagentAttach = staticCompositionLocalOf<(String) -> Unit> { {} }
+
+/**
+ * Launch items whose worker's steps could not be read, by tool call id.
+ *
+ * The session stays readable when one child stream fails, so the failure is drawn on
+ * the card that owns it rather than replacing the conversation. The reason is carried
+ * because the two cases are not the same news: a stream that failed may be readable on
+ * the next attempt, while a desktop that has no on-demand streams never will be.
+ */
+internal val LocalSubagentFailures =
+    staticCompositionLocalOf<Map<String, RemoteSessionFailureReason>> { emptyMap() }
 
 /** What the app has to be handed to draw any block, gathered so nesting stays cheap. */
 internal data class MessageBlockCallbacks(
@@ -159,8 +183,24 @@ private fun MessageBlockView(block: MessageBlock, callbacks: MessageBlockCallbac
 private fun SubagentGroup(block: MessageBlock.Subagent, callbacks: MessageBlockCallbacks) {
     var expanded by rememberSaveable(block.id) { mutableStateOf(false) }
     val children = remember(block.children, block.running) { subagentChildren(block) }
-    val hasDetails = children.isNotEmpty() || block.text.isNotBlank()
+    // A card whose worker's steps are missing is still openable: opening it is how a
+    // reader asks for those steps again, and how the card says why they are missing.
+    // A worker that is still running and has published nothing yet is the same case —
+    // its branch may have lost its slot before its first record, and the card would
+    // otherwise be the one card that cannot be asked to follow it.
+    val stepsUnavailable = LocalSubagentFailures.current[block.ownerToolCallId]
+    val hasDetails = children.isNotEmpty() || block.text.isNotBlank() || stepsUnavailable != null ||
+        (block.ownerToolCallId.isNotEmpty() && block.running)
+    val attach = LocalSubagentAttach.current
     val outline = MaterialTheme.colorScheme.outlineVariant
+    // Identity and lifecycle are read from the card's own data, never from a timer:
+    // the avatar is derived from the launch the host named, and the state is the
+    // status the transcript already carries.
+    val identity = remember(block.ownerToolCallId, block.id) {
+        subagentIdentity(subagentIdentityKey(block.ownerToolCallId, block.id))
+    }
+    val liveness = remember(block.status) { subagentLiveness(block.status) }
+    val name = subagentDisplayName(block.title).ifEmpty { stringResource(R.string.chat_subagent) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -177,21 +217,20 @@ private fun SubagentGroup(block: MessageBlock.Subagent, callbacks: MessageBlockC
                     value = expanded,
                     role = Role.Button,
                     enabled = hasDetails,
-                    onValueChange = { expanded = it },
+                    onValueChange = { open ->
+                        expanded = open
+                        // First expansion is the reader asking to see this worker's
+                        // work, so it re-attaches a branch that a failed or evicted
+                        // stream left with nothing.
+                        if (open) attach(block.ownerToolCallId)
+                    },
                 ),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (hasDetails) androidx.compose.material3.Icon(
-                painter = androidx.compose.ui.res.painterResource(
-                    if (expanded) R.drawable.ic_symbol_chevron_down else R.drawable.ic_symbol_chevron_right,
-                ),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.width(18.dp),
-            )
+            SubagentAvatar(identity, Modifier)
             Text(
-                block.title.ifEmpty { stringResource(R.string.chat_subagent) },
+                name,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -199,12 +238,20 @@ private fun SubagentGroup(block: MessageBlock.Subagent, callbacks: MessageBlockC
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
-            Text(stringResource(when {
-                subagentFailed(block.status) -> R.string.tool_phase_failed
-                block.running -> R.string.tool_phase_running
-                else -> R.string.tool_phase_completed
-            }), style = MaterialTheme.typography.labelSmall,
-                color = if (subagentFailed(block.status)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            SubagentStateChip(liveness)
+            // The card header is the only control that opens the worker's steps, so
+            // it is the one that has to say what tapping it does. A card with nothing
+            // to open draws no chevron, and so has nothing to announce.
+            if (hasDetails) androidx.compose.material3.Icon(
+                painter = androidx.compose.ui.res.painterResource(
+                    if (expanded) R.drawable.ic_symbol_chevron_down else R.drawable.ic_symbol_chevron_right,
+                ),
+                contentDescription = stringResource(
+                    if (expanded) R.string.subagent_collapse_steps else R.string.subagent_expand_steps,
+                ),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(16.dp),
+            )
         }
         if (expanded && hasDetails) {
             Column(
@@ -221,6 +268,21 @@ private fun SubagentGroup(block: MessageBlock.Subagent, callbacks: MessageBlockC
                     .padding(start = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (children.isEmpty() && stepsUnavailable != null) {
+                    // A desktop without on-demand streams is not going to answer a
+                    // second time, so its copy says so instead of inviting a retry.
+                    Text(
+                        stringResource(
+                            if (stepsUnavailable == RemoteSessionFailureReason.HOST_STREAM_UNSUPPORTED) {
+                                R.string.subagent_steps_unsupported
+                            } else {
+                                R.string.subagent_steps_unavailable
+                            },
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (children.isEmpty() && block.text.isNotBlank()) {
                     Text(
                         subagentPreview(block.text),

@@ -54,10 +54,28 @@ public sealed interface MessageBlock {
         public val children: List<MessageBlock>,
         /** Preserve host status; running alone loses failure and queued states. */
         public val status: String,
+        /**
+         * The tool call that launched this worker, when the item named one.
+         *
+         * [id] is this block's position in the transcript, which is what a lazy list
+         * keys on; the launch item's own identity is what the session store follows a
+         * spawned child by, so a card that wants its worker's steps read again names
+         * this. Empty for a branch the host published inside its own stream.
+         */
+        public val ownerToolCallId: String,
     ) : MessageBlock {
         // Keep source compatibility without default arguments on the exported feature API.
         public constructor(id: String, title: String, running: Boolean, text: String, children: List<MessageBlock>) :
             this(id, title, running, text, children, if (running) "running" else "completed")
+
+        public constructor(
+            id: String,
+            title: String,
+            running: Boolean,
+            text: String,
+            children: List<MessageBlock>,
+            status: String,
+        ) : this(id, title, running, text, children, status, "")
     }
 }
 
@@ -190,6 +208,7 @@ private fun walk(items: List<ChatMessageItemResponse>, path: String, streaming: 
                 text = subagentBody(entry),
                 children = walk(entry.subItems.orEmpty().map { it.copy(isSubagent = false) }, id, running),
                 status = status,
+                ownerToolCallId = entry.tool?.id.orEmpty(),
             )
             return@forEachIndexed
         }
@@ -323,7 +342,15 @@ private fun plainSubagentLabel(raw: String): String {
     return text
 }
 
-private val SUBAGENT_RUNNING = setOf("running", "active", "preparing", "pending", "queued")
+/**
+ * Statuses that mean the worker still owes work, whatever word the host used.
+ *
+ * This is the block's `running` flag, not the card's reading: it says the worker has
+ * work coming, so its scope is still open and its card can still be asked for its
+ * steps. A queued worker is in here for that reason — it is not working yet, and the
+ * card says so from its own status word, but it has not finished either.
+ */
+private val SUBAGENT_RUNNING = setOf("running", "active", "preparing", "pending", "queued", "waiting")
 
 private const val TITLE_LIMIT = 80
 private val TEXT_TYPES = setOf("text", "message", "")

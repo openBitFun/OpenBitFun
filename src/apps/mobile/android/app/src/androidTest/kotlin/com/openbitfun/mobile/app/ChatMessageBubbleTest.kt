@@ -14,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.platform.app.InstrumentationRegistry
 import com.openbitfun.mobile.app.ui.chat.ChatMessageBubble
+import com.openbitfun.mobile.app.ui.chat.message.LocalReduceMotionOverride
 import com.openbitfun.mobile.app.ui.chat.message.SUBAGENT_GROUP_TEST_TAG
 import com.openbitfun.mobile.app.ui.chat.message.TYPING_DOTS_TEST_TAG
 import com.openbitfun.mobile.core.feature.session.ConversationRow
@@ -255,22 +256,35 @@ class ChatMessageBubbleTest {
         composeRule.onNodeWithText("Working on it").assertIsDisplayed()
     }
 
+    /**
+     * One turn, drawn with animations removed.
+     *
+     * Three fixtures here render a running delegation card, and a running worker's
+     * state mark pulses forever: a compose test cannot idle on a clock that never
+     * stops, so without this the pre-existing assertions in this file would wait for
+     * an idle state that never arrives. The override changes only the movement — the
+     * reading printed on the card is the same — and
+     * `SubagentLivenessCardTest.aRunningWorkerMovesAndOnlyItsMarkMoves` is the test
+     * that measures the pulse, on a fixture that asks for it explicitly.
+     */
     @androidx.compose.runtime.Composable
     private fun Bubble(row: ConversationRow) {
-        ChatMessageBubble(
-            row = row,
-            enabled = true,
-            onApproveTool = { _, _ -> },
-            onRejectTool = { _, _ -> },
-            onCancelTool = { _, _ -> },
-            onAnswerTool = { _, _ -> },
-            onAnswerToolStructured = { _, _ -> },
-            onRetry = {},
-            onOpenLink = { _, _ -> },
-            previewingRemotePath = "",
-            previewLoading = false,
-            modifier = Modifier,
-        )
+        androidx.compose.runtime.CompositionLocalProvider(LocalReduceMotionOverride provides true) {
+            ChatMessageBubble(
+                row = row,
+                enabled = true,
+                onApproveTool = { _, _ -> },
+                onRejectTool = { _, _ -> },
+                onCancelTool = { _, _ -> },
+                onAnswerTool = { _, _ -> },
+                onAnswerToolStructured = { _, _ -> },
+                onRetry = {},
+                onOpenLink = { _, _ -> },
+                previewingRemotePath = "",
+                previewLoading = false,
+                modifier = Modifier,
+            )
+        }
     }
 
     private fun row(

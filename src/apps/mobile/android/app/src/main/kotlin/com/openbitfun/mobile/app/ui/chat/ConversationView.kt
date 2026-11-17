@@ -248,6 +248,17 @@ internal fun ConversationView(
         onIntent(RemoteSessionIntent.UpdateDraft(mergeComposerDraft(state.draft, text)))
     }
 
+    // Held once, not rebuilt per recomposition: a composition local is compared by
+    // identity, so a fresh lambda here would invalidate every reader of it — the whole
+    // block list — on every frame the conversation redraws. [onIntent] is read through
+    // a holder for the same reason: the store's callback may be a new lambda each
+    // composition, and following the worker on a card the reader opened is not worth a
+    // transcript rebuild.
+    val currentOnIntent by rememberUpdatedState(onIntent)
+    val attachSubagent: (String) -> Unit = remember {
+        { owner: String -> currentOnIntent(RemoteSessionIntent.EnsureSubagentAttached(owner)) }
+    }
+
     androidx.compose.runtime.CompositionLocalProvider(
         com.openbitfun.mobile.app.ui.chat.tool.LocalPermissionMailbox provides state.permissionMailbox,
         com.openbitfun.mobile.app.ui.chat.tool.LocalPlanActions provides com.openbitfun.mobile.app.ui.chat.tool.PlanActions(
@@ -255,6 +266,11 @@ internal fun ConversationView(
             enabled = !state.busy && activeTurn == null && phase == ConnectionPhase.CONNECTED,
             build = { plan -> onIntent(RemoteSessionIntent.BuildPlan(sessionId, plan.path, plan.name)) },
         ),
+        // A delegation card's worker is followed on demand, so opening the card has
+        // to reach the store. Handed down as a local rather than threaded through
+        // every block renderer: only the subagent card ever asks.
+        com.openbitfun.mobile.app.ui.chat.message.LocalSubagentAttach provides attachSubagent,
+        com.openbitfun.mobile.app.ui.chat.message.LocalSubagentFailures provides state.subagentFailures,
     ) {
         androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxSize()) {
         val mailboxMaxHeight = maxHeight * 0.4f

@@ -297,7 +297,31 @@ public sealed interface RemoteSessionUiState {
         /** Host hint for the latest completed turn; never persisted with the transcript. */
         public val promptSuggestion: String?,
         public val messageQueue: MessageQueueUiState,
+        /**
+         * Delegation cards whose child session could not be read, by owner tool call id.
+         *
+         * A spawned child lives in its own session, and that stream can fail on its
+         * own: a host that serves this conversation perfectly well may refuse one
+         * child's `read_stream`, or drop it, or never answer it. That says nothing
+         * about the conversation on screen, which is still the host's own transcript,
+         * so it is reported here — on a session that stays [Ready] — instead of
+         * replacing the readable conversation with a session-level failure. The card
+         * keeps the launching item's own status and can say that its steps are
+         * unavailable; the entry disappears when the branch is read again.
+         */
+        public val subagentFailures: Map<String, RemoteSessionFailureReason>,
     ) : RemoteSessionUiState {
+        /** Preserve the existing Swift initializer when adding the per-card delegation failures. */
+        public constructor(
+            sessions: List<RemoteSession>, selectedSessionId: String?, timeline: ChatTimelineState?, busy: Boolean,
+            permissionMode: SessionPermissionMode?, permissionModeFailure: PermissionModeFailure?, query: String,
+            agentFilter: SessionAgentFilter, hasMore: Boolean, hasMoreMessages: Boolean,
+            modelCatalog: RemoteModelCatalog?, modelCatalogFailure: ModelCatalogFailure?, draft: String,
+            revision: Long, lastSentMessage: SentChatMessage?, permissionMailbox: PermissionMailboxUiState,
+            historyLoadState: HistoryLoadState, promptSuggestion: String?, messageQueue: MessageQueueUiState,
+        ) : this(sessions, selectedSessionId, timeline, busy, permissionMode, permissionModeFailure, query,
+            agentFilter, hasMore, hasMoreMessages, modelCatalog, modelCatalogFailure, draft, revision,
+            lastSentMessage, permissionMailbox, historyLoadState, promptSuggestion, messageQueue, emptyMap())
         public constructor(
             sessions: List<RemoteSession>, selectedSessionId: String?, timeline: ChatTimelineState?, busy: Boolean,
             permissionMode: SessionPermissionMode?, permissionModeFailure: PermissionModeFailure?, query: String,
@@ -430,6 +454,15 @@ public sealed interface RemoteSessionIntent {
 
     /** Native lifecycle controls foreground connection health probes. */
     public data class SetForeground(public val active: Boolean) : RemoteSessionIntent
+
+    /**
+     * A delegation card was opened and wants its worker's own steps.
+     *
+     * The card may have lost its stream to the concurrency cap, never had one, or been
+     * released while the app was in the background; opening it is the one gesture that
+     * asks for the child's stream again. It changes nothing else about the session.
+     */
+    public data class EnsureSubagentAttached(public val ownerToolCallId: String) : RemoteSessionIntent
 
     public data object Load : RemoteSessionIntent
 
