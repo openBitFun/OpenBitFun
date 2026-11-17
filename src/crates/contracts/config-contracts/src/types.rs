@@ -1905,6 +1905,13 @@ pub fn is_valid_configured_max_output_tokens(context_window: u32, max_tokens: u3
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AIModelConfig {
+    /// Responses transport and context preferences; absent preserves HTTP/full behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses: Option<openbitfun_core_types::responses::ResponsesRequestSettings>,
+    /// Provider-instance defaults, materialized with the other shared endpoint settings.
+    /// A model's explicit `responses` override wins. Only Responses routes consume these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses_defaults: Option<openbitfun_core_types::responses::ResponsesRequestSettings>,
     pub id: String,
     pub name: String,
     pub provider: String,
@@ -2434,6 +2441,8 @@ impl Default for AIModelConfig {
             skip_ssl_verify: false,
             custom_request_body: None,
             custom_request_body_mode: None,
+            responses: None,
+            responses_defaults: None,
             auth: AuthConfig::ApiKey,
             channel_routing: None,
         }

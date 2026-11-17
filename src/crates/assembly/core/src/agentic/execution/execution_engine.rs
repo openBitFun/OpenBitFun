@@ -669,6 +669,7 @@ impl ExecutionEngine {
         context: &HashMap<String, String>,
     ) -> ModelRequestContext {
         ModelRequestContext {
+            conversation_scope: None,
             prompt_cache_route_key: Some(prompt_cache_lineage_id.to_string()),
             output_schema: context
                 .get(openbitfun_runtime_ports::OUTPUT_SCHEMA_CONTEXT_KEY)
@@ -2615,10 +2616,11 @@ impl ExecutionEngine {
                 None
             }
         };
-        let model_request_context = Self::model_request_context(
+        let mut model_request_context = Self::model_request_context(
             session.effective_prompt_cache_lineage_id(),
             &context.context,
         );
+        model_request_context.conversation_scope = Some(session.model_conversation_scope.clone());
         let initialization_binding = if matches!(
             session.config.model_binding_policy,
             SessionModelBindingPolicy::ApprovedImmutable
@@ -3480,10 +3482,11 @@ impl ExecutionEngine {
                 }
             }
         };
-        let model_request_context = Self::model_request_context(
+        let mut model_request_context = Self::model_request_context(
             session.effective_prompt_cache_lineage_id(),
             &context.context,
         );
+        model_request_context.conversation_scope = Some(session.model_conversation_scope.clone());
         let initialization_cancel = self.round_executor.ensure_cancel_token(&dialog_turn_id);
         let initialization_binding = if matches!(
             session.config.model_binding_policy,

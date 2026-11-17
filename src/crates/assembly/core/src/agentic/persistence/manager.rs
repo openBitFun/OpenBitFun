@@ -2991,6 +2991,7 @@ impl PersistenceManager {
         let dialog_turn_ids = turns.iter().map(|turn| turn.turn_id.clone()).collect();
 
         Ok(Session {
+            model_conversation_scope: Arc::new(uuid::Uuid::new_v4().to_string()),
             session_id: metadata.session_id.clone(),
             session_name: metadata.session_name.clone(),
             agent_type: if legacy_minimal {

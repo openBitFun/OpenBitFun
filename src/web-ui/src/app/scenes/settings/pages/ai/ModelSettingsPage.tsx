@@ -118,6 +118,7 @@ import {
 } from '@/infrastructure/config/utils/reasoningPresets';
 import { i18nService, useI18n } from '@/infrastructure/i18n';
 import { getActiveSurfaceScope, onSurfaceActivated } from '@/infrastructure/peer-device/deviceSurface';
+import { ResponsesRequestSettingsFields } from '@/infrastructure/config/components/ResponsesRequestSettingsFields';
 import { usePeerDeviceModeOptional } from '@/infrastructure/peer-device/peerDeviceContextState';
 import { canEditAccountPoolsOnSurface, canEditChannelRoutingOnSurface, canQuerySubscriptionQuotaOnSurface, canQueryModelQuotaOnSurface, canQueryGrokQuotaOnSurface } from '@/infrastructure/peer-device/peerCapabilityResolution';
 import { isPeerDeviceModeActive } from '@/infrastructure/peer-device/peerModeFlag';
@@ -649,6 +650,7 @@ const ModelSettingsPage: React.FC = () => {
     Boolean(peerDevice?.peerMode.active),
     peerDevice?.currentPeerCapabilities ?? null,
   );
+  const canEditResponses = !peerDevice?.peerMode.active || peerDevice.currentPeerCapabilities?.responsesWebsocketV1 === true;
   const canEditChannelRouting = canEditChannelRoutingOnSurface(
     Boolean(peerDevice?.peerMode.active),
     peerDevice?.currentPeerCapabilities ?? null,
@@ -1207,7 +1209,8 @@ const ModelSettingsPage: React.FC = () => {
     setShowModelValidation(false);
     const settings = draft.requestSettings;
     setShowAdvancedSettings(
-      !!settings.skip_ssl_verify
+      !!settings.responses || !!settings.responses_defaults
+      || !!settings.skip_ssl_verify
       || settings.custom_request_body_mode === 'trim'
       || !!settings.custom_request_body?.trim()
       || settings.max_images_per_request !== undefined
@@ -1992,6 +1995,7 @@ const ModelSettingsPage: React.FC = () => {
         skip_ssl_verify: config.skip_ssl_verify ?? false,
         custom_request_body: config.custom_request_body,
         custom_request_body_mode: config.custom_request_body_mode,
+        responses_defaults: config.responses_defaults,
         auth: config.auth || { type: 'api_key' },
       });
       if (subscriptionProviderOf(config.auth)) void refreshSubscriptionAccounts();
@@ -2236,6 +2240,13 @@ const ModelSettingsPage: React.FC = () => {
           channel_routing: normalizeChannelRouting(draft.channelRouting),
         };
       });
+      if (!canEditResponses && configsToSave.some(config => {
+        const existing = aiModels.find(model => model.id === config.id);
+        return stableJson([config.responses, config.responses_defaults]) !== stableJson([existing?.responses, existing?.responses_defaults]);
+      })) {
+        notification.warning(t('advancedSettings.responses.unsupported'));
+        return false;
+      }
       let previousModelsBeforeSave: AIModelConfigType[] = [];
       const updatedModels = await configManager.updateConfig<AIModelConfigType[]>('ai.models', current => {
         previousModelsBeforeSave = current;
@@ -3719,8 +3730,14 @@ const ModelSettingsPage: React.FC = () => {
       );
     };
 
+    const selectedRequestFormat = automaticOpenCodeRouting && singleModelEditorDraft
+      ? resolveOpenCodeModelRoute(routeConfig, singleModelEditorDraft.modelName, remoteModelOptions)?.format
+        || singleModelEditorDraft.manualRequestFormat || editingConfig.provider
+      : editingConfig.provider;
+    const showResponsesSettings = ['response', 'responses'].includes(selectedRequestFormat ?? '')
+      || (isProviderScopedEditing && automaticOpenCodeRouting);
     const renderAdvancedSettings = () => (
-      !authIsSubscription && (
+      (!authIsSubscription || showResponsesSettings) && (
         <Disclosure
           data-testid="settings-model-advanced-toggle"
           summary={t('advancedSettings.title')}
@@ -3742,6 +3759,14 @@ const ModelSettingsPage: React.FC = () => {
         >
           {showAdvancedSettings && (
             <FieldGroup appearance="plain" dividers={false} fieldSurface="filled">
+              {showResponsesSettings && (
+                <ResponsesRequestSettingsFields
+                  value={isProviderScopedEditing ? requestSettings.responses_defaults : requestSettings.responses ?? requestSettings.responses_defaults}
+                  supported={canEditResponses}
+                  onChange={responses => updateRequestSettings(isProviderScopedEditing ? { responses_defaults: responses } : { responses })}
+                  onReset={!isProviderScopedEditing && requestSettings.responses ? () => updateRequestSettings({ responses: undefined }) : undefined} />
+              )}
+              {!authIsSubscription && <>
               {(editingConfig.provider === 'openai' || editingConfig.provider === 'anthropic') && (
                 <ConfigPageRow
                   label={t('advancedSettings.inlineThinkInText.label')}
@@ -3943,6 +3968,7 @@ const ModelSettingsPage: React.FC = () => {
                   })()}
                 </div>
               </ConfigPageRow>
+              </>}
             </FieldGroup>
           )}
         </Disclosure>

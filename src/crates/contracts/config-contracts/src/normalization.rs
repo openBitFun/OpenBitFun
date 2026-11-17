@@ -26,6 +26,19 @@ pub(crate) fn validate_image_budget_request_body(
 
 /// Provider-neutral model validation, shared by startup and offline import.
 pub fn validate_model_config(model: &crate::AIModelConfig, index: usize) -> Result<(), String> {
+    for settings in [model.responses, model.responses_defaults]
+        .into_iter()
+        .flatten()
+    {
+        if settings.context == openbitfun_core_types::responses::ResponsesContextMode::Incremental
+            && settings.transport != openbitfun_core_types::responses::ResponsesTransport::Websocket
+        {
+            return Err(format!(
+                "Model '{}' incremental context requires WebSocket transport",
+                model.name
+            ));
+        }
+    }
     if !model.supports_text_generation() {
         for (field, present) in [
             ("context_window", model.context_window.is_some()),
@@ -465,6 +478,25 @@ pub fn reconcile_model_references(config: &mut GlobalConfig) -> ModelReferenceRe
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn responses_incremental_requires_websocket_in_both_scopes() {
+        use openbitfun_core_types::responses::{ResponsesContextMode, ResponsesRequestSettings};
+        let invalid = ResponsesRequestSettings {
+            context: ResponsesContextMode::Incremental,
+            ..Default::default()
+        };
+        let mut model = crate::AIModelConfig::default();
+        model.responses = Some(invalid);
+        assert!(super::validate_model_config(&model, 0)
+            .unwrap_err()
+            .contains("WebSocket"));
+        model.responses = None;
+        model.responses_defaults = Some(invalid);
+        assert!(super::validate_model_config(&model, 0)
+            .unwrap_err()
+            .contains("WebSocket"));
+    }
+
     use super::*;
 
     #[test]
