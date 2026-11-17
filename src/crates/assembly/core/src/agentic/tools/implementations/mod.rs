@@ -89,8 +89,8 @@ pub mod worktree_tool;
 pub use crate::agentic::tools::product_runtime::GetToolSpecTool;
 pub(crate) use agent_collaboration::AgentExecutionTool;
 pub use agent_collaboration::{
-    AgentControlTool, AgentListTool, AgentSendInputTool, AgentSpawnTool, AgentWaitTool,
-    LaunchReviewAgentTool, TaskTool,
+    AgentControlTool, AgentForkTool, AgentListTool, AgentSendInputTool, AgentSpawnTool,
+    AgentWaitTool, LaunchReviewAgentTool, TaskTool,
 };
 #[cfg(feature = "tools-image-analysis")]
 pub use analyze_image_tool::AnalyzeImageTool;

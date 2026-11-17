@@ -50,7 +50,7 @@ Browse and customize specialized agents, tailor each role’s allowed tools and 
   - Toggle tool groups, individual tools, and Skills per agent — with one-click reset to defaults
   - 说明：既可以给内置模式增减工具与技能，也可以为自定义角色做最小权限裁剪；改乱了点一下「恢复默认」就能回到出厂推荐组合。
   - Why & how: Tailor built-in or custom agents with minimal-privilege tool and Skill pickers, and reset any built-in profile back to defaults in one click.
-- **由专用智能体工具控制 / Delegated Agent tool** · `AgentSpawn` / `AgentWait` / `AgentSendInput` / `AgentControl` / `AgentList` · 由主智能体自动派生并行子智能体协同调研、编码与审查，并统一汇总结果
+- **由专用智能体工具控制 / Delegated Agent tool** · `AgentSpawn` / `AgentFork` / `AgentWait` / `AgentSendInput` / `AgentControl` / `AgentList` · 由主智能体自动派生并行子智能体协同调研、编码与审查，并统一汇总结果
   - Let the primary agent spawn parallel subagents for research, coding, and review and synthesize their output
   - 说明：主智能体会把大任务拆成互不踩踏的子切片交给多个子智能体同时推进；你在对话流里还能看到可爱的子代理化身卡片并随时点开查看它的独立推理轨迹。
   - Why & how: The primary agent breaks complex requests into non-overlapping slices, monitors running subagents, steers or cancels them if needed, and delivers a unified answer.

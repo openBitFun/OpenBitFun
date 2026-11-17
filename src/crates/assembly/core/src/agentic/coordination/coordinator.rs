@@ -874,7 +874,7 @@ fn external_delegation_agent_id(logical_id: &str, invocation_id: &uuid::Uuid) ->
 }
 
 fn fork_subagent_system_reminder() -> String {
-    "<system_reminder>You are now running as a forked subagent. Messages before this reminder were inherited from the parent agent as context. Messages after this reminder are the request for you. Do not call the Task tool to launch another subagent. Use the tools available to complete the task directly.</system_reminder>".to_string()
+    "<system_reminder>You are now running as a forked subagent. Messages before this reminder were inherited from the parent agent as context. Messages after this reminder are the request for you. Do not launch another subagent. Use the tools available to complete the task directly.</system_reminder>".to_string()
 }
 
 fn session_created_by_parent(session: &Session, parent_session_id: &str) -> bool {
@@ -13016,8 +13016,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     context: request.context,
                     permission_runtime_ceiling: Some(request.permission_runtime_ceiling),
                     delegation_policy: request.delegation_policy,
+                    // Keep the inherited tool definitions cacheable. The launch tools
+                    // enforce the child's delegation policy when invoked.
                     runtime_tool_restrictions: runtime_tool_restrictions_for_session_lifetime(
-                        runtime_tool_restrictions_for_delegation_policy(request.delegation_policy),
+                        ToolRuntimeRestrictions::default(),
                         parent_transient,
                     ),
                     prompt_cache_source_session_id: Some(snapshot.parent_session_id),
@@ -25201,6 +25203,12 @@ pub(crate) mod tests {
             .expect("fork request should inherit the parent model");
 
         assert_eq!(prepared.session_config.model_id.as_deref(), Some("primary"));
+        for tool_name in ["Task", "AgentSpawn", "AgentFork"] {
+            assert!(prepared
+                .runtime_tool_restrictions
+                .is_tool_allowed(tool_name));
+        }
+        assert!(!prepared.delegation_policy.allow_subagent_spawn);
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 use super::{
     execution::{requested_subagent_type_is_allowed, resolved_subagent_is_available},
-    AgentExecutionTool, AgentSendInputTool, AgentSpawnTool, LaunchReviewAgentTool, TaskTool,
+    AgentExecutionTool, AgentForkTool, AgentSendInputTool, AgentSpawnTool, LaunchReviewAgentTool,
+    TaskTool,
 };
 use crate::agentic::agents::CustomSubagentConfig;
 use crate::agentic::agents::{
@@ -209,6 +210,69 @@ fn split_agent_send_input_runs_in_the_background() {
     assert_eq!(task_input["action"], "send_input");
     assert_eq!(task_input["agent_id"], "a1");
     assert_eq!(task_input["run_in_background"], true);
+}
+
+#[tokio::test]
+async fn agent_fork_preserves_legacy_fork_contract_and_permissions() {
+    let tool = AgentForkTool::new();
+    let input = json!({"agent_id":"parser-fork", "prompt":"Review the findings above", "model_id":"inherit"});
+    let translated = AgentForkTool::task_input(&input).unwrap();
+    let legacy = json!({"action":"spawn", "agent_id":"parser-fork", "prompt":"Review the findings above", "model_id":"inherit", "fork_context":true, "run_in_background":true});
+    assert_eq!(translated, legacy);
+    assert_eq!(
+        AgentExecutionTool::context_mode_from_input(&translated).unwrap(),
+        openbitfun_runtime_ports::SubagentContextMode::Fork
+    );
+    assert!(tool.validate_input(&input, None).await.result);
+    let context = test_tool_context("GeneralPurpose");
+    assert_eq!(
+        serde_json::to_value(tool.permission_intents(&input, &context).unwrap()).unwrap(),
+        serde_json::to_value(
+            TaskTool::new()
+                .permission_intents(&legacy, &context)
+                .unwrap()
+        )
+        .unwrap()
+    );
+    assert!(!tool.is_readonly());
+    assert!(!tool.is_concurrency_safe(Some(&input)));
+    assert!(tool.manages_own_execution_timeout());
+}
+
+#[tokio::test]
+async fn agent_fork_rejects_invalid_ids_and_spawn_only_parameters() {
+    let tool = AgentForkTool::new();
+    for agent_id in ["", "ParserFork", "parser fork", " parser-fork", "1fork"] {
+        assert!(
+            !tool
+                .validate_input(&json!({"agent_id":agent_id, "prompt":"Review"}), None)
+                .await
+                .result
+        );
+    }
+    for input in [
+        json!({"prompt":"Review"}),
+        json!({"agent_id":"review"}),
+        json!({"agent_id":"review", "prompt":" "}),
+    ] {
+        assert!(!tool.validate_input(&input, None).await.result);
+    }
+    for field in [
+        "agent_type",
+        "subagent_type",
+        "fork_context",
+        "action",
+        "run_in_background",
+    ] {
+        let mut input = json!({"agent_id":"review", "prompt":"Review"});
+        input[field] = json!("unsupported");
+        assert!(!tool.validate_input(&input, None).await.result, "{field}");
+    }
+    let schema = tool.input_schema();
+    assert_eq!(schema["required"], json!(["agent_id", "prompt"]));
+    assert!(schema["properties"].get("agent_type").is_none());
+    assert!(schema["properties"].get("fork_context").is_none());
+    assert_eq!(schema["properties"].as_object().unwrap().len(), 3);
 }
 
 #[test]
@@ -991,6 +1055,16 @@ async fn call_impl_rejects_nested_subagent_delegation() {
     assert!(error
         .to_string()
         .contains("Recursive subagent delegation is blocked. Use direct tools instead."));
+    let fork_error = AgentForkTool::new()
+        .call_impl(
+            &json!({"agent_id":"review-fork", "prompt":"Review the inherited findings"}),
+            &context,
+        )
+        .await
+        .expect_err("forking must not bypass nested delegation restrictions");
+    assert!(fork_error
+        .to_string()
+        .contains("Recursive subagent delegation is blocked"));
 }
 
 #[test]
@@ -2313,6 +2387,7 @@ fn deep_review_retry_scope_prompt_prepend_bounds_review_files() {
 fn collaboration_model_policy_tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(AgentSpawnTool::new()),
+        Box::new(AgentForkTool::new()),
         Box::new(AgentSendInputTool::new()),
         Box::new(TaskTool::new()),
         Box::new(LaunchReviewAgentTool::new()),
@@ -2481,12 +2556,16 @@ async fn subagent_model_override_policy_reaches_native_and_host_catalogs() {
             assert!(info.input_schema["properties"].get("model_id").is_none());
             assert!(!info.description.contains("model_id"));
             let manifest = resolve_product_resolved_tool_manifest(
-                &["AgentSpawn".into(), "AgentSendInput".into()],
+                &[
+                    "AgentSpawn".into(),
+                    "AgentFork".into(),
+                    "AgentSendInput".into(),
+                ],
                 &Default::default(),
                 &context,
             )
             .await;
-            for name in ["AgentSpawn", "AgentSendInput"] {
+            for name in ["AgentSpawn", "AgentFork", "AgentSendInput"] {
                 let definition = manifest
                     .tool_definitions
                     .iter()
@@ -2515,13 +2594,18 @@ async fn subagent_model_override_policy_reaches_ptc_bindings() {
         TEST_MODEL_OVERRIDE
             .scope(allowed, async {
                 let manifest = resolve_product_resolved_tool_manifest(
-                    &["AgentSpawn".into(), "AgentSendInput".into()],
+                    &[
+                        "AgentSpawn".into(),
+                        "AgentFork".into(),
+                        "AgentSendInput".into(),
+                    ],
                     &Default::default(),
                     &context,
                 )
                 .await;
                 let guide = manifest.ptc_tool_calling_guide.unwrap();
                 assert!(guide.contains("AgentSpawn"));
+                assert!(guide.contains("AgentFork"));
                 assert_eq!(guide.contains("model_id"), allowed);
             })
             .await;

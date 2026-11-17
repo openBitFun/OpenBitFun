@@ -212,6 +212,36 @@ The result includes a `bg_task_id`. Use `bg_task_id` with AgentWait to collect t
     }
 }
 
+impl AgentForkTool {
+    pub(super) fn agent_fork_input_schema() -> Value {
+        let mut schema = AgentSpawnTool::agent_spawn_input_schema();
+        schema["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_type");
+        schema["required"] = json!(["agent_id", "prompt"]);
+        schema["properties"]["prompt"]["description"] = json!("The fork's objective, scope, constraints, and expected result. May refer to the inherited conversation context.");
+        schema
+    }
+
+    pub(super) fn render_agent_fork_description(&self, allow_model_override: bool) -> String {
+        let model_guidance = if allow_model_override {
+            "\n\nSet `model_id` only when the user explicitly requests a particular model. Omit it to use the configured subagent model. `inherit` selects the current model; `primary` and `fast` select the corresponding configured model slots. Call ListModels before using a configured model ID."
+        } else {
+            ""
+        };
+        format!(
+            r#"Launch a new agent in the background with a copy of the current conversation context. Use this when the delegated work benefits from the discussion and findings already in this conversation.
+
+Choose a meaningful unique `agent_id` matching `[a-z][a-z0-9_-]{{0,31}}`. State the fork's objective, scope, constraints, and expected result in `prompt`. It can refer to the inherited conversation instead of repeating it. The fork runs independently after launch; later messages are not automatically shared.
+
+The agent shares your workspace. Give agents that may write files non-overlapping scopes so their edits and side effects do not conflict.{model_guidance}
+
+The result includes a `bg_task_id`. Use AgentWait with this ID to collect the result, AgentSendInput with `agent_id` to send follow-up instructions, and AgentControl to interrupt or delete the agent."#
+        )
+    }
+}
+
 impl AgentSendInputTool {
     pub(super) fn agent_send_input_schema() -> Value {
         json!({

@@ -17,6 +17,9 @@ export default function SubagentModelOverrideSection() {
   const [saving, setSaving] = useState(false);
   const request = useRef(0);
   const savingRef = useRef(false);
+  const invalidateRequests = useCallback(() => {
+    request.current++;
+  }, []);
   const load = useCallback(async () => {
     const current = ++request.current;
     setError(null);
@@ -39,13 +42,16 @@ export default function SubagentModelOverrideSection() {
     const stop = configManager.watch(subagentModelOverridePath, () => {
       if (!savingRef.current) void load();
     });
-    return () => { request.current++; stop(); };
-  }, [load]);
+    return () => {
+      invalidateRequests();
+      stop();
+    };
+  }, [invalidateRequests, load]);
 
   const ready = loaded?.epoch === scope.epoch;
   const save = async (allowed: boolean) => {
     if (!scope.isCurrent() || !ready || loaded.allowed === undefined || savingRef.current) return;
-    request.current++;
+    invalidateRequests();
     savingRef.current = true;
     setSaving(true);
     setError(null);

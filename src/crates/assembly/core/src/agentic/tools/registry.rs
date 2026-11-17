@@ -584,6 +584,7 @@ mod tests {
             "ListModels",
             "Task",
             "AgentSpawn",
+            "AgentFork",
             "AgentSendInput",
             "AgentControl",
             "AgentList",

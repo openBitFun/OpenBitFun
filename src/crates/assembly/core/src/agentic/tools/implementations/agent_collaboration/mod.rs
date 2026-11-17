@@ -62,6 +62,7 @@ pub use legacy_task::TaskTool;
 
 pub(crate) struct AgentExecutionTool;
 pub struct AgentSpawnTool;
+pub struct AgentForkTool;
 pub struct AgentSendInputTool;
 
 const LARGE_TASK_PROMPT_SOFT_LINE_LIMIT: usize = 180;

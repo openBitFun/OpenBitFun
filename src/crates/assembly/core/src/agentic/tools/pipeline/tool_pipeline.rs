@@ -767,7 +767,7 @@ fn permission_decision_input(
     }
 }
 
-const SUBAGENT_LAUNCH_TOOL_NAMES: &[&str] = &["Task", "AgentSpawn"];
+const SUBAGENT_LAUNCH_TOOL_NAMES: &[&str] = &["Task", "AgentSpawn", "AgentFork"];
 
 /// Native hook session facts derived from one tool task.
 fn native_hook_session_facts<'a>(

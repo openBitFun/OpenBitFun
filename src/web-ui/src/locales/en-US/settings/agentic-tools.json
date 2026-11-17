@@ -43,6 +43,8 @@
     "subagentModelInherit": "Inherit parent session",
     "subagentDefaultModel": "Default subagent model",
     "subagentDefaultModelDesc": "Used by subagents without an individual model override.",
+    "forkSubagentDefaultModel": "Default fork subagent model",
+    "forkSubagentDefaultModelDesc": "Used when launching a subagent with inherited conversation context and no model override.",
     "subagentModelOverride": {
       "label": "Allow agents to choose subagent models",
       "hint": "When disabled, subagents use their configured models. Agents cannot choose a different model when launching or continuing work.",

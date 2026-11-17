@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "fe4be08cb20c2d67857891380d223a77d420345b94e2733d0000d14485027697",
+  "digest": "408cc52581d52de1e3686853eec8a09b2c02129869cb82b2931e21694e10557b",
   "ownerDigest": "1fdb9c49d404c02483c08e1e0fe9effa0aaa4f0f2914578bcaa63e04de16cc16",
   "searchAcceptance": [
     {
@@ -1917,6 +1917,7 @@
       },
       "delegateTools": [
         "AgentSpawn",
+        "AgentFork",
         "AgentWait",
         "AgentSendInput",
         "AgentControl",
@@ -23170,6 +23171,7 @@
             "kind": "delegate",
             "tools": [
               "AgentSpawn",
+              "AgentFork",
               "AgentWait",
               "AgentSendInput",
               "AgentControl",
@@ -23265,6 +23267,7 @@
         "Spawn parallel subagents to audit error handling across auth, billing, and gateway, then synthesize the findings",
         "Help me draft a read-only subagent specialized in reviewing SQL migration safety",
         "AgentSpawn",
+        "AgentFork",
         "AgentWait",
         "AgentSendInput",
         "AgentControl",

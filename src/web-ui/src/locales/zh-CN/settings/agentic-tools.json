@@ -43,6 +43,8 @@
     "subagentModelInherit": "继承父会话",
     "subagentDefaultModel": "子智能体默认模型",
     "subagentDefaultModelDesc": "未单独指定模型的子智能体使用此设置。",
+    "forkSubagentDefaultModel": "Fork 子智能体默认模型",
+    "forkSubagentDefaultModelDesc": "启动继承父会话上下文的子智能体时，若未指定模型，则使用此设置。",
     "subagentModelOverride": {
       "label": "允许 Agent 指定子 Agent 模型",
       "hint": "关闭后，子 Agent 使用已配置的模型，Agent 无法在启动或继续执行时指定其他模型。",

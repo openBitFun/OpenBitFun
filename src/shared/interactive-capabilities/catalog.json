@@ -1592,6 +1592,7 @@
             "kind": "delegate",
             "tools": [
               "AgentSpawn",
+              "AgentFork",
               "AgentWait",
               "AgentSendInput",
               "AgentControl",
