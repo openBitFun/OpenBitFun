@@ -6723,6 +6723,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               anchorRef: composerRef,
               previewSession: {
                 sessionId: effectiveTargetSessionId,
+                canvasSessionId: currentSessionId ?? effectiveTargetSessionId,
                 workspaceId: effectiveTargetSession.workspaceId ?? effectiveTargetSession.config.workspaceId,
               },
               loadContext: loadContextUsageOverview,
