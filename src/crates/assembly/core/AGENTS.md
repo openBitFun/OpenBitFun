@@ -287,7 +287,7 @@ For smart routing, unchanged subagent model policy and resumed subagent choices:
 ```bash
 cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib subagent_model
 cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib round_model_routing
-cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib coordinator::tests::reused_subagent
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib coordinator::tests::subagent_input::reused_subagent
 ```
 
 These fixtures cover host-owned configuration, nested delegation and Router protocol
@@ -645,7 +645,7 @@ cargo test -p openbitfun-core --no-default-features --features external-sources,
 cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib agentic::persistence::manager::tests
 cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib session_fork_
 cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib agentic::persistence::session_branch::tests
-cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib agentic::session::session_manager::tests::restore_session_
+cargo test -p openbitfun-core --no-default-features --features external-sources,git,product-search --lib restore_session_
 ```
 
 For installed-source acceptance, set `OPENBITFUN_TEST_SESSION_ECOSYSTEM` and
