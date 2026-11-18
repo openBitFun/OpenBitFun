@@ -24,7 +24,10 @@ impl ExecutionEngine {
                 "The external agent does not expose its current model context".into(),
             ));
         }
-        if session.kind != openbitfun_core_types::SessionKind::Standard {
+        // Native subagents keep the same catalog regardless of delegation policy;
+        // launch tools enforce that policy at invocation. Internal ephemeral
+        // workers may still have execution-only tool restrictions.
+        if session.kind == openbitfun_core_types::SessionKind::EphemeralChild {
             return Err(OpenBitFunError::NotImplemented(
                 "Delegated session context requires its execution-scoped tool restrictions".into(),
             ));

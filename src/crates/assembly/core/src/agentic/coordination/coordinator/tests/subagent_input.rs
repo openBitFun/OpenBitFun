@@ -15,6 +15,388 @@ use openbitfun_runtime_ports::{
 use std::collections::HashMap;
 
 #[tokio::test]
+async fn current_context_estimate_supports_fresh_reused_and_forked_subagents() {
+    use crate::service::session::{DialogTurnData, UserMessageData};
+    use openbitfun_core_types::{UsageContextCategory, UsageContextEstimateRequest};
+
+    let workspace = tempfile::tempdir().unwrap();
+    crate::service::workspace::legacy_compat::register_local_fixture_blocking(workspace.path());
+    std::fs::write(
+        workspace.path().join("AGENTS.md"),
+        "Child workspace instruction",
+    )
+    .unwrap();
+    TEST_MODEL_RESOLUTION_AI_CONFIG
+        .scope(context_estimate_ai_config(), async {
+            let (coordinator, manager) = test_persistent_coordinator();
+            let persistence = manager.persistence_manager();
+            let parent = manager
+                .create_session(
+                    "Parent".into(),
+                    "Standard".into(),
+                    SessionConfig {
+                        workspace_path: Some(workspace.path().to_string_lossy().into_owned()),
+                        model_id: Some("parent-model".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let parent_message =
+                Message::user("Parent context is inherited only by forks. ".repeat(100));
+            manager
+                .replace_context_messages(&parent.session_id, vec![parent_message.clone()])
+                .await;
+
+            let mut fresh_child = None;
+            let mut fresh_conversation = 0;
+            for (index, context_mode) in [
+                SubagentContextMode::Fresh,
+                SubagentContextMode::Fresh,
+                SubagentContextMode::Fork,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let target = (index == 1).then(|| fresh_child.clone().unwrap());
+                let prepared = coordinator
+                    .prepare_subagent_execution_request(SubagentExecutionRequest {
+                        task_description: format!("Inspect child context {index}"),
+                        requested_agent_id: None,
+                        context_mode,
+                        target_session_id: target.clone(),
+                        subagent_type: (target.is_none()
+                            && context_mode == SubagentContextMode::Fresh)
+                            .then(|| "GeneralPurpose".into()),
+                        logical_subagent_type: None,
+                        continuation_policy: SessionContinuationPolicy::Reusable,
+                        model_binding_policy: SessionModelBindingPolicy::Mutable,
+                        workspace_path: None,
+                        model_id: Some("child-model".into()),
+                        inherit_parent_model: false,
+                        subagent_parent_info: SubagentParentInfo {
+                            session_id: parent.session_id.clone(),
+                            dialog_turn_id: "parent-turn".into(),
+                            tool_call_id: format!("spawn-{index}"),
+                        },
+                        context: HashMap::new(),
+                        permission_runtime_ceiling: PermissionRuntimeCeiling::default(),
+                        delegation_policy: DelegationPolicy::top_level().spawn_child(),
+                        external_generation_lease: None,
+                    })
+                    .await
+                    .unwrap();
+                let child_id = prepared.target_session_id().unwrap().to_string();
+                if index == 0 {
+                    fresh_child = Some(child_id.clone());
+                }
+                let messages = prepared.initial_messages.clone();
+                drop(prepared);
+                manager
+                    .replace_context_messages(&child_id, messages.clone())
+                    .await;
+                let storage = manager
+                    .effective_session_storage_path(&child_id)
+                    .await
+                    .unwrap();
+                let turn = DialogTurnData::new(
+                    format!("child-turn-{index}"),
+                    index,
+                    child_id.clone(),
+                    UserMessageData {
+                        id: format!("child-input-{index}"),
+                        content: format!("Inspect child context {index}"),
+                        timestamp: 1,
+                        metadata: None,
+                    },
+                );
+                persistence.save_dialog_turn(&storage, &turn).await.unwrap();
+                persistence
+                    .save_turn_context_snapshot(&storage, &child_id, index, &messages)
+                    .await
+                    .unwrap();
+                let root = if persistence.is_resolved_sessions_dir(&storage) {
+                    storage.clone()
+                } else {
+                    persistence.path_manager().project_sessions_dir(&storage)
+                };
+                let child_dir = root.join(&child_id);
+                let before = context_estimate_session_files(&child_dir);
+                let session_before =
+                    serde_json::to_value(manager.get_session(&child_id).unwrap()).unwrap();
+                let mut estimates = Vec::new();
+                for include_contents in [false, true] {
+                    let inputs = manager
+                        .read_context_estimate_inputs(&storage, &child_id)
+                        .await
+                        .unwrap();
+                    assert_eq!(inputs.session.kind, SessionKind::Subagent);
+                    let estimate = coordinator
+                        .estimate_session_context(
+                            inputs,
+                            &UsageContextEstimateRequest {
+                                include_contents,
+                                context_only: true,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert!(estimate.unavailable_reason.is_none());
+                    assert_eq!(estimate.contents.is_empty(), !include_contents);
+                    estimates.push(estimate);
+                }
+                assert_eq!(estimates[0].composition, estimates[1].composition);
+                let composition = estimates[0].composition.as_ref().unwrap();
+                assert_eq!(composition.context_window, Some(256_000));
+                assert!(composition.system_prompt > 0);
+                assert!(composition.tool_definitions > 0);
+                assert!(composition.rules > 0);
+                assert!(composition.conversation > 0);
+                let preview = &estimates[1].contents;
+                assert!(
+                    preview[&UsageContextCategory::Rules].contains("Child workspace instruction")
+                );
+                assert!(
+                    preview[&UsageContextCategory::ToolDefinitions].contains("\"name\": \"Read\"")
+                );
+                for name in ["AgentSpawn", "AgentFork"] {
+                    assert_eq!(
+                        preview[&UsageContextCategory::ToolDefinitions]
+                            .contains(&format!("\"name\": \"{name}\"")),
+                        context_mode == SubagentContextMode::Fork,
+                        "estimates must retain each agent's own tool policy"
+                    );
+                }
+                if index == 0 {
+                    fresh_conversation = composition.conversation;
+                    assert!(!messages
+                        .iter()
+                        .any(|message| message.id == parent_message.id));
+                } else {
+                    assert!(composition.conversation > fresh_conversation);
+                }
+                assert_eq!(before, context_estimate_session_files(&child_dir));
+                assert_eq!(
+                    session_before,
+                    serde_json::to_value(manager.get_session(&child_id).unwrap()).unwrap()
+                );
+
+                // Persisted children must remain inspectable without being restored
+                // or depending on a legacy display snapshot.
+                manager.unload_session_from_memory(&child_id).await.unwrap();
+                std::fs::write(
+                    child_dir.join("usage-context.json"),
+                    b"unreadable legacy display snapshot",
+                )
+                .unwrap();
+                let before = context_estimate_session_files(&child_dir);
+                let inputs = manager
+                    .read_context_estimate_inputs(&storage, &child_id)
+                    .await
+                    .unwrap();
+                let restored = coordinator
+                    .estimate_session_context(inputs, &UsageContextEstimateRequest::default())
+                    .await
+                    .unwrap();
+                assert_eq!(restored.composition, estimates[0].composition);
+                assert!(manager.get_session(&child_id).is_none());
+                assert_eq!(before, context_estimate_session_files(&child_dir));
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn current_context_estimate_remote_subagent_uses_cached_rules_without_local_fallback() {
+    use crate::agentic::agents::get_agent_registry;
+    use crate::agentic::session::CachedUserContext;
+    use crate::agentic::tools::ToolRuntimeRestrictions;
+    use crate::agentic::WorkspaceBinding;
+    use crate::service::remote_ssh::workspace_state::WorkspaceSessionIdentity;
+    use openbitfun_core_types::{UsageContextCategory, UsageContextEstimateRequest, WorkspaceKind};
+
+    let local = tempfile::tempdir().unwrap();
+    std::fs::write(
+        local.path().join("AGENTS.md"),
+        "Controller-local private rules",
+    )
+    .unwrap();
+    // A same-named controller path must never supply remote workspace rules.
+    let workspace = WorkspaceBinding::new_remote(
+        None,
+        local.path().to_path_buf(),
+        "context-estimate-connection".into(),
+        "remote-host".into(),
+        WorkspaceSessionIdentity {
+            workspace_kind: WorkspaceKind::Remote,
+            hostname: "remote-host".into(),
+            logical_workspace_path: local.path().to_string_lossy().into_owned(),
+            remote_connection_id: Some("context-estimate-connection".into()),
+        },
+    );
+    TEST_MODEL_RESOLUTION_AI_CONFIG
+        .scope(context_estimate_ai_config(), async {
+            let (coordinator, _) = test_coordinator();
+            let agent = get_agent_registry()
+                .get_agent("GeneralPurpose", None)
+                .unwrap();
+            for cached in [false, true] {
+                let mut inputs = context_estimate_subagent_inputs(&workspace);
+                if cached {
+                    let identity = agent.user_context_cache_identity();
+                    #[cfg(feature = "remote-workspace")]
+                    let identity = crate::agentic::session::UserContextCacheIdentity::new(format!(
+                        "{}|remote:remote-host",
+                        identity.scope_key
+                    ));
+                    inputs.prompt_cache.user_context = Some(CachedUserContext::new(
+                        identity,
+                        "Remote child workspace rules",
+                    ));
+                }
+                let result = coordinator
+                    .execution_engine
+                    .estimate_current_context(
+                        inputs,
+                        workspace.clone(),
+                        None,
+                        coordinator.terminal_port.get(),
+                        coordinator.remote_exec_port.get(),
+                        ToolRuntimeRestrictions::default(),
+                        HashMap::new(),
+                        &UsageContextEstimateRequest {
+                            include_contents: true,
+                            context_only: true,
+                        },
+                    )
+                    .await;
+                if cached {
+                    let estimate = result.unwrap();
+                    assert!(estimate.composition.unwrap().rules > 0);
+                    let rules = &estimate.contents[&UsageContextCategory::Rules];
+                    assert!(rules.contains("Remote child workspace rules"));
+                    assert!(!rules.contains("Controller-local private rules"));
+                } else {
+                    assert!(result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("Workspace instructions are unavailable"));
+                }
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn current_context_estimate_keeps_external_and_internal_worker_contexts_unsupported() {
+    use crate::agentic::tools::ToolRuntimeRestrictions;
+    use crate::agentic::WorkspaceBinding;
+    use openbitfun_core_types::{SessionAgentRouteOwner, UsageContextEstimateRequest};
+
+    let (coordinator, _) = test_coordinator();
+    let workspace = WorkspaceBinding::new(None, std::env::temp_dir());
+    for (kind, route, agent_type, reason) in [
+        (
+            SessionKind::EphemeralChild,
+            SessionAgentRouteOwner::Local,
+            "GeneralPurpose",
+            "execution-scoped tool restrictions",
+        ),
+        (
+            SessionKind::Subagent,
+            SessionAgentRouteOwner::External,
+            "GeneralPurpose",
+            "external agent",
+        ),
+        (
+            SessionKind::Subagent,
+            SessionAgentRouteOwner::Local,
+            "acp:codex",
+            "external agent",
+        ),
+    ] {
+        let mut inputs = context_estimate_subagent_inputs(&workspace);
+        inputs.session.kind = kind;
+        inputs.session.config.agent_route_owner = route;
+        inputs.session.agent_type = agent_type.into();
+        let error = coordinator
+            .execution_engine
+            .estimate_current_context(
+                inputs,
+                workspace.clone(),
+                None,
+                None,
+                None,
+                ToolRuntimeRestrictions::default(),
+                HashMap::new(),
+                &UsageContextEstimateRequest::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(reason));
+    }
+}
+
+fn context_estimate_subagent_inputs(
+    workspace: &crate::agentic::WorkspaceBinding,
+) -> crate::agentic::session::session_manager::ContextEstimateInputs {
+    use crate::agentic::core::Session;
+    use crate::agentic::session::session_manager::ContextEstimateInputs;
+
+    let mut session = Session::new(
+        "Child".into(),
+        "GeneralPurpose".into(),
+        SessionConfig {
+            workspace_path: Some(workspace.root_path_string()),
+            model_id: Some("child-model".into()),
+            ..Default::default()
+        },
+    );
+    session.kind = SessionKind::Subagent;
+    ContextEstimateInputs {
+        session,
+        messages: vec![Message::user("Child task".into())],
+        prompt_cache: Default::default(),
+        cache_ttl: None,
+        listing_baseline: None,
+        turn_id: "child-turn".into(),
+        turn_metadata: None,
+        turn_index: 0,
+    }
+}
+
+fn context_estimate_ai_config() -> AIConfig {
+    let mut config = AIConfig::default();
+    config.models = [("parent-model", 64_000), ("child-model", 256_000)]
+        .into_iter()
+        .map(|(id, context_window)| AIModelConfig {
+            id: id.into(),
+            model_name: id.into(),
+            enabled: true,
+            context_window: Some(context_window),
+            ..Default::default()
+        })
+        .collect();
+    config.default_models.primary = Some("parent-model".into());
+    config
+}
+
+fn context_estimate_session_files(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(path).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(context_estimate_session_files(&path));
+        } else {
+            files.insert(path.clone(), std::fs::read(path).unwrap());
+        }
+    }
+    files
+}
+
+#[tokio::test]
 async fn reused_subagent_send_input_updates_requested_and_inherited_model() {
     assert_reused_subagent_model_selection(None).await;
 }
