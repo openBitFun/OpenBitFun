@@ -597,7 +597,8 @@
               "computer-use": "Enable or disable the Allow desktop control switch after OS authorization",
               "computer-use-permissions": "Inspect and request Accessibility and Screen Recording OS permissions",
               "browser-auto-connect": "Choose whether OpenBitFun automatically connects to your CDP browser on startup",
-              "browser-setup": "Discover and choose an external browser, enable default CDP, or reconnect on demand"
+              "browser-setup": "Discover and choose an external browser, enable default CDP, or reconnect on demand",
+              "subagent-model-override": "Choose whether agents can override subagent models when launching or continuing work"
             }
           },
           "desktop-control": {

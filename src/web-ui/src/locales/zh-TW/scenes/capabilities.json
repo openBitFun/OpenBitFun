@@ -597,7 +597,8 @@
               "computer-use": "開啟或關閉已獲系統授權的「允許桌面控制」開關",
               "computer-use-permissions": "檢視並請求輔助功能與螢幕錄製系統權限",
               "browser-auto-connect": "控制 OpenBitFun 啟動時是否自動連線外部 CDP 瀏覽器",
-              "browser-setup": "探索並選擇外部瀏覽器、開啟預設 CDP 設定或依需求重新啟動連線"
+              "browser-setup": "探索並選擇外部瀏覽器、開啟預設 CDP 設定或依需求重新啟動連線",
+              "subagent-model-override": "控制 Agent 能否在啟動或繼續執行子 Agent 時指定模型"
             }
           },
           "desktop-control": {

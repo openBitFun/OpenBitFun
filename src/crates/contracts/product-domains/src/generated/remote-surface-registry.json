@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:8732d7ca210f7cf2",
+  "digest": "fnv1a64:67a20e107dd93ffd",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -12,6 +12,7 @@
       "gen_ui_libraries_v1",
       "model_routing_v1",
       "model_pool_selection_v1",
+      "subagent_model_override_policy_v1",
       "magpie_discovery_v1",
       "background_result_delivery_v1",
       "dialog_queue_v1",
@@ -67,6 +68,7 @@
       "gen_ui_libraries_v1",
       "model_routing_v1",
       "model_pool_selection_v1",
+      "subagent_model_override_policy_v1",
       "magpie_discovery_v1",
       "background_result_delivery_v1",
       "dialog_queue_v1",
@@ -120,6 +122,7 @@
     "cli": [
       "model_routing_v1",
       "model_pool_selection_v1",
+      "subagent_model_override_policy_v1",
       "magpie_discovery_v1",
       "background_result_delivery_v1",
       "dialog_queue_v1",

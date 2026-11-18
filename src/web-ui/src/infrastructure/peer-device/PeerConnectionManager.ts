@@ -84,6 +84,7 @@ export interface PeerHostCapabilities {
   readonly sessionTrajectoryV1?: boolean;
   readonly modelRoutingV1?: boolean;
   readonly modelPoolSelectionV1?: boolean;
+  readonly subagentModelOverridePolicyV1?: boolean;
   readonly magpieDiscoveryV1?: boolean;
   readonly computerUseSharingV1?: boolean;
   /** Typed ProductControl HostInvoke, including shared config read-back. */
@@ -258,6 +259,7 @@ const NO_CAPABILITIES: PeerHostCapabilities = {
   sessionTrajectoryV1: false,
   modelRoutingV1: false,
   modelPoolSelectionV1: false,
+  subagentModelOverridePolicyV1: false,
   magpieDiscoveryV1: false,
   computerUseSharingV1: false,
   productControlV1: false,
@@ -732,6 +734,7 @@ export class PeerConnectionManager {
       genUiLibrariesV1: caps?.gen_ui_libraries_v1 === true,
       modelRoutingV1: caps?.model_routing_v1 === true,
       modelPoolSelectionV1: caps?.model_pool_selection_v1 === true,
+      subagentModelOverridePolicyV1: caps?.subagent_model_override_policy_v1 === true,
       magpieDiscoveryV1: caps?.magpie_discovery_v1 === true,
       computerUseSharingV1: caps?.computer_use_sharing_v1 === true,
       productControlV1: caps?.product_control_v1 === true,

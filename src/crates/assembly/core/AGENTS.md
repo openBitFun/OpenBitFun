@@ -253,14 +253,28 @@ cargo test --locked -p openbitfun-core --no-default-features --features agent-ru
 This fixture verifies default report privacy and resolved host storage with a
 simulated SSH workspace identity; it does not exercise live remote connections.
 
-For Agent name references, enabled-catalog admission, and prompt catalog names:
+`Agent*` tools and the legacy `Task` entry point live in
+`agentic::tools::implementations::agent_collaboration`.
+For Agent name references, enabled-catalog admission, and collaboration tool behavior:
 
 ```bash
-cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib agentic::tools::implementations::task::tests
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib agentic::tools::implementations::agent_collaboration::
 ```
 
 These fixtures cover prompt name mappings and simulated workspace policies;
 they do not establish live SSH, relay, Peer, or Detached Dispatch behavior.
+
+For collaboration presentation policy scope, input-independent future size, and
+native/PTC catalog propagation:
+
+```bash
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib -- collaboration_policy_ subagent_model_override_policy_
+cargo test --locked -p openbitfun-core --no-default-features --features ptc-runtime --lib -- collaboration_policy_ subagent_model_override_policy_
+```
+
+The policy wrapper boxes its input before constructing its async state machine;
+keep this boundary shared by all catalog callers. These fixtures do not exercise
+live remote transports.
 
 For ordinary subagent shared concurrency, permit release, and cancelled/timed-out waits:
 
@@ -384,6 +398,16 @@ Run this filter alone with `RUST_MIN_STACK` unset so prior skill discovery canno
 warm the cold-start path. The shared coordinator keeps startup state behind one
 allocation boundary for every admission surface.
 
+For manual compaction cancellation and terminal persistence:
+
+```bash
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib manual_compaction_
+```
+
+Keep `RUST_MIN_STACK` unset when checking stack-overflow regressions. Linux CI's
+`product-full` suite also covers the larger assembled tool-catalog futures.
+These local fixtures do not exercise live remote scenarios.
+
 For direct user follow-ups to reusable subagent sessions, legacy route defaults,
 source binding, and FreshOnly admission:
 
@@ -399,7 +423,7 @@ listing (including reserved IDs), parent-scoped resolution, and persisted deleti
 (ordinary subagents and Swarm):
 
 ```bash
-cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib -- agent_lifecycle_ agentic::coordination::coordination_store::tests agentic::tools::implementations::agent_list_tool::tests
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib -- agent_lifecycle_ agentic::coordination::coordination_store::tests agentic::tools::implementations::agent_collaboration::agent_list_tool::tests
 ```
 
 These fixtures cover local execution and persistence, not live remote transports.
