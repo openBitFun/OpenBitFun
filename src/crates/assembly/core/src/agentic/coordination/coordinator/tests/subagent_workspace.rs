@@ -117,6 +117,12 @@ async fn fresh_subagent_inherits_matching_parent_worktree_binding() {
         .await
         .expect("fresh subagent request should resolve");
 
+    assert!(!resolved.delegation_policy.allow_subagent_spawn);
+    for tool_name in ["AgentSpawn", "AgentFork"] {
+        assert!(resolved
+            .runtime_tool_restrictions
+            .is_tool_allowed(tool_name));
+    }
     assert_eq!(
         resolved.session_config.workspace_path.as_deref(),
         Some(workspace_path.as_str())
@@ -201,6 +207,12 @@ async fn fresh_subagent_inherits_transient_parent_persistence_boundary() {
         .expect("fresh subagent request should resolve");
 
     assert!(resolved.transient);
+    assert!(!resolved.delegation_policy.allow_subagent_spawn);
+    for tool_name in ["AgentSpawn", "AgentFork"] {
+        assert!(resolved
+            .runtime_tool_restrictions
+            .is_tool_allowed(tool_name));
+    }
     assert!(!resolved
         .runtime_tool_restrictions
         .is_tool_allowed("SessionControl"));

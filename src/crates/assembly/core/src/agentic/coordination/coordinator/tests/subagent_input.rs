@@ -165,6 +165,12 @@ async fn assert_reused_subagent_model_selection(legacy_routing: Option<&str>) {
         .await
         .expect("send_input request should prepare with a requested model");
 
+    assert!(!prepared.delegation_policy.allow_subagent_spawn);
+    for tool_name in ["AgentSpawn", "AgentFork"] {
+        assert!(prepared
+            .runtime_tool_restrictions
+            .is_tool_allowed(tool_name));
+    }
     assert_eq!(prepared.session_config.model_id.as_deref(), Some("fast"));
     if legacy_routing.is_some() {
         assert_eq!(

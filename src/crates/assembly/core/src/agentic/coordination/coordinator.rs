@@ -59,11 +59,7 @@ use crate::agentic::skill_agent_snapshot::{
 use crate::agentic::tools::pipeline::{
     PrimaryModelFacts, SubagentParentInfo, ToolExecutionContext, ToolExecutionOptions, ToolPipeline,
 };
-use crate::agentic::tools::{
-    miniapp_agent_run_tool_restrictions,
-    tool_restrictions_for_delegation_policy as runtime_tool_restrictions_for_delegation_policy,
-    ToolRuntimeRestrictions,
-};
+use crate::agentic::tools::{miniapp_agent_run_tool_restrictions, ToolRuntimeRestrictions};
 use crate::agentic::workspace::WorkspaceServices;
 use crate::agentic::WorkspaceBinding;
 use crate::native_hooks::{self, NativeHookSessionFacts};
@@ -12843,10 +12839,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                         context: request.context,
                         permission_runtime_ceiling: Some(request.permission_runtime_ceiling),
                         delegation_policy: request.delegation_policy,
+                        // Launch tools enforce delegation policy without changing the catalog.
                         runtime_tool_restrictions: runtime_tool_restrictions_for_session_lifetime(
-                            runtime_tool_restrictions_for_delegation_policy(
-                                request.delegation_policy,
-                            ),
+                            ToolRuntimeRestrictions::default(),
                             transient,
                         ),
                         prompt_cache_source_session_id: None,
@@ -12944,8 +12939,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     context: request.context,
                     permission_runtime_ceiling: Some(request.permission_runtime_ceiling),
                     delegation_policy: request.delegation_policy,
+                    // Match forks: keep launch tools visible and enforce delegation at invocation.
                     runtime_tool_restrictions: runtime_tool_restrictions_for_session_lifetime(
-                        runtime_tool_restrictions_for_delegation_policy(request.delegation_policy),
+                        ToolRuntimeRestrictions::default(),
                         parent_transient,
                     ),
                     prompt_cache_source_session_id: None,
