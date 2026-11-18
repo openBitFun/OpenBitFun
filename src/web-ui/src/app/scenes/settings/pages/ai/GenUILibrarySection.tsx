@@ -6,7 +6,6 @@ import { configAPI } from '@/infrastructure/api/service-api/ConfigAPI';
 import { getActiveSurfaceScope, onSurfaceActivated } from '@/infrastructure/peer-device/deviceSurface';
 import { useI18n } from '@/infrastructure/i18n';
 import { genUILibraryProfiles } from '@/tools/generative-ui/genUILibraryProfiles';
-import './GenUILibrarySection.scss';
 
 const path = 'ai.generative_ui_library';
 export default function GenUILibrarySection() {
@@ -52,13 +51,13 @@ export default function GenUILibrarySection() {
   const options = Object.entries(genUILibraryProfiles).map(([value, profile]) => ({ value, label: profile.label }));
   const known = ready && Object.prototype.hasOwnProperty.call(genUILibraryProfiles, loaded.value);
   if (ready && !known) options.push({ value: loaded.value, label: loaded.value });
-  return <ConfigPageSection id="generative-ui-library" className="gen-ui-library-section" title={t('genui.title')} description={t('genui.description')} bodySurface={false}>
+  return <ConfigPageSection id="generative-ui-library" className="gen-ui-library-section" title={t('genui.title')} description={t('genui.description')}>
     {!ready ? error
       ? <ConfigRetryState message={error} retryLabel={t('genui.retry')} onRetry={() => void load()} />
       : <ConfigLoadingState label={t('genui.loading')} />
       : <>
-        <div className="gen-ui-library-settings-surface" data-openbitfun-component="gen-ui-library-settings" data-openbitfun-part="settings">
-          <ConfigPageRow className="gen-ui-library-selector" label={t('genui.collection')} description={known ? undefined : t('genui.unknown')} align="center">
+        <div data-openbitfun-component="gen-ui-library-settings" data-openbitfun-part="settings">
+          <ConfigPageRow label={t('genui.collection')} description={known ? undefined : t('genui.unknown')} align="center">
             <Select size="sm" aria-label={t('genui.collection')} options={options} value={loaded.value} disabled={saving} onValueChange={value => void save(String(value))} />
           </ConfigPageRow>
         </div>
