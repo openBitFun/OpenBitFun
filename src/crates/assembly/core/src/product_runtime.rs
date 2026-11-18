@@ -468,6 +468,21 @@ async fn begin_session_read(
     let guard = session_manager.acquire_session_mutation(session_id).await?;
     session_manager.validate_session_storage_path_binding(session_id, storage_path)?;
 
+    // Temporary conversations have no durable revert or recovery state. Never
+    // consult an unrelated on-disk record with the same ID for a live memory owner.
+    if let Some(session) = session_manager
+        .get_session(session_id)
+        .filter(|_| !session_manager.should_persist_session_id(session_id))
+    {
+        if let Some(expected) = expected_workspace {
+            validate_session_workspace_identity(&session, expected)?;
+        }
+        return Ok(CoreSessionReadPermit {
+            _guard: guard,
+            visible_turn_end: None,
+        });
+    }
+
     // A remote mirror's Session directory predates connection-specific snapshot
     // scopes. Check durable and loaded identity under the same lock before
     // reconciling history or exposing any operation content.
@@ -5332,6 +5347,137 @@ mod tests {
                 .unwrap(),
             Some(interrupted)
         );
+    }
+
+    #[tokio::test]
+    async fn current_context_estimate_btw_inspects_live_state_without_durable_history() {
+        use crate::agentic::core::{Message, MessageSemanticKind, SessionConfig};
+        use crate::agentic::session::TEST_MODEL_RESOLUTION_AI_CONFIG;
+        use crate::service::config::types::{AIConfig, AIModelConfig};
+        use openbitfun_core_types::{UsageContextCategory, UsageContextEstimateRequest};
+
+        let workspace = TestWorkspace::new();
+        std::fs::write(workspace.path().join("AGENTS.md"), "BTW workspace rules").unwrap();
+        let persistence = Arc::new(PersistenceManager::new(workspace.path_manager()).unwrap());
+        let manager = Arc::new(SessionManager::new(
+            Arc::new(SessionContextStore::new()),
+            persistence.clone(),
+            SessionManagerConfig {
+                max_active_sessions: 100,
+                session_idle_timeout: Duration::from_secs(3600),
+                auto_save_interval: Duration::from_secs(300),
+                enable_persistence: true,
+                prompt_cache_policy: PromptCachePolicy::default(),
+            },
+        ));
+        let events = Arc::new(EventQueue::new(EventQueueConfig::default()));
+        let pipeline = Arc::new(ToolPipeline::new(
+            Arc::new(TokioRwLock::new(ToolRegistry::new())),
+            Arc::new(ToolStateManager::new(events.clone())),
+            None,
+        ));
+        let engine = Arc::new(ExecutionEngine::new(
+            Arc::new(RoundExecutor::new(
+                Arc::new(StreamProcessor::new(events.clone())),
+                events.clone(),
+                pipeline.clone(),
+            )),
+            events.clone(),
+            manager.clone(),
+            Arc::new(ContextCompressor::new()),
+            ExecutionEngineConfig::default(),
+        ));
+        let coordinator = Arc::new(ConversationCoordinator::new(
+            manager.clone(),
+            engine,
+            pipeline,
+            events,
+            Arc::new(EventRouter::new()),
+            Arc::new(
+                crate::runtime_ownership::CoreRuntimeOwnership::embedded_with_facts(
+                    workspace.path().join("ownership"),
+                    "openbitfun".into(),
+                    "test",
+                ),
+            ),
+        ));
+        let scheduler = DialogScheduler::new(coordinator.clone(), manager.clone());
+        let tokens = Arc::new(
+            TokenUsageService::new_in_base_dir(workspace.path().join("tokens"))
+                .await
+                .unwrap(),
+        );
+        let port = CoreSessionOperationsPort::new(coordinator, scheduler, tokens);
+        let config = AIConfig {
+            models: vec![AIModelConfig {
+                id: "btw-model".into(),
+                model_name: "btw-model".into(),
+                context_window: Some(256_000),
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        TEST_MODEL_RESOLUTION_AI_CONFIG.scope(config, async {
+            let child = manager.create_session_with_id_and_details(
+                None, "BTW".into(), "Standard".into(), SessionConfig {
+                    workspace_path: Some(workspace.path().to_string_lossy().into_owned()),
+                    model_id: Some("btw-model".into()), ..Default::default()
+                }, Some("session-parent".into()), SessionKind::EphemeralChild,
+            ).await.unwrap();
+            let id = &child.session_id;
+            manager.replace_context_messages(id, vec![Message::user("Inherited parent context".into())]).await;
+            let storage = manager.effective_session_storage_path(id).await.unwrap();
+            let root = if persistence.is_resolved_sessions_dir(&storage) { storage.clone() }
+                else { persistence.path_manager().project_sessions_dir(&storage) };
+            let child_dir = root.join(id);
+            let request = |include_contents| AgentSessionUsageRequest {
+                session_id: id.clone(), workspace_id: child.config.workspace_id.clone(), workspace_path: None,
+                remote_connection_id: None, remote_ssh_host: None, include_system_prompt_preview: false,
+                context_preview_category: None, include_hidden_subagents: false,
+                context_estimate: Some(UsageContextEstimateRequest { include_contents, context_only: true }),
+            };
+            let before_first_turn = port.generate_session_usage(request(false)).await.unwrap();
+            assert!(before_first_turn.context_estimate.unwrap().composition.unwrap().conversation > 0);
+            assert!(!child_dir.exists(), "inspection must not persist a BTW before its first question");
+
+            let turn_id = manager.start_dialog_turn(id, "Standard".into(), "BTW question".into(),
+                Some("btw-live-turn".into()), None, Some(serde_json::json!({"kind": "btw"})),
+            ).await.unwrap();
+            let mut summary = Message::user("Compressed inherited conversation".into());
+            summary.metadata.semantic_kind = Some(MessageSemanticKind::CompressionSummary);
+            manager.replace_context_messages(id, vec![summary, Message::user("Current BTW question".into())]).await;
+            let session_before = serde_json::to_value(manager.get_session(id).unwrap()).unwrap();
+            let numeric = port.generate_session_usage(request(false)).await.unwrap().context_estimate.unwrap();
+            let preview = port.generate_session_usage(request(true)).await.unwrap().context_estimate.unwrap();
+            assert!(numeric.unavailable_reason.is_none());
+            assert_eq!(numeric.composition, preview.composition);
+            assert!(numeric.contents.is_empty());
+            let composition = numeric.composition.unwrap();
+            assert_eq!(composition.context_window, Some(256_000));
+            assert!(composition.system_prompt > 0 && composition.tool_definitions > 0);
+            assert!(composition.summarized_conversation > 0 && composition.conversation > 0);
+            assert!(preview.contents[&UsageContextCategory::Rules].contains("BTW workspace rules"));
+            assert!(!child_dir.exists(), "running BTW inspection must not create history or cache files");
+            assert_eq!(session_before, serde_json::to_value(manager.get_session(id).unwrap()).unwrap());
+
+            // An unrelated disk record must neither block a live memory query nor be repaired.
+            std::fs::create_dir_all(&child_dir).unwrap();
+            let poison = child_dir.join("session-revert.json");
+            std::fs::write(&poison, b"unrelated durable recovery data").unwrap();
+            let report = port.generate_session_usage(request(true)).await.unwrap();
+            assert!(report.context_estimate.unwrap().composition.is_some());
+            assert_eq!(std::fs::read(&poison).unwrap(), b"unrelated durable recovery data");
+            assert_eq!(std::fs::read_dir(&child_dir).unwrap().count(), 1);
+            assert!(matches!(manager.get_session(id).unwrap().state,
+                crate::agentic::core::SessionState::Processing { current_turn_id, .. } if current_turn_id == turn_id));
+
+            let other = TestWorkspace::new();
+            let other_record = crate::service::workspace::legacy_compat::register_local_fixture_blocking(other.path());
+            let mut mismatched = request(true);
+            mismatched.workspace_id = Some(other_record.id);
+            assert!(port.generate_session_usage(mismatched).await.is_err(), "memory inspection must validate storage ownership");
+        }).await;
     }
 
     #[tokio::test]

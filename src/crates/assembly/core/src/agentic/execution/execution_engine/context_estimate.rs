@@ -24,10 +24,17 @@ impl ExecutionEngine {
                 "The external agent does not expose its current model context".into(),
             ));
         }
-        // Native subagents keep the same catalog regardless of delegation policy;
-        // launch tools enforce that policy at invocation. Internal ephemeral
-        // workers may still have execution-only tool restrictions.
-        if session.kind == openbitfun_core_types::SessionKind::EphemeralChild {
+        // BTW inherits a normal conversation's catalog and carries host-assigned
+        // parent ownership, even before its first turn. Other ephemeral workers
+        // may have execution-only restrictions that inspection cannot reconstruct.
+        let has_conversation_parent = session
+            .created_by
+            .as_deref()
+            .and_then(|owner| owner.strip_prefix("session-"))
+            .is_some_and(|parent_id| !parent_id.is_empty());
+        if session.kind == openbitfun_core_types::SessionKind::EphemeralChild
+            && !has_conversation_parent
+        {
             return Err(OpenBitFunError::NotImplemented(
                 "Delegated session context requires its execution-scoped tool restrictions".into(),
             ));

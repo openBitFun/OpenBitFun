@@ -9,6 +9,162 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[tokio::test]
+async fn current_context_estimate_reads_temporary_turns_caches_and_compression_only_from_memory() {
+    use crate::agentic::core::{MessageSemanticKind, SessionKind};
+    use crate::agentic::session::{SystemPromptCacheIdentity, UserContextCacheIdentity};
+    use crate::agentic::skill_agent_snapshot::{SkillSnapshotEntry, TurnSkillAgentSnapshot};
+
+    let workspace = TestWorkspace::new();
+    let persistence = Arc::new(PersistenceManager::new(workspace.path_manager()).unwrap());
+    let manager = test_manager(persistence.clone());
+    let session = manager
+        .create_session_with_id_and_details(
+            None,
+            "BTW".into(),
+            "Standard".into(),
+            SessionConfig {
+                workspace_path: Some(workspace.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            Some("session-parent".into()),
+            SessionKind::EphemeralChild,
+        )
+        .await
+        .unwrap();
+    let id = &session.session_id;
+    let storage = manager.effective_session_storage_path(id).await.unwrap();
+    let inherited = Message::user("Inherited context".into());
+    manager
+        .replace_context_messages(id, vec![inherited.clone()])
+        .await;
+    let initial = manager
+        .read_context_estimate_inputs(&storage, id)
+        .await
+        .unwrap();
+    assert!(initial.turn_id.is_empty());
+    assert!(initial.prompt_cache.is_empty());
+    assert!(initial.listing_baseline.is_none());
+    assert_eq!(initial.messages[0].id, inherited.id);
+    let root = if persistence.is_resolved_sessions_dir(&storage) {
+        storage.clone()
+    } else {
+        persistence.path_manager().project_sessions_dir(&storage)
+    };
+    let child_dir = root.join(id);
+    assert!(!child_dir.exists());
+
+    manager
+        .remember_system_prompt(
+            id,
+            SystemPromptCacheIdentity::new("system"),
+            "Cached system".into(),
+        )
+        .await;
+    manager
+        .remember_user_context(
+            id,
+            UserContextCacheIdentity::new("rules"),
+            "Cached rules".into(),
+        )
+        .await;
+    let baseline = TurnSkillAgentSnapshot {
+        skills: vec![SkillSnapshotEntry {
+            name: "inherited-skill".into(),
+            description: "Inherited skill baseline".into(),
+            location: "/workspace/skill.md".into(),
+        }],
+        subagents: Vec::new(),
+        deferred_tools: None,
+    };
+    manager
+        .skill_agent_baseline_override_snapshot_store
+        .insert(id.clone(), baseline.clone());
+    for index in 0..2 {
+        let turn_id = manager
+            .start_dialog_turn(
+                id,
+                "Standard".into(),
+                format!("Question {index}"),
+                Some(format!("btw-turn-{index}")),
+                None,
+                Some(serde_json::json!({"kind": "btw", "questionIndex": index})),
+            )
+            .await
+            .unwrap();
+        if index == 0 {
+            manager
+                .complete_dialog_turn(
+                    id,
+                    &turn_id,
+                    "Answer".into(),
+                    &[],
+                    Default::default(),
+                    Some("stop".into()),
+                    Some(true),
+                )
+                .await
+                .unwrap();
+            manager.reset_session_state_if_processing(id, &turn_id);
+        }
+    }
+    let mut summary = Message::user("Compressed temporary conversation".into());
+    summary.metadata.semantic_kind = Some(MessageSemanticKind::CompressionSummary);
+    manager
+        .replace_context_messages(id, vec![summary.clone()])
+        .await;
+    assert!(
+        !child_dir.exists(),
+        "temporary history and caches must not be persisted"
+    );
+
+    // Even an unrelated durable record at this ID cannot supply recovery facts.
+    std::fs::create_dir_all(&child_dir).unwrap();
+    let poison = child_dir.join("session-revert.json");
+    std::fs::write(&poison, b"not temporary session state").unwrap();
+    let inputs = manager
+        .read_context_estimate_inputs(&storage, id)
+        .await
+        .unwrap();
+    assert_eq!(inputs.turn_id, "btw-turn-1");
+    assert_eq!(inputs.turn_index, 1);
+    assert_eq!(inputs.turn_metadata.unwrap()["questionIndex"], 1);
+    assert_eq!(inputs.messages.len(), 1);
+    assert_eq!(inputs.messages[0].id, summary.id);
+    assert_eq!(
+        inputs.prompt_cache.system_prompt.unwrap().text.content,
+        "Cached system"
+    );
+    assert_eq!(
+        inputs.prompt_cache.user_context.unwrap().text.content,
+        "Cached rules"
+    );
+    assert_eq!(inputs.listing_baseline, Some(baseline));
+    assert_eq!(
+        std::fs::read(&poison).unwrap(),
+        b"not temporary session state"
+    );
+    assert_eq!(std::fs::read_dir(&child_dir).unwrap().count(), 1);
+
+    manager.context_store.delete_session(id);
+    assert!(manager
+        .read_context_estimate_inputs(&storage, id)
+        .await
+        .err()
+        .expect("missing context must fail")
+        .to_string()
+        .contains("Temporary session context is unavailable"));
+    manager.context_store.replace_context(id, vec![summary]);
+    manager.transient_turns.remove(id);
+    assert!(manager
+        .read_context_estimate_inputs(&storage, id)
+        .await
+        .err()
+        .expect("missing temporary history must fail")
+        .to_string()
+        .contains("Temporary session history is unavailable"));
+}
+
+#[tokio::test]
 async fn current_context_estimate_reads_compression_forks_and_legacy_snapshots_without_writes() {
     use openbitfun_services_core::session::{SessionBranchBoundary, SessionBranchRequest};
     let workspace = TestWorkspace::new();

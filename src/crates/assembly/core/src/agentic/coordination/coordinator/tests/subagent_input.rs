@@ -240,8 +240,17 @@ async fn current_context_estimate_remote_subagent_uses_cached_rules_without_loca
             let agent = get_agent_registry()
                 .get_agent("GeneralPurpose", None)
                 .unwrap();
-            for cached in [false, true] {
+            for (kind, cached) in [
+                (SessionKind::Subagent, false),
+                (SessionKind::Subagent, true),
+                (SessionKind::EphemeralChild, false),
+                (SessionKind::EphemeralChild, true),
+            ] {
                 let mut inputs = context_estimate_subagent_inputs(&workspace);
+                inputs.session.kind = kind;
+                if kind == SessionKind::EphemeralChild {
+                    inputs.session.created_by = Some("session-parent".into());
+                }
                 if cached {
                     let identity = agent.user_context_cache_identity();
                     #[cfg(feature = "remote-workspace")]
