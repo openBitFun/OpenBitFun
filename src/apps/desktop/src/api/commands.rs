@@ -16,6 +16,8 @@ use crate::api::search_api::{
     SearchMetadataResponse,
 };
 use crate::api::workspace_activation::spawn_workspace_background_warmup;
+use crate::host::HostHandle;
+use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use log::{debug, error, info, warn};
 use openbitfun_core::infrastructure::{
@@ -35,7 +37,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State};
 
 struct WorkspaceStateSnapshot {
     current_workspace: Option<WorkspaceInfoDto>,
@@ -261,7 +262,7 @@ fn ensure_search_id(search_id: Option<String>, prefix: &str) -> String {
 }
 
 fn emit_search_progress(
-    app_handle: &AppHandle,
+    app_handle: &HostHandle,
     search_id: &str,
     search_kind: SearchStreamKind,
     results: Vec<FileSearchResultGroup>,
@@ -288,7 +289,7 @@ fn emit_search_progress(
 }
 
 fn emit_search_complete(
-    app_handle: &AppHandle,
+    app_handle: &HostHandle,
     search_id: &str,
     search_kind: SearchStreamKind,
     limit: usize,
@@ -317,7 +318,7 @@ fn emit_search_complete(
 }
 
 fn emit_search_error(
-    app_handle: &AppHandle,
+    app_handle: &HostHandle,
     search_id: &str,
     search_kind: SearchStreamKind,
     error_message: &str,
@@ -828,7 +829,7 @@ pub struct RevealInExplorerRequest {
 
 async fn clear_active_workspace_context(
     state: &State<'_, AppState>,
-    app: &AppHandle,
+    app: &HostHandle,
     startup_trace: Option<&DesktopStartupTrace>,
 ) {
     #[cfg(not(target_os = "macos"))]
@@ -897,12 +898,15 @@ async fn clear_active_workspace_context(
             .await
             .unwrap_or_else(|_| "zh-CN".to_string());
         let edit_mode = *state.macos_edit_menu_mode.read().await;
-        let _ = crate::macos_menubar::set_macos_menubar_with_mode(
-            app,
-            &language,
-            crate::macos_menubar::MenubarMode::Startup,
-            edit_mode,
-        );
+        // The native host's menu bar belongs to its UI process.
+        if let Some(app) = app.as_tauri() {
+            let _ = crate::macos_menubar::set_macos_menubar_with_mode(
+                app,
+                &language,
+                crate::macos_menubar::MenubarMode::Startup,
+                edit_mode,
+            );
+        }
         if let Some(trace) = startup_trace {
             trace.record_elapsed_step(
                 "tauri_command",
@@ -915,7 +919,7 @@ async fn clear_active_workspace_context(
 
 async fn apply_active_workspace_context(
     state: &State<'_, AppState>,
-    app: &AppHandle,
+    app: &HostHandle,
     workspace_info: &openbitfun_core::service::workspace::manager::WorkspaceInfo,
     startup_trace: Option<&DesktopStartupTrace>,
 ) {
@@ -961,12 +965,15 @@ async fn apply_active_workspace_context(
             .await
             .unwrap_or_else(|_| "zh-CN".to_string());
         let edit_mode = *state.macos_edit_menu_mode.read().await;
-        let _ = crate::macos_menubar::set_macos_menubar_with_mode(
-            app,
-            &language,
-            crate::macos_menubar::MenubarMode::Workspace,
-            edit_mode,
-        );
+        // The native host's menu bar belongs to its UI process.
+        if let Some(app) = app.as_tauri() {
+            let _ = crate::macos_menubar::set_macos_menubar_with_mode(
+                app,
+                &language,
+                crate::macos_menubar::MenubarMode::Workspace,
+                edit_mode,
+            );
+        }
         if let Some(trace) = startup_trace {
             trace.record_elapsed_step(
                 "tauri_command",
@@ -1005,7 +1012,7 @@ async fn apply_active_workspace_context(
 
 async fn initialize_global_state_impl(
     state: &State<'_, AppState>,
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     trace: &DesktopStartupTrace,
 ) {
     let total_started = Instant::now();
@@ -1356,7 +1363,7 @@ pub async fn update_app_status(
 #[tauri::command]
 pub async fn open_workspace(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     request: OpenWorkspaceRequest,
 ) -> Result<WorkspaceInfoDto, String> {
     let result = if let Some(id) = request.workspace_id.as_deref() {
@@ -1409,7 +1416,7 @@ pub async fn open_workspace(
 #[tauri::command]
 pub async fn open_remote_workspace(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     request: OpenRemoteWorkspaceRequest,
 ) -> Result<WorkspaceInfoDto, String> {
     use openbitfun_core::service::remote_ssh::normalize_remote_workspace_path;
@@ -1587,7 +1594,7 @@ pub async fn open_remote_workspace(
 #[tauri::command]
 pub async fn create_assistant_workspace(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     _request: CreateAssistantWorkspaceRequest,
 ) -> Result<WorkspaceInfoDto, String> {
     match state
@@ -1689,7 +1696,7 @@ fn assistant_workspace_directory_plan(
 #[tauri::command]
 pub async fn delete_assistant_workspace(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     request: DeleteAssistantWorkspaceRequest,
 ) -> Result<(), String> {
     let workspace_info = state
@@ -1911,7 +1918,7 @@ mod assistant_workspace_delete_tests {
 #[tauri::command]
 pub async fn reset_assistant_workspace(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     request: ResetAssistantWorkspaceRequest,
 ) -> Result<WorkspaceInfoDto, String> {
     let workspace_info = state
@@ -1972,7 +1979,7 @@ pub async fn reset_assistant_workspace(
 #[tauri::command]
 pub async fn close_workspace(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     request: CloseWorkspaceRequest,
 ) -> Result<(), String> {
     let closing = state
@@ -2015,7 +2022,7 @@ pub async fn close_workspace(
 #[tauri::command]
 pub async fn set_active_workspace(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     request: SetActiveWorkspaceRequest,
 ) -> Result<WorkspaceInfoDto, String> {
     match state
@@ -2074,7 +2081,7 @@ pub async fn reorder_opened_workspaces(
 #[tauri::command]
 pub async fn update_workspace_info(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     request: UpdateWorkspaceInfoRequest,
 ) -> Result<WorkspaceInfoDto, String> {
     let updates = openbitfun_core::service::workspace::WorkspaceInfoUpdates {
@@ -2202,7 +2209,7 @@ pub async fn remove_recent_workspace(
 #[tauri::command]
 pub async fn cleanup_invalid_workspaces(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     startup_trace: State<'_, DesktopStartupTrace>,
 ) -> Result<usize, String> {
     let trace_started = Instant::now();
@@ -2220,7 +2227,7 @@ pub async fn cleanup_invalid_workspaces(
 #[tauri::command]
 pub async fn initialize_workspace_startup_state(
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     startup_trace: State<'_, DesktopStartupTrace>,
 ) -> Result<WorkspaceStartupStateSnapshotDto, String> {
     let command_started = Instant::now();
@@ -2237,7 +2244,7 @@ pub async fn initialize_workspace_startup_state(
 
 pub async fn prepare_workspace_startup_bootstrap_snapshot(
     state: &State<'_, AppState>,
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     startup_trace: &State<'_, DesktopStartupTrace>,
 ) -> Option<WorkspaceStartupStateSnapshotDto> {
     let started = Instant::now();
@@ -2262,7 +2269,7 @@ pub async fn prepare_workspace_startup_bootstrap_snapshot(
 
 async fn initialize_workspace_startup_state_impl(
     state: &State<'_, AppState>,
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     startup_trace: &State<'_, DesktopStartupTrace>,
     command_started: Instant,
 ) -> Result<WorkspaceStartupStateSnapshotDto, String> {
@@ -2307,7 +2314,7 @@ async fn initialize_workspace_startup_state_impl(
 
 async fn cleanup_invalid_workspaces_impl(
     state: &State<'_, AppState>,
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     startup_trace: &State<'_, DesktopStartupTrace>,
     trace_step_prefix: &str,
     command_name: Option<&str>,
@@ -5361,7 +5368,7 @@ pub async fn search_file_contents(
 
 #[tauri::command]
 pub async fn start_search_filenames_stream(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     state: State<'_, AppState>,
     mut request: SearchFilenamesRequest,
 ) -> Result<serde_json::Value, String> {
@@ -5520,7 +5527,7 @@ pub async fn start_search_filenames_stream(
 
 #[tauri::command]
 pub async fn start_search_file_contents_stream(
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     state: State<'_, AppState>,
     mut request: SearchFileContentsRequest,
 ) -> Result<serde_json::Value, String> {

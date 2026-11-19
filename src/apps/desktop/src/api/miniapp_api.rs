@@ -1,6 +1,7 @@
 //! MiniApp API — Tauri commands for MiniApp CRUD, JS Worker, and dialog.
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use futures::StreamExt;
 use openbitfun_core::infrastructure::events::{emit_global_event, BackendEvent};
@@ -31,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter};
 
 #[tauri::command]
 pub(crate) async fn miniapp_presentation(

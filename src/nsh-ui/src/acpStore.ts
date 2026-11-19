@@ -11,6 +11,7 @@
 
 import { signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
+import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
 /** One client, as `get_acp_clients` reports it. */
@@ -185,6 +186,39 @@ export function closeAcpJson(): void {
   acpJsonOpen.set(false);
   acpJsonNotice.set("");
   acpJsonDirty.set(false);
+  // Closing discards what was typed: the next open reads the stored document
+  // again instead of showing the abandoned edit as if it were stored.
+  acpJsonText.set("");
+  jsonLoaded = false;
+}
+
+/** The permission modes a client's tool requests can run under (`ask` or `allow_once`). */
+export const ACP_PERMISSION_MODES = ["ask", "allow_once"] as const;
+
+/**
+ * Sets one configured client's permission mode through
+ * `set_acp_client_permission_mode`: the host changes that one entry, keeps the
+ * rest of the stored document, re-initializes the clients and answers with the
+ * client list. A host without the command says it needs an update; the JSON
+ * editor below stays available for it.
+ */
+export async function setAcpPermissionMode(clientId: string, mode: string): Promise<void> {
+  acpBusy.set(clientId);
+  acpNotice.set("");
+  try {
+    const rows = await invokeSettingsMutation<unknown>("set_acp_client_permission_mode", {
+      clientId,
+      permissionMode: mode,
+    });
+    const list = Array.isArray(rows) ? rows : [];
+    acpClients.set(list.map(readClient).filter((client): client is AcpClient => client !== null));
+    jsonLoaded = false;
+    acpNotice.set(`Saved ${clientId}`);
+  } catch (error) {
+    acpNotice.set(errorText(error));
+  } finally {
+    acpBusy.set("");
+  }
 }
 
 export function editAcpJson(text: string): void {

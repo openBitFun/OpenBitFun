@@ -216,12 +216,12 @@ test("home displays ecosystem counts, 5-metric bar, 6-month heatmap, spaces, ssh
   await app.clear("home-quick-prompt");
   await app.type("home-quick-prompt", "Summarize recent commits");
   await app.press("home-quick-ask");
-  await app.waitUntil(() => recorded.some(c => c.action === "start_dialog_turn"));
+  await app.waitUntil(() => recorded.some(c => c.action === "submit_user_message"));
 
-  const turnCall = recorded.find(c => c.action === "start_dialog_turn");
+  const turnCall = recorded.find(c => c.action === "submit_user_message");
   expect(turnCall?.payload).toMatchObject({
     sessionId: "session-1",
-    userInput: "Summarize recent commits",
+    text: "Summarize recent commits",
     workspaceId: "workspace-1",
   });
 });
@@ -318,7 +318,9 @@ test("home github auth runs device flow in modal with openUrl, poll status, and 
   await app.waitFor("Welcome back, octocat");
   expect(app.texts()).toContain("@octocat");
 
-  // Sign out returns to unauthenticated state.
+  // Sign out lives in the quiet account menu and returns to unauthenticated state.
+  await app.press("home-account-menu");
+  await app.waitFor("home-github-sign-out");
   await app.press("home-github-sign-out");
   await app.waitFor("home-github-sign-in");
   expect(recorded.some(c => c.action === "account_logout" && c.raw)).toBe(true);
@@ -564,9 +566,12 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor("OpenBitFun");
 
+  // The list sits beside the selected assistant's persona studio.
   await app.press("Assistants");
+  await app.waitFor("assistant-card-asst-1");
+  expect(app.texts()).toContain("Calm & precise");
+  await app.press("assistant-card-asst-1");
   await app.waitFor("/tmp/assistants/asst-1/IDENTITY.md");
-  expect(app.value("persona-editor-input")).toBe("# Muse\n\nPrimary studio assistant.");
 
   // Primary assistant's Delete item is disabled inside its DropdownMenu.
   await app.press("assistant-actions-asst-1");
@@ -574,6 +579,9 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   expect(app.enabled("assistant-delete-asst-1")).toBe(false);
   await app.keyboard.press("escape");
   await app.waitFor("assistant-delete-asst-1", { state: "gone" });
+
+  // The Persona tab edits IDENTITY.md first.
+  expect(app.value("persona-editor-input")).toBe("# Muse\n\nPrimary studio assistant.");
 
   // Edit IDENTITY.md and save with POSIX path.
   await app.clear("persona-editor-input");
@@ -614,12 +622,11 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.waitFor("Persona files reset to defaults.");
   expect(app.value("persona-editor-input")).toBe("# User Profile\n\nRestored user.");
 
-  // Create new assistant via ModalDialog, promote to Primary, then select Muse to reset & delete it.
+  // A new assistant is created and its studio opens.
   await app.press("assistants-new");
   await app.waitFor("assistants-create-confirm");
   await app.press("assistants-create-confirm");
-  await app.waitFor("Atlas");
-  await app.waitFor("/tmp/assistants/asst-2/USER.md");
+  await app.waitFor("assistant-actions-asst-2");
 
   await app.press("assistant-actions-asst-2");
   await app.waitFor("assistant-set-primary-asst-2");
@@ -633,7 +640,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.waitFor("assistant-delete-asst-2", { state: "gone" });
 
   await app.press("assistant-card-asst-1");
-  await app.waitFor("/tmp/assistants/asst-1/USER.md");
+  await app.waitFor("assistant-actions-asst-1");
 
   await app.press("assistant-actions-asst-1");
   await app.waitFor("assistant-reset-asst-1");
@@ -654,7 +661,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   // Message remaining assistant ("Atlas") directly from Persona Studio quick bar.
   await app.type("assistant-quick-prompt", "Draft my daily agenda");
   await app.press("assistant-quick-send");
-  await app.waitUntil(() => recorded.some(c => c.action === "start_dialog_turn"));
+  await app.waitUntil(() => recorded.some(c => c.action === "submit_user_message"));
 
   const createSessionCall = recorded.find(
     c => c.action === "create_session" && c.payload.workspaceId === "asst-2",
@@ -665,10 +672,10 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
     agentType: "Claw",
   });
   const turnCall = recorded.find(
-    c => c.action === "start_dialog_turn" && c.payload.workspaceId === "asst-2",
+    c => c.action === "submit_user_message" && c.payload.workspaceId === "asst-2",
   );
   expect(turnCall?.payload).toMatchObject({
-    userInput: "Draft my daily agenda",
+    text: "Draft my daily agenda",
     agentType: "Claw",
   });
 });
@@ -833,21 +840,222 @@ test("home and assistants repaint when switching between dark and light color sc
   const darkHomeHeadingColor = app.spanStyle("Welcome back").color;
 
   await app.press("Assistants");
-  await app.waitFor("/tmp/assistants/asst-1/IDENTITY.md");
-  const darkAssistantsRailColor = app.spanStyle("Assistants >> nth=1").color;
+  await app.waitFor("assistant-card-asst-1");
+  const darkAssistantsRailColor = app.spanStyle("An assistant waiting to be defined").color;
   const darkAssistantsHeadingColor = app.spanStyle("Muse >> nth=1").color;
 
   await app.press("Settings");
+  // Settings opens on General; the scheme lives on the Appearance page.
+  await app.press("nav-settings-page-appearance");
   await app.waitFor("appearance-light");
   await app.press("appearance-light");
   await app.waitFor("Showing the light scheme");
 
+  // Settings swaps the navigation panel for its own page list; its Back returns to the app's.
+  if (!app.shows("Home")) await app.press("Back");
   await app.press("Home");
   await app.waitFor("Personal Agent Studio");
   expect(app.spanStyle("Welcome back").color).not.toBe(darkHomeHeadingColor);
 
   await app.press("Assistants");
-  await app.waitFor("/tmp/assistants/asst-1/IDENTITY.md");
-  expect(app.spanStyle("Assistants >> nth=1").color).not.toBe(darkAssistantsRailColor);
+  await app.waitFor("assistant-card-asst-1");
+  expect(app.spanStyle("An assistant waiting to be defined").color).not.toBe(darkAssistantsRailColor);
   expect(app.spanStyle("Muse >> nth=1").color).not.toBe(darkAssistantsHeadingColor);
+});
+
+test("creating a named assistant rewrites only the IDENTITY.md frontmatter name and keeps the seeded body", async () => {
+  const base = createBackend();
+  let assistantList: Array<Record<string, unknown>> = [];
+  const seeded =
+    "---\nname: Claw\ncreature: Fox\nvibe: Calm\navatar:\nemoji: \"🦊\"\n---\n\n# Who I am\n\nSeeded persona body.\n";
+  const files: Record<string, string> = {};
+
+  const { recorded } = wrapBackend(base, action => {
+    if (action === "get_assistant_workspaces") {
+      return { ok: true, value: assistantList, transport: "dev" };
+    }
+    if (action === "get_primary_assistant_workspace") {
+      return { ok: true, value: null, transport: "dev" };
+    }
+    if (action === "create_assistant_workspace") {
+      const created = {
+        id: "asst-9",
+        name: "Claw",
+        rootPath: "/tmp/assistants/asst-9",
+        workspaceKind: "assistant",
+      };
+      files["/tmp/assistants/asst-9/IDENTITY.md"] = seeded;
+      assistantList = [...assistantList, created];
+      return { ok: true, value: created, transport: "dev" };
+    }
+    return undefined;
+  });
+  const originalInvoke = base.handlers["openbitfun.invoke"];
+  base.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> };
+    if (args.action === "read_file_content") {
+      const filePath = String(args.request?.filePath ?? "");
+      return filePath in files
+        ? { ok: true, value: files[filePath], transport: "dev" }
+        : { ok: false, error: `File does not exist: ${filePath}` };
+    }
+    if (args.action === "write_file_content") {
+      files[String(args.request?.filePath ?? "")] = String(args.request?.content ?? "");
+      return { ok: true, value: null, transport: "dev" };
+    }
+    return originalInvoke(data);
+  };
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.waitFor("OpenBitFun");
+  await app.press("Assistants");
+  await app.waitFor("assistants-new");
+  await app.press("assistants-new");
+  await app.waitFor("new-assistant-name-input");
+  await app.type("new-assistant-name-input", "Nova: Night Owl");
+  await app.press("assistants-create-confirm");
+  await app.waitUntil(() =>
+    (files["/tmp/assistants/asst-9/IDENTITY.md"] ?? "").includes("Night Owl"),
+  );
+
+  expect(files["/tmp/assistants/asst-9/IDENTITY.md"]).toBe(
+    "---\nname: \"Nova: Night Owl\"\ncreature: Fox\nvibe: Calm\navatar:\nemoji: \"🦊\"\n---\n\n# Who I am\n\nSeeded persona body.\n",
+  );
+  // The seeded file is read before it is written; nothing replaces the body.
+  const reads = recorded.filter(c => c.action === "create_assistant_workspace");
+  expect(reads.length).toBe(1);
+});
+
+test("home insights take the day range and model the desktop offers and reveal the HTML report", async () => {
+  const base = createBackend();
+  const { recorded } = wrapBackend(base, action => {
+    if (action === "account_status") {
+      return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
+    }
+    if (action === "get_latest_insights") return { ok: true, value: [], transport: "dev" };
+    if (action === "generate_insights") {
+      return {
+        ok: true,
+        value: {
+          days_covered: 7,
+          total_sessions: 3,
+          html_report_path: "/insights/report-week.html",
+          at_a_glance: { whats_working: "Short loops." },
+        },
+        transport: "dev",
+      };
+    }
+    if (action === "reveal_in_explorer") return { ok: true, value: null, transport: "dev" };
+    return undefined;
+  });
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.waitFor("OpenBitFun");
+  await app.press("Home");
+  await app.waitFor("home-generate-insights");
+  await app.press("home-insights-days");
+  await app.press("home-insights-days-7");
+  await app.press("home-insights-model");
+  await app.press("home-insights-model-fast");
+  await app.press("home-generate-insights");
+  await app.waitFor("insights-show-html");
+  expect(recorded.find(c => c.action === "generate_insights")?.payload).toEqual({
+    days: 7,
+    modelId: "fast",
+  });
+  await app.press("insights-show-html");
+  await app.waitUntil(() => recorded.some(c => c.action === "reveal_in_explorer"));
+  expect(recorded.find(c => c.action === "reveal_in_explorer")?.payload).toEqual({
+    path: "/insights/report-week.html",
+  });
+});
+
+test("an assistant workspace opens and closes on the host from its studio header", async () => {
+  const base = createBackend();
+  const { recorded } = wrapBackend(base, action => {
+    if (action === "get_assistant_workspaces") {
+      return {
+        ok: true,
+        value: [
+          { id: "asst-7", name: "Nova", rootPath: "/tmp/assistants/asst-7", workspaceKind: "assistant", identity: { emoji: "🦉" } },
+        ],
+        transport: "dev",
+      };
+    }
+    if (action === "get_primary_assistant_workspace") return { ok: true, value: null, transport: "dev" };
+    if (action === "read_file_content") return { ok: true, value: "# Nova", transport: "dev" };
+    if (action === "set_active_workspace") return { ok: true, value: null, transport: "dev" };
+    if (action === "close_workspace") return { ok: true, value: null, transport: "dev" };
+    return undefined;
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.waitFor("OpenBitFun");
+  await app.press("Assistants");
+  await app.waitFor("assistant-open-asst-7");
+  // The saved emoji is the avatar, as on the desktop.
+  expect(app.texts()).toContain("🦉");
+  await app.press("assistant-open-asst-7");
+  await app.waitUntil(() => recorded.some(c => c.action === "set_active_workspace"));
+  expect(recorded.find(c => c.action === "set_active_workspace")?.payload).toMatchObject({ workspaceId: "asst-7" });
+  await app.waitFor("assistant-close-asst-7");
+  await app.press("assistant-close-asst-7");
+  await app.waitUntil(() => recorded.some(c => c.action === "close_workspace"));
+  expect(recorded.find(c => c.action === "close_workspace")?.payload).toMatchObject({ workspaceId: "asst-7" });
+});
+
+test("home and assistants switch to the compact single-column layout at phone width", async () => {
+  const base = createBackend();
+  const { recorded } = wrapBackend(base, action => {
+    if (action === "account_status") {
+      return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
+    }
+    if (action === "account_github_info") return { ok: true, value: null, transport: "dev" };
+    if (action === "get_latest_insights") return { ok: true, value: [], transport: "dev" };
+    if (action === "get_assistant_workspaces") {
+      return {
+        ok: true,
+        value: [
+          { id: "asst-1", name: "Muse", rootPath: "/tmp/assistants/asst-1", workspaceKind: "assistant" },
+          { id: "asst-2", name: "Scout", rootPath: "/tmp/assistants/asst-2", workspaceKind: "assistant" },
+        ],
+        transport: "dev",
+      };
+    }
+    if (action === "get_primary_assistant_workspace") {
+      return { ok: true, value: { id: "asst-1", name: "Muse", rootPath: "/tmp/assistants/asst-1" }, transport: "dev" };
+    }
+    if (action === "read_file_content") return { ok: true, value: "# Persona", transport: "dev" };
+    return undefined;
+  });
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.waitFor("OpenBitFun");
+  await app.press("Home");
+  await app.waitFor("Personal Agent Studio");
+  const desktopTitle = Number(app.spanStyle("Welcome back").fontSize);
+
+  // Phone width: the shell's sidebar is put away and Home reads its own laid-out width.
+  await app.setViewport(390, 844);
+  // The shell folds its sidebar away at phone width (or overlays it); make sure Home is uncovered.
+  if (app.shows("compact-drawer-scrim")) await app.press("compact-drawer-scrim");
+  await app.waitUntil(() => Number(app.spanStyle("Welcome back").fontSize) < desktopTitle);
+  await app.waitFor("Your studio");
+  // Studio rows stay reachable and navigate; the launchpad keeps its one primary action.
+  await app.type("home-quick-prompt", "Plan my day");
+  expect(app.enabled("home-quick-ask")).toBe(true);
+  await app.press("home-new-workspace");
+  await app.waitFor("new-workspace-modal");
+  await app.press("modal-close");
+  await app.waitFor("new-workspace-modal", { state: "gone" });
+
+  // Assistants: the list is the landing; a row opens the persona studio with a back control.
+  await app.press("home-card-assistants");
+  await app.waitFor("assistant-card-asst-2");
+  expect(app.shows("persona-editor-input")).toBe(false);
+  await app.press("assistant-card-asst-2");
+  await app.waitFor("/tmp/assistants/asst-2/IDENTITY.md");
+  expect(app.shows("assistant-card-asst-1")).toBe(false);
+  await app.press("assistants-back");
+  await app.waitFor("assistant-card-asst-1");
+  expect(recorded.some(c => c.action === "get_assistant_workspaces")).toBe(true);
 });

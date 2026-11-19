@@ -49,6 +49,8 @@ export interface BackendOptions {
   acpProbes?: Array<Record<string, unknown>>;
   /** Config paths the host refuses to read, as an older file would. */
   absentConfigs?: string[];
+  /** A host older than the typed settings commands (wave 3 config): they are unknown. */
+  legacySettingsHost?: boolean;
   devices?: Array<Record<string, unknown>>;
   onlineDevices?: Array<Record<string, unknown>>;
   /** The host answers `manage_dialog_queue`; without it the surface keeps its own list. */
@@ -100,6 +102,12 @@ export interface BackendOptions {
    * does not offer the command, and the composer then draws no reasoning control.
    */
   reasoningCatalog?: Record<string, unknown> | null;
+  /** Workspaces the host remembers as recent but has not opened. */
+  recentOnlyWorkspaces?: Array<{ id: string; name: string; rootPath: string; workspaceKind?: string }>;
+  /** Opened workspaces; the default is the local `workspace-1` and the remote `workspace-2`. */
+  openedWorkspaces?: Array<{ id: string; name: string; rootPath: string; workspaceKind?: string }>;
+  /** The workspace `get_current_workspace` reports; the default is the first opened one. */
+  currentWorkspaceId?: string | null;
 }
 
 interface HostQueueRow {
@@ -164,6 +172,13 @@ export interface Backend {
   peerInvocations: Array<{ action: string; args: Record<string, unknown> }>;
   /** Every `manage_dialog_queue` reorder the host accepted, in order. */
   queueReorders: Array<{ turnId: string; beforeTurnId: string | null; expectedRevision: number }>;
+  // session policy (wave 3)
+  /** What `submit_user_message` decided for each message, in order. */
+  userMessages: Array<{ sessionId: string; text: string; outcome: string; turnId: string; workspaceId?: string }>;
+  /** Marks the turn the fixture host is running for a session (`null` settles it). */
+  setRunningTurn: (sessionId: string, turnId: string | null) => void;
+  /** Every `mark_session_seen` request, in order. */
+  seenMarks: Array<{ sessionId: string; seenThroughMs?: number }>;
   handlers: Record<string, (data: unknown) => unknown>;
 }
 
@@ -268,6 +283,8 @@ const DEFAULT_SESSIONS = [
     lastUpdated: 1763000000000,
     messageCount: 4,
     agentType: "Standard",
+    // The host's unread receipt: a settled result nobody has opened yet.
+    unreadCompletion: "completed",
   },
   {
     sessionId: "session-2",
@@ -275,6 +292,7 @@ const DEFAULT_SESSIONS = [
     lastUpdated: 1762900000000,
     messageCount: 9,
     modelName: "session-only-model",
+    unreadCompletion: "completed",
   },
   {
     sessionId: "session-3",
@@ -736,6 +754,15 @@ function answerPeerHostInvoke(
           workspaceKind: "local",
         },
       ]);
+    case "get_current_workspace":
+      return envelope({
+        id: `${targetDeviceId}-workspace`,
+        name: `peer workspace on ${targetDeviceId}`,
+        rootPath: "/srv/peer",
+        workspaceKind: "local",
+      });
+    case "set_active_workspace":
+      return envelope(null);
     case "list_persisted_sessions_page":
       return envelope({
         sessions: [
@@ -791,15 +818,93 @@ function answerPeerHostInvoke(
   }
 }
 
+// settings mutations (wave 3 config): what `get_settings_schema` answers on the
+// host, as generated from the product-control catalog and `GlobalConfig`'s
+// defaults for the paths the settings page draws.
+const SETTINGS_DESCRIPTOR: Record<string, Record<string, unknown>> = {
+  "ai.browser_control_auto_connect_on_startup": {"constrained": true, "default": false, "type": "boolean"},
+  "ai.browser_control_preferred_browser": {"constrained": false, "default": ""},
+  "ai.computer_use_enabled": {"constrained": true, "default": true, "type": "boolean"},
+  "ai.enable_deferred_tool_loading": {"constrained": true, "default": true, "type": "boolean"},
+  "ai.proxy.enabled": {"constrained": false, "default": false},
+  "ai.proxy.password": {"constrained": false, "default": null},
+  "ai.proxy.url": {"constrained": false, "default": ""},
+  "ai.proxy.username": {"constrained": false, "default": null},
+  "ai.stream_idle_timeout_secs": {"constrained": true, "default": 600, "maximum": 86400, "minimum": 1, "nullable": true, "type": "integer"},
+  "ai.stream_ttft_timeout_secs": {"constrained": true, "default": 600, "maximum": 86400, "minimum": 1, "nullable": true, "type": "integer"},
+  "ai.subagent_batch_execution_policy": {"constrained": true, "default": "force_parallel", "enum": ["safe_only", "force_parallel", "serial"], "type": "string"},
+  "ai.subagent_max_concurrency": {"constrained": true, "default": 5, "maximum": 32, "minimum": 1, "type": "integer"},
+  "ai.swarm_max_concurrency": {"constrained": true, "default": 16, "maximum": 64, "minimum": 1, "type": "integer"},
+  "ai.tool_execution_timeout_secs": {"constrained": true, "default": null, "maximum": 86400, "minimum": 1, "nullable": true, "type": "integer"},
+  "ai.tool_presentation_mode": {"constrained": true, "default": "native", "enum": ["native", "ptc", "ptc_python"], "type": "string"},
+  "ai.user_question_timeout_secs": {"constrained": false, "default": 180},
+  "app.ai_experience.enable_git_commit_coauthor": {"constrained": false, "default": true},
+  "app.ai_experience.enable_prompt_suggestion": {"constrained": false, "default": true},
+  "app.ai_experience.enable_session_title_generation": {"constrained": false, "default": true},
+  "app.ai_experience.enable_workspace_search": {"constrained": false, "default": false},
+  "app.ai_experience.voice_input.default_language": {"constrained": false, "default": "auto"},
+  "app.ai_experience.voice_input.enabled": {"constrained": false, "default": true},
+  "app.ai_experience.voice_input.max_recording_seconds": {"constrained": false, "default": 60},
+  "app.ai_experience.voice_input.microphone_device_id": {"constrained": false, "default": ""},
+  "app.auto_update": {"constrained": true, "default": true, "type": "boolean"},
+  "app.close_button_behavior": {"constrained": true, "default": "minimize_to_tray", "enum": ["ask", "minimize_to_tray", "quit"], "type": "string"},
+  "app.flow_chat.auto_show_selection_toolbar": {"constrained": true, "default": true, "type": "boolean"},
+  "app.hooks.enabled": {"constrained": false, "default": true},
+  "app.hooks.project_hooks_enabled": {"constrained": false, "default": false},
+  "app.logging.include_sensitive_diagnostics": {"constrained": true, "default": false, "type": "boolean"},
+  "app.logging.level": {"constrained": true, "default": "debug", "enum": ["error", "warn", "info", "debug", "trace", "off"], "type": "string"},
+  "app.notifications.dialog_completion_notify": {"constrained": true, "default": true, "type": "boolean"},
+  "app.notifications.permission_request_notify": {"constrained": true, "default": true, "type": "boolean"},
+  "app.prevent_sleep": {"constrained": false, "default": false},
+  "app.worktrees.autoDeleteEnabled": {"constrained": true, "default": true, "type": "boolean"},
+  "app.worktrees.autoDeleteLimit": {"constrained": true, "default": 15, "maximum": 100, "minimum": 1, "type": "integer"},
+  "app.worktrees.branchPrefix": {"constrained": true, "default": "openbitfun/", "maxLength": 200, "minLength": 1, "type": "string"},
+  "app.worktrees.copyLocalChanges": {"constrained": true, "default": false, "type": "boolean"},
+  "app.worktrees.rootPath": {"constrained": true, "default": "~/.openbitfun/worktrees", "maxLength": 4096, "minLength": 1, "type": "string"},
+  "editor.font_size": {"constrained": true, "default": 14, "maximum": 32, "minimum": 10, "type": "integer"},
+  "editor.line_numbers": {"constrained": true, "default": "on", "enum": ["on", "off", "relative", "interval"], "type": "string"},
+  "editor.minimap.enabled": {"constrained": true, "default": true, "type": "boolean"},
+  "editor.tab_size": {"constrained": true, "default": 4, "maximum": 8, "minimum": 1, "type": "integer"},
+  "editor.word_wrap": {"constrained": true, "default": "off", "enum": ["off", "on", "wordWrapColumn", "bounded"], "type": "string"},
+  "memories.consolidation_model": {"constrained": false, "default": null},
+  "memories.external_context_policy": {"constrained": false, "default": "clear_tool_results"},
+  "memories.extract_model": {"constrained": false, "default": null},
+  "memories.generate_for_btw_sessions": {"constrained": false, "default": false},
+  "memories.generate_memories": {"constrained": false, "default": false},
+  "memories.max_raw_memories_for_consolidation": {"constrained": false, "default": 64},
+  "memories.max_rollout_age_days": {"constrained": false, "default": 10},
+  "memories.max_rollouts_per_startup": {"constrained": false, "default": 2},
+  "memories.max_rollouts_scan_limit": {"constrained": false, "default": 2000},
+  "memories.max_unused_days": {"constrained": false, "default": 30},
+  "memories.min_rollout_idle_hours": {"constrained": false, "default": 6},
+  "memories.phase1_max_concurrency": {"constrained": false, "default": 1},
+  "memories.use_memories": {"constrained": false, "default": false},
+  "terminal.cursor_style": {"constrained": false, "default": "block"},
+  "terminal.font_size": {"constrained": false, "default": 14},
+  "terminal.scrollback": {"constrained": false, "default": 1000},
+};
+
 export function createBackend(options: BackendOptions = {}): Backend {
   const calls: BackendCall[] = [];
   // Sessions carry their agent binding, so a switch shows up in the next read the
   // way the host reports it.
   let sessions: Array<Record<string, unknown>> = options.sessions ?? DEFAULT_SESSIONS;
+  let openedWorkspaces: Array<{ id: string; name: string; rootPath: string; workspaceKind?: string }> =
+    options.openedWorkspaces ?? [
+      { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+      { id: "workspace-2", name: "remote-host", rootPath: "/srv/app", workspaceKind: "remote" },
+    ];
+  let recentOnlyWorkspaces = options.recentOnlyWorkspaces ?? [];
+  let currentWorkspaceId: string | null =
+    options.currentWorkspaceId !== undefined ? options.currentWorkspaceId : (openedWorkspaces[0]?.id ?? null);
   const files = options.files ?? DEFAULT_FILES;
   const content = options.fileContent ?? DEFAULT_CONTENT;
   const fs = buildVirtualFs("/repo", files);
   const settingsWrites: Array<{ path: string; value: unknown }> = [];
+  // The documents `get_config` answers from. A `set_config` lands here too, as on
+  // the host, so a surface that re-reads before it writes sees its own last write.
+  // A copy per backend: the shared defaults never change between tests.
+  const liveConfigs: Record<string, unknown> = JSON.parse(JSON.stringify(options.configs ?? DEFAULT_CONFIGS));
   const initialAppConfig = (options.configs ?? DEFAULT_CONFIGS).app;
   let currentLanguage =
     initialAppConfig &&
@@ -823,6 +928,11 @@ export function createBackend(options: BackendOptions = {}): Backend {
   const dispatchSyncs: string[] = [];
   const usageRequests: Array<Record<string, unknown>> = [];
   const sessionModeWrites: Array<{ sessionId: string; modeId: string; workspaceId?: string }> = [];
+  // session policy (wave 3): what the fixture host runs and decides.
+  const runningTurnsBySession: Record<string, string> = {};
+  const userMessages: Backend["userMessages"] = [];
+  const seenMarks: Backend["seenMarks"] = [];
+  let submittedTurns = 0;
   const acpSaves: string[] = [];
   const acpInstalls: string[] = [];
   const reveals: string[] = [];
@@ -832,6 +942,9 @@ export function createBackend(options: BackendOptions = {}): Backend {
   let pendingQuestions = options.pendingQuestions === undefined ? [] : options.pendingQuestions;
   const questionStarts: Array<{ sessionId: string; toolId: string }> = [];
   const userAnswers: Array<{ toolId: string; answers: Record<string, unknown>; sessionId: string }> = [];
+  // Per-session permission mode overrides (`null` follows the default), as the host keeps them.
+  const sessionPermissionModes: Record<string, string | null> = {};
+  const turnPermissionModes: Record<string, string | null> = {};
   // Everything sent inside a Device RPC envelope, with the arguments as the peer
   // received them: the shape a positional command must not get wrong.
   const peerInvocations: Array<{ action: string; args: Record<string, unknown> }> = [];
@@ -1025,11 +1138,30 @@ export function createBackend(options: BackendOptions = {}): Backend {
         mcpSaves.push({ jsonConfig: String(body.jsonConfig ?? ""), expectedFingerprint: expected });
         mcpDocumentText = String(body.jsonConfig ?? "");
         mcpFingerprint += 1;
+        // The runtime list follows the stored `enabled` flags, as the host's does.
+        try {
+          const stored = (JSON.parse(mcpDocumentText) as { mcpServers?: Record<string, { enabled?: boolean }> })
+            .mcpServers ?? {};
+          for (const row of mcpRows) {
+            const entry = stored[String(row.id)];
+            if (entry) row.enabled = entry.enabled !== false;
+          }
+        } catch {
+          // A document the test wrote by hand may not parse; the rows stay as they were.
+        }
         return null;
       }
-      case "start_mcp_server":
-        mcpSetStatus(String(body.serverId ?? ""), "Connected");
+      case "start_mcp_server": {
+        // The host refuses to start a server the stored configuration disables.
+        const serverId = String(body.serverId ?? "");
+        const stored = (JSON.parse(mcpDocumentText) as { mcpServers?: Record<string, { enabled?: boolean }> })
+          .mcpServers?.[serverId];
+        if (stored && stored.enabled === false) {
+          throw new Error(`MCP server '${serverId}' is disabled`);
+        }
+        mcpSetStatus(serverId, "Connected");
         return null;
+      }
       case "stop_mcp_server":
         mcpSetStatus(String(body.serverId ?? ""), "Stopped");
         return null;
@@ -1150,6 +1282,52 @@ export function createBackend(options: BackendOptions = {}): Backend {
     };
   }
 
+  /** The fixture host's mode catalog: profiles first, assistant-only ids left out. */
+  function answerModeCatalog(payload: Record<string, unknown>): unknown {
+    const rows = (options.agentModes ?? DEFAULT_AGENT_MODES) as Array<{ id: string; name?: string; description?: string }>;
+    const profiles = ["Minimal", "Standard", "Ultimate", "Creative"];
+    const aliases: Record<string, string> = { agentic: "Standard", balanced: "Standard", ultra: "Ultimate" };
+    const profileOf = (id: string) =>
+      profiles.find(name => name.toLowerCase() === (aliases[id.toLowerCase()] ?? id).toLowerCase()) ?? null;
+    const seen = new Set<string>();
+    const entries: Array<{ id: string; label: string; description: string; profile: boolean; switchable: boolean }> = [];
+    for (const row of rows) {
+      const raw = String(row.id ?? "").trim();
+      if (!raw || ["claw", "multitask", "plan"].includes(raw.toLowerCase())) continue;
+      const profile = profileOf(raw);
+      const id = profile ?? raw;
+      if (seen.has(id.toLowerCase())) continue;
+      seen.add(id.toLowerCase());
+      entries.push({ id, label: String(row.name ?? "").trim() || id, description: String(row.description ?? ""), profile: profile !== null, switchable: true });
+    }
+    const ordered = [
+      ...profiles.flatMap(name => entries.filter(entry => entry.profile && entry.id === name)),
+      ...entries.filter(entry => !entry.profile),
+    ];
+    const sessionId = String(payload.sessionId ?? "");
+    const row = sessions.find(item => item.sessionId === sessionId);
+    const started = Boolean(row) && Number(row?.messageCount ?? 1) > 0;
+    const sessionMode = row ? String(row.agentType ?? "Standard") : undefined;
+    if (row && started) {
+      for (const entry of ordered) entry.switchable = entry.id.toLowerCase() === (profileOf(sessionMode!) ?? sessionMode!).toLowerCase();
+    }
+    const flow = (liveConfigs["app.flow_chat"] ?? {}) as Record<string, unknown>;
+    const eligible = (value: unknown) => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      if (["claw", "multitask", "plan"].includes(value.trim().toLowerCase())) return null;
+      const id = profileOf(value.trim()) ?? value.trim();
+      return ordered.some(entry => entry.id.toLowerCase() === id.toLowerCase()) ? id : null;
+    };
+    const fixed = eligible(flow.default_mode_id);
+    const last = eligible(flow.last_mode_id);
+    const defaultModeId = (flow.default_mode_strategy === "fixed" ? fixed ?? last : last ?? fixed) ?? "Standard";
+    return {
+      entries: ordered,
+      defaultModeId,
+      ...(row ? { sessionModeId: sessionMode, sessionStarted: started } : {}),
+    };
+  }
+
   function answerHostQueue(request: unknown): unknown {    const payload = (request ?? {}) as {
       sessionId?: string;
       action?: string;
@@ -1245,26 +1423,388 @@ export function createBackend(options: BackendOptions = {}): Backend {
     };
   }
 
+  // settings mutations (wave 3 config): the typed commands, applied the way the
+  // host does to the document `get_config` reads, then stored through
+  // `set_config` so `settingsWrites` shows the document each intent produced.
+  let mintedModels = 0;
+  function readLive(path: string): unknown {
+    try {
+      return answer("get_config", { path, skipRetryOnNotFound: true });
+    } catch {
+      return null;
+    }
+  }
+  function writeLive(path: string, value: unknown): void {
+    answer("set_config", { path, value });
+  }
+  function storedRequestUrl(baseUrl: string, provider: string): string {
+    const trimmed = baseUrl.trim().replace(/\/+$/, "");
+    if (!trimmed) return "";
+    if (trimmed.endsWith("#")) return trimmed.slice(0, -1).replace(/\/+$/, "");
+    if (provider === "openai") return trimmed.endsWith("chat/completions") ? trimmed : `${trimmed}/chat/completions`;
+    if (provider === "responses") return trimmed.endsWith("responses") ? trimmed : `${trimmed}/responses`;
+    if (provider === "anthropic") {
+      if (trimmed.endsWith("/messages")) return trimmed;
+      return trimmed.endsWith("/v1") ? `${trimmed}/messages` : `${trimmed}/v1/messages`;
+    }
+    if (provider === "gemini") return trimmed.replace(/\/v1beta(?:\/models\/[^/]*)?$/, "").replace(/\/+$/, "");
+    return trimmed;
+  }
+  function capabilitiesOf(category: string): string[] {
+    if (category === "multimodal") return ["text_chat", "image_understanding"];
+    if (category === "speech_recognition") return ["speech_recognition"];
+    return ["text_chat"];
+  }
+  function permissionView(document: Record<string, unknown>): unknown {
+    const policy = (document.policy ?? {}) as { preset?: string; rules?: unknown[] };
+    const interaction = (document.interaction ?? {}) as { auto_approve_ask?: boolean };
+    const approval = {
+      strategy: "interactive",
+      model_kind: "chat",
+      chat_model_id: "fast",
+      timeout_ms: 30000,
+      on_ask: "user",
+      on_error: "ask",
+      ...((document.approval ?? {}) as Record<string, unknown>),
+    };
+    const preset = policy.preset ?? "full_access";
+    const mode =
+      preset === "full_access"
+        ? "full_access"
+        : interaction.auto_approve_ask || approval.strategy === "model" || approval.strategy === "immediate_allow"
+          ? "auto_approve"
+          : "ask";
+    return { mode, rules: policy.rules ?? [], approval };
+  }
+  function permissionDocument(): Record<string, unknown> {
+    const stored = readLive("tool_permissions");
+    const document = JSON.parse(JSON.stringify(stored ?? {})) as Record<string, unknown>;
+    document.policy = { preset: "full_access", rules: [], ...((document.policy ?? {}) as object) };
+    document.interaction = { auto_approve_ask: false, ...((document.interaction ?? {}) as object) };
+    return document;
+  }
+  function sameRule(left: unknown, right: unknown): boolean {
+    const a = (left ?? {}) as Record<string, unknown>;
+    const b = (right ?? {}) as Record<string, unknown>;
+    return a.action === String(b.action ?? "").trim() && a.resource === String(b.resource ?? "").trim() && a.effect === b.effect;
+  }
+  function checkedRule(rule: unknown): Record<string, unknown> {
+    const record = (rule ?? {}) as Record<string, unknown>;
+    const action = String(record.action ?? "").trim();
+    const resource = String(record.resource ?? "").trim();
+    if (!action) throw new Error("Every rule needs an action, or * for all of them");
+    if (!resource) throw new Error("Every rule needs a resource, for example workspace/*");
+    return { action, resource, effect: record.effect };
+  }
+  function answerSettingsMutation(action: string, payload: Record<string, unknown>): unknown {
+    if (options.legacySettingsHost) throw new Error(`Command ${action} not found`);
+    switch (action) {
+      case "get_settings_schema": {
+        const paths = Array.isArray(payload.paths) ? payload.paths.map(String) : Object.keys(SETTINGS_DESCRIPTOR);
+        const fields: Record<string, unknown> = {};
+        for (const path of paths) if (SETTINGS_DESCRIPTOR[path]) fields[path] = SETTINGS_DESCRIPTOR[path];
+        return { catalogDigest: "test", fields };
+      }
+      case "resolve_ai_model_request_url": {
+        const provider = String(payload.provider ?? "").trim().toLowerCase().replace(/^response$/, "responses") || "openai";
+        const requestUrl = storedRequestUrl(String(payload.baseUrl ?? ""), provider);
+        const model = String(payload.modelName ?? "").trim();
+        const previewUrl =
+          provider === "gemini" && requestUrl && !String(payload.baseUrl ?? "").trim().endsWith("#")
+            ? `${requestUrl}/v1beta/models/${model ? encodeURIComponent(model) : "{model}"}:streamGenerateContent?alt=sse`
+            : requestUrl;
+        return { provider, requestUrl, previewUrl };
+      }
+      case "ai_model_upsert": {
+        const models = JSON.parse(JSON.stringify(readLive("ai.models") ?? [])) as Array<Record<string, unknown>>;
+        const ids: string[] = [];
+        const clampedIds: string[] = [];
+        for (const intent of (payload.models ?? []) as Array<Record<string, unknown>>) {
+          let entry = intent.id ? models.find(model => model.id === intent.id) : undefined;
+          if (intent.id && !entry) throw new Error(`Model '${String(intent.id)}' was removed while it was being edited; reload`);
+          const created = !entry;
+          if (!entry) {
+            mintedModels += 1;
+            entry = { id: `model_minted_${mintedModels}`, enabled: true, category: "general_chat", capabilities: [] };
+            models.push(entry);
+          }
+          const routing = [entry.base_url, entry.provider, entry.model_name].join("|");
+          const pick = (key: string, field: string, transform: (value: unknown) => unknown = value => value) => {
+            if (Object.prototype.hasOwnProperty.call(intent, key)) entry![field] = transform(intent[key]);
+          };
+          pick("name", "name", value => String(value ?? "").trim());
+          pick("provider", "provider", value => {
+            const text = String(value ?? "").trim().toLowerCase();
+            return text === "response" ? "responses" : text || "openai";
+          });
+          pick("modelName", "model_name", value => String(value ?? "").trim());
+          pick("baseUrl", "base_url", value => String(value ?? "").trim());
+          pick("apiKey", "api_key", value => String(value ?? "").trim());
+          pick("enabled", "enabled");
+          pick("skipSslVerify", "skip_ssl_verify");
+          pick("customHeaders", "custom_headers");
+          pick("customHeadersMode", "custom_headers_mode");
+          pick("contextWindow", "context_window", value => (value ? value : null));
+          pick("maxTokens", "max_tokens", value => (value ? value : null));
+          if (created && entry.provider === undefined) entry.provider = "openai";
+          for (const [field, label] of [["name", "a name"], ["model_name", "a model name"], ["base_url", "a base URL"]]) {
+            if (!String(entry[field] ?? "").trim()) throw new Error(`A model needs ${label}`);
+          }
+          const previousCategory = entry.category;
+          pick("category", "category");
+          if (Array.isArray(intent.capabilities)) entry.capabilities = intent.capabilities;
+          else if (created || previousCategory !== entry.category || !Array.isArray(entry.capabilities) || entry.capabilities.length === 0) {
+            entry.capabilities = capabilitiesOf(String(entry.category ?? "general_chat"));
+          }
+          const window = typeof entry.context_window === "number" ? entry.context_window : 128128;
+          const ceiling = Math.floor((window * 40) / 100);
+          if (typeof entry.max_tokens === "number" && entry.max_tokens > ceiling) {
+            entry.max_tokens = ceiling;
+            clampedIds.push(String(entry.id));
+          }
+          if (created || routing !== [entry.base_url, entry.provider, entry.model_name].join("|") || !entry.request_url) {
+            entry.request_url = storedRequestUrl(String(entry.base_url ?? ""), String(entry.provider ?? ""));
+          }
+          ids.push(String(entry.id));
+        }
+        writeLive("ai.models", models);
+        return { models, ids, clampedIds };
+      }
+      case "ai_model_delete": {
+        const id = String(payload.id ?? "");
+        const models = (readLive("ai.models") ?? []) as Array<Record<string, unknown>>;
+        if (!models.some(model => model.id === id)) throw new Error(`Model '${id}' is not stored; reload`);
+        const next = models.filter(model => model.id !== id);
+        writeLive("ai.models", next);
+        // The host's model reconciliation clears the slots that named it.
+        const slots = readLive("ai.default_models");
+        let defaultModels = slots;
+        if (slots && typeof slots === "object" && Object.values(slots).includes(id)) {
+          defaultModels = Object.fromEntries(
+            Object.entries(slots as Record<string, unknown>).map(([slot, value]) => [slot, value === id ? null : value]),
+          );
+          writeLive("ai.default_models", defaultModels);
+        }
+        return { models: next, defaultModels };
+      }
+      case "set_task_model": {
+        const task = String(payload.task ?? "");
+        if (task !== "session_title" && task !== "git_commit") throw new Error(`Unknown task '${task}'`);
+        const read = (value: unknown): unknown => {
+          if (value === "Inherit" || value === "inherit") return { kind: "inherit" };
+          const record = (value ?? {}) as Record<string, unknown>;
+          if (record.kind === "inherit") return { kind: "inherit" };
+          if (record.kind === "fixed" && record.model_id) return { kind: "fixed", model_id: record.model_id };
+          const fixed = record.Fixed as Record<string, unknown> | undefined;
+          if (fixed?.model_id) return { kind: "fixed", model_id: fixed.model_id };
+          return { kind: "fixed", model_id: "fast" };
+        };
+        const stored = (readLive("ai.task_models") ?? {}) as Record<string, unknown>;
+        const document: Record<string, unknown> = { ...stored };
+        for (const known of ["session_title", "git_commit"]) document[known] = read(stored[known]);
+        document[task] = read(payload.selection);
+        writeLive("ai.task_models", document);
+        return { taskModels: { session_title: document.session_title, git_commit: document.git_commit } };
+      }
+      case "set_permission_mode": {
+        const raw = String(payload.mode ?? "");
+        const mode = raw === "auto" ? "auto_approve" : raw;
+        if (!["ask", "auto_approve", "full_access"].includes(mode)) throw new Error(`Unknown permission mode '${raw}'`);
+        const document = permissionDocument();
+        const approval = { ...((document.approval ?? {}) as Record<string, unknown>) };
+        (document.policy as Record<string, unknown>).preset = mode === "full_access" ? "full_access" : "ask";
+        (document.interaction as Record<string, unknown>).auto_approve_ask = mode === "auto_approve";
+        approval.strategy = mode === "auto_approve" ? "model" : "interactive";
+        if (mode === "auto_approve" && (approval.model_kind ?? "chat") === "chat" && !String(approval.chat_model_id ?? "").trim()) {
+          approval.chat_model_id = "fast";
+        }
+        document.approval = approval;
+        writeLive("tool_permissions", document);
+        return permissionView(document);
+      }
+      case "upsert_permission_rule":
+      case "delete_permission_rule": {
+        const document = permissionDocument();
+        const rules = ((document.policy as Record<string, unknown>).rules ?? []) as unknown[];
+        const index = typeof payload.index === "number" ? payload.index : null;
+        if (index !== null && (index >= rules.length || (payload.expected && !sameRule(rules[index], payload.expected)))) {
+          throw new Error("The rule list changed while it was being edited; reload");
+        }
+        if (action === "delete_permission_rule") {
+          if (index === null) throw new Error("A rule index is required");
+          rules.splice(index, 1);
+        } else {
+          let position = index;
+          if (index === null) {
+            rules.push(checkedRule(payload.rule));
+            position = rules.length - 1;
+          } else if (payload.rule) {
+            rules[index] = checkedRule(payload.rule);
+          }
+          if (typeof payload.moveTo === "number" && position !== null) {
+            const [moved] = rules.splice(position, 1);
+            rules.splice(payload.moveTo, 0, moved);
+          }
+        }
+        (document.policy as Record<string, unknown>).rules = rules;
+        writeLive("tool_permissions", document);
+        return permissionView(document);
+      }
+      case "set_approval_settings": {
+        const document = permissionDocument();
+        const approval: Record<string, unknown> = {
+          strategy: "interactive",
+          model_kind: "chat",
+          chat_model_id: "fast",
+          timeout_ms: 30000,
+          on_ask: "user",
+          on_error: "ask",
+          ...((document.approval ?? {}) as Record<string, unknown>),
+        };
+        if (payload.modelKind !== undefined) approval.model_kind = payload.modelKind;
+        if (payload.chatModelId !== undefined) approval.chat_model_id = String(payload.chatModelId).trim();
+        const timeout =
+          typeof payload.timeoutMs === "number"
+            ? payload.timeoutMs
+            : typeof payload.timeoutSeconds === "number"
+              ? payload.timeoutSeconds * 1000
+              : undefined;
+        if (timeout !== undefined) approval.timeout_ms = Math.min(300000, Math.max(1, timeout));
+        if (payload.onAsk !== undefined) approval.on_ask = payload.onAsk;
+        if (payload.onError !== undefined) approval.on_error = payload.onError;
+        if (approval.strategy === "model" && approval.model_kind === "chat" && !approval.chat_model_id) {
+          throw new Error("chat approval strategy requires a chat_model_id");
+        }
+        document.approval = approval;
+        writeLive("tool_permissions", document);
+        return permissionView(document);
+      }
+      case "set_web_search_provider": {
+        const document = JSON.parse(JSON.stringify(readLive("ai.web_search") ?? {})) as Record<string, unknown>;
+        const providers = { ...((document.providers ?? {}) as Record<string, Record<string, unknown>>) };
+        if (payload.provider !== undefined) {
+          const provider = String(payload.provider);
+          if (!["exa_mcp_free", "exa_search_api", "tavily", "deepseek", "keenable", "openbitfun_search_http"].includes(provider)) {
+            throw new Error(`Unknown web search provider '${provider}'`);
+          }
+          document.provider = provider;
+        }
+        if (payload.credentialId !== undefined) {
+          const target = String(payload.credentialProvider ?? document.provider ?? "");
+          if (target === "openbitfun_search_http") {
+            const http = { ...(providers.openbitfun_search_http ?? {}) };
+            http.auth = { ...((http.auth ?? {}) as object), credentialId: payload.credentialId };
+            providers.openbitfun_search_http = http;
+          } else {
+            providers[target] = { ...(providers[target] ?? {}), credentialId: payload.credentialId };
+          }
+        }
+        const http = { ...(providers.openbitfun_search_http ?? {}) } as Record<string, unknown>;
+        const auth: Record<string, unknown> = { mode: "none", ...((http.auth ?? {}) as Record<string, unknown>) };
+        if (payload.endpoint !== undefined) http.endpoint = String(payload.endpoint).trim();
+        if (payload.authMode !== undefined) auth.mode = payload.authMode;
+        if (payload.authCredentialId !== undefined) auth.credentialId = payload.authCredentialId;
+        if (payload.authHeaderName !== undefined) auth.headerName = payload.authHeaderName;
+        if (payload.endpoint !== undefined || payload.authMode !== undefined || payload.authCredentialId !== undefined || payload.authHeaderName !== undefined) {
+          http.auth = auth;
+          providers.openbitfun_search_http = http;
+        }
+        document.providers = providers;
+        writeLive("ai.web_search", document);
+        return document;
+      }
+      case "set_acp_client_permission_mode": {
+        const clientId = String(payload.clientId ?? "");
+        const mode = String(payload.permissionMode ?? "");
+        if (!["ask", "allow_once", "reject_once"].includes(mode)) throw new Error(`Unknown ACP permission mode '${mode}'`);
+        if (!acpRows.some(row => row.id === clientId)) throw new Error(`ACP client is not configured: ${clientId}`);
+        acpRows = acpRows.map(row => (row.id === clientId ? { ...row, permissionMode: mode } : row));
+        return acpRows;
+      }
+    }
+    throw new Error(`the simulated backend has no answer for ${action}`);
+  }
+
   function answer(action: string, request: unknown, positional = false): unknown {
     const payload = (request ?? {}) as Record<string, unknown>;
     switch (action) {
+      // settings mutations (wave 3 config)
+      case "ai_model_upsert":
+      case "ai_model_delete":
+      case "resolve_ai_model_request_url":
+      case "set_task_model":
+      case "set_permission_mode":
+      case "upsert_permission_rule":
+      case "delete_permission_rule":
+      case "set_approval_settings":
+      case "set_web_search_provider":
+      case "set_acp_client_permission_mode":
+      case "get_settings_schema":
+        return answerSettingsMutation(action, payload);
       case "get_opened_workspaces":
-        return [
-          { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
-        ];
+        return openedWorkspaces.map(record => ({ ...record }));
       case "get_recent_workspaces":
         return [
           { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
           { id: "workspace-2", name: "remote-host", rootPath: "/srv/app", workspaceKind: "remote" },
+          ...recentOnlyWorkspaces.map(record => ({ ...record })),
         ];
-      case "set_active_workspace":
+      case "get_current_workspace":
+        return openedWorkspaces.find(record => record.id === currentWorkspaceId) ?? null;
+      case "set_active_workspace": {
+        const id = String(payload.workspaceId ?? "");
+        if (!openedWorkspaces.some(record => record.id === id)) {
+          throw new Error(`Workspace is not opened: ${id}`);
+        }
+        currentWorkspaceId = id;
         return null;
+      }
+      case "open_workspace": {
+        // Reopening a recent workspace names it by id, as the desktop's switch does.
+        const id = String(payload.workspaceId ?? "");
+        const record = [
+          ...recentOnlyWorkspaces,
+          { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+          { id: "workspace-2", name: "remote-host", rootPath: "/srv/app", workspaceKind: "remote" },
+        ].find(item => item.id === id && !openedWorkspaces.some(open => open.id === id));
+        if (!record) throw new Error(`the simulated backend cannot open ${id || String(payload.path ?? "")}`);
+        recentOnlyWorkspaces = recentOnlyWorkspaces.filter(item => item.id !== id);
+        openedWorkspaces = [record, ...openedWorkspaces];
+        currentWorkspaceId = id;
+        return { ...record };
+      }
+      case "remove_recent_workspace": {
+        const id = String(payload.workspaceId ?? "");
+        recentOnlyWorkspaces = recentOnlyWorkspaces.filter(item => item.id !== id);
+        return null;
+      }
+      case "update_workspace_info": {
+        const id = String(payload.workspaceId ?? "");
+        const name = typeof payload.name === "string" ? payload.name : undefined;
+        openedWorkspaces = openedWorkspaces.map(item => (item.id === id && name ? { ...item, name } : item));
+        const record = openedWorkspaces.find(item => item.id === id);
+        if (!record) throw new Error(`Workspace not found: ${id}`);
+        return { ...record };
+      }
       case "list_persisted_sessions_page":
         return {
-          sessions: sessions.map(session => ({ ...session, workspaceId: "workspace-1" })),
+          // Rows belong to the workspace the list was asked for, as on the host.
+          sessions: sessions.map(session => ({
+            ...session,
+            workspaceId: String((request as { workspace_id?: string })?.workspace_id ?? "workspace-1"),
+          })),
           totalTopLevelCount: sessions.length,
           loadedTopLevelCount: sessions.length,
           hasMore: false,
+          // The host derives each row's read state from its unread receipt.
+          activities: sessions.map(session => ({
+            sessionId: session.sessionId,
+            execution: runningTurnsBySession[String(session.sessionId)] ? "running" : "idle",
+            pendingApprovals: 0,
+            pendingQuestions: 0,
+            unread: typeof session.unreadCompletion === "string" && session.unreadCompletion !== "",
+            failed: session.unreadCompletion === "error",
+          })),
         };
       case "load_session_turns": {
         const sessionId = (request as { session_id?: string })?.session_id ?? "";
@@ -1274,7 +1814,40 @@ export function createBackend(options: BackendOptions = {}): Backend {
         return options.configs ?? { appearance: { theme: "dark" }, editor: { fontSize: 13 } };
       case "set_config": {
         const path = String(payload.path ?? "");
+        // The host's memory window rule applies to leaf writes too (wave 3 config).
+        if (path === "memories.max_unused_days" || path === "memories.max_rollout_age_days") {
+          const memories = { ...((liveConfigs.memories ?? {}) as Record<string, unknown>) };
+          memories[path.slice("memories.".length)] = payload.value;
+          if (Number(memories.max_rollout_age_days ?? 10) > Number(memories.max_unused_days ?? 30)) {
+            throw new Error("Failed to set config: Memory rollout age must not exceed unused-memory retention");
+          }
+        }
         settingsWrites.push({ path, value: payload.value });
+        {
+          // Store the value where `get_config` will find it: the flat key when
+          // the fixture keeps one, otherwise inside the document that holds it.
+          const value = JSON.parse(JSON.stringify(payload.value ?? null)) as unknown;
+          if (path in liveConfigs) {
+            liveConfigs[path] = value;
+          } else {
+            const segments = path.split(".");
+            let stored = false;
+            for (let cut = segments.length - 1; cut > 0 && !stored; cut -= 1) {
+              const parent = segments.slice(0, cut).join(".");
+              const document = liveConfigs[parent];
+              if (!document || typeof document !== "object" || Array.isArray(document)) continue;
+              let node = document as Record<string, unknown>;
+              for (const segment of segments.slice(cut, -1)) {
+                const child = node[segment];
+                if (!child || typeof child !== "object" || Array.isArray(child)) node[segment] = {};
+                node = node[segment] as Record<string, unknown>;
+              }
+              node[segments[segments.length - 1]] = value;
+              stored = true;
+            }
+            if (!stored) liveConfigs[path] = value;
+          }
+        }
         if (path === "app" && payload.value && typeof payload.value === "object") {
           const lang = (payload.value as Record<string, unknown>).language;
           if (typeof lang === "string" && lang.trim()) currentLanguage = lang;
@@ -1326,13 +1899,40 @@ export function createBackend(options: BackendOptions = {}): Backend {
           }
           return options.fontPreference;
         }
-        const configs = options.configs ?? DEFAULT_CONFIGS;
+        const configs = liveConfigs;
         if (options.absentConfigs?.includes(path)) {
           throw new Error(`Failed to get config: Not found: Config path '${path}' not found`);
         }
-        if (!(path in configs)) throw new Error(`Config path '${path}' not found`);
+        if (!(path in configs)) {
+          // The host resolves a dotted leaf inside the document that holds it
+          // (`editor.font_size` inside `editor`), so the fixture does too.
+          const segments = path.split(".");
+          for (let cut = segments.length - 1; cut > 0; cut -= 1) {
+            const parent = segments.slice(0, cut).join(".");
+            if (!(parent in configs)) continue;
+            let node: unknown = configs[parent];
+            for (const segment of segments.slice(cut)) {
+              node =
+                node && typeof node === "object" && !Array.isArray(node)
+                  ? (node as Record<string, unknown>)[segment]
+                  : undefined;
+            }
+            if (node !== undefined) return node;
+            break;
+          }
+          throw new Error(`Config path '${path}' not found`);
+        }
         return configs[path];
       }
+      case "browser_control_list_browsers":
+        // Positional with no arguments on the host; the desktop's own list.
+        return {
+          options: [
+            { value: "default", label: "Default browser", installed: true },
+            { value: "chrome", label: "Google Chrome", installed: true },
+            { value: "edge", label: "Microsoft Edge", installed: false },
+          ],
+        };
       case "get_file_tree":
         return files;
       case "explorer_get_children": {
@@ -1438,12 +2038,25 @@ export function createBackend(options: BackendOptions = {}): Backend {
         const sessionId = String(payload.sessionId ?? "");
         const modeId = String(payload.modeId ?? "");
         if (!modeId.trim()) throw new Error("session mode must not be empty");
+        // The host refuses to rebind a session that already ran a turn.
+        const bound = sessions.find(row => row.sessionId === sessionId);
+        if (bound && Number(bound.messageCount ?? 0) > 0
+          && String(bound.agentType ?? "Standard").toLowerCase() !== modeId.toLowerCase()) {
+          throw new Error(`session_mode_locked: this session already started as ${String(bound.agentType ?? "Standard")}`);
+        }
         sessionModeWrites.push({
           sessionId,
           modeId,
           ...(payload.workspaceId ? { workspaceId: String(payload.workspaceId) } : {}),
         });
         sessions = sessions.map(row => (row.sessionId === sessionId ? { ...row, agentType: modeId } : row));
+        // The host records the explicit pick as the next default, as the desktop does.
+        if (payload.includeInternal !== true) {
+          liveConfigs["app.flow_chat"] = {
+            ...((liveConfigs["app.flow_chat"] ?? {}) as Record<string, unknown>),
+            last_mode_id: modeId,
+          };
+        }
         return null;
       }
       case "copy_session": {
@@ -1452,7 +2065,16 @@ export function createBackend(options: BackendOptions = {}): Backend {
           { sessionId: "session-copy", sessionName: "NSH skeleton (copy)", lastUpdated: 1763100000000, messageCount: 4 },
           ...sessions,
         ];
-        return { session_id: "session-copy", session_name: "NSH skeleton (copy)", agent_type: "Standard" };
+        // The real host answers `SessionLineageCopyResult` in camelCase.
+        return { sessionId: "session-copy", sessionName: "NSH skeleton (copy)", agentType: "Standard" };
+      }
+      case "fork_session": {
+        const sourceTurn = String((payload as { source_turn_id?: string }).source_turn_id ?? "");
+        sessions = [
+          { sessionId: "session-fork", sessionName: `Fork of ${sourceTurn}`, lastUpdated: 1763100000000, messageCount: 2 },
+          ...sessions,
+        ];
+        return { sessionId: "session-fork", sessionName: `Fork of ${sourceTurn}`, agentType: "Standard" };
       }
       case "start_dialog_turn":
         return { success: true, message: "started" };
@@ -1463,6 +2085,78 @@ export function createBackend(options: BackendOptions = {}): Backend {
         return { success: true, steeringId: "steering-1" };
       case "manage_dialog_queue":
         return options.hostQueue ? answerHostQueue(request) : unsupported("manage_dialog_queue");
+      // session policy (wave 3): the host decides steer / queue / start.
+      case "submit_user_message": {
+        const sessionId = String(payload.sessionId ?? "");
+        const text = String(payload.text ?? "");
+        if (!sessionId || (!text.trim() && !(payload.attachments as unknown[] | undefined)?.length)) {
+          throw new Error("A message or an attachment is required");
+        }
+        const running = runningTurnsBySession[sessionId];
+        const stored = liveConfigs["app.flow_chat.send_during_turn"];
+        const policy = String(payload.sendDuringTurn ?? stored ?? "immediate");
+        const workspaceId = payload.workspaceId ? String(payload.workspaceId) : undefined;
+        if (running && policy !== "queue") {
+          userMessages.push({ sessionId, text, outcome: "steered", turnId: running, ...(workspaceId ? { workspaceId } : {}) });
+          return { outcome: "steered", turnId: running, steeringId: "steering-1" };
+        }
+        const turnId = String(payload.turnId ?? `turn-submitted-${++submittedTurns}`);
+        if (running) {
+          // The real host admits it through its own queue, so every panel lists it.
+          hostQueue.push({ sessionId, turnId, content: text, status: "queued" });
+          queueRevision += 1;
+          userMessages.push({ sessionId, text, outcome: "queued", turnId, ...(workspaceId ? { workspaceId } : {}) });
+          return { outcome: "queued", turnId, queueItemId: turnId };
+        }
+        // A test marks the turn running itself (`setRunningTurn`) when it emits the
+        // host's turn-started event, so the fixture never guesses when it settles.
+        userMessages.push({ sessionId, text, outcome: "started", turnId, ...(workspaceId ? { workspaceId } : {}) });
+        return { outcome: "started", turnId };
+      }
+      case "stop_dialog_turn": {
+        const sessionId = String(payload.sessionId ?? "");
+        const turnId = String(payload.dialogTurnId ?? runningTurnsBySession[sessionId] ?? "");
+        if (!turnId) throw new Error(`No running turn to stop for session: ${sessionId}`);
+        delete runningTurnsBySession[sessionId];
+        return { turnId, method: "interrupted" };
+      }
+      case "get_session_mode_catalog": {
+        if (options.agentModes === null) throw new Error("Command not found: get_session_mode_catalog");
+        return answerModeCatalog(payload);
+      }
+      case "list_session_commands": {
+        const sessionId = String(payload.sessionId ?? "");
+        const busy = Boolean(runningTurnsBySession[sessionId]);
+        return [
+          { id: "compact", command: "/compact", labelKey: "chat.slash.compact", description: "Summarize the conversation to free context", idleOnly: true, available: !busy },
+          { id: "init", command: "/init", labelKey: "chat.slash.init", description: "Generate or update AGENTS.md for this workspace", idleOnly: true, available: !busy },
+          { id: "reload", command: "/reload", labelKey: "chat.slash.reload", description: "Reload skills and project instructions", idleOnly: false, available: true, args: ["skills", "instructions"] },
+        ];
+      }
+      case "execute_session_command": {
+        const id = String(payload.id ?? "");
+        const arg = payload.arg === undefined ? undefined : String(payload.arg);
+        if (id === "reload" && arg !== undefined && !["skills", "instructions"].includes(arg)) {
+          throw new Error(`unknown variant \`${arg}\``);
+        }
+        const outcome = { compact: "compaction_started", init: "init_started", reload: "reloaded" }[id];
+        if (!outcome) throw new Error(`unknown_session_command: ${id}`);
+        return { id, outcome, ...(id === "reload" ? {} : { turnId: `${id}-turn` }) };
+      }
+      case "mark_session_seen": {
+        const sessionId = String(payload.sessionId ?? "");
+        const seenThroughMs = typeof payload.seenThroughMs === "number" ? payload.seenThroughMs : undefined;
+        seenMarks.push({ sessionId, ...(seenThroughMs !== undefined ? { seenThroughMs } : {}) });
+        let changed = false;
+        sessions = sessions.map(row => {
+          if (row.sessionId !== sessionId || !row.unreadCompletion) return row;
+          changed = true;
+          const next = { ...row };
+          delete next.unreadCompletion;
+          return next;
+        });
+        return { changed };
+      }
       case "get_model_pools":
       case "save_model_pool":
       case "delete_model_pool":
@@ -1518,6 +2212,51 @@ export function createBackend(options: BackendOptions = {}): Backend {
       case "dispatch_list_jobs":
         // The controller's own index: the state is the last observed one.
         return [options.dispatchJob].filter(Boolean);
+      case "dispatch_probe_target": {
+        // conn-1 runs a current CLI; any other target has none installed.
+        const probeTarget = (payload.target ?? {}) as Record<string, unknown>;
+        if (probeTarget.connectionId !== "conn-1") {
+          return {
+            cliInstalled: false,
+            os: "linux",
+            arch: "x86_64",
+            installSupported: true,
+            // The controller host's readiness verdict (wave 3 config).
+            ready: false,
+            reason: "cli_missing",
+            missingCapabilities: [],
+            expectedProtocolVersion: 6,
+          };
+        }
+        return {
+          ready: true,
+          missingCapabilities: [],
+          expectedProtocolVersion: 6,
+          cliInstalled: true,
+          os: "linux",
+          arch: "x86_64",
+          installSupported: true,
+          protocol: {
+            productId: "openbitfun",
+            dataNamespace: "openbitfun",
+            protocolVersion: 6,
+            cliVersion: "0.0.0-test",
+            os: "linux",
+            arch: "x86_64",
+            capabilities: [
+              "product_identity", "persistent_jobs", "cursor_events", "detached_worker",
+              "frontend_event_projection", "append_message", "event_log_completeness",
+              "approval_auto", "approval_reject_and_report", "approval_remote",
+              "workspace_serialization", "workspace_git_worktree", "workspace_git_bundle_upload",
+              "workspace_git_sync", "dispatch_worker_cli_profile", "per_turn_options",
+              "session_query", "inline_attachments", "reasoning_presets",
+            ],
+            modelConfigured: true,
+            availableModels: ["claude-sonnet", "gpt-5-mini"],
+            defaultModel: "claude-sonnet",
+          },
+        };
+      }
       case "dispatch_submit":
         submitted = request;
         return { jobId: payload.jobId, sessionId: payload.sessionId, state: "queued" };
@@ -1654,10 +2393,62 @@ export function createBackend(options: BackendOptions = {}): Backend {
       case "archive_session":
       case "unarchive_session":
       case "delete_persisted_session":
-      case "fork_session":
       case "account_update_device_alias":
-      case "save_session_metadata":
         return null;
+      // The desktop window's own commands (tray, close, notifications, reveal),
+      // which a native window answers with nothing to report.
+      case "initialize_tray_after_startup":
+      case "set_tray_unread_count":
+      case "minimize_to_tray":
+      case "quit_app":
+      case "hide_main_window_after_close_request":
+      case "send_system_notification":
+      case "reveal_in_explorer":
+      case "reveal_session_storage_directory":
+      case "toggle_main_window_fullscreen":
+        return null;
+      case "get_pending_update":
+        return null;
+      case "export_session_transcript":
+        return {
+          sessionId: String(payload.session_id ?? ""),
+          transcriptPath: `/tmp/exports/${String(payload.session_id ?? "session")}.md`,
+          generatedAt: 1763200000000,
+        };
+      case "save_session_metadata": {
+        // The host deserializes a whole `SessionMetadata` before it merges `fields`.
+        const metadata = (payload.metadata ?? {}) as Record<string, unknown>;
+        for (const field of ["sessionId", "sessionName", "agentType", "modelName", "createdAt", "lastActiveAt", "turnCount", "messageCount", "toolCallCount", "status"]) {
+          if (!(field in metadata)) throw new Error(`missing field \`${field}\``);
+        }
+        return null;
+      }
+      case "get_session_permission_mode":
+      case "update_session_permission_mode":
+      case "update_active_turn_permission_mode": {
+        const sessionId = String(payload.sessionId ?? "");
+        if (action !== "get_session_permission_mode") {
+          const mode = typeof payload.mode === "string" ? (payload.mode === "auto" ? "auto_approve" : payload.mode) : null;
+          if (action === "update_active_turn_permission_mode") turnPermissionModes[sessionId] = mode;
+          else sessionPermissionModes[sessionId] = mode;
+        }
+        return {
+          mode: sessionPermissionModes[sessionId] ?? null,
+          turnMode: turnPermissionModes[sessionId] ?? null,
+          activeTurnId: payload.turnId ?? null,
+        };
+      }
+      case "compact_session":
+        return { success: true };
+      case "run_init_agents_md":
+        return { success: true, message: "started" };
+      case "reload_session_context":
+        if (!["all", "skills", "instructions"].includes(String(payload.target ?? ""))) {
+          throw new Error(`unknown variant \`${String(payload.target)}\``);
+        }
+        return null;
+      case "rollback_session_to_turn":
+        return { status: "completed", retiredTurnIds: [String(payload.targetTurnId ?? "")], restoredFiles: [] };
       case "get_local_models_dev_catalogs":
         if (modelCatalogFixture === null) throw new Error("Command not found: get_local_models_dev_catalogs");
         return modelCatalogFixture;
@@ -1767,6 +2558,19 @@ export function createBackend(options: BackendOptions = {}): Backend {
         if (body === undefined) throw new Error(`no fixture content for ${path}`);
         return body;
       }
+      // Workbench (round 4): disk identity and the host file watcher.
+      case "get_file_metadata": {
+        const path = String(payload.path ?? "");
+        const body = content[path];
+        if (body === undefined) throw new Error(`no fixture content for ${path}`);
+        return { path, modified: 1_700_000_000_000, size: body.length, isFile: true, isDir: false };
+      }
+      case "start_file_watch":
+      case "stop_file_watch":
+      case "retry_file_watch":
+        return null;
+      case "get_file_watch_status":
+        return { healthy: true, watchedPaths: [], failure: null };
       case "terminal_create": {
         // Each call is a new shell, the way the host numbers them.
         terminalCount += 1;
@@ -1844,6 +2648,12 @@ export function createBackend(options: BackendOptions = {}): Backend {
     userAnswers,
     peerInvocations,
     queueReorders,
+    userMessages,
+    setRunningTurn: (sessionId: string, turnId: string | null) => {
+      if (turnId) runningTurnsBySession[sessionId] = turnId;
+      else delete runningTurnsBySession[sessionId];
+    },
+    seenMarks,
     handlers,
   };
 }

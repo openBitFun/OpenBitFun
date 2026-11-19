@@ -85,6 +85,10 @@ pub struct DispatchSshProbe {
     pub protocol: Option<Value>,
     /// Legacy probe field retained for older controllers.
     pub prebuilt_incompatible: Option<String>,
+    /// Readiness verdict (`ready`, `reason`, `missingCapabilities`) derived
+    /// from the shared dispatch contract; additive for older controllers.
+    #[serde(flatten, default)]
+    pub readiness: openbitfun_services_core::dispatch_contract::DispatchProbeReadiness,
 }
 
 #[derive(Debug)]
@@ -130,7 +134,13 @@ pub async fn probe(
         }
     }
 
+    let readiness = openbitfun_services_core::dispatch_contract::DispatchProbeReadiness::evaluate(
+        target.cli_path.is_some(),
+        protocol.as_ref(),
+        protocol_error.as_deref(),
+    );
     Ok(DispatchSshProbe {
+        readiness,
         cli_installed: target.cli_path.is_some(),
         cli_path: target.cli_path,
         os: target.os,

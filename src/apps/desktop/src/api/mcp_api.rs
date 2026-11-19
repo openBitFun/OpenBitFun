@@ -1,6 +1,7 @@
 //! MCP API
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot;
 use openbitfun_core::service::mcp::config::MCPConfigService;
@@ -12,8 +13,6 @@ use openbitfun_core::service::runtime::{RuntimeManager, RuntimeSource};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
-use tauri::State;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MCPServerInfo {

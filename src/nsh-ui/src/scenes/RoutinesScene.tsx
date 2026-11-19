@@ -1,6 +1,5 @@
-import { cleanup, computed, effect, Scroll, signal, Text, View, type ViewRef } from "nsh";
+import { cleanup, computed, effect, Scroll, signal, Text, View } from "nsh";
 import {
-  formatCount,
   formatDuration,
   formatMonthYear,
   formatPlural,
@@ -52,42 +51,44 @@ import {
   type RoutineReportPolicy,
   type RoutineScheduleKind,
 } from "../routinesStore";
-import { workspaces } from "../state";
-import { fontMono, palette, radii, textLineHeight, textSize, textTracking } from "../theme";
-import { Icon } from "../ui/icons";
+import { activeWorkspaceId, sessions, workspaces } from "../state";
+import { palette, radii, textLineHeight, textSize } from "../theme";
+import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
 import {
-  MOTION_DURATION,
-  paintTransition,
-  pressTransition,
-  Spinner,
-  tactileActiveStyle,
-} from "../ui/motion";
+  InsetGroup,
+  InsetRow,
+  MoreMenu,
+  STUDIO_TOUCH_MIN,
+  StudioBody,
+  StudioEmpty,
+  StudioHeader,
+  StudioSection,
+  StudioToolbar,
+  studioCompact,
+  trackStudioWidth,
+} from "../ui/studio";
 import {
-  DropdownMenu,
   ModalDialog,
   SelectDropdown,
   type DropdownMenuItem,
   type SelectDropdownOption,
 } from "../ui/overlays";
 import {
-  Badge,
   Button,
   ConfigRow,
   ConfigSection,
-  EmptyStateCard,
   IconButton,
   InlineBanner,
   InlineConfirmBar,
   InputBox,
   PillChip,
-  SectionCard,
+  SearchInput,
   SegmentedTabs,
   StatusDot,
-  StatusPill,
   ToggleSwitch,
   TooltipBubble,
   type SegmentedTabOption,
-  type StatusPillKind,
+  type StatusDotKind,
 } from "../ui/primitives";
 
 function agentOptions(): ReadonlyArray<SelectDropdownOption<string>> {
@@ -127,13 +128,9 @@ function cronPresets(): ReadonlyArray<{ label: string; expr: string }> {
 }
 
 const filterTabOptions = computed<ReadonlyArray<SegmentedTabOption<RoutineFilter>>>(() => [
-  { value: "all", label: tr("common.all"), badge: routines().length },
-  { value: "active", label: tr("common.active"), badge: activeRoutineCount() },
-  {
-    value: "paused",
-    label: tr("common.paused"),
-    badge: Math.max(0, routines().length - activeRoutineCount()),
-  },
+  { value: "all", label: tr("common.all"), accessibilityLabel: "routines-filter-all" },
+  { value: "active", label: tr("common.active"), accessibilityLabel: "routines-filter-active" },
+  { value: "paused", label: tr("common.paused"), accessibilityLabel: "routines-filter-paused" },
 ]);
 
 const workspaceSelectOptions = computed<ReadonlyArray<SelectDropdownOption<string>>>(() =>
@@ -145,12 +142,12 @@ const workspaceSelectOptions = computed<ReadonlyArray<SelectDropdownOption<strin
   })),
 );
 
-function runStatusKind(status: string | null | undefined): StatusPillKind {
-  if (status === "ok") return "success";
+function runStatusKind(status: string | null | undefined): StatusDotKind {
   if (status === "error") return "danger";
   if (status === "running") return "accent";
   if (status === "queued") return "warning";
-  return "neutral";
+  if (!status || status === "ok") return "success";
+  return "muted";
 }
 
 function runStatusLabel(status: string | null | undefined): string {
@@ -199,146 +196,83 @@ function inlineAtPreview(isoRaw: string): { valid: boolean; text: string } {
   return { valid: true, text: tr("routines.runsOnceAt", { time: formatTimestamp(ms) }) };
 }
 
-function ScheduleMonoBadge(props: { label: string; active?: boolean }) {
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        flexShrink: 0,
-        maxWidth: "100%",
-        gap: 5,
-        paddingHorizontal: 8,
-        paddingVertical: 2.5,
-        borderRadius: radii.xs,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().surfaceSubtle,
-      }}
-    >
-      <Icon
-        name="clock"
-        size={11}
-        color={props.active ? palette().accent : palette().textMuted}
-      />
-      <Text
-        style={{
-          flexShrink: 1,
-          minWidth: 0,
-          color: props.active ? palette().textSecondary : palette().textMuted,
-          fontFamily: fontMono,
-          fontSize: textSize(10.5),
-          fontWeight: "500",
-          fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(10.5, 1.32),
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {props.label}
-      </Text>
-    </View>
+// --- Presentation-only state (no business logic): a name filter over the host's list, and
+// how many rows of a long projection are drawn. ---
+
+/** Free-text filter over the routine names and prompts already loaded. */
+const routineQuery = signal("");
+/** The next-24-hours list draws this many runs until it is expanded. */
+const DUE_ROW_CAP = 5;
+const dueExpanded = signal(false);
+/** The selected day's runs draw this many rows until expanded. */
+const DAY_ROW_CAP = 8;
+const dayExpanded = signal(false);
+/** The scene's own laid-out width: the calendar sits beside the list only when both fit. */
+const routinesWidth = signal(0);
+const SIDE_CALENDAR_MIN_WIDTH = 1040;
+
+const visibleRoutines = computed<CronJobRecord[]>(() => {
+  const list = filteredRoutines();
+  const query = routineQuery().trim().toLowerCase();
+  if (!query) return list;
+  return list.filter(
+    job =>
+      job.name.toLowerCase().includes(query) ||
+      (job.payload.text ?? "").toLowerCase().includes(query),
   );
+});
+
+const visibleDue = computed(() => {
+  const all = dueNext24Hours();
+  return dueExpanded() ? all : all.slice(0, DUE_ROW_CAP);
+});
+
+const visibleDayOccurrences = computed(() => {
+  const all = selectedDayOccurrences();
+  return dayExpanded() ? all : all.slice(0, DAY_ROW_CAP);
+});
+
+function sideCalendar(): boolean {
+  const width = routinesWidth();
+  if (width > 0) return width >= SIDE_CALENDAR_MIN_WIDTH;
+  return !studioCompact();
 }
 
-function Due24hCard(props: {
-  item: () => { job: CronJobRecord; atMs: number; timeLabel: string };
-}) {
-  return (
-    <View
-      role="button"
-      onPress={() => openEditRoutineDraft(props.item().job)}
-      style={{
-        minWidth: 0,
-        paddingHorizontal: 13,
-        paddingVertical: 11,
-        borderRadius: radii.md,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().surfaceTertiary,
-        boxShadow: palette().innerHighlight,
-        gap: 4,
-        cursor: "pointer",
-        ...pressTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{
-        backgroundColor: palette().panelHover,
-        borderColor: palette().borderStrong,
-      }}
-      activeStyle={tactileActiveStyle(0.98)}
-      focusVisibleStyle={{
-        outlineWidth: 2,
-        outlineColor: palette().borderFocus,
-        outlineOffset: 2,
-      }}
-    >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 7, minWidth: 0 }}>
-        <StatusDot kind="accent" size={5.5} />
-        <Text
-          style={{
-            flexShrink: 0,
-            color: palette().accent,
-            fontFamily: fontMono,
-            fontSize: textSize(11.5),
-            fontWeight: "600",
-            fontVariant: ["tabular-nums"],
-            lineHeight: textLineHeight(11.5, 1.3),
-          }}
-        >
-          {props.item().timeLabel}
-        </Text>
-        <Text
-          style={{
-            flex: 1,
-            minWidth: 0,
-            color: palette().text,
-            fontSize: textSize(12.5),
-            fontWeight: "600",
-            lineHeight: textLineHeight(12.5, 1.32),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.item().job.name}
-        </Text>
-      </View>
-      <Text
-        style={{
-          minWidth: 0,
-          color: palette().textMuted,
-          fontSize: textSize(11.5),
-          fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(11.5, 1.38),
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {`${formatScheduleSummary(props.item().job.schedule)} · ${routineTargetLabel(props.item().job)}`}
-      </Text>
-    </View>
-  );
+function routineDotKind(job: CronJobRecord): StatusDotKind {
+  if (!job.enabled) return "muted";
+  return runStatusKind(job.state.lastRunStatus);
 }
 
-function RoutineCard(props: { job: () => CronJobRecord }) {
-  const menuOpen = signal(false);
-  const anchorRef = signal<ViewRef | null>(null);
+/** One quiet meta line: next run, last outcome, last finish. */
+function routineMetaLine(job: CronJobRecord): string {
+  const parts: string[] = [];
+  if (job.enabled && job.state.nextRunAtMs) {
+    parts.push(tr("routines.nextRun", { time: formatTimestamp(job.state.nextRunAtMs ?? undefined) }));
+  }
+  if (job.state.lastRunStatus) parts.push(runStatusLabel(job.state.lastRunStatus));
+  if (job.state.lastRunFinishedAtMs) {
+    parts.push(
+      tr("routines.lastFinished", { time: formatTimestamp(job.state.lastRunFinishedAtMs ?? undefined) }),
+    );
+  }
+  return parts.join(" · ");
+}
 
-  const menuItems = (): DropdownMenuItem[] => [
+function routineMenuItems(job: CronJobRecord): DropdownMenuItem[] {
+  return [
     {
       id: "edit",
       label: tr("routines.editRoutine"),
       icon: "edit",
-      accessibilityLabel: `routine-edit-${props.job().id}`,
-      onSelect: () => openEditRoutineDraft(props.job()),
+      accessibilityLabel: `routine-edit-${job.id}`,
+      onSelect: () => openEditRoutineDraft(job),
     },
     {
       id: "toggle",
-      label: props.job().enabled ? tr("routines.pauseRoutine") : tr("routines.resumeRoutine"),
-      icon: props.job().enabled ? "pause" : "play",
-      accessibilityLabel: `routine-menu-toggle-${props.job().id}`,
-      onSelect: () => void toggleRoutineEnabled(props.job()),
+      label: job.enabled ? tr("routines.pauseRoutine") : tr("routines.resumeRoutine"),
+      icon: job.enabled ? "pause" : "play",
+      accessibilityLabel: `routine-menu-toggle-${job.id}`,
+      onSelect: () => void toggleRoutineEnabled(job),
     },
     { id: "sep", label: "", separator: true },
     {
@@ -346,204 +280,520 @@ function RoutineCard(props: { job: () => CronJobRecord }) {
       label: tr("routines.deleteRoutine"),
       icon: "trash",
       danger: true,
-      accessibilityLabel: `routine-delete-${props.job().id}`,
-      onSelect: () => requestDeleteRoutine(props.job().id),
+      accessibilityLabel: `routine-delete-${job.id}`,
+      onSelect: () => requestDeleteRoutine(job.id),
     },
   ];
+}
 
+/** A run time in a list row's leading column (13 px, tabular, secondary). */
+function TimeLabel(props: { label: string }) {
+  return (
+    <Text
+      style={{
+        width: 44,
+        color: palette().textSecondary,
+        fontSize: textSize(13),
+        fontVariant: ["tabular-nums"],
+        lineHeight: textLineHeight(13, 1.35),
+      }}
+    >
+      {props.label}
+    </Text>
+  );
+}
+
+/**
+ * One routine in the inset grouped list. The text area opens the editor; the
+ * switch and the "…" menu sit beside it (siblings, never nested presses).
+ */
+function RoutineRow(props: { job: () => CronJobRecord; first: boolean }) {
   return (
     <View
       style={{
+        position: "relative",
         minWidth: 0,
-        minHeight: 76,
-        padding: 18,
-        borderRadius: radii.lg,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: props.job().enabled ? palette().border : palette().borderSubtle,
-        backgroundColor: props.job().enabled ? palette().panelRaised : palette().surfaceTertiary,
-        boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
-        gap: 11,
-        opacity: props.job().enabled ? 1 : 0.72,
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{
-        borderColor: palette().borderStrong,
-        backgroundColor: palette().panelHover,
-      }}
+      hoverStyle={{ backgroundColor: palette().panelHover }}
     >
-      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
-        <View style={{ flex: 1, minWidth: 0, gap: 7 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 7, minWidth: 0 }}>
-            <If when={props.job().enabled && !props.job().state.lastRunStatus}>
-              <StatusDot kind="success" size={6} />
-            </If>
-            <Text
-              style={{
-                flexShrink: 1,
-                minWidth: 0,
-                color: palette().text,
-                fontSize: textSize(14),
-                fontWeight: "600",
-                letterSpacing: textTracking(14),
-                lineHeight: textLineHeight(14, 1.3),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {props.job().name}
-            </Text>
-            <If when={Boolean(props.job().state.lastRunStatus)}>
-              <StatusPill
-                label={runStatusLabel(props.job().state.lastRunStatus)}
-                kind={runStatusKind(props.job().state.lastRunStatus)}
-                pulse={props.job().state.lastRunStatus === "running"}
-              />
-            </If>
-            <If when={!props.job().enabled}>
-              <Badge label={tr("common.paused")} tone="neutral" />
-            </If>
-          </View>
-
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "wrap" }}>
-            <ScheduleMonoBadge
-              label={formatScheduleSummary(props.job().schedule)}
-              active={props.job().enabled}
-            />
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, flex: 1, minWidth: 96 }}>
-              <Icon
-                name={props.job().target.kind === "session" ? "pin" : "folder"}
-                size={11.5}
-                color={palette().textMuted}
-              />
-              <Text
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(11.5),
-                  lineHeight: textLineHeight(11.5, 1.35),
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis-middle",
-                }}
-              >
-                {routineTargetLabel(props.job())}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <ToggleSwitch
-            value={props.job().enabled}
-            accessibilityLabel={`routine-toggle-${props.job().id}`}
-            onChange={() => void toggleRoutineEnabled(props.job())}
-          />
-          <View ref={el => anchorRef.set(el)} style={{ flexShrink: 0 }}>
-            <IconButton
-              icon="more"
-              size="sm"
-              active={menuOpen()}
-              accessibilityLabel={`routine-more-${props.job().id}`}
-              tooltip={tr("routines.routineActions")}
-              onPress={() => menuOpen.update(open => !open)}
-            />
-          </View>
-        </View>
-      </View>
-
-      <Text
-        style={{
-          minWidth: 0,
-          color: palette().textSecondary,
-          fontSize: textSize(12.5),
-          lineHeight: textLineHeight(12.5, 1.5),
-          numberOfLines: 2,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {props.job().payload.text}
-      </Text>
-
-      <If
-        when={Boolean(
-          (props.job().state.nextRunAtMs && props.job().enabled) ||
-            props.job().state.lastRunFinishedAtMs,
-        )}
-      >
+      <If when={!props.first}>
         <View
           style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 16,
-            flexWrap: "wrap",
-            paddingTop: 10,
-            borderTopWidth: 1,
-            borderColor: palette().borderSubtle,
+            position: "absolute",
+            top: 0,
+            left: 16,
+            right: 0,
+            height: 1,
+            backgroundColor: palette().borderSubtle,
+            pointerEvents: "none",
           }}
-        >
-          <If when={Boolean(props.job().state.nextRunAtMs && props.job().enabled)}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
-              <Icon name="calendar" size={11.5} color={palette().textMuted} />
-              <Text
-                style={{
-                  minWidth: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(11.5),
-                  fontVariant: ["tabular-nums"],
-                  lineHeight: textLineHeight(11.5, 1.35),
-                }}
-              >
-                {tr("routines.nextRun", {
-                  time: formatTimestamp(props.job().state.nextRunAtMs ?? undefined),
-                })}
-              </Text>
-            </View>
-          </If>
-          <If when={Boolean(props.job().state.lastRunFinishedAtMs)}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
-              <Icon name="history" size={11.5} color={palette().textMuted} />
-              <Text
-                style={{
-                  minWidth: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(11.5),
-                  fontVariant: ["tabular-nums"],
-                  lineHeight: textLineHeight(11.5, 1.35),
-                }}
-              >
-                {tr("routines.lastFinished", {
-                  time: formatTimestamp(props.job().state.lastRunFinishedAtMs ?? undefined),
-                })}
-              </Text>
-            </View>
-          </If>
-        </View>
-      </If>
-
-      <If when={props.job().state.lastError ?? ""}>
-        {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
-      </If>
-
-      <If when={confirmingDeleteRoutineId() === props.job().id}>
-        <InlineConfirmBar
-          danger
-          message={tr("routines.deleteConfirm", { name: props.job().name })}
-          confirmLabel={tr("routines.deleteRoutine")}
-          cancelLabel={tr("common.cancel")}
-          onConfirm={() => void confirmDeleteRoutine(props.job().id)}
-          onCancel={() => cancelDeleteRoutine()}
         />
       </If>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 12,
+          minHeight: STUDIO_TOUCH_MIN,
+          paddingLeft: 16,
+          paddingRight: 12,
+          paddingVertical: 10,
+          minWidth: 0,
+        }}
+      >
+        <View style={{ alignSelf: "flex-start", paddingTop: 7 }}>
+          <StatusDot
+            kind={routineDotKind(props.job())}
+            size={7}
+            pulse={props.job().enabled && props.job().state.lastRunStatus === "running"}
+          />
+        </View>
+        <View
+          role="button"
+          accessibilityLabel={`routine-open-${props.job().id}`}
+          onPress={() => openEditRoutineDraft(props.job())}
+          style={{ flex: 1, minWidth: 0, gap: 2, cursor: "pointer", borderRadius: radii.xs }}
+          focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: 2 }}
+        >
+          <Text
+            style={{
+              color: props.job().enabled ? palette().text : palette().textSecondary,
+              fontSize: textSize(14),
+              fontWeight: "500",
+              lineHeight: textLineHeight(14, 1.35),
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.job().name}
+          </Text>
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(12),
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(12, 1.4),
+              numberOfLines: 1,
+              textOverflow: "ellipsis-middle",
+            }}
+          >
+            {`${formatScheduleSummary(props.job().schedule)} · ${routineTargetLabel(props.job())}`}
+          </Text>
+          <If when={props.job().payload.text ?? ""}>
+            {text => (
+              <Text
+                style={{
+                  marginTop: 2,
+                  color: palette().textSecondary,
+                  fontSize: textSize(13),
+                  lineHeight: textLineHeight(13, 1.45),
+                  numberOfLines: 2,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {text()}
+              </Text>
+            )}
+          </If>
+          <If when={routineMetaLine(props.job())}>
+            {meta => (
+              <Text
+                style={{
+                  color: palette().textMuted,
+                  fontSize: textSize(12),
+                  fontVariant: ["tabular-nums"],
+                  lineHeight: textLineHeight(12, 1.4),
+                }}
+              >
+                {meta()}
+              </Text>
+            )}
+          </If>
+          <If when={props.job().state.lastError ?? ""}>
+            {err => (
+              <Text
+                style={{
+                  color: palette().danger,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.4),
+                }}
+              >
+                {localizeHostError(err())}
+              </Text>
+            )}
+          </If>
+        </View>
+        <ToggleSwitch
+          value={props.job().enabled}
+          accessibilityLabel={`routine-toggle-${props.job().id}`}
+          onChange={() => void toggleRoutineEnabled(props.job())}
+        />
+        <MoreMenu
+          accessibilityLabel={`routine-more-${props.job().id}`}
+          tooltip={tr("routines.routineActions")}
+          minWidth={184}
+          items={routineMenuItems(props.job())}
+        />
+      </View>
+      <If when={confirmingDeleteRoutineId() === props.job().id}>
+        <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+          <InlineConfirmBar
+            danger
+            message={tr("routines.deleteConfirm", { name: props.job().name })}
+            confirmLabel={tr("routines.deleteRoutine")}
+            cancelLabel={tr("common.cancel")}
+            onConfirm={() => void confirmDeleteRoutine(props.job().id)}
+            onCancel={() => cancelDeleteRoutine()}
+          />
+        </View>
+      </If>
+    </View>
+  );
+}
 
-      <DropdownMenu
-        open={menuOpen()}
-        anchor={anchorRef()}
-        align="end"
-        minWidth={184}
-        items={menuItems()}
-        onClose={() => menuOpen.set(false)}
-      />
+/** Quiet "Show all N" / "Show less" link under a capped list. */
+function ExpandLink(props: { total: number; cap: number; expanded: boolean; onToggle: () => void; accessibilityLabel: string }) {
+  return (
+    <If when={props.total > props.cap}>
+      <View
+        role="button"
+        accessibilityLabel={props.accessibilityLabel}
+        onPress={props.onToggle}
+        style={{
+          alignSelf: "flex-start",
+          marginTop: 8,
+          paddingHorizontal: 4,
+          minHeight: 28,
+          justifyContent: "center",
+          cursor: "pointer",
+        }}
+      >
+        <Text style={{ color: palette().accent, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.35) }}>
+          {props.expanded ? tr("common.showLess") : `${tr("common.showAll")} (${props.total})`}
+        </Text>
+      </View>
+    </If>
+  );
+}
+
+function DueSection() {
+  return (
+    <StudioSection
+      title={tr("routines.polish.dueSection")}
+      accessibilityLabel="routines-due-section"
+    >
+      <If
+        when={dueNext24Hours().length > 0}
+        else={
+          <Text
+            style={{
+              paddingHorizontal: 4,
+              color: palette().textMuted,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.45),
+            }}
+          >
+            {tr("routines.noneDueNext24h")}
+          </Text>
+        }
+      >
+        <InsetGroup>
+          <Each of={visibleDue()} key={item => `due:${item.job.id}:${item.atMs}`}>
+            {(item, index) => (
+              <InsetRow
+                first={index() === 0}
+                leading={<TimeLabel label={item().timeLabel} />}
+                label={item().job.name}
+                detail={`${formatScheduleSummary(item().job.schedule)} · ${routineTargetLabel(item().job)}`}
+                chevron
+                accessibilityLabel={`routine-due-${item().job.id}-${item().atMs}`}
+                onPress={() => openEditRoutineDraft(item().job)}
+              />
+            )}
+          </Each>
+        </InsetGroup>
+        <ExpandLink
+          total={dueNext24Hours().length}
+          cap={DUE_ROW_CAP}
+          expanded={dueExpanded()}
+          accessibilityLabel="routines-due-expand"
+          onToggle={() => dueExpanded.update(open => !open)}
+        />
+      </If>
+    </StudioSection>
+  );
+}
+
+function RoutineListSection() {
+  return (
+    <StudioSection
+      title={tr("routines.polish.listSection")}
+      trailing={
+        <Text
+          style={{
+            color: palette().textSecondary,
+            fontSize: textSize(13),
+            fontVariant: ["tabular-nums"],
+            lineHeight: textLineHeight(13, 1.35),
+          }}
+        >
+          {tr("routines.activeCount", { count: activeRoutineCount() })}
+        </Text>
+      }
+    >
+      <If
+        when={visibleRoutines().length > 0}
+        else={
+          <StudioEmpty
+            icon="calendar"
+            message={routines().length === 0 ? tr("routines.emptyTitle") : tr("routines.emptyFilteredTitle")}
+            detail={routines().length === 0 ? tr("routines.emptySubtitle") : tr("routines.emptyFilteredSubtitle")}
+            action={
+              <Button
+                label={routines().length === 0 ? tr("routines.createRoutine") : tr("routines.showAllRoutines")}
+                variant="secondary"
+                size="sm"
+                accessibilityLabel="routines-empty-action"
+                onPress={() => {
+                  if (routines().length === 0) openCreateRoutineDraft();
+                  else {
+                    routineFilter.set("all");
+                    routineQuery.set("");
+                  }
+                }}
+              />
+            }
+          />
+        }
+      >
+        <InsetGroup accessibilityLabel="routines-list">
+          <Each of={visibleRoutines()} key={job => job.id}>
+            {(job, index) => <RoutineRow job={job} first={index() === 0} />}
+          </Each>
+        </InsetGroup>
+      </If>
+    </StudioSection>
+  );
+}
+
+function CalendarGrid() {
+  return (
+    <View style={{ gap: 4 }}>
+      <View style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 2 }}>
+        <Each of={weekdayShortLabels(true)} key="index">
+          {(day, idx) => (
+            <View style={{ alignItems: "center", paddingVertical: 4 }}>
+              <Text
+                style={{
+                  color: idx() >= 5 ? palette().textMuted : palette().textSecondary,
+                  fontSize: textSize(11),
+                  fontWeight: "500",
+                  lineHeight: textLineHeight(11, 1.3),
+                }}
+              >
+                {day()}
+              </Text>
+            </View>
+          )}
+        </Each>
+      </View>
+      <View style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 2 }}>
+        <Each of={calendarCells()} key={cell => cell.dayKey}>
+          {cell => (
+            <View
+              role="button"
+              accessibilityLabel={`routines-day-${cell().dayKey}`}
+              accessibilityState={{ selected: cell().isSelected }}
+              tooltip={
+                cell().occurrenceCount > 0 ? (
+                  <TooltipBubble
+                    text={`${cell().dayKey} · ${formatPlural(
+                      cell().occurrenceCount,
+                      "format.occurrenceOne",
+                      "format.occurrenceOther",
+                    )}`}
+                  />
+                ) : undefined
+              }
+              onPress={() => {
+                dayExpanded.set(false);
+                selectCalendarDay(cell().dayKey);
+              }}
+              style={{
+                minWidth: 0,
+                height: studioCompact() ? STUDIO_TOUCH_MIN : 38,
+                borderRadius: radii.sm,
+                borderCurve: "continuous",
+                backgroundColor: cell().isSelected ? palette().accentSoft : "transparent",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 3,
+                cursor: "pointer",
+                ...paintTransition(MOTION_DURATION.fast),
+              }}
+              hoverStyle={{
+                backgroundColor: cell().isSelected ? palette().accentSoft : palette().panelHover,
+              }}
+              focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -1 }}
+            >
+              <Text
+                style={{
+                  color: cell().isSelected || cell().isToday
+                    ? palette().accent
+                    : cell().inCurrentMonth
+                      ? palette().text
+                      : palette().textMuted,
+                  fontSize: textSize(13),
+                  fontWeight: cell().isToday || cell().isSelected ? "600" : "400",
+                  fontVariant: ["tabular-nums"],
+                  lineHeight: textLineHeight(13, 1.2),
+                }}
+              >
+                {String(cell().dayNumber)}
+              </Text>
+              <View
+                style={{
+                  width: 4,
+                  height: 4,
+                  borderRadius: radii.pill,
+                  backgroundColor:
+                    cell().occurrenceCount > 0
+                      ? cell().isSelected
+                        ? palette().accent
+                        : palette().textMuted
+                      : "transparent",
+                }}
+              />
+            </View>
+          )}
+        </Each>
+      </View>
+    </View>
+  );
+}
+
+/** Month grid plus the selected day's projected runs; no surrounding card. */
+function CalendarBlock() {
+  return (
+    <View style={{ gap: 20, minWidth: 0 }}>
+      <View style={{ gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4, minHeight: 28, paddingHorizontal: 4 }}>
+          <Text
+            role="header"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              color: palette().text,
+              fontSize: textSize(15),
+              fontWeight: "600",
+              lineHeight: textLineHeight(15, 1.3),
+              numberOfLines: 1,
+            }}
+          >
+            {formatMonthYear(calendarYear(), calendarMonth())}
+          </Text>
+          <IconButton
+            icon="chevron-left"
+            size="sm"
+            accessibilityLabel="routines-cal-prev"
+            tooltip={tr("routines.prevMonth")}
+            onPress={() => stepCalendarMonth(-1)}
+          />
+          <Button
+            label={tr("common.today")}
+            size="sm"
+            variant="ghost"
+            accessibilityLabel="routines-cal-today"
+            onPress={() => jumpCalendarToday()}
+          />
+          <IconButton
+            icon="chevron-right"
+            size="sm"
+            accessibilityLabel="routines-cal-next"
+            tooltip={tr("routines.nextMonth")}
+            onPress={() => stepCalendarMonth(1)}
+          />
+        </View>
+        <CalendarGrid />
+        <Text
+          style={{
+            paddingHorizontal: 4,
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.4),
+          }}
+        >
+          {tr("routines.tapDateHint")}
+        </Text>
+      </View>
+
+      <View style={{ gap: 8, minWidth: 0 }}>
+        <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8, paddingHorizontal: 4 }}>
+          <Text
+            role="header"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              color: palette().textSecondary,
+              fontSize: textSize(13),
+              fontWeight: "600",
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(13, 1.35),
+            }}
+          >
+            {tr("routines.scheduledFor", { date: selectedCalendarDay() })}
+          </Text>
+          <Text
+            style={{
+              flexShrink: 0,
+              color: palette().textMuted,
+              fontSize: textSize(12),
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(12, 1.35),
+            }}
+          >
+            {formatPlural(selectedDayOccurrences().length, "format.occurrenceOne", "format.occurrenceOther")}
+          </Text>
+        </View>
+        <If
+          when={selectedDayOccurrences().length > 0}
+          else={
+            <Text
+              style={{
+                paddingHorizontal: 4,
+                color: palette().textMuted,
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.45),
+              }}
+            >
+              {tr("routines.noRunsOnDate")}
+            </Text>
+          }
+        >
+          <InsetGroup>
+            <Each of={visibleDayOccurrences()} key={occ => `${occ.job.id}:${occ.atMs}`}>
+              {(occ, index) => (
+                <InsetRow
+                  first={index() === 0}
+                  leading={<TimeLabel label={occ().timeLabel} />}
+                  label={occ().job.name}
+                  detail={routineTargetLabel(occ().job)}
+                  chevron
+                  onPress={() => openEditRoutineDraft(occ().job)}
+                />
+              )}
+            </Each>
+          </InsetGroup>
+          <ExpandLink
+            total={selectedDayOccurrences().length}
+            cap={DAY_ROW_CAP}
+            expanded={dayExpanded()}
+            accessibilityLabel="routines-day-expand"
+            onToggle={() => dayExpanded.update(open => !open)}
+          />
+        </If>
+      </View>
     </View>
   );
 }
@@ -656,9 +906,9 @@ function RoutineEditorModal() {
                 <Text
                   style={{
                     color: everyCheck().valid ? palette().textMuted : palette().danger,
-                    fontSize: textSize(11.5),
+                    fontSize: textSize(12),
                     fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(11.5, 1.4),
+                    lineHeight: textLineHeight(12, 1.4),
                   }}
                 >
                   {everyCheck().text}
@@ -704,9 +954,9 @@ function RoutineEditorModal() {
                 <Text
                   style={{
                     color: cronCheck().valid ? palette().textMuted : palette().warning,
-                    fontSize: textSize(11.5),
+                    fontSize: textSize(12),
                     fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(11.5, 1.4),
+                    lineHeight: textLineHeight(12, 1.4),
                   }}
                 >
                   {cronCheck().text}
@@ -728,9 +978,9 @@ function RoutineEditorModal() {
                 <Text
                   style={{
                     color: atCheck().valid ? palette().textMuted : palette().warning,
-                    fontSize: textSize(11.5),
+                    fontSize: textSize(12),
                     fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(11.5, 1.4),
+                    lineHeight: textLineHeight(12, 1.4),
                   }}
                 >
                   {atCheck().text}
@@ -753,6 +1003,16 @@ function RoutineEditorModal() {
             <If
               when={Boolean(routineDraft().preservedTarget)}
               else={
+                <View style={{ gap: 10 }}>
+                <SegmentedTabs
+                  size="sm"
+                  value={routineDraft().targetKind ?? "workspace"}
+                  options={[
+                    { value: "workspace", label: tr("routines.targetNewSession"), accessibilityLabel: "routine-target-workspace" },
+                    { value: "session", label: tr("routines.targetExistingSession"), accessibilityLabel: "routine-target-session" },
+                  ]}
+                  onChange={kind => updateRoutineDraft({ targetKind: kind })}
+                />
                 <View style={{ flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
                   <View style={{ flex: 1, minWidth: 160, gap: 5 }}>
                     <Text
@@ -784,17 +1044,37 @@ function RoutineEditorModal() {
                         lineHeight: textLineHeight(12, 1.35),
                       }}
                     >
-                      {tr("routines.agentMode")}
+                      {(routineDraft().targetKind ?? "workspace") === "session"
+                        ? tr("routines.targetSessionLabel")
+                        : tr("routines.agentMode")}
                     </Text>
-                    <SelectDropdown
-                      size="md"
-                      options={agentOptions()}
-                      value={routineDraft().agentType}
-                      accessibilityLabel="routine-agent-select"
-                      style={{ width: "100%" }}
-                      onChange={agentType => updateRoutineDraft({ agentType })}
-                    />
+                    <If
+                      when={(routineDraft().targetKind ?? "workspace") === "session"}
+                      else={
+                        <SelectDropdown
+                          size="md"
+                          options={agentOptions()}
+                          value={routineDraft().agentType}
+                          accessibilityLabel="routine-agent-select"
+                          style={{ width: "100%" }}
+                          onChange={agentType => updateRoutineDraft({ agentType })}
+                        />
+                      }
+                    >
+                      <SelectDropdown
+                        size="md"
+                        searchable
+                        options={routineSessionOptions()}
+                        value={routineDraft().sessionId || null}
+                        placeholder={tr("routines.selectSession")}
+                        emptyLabel={tr("routines.sessionsOtherWorkspace")}
+                        accessibilityLabel="routine-session-select"
+                        style={{ width: "100%" }}
+                        onChange={sessionId => updateRoutineDraft({ sessionId })}
+                      />
+                    </If>
                   </View>
+                </View>
                 </View>
               }
             >
@@ -851,356 +1131,48 @@ function RoutineEditorModal() {
   );
 }
 
-function CalendarPanel() {
+/**
+ * Sessions a routine can run in. The session list belongs to the active
+ * workspace, so another workspace's sessions are offered only after switching.
+ */
+function routineSessionOptions(): SelectDropdownOption<string>[] {
+  if (routineDraft().workspaceId !== activeWorkspaceId()) return [];
+  return sessions().map(session => ({
+    value: session.sessionId,
+    label: session.sessionName || session.sessionId,
+    accessibilityLabel: `routine-session-option-${session.sessionId}`,
+  }));
+}
+
+function RoutinesBody() {
   return (
-    <View
-      style={{
-        width: 344,
-        flexShrink: 0,
-        minHeight: 0,
-        padding: 16,
-        gap: 14,
-        flexDirection: "column",
-        borderLeftWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().canvasSubtle,
-      }}
-    >
-      {/* Fixed Month Calendar Card — Apple/Linear calm dot indicators, zero blue count spam */}
-      <SectionCard
-        title={formatMonthYear(calendarYear(), calendarMonth())}
-        subtitle={tr("routines.tapDateHint")}
-        style={{ flexShrink: 0, padding: 14, gap: 10 }}
-        right={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
-            <IconButton
-              icon="chevron-left"
-              size="xs"
-              accessibilityLabel="routines-cal-prev"
-              tooltip={tr("routines.prevMonth")}
-              onPress={() => stepCalendarMonth(-1)}
-            />
-            <Button
-              label={tr("common.today")}
-              size="xs"
-              variant="ghost"
-              accessibilityLabel="routines-cal-today"
-              onPress={() => jumpCalendarToday()}
-            />
-            <IconButton
-              icon="chevron-right"
-              size="xs"
-              accessibilityLabel="routines-cal-next"
-              tooltip={tr("routines.nextMonth")}
-              onPress={() => stepCalendarMonth(1)}
-            />
-          </View>
-        }
-      >
-        {/* 7-column localized Mon–Sun Weekday Header */}
-        <View
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
-            gap: 4,
-          }}
-        >
-          <Each of={weekdayShortLabels(true)} key="index">
-            {(day, idx) => (
-              <View style={{ alignItems: "center", paddingVertical: 2 }}>
-                <Text
-                  style={{
-                    color: idx() >= 5 ? palette().textMuted : palette().textSecondary,
-                    fontSize: textSize(10.5),
-                    fontWeight: "600",
-                    letterSpacing: textTracking(10.5, true),
-                    lineHeight: textLineHeight(10.5, 1.3),
-                  }}
-                >
-                  {day()}
-                </Text>
-              </View>
-            )}
-          </Each>
-        </View>
+    <StudioBody>
+      <If when={routinesError()}>
+        {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
+      </If>
+      <If when={routinesNotice() && !routinesError()}>
+        <InlineBanner
+          tone="success"
+          message={routinesNotice() ?? ""}
+          onDismiss={() => routinesNotice.set("")}
+        />
+      </If>
+      <If when={routinePeerDeliveryNotice()}>
+        {notice => <InlineBanner tone="warning" message={notice()} />}
+      </If>
 
-        {/* 7-column Month Grid */}
-        <View
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
-            gap: 4,
-          }}
-        >
-          <Each of={calendarCells()} key={cell => cell.dayKey}>
-            {cell => (
-              <View
-                role="button"
-                accessibilityLabel={`routines-day-${cell().dayKey}`}
-                accessibilityState={{ selected: cell().isSelected }}
-                tooltip={
-                  cell().occurrenceCount > 0 ? (
-                    <TooltipBubble
-                      text={`${cell().dayKey} · ${formatPlural(
-                        cell().occurrenceCount,
-                        "format.occurrenceOne",
-                        "format.occurrenceOther",
-                      )}`}
-                    />
-                  ) : undefined
-                }
-                onPress={() => selectCalendarDay(cell().dayKey)}
-                style={{
-                  minWidth: 0,
-                  height: 36,
-                  paddingVertical: 3,
-                  paddingHorizontal: 2,
-                  borderRadius: radii.sm,
-                  borderCurve: "continuous",
-                  borderWidth: cell().isSelected ? 1.5 : 1,
-                  borderColor: cell().isSelected ? palette().borderFocus : "transparent",
-                  backgroundColor: cell().isSelected ? palette().accentSoft : "transparent",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 2.5,
-                  overflow: "hidden",
-                  cursor: "pointer",
-                  ...pressTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{
-                  backgroundColor: cell().isSelected
-                    ? palette().accentSoft
-                    : palette().panelHover,
-                  borderColor: cell().isSelected
-                    ? palette().borderFocus
-                    : palette().border,
-                }}
-                activeStyle={tactileActiveStyle(0.95)}
-                focusVisibleStyle={{
-                  outlineWidth: 2,
-                  outlineColor: palette().borderFocus,
-                  outlineOffset: -1,
-                }}
-              >
-                {/* Crisp circular Today indicator + clean day number */}
-                <View
-                  style={{
-                    width: 22,
-                    height: 22,
-                    borderRadius: radii.pill,
-                    borderWidth: cell().isToday && !cell().isSelected ? 1 : 0,
-                    borderColor: palette().accentBorder,
-                    backgroundColor:
-                      cell().isToday && cell().isSelected
-                        ? palette().actionSolid
-                        : cell().isToday
-                          ? palette().accentSoft
-                          : "transparent",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <Text
-                    style={{
-                      color:
-                        cell().isToday && cell().isSelected
-                          ? palette().actionSolidFg
-                          : cell().isToday || cell().isSelected
-                            ? palette().accent
-                            : cell().inCurrentMonth
-                              ? palette().text
-                              : palette().textMuted,
-                      fontSize: textSize(11.5),
-                      fontWeight: cell().isToday || cell().isSelected ? "600" : "500",
-                      fontVariant: ["tabular-nums"],
-                      lineHeight: textLineHeight(11.5, 1.2),
-                      opacity: cell().inCurrentMonth || cell().isSelected || cell().isToday ? 1 : 0.55,
-                    }}
-                  >
-                    {String(cell().dayNumber)}
-                  </Text>
-                </View>
+      <If when={routines().length > 0}>
+        <DueSection />
+      </If>
 
-                {/* Subtle 4px scheduled-day dot (replaces noisy blue count pills) */}
-                <View style={{ height: 4, alignItems: "center", justifyContent: "center" }}>
-                  <If when={cell().occurrenceCount > 0}>
-                    <View
-                      style={{
-                        width: 4,
-                        height: 4,
-                        borderRadius: radii.pill,
-                        backgroundColor: cell().inCurrentMonth
-                          ? palette().accent
-                          : palette().textMuted,
-                        opacity: cell().inCurrentMonth
-                          ? cell().isSelected
-                            ? 1
-                            : 0.72
-                          : 0.35,
-                      }}
-                    />
-                  </If>
-                </View>
-              </View>
-            )}
-          </Each>
-        </View>
-      </SectionCard>
+      <RoutineListSection />
 
-      {/* Flex-bounded Scrollable Selected-Day Occurrences Card */}
-      <View
-        style={{
-          flex: 1,
-          minHeight: 0,
-          flexDirection: "column",
-          borderRadius: radii.lg,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().border,
-          backgroundColor: palette().panelRaised,
-          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
-          padding: 14,
-          gap: 10,
-          overflow: "hidden",
-        }}
-      >
-        <View style={{ flexShrink: 0, gap: 2 }}>
-          <Text
-            style={{
-              color: palette().text,
-              fontSize: textSize(13.5),
-              fontWeight: "600",
-              letterSpacing: textTracking(13.5),
-              fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(13.5, 1.32),
-            }}
-          >
-            {tr("routines.scheduledFor", { date: selectedCalendarDay() })}
-          </Text>
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(11.5),
-              fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(11.5, 1.4),
-            }}
-          >
-            {formatPlural(
-              selectedDayOccurrences().length,
-              "format.occurrenceOne",
-              "format.occurrenceOther",
-            )}
-          </Text>
-        </View>
-
-        <If when={selectedDayOccurrences().length === 0}>
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.45),
-            }}
-          >
-            {tr("routines.noRunsOnDate")}
-          </Text>
-        </If>
-
-        <If when={selectedDayOccurrences().length > 0}>
-          <Scroll
-            style={{ flex: 1, minHeight: 0 }}
-            contentStyle={{ gap: 6, paddingBottom: 4 }}
-            scrollbar={true}
-          >
-            <Each of={selectedDayOccurrences()} key={occ => `${occ.job.id}:${occ.atMs}`}>
-              {occ => (
-                <View
-                  role="button"
-                  onPress={() => openEditRoutineDraft(occ().job)}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 9,
-                    paddingHorizontal: 10,
-                    paddingVertical: 8,
-                    borderRadius: radii.sm,
-                    borderCurve: "continuous",
-                    borderWidth: 1,
-                    borderColor: palette().borderSubtle,
-                    backgroundColor: palette().surfaceTertiary,
-                    cursor: "pointer",
-                    ...pressTransition(MOTION_DURATION.fast),
-                  }}
-                  hoverStyle={{
-                    backgroundColor: palette().panelHover,
-                    borderColor: palette().borderStrong,
-                  }}
-                  activeStyle={tactileActiveStyle(0.98)}
-                  focusVisibleStyle={{
-                    outlineWidth: 2,
-                    outlineColor: palette().borderFocus,
-                    outlineOffset: -1,
-                  }}
-                >
-                  <View
-                    style={{
-                      flexShrink: 0,
-                      paddingHorizontal: 6,
-                      paddingVertical: 2,
-                      borderRadius: radii.xs,
-                      borderCurve: "continuous",
-                      borderWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      backgroundColor: palette().surfaceSubtle,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: palette().accent,
-                        fontFamily: fontMono,
-                        fontSize: textSize(10.5),
-                        fontWeight: "600",
-                        fontVariant: ["tabular-nums"],
-                        lineHeight: textLineHeight(10.5, 1.3),
-                      }}
-                    >
-                      {occ().timeLabel}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
-                    <Text
-                      style={{
-                        minWidth: 0,
-                        color: palette().text,
-                        fontSize: textSize(12),
-                        fontWeight: "600",
-                        lineHeight: textLineHeight(12, 1.35),
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {occ().job.name}
-                    </Text>
-                    <Text
-                      style={{
-                        minWidth: 0,
-                        color: palette().textMuted,
-                        fontSize: textSize(10.5),
-                        lineHeight: textLineHeight(10.5, 1.35),
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis-middle",
-                      }}
-                    >
-                      {routineTargetLabel(occ().job)}
-                    </Text>
-                  </View>
-                  <Icon name="chevron-right" size={12} color={palette().textMuted} />
-                </View>
-              )}
-            </Each>
-          </Scroll>
-        </If>
-      </View>
-    </View>
+      <If when={!sideCalendar()}>
+        <StudioSection title={tr("routines.polish.calendarSection")}>
+          <CalendarBlock />
+        </StudioSection>
+      </If>
+    </StudioBody>
   );
 }
 
@@ -1215,202 +1187,83 @@ export function RoutinesScene() {
   cleanup(subscribeRoutinesChanged());
 
   return (
-    <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}>
-      {/* Unified Studio Scene Header grounded on palette().canvas */}
-      <View
-        style={{
-          flexDirection: "row",
-          flexWrap: "wrap",
-          alignItems: "center",
-          gap: 12,
-          paddingHorizontal: 24,
-          paddingVertical: 16,
-          borderBottomWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().canvas,
-        }}
-      >
-        <View
-          style={{
-            width: 36,
-            height: 36,
-            flexShrink: 0,
-            borderRadius: radii.md,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: palette().borderSubtle,
-            backgroundColor: palette().panelRaised,
-            boxShadow: palette().shadowButton,
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Icon name="calendar" size={17} color={palette().accent} />
-        </View>
-
-        <View style={{ flex: 1, minWidth: 180, gap: 3 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <Text
-              style={{
-                color: palette().text,
-                fontSize: textSize(22),
-                fontWeight: "600",
-                letterSpacing: textTracking(22),
-                lineHeight: textLineHeight(22, 1.22),
-              }}
-            >
-              {tr("routines.title")}
-            </Text>
-            <Badge
-              label={tr("routines.activeCount", { count: formatCount(activeRoutineCount()) })}
-              tone={activeRoutineCount() > 0 ? "success" : "neutral"}
-            />
-          </View>
-          <Text
-            style={{
-              maxWidth: 620,
-              color: palette().textMuted,
-              fontSize: textSize(12.5),
-              lineHeight: textLineHeight(12.5, 1.44),
-            }}
-          >
-            {tr("routines.subtitle")}
-          </Text>
-        </View>
-
-        <SegmentedTabs
-          size="md"
-          options={filterTabOptions()}
-          value={routineFilter()}
-          onChange={next => routineFilter.set(next)}
-        />
-
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <If when={routinesBusy()}>
-            <Spinner size={14} />
-          </If>
-          <IconButton
-            icon="refresh"
-            size="md"
-            accessibilityLabel="routines-refresh"
-            tooltip={tr("routines.refreshTooltip")}
-            disabled={routinesBusy()}
-            onPress={() => void loadRoutines()}
-          />
-          <Button
-            label={tr("routines.newRoutine")}
-            variant="primary"
-            size="md"
-            leadingIcon="plus"
-            accessibilityLabel="routines-new"
-            onPress={() => openCreateRoutineDraft()}
-          />
-        </View>
-      </View>
-
-      <If when={routinesError()}>
-        {err => (
-          <View style={{ paddingHorizontal: 24, paddingTop: 12 }}>
-            <InlineBanner tone="danger" message={localizeHostError(err())} />
-          </View>
-        )}
-      </If>
-
-      <If when={routinesNotice() && !routinesError()}>
-        <View style={{ paddingHorizontal: 24, paddingTop: 12 }}>
-          <InlineBanner
-            tone="success"
-            message={routinesNotice() ?? ""}
-            onDismiss={() => routinesNotice.set("")}
-          />
-        </View>
-      </If>
-
-      <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row" }}>
-        <Scroll
-          style={{ flex: 1, minWidth: 0, minHeight: 0 }}
-          contentStyle={{ padding: 24, gap: 20 }}
-        >
-          <If when={routinePeerDeliveryNotice()}>
-            {notice => <InlineBanner tone="warning" message={notice()} />}
-          </If>
-
-          <If when={routines().length > 0}>
-            <SectionCard
-              title={tr("routines.dueNext24h")}
-              subtitle={
-                dueNext24Hours().length > 0
-                  ? formatPlural(dueNext24Hours().length, "format.runOne", "format.runOther")
-                  : tr("routines.noneDueNext24h")
-              }
-            >
-              <If when={dueNext24Hours().length > 0}>
-                <View
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                    gap: 10,
-                  }}
-                >
-                  <Each of={dueNext24Hours()} key={item => `due:${item.job.id}:${item.atMs}`}>
-                    {item => <Due24hCard item={item} />}
-                  </Each>
-                </View>
+    <View
+      onLayout={event => {
+        trackStudioWidth(event);
+        const width = Math.round(event.bounds.size.width);
+        if (width > 0) routinesWidth.set(width);
+      }}
+      style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row", backgroundColor: palette().canvas }}
+    >
+      <Scroll style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+        <StudioHeader
+          title={tr("routines.title")}
+          subtitle={tr("routines.subtitle")}
+          actions={
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <If when={routinesBusy()}>
+                <Spinner size={14} />
               </If>
-            </SectionCard>
-          </If>
-
-          <View style={{ gap: 12 }}>
-            <Text
-              style={{
-                color: palette().text,
-                fontSize: textSize(15),
-                fontWeight: "600",
-                letterSpacing: textTracking(15),
-                fontVariant: ["tabular-nums"],
-                lineHeight: textLineHeight(15, 1.3),
-              }}
-            >
-              {tr("routines.allRoutinesCount", { count: formatCount(filteredRoutines().length) })}
-            </Text>
-
-            <If when={filteredRoutines().length === 0}>
-              <EmptyStateCard
-                icon="calendar"
-                title={
-                  routines().length === 0
-                    ? tr("routines.emptyTitle")
-                    : tr("routines.emptyFilteredTitle")
-                }
-                subtitle={
-                  routines().length === 0
-                    ? tr("routines.emptySubtitle")
-                    : tr("routines.emptyFilteredSubtitle")
-                }
-                actionLabel={
-                  routines().length === 0
-                    ? tr("routines.createRoutine")
-                    : tr("routines.showAllRoutines")
-                }
-                onAction={() => {
-                  if (routines().length === 0) openCreateRoutineDraft();
-                  else routineFilter.set("all");
-                }}
+              <IconButton
+                icon="refresh"
+                size="md"
+                accessibilityLabel="routines-refresh"
+                tooltip={tr("routines.refreshTooltip")}
+                disabled={routinesBusy()}
+                onPress={() => void loadRoutines()}
               />
-            </If>
+              <Button
+                label={tr("routines.newRoutine")}
+                variant="primary"
+                size="md"
+                leadingIcon="plus"
+                accessibilityLabel="routines-new"
+                onPress={() => openCreateRoutineDraft()}
+              />
+            </View>
+          }
+          extra={
+            <StudioToolbar
+              leading={
+                <SegmentedTabs
+                  size="sm"
+                  options={filterTabOptions()}
+                  value={routineFilter()}
+                  onChange={next => routineFilter.set(next)}
+                />
+              }
+              trailing={
+                <SearchInput
+                  size="md"
+                  value={routineQuery()}
+                  placeholder={tr("routines.polish.searchPlaceholder")}
+                  accessibilityLabel="routines-search-input"
+                  style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 240 }}
+                  onChange={value => routineQuery.set(value)}
+                />
+              }
+            />
+          }
+        />
+        <RoutinesBody />
+      </Scroll>
 
-            <If when={filteredRoutines().length > 0}>
-              <View style={{ gap: 12 }}>
-                <Each of={filteredRoutines()} key={job => job.id}>
-                  {job => <RoutineCard job={job} />}
-                </Each>
-              </View>
-            </If>
-          </View>
+      <If when={sideCalendar()}>
+        <Scroll
+          accessibilityLabel="routines-calendar-panel"
+          style={{
+            width: 340,
+            flexShrink: 0,
+            minHeight: 0,
+            borderLeftWidth: 1,
+            borderColor: palette().borderSubtle,
+            backgroundColor: palette().canvas,
+          }}
+          contentStyle={{ paddingHorizontal: 20, paddingTop: 28, paddingBottom: 32 }}
+        >
+          <CalendarBlock />
         </Scroll>
-
-        <CalendarPanel />
-      </View>
+      </If>
 
       <RoutineEditorModal />
     </View>

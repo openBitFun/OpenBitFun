@@ -615,6 +615,32 @@ impl DesktopSessionApplication {
         Ok(())
     }
 
+    /// Acknowledges a session's unread result for every client: the host
+    /// receipt is cleared only when the reader saw a result at least as new as
+    /// the one recorded (`seen_through_ms`), so a turn that settled later stays
+    /// unread. Returns whether the receipt changed.
+    pub(crate) async fn mark_session_seen(
+        &self,
+        request: DesktopSessionScopeRequest,
+        session_id: &str,
+        seen_through_ms: Option<u64>,
+    ) -> DesktopSessionApplicationResult<bool> {
+        let scope = self.resolved_scope(request).await?;
+        self.ensure_runtime_ownership(&scope)?;
+        let storage_path = self.storage_path(&scope);
+        let mut changed = false;
+        self.compatibility
+            .update_persisted_session_metadata(&storage_path, session_id, |current| {
+                changed = openbitfun_core::agentic::session_policy::acknowledge_session_unread(
+                    current,
+                    seen_through_ms,
+                );
+            })
+            .await
+            .map_err(|error| DesktopSessionApplicationError::Core(error.to_string()))?;
+        Ok(changed)
+    }
+
     pub(crate) async fn generate_usage_report(
         &self,
         request: DesktopSessionScopeRequest,

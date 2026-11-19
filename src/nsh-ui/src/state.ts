@@ -1,18 +1,26 @@
 // Application state. NSH components run once, so the store is plain signals and
 // the loaders below; a change re-runs only the bindings that read that signal.
 
-import { computed, signal } from "nsh";
-import { attachmentContexts, clearAttachments } from "./attachmentStore";
+import { computed, signal, Storage } from "nsh";
+import {
+  attachmentContexts,
+  clearAttachments,
+  imageAttachments,
+  type ImageAttachment,
+} from "./attachmentStore";
 import { invokeCommand, listenEvent } from "./bridge";
 import {
   currentLocale,
   loadAppLocale,
   setAppLocale,
   syncLocaleFromHost,
+  tr,
   type AppLocale,
 } from "./i18n";
+import { peerScope, peerSupports } from "./peerState";
 import { resetPermissions } from "./permissionStore";
-import { markSessionSeen } from "./sessionStatusStore";
+import { markSessionSeen, reconcileSessionReadState } from "./sessionStatusStore";
+import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 import { loadQuestionMailbox, resetQuestionPrompts } from "./userQuestionStore";
 import {
   archiveSession,
@@ -21,6 +29,7 @@ import {
   createSession,
   deletePersistedSession,
   forkSession,
+  getCurrentWorkspace,
   getOpenedWorkspaces,
   getRecentWorkspaces,
   interruptDialogTurn,
@@ -28,12 +37,18 @@ import {
   loadSessionTurns,
   normalizeSessionSummary,
   openWorkspace,
+  openWorkspaceById,
+  removeRecentWorkspace,
   saveSessionName,
+  sessionMetadataForSave,
   setActiveWorkspace,
   startDialogTurn,
-  steerDialogTurn,
+  stopDialogTurn,
+  submitUserMessage,
   unarchiveSession,
+  type SubmitUserMessageResult,
   updateSessionMode,
+  updateWorkspaceInfo,
   type SessionSummary,
   type WorkspaceRecord,
 } from "./api";
@@ -123,8 +138,8 @@ export function goForwardScene(): void {
 }
 
 /** Right/left auxiliary workbench pane state (`WorkbenchLayout` / `AuxPane`). */
-export const AUX_MIN_WIDTH = 280;
-export const AUX_MAX_WIDTH = 760;
+export const AUX_MIN_WIDTH = 300;
+export const AUX_MAX_WIDTH = 1200;
 export const auxPaneOpen = signal(false);
 export const auxPaneTab = signal<AuxPaneTab>("files");
 export const auxPaneWidth = signal(460);
@@ -165,13 +180,71 @@ export function swapAuxPanes(): void {
 
 /** Left NavPanel width & session tree grouping. */
 export const NAV_MIN_WIDTH = 216;
-export const NAV_MAX_WIDTH = 420;
-export const navWidth = signal(272);
+export const NAV_MAX_WIDTH = 480;
+export const NAV_DEFAULT_WIDTH = 280;
+/** A sidebar dragged narrower than this collapses, as the desktop's does. */
+export const NAV_COLLAPSE_WIDTH = 64;
+export const navWidth = signal(NAV_DEFAULT_WIDTH);
 export const sessionGrouping = signal<SessionGrouping>("grouped");
+/** Workspace rows the user folded in the sidebar, by workspace id. */
+export const collapsedWorkspaces = signal<Record<string, boolean>>({});
 
 export function setNavWidth(width: number): void {
   const clamped = Math.max(NAV_MIN_WIDTH, Math.min(NAV_MAX_WIDTH, Math.round(width)));
   navWidth.set(clamped);
+}
+
+/**
+ * The shell's own layout (sidebar open and width, aux pane width and side,
+ * session grouping, folded workspaces), kept in this surface's storage. The
+ * document is read tolerantly: a missing or malformed field keeps its default,
+ * so an older or newer build's document never resets the others.
+ */
+export const SHELL_LAYOUT_STORAGE_KEY = "openbitfun.nsh.shell-layout.v1";
+let shellLayoutLoaded = false;
+
+export async function loadShellLayout(): Promise<void> {
+  try {
+    const raw = await Storage.getItem(SHELL_LAYOUT_STORAGE_KEY);
+    if (raw) {
+      const doc = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof doc.drawerOpen === "boolean") drawerOpen.set(doc.drawerOpen);
+      if (typeof doc.navWidth === "number" && Number.isFinite(doc.navWidth)) setNavWidth(doc.navWidth);
+      if (typeof doc.auxPaneWidth === "number" && Number.isFinite(doc.auxPaneWidth)) {
+        setAuxPaneWidth(doc.auxPaneWidth);
+      }
+      if (doc.auxPaneSide === "left" || doc.auxPaneSide === "right") auxPaneSide.set(doc.auxPaneSide);
+      if (doc.sessionGrouping === "grouped" || doc.sessionGrouping === "flat") {
+        sessionGrouping.set(doc.sessionGrouping);
+      }
+      if (doc.collapsedWorkspaces && typeof doc.collapsedWorkspaces === "object") {
+        const folded: Record<string, boolean> = {};
+        for (const [id, value] of Object.entries(doc.collapsedWorkspaces as Record<string, unknown>)) {
+          if (value === true) folded[id] = true;
+        }
+        collapsedWorkspaces.set(folded);
+      }
+    }
+  } catch {
+    // An unreadable document keeps the defaults; it is overwritten on the next change.
+  } finally {
+    shellLayoutLoaded = true;
+  }
+}
+
+/** Writes the current layout; called from an effect in the shell. */
+export function persistShellLayout(): void {
+  const doc = {
+    drawerOpen: drawerOpen(),
+    navWidth: navWidth(),
+    auxPaneWidth: auxPaneWidth(),
+    auxPaneSide: auxPaneSide(),
+    sessionGrouping: sessionGrouping(),
+    collapsedWorkspaces: collapsedWorkspaces(),
+  };
+  // Never write before the stored document was read, or launch defaults win.
+  if (!shellLayoutLoaded) return;
+  void Storage.setItem(SHELL_LAYOUT_STORAGE_KEY, JSON.stringify(doc)).catch(() => undefined);
 }
 
 export const workspaces = signal<WorkspaceRecord[]>([]);
@@ -180,6 +253,8 @@ export const sessions = signal<SessionSummary[]>([]);
 export const sessionTotal = signal(0);
 export const activeSessionId = signal<string | null>(null);
 export const sessionTurns = signal<unknown[]>([]);
+/** True from selecting a session until its first `load_session_turns` answer lands. */
+export const turnsLoading = signal(false);
 export const busy = signal(false);
 export const lastError = signal<string | null>(null);
 
@@ -234,6 +309,33 @@ export function onStreamCleared(handler: () => void): () => void {
   return () => {
     streamClearedHandlers.delete(handler);
   };
+}
+
+export type SessionSwitchPhase = "leave" | "enter" | "reset";
+const sessionSwitchHandlers = new Set<(phase: SessionSwitchPhase, sessionId: string | null) => void>();
+
+/**
+ * Lets `agentEvents` keep a running turn per session: `leave` fires before the
+ * open session's stream is cleared, `enter` after the next one is selected, and
+ * `reset` when the machine being read changes.
+ */
+export function onSessionSwitch(
+  handler: (phase: SessionSwitchPhase, sessionId: string | null) => void,
+): () => void {
+  sessionSwitchHandlers.add(handler);
+  return () => {
+    sessionSwitchHandlers.delete(handler);
+  };
+}
+
+function notifySessionSwitch(phase: SessionSwitchPhase, sessionId: string | null): void {
+  for (const handler of [...sessionSwitchHandlers]) {
+    try {
+      handler(phase, sessionId);
+    } catch {
+      // A failed restore must not block selecting the session.
+    }
+  }
 }
 
 /** True when a session metadata row is archived (supports both Rust `status` and fixture `persistedStatus`). */
@@ -329,22 +431,114 @@ export async function runStep(
   }
 }
 
-export async function loadWorkspaces(): Promise<void> {
+/**
+ * Workspaces the host remembers but has not opened. They are listed apart and
+ * reopened through `open_workspace`; `set_active_workspace` only switches between
+ * opened ones, so a recent row must never be selected as if it were open.
+ */
+export const recentWorkspaces = signal<WorkspaceRecord[]>([]);
+/** False until the first workspace read answered, so the sidebar can say "loading". */
+export const workspacesLoaded = signal(false);
+
+function uniqueWorkspaces(list: ReadonlyArray<WorkspaceRecord | null | undefined>): WorkspaceRecord[] {
+  const out: WorkspaceRecord[] = [];
+  for (const record of list) {
+    if (!record?.id || out.some(item => item.id === record.id)) continue;
+    out.push(record);
+  }
+  return out;
+}
+
+/**
+ * Reads the opened and recent lists. The selection follows the host: a surface
+ * that has no selection (startup, a device change) takes the workspace the host
+ * reports as current, then the first opened one; only when nothing is open at
+ * all and `autoOpenRecent` is set does it reopen the most recent workspace.
+ */
+export async function loadWorkspaces(options?: { autoOpenRecent?: boolean }): Promise<void> {
+  let reopen: WorkspaceRecord | null = null;
   await runStep(async () => {
-    const [opened, recent] = await Promise.all([
-      getOpenedWorkspaces().catch(() => [] as WorkspaceRecord[]),
-      getRecentWorkspaces(),
-    ]);
-    const merged: WorkspaceRecord[] = [];
-    for (const record of [...opened, ...recent]) {
-      if (!record?.id || merged.some(item => item.id === record.id)) continue;
-      merged.push(record);
+    try {
+      const [openedRaw, recentRaw, current] = await Promise.all([
+        getOpenedWorkspaces(),
+        getRecentWorkspaces().catch(() => [] as WorkspaceRecord[]),
+        getCurrentWorkspace().catch(() => null),
+      ]);
+      const opened = uniqueWorkspaces(Array.isArray(openedRaw) ? openedRaw : []);
+      const openedIds = new Set(opened.map(item => item.id));
+      const recent = uniqueWorkspaces(Array.isArray(recentRaw) ? recentRaw : []).filter(
+        item => !openedIds.has(item.id),
+      );
+      workspaces.set(opened);
+      recentWorkspaces.set(recent);
+      const selected = activeWorkspaceId();
+      if (selected && openedIds.has(selected)) return;
+      if (current?.id && openedIds.has(current.id)) {
+        selectWorkspace(current.id, { syncHost: false });
+      } else if (opened.length > 0) {
+        selectWorkspace(opened[0].id);
+      } else {
+        if (selected) clearWorkspaceSelection();
+        if (options?.autoOpenRecent && recent.length > 0) reopen = recent[0];
+      }
+    } finally {
+      workspacesLoaded.set(true);
     }
-    workspaces.set(merged);
-    const current = activeWorkspaceId();
-    if (!current && merged.length > 0) {
-      selectWorkspace(merged[0].id);
+  });
+  if (reopen) await openRecentWorkspace(reopen);
+}
+
+function clearWorkspaceSelection(): void {
+  activeWorkspaceId.set(null);
+  activeSessionId.set(null);
+  sessionTurns.set([]);
+  sessions.set([]);
+  sessionCursor.set(null);
+  sessionHasMore.set(false);
+  sessionTotal.set(0);
+  runningTurnId.set(null);
+  clearPendingTurn();
+  clearStreamedText();
+  notifyWorkspaceChanged();
+}
+
+/**
+ * Reopens a workspace from the recent list. The host makes it active as it opens
+ * it, so the selection follows without a separate `set_active_workspace`.
+ */
+export async function openRecentWorkspace(record: WorkspaceRecord): Promise<void> {
+  await runStep(async () => {
+    const legacyPathOnly = peerScope() !== null && peerSupports("workspace_id_references_v1") === false;
+    const opened = await openWorkspaceById(record, legacyPathOnly);
+    await loadWorkspaces();
+    const id = opened?.id || record.id;
+    if (opened?.id && !workspaces().some(item => item.id === opened.id)) {
+      workspaces.update(current => [opened, ...current]);
     }
+    recentWorkspaces.update(current => current.filter(item => item.id !== id));
+    selectWorkspace(id, { syncHost: false });
+  });
+}
+
+/** Drops a workspace from the host's recent list (not a delete of its files). */
+export async function forgetRecentWorkspace(workspaceId: string): Promise<void> {
+  await runStep(async () => {
+    await removeRecentWorkspace(workspaceId);
+    recentWorkspaces.update(current => current.filter(item => item.id !== workspaceId));
+  });
+}
+
+/** Renames an opened workspace through the host and keeps the row in place. */
+export async function renameWorkspace(workspaceId: string, name: string): Promise<void> {
+  const next = name.trim();
+  if (!workspaceId || !next) return;
+  await runStep(async () => {
+    const updated = await updateWorkspaceInfo(workspaceId, next);
+    workspaces.update(current =>
+      current.map(item =>
+        item.id === workspaceId ? { ...item, ...(updated ?? {}), name: updated?.name ?? next } : item,
+      ),
+    );
   });
 }
 
@@ -369,16 +563,28 @@ export async function resetForDeviceChange(): Promise<void> {
   clearPendingTurn();
   turnError.set("");
   workspaces.set([]);
+  recentWorkspaces.set([]);
+  workspacesLoaded.set(false);
   // The agents this surface bound belong to the sessions of the machine it left.
   sessionAgentTypes.set({});
+  composerDrafts.clear();
+  notifySessionSwitch("reset", null);
   resetPermissions();
   resetQuestionPrompts();
   notifyWorkspaceChanged();
   await loadWorkspaces();
 }
 
-export function selectWorkspace(workspaceId: string): void {
+export function selectWorkspace(workspaceId: string, options?: { syncHost?: boolean }): void {
   if (activeWorkspaceId() === workspaceId) return;
+  // A recent workspace is not open on the host: reopen it instead of pretending.
+  if (!workspaces().some(item => item.id === workspaceId)) {
+    const recent = recentWorkspaces().find(item => item.id === workspaceId);
+    if (recent) {
+      void openRecentWorkspace(recent);
+      return;
+    }
+  }
   activeWorkspaceId.set(workspaceId);
   activeSessionId.set(null);
   sessionTurns.set([]);
@@ -388,7 +594,10 @@ export function selectWorkspace(workspaceId: string): void {
   clearPendingTurn();
   clearStreamedText();
   notifyWorkspaceChanged();
-  void setActiveWorkspace(workspaceId).catch(() => undefined);
+  if (options?.syncHost !== false) {
+    // A refused switch leaves the host on another workspace; say so.
+    void setActiveWorkspace(workspaceId).catch(reportError);
+  }
   void loadSessions();
 }
 
@@ -411,8 +620,13 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
   if (!workspaceId) return;
   await runStep(async () => {
     await invokeCommand<unknown>("close_workspace", { workspaceId });
+    const closed = workspaces().find(item => item.id === workspaceId);
     const remaining = workspaces().filter(item => item.id !== workspaceId);
     workspaces.set(remaining);
+    // The host keeps a closed workspace in its recent list; mirror it until the next read.
+    if (closed && !recentWorkspaces().some(item => item.id === workspaceId)) {
+      recentWorkspaces.update(current => [closed, ...current]);
+    }
     if (activeWorkspaceId() === workspaceId) {
       const next = remaining[0] ?? null;
       activeWorkspaceId.set(null);
@@ -441,6 +655,7 @@ export async function loadSessions(): Promise<void> {
     const page = await listSessions(workspaceId, 50);
     if (activeWorkspaceId() !== workspaceId) return;
     sessions.set(page.sessions ?? []);
+    reconcileSessionReadState(page.sessions ?? []);
     sessionTotal.set(page.totalTopLevelCount ?? page.sessions?.length ?? 0);
     sessionCursor.set(page.nextCursor ?? null);
     sessionHasMore.set(page.hasMore === true);
@@ -464,6 +679,7 @@ export async function refreshSessionsSilently(): Promise<void> {
     const incoming = page.sessions ?? [];
     if (!incoming.length && sessions().length > 0 && page.totalTopLevelCount === undefined) return;
     sessions.set(incoming);
+    reconcileSessionReadState(incoming);
     if (typeof page.totalTopLevelCount === "number") {
       sessionTotal.set(page.totalTopLevelCount);
     }
@@ -484,6 +700,7 @@ export async function loadMoreSessions(): Promise<void> {
     const known = new Set(sessions().map(item => item.sessionId));
     const extra = (page.sessions ?? []).filter(item => !known.has(item.sessionId));
     sessions.set([...sessions(), ...extra]);
+    reconcileSessionReadState(extra);
     sessionCursor.set(page.nextCursor ?? null);
     sessionHasMore.set(page.hasMore === true);
     sessionTotal.set(page.totalTopLevelCount ?? sessions().length);
@@ -498,12 +715,16 @@ export function selectSession(sessionId: string): void {
   activeSessionId.set(sessionId);
   if (!openSessionIds().includes(sessionId)) openSessionIds.update(ids => [...ids, sessionId]);
   if (previous !== sessionId) {
+    notifySessionSwitch("leave", previous);
+    swapComposerDraft(previous, sessionId);
     sessionTurns.set([]);
+    turnsLoading.set(true);
     clearPendingTurn();
     clearStreamedText();
     turnError.set("");
   }
   runningTurnId.set(runningTurns()[sessionId] ?? null);
+  if (previous !== sessionId) notifySessionSwitch("enter", sessionId);
   // Opening a session is what makes it read; its row compares against this stamp.
   const row = sessions().find(item => item.sessionId === sessionId);
   markSessionSeen(sessionId, sessionLastActivityMs(row));
@@ -519,12 +740,46 @@ export function closeSessionTab(sessionId: string): void {
   openSessionIds.set(remaining);
   if (activeSessionId() !== sessionId) return;
   const fallback = remaining[remaining.length - 1];
+  notifySessionSwitch("leave", sessionId);
+  swapComposerDraft(sessionId, null);
   activeSessionId.set(null);
   sessionTurns.set([]);
   runningTurnId.set(null);
   clearPendingTurn();
   clearStreamedText();
   if (fallback) selectSession(fallback);
+}
+
+/** How many of the newest turns a session loads; "Load earlier" widens it. */
+export const TURN_WINDOW_STEP = 30;
+export const turnWindows = signal<Record<string, number>>({});
+
+function turnWindowOf(sessionId: string): number {
+  return turnWindows()[sessionId] ?? TURN_WINDOW_STEP;
+}
+
+/**
+ * Whether the host holds turns older than the loaded window: the catalogue's
+ * `turnCount` says so exactly, and without it a full window is taken to mean
+ * there may be more.
+ */
+export const hasEarlierTurns = computed(() => {
+  const sessionId = activeSessionId();
+  if (!sessionId) return false;
+  const loaded = sessionTurns().length;
+  const row = sessions().find(item => item.sessionId === sessionId) as
+    | (SessionSummary & { turnCount?: number })
+    | undefined;
+  if (typeof row?.turnCount === "number") return row.turnCount > loaded;
+  return loaded >= turnWindowOf(sessionId);
+});
+
+/** Widens the open session's window by one step and reloads it. */
+export async function loadEarlierTurns(): Promise<void> {
+  const sessionId = activeSessionId();
+  if (!sessionId) return;
+  turnWindows.update(current => ({ ...current, [sessionId]: turnWindowOf(sessionId) + TURN_WINDOW_STEP }));
+  await loadTurns(sessionId, { silent: true });
 }
 
 export async function loadTurns(
@@ -536,7 +791,12 @@ export async function loadTurns(
   let loaded: unknown[] | null = null;
   await runStep(
     async () => {
-      const turns = await loadSessionTurns(sessionId, workspaceId);
+      let turns: unknown[] | null = null;
+      try {
+        turns = await loadSessionTurns(sessionId, workspaceId, turnWindowOf(sessionId));
+      } finally {
+        if (activeSessionId() === sessionId) turnsLoading.set(false);
+      }
       if (activeSessionId() !== sessionId) return;
       const list = Array.isArray(turns) ? turns : [];
       sessionTurns.set(list);
@@ -573,6 +833,8 @@ export const thinkingText = signal<string>("");
 export function setPendingTurn(sessionId: string, userText: string, turnId?: string): void {
   const trimmed = userText.trim();
   if (!sessionId || !trimmed) return;
+  // The new turn joins the window instead of pushing the oldest loaded one out.
+  turnWindows.update(current => ({ ...current, [sessionId]: turnWindowOf(sessionId) + 1 }));
   pendingTurnState.set({
     sessionId,
     ...(turnId ? { turnId } : {}),
@@ -663,78 +925,144 @@ export const runningTurns = signal<Record<string, string>>({});
 export const composerText = signal<string>("");
 
 /**
- * Starts a dialog turn on the selected session. The reply is not awaited here:
- * `start_dialog_turn` returns immediately once Rust spawns the task, so the
- * optimistic `pendingTurn` stays visible across TTFT and streaming until
- * persisted turns settle (never flashing back to the empty Welcome Studio!).
+ * What each session's composer held when another session was opened, so a draft
+ * and its attachments stay with the session they were written for.
  */
-export async function sendTurn(text: string): Promise<void> {
-  const workspaceId = activeWorkspaceId();
+const composerDrafts = new Map<string, { text: string; attachments: ImageAttachment[] }>();
+
+function swapComposerDraft(previous: string | null, next: string | null): void {
+  if (previous) {
+    const text = composerText();
+    const attachments = imageAttachments();
+    if (text || attachments.length) composerDrafts.set(previous, { text, attachments });
+    else composerDrafts.delete(previous);
+  }
+  const draft = next ? composerDrafts.get(next) : undefined;
+  // Nothing was open before: whatever the composer holds (a starter card, a quick
+  // prompt) is meant for the session being opened.
+  if (!previous && !draft) return;
+  composerText.set(draft?.text ?? "");
+  imageAttachments.set(draft?.attachments ?? []);
+  if (next) composerDrafts.delete(next);
+}
+
+/** Why the composer could not send mid-turn on this host, or empty. */
+export const sendNotice = signal("");
+
+/**
+ * Sends the composer's message for the selected session through the host's
+ * `submit_user_message`: the host applies `app.flow_chat.send_during_turn` and
+ * answers whether the message started a turn, steered the running one or waits
+ * in its queue. Mobile and IM bots go through the same host function, so a
+ * message written during a turn does the same thing whichever client sent it.
+ *
+ * The message goes to the session's own workspace, never to whichever workspace
+ * the UI happens to show. A host older than the command still starts a turn on
+ * an idle session; during a turn it is told to update rather than this surface
+ * guessing the policy.
+ */
+export async function sendTurn(
+  text: string,
+  /** The user's explicit "Steer" / "Queue" press; omitted, the host's setting applies. */
+  sendDuringTurn?: "immediate" | "queue",
+): Promise<SubmitUserMessageResult["outcome"] | null> {
   const sessionId = activeSessionId();
   const body = text.trim();
-  if (!workspaceId || !sessionId || !body) return;
+  if (!sessionId || !body) return null;
+  // The row says which workspace owns the session. A session open in a tab whose
+  // workspace is no longer listed is sent without one, so the host restores it
+  // from its own binding instead of the workspace this window shows now.
+  const row = sessions().find(item => item.sessionId === sessionId);
+  const workspaceId = row ? row.workspaceId || activeWorkspaceId() || undefined : undefined;
   turnError.set("");
+  sendNotice.set("");
   const attachments = attachmentContexts();
-  const runningTurn = runningTurnId();
-  if (runningTurn) {
-    await steerTurn(sessionId, runningTurn, body, attachments);
-    return;
+  const running = Boolean(runningTurnId());
+  if (!running) {
+    // Optimistic: the pending bubble stays across TTFT until persisted turns
+    // settle (no flash back to the empty Welcome Studio on send).
+    clearStreamedText();
+    setPendingTurn(sessionId, body);
   }
-  clearStreamedText();
-  setPendingTurn(sessionId, body);
+  let outcome: SubmitUserMessageResult["outcome"] | null = null;
   await runStep(async () => {
     try {
-      await startDialogTurn({
+      const result = await submitUserMessage({
         sessionId,
-        userInput: body,
+        ...(workspaceId ? { workspaceId } : {}),
+        text: body,
         agentType: agentTypeOf(sessionId),
-        workspaceId,
-        ...(activeWorkspaceRoot() ? { workspacePath: activeWorkspaceRoot() } : {}),
-        ...(attachments.length ? { imageContexts: attachments } : {}),
+        ...(attachments.length ? { attachments } : {}),
+        ...(running && sendDuringTurn ? { sendDuringTurn } : {}),
       });
+      outcome = result.outcome;
       composerText.set("");
       clearAttachments();
-      // Keep `pendingTurn` & `pendingTurnState` alive until `loadTurns()`
-      // reconciles the persisted turn (eliminates Welcome Studio flash on send).
+      if (result.outcome === "started") {
+        bindPendingTurnId(sessionId, result.turnId, body);
+      } else {
+        // Steered into the running turn or waiting in the host queue: either way
+        // no new turn starts from this message now.
+        if (!running) clearPendingTurn(sessionId);
+        if (result.outcome === "steered") await loadTurns(sessionId);
+      }
     } catch (error) {
-      clearPendingTurn(sessionId);
+      if (isMissingCommand(error, "submit_user_message")) {
+        outcome = await sendWithLegacyHost(
+          sessionId,
+          workspaceId ?? activeWorkspaceId() ?? "",
+          body,
+          attachments,
+          running,
+        );
+        return;
+      }
+      if (!running) clearPendingTurn(sessionId);
       turnError.set(error instanceof Error ? error.message : String(error));
     }
   });
+  return outcome;
 }
 
 /**
- * Injects the composer's text into the running turn. The transcript is reloaded
- * afterwards so the steering message appears where the host recorded it.
+ * A host without `submit_user_message`: an idle session still starts a turn; a
+ * message written during a turn is kept in the composer with an explicit notice,
+ * because only a newer host decides between steering and queueing.
  */
-async function steerTurn(
+async function sendWithLegacyHost(
   sessionId: string,
-  dialogTurnId: string,
+  workspaceId: string,
   body: string,
-  attachments: Array<ReturnType<typeof attachmentContexts>[number]>,
-): Promise<void> {
-  await runStep(async () => {
-    try {
-      await steerDialogTurn({
-        sessionId,
-        dialogTurnId,
-        content: body,
-        displayContent: body,
-        ...(attachments.length ? { imageContexts: attachments } : {}),
-      });
-      composerText.set("");
-      clearAttachments();
-      await loadTurns(sessionId);
-    } catch (error) {
-      turnError.set(error instanceof Error ? error.message : String(error));
-    }
-  });
+  attachments: ReturnType<typeof attachmentContexts>,
+  running: boolean,
+): Promise<SubmitUserMessageResult["outcome"] | null> {
+  if (running) {
+    sendNotice.set(tr("chat.send.hostUpdateRequired"));
+    return null;
+  }
+  try {
+    await startDialogTurn({
+      sessionId,
+      userInput: body,
+      agentType: agentTypeOf(sessionId),
+      workspaceId,
+      ...(attachments.length ? { imageContexts: attachments } : {}),
+    });
+    composerText.set("");
+    clearAttachments();
+    return "started";
+  } catch (error) {
+    clearPendingTurn(sessionId);
+    turnError.set(error instanceof Error ? error.message : String(error));
+    return null;
+  }
 }
 
 /**
- * Stops the turn the host reported as running. Interruption is asked for first
- * and hard cancellation is the fallback, mirroring the React surface: a runtime
- * without an interruption surface for this session must still stop.
+ * Stops the turn the host reported as running. The host's `stop_dialog_turn`
+ * interrupts when it can and cancels otherwise, so every client stops the same
+ * way. A host older than that command gets the interruption it has, with hard
+ * cancellation behind it, which is what such a host itself offered.
  */
 export async function stopRunningTurn(): Promise<void> {
   const sessionId = activeSessionId();
@@ -742,9 +1070,14 @@ export async function stopRunningTurn(): Promise<void> {
   if (!sessionId || !turnId) return;
   await runStep(async () => {
     try {
-      await interruptDialogTurn(sessionId, turnId);
-    } catch {
-      await cancelDialogTurn(sessionId, turnId);
+      await stopDialogTurn(sessionId, turnId);
+    } catch (error) {
+      if (!isMissingCommand(error, "stop_dialog_turn")) throw error;
+      try {
+        await interruptDialogTurn(sessionId, turnId);
+      } catch {
+        await cancelDialogTurn(sessionId, turnId);
+      }
     }
     runningTurnId.set(null);
     runningTurns.update(current => {
@@ -821,7 +1154,15 @@ export async function renameSession(sessionId: string, name: string): Promise<vo
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return;
   await runStep(async () => {
-    await saveSessionName({ sessionId, sessionName: name }, workspaceId);
+    const row = sessions().find(item => item.sessionId === sessionId);
+    await saveSessionName(
+      sessionMetadataForSave(row as (SessionSummary & Record<string, unknown>) | undefined, {
+        sessionId,
+        sessionName: name,
+        agentType: agentTypeOf(sessionId),
+      }),
+      workspaceId,
+    );
     sessions.update(current =>
       current.map(item => (item.sessionId === sessionId ? { ...item, sessionName: name } : item)),
     );
@@ -874,21 +1215,39 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
   });
 }
 
-/** Forks from the last loaded turn of the session, which is what the row menu offers. */
-export async function forkActiveSession(): Promise<void> {
+function lineageSessionIdOf(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const record = result as Record<string, unknown>;
+  const id = record.sessionId ?? record.session_id;
+  return typeof id === "string" ? id : "";
+}
+
+function persistedTurnIdOf(turn: unknown): string {
+  if (!turn || typeof turn !== "object") return "";
+  const record = turn as Record<string, unknown>;
+  const id = record.turnId ?? record.turn_id ?? record.id;
+  return typeof id === "string" ? id : "";
+}
+
+/**
+ * Forks the active session at one turn (the last loaded one when no turn is
+ * named, which is what the thread menu offers) and opens the fork the host made.
+ */
+export async function forkActiveSession(atTurnId?: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
   const sessionId = activeSessionId();
   if (!workspaceId || !sessionId) return;
   const turns = sessionTurns();
-  const last = turns[turns.length - 1] as Record<string, unknown> | undefined;
-  const turnId = typeof last?.turnId === "string" ? last.turnId : undefined;
+  const turnId = atTurnId || persistedTurnIdOf(turns[turns.length - 1]);
   if (!turnId) {
-    reportError("This session has no loaded turn to fork from");
+    lastError.set(tr("sessions.forkNoTurn"));
     return;
   }
   await runStep(async () => {
-    await forkSession(sessionId, turnId, workspaceId);
+    const forked = await forkSession(sessionId, turnId, workspaceId);
     await loadSessions();
+    const forkedId = lineageSessionIdOf(forked);
+    if (forkedId) selectSession(forkedId);
   });
 }
 
@@ -900,7 +1259,8 @@ export async function copyActiveSession(): Promise<void> {
   await runStep(async () => {
     const copied = await copySession(sessionId, workspaceId);
     await loadSessions();
-    if (copied?.session_id) await selectSession(copied.session_id);
+    const copiedId = lineageSessionIdOf(copied);
+    if (copiedId) selectSession(copiedId);
   });
 }
 

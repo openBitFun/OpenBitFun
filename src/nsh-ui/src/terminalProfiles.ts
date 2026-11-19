@@ -5,10 +5,16 @@
 // device surface and the workspace; those entries name a chat session, which is
 // how its terminal panel binds a tab. This surface's tabs are host terminal
 // sessions, so writing there would hand the desktop records it cannot resolve.
-// The list is therefore this surface's own file, keyed by workspace root.
+// The list is therefore this surface's own file. Entries are keyed by device and
+// workspace id (`id:<device>:<workspaceId>`), the identity the desktop keys its
+// own profiles by, so two workspaces at the same path (a local folder and an SSH
+// host's) never share a list. Lists written by older builds under the bare
+// workspace root are still read until the workspace saves under its id; they
+// are never deleted.
 
 import { Storage, signal } from "nsh";
-import { activeWorkspaceRoot } from "./state";
+import { peerScope } from "./peerState";
+import { activeWorkspaceId, activeWorkspaceRoot } from "./state";
 
 export interface TerminalProfile {
   id: string;
@@ -25,7 +31,7 @@ export interface TerminalProfile {
 const STORAGE_KEY = "openbitfun.nsh.terminal-profiles.v1";
 const MAX_PROFILES = 20;
 
-/** Profiles by workspace root; a workspace without an entry has none. */
+/** Profiles by workspace key (or a legacy root); a workspace without an entry has none. */
 export const terminalProfiles = signal<Record<string, TerminalProfile[]>>({});
 export const profileNotice = signal("");
 /** The profile being edited, or `null` while the list is closed. */
@@ -74,9 +80,24 @@ function persist(): void {
   });
 }
 
+function workspaceProfileKey(): string | null {
+  const id = activeWorkspaceId();
+  return id ? `id:${peerScope()?.deviceId ?? "local"}:${id}` : null;
+}
+
+/** The active workspace's profiles: its id entry, else the legacy entry under its root. */
 export function profilesFor(root: string | null): TerminalProfile[] {
+  const key = workspaceProfileKey();
+  const map = terminalProfiles();
+  if (key && map[key]) return map[key];
   if (!root) return [];
-  return terminalProfiles()[root] ?? [];
+  return map[root] ?? [];
+}
+
+function writeProfiles(next: TerminalProfile[]): void {
+  const key = workspaceProfileKey();
+  if (!key) return;
+  terminalProfiles.update(current => ({ ...current, [key]: next }));
 }
 
 export function openProfileDraft(shellId: string, shellType: string): void {
@@ -126,7 +147,7 @@ export async function saveProfileDraft(): Promise<void> {
   const next = draft.id
     ? existing.map(profile => (profile.id === draft.id ? saved : profile))
     : [...existing, saved];
-  terminalProfiles.update(current => ({ ...current, [root]: next }));
+  writeProfiles(next);
   // The panel stays open so the list and the confirmation are both readable; the
   // form is cleared for the next profile.
   profileDraft.set({
@@ -144,7 +165,7 @@ export function deleteProfile(profileId: string): void {
   const root = activeWorkspaceRoot();
   if (!root) return;
   const next = profilesFor(root).filter(profile => profile.id !== profileId);
-  terminalProfiles.update(current => ({ ...current, [root]: next }));
+  writeProfiles(next);
   profileNotice.set("Profile deleted");
   persist();
 }

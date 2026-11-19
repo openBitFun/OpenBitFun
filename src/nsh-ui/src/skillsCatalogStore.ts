@@ -7,6 +7,7 @@
 
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
+import { tr } from "./i18n";
 import { peerScope } from "./peerState";
 import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot } from "./state";
 
@@ -439,7 +440,11 @@ export async function toggleSkillGlobalDisabled(skill: SkillRecord, nextEnabled:
         return Array.from(set);
       });
     }
-    skillsNotice.set(`${disabled ? "Disabled" : "Enabled"} '${skill.name}'.`);
+    skillsNotice.set(
+      disabled
+        ? tr("skills.store.disabled", { name: skill.name })
+        : tr("skills.store.enabled", { name: skill.name }),
+    );
   } catch (error) {
     skillsNotice.set(error instanceof Error ? error.message : String(error));
   } finally {
@@ -462,7 +467,7 @@ export async function inspectSkill(skill: SkillRecord): Promise<void> {
 
   if (!skill.path.trim()) {
     inspectedSkillLoading.set(false);
-    inspectedSkillError.set("Skill path is unavailable.");
+    inspectedSkillError.set(tr("skills.store.pathUnavailable"));
     return;
   }
 
@@ -506,7 +511,7 @@ export async function removeInstalledSkill(skill: SkillRecord): Promise<void> {
     if (inspectedSkillKey() === skill.key) {
       closeSkillInspector();
     }
-    skillsNotice.set(`Deleted '${skill.name}'.`);
+    skillsNotice.set(tr("skills.store.deleted", { name: skill.name }));
     await loadSkillsCatalog(true);
   } catch (error) {
     skillsNotice.set(error instanceof Error ? error.message : String(error));
@@ -526,7 +531,7 @@ export async function validateFolderSkillPath(): Promise<void> {
   }
   const path = folderPathInput().trim();
   if (!path) {
-    folderInstallError.set("Enter a folder path containing SKILL.md.");
+    folderInstallError.set(tr("skills.store.enterFolderWithSkill"));
     return;
   }
   const workspace = activeWorkspace();
@@ -570,7 +575,7 @@ export async function installFolderSkill(): Promise<void> {
   }
   const sourcePath = folderPathInput().trim();
   if (!sourcePath) {
-    folderInstallError.set("Enter a skill folder path first.");
+    folderInstallError.set(tr("skills.store.enterFolderFirst"));
     return;
   }
   const level = folderLevel();
@@ -579,7 +584,7 @@ export async function installFolderSkill(): Promise<void> {
   const workspacePath = workspace?.rootPath || activeWorkspaceRoot() || null;
 
   if (level === "project" && !workspaceId) {
-    folderInstallError.set("Project-level skill installation requires an open workspace.");
+    folderInstallError.set(tr("skills.store.projectNeedsWorkspace"));
     return;
   }
 
@@ -599,7 +604,7 @@ export async function installFolderSkill(): Promise<void> {
     folderPathInput.set("");
     folderValidation.set(null);
     installDrawerOpen.set(false);
-    skillsNotice.set(`Installed skill '${addedName}' (${level}).`);
+    skillsNotice.set(tr("skills.store.installed", { name: addedName, level }));
     await loadSkillsCatalog(true);
   } catch (error) {
     folderInstallError.set(error instanceof Error ? error.message : String(error));
@@ -671,11 +676,11 @@ export async function installMarketSkill(
   const workspacePath = workspace?.rootPath || activeWorkspaceRoot() || undefined;
 
   if (level === "project" && !workspaceId) {
-    skillsNotice.set("Open a workspace before installing a project-level skill.");
+    skillsNotice.set(tr("skills.store.openWorkspaceFirst"));
     return;
   }
   if (level === "project" && workspace?.workspaceKind === "remote") {
-    skillsNotice.set("Installing project skills into remote workspaces is not supported yet.");
+    skillsNotice.set(tr("skills.store.remoteProjectUnsupported"));
     return;
   }
 
@@ -692,7 +697,7 @@ export async function installMarketSkill(
     recentlyInstalledPackages.update(current =>
       current.includes(pkg) ? current : [...current, pkg],
     );
-    skillsNotice.set(`Installed '${item.name}' (${level}) from marketplace.`);
+    skillsNotice.set(tr("skills.store.marketInstalled", { name: item.name, level }));
     await loadSkillsCatalog(true);
   } catch (error) {
     marketError.set(error instanceof Error ? error.message : String(error));

@@ -1,0 +1,35 @@
+[package]
+name = "nsh-app-openbitfun-mobile-native-macos-app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "nsh-app-openbitfun-mobile-native-macos-app"
+path = "main.rs"
+
+[dependencies]
+nsh-macos-app = { version = "=0.6.1", default-features = false }
+nsh-core = { version = "=0.6.1" }
+nsh-base = { version = "=0.6.1", default-features = false }
+app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "=0.6.1", default-features = false }
+
+[features]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "svg"]
+js = ["nsh-macos-app/js"]
+shader = ["nsh-macos-app/shader"]
+editor = ["nsh-macos-app/editor"]
+emoji-picker = ["nsh-macos-app/emoji-picker"]
+highlight = ["nsh-macos-app/highlight"]
+math = ["nsh-macos-app/math"]
+plot = ["nsh-macos-app/plot"]
+rich-editor = ["nsh-macos-app/rich-editor"]
+term = ["nsh-macos-app/term"]
+zlib = ["nsh-macos-app/zlib"]
+crypto = ["nsh-macos-app/crypto"]
+websocket = ["nsh-macos-app/websocket"]
+updater = ["nsh-macos-app/updater"]
+svg = ["nsh-macos-app/svg"]

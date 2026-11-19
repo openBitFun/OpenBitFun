@@ -1,5 +1,6 @@
 import { Buffer } from "buffer";
-import { Clipboard, signal } from "nsh";
+import { tr } from "./i18n";
+import { Clipboard, Picker, signal } from "nsh";
 
 /**
  * An image the composer carries into the next turn. The React surface sends the
@@ -39,7 +40,7 @@ export async function attachImageFromClipboard(): Promise<void> {
     return;
   }
   if (!image) {
-    attachmentNotice.set("The clipboard holds no image");
+    attachmentNotice.set(tr("chat.attach.noClipboardImage"));
     return;
   }
 
@@ -73,6 +74,46 @@ export async function attachImageFromClipboard(): Promise<void> {
   } catch (error) {
     attachmentNotice.set(error instanceof Error ? error.message : String(error));
   }
+}
+
+/**
+ * Lets the user pick image files with the system picker. The bytes travel as a
+ * data URL, the same field a clipboard image uses, so the host needs no access
+ * to this machine's file system (a remote or Peer host could not open a local
+ * path anyway). A runtime without the `picker` capability says so.
+ */
+export async function attachImagesFromPicker(): Promise<number> {
+  attachmentNotice.set("");
+  let picked: Array<{ file: File; size: { width: number; height: number } }> = [];
+  try {
+    picked = await Picker.pickImages({ multiple: true, limit: 8, maxDimension: 2048 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    attachmentNotice.set(
+      message.includes("ERR_ACCESS_DENIED") ? tr("chat.attach.pickerUnavailable") : message,
+    );
+    return 0;
+  }
+  let added = 0;
+  for (const image of picked) {
+    try {
+      const bytes = new Uint8Array(await image.file.arrayBuffer());
+      const mimeType = image.file.type || "image/png";
+      addAttachment({
+        id: `attachment-${++nextId}`,
+        name: image.file.name || `image-${nextId}.${extensionOf(mimeType)}`,
+        mimeType,
+        fileSize: bytes.byteLength,
+        width: image.size.width,
+        height: image.size.height,
+        dataUrl: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+      });
+      added += 1;
+    } catch (error) {
+      attachmentNotice.set(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return added;
 }
 
 function addAttachment(attachment: ImageAttachment): void {

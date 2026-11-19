@@ -48,6 +48,8 @@ pub mod dispatch_ssh {
         pub protocol_error: Option<String>,
         pub release: Option<DispatchCliRelease>,
         pub protocol: Option<Value>,
+        #[serde(flatten, default)]
+        pub readiness: openbitfun_services_core::dispatch_contract::DispatchProbeReadiness,
     }
 
     pub async fn probe(

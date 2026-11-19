@@ -292,9 +292,11 @@ struct DesktopMiniAppWebHost {
 }
 
 impl DesktopMiniAppWebHost {
-    fn miniapps(&self) -> Option<tauri::State<'_, DesktopMiniApps>> {
+    fn miniapps(&self) -> Option<crate::host::State<'_, DesktopMiniApps>> {
         use tauri::Manager;
-        self.app.try_state::<DesktopMiniApps>()
+        self.app
+            .try_state::<DesktopMiniApps>()
+            .map(crate::host::State::from)
     }
 
     /// Reject an unknown app before involving the UI, and tell the surface which

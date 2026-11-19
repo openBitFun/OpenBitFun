@@ -2497,6 +2497,7 @@ mod tests {
             release: None,
             protocol: Some(json!({ "cliVersion": "1.2.3" })),
             prebuilt_incompatible: None,
+            readiness: Default::default(),
         };
 
         recover_interrupted_cli_install_audit(&store, "job-install-recovery", &probe)

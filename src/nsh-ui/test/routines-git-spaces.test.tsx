@@ -13,6 +13,10 @@ interface WorkbenchFixtures {
   enhancedBranchesFails?: boolean;
   miniapps?: Array<Record<string, unknown>>;
   runningWorkers?: string[];
+  /** `git_push` without an upstream fails the way git does until `set_upstream` is sent. */
+  pushNeedsUpstream?: boolean;
+  /** Checking out this branch fails with git's overwrite diagnostic until the blocking file is committed. */
+  checkoutBlockedBy?: { branch: string; file: string };
 }
 
 function createWorkbenchBackend(
@@ -67,6 +71,7 @@ function createWorkbenchBackend(
   let cronSeq = 2;
 
   let gitIsRepo = fx.gitIsRepo ?? true;
+  let checkoutUnblocked = false;
   let gitTrustState = fx.gitTrustState ?? "trusted";
   let gitStatusState: Record<string, unknown> = {
     staged: [{ path: "/repo/main.rs", status: "M", index_status: "M", workdir_status: null }],
@@ -245,6 +250,8 @@ function createWorkbenchBackend(
       case "git_get_diff": {
         const params = (payload.params ?? {}) as { files?: string[]; staged?: boolean };
         const target = params.files?.[0] ?? "file";
+        // git has no diff for a file it does not track.
+        if ((gitStatusState.untracked as string[] | undefined)?.includes(target)) return { handled: true, value: "" };
         return {
           handled: true,
           value: [
@@ -338,14 +345,43 @@ function createWorkbenchBackend(
           },
         };
       case "git_commit":
+        checkoutUnblocked = true;
         gitStatusState = { ...gitStatusState, staged: [] };
         return { handled: true, value: { success: true, message: "Committed" } };
       case "git_pull":
         gitStatusState = { ...gitStatusState, behind: 0 };
         return { handled: true, value: { success: true, message: "Pulled" } };
-      case "git_push":
+      case "git_push": {
+        const params = (payload.params ?? {}) as { set_upstream?: boolean };
+        if (fx.pushNeedsUpstream && params.set_upstream !== true) {
+          return {
+            handled: true,
+            value: {
+              success: false,
+              error: "fatal: The current branch feat/new has no upstream branch.\nTo push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin feat/new",
+            },
+          };
+        }
         gitStatusState = { ...gitStatusState, ahead: 0 };
         return { handled: true, value: { success: true, message: "Pushed" } };
+      }
+      case "git_get_changed_files":
+        return {
+          handled: true,
+          value: [
+            { path: "src/app.rs", old_path: null, status: "modified" },
+            { path: "docs/new.md", old_path: null, status: "added" },
+          ],
+        };
+      case "git_cherry_pick":
+        return { handled: true, value: { success: true, data: null, error: null } };
+      case "git_reset_to_commit":
+        return { handled: true, value: { success: true, data: null, error: null } };
+      case "read_file_content": {
+        const filePath = String(payload.filePath ?? "");
+        if (filePath === "/repo/scratch.txt") return { handled: true, value: "scratch line one\nscratch line two\n" };
+        return { handled: false };
+      }
       case "git_get_enhanced_branches":
         if (fx.enhancedBranchesFails) return { handled: true, error: "enhanced branches unsupported" };
         return { handled: true, value: branches };
@@ -353,6 +389,15 @@ function createWorkbenchBackend(
         return { handled: true, value: branches };
       case "git_checkout_branch": {
         const target = String(payload.branchName ?? "");
+        if (fx.checkoutBlockedBy && fx.checkoutBlockedBy.branch === target && !checkoutUnblocked) {
+          return {
+            handled: true,
+            value: {
+              success: false,
+              error: `Failed to checkout branch: error: Your local changes to the following files would be overwritten by checkout:\n\t${fx.checkoutBlockedBy.file}\nPlease commit your changes or stash them before you switch branches.\nAborting`,
+            },
+          };
+        }
         branches = branches.map(b => ({ ...b, current: b.name === target }));
         gitStatusState = { ...gitStatusState, current_branch: target };
         return { handled: true, value: { success: true } };
@@ -521,6 +566,10 @@ function createWorkbenchBackend(
     pushCronJobFromHost: (job: Record<string, unknown>) => {
       cronJobs = [job, ...cronJobs];
     },
+    /** Something outside this window (an agent, a terminal) changed the repository. */
+    setGitStatus: (patch: Record<string, unknown>) => {
+      gitStatusState = { ...gitStatusState, ...patch };
+    },
   };
 }
 
@@ -535,7 +584,8 @@ test("routines: loads schedules, renders 24h & calendar, creates/edits/toggles/d
   expect(backend.actions()).toContain("notify_cron_host_ready");
   expect(backend.actions()).toContain("list_cron_jobs");
   expect(app.texts()).toContain("1 active");
-  expect(app.texts()).toContain("Due in Next 24 Hours");
+  // Section headers are sentence case in the calm studio layout.
+  expect(app.texts()).toContain("Due in the next 24 hours");
 
   // Filter tabs: Paused shows Session Watcher only in All Routines
   await app.press("Paused");
@@ -695,7 +745,7 @@ test("git: trust_required recovery and not_a_repository initialize with agent", 
 
   await app2.press("Initialize with Agent");
   await app2.waitFor("label:composer");
-  expect(emptyBackend.actions()).toContain("start_dialog_turn");
+  expect(emptyBackend.actions()).toContain("submit_user_message");
 
   const readonlyTrustBackend = createWorkbenchBackend(
     {},
@@ -851,7 +901,8 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
   // History tab on local workspace calls git_get_graph and shows lane badges
   await app.press("History");
   await app.waitFor("feat(nsh): wire studio workbench");
-  expect(app.texts()).toContain("L0");
+  // Lanes are drawn by the graph rail only; no "L0" lane text (B37).
+  expect(app.texts()).not.toContain("L0");
 
   const localGraphCalls = backend.calls.filter(c => c.action === "git_get_graph").length;
   const localWorktreeCalls = backend.calls.filter(c => c.action === "git_list_worktrees").length;
@@ -878,7 +929,7 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
   expect(app.texts()).toContain("Worktrees");
 });
 
-test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, stops worker, deletes via DropdownMenu, and launches Ultimate agent", async () => {
+test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, stops worker, deletes via DropdownMenu, and launches a Creative agent", async () => {
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
@@ -887,7 +938,9 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   await app.waitFor("Release Tracker");
   expect(app.texts()).toContain("Focus Pad");
   expect(app.texts().some(t => t.includes("1 active workers"))).toBe(true);
-  expect(app.texts().some(t => t.includes("desktop host shell"))).toBe(true);
+  // Running a Space is not built yet: the scene says so instead of hinting at a fallback.
+  expect(app.texts()).toContain("Running Spaces is not available in this preview yet");
+  expect(app.shows("label:space-running-space-board")).toBe(true);
 
   // Open Inspector ModalDialog -> checks get_miniapp (invokeCommand) & get_miniapp_versions (invokeRawCommand)
   await app.press("label:space-inspect-space-board");
@@ -926,17 +979,46 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   expect(app.texts()).toContain("<main>Focus Pad</main>");
   await app.press("label:space-inspector-close");
 
-  // Hero launchpad -> Create with Agent (Ultimate)
+  // Hero launchpad -> Create with Agent (Creative, as the desktop starts MiniApp creation)
   await app.type("label:spaces-prompt-input", "A Pomodoro focus timer with audio chime");
   await app.press("label:spaces-create-agent");
   await app.waitFor("label:composer");
-  const turnCall = backend.calls.find(c => c.action === "start_dialog_turn");
+  const turnCall = backend.calls.find(c => c.action === "submit_user_message");
   expect(turnCall?.request).toMatchObject({
-    agentType: "Ultimate",
+    agentType: "Creative",
   });
-  expect(String((turnCall?.request as Record<string, unknown>)?.userInput ?? "")).toContain(
+  expect(String((turnCall?.request as Record<string, unknown>)?.text ?? "")).toContain(
     "Pomodoro focus timer",
   );
+});
+
+test("spaces: follows miniapp catalogue events and guards Create with Agent on remote workspaces", async () => {
+  const backend = createWorkbenchBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("Spaces");
+  await app.press("Spaces");
+  await app.waitFor("Release Tracker");
+  expect(app.shows("label:space-running-space-board")).toBe(true);
+
+  // A worker stop pushed by the host clears the running dot without a reload.
+  await app.host.send("openbitfun.event", { event: "miniapp-worker-stopped", payload: { id: "space-board" } });
+  await app.waitUntil(() => !app.shows("label:space-running-space-board"));
+  await app.host.send("openbitfun.event", { event: "miniapp-worker-restarted", payload: { id: "space-notes" } });
+  await app.waitFor("label:space-running-space-notes");
+
+  // A created MiniApp re-reads the catalogue.
+  const listsBefore = backend.calls.filter(c => c.action === "list_miniapps").length;
+  await app.host.send("openbitfun.event", { event: "miniapp-created", payload: { id: "space-new" } });
+  await app.waitUntil(
+    () => backend.calls.filter(c => c.action === "list_miniapps").length > listsBefore,
+  );
+
+  // Remote workspace: creation is refused loudly, nothing is started.
+  await app.press("label:workspace-row-workspace-2");
+  await app.press("Spaces");
+  await app.waitFor("Creating Spaces is not supported in remote workspaces. Switch to a local workspace to create one.");
+  expect(app.enabled("label:spaces-create-agent")).toBe(false);
 });
 
 test("spaces: shows Peer Device Mode notice when driving a peer", async () => {
@@ -956,4 +1038,178 @@ test("spaces: shows Peer Device Mode notice when driving a peer", async () => {
   await app.press("Spaces");
   await app.waitFor("Release Tracker");
   expect(app.texts().some(t => t.includes("Driving peer device builder"))).toBe(true);
+});
+
+test("git: live status refresh, commit inspection, untracked additions, batch staging, upstream publish and commit & switch", async () => {
+  const backend = createWorkbenchBackend(
+    {},
+    { pushNeedsUpstream: true, checkoutBlockedBy: { branch: "feat/studio", file: "docs/guide.md" } },
+  );
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Git");
+  await app.waitFor("Working Copy");
+
+  // A change made outside this window shows up from the watcher event…
+  backend.setGitStatus({ untracked: ["/repo/scratch.txt", "/repo/agent-note.md"] });
+  await app.host.send("openbitfun.event", {
+    event: "file-system-changed",
+    payload: [{ path: "/repo/agent-note.md", kind: "create", timestamp: 1 }],
+  });
+  await app.waitFor("agent-note.md");
+  // …and from the 2 s status poll when no event arrives.
+  backend.setGitStatus({ untracked: ["/repo/scratch.txt", "/repo/agent-note.md", "/repo/poll-only.md"] });
+  await app.waitFor("poll-only.md", { timeout: 6000 });
+
+  // An untracked file reads as all additions instead of an empty diff.
+  await app.press("label:git-untracked-scratch.txt");
+  await app.waitFor("scratch line two");
+
+  // Batch staging: check two rows, stage them in one call.
+  await app.hover("label:git-untracked-agent-note.md");
+  await app.press("label:git-check-agent-note.md");
+  await app.press("label:git-check-poll-only.md");
+  await app.waitFor("2 selected");
+  await app.press("label:git-stage-selected");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      c =>
+        c.action === "git_add_files" &&
+        JSON.stringify((c.request as { params?: { files?: string[] } })?.params?.files) ===
+          JSON.stringify(["/repo/agent-note.md", "/repo/poll-only.md"]),
+    ),
+  );
+
+  // Push on a branch without upstream publishes it with set_upstream.
+  await app.press("label:git-push");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      c => c.action === "git_push" && (c.request as { params?: { set_upstream?: boolean } })?.params?.set_upstream === true,
+    ),
+  );
+
+  // A checkout blocked by local edits offers Commit & switch.
+  await app.press("Branches");
+  await app.waitFor("label:git-checkout-feat/studio");
+  await app.press("label:git-checkout-feat/studio");
+  await app.waitFor("label:git-switch-blocker");
+  await app.type("label:git-switch-commit-message", "wip: save guide edits");
+  await app.press("label:git-commit-and-switch");
+  await app.waitUntil(() => !app.shows("label:git-switch-blocker"));
+  expect(backend.calls.find(c => c.action === "git_commit")?.request).toMatchObject({
+    params: { message: "wip: save guide edits", amend: false },
+  });
+  expect(
+    backend.calls.filter(c => c.action === "git_checkout_branch" && (c.request as { branchName?: string }).branchName === "feat/studio"),
+  ).toHaveLength(2);
+
+  // History: select a commit, see its files and diff, copy, cherry-pick, reset behind a confirm.
+  await app.press("History");
+  await app.waitFor("label:git-commit-row-abc1234");
+  await app.press("label:git-commit-row-abc1234");
+  await app.waitFor("label:git-commit-details");
+  await app.waitFor("src/app.rs");
+  expect(backend.calls.find(c => c.action === "git_get_changed_files")?.request).toMatchObject({
+    params: { source: "0001112223334444", target: "abc1234567890000" },
+  });
+  await app.press("label:git-commit-file-docs/new.md");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      c =>
+        c.action === "git_get_diff" &&
+        (c.request as { params?: { target?: string; files?: string[] } })?.params?.target === "abc1234567890000" &&
+        (c.request as { params?: { files?: string[] } })?.params?.files?.[0] === "docs/new.md",
+    ),
+  );
+  await app.press("label:git-commit-cherry-pick");
+  await app.waitUntil(() => backend.actions().includes("git_cherry_pick"));
+  expect(backend.calls.find(c => c.action === "git_cherry_pick")?.request).toMatchObject({
+    commitHash: "abc1234567890000",
+  });
+  await app.press("label:git-commit-reset");
+  await app.press("label:git-commit-reset-hard");
+  await app.waitFor("Reset");
+  expect(backend.actions()).not.toContain("git_reset_to_commit");
+  await app.press("Reset");
+  await app.waitUntil(() => backend.actions().includes("git_reset_to_commit"));
+  expect(backend.calls.find(c => c.action === "git_reset_to_commit")?.request).toMatchObject({
+    commitHash: "abc1234567890000",
+    mode: "hard",
+  });
+});
+
+
+test("routines: a routine can run in an existing session of the active workspace", async () => {
+  const backend = createWorkbenchBackend({
+    sessions: [{ sessionId: "session-standup", sessionName: "Standup thread", messageCount: 3 }],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("Routines");
+  await app.press("Routines");
+  await app.press("label:routines-new");
+  await app.waitFor("label:routine-name-input");
+  await app.type("label:routine-name-input", "Standup nudge");
+  await app.type("label:routine-prompt-input", "Post the standup summary.");
+  // Without a session chosen the form refuses, as the desktop's validation does.
+  await app.press("label:routine-target-session");
+  await app.press("label:routine-save");
+  await app.waitFor("Choose the session this routine runs in.");
+  expect(backend.calls.some(c => c.action === "create_cron_job")).toBe(false);
+  await app.press("label:routine-session-select");
+  await app.press("label:routine-session-option-session-standup");
+  await app.press("label:routine-save");
+  await app.waitUntil(() => backend.calls.some(c => c.action === "create_cron_job"));
+  expect(backend.calls.find(c => c.action === "create_cron_job")?.request).toMatchObject({
+    name: "Standup nudge",
+    target: {
+      kind: "session",
+      sessionId: "session-standup",
+      workspace: { workspaceId: "workspace-1" },
+    },
+  });
+});
+
+test("studio polish: Routines, Spaces and Devices lay out at phone width with their primary action reachable", async () => {
+  const backend = createWorkbenchBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  // Routines: at desktop width the calendar sits beside the list; at 390 pt it stacks under it.
+  await app.waitFor("Routines");
+  await app.press("Routines");
+  await app.waitFor("Daily PR Triage");
+  expect(app.shows("label:routines-calendar-panel")).toBe(true);
+  await app.setViewport(390, 844);
+  await app.waitUntil(() => !app.shows("label:routines-calendar-panel"));
+  expect(app.texts()).toContain("Calendar");
+  expect(app.shows("label:routines-cal-today")).toBe(true);
+  expect(app.shows("label:routine-toggle-cron-1")).toBe(true);
+  expect(app.enabled("label:routines-new")).toBe(true);
+  await app.press("label:routines-new");
+  await app.waitFor("label:routine-name-input");
+  await app.press("Cancel");
+  await app.waitFor("label:routine-name-input", { state: "gone" });
+
+  // Spaces: the gallery collapses to one column and Create with Agent stays reachable.
+  await app.setViewport(1440, 900);
+  // The shell folds its sidebar away at phone width; bring it back to navigate.
+  if (!app.shows("Spaces")) await app.press("toggle-drawer");
+  await app.press("Spaces");
+  await app.waitFor("Release Tracker");
+  await app.setViewport(390, 844);
+  await app.waitFor("label:spaces-create-agent");
+  expect(app.shows("label:space-inspect-space-board")).toBe(true);
+  await app.type("label:spaces-prompt-input", "A tiny habit tracker");
+  expect(app.enabled("label:spaces-create-agent")).toBe(true);
+
+  // Devices: the inset lists render and the dispatch form opens at phone width.
+  await app.setViewport(1440, 900);
+  if (!app.shows("Devices")) await app.press("toggle-drawer");
+  await app.press("Devices");
+  await app.waitFor("Your devices");
+  await app.setViewport(390, 844);
+  await app.waitFor("Messaging channels");
+  expect(app.texts()).toContain("Driving another device");
+  await app.waitFor("label:dispatch-form-toggle");
+  await app.press("label:dispatch-form-toggle");
+  await app.waitFor("label:dispatch-prompt");
 });

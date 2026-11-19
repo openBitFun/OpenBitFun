@@ -169,7 +169,7 @@ fn sessions() -> &'static std::sync::Mutex<std::collections::HashMap<String, wat
 
 #[tauri::command]
 pub async fn html_preview_create(
-    app_state: tauri::State<'_, AppState>,
+    app_state: crate::host::State<'_, AppState>,
     request: HtmlPreviewCreateRequest,
 ) -> Result<HtmlPreviewCreateResponse, String> {
     let is_peer = request.peer_device_mode

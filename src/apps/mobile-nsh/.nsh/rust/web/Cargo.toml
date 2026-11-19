@@ -1,0 +1,26 @@
+[package]
+name = "nsh-app-openbitfun-mobile-native-web"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "nsh_app_openbitfun_mobile_native_web"
+path = "lib.rs"
+crate-type = ["cdylib"]
+
+[features]
+# The runtime of published apps: TSX on the browser's JavaScript engine.
+browser = ["nsh-platform-web/browser"]
+# The development host's: hot updates, and what `nsh test --target web` asks about.
+dev = ["nsh-platform-web/dev"]
+                 # What `nsh package` links the app's runtime from (its relocations kept).
+linkable = ["nsh-platform-web/linkable"]
+
+[dependencies]
+nsh-core = { version = "=0.6.1" }
+nsh-base = { version = "=0.6.1", features = ["highlight"] }
+app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+nsh-platform-web = { version = "=0.6.1", default-features = false }

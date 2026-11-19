@@ -579,7 +579,7 @@ async fn local_workspace(
     path: Option<String>,
 ) -> Result<Option<String>, String> {
     if let Some(path) = path.filter(|path| !path.is_empty()) {
-        let state = app.state::<AppState>();
+        let state = crate::host::State::from(app.state::<AppState>());
         let target =
             crate::api::path_target::resolve_desktop_path_target(&state, &path, None, None).await?;
         let local = target
@@ -597,7 +597,7 @@ async fn record(
     app_id: &str,
     workspace_path: Option<String>,
 ) -> Result<launcher::LaunchRecord, String> {
-    let state = app.state::<AppState>();
+    let state = crate::host::State::from(app.state::<AppState>());
     let miniapp = state
         .miniapp_manager
         .get(app_id)
@@ -919,8 +919,8 @@ async fn stop_instance(app: &tauri::AppHandle, instance_id: &str) -> Result<(), 
         .is_some_and(|permission| permission.enabled)
     {
         crate::api::miniapp_agent_api::miniapp_agent_cancel_stale_runs(
-            app.state(),
-            app.state(),
+            crate::host::State::from(app.state()),
+            crate::host::State::from(app.state()),
             crate::api::miniapp_agent_api::MiniAppAgentCancelStaleRunsRequest {
                 app_id: instance.app_id.clone(),
             },
@@ -928,7 +928,8 @@ async fn stop_instance(app: &tauri::AppHandle, instance_id: &str) -> Result<(), 
         .await?;
     }
     miniapp_api::cancel_miniapp_streams(&instance.app_id);
-    miniapp_api::miniapp_worker_stop(app.state(), instance.app_id).await?;
+    miniapp_api::miniapp_worker_stop(crate::host::State::from(app.state()), instance.app_id)
+        .await?;
     host.sessions
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -984,7 +985,7 @@ async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result
         }
         let workspace = local_workspace(app, record.workspace_path.clone()).await?;
         let miniapp = miniapp_api::get_miniapp(
-            app.state(),
+            crate::host::State::from(app.state()),
             miniapp_api::GetMiniAppRequest {
                 app_id: record.app_id.clone(),
                 appearance_mode: Some(crate::appearance::AppearanceConfig::miniapp_mode().into()),
@@ -1026,7 +1027,9 @@ async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result
             }
         }
         changed(app);
-        let locale = crate::api::i18n_api::i18n_get_current_language(app.state()).await?;
+        let locale =
+            crate::api::i18n_api::i18n_get_current_language(crate::host::State::from(app.state()))
+                .await?;
         let catalog =
             include_str!("../../../../shared/miniapp-chrome/presentation-labels.generated.json");
         let catalog: Value = serde_json::from_str(catalog).map_err(|e| e.to_string())?;
@@ -1161,7 +1164,9 @@ async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result
                 .get(&instance_id)
                 .cloned()
                 .unwrap_or_default();
-            let pending = crate::api::agentic_api::list_pending_permission_requests(app.state())?;
+            let pending = crate::api::agentic_api::list_pending_permission_requests(
+                crate::host::State::from(app.state()),
+            )?;
             let own: Vec<_> = pending
                 .into_iter()
                 .filter(|request| sessions.contains(&request.session_id))
@@ -1175,7 +1180,7 @@ async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result
                     return Err("Unsupported MiniApp permission response".into());
                 }
                 crate::api::agentic_api::respond_permission(
-                    app.state(),
+                    crate::host::State::from(app.state()),
                     serde_json::from_value(json!({"requestId":request_id,"reply":reply}))
                         .map_err(|e| e.to_string())?,
                 )

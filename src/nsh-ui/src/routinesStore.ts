@@ -72,6 +72,9 @@ export interface RoutineDraft {
   reportPolicy: RoutineReportPolicy;
   enabled: boolean;
   preservedTarget: CronJobTarget | null;
+  /** A new session per run in the workspace, or one existing session (the desktop's two targets). */
+  targetKind?: "workspace" | "session";
+  sessionId?: string;
 }
 
 export interface RoutineOccurrence {
@@ -161,6 +164,8 @@ function makeEmptyDraft(): RoutineDraft {
     reportPolicy: "inherit",
     enabled: true,
     preservedTarget: null,
+    targetKind: "workspace",
+    sessionId: "",
   };
 }
 
@@ -697,7 +702,9 @@ export async function toggleRoutineEnabled(job: CronJobRecord): Promise<void> {
     } else {
       await loadRoutines();
     }
-    const statusMsg = `${job.name} ${!job.enabled ? "resumed" : "paused"}`;
+    const statusMsg = !job.enabled
+      ? tr("routines.store.resumed", { name: job.name })
+      : tr("routines.store.paused", { name: job.name });
     routinesNotice.set(statusMsg);
     pushToast(statusMsg, "success");
   } catch (error) {
@@ -778,11 +785,11 @@ export async function saveRoutineDraft(): Promise<void> {
   const name = draft.name.trim();
   const text = draft.prompt.trim();
   if (!name) {
-    routineFormError.set("Routine name is required.");
+    routineFormError.set(tr("routines.store.nameRequired"));
     return;
   }
   if (!text) {
-    routineFormError.set("Prompt text is required.");
+    routineFormError.set(tr("routines.store.promptRequired"));
     return;
   }
 
@@ -790,14 +797,14 @@ export async function saveRoutineDraft(): Promise<void> {
   if (draft.scheduleKind === "every") {
     const mins = Number(draft.everyMinutes.trim());
     if (!Number.isFinite(mins) || mins <= 0) {
-      routineFormError.set("Interval minutes must be a positive number.");
+      routineFormError.set(tr("routines.store.intervalPositive"));
       return;
     }
     schedule = { kind: "every", everyMs: Math.round(mins * 60_000) };
   } else if (draft.scheduleKind === "cron") {
     const expr = draft.cronExpr.trim();
     if (!parseCronExpression(expr)) {
-      routineFormError.set("Enter a valid 5-field cron expression (e.g. 0 9 * * 1-5).");
+      routineFormError.set(tr("routines.store.cronInvalid"));
       return;
     }
     const tz = draft.cronTz.trim();
@@ -805,7 +812,7 @@ export async function saveRoutineDraft(): Promise<void> {
   } else {
     const at = draft.atIso.trim();
     if (!at || !Number.isFinite(Date.parse(at))) {
-      routineFormError.set("Enter a valid ISO-8601 timestamp.");
+      routineFormError.set(tr("routines.store.timestampInvalid"));
       return;
     }
     schedule = { kind: "at", at };
@@ -818,13 +825,27 @@ export async function saveRoutineDraft(): Promise<void> {
     null;
 
   if (!draft.preservedTarget && !wsRecord) {
-    routineFormError.set("Select a target workspace for this routine.");
+    routineFormError.set(tr("routines.store.selectWorkspace"));
+    return;
+  }
+
+  if (!draft.preservedTarget && draft.targetKind === "session" && !(draft.sessionId ?? "").trim()) {
+    routineFormError.set(tr("routines.store.selectSession"));
     return;
   }
 
   const target: CronJobTarget = draft.preservedTarget
     ? draft.preservedTarget
-    : {
+    : draft.targetKind === "session"
+      ? {
+          kind: "session",
+          sessionId: (draft.sessionId ?? "").trim(),
+          workspace: {
+            workspaceId: wsRecord!.id,
+            workspacePath: wsRecord!.rootPath,
+          },
+        }
+      : {
         kind: "workspace",
         workspace: {
           workspaceId: wsRecord!.id,
@@ -863,7 +884,7 @@ export async function saveRoutineDraft(): Promise<void> {
       } else {
         await loadRoutines();
       }
-      const updatedMsg = `Updated routine "${name}"`;
+      const updatedMsg = tr("routines.store.updated", { name });
       routinesNotice.set(updatedMsg);
       pushToast(updatedMsg, "success");
     } else {
@@ -881,7 +902,7 @@ export async function saveRoutineDraft(): Promise<void> {
       } else {
         await loadRoutines();
       }
-      const createdMsg = `Created routine "${name}"`;
+      const createdMsg = tr("routines.store.created", { name });
       routinesNotice.set(createdMsg);
       pushToast(createdMsg, "success");
     }
@@ -913,8 +934,8 @@ export async function confirmDeleteRoutine(jobId: string): Promise<void> {
     if (routineDraft().editingJobId === jobId) {
       editorOpen.set(false);
     }
-    routinesNotice.set("Routine deleted");
-    pushToast("Routine deleted", "success");
+    routinesNotice.set(tr("routines.store.deleted"));
+    pushToast(tr("routines.store.deleted"), "success");
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     routinesError.set(errMsg);

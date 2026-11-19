@@ -7,7 +7,9 @@
 
 import { computed, signal } from "nsh";
 import { reloadAgentModes } from "./agentModeStore";
+import { getConfig, setConfig } from "./api";
 import { invokeCommand, invokeRawCommand } from "./bridge";
+import { tr } from "./i18n";
 import { peerScope, peerSupports } from "./peerState";
 import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot, startQuickPromptInSession } from "./state";
 
@@ -49,9 +51,47 @@ export interface AgentBuilderDraft {
   model: string;
   enabled: boolean;
   parentAgentType: string;
+  /** Whether the user picked a parent agent; availability is only written for a chosen one. */
+  parentChosen?: boolean;
   source: AgentSource;
   path: string;
 }
+
+/**
+ * A subagent's model choice as one token: "" (no override, the default
+ * applies), "inherit", a model reference ("primary", "fast" or an `ai.models`
+ * id) or `pool:<id>`. Built-ins store it as an `AgentModelTargetSelection`
+ * under `ai.agent_model_selections.subagents.builtin.<id>`, custom subagents
+ * as the `model` string `update_subagent_config` takes.
+ */
+export const POOL_TOKEN_PREFIX = "pool:";
+
+export function modelSelectionToToken(selection: unknown): string {
+  if (typeof selection === "string") return selection.trim();
+  if (!selection || typeof selection !== "object") return "";
+  const rec = selection as Record<string, unknown>;
+  if (rec.kind === "inherit") return "inherit";
+  if (rec.kind === "model" && typeof rec.model_ref === "string") return rec.model_ref.trim();
+  if (rec.kind === "pool" && typeof rec.pool_id === "string") return `${POOL_TOKEN_PREFIX}${rec.pool_id}`;
+  if (rec.kind === "fixed" && typeof rec.model_id === "string") return rec.model_id.trim();
+  return "";
+}
+
+export function modelTokenToSelection(token: string): Record<string, string> | null {
+  const value = token.trim();
+  if (!value) return null;
+  if (value === "inherit") return { kind: "inherit" };
+  if (value.startsWith(POOL_TOKEN_PREFIX)) return { kind: "pool", pool_id: value.slice(POOL_TOKEN_PREFIX.length) };
+  return { kind: "model", model_ref: value };
+}
+
+/** Whether the host stores built-in subagent models as `ai.agent_model_selections`. */
+function hostUsesModelSelections(): boolean {
+  return !peerScope() || peerSupports("model_pool_selection_v1") === true;
+}
+
+let initialRuntimeModel = "";
+let initialRuntimeEnabled = true;
 
 function emptyDraft(): AgentBuilderDraft {
   return {
@@ -297,7 +337,7 @@ export async function loadAgentsCatalog(contextKey?: string): Promise<void> {
 
   if (!canQueryTools) {
     agentToolNames.set([]);
-    toolCatalogError.set("Connected peer host does not expose the tool catalog.");
+    toolCatalogError.set(tr("agents.store.noToolCatalog"));
   } else if (toolsRes.status === "fulfilled") {
     const names = Array.isArray(toolsRes.value)
       ? toolsRes.value.filter((name): name is string => typeof name === "string" && name.trim().length > 0)
@@ -342,7 +382,7 @@ export async function reloadAgentsCatalog(): Promise<void> {
   await loadAgentsCatalog();
   reloadAgentModes();
   if (!agentsCatalogError()) {
-    agentsNotice.set("Reloaded agent and subagent definitions.");
+    agentsNotice.set(tr("agents.store.reloaded"));
   }
 }
 
@@ -359,7 +399,7 @@ export function closeBuilder(): void {
 
 export function openCreateBotBuilder(defaultKind: AgentKind = "mode"): void {
   if (isRemoteAgentWorkspace()) {
-    agentsNotice.set("Custom agent creation is unsupported for remote workspaces.");
+    agentsNotice.set(tr("agents.store.createRemote"));
     return;
   }
   confirmDeleteAgentUid.set(null);
@@ -429,6 +469,22 @@ export async function openAgentInspector(item: AgentCatalogItem): Promise<void> 
   builderError.set(null);
   builderSaving.set(false);
   builderOpen.set(true);
+  // A primary agent's builder also lists which subagents it may call.
+  if (item.kind === "mode" && item.source !== "external") {
+    void loadParentSubagents(item.id);
+    // The desktop reads an agent's skills only when it can call the Skill tool.
+    if (effectiveToolsForAgent(item).includes("Skill")) {
+      void loadModeSkills(item.id);
+    } else {
+      modeSkillsFor.set(null);
+      modeSkills.set([]);
+    }
+  } else {
+    modeSkillsFor.set(null);
+    modeSkills.set([]);
+    parentSubagentsFor.set(null);
+    parentSubagents.set([]);
+  }
 
   if (item.source === "external") {
     builderLoading.set(false);
@@ -475,6 +531,20 @@ export async function openAgentInspector(item: AgentCatalogItem): Promise<void> 
 
   if (item.kind === "subagent" && item.source === "builtin") {
     builderLoading.set(false);
+    initialRuntimeModel = (item.model ?? "").trim();
+    initialRuntimeEnabled = item.effectiveEnabled;
+    if (hostUsesModelSelections()) {
+      // The stored selection is the truth for a built-in (a pool has no model string).
+      void getConfig(`ai.agent_model_selections.subagents.builtin.${item.id}`, true)
+        .then(selection => {
+          const draft = builderDraft();
+          if (draft.mode !== "configure-subagent" || draft.id !== item.id) return;
+          const token = modelSelectionToToken(selection);
+          initialRuntimeModel = token;
+          builderDraft.update(current => ({ ...current, model: token }));
+        })
+        .catch(() => undefined);
+    }
     builderDraft.set({
       mode: "configure-subagent",
       kind: "subagent",
@@ -512,12 +582,14 @@ export async function openAgentInspector(item: AgentCatalogItem): Promise<void> 
       source: item.source,
       path: item.path ?? "",
     });
-    builderError.set("Custom agent inspection and editing are unsupported for remote workspaces.");
+    builderError.set(tr("agents.store.inspectRemote"));
     return;
   }
 
   builderLoading.set(true);
   initialEditModel = item.kind === "subagent" ? (item.model ?? "").trim() : "";
+  initialRuntimeModel = initialEditModel;
+  initialRuntimeEnabled = item.effectiveEnabled;
   builderDraft.set({
     mode: "edit-custom",
     kind: item.kind,
@@ -562,6 +634,7 @@ export async function openAgentInspector(item: AgentCatalogItem): Promise<void> 
       const tools = readStringArray(detail, ["tools", "defaultTools"]);
       const loadedModel = (readOptionalString(detail, ["model"]) ?? item.model ?? "").trim();
       initialEditModel = loadedModel;
+      initialRuntimeModel = loadedModel;
       builderDraft.update(current => ({
         ...current,
         id: readString(detail, ["subagentId", "agentId", "id"]) || current.id,
@@ -589,7 +662,7 @@ export async function saveBuilderBot(): Promise<void> {
   builderError.set(null);
 
   if (isRemoteAgentWorkspace()) {
-    builderError.set("Custom agent management is unsupported for remote workspaces.");
+    builderError.set(tr("agents.store.manageRemote"));
     return;
   }
 
@@ -601,23 +674,23 @@ export async function saveBuilderBot(): Promise<void> {
   const trimmedModel = draft.model.trim();
 
   if (draft.mode === "create" && !resolvedId) {
-    builderError.set("Bot ID is required.");
+    builderError.set(tr("agents.store.idRequired"));
     return;
   }
   if (!trimmedName) {
-    builderError.set("Name is required.");
+    builderError.set(tr("agents.store.nameRequired"));
     return;
   }
   if (!trimmedDesc) {
-    builderError.set("Description is required.");
+    builderError.set(tr("agents.store.descriptionRequired"));
     return;
   }
   if (!trimmedPrompt) {
-    builderError.set("System prompt is required.");
+    builderError.set(tr("agents.store.promptRequired"));
     return;
   }
   if (draft.kind === "subagent" && draft.level === "project" && !workspaceId) {
-    builderError.set("Project-level subagents require an active workspace.");
+    builderError.set(tr("agents.store.projectNeedsWorkspace"));
     return;
   }
 
@@ -658,7 +731,11 @@ export async function saveBuilderBot(): Promise<void> {
           });
         }
       }
-      agentsNotice.set(`Created ${draft.kind === "mode" ? "primary agent" : "subagent"} '${trimmedName}'.`);
+      agentsNotice.set(
+        draft.kind === "mode"
+          ? tr("agents.store.createdMode", { name: trimmedName })
+          : tr("agents.store.createdSubagent", { name: trimmedName }),
+      );
     } else if (draft.mode === "edit-custom") {
       if (draft.kind === "mode") {
         await invokeCommand<unknown>("update_custom_agent", {
@@ -692,7 +769,7 @@ export async function saveBuilderBot(): Promise<void> {
           initialEditModel = trimmedModel;
         }
       }
-      agentsNotice.set(`Updated '${trimmedName}'.`);
+      agentsNotice.set(tr("agents.store.updated", { name: trimmedName }));
     }
     builderOpen.set(false);
     await loadAgentsCatalog();
@@ -723,7 +800,7 @@ export async function saveProfileConfig(): Promise<void> {
       agentId: draft.id,
       config,
     });
-    agentsNotice.set(`Saved profile tool settings for '${draft.name}'.`);
+    agentsNotice.set(tr("agents.store.profileSaved", { name: draft.name }));
     await loadAgentsCatalog();
     reloadAgentModes();
   } catch (error) {
@@ -751,7 +828,7 @@ export async function resetProfileConfig(): Promise<void> {
       }));
     }
     reloadAgentModes();
-    agentsNotice.set(`Reset profile '${draft.name}' to defaults.`);
+    agentsNotice.set(tr("agents.store.profileReset", { name: draft.name }));
   } catch (error) {
     builderError.set(error instanceof Error ? error.message : String(error));
   } finally {
@@ -764,21 +841,54 @@ export async function saveSubagentRuntimeConfig(): Promise<void> {
   if (draft.kind !== "subagent") return;
   const workspaceId = activeWorkspaceId() ?? undefined;
   if (isRemoteAgentWorkspace()) {
-    builderError.set("Subagent configuration is unsupported for remote workspaces.");
+    builderError.set(tr("agents.subagentRemoteUnsupported"));
+    return;
+  }
+  const token = draft.model.trim();
+  const modelChanged = token !== initialRuntimeModel;
+  const availabilityChanged = Boolean(draft.parentChosen) || draft.enabled !== initialRuntimeEnabled;
+  if (availabilityChanged && !draft.parentChosen) {
+    // The host scopes availability to one parent agent; it never guesses one.
+    builderError.set(tr("agents.chooseParentFirst"));
+    return;
+  }
+  if (!modelChanged && !availabilityChanged) {
+    agentsNotice.set(tr("agents.runtimeNothingChanged"));
+    return;
+  }
+  const isBuiltin = draft.source === "builtin";
+  if (modelChanged && token.startsWith(POOL_TOKEN_PREFIX) && !(isBuiltin && hostUsesModelSelections())) {
+    builderError.set(tr("agents.poolUnsupportedForAgent"));
     return;
   }
   builderError.set(null);
   builderSaving.set(true);
   try {
-    const trimmedModel = draft.model.trim();
-    await invokeCommand<unknown>("update_subagent_config", {
-      subagentId: draft.id,
-      enabled: draft.enabled,
-      model: trimmedModel || null,
-      parentAgentType: draft.parentAgentType || "Standard",
-      ...(workspaceId ? { workspaceId } : {}),
-    });
-    agentsNotice.set(`Updated runtime config for subagent '${draft.name}'.`);
+    if (availabilityChanged) {
+      await invokeCommand<unknown>("update_subagent_config", {
+        subagentId: draft.id,
+        enabled: draft.enabled,
+        parentAgentType: draft.parentAgentType,
+        ...(workspaceId ? { workspaceId } : {}),
+      });
+      initialRuntimeEnabled = draft.enabled;
+    }
+    if (modelChanged) {
+      if (isBuiltin && hostUsesModelSelections()) {
+        await setConfig(
+          `ai.agent_model_selections.subagents.builtin.${draft.id}`,
+          modelTokenToSelection(token),
+        );
+      } else {
+        await invokeCommand<unknown>("update_subagent_config", {
+          subagentId: draft.id,
+          ...(token ? { model: token } : { clearModelOverride: true }),
+          ...(workspaceId ? { workspaceId } : {}),
+        });
+      }
+      initialRuntimeModel = token;
+    }
+    agentsNotice.set(tr("agents.runtimeUpdated", { name: draft.name }));
     await loadAgentsCatalog();
   } catch (error) {
     builderError.set(error instanceof Error ? error.message : String(error));
@@ -790,7 +900,7 @@ export async function saveSubagentRuntimeConfig(): Promise<void> {
 export async function deleteCatalogAgent(item: AgentCatalogItem): Promise<void> {
   if (!isCustomSource(item.source)) return;
   if (isRemoteAgentWorkspace()) {
-    agentsNotice.set("Custom agent deletion is unsupported for remote workspaces.");
+    agentsNotice.set(tr("agents.store.deleteRemote"));
     return;
   }
   const workspaceId = activeWorkspaceId() ?? undefined;
@@ -811,10 +921,185 @@ export async function deleteCatalogAgent(item: AgentCatalogItem): Promise<void> 
     if (builderOpen() && builderDraft().id === item.id && builderDraft().kind === item.kind) {
       closeBuilder();
     }
-    agentsNotice.set(`Deleted '${item.name}'.`);
+    agentsNotice.set(tr("agents.store.deleted", { name: item.name }));
     await loadAgentsCatalog();
     reloadAgentModes();
   } catch (error) {
     agentsNotice.set(error instanceof Error ? error.message : String(error));
+  }
+}
+
+// --- Per-parent subagent availability (the desktop's agent card toggles) ---
+
+/** The subagents a primary agent may call, as `list_manageable_subagents` reports them. */
+export const parentSubagents = signal<AgentCatalogItem[]>([]);
+export const parentSubagentsFor = signal<string | null>(null);
+export const parentSubagentsLoading = signal(false);
+export const parentSubagentsError = signal<string | null>(null);
+export const parentSubagentSaving = signal<string | null>(null);
+let parentSubagentsTicket = 0;
+
+export async function loadParentSubagents(parentAgentType: string): Promise<void> {
+  const ticket = ++parentSubagentsTicket;
+  const workspaceId = activeWorkspaceId() ?? undefined;
+  parentSubagentsFor.set(parentAgentType);
+  parentSubagentsLoading.set(true);
+  parentSubagentsError.set(null);
+  try {
+    const rows = await invokeCommand<Array<Record<string, unknown>>>("list_manageable_subagents", {
+      parentAgentType,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (ticket !== parentSubagentsTicket) return;
+    parentSubagents.set(
+      (Array.isArray(rows) ? rows : [])
+        .map(row => normalizeAgentRow(row ?? {}, "subagent"))
+        .filter((item): item is AgentCatalogItem => item !== null),
+    );
+  } catch (error) {
+    if (ticket !== parentSubagentsTicket) return;
+    parentSubagents.set([]);
+    parentSubagentsError.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    if (ticket === parentSubagentsTicket) parentSubagentsLoading.set(false);
+  }
+}
+
+/** Turns one subagent on or off for one parent agent, then reads the list back. */
+export async function setParentSubagentEnabled(
+  parentAgentType: string,
+  subagentId: string,
+  enabled: boolean,
+): Promise<void> {
+  if (parentSubagentSaving()) return;
+  if (isRemoteAgentWorkspace()) {
+    parentSubagentsError.set(tr("agents.subagentRemoteUnsupported"));
+    return;
+  }
+  const workspaceId = activeWorkspaceId() ?? undefined;
+  parentSubagentSaving.set(subagentId);
+  parentSubagentsError.set(null);
+  try {
+    await invokeCommand<unknown>("update_subagent_config", {
+      subagentId,
+      parentAgentType,
+      enabled,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    await loadParentSubagents(parentAgentType);
+    reloadAgentModes();
+  } catch (error) {
+    parentSubagentsError.set(
+      tr("agents.subagentToggleFailed", { error: error instanceof Error ? error.message : String(error) }),
+    );
+  } finally {
+    parentSubagentSaving.set(null);
+  }
+}
+
+// --- Per-agent skill selection (get_mode_skill_configs / replace / reset) ---
+
+export interface ModeSkillRow {
+  key: string;
+  name: string;
+  description: string;
+  effectiveEnabled: boolean;
+  globallyEnabled: boolean;
+}
+
+export const modeSkills = signal<ModeSkillRow[]>([]);
+export const modeSkillsFor = signal<string | null>(null);
+export const modeSkillsLoading = signal(false);
+export const modeSkillsError = signal<string | null>(null);
+export const modeSkillsSaving = signal(false);
+let modeSkillsTicket = 0;
+
+function readModeSkill(raw: unknown): ModeSkillRow | null {
+  const rec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  if (!rec) return null;
+  const key = readString(rec, ["key", "skillKey", "skill_key"]);
+  if (!key) return null;
+  return {
+    key,
+    name: readString(rec, ["name"]) || key,
+    description: readString(rec, ["description"]),
+    effectiveEnabled: readBoolean(rec, ["effectiveEnabled", "effective_enabled"], false),
+    globallyEnabled: readBoolean(rec, ["globallyEnabled", "globally_enabled"], true),
+  };
+}
+
+/** Reads which skills one agent runs with (`get_mode_skill_configs`, positional). */
+export async function loadModeSkills(modeId: string): Promise<void> {
+  const ticket = ++modeSkillsTicket;
+  const workspace = activeWorkspace();
+  modeSkillsFor.set(modeId);
+  modeSkillsLoading.set(true);
+  modeSkillsError.set(null);
+  try {
+    const raw = await invokeRawCommand<unknown>("get_mode_skill_configs", {
+      modeId,
+      workspaceId: workspace?.id ?? null,
+      workspacePath: workspace?.rootPath || null,
+    });
+    if (ticket !== modeSkillsTicket) return;
+    const list = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).skills)
+        ? ((raw as Record<string, unknown>).skills as unknown[])
+        : [];
+    modeSkills.set(list.map(readModeSkill).filter((row): row is ModeSkillRow => row !== null));
+  } catch (error) {
+    if (ticket !== modeSkillsTicket) return;
+    modeSkills.set([]);
+    modeSkillsError.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    if (ticket === modeSkillsTicket) modeSkillsLoading.set(false);
+  }
+}
+
+/** Turns one skill on or off for one agent by replacing that agent's whole selection. */
+export async function setModeSkillEnabled(modeId: string, skillKey: string, enabled: boolean): Promise<void> {
+  if (modeSkillsSaving()) return;
+  const workspaceId = activeWorkspaceId() ?? undefined;
+  const enabledSkillKeys = modeSkills()
+    .filter(row => (row.key === skillKey ? enabled : row.effectiveEnabled))
+    .map(row => row.key);
+  modeSkillsSaving.set(true);
+  modeSkillsError.set(null);
+  try {
+    await invokeCommand<unknown>("replace_mode_skill_selection", {
+      modeId,
+      enabledSkillKeys,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    await loadModeSkills(modeId);
+    reloadAgentModes();
+  } catch (error) {
+    modeSkillsError.set(
+      tr("agents.modeSkillsFailed", { error: error instanceof Error ? error.message : String(error) }),
+    );
+  } finally {
+    modeSkillsSaving.set(false);
+  }
+}
+
+export async function resetModeSkills(modeId: string): Promise<void> {
+  if (modeSkillsSaving()) return;
+  const workspaceId = activeWorkspaceId() ?? undefined;
+  modeSkillsSaving.set(true);
+  modeSkillsError.set(null);
+  try {
+    await invokeCommand<unknown>("reset_mode_skill_selection", {
+      modeId,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    await loadModeSkills(modeId);
+    reloadAgentModes();
+  } catch (error) {
+    modeSkillsError.set(
+      tr("agents.modeSkillsFailed", { error: error instanceof Error ? error.message : String(error) }),
+    );
+  } finally {
+    modeSkillsSaving.set(false);
   }
 }

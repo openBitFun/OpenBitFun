@@ -171,7 +171,11 @@ import {
   type WorkspaceConnectionTarget,
   type WorkspaceEnvironment,
   type WorkspaceLocation,
+  remoteLinkErrors,
+  remoteLinkStateOf,
+  retryRemoteWorkspace,
 } from "../sshRemoteStore";
+import { activeWorkspace } from "../state";
 import {
   controlHeight,
   fontMono,
@@ -3245,5 +3249,89 @@ export function SshWorkspaceModals() {
       <RemoteFileBrowserModal />
       <PortForwardModal />
     </View>
+  );
+}
+
+/**
+ * The active remote workspace's link, said where the work happens: Files, Git
+ * and Terminal show it above their content while the transport is down, being
+ * restored, or waiting for credentials. Nothing shows while it is connected.
+ */
+export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
+  const state = () => remoteLinkStateOf(activeWorkspace());
+  const visible = () => {
+    const current = state();
+    return current === "offline" || current === "reconnecting" || current === "auth-required";
+  };
+  const host = () => {
+    const ws = activeWorkspace();
+    return ws?.sshHost || ws?.connectionId || ws?.name || "";
+  };
+  const detail = () => {
+    const ws = activeWorkspace();
+    return ws?.connectionId ? remoteLinkErrors()[ws.connectionId] ?? "" : "";
+  };
+  return (
+    <If when={visible()}>
+      <View
+        role="alert"
+        accessibilityLabel={`remote-link-${state() ?? "unknown"}`}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+          paddingHorizontal: props.compact ? 8 : 12,
+          paddingVertical: 6,
+          borderBottomWidth: 1,
+          borderColor: state() === "reconnecting" ? palette().warningBorder : palette().dangerBorder,
+          backgroundColor: state() === "reconnecting" ? palette().warningSoft : palette().dangerSoft,
+        }}
+      >
+        <If
+          when={state() === "reconnecting"}
+          else={<Icon name="server" size={14} color={palette().danger} />}
+        >
+          <Spinner size={12} />
+        </If>
+        <View style={{ flex: 1, minWidth: 160, gap: 1 }}>
+          <Text
+            style={{
+              color: palette().text,
+              fontSize: textSize(12),
+              fontWeight: "600",
+              lineHeight: textLineHeight(12, 1.35),
+            }}
+          >
+            {state() === "reconnecting"
+              ? tr("ssh.link.reconnecting", { host: host() })
+              : state() === "auth-required"
+                ? tr("ssh.link.authRequired", { host: host() })
+                : tr("ssh.link.offline", { host: host() })}
+          </Text>
+          <If when={state() !== "reconnecting"}>
+            <Text
+              style={{
+                color: palette().textSecondary,
+                fontSize: textSize(11),
+                lineHeight: textLineHeight(11, 1.4),
+              }}
+            >
+              {detail() ? localizeHostError(detail()) : tr("ssh.link.offlineHint")}
+            </Text>
+          </If>
+        </View>
+        <If when={state() !== "reconnecting"}>
+          <Button
+            label={state() === "auth-required" ? tr("ssh.link.signIn") : tr("ssh.link.reconnect")}
+            accessibilityLabel="remote-link-reconnect"
+            variant="secondary"
+            size="xs"
+            leadingIcon={state() === "auth-required" ? "key" : "refresh"}
+            onPress={() => void retryRemoteWorkspace()}
+          />
+        </If>
+      </View>
+    </If>
   );
 }

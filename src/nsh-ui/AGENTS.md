@@ -35,7 +35,25 @@ Two rules follow:
   `openbitfun.unlisten` and pushes `openbitfun.event`. Without a native host it answers
   from development fixtures so the shell runs in a plain browser.
 - `src/bridge.ts`: the app-side transport (`invokeCommand`, `invokeRawCommand`,
-  `listenEvent`). Scenes never call `host` directly.
+  `listenEvent`) and the window functions. Scenes never call `host` directly, and
+  the bridge does not either: it runs over an injected backend connection
+  (`src/backendConnection.ts`; default `src/hostPageConnection.ts` over `host.js`,
+  the native desktop installs `src/jsonWireConnection.ts`) and an injected window
+  shell (`src/windowShell.ts`; default the Tauri webview's, the native desktop
+  installs `src/nshDesktopShell.ts`). Both are installed before `App.tsx` mounts
+  (`installBackendConnection`, `installWindowShell`); see
+  `src/apps/desktop-nsh/src/nativeTransport.ts`. A page served by a backend (its
+  `index.html` carries `#nsh-params` `{obp}`) gets `src/webSocketConnection.ts`
+  and `src/browserShell.ts` from `src/servedBackend.ts`, called first in `App.tsx`;
+  it must never fall back to `host.js` fixtures. `src/backendResync.ts`
+  re-hydrates on `backend://events-dropped` for every connection. A connection is generic: Tauri
+  args in, seq-numbered event batches out, `ready()` and a connection state —
+  nothing in it may assume NSH-native, Tauri or where the backend runs. Window,
+  menu, tray, notification and picker work belongs to the shell. Peer envelope
+  routing and the peer event tag filter live in `src/peerRouting.ts`
+  (`backend-owned`: to be replaced by connecting to the peer's backend), and
+  `src/textChunkCoalescer.ts` is `host.js`'s per-frame text-chunk merge for every
+  other wire (`test/native-host.test.tsx` holds the two to the same output).
 - `src/api.ts`: typed command wrappers. Keep the wire names and their casing.
 - `src/format.ts`: text, date and count helpers shared by the scenes
   (`formatTokens`, `formatCount`, `formatPercent`, `formatBucket`, `formatBytes`,
@@ -95,12 +113,16 @@ Two rules follow:
   primary studio links `Home`/`Sessions`/`Assistants`, collapsible
   `STUDIO & WORKBENCH` group, unified `Workspaces` + grouped/flat `Sessions` +
   `SSH HOSTS` tree, `New workspace`, footer `Devices`/`Settings`, Appearance
-  preset switcher, Remote/SSH menu, and `{transportKind()}` readout in the top
-  `NavPanel` header), `SceneTopBar` + `SceneBar` open-scene tabs + right
+  preset switcher, Remote/SSH menu), `SceneTopBar` + `SceneBar` open-scene tabs + right
   `AuxPane` toggles, inset rounded `SceneSurface` wrapping `<SceneTransition>`,
   resizable/swappable/maximizable right `AuxPane` (`Files`/`Git`/`Terminal`
-  compact split), `PeerBanner`, `SearchPanel` (`keymap.bind` `mod+k`, `mod+b`,
-  `mod+j`, `mod+,`, `mod+n`), and mounted `<SshWorkspaceModals />`.
+  compact split), `BackendConnectionBanner`, `PeerBanner`, `SearchPanel`
+  (`keymap.bind` `mod+k`, `mod+b`, `mod+j`, `mod+,`, `mod+n`), and mounted
+  `<SshWorkspaceModals />`. The title bars take their drag behaviour from the
+  shell (`titlebarDragRegionProps`: `desktop={{ windowDrag }}` in a native NSH
+  window, a press-started drag in the Tauri webview); the menu and tray come
+  from `startShellIntegration`, and shortcuts the native application menu
+  carries (`shellMenuShortcutIds`) are not bound again with `keymap`.
 - `src/ui/icons.tsx`: native `<Canvas>` + `Path2D` crisp 1.6 px vector icon library
   (`Icon`) and 5-variant expressive companion faces (`BotCharacter`: `"grok"`,
   `"muse"`, `"amber"`, `"mint"`, `"violet"`), reading `palette()` dynamically inside
@@ -132,211 +154,48 @@ Two rules follow:
   `{ request }` commands (`ssh_start_port_forward`, `open_remote_workspace`,
   `close_workspace`, `open_workspace`) call `invokeCommand`. Remote SSH/Docker/WSL
   workspaces never fall back to local `open_workspace`.
-- `src/modelDiscoveryStore.ts`: live request URL projection (`previewRequestUrl`
-  / `resolveRequestUrl` with trailing `#` verbatim support), remote `/models`
-  discovery (`list_ai_models_by_config`) with stale-reply coordination, 40%
-  `max_tokens` batch import into `ai.models`, endpoint testing
-  (`test_ai_config_connection`), and subscription account/quota loading
-  (`list_subscription_accounts`, `get_subscription_account_quota`).
-- `src/agentModeStore.ts`: the agent picker behind the composer. `get_available_modes`
-  is the host's catalogue for the active workspace (the four harness profiles plus the
-  agents and external ACP agents it resolves), and the panel draws it in that order;
-  the modes the desktop refuses to switch a session to (`claw`, `multitask`, `plan`)
-  stay out. A session that has not started takes the press, written with
-  `update_session_mode`; one that already ran a turn keeps the agent it started with,
-  so the press asks for a new session in that agent instead — the runtime would accept
-  the rebind silently, which is why the desktop enforces this in its UI. The preference
-  both surfaces share is `app.flow_chat` (`default_mode_strategy`, `default_mode_id`,
-  `last_mode_id`): the initial pick follows it the way the desktop does, and every
-  choice is remembered by writing the `last_mode_id` leaf. A host without the catalogue
-  (older build, or a plain Peer) says so and the composer stays on the agent it already
-  had, rather than showing an empty list.
-- `src/fileStore.ts`: the lazy explorer (children per directory path), the open
-  file, live editing (`editingContent`, `fileSaving`, `beginEditFile`,
-  `cancelEditFile`, `setEditingContent`, `saveEditedFile` persisting
-  `"code" | "markdown" | "text"` files via `write_file_content` and updating the
-  open preview on save), and the mutation actions. Both directory cache and
-  `editingContent` reset through `onWorkspaceChanged` (and `editingContent` also
-  clears when switching files or opening a diff) instead of importing the
-  workspace selector, so the dependency runs one way.
-- `src/homeStore.ts`: Personal Hub store for `HomeScene`. Combines
-  controller-local GitHub identity & device-flow auth (`account_status`,
-  `account_github_info`, `account_github_start`, `account_github_poll`,
-  `account_logout`), controller-local AI Insights (`get_latest_insights`,
-  `load_insights_report`, `generate_insights`, `cancel_insights_generation`),
-  and independent ecosystem pulse loaders (`get_assistant_workspaces`,
-  `get_available_modes`, `get_skill_configs`, `list_cron_jobs`, and 30-day
-  `get_token_usage_statistics`) where each source catches failures independently
-  so one missing peer/older-host command never blocks the dashboard.
-- `src/assistantStore.ts`: Personal Assistant / Claw Nursery and Persona Studio
-  store (`get_assistant_workspaces`, `get_primary_assistant_workspace`,
-  `create_assistant_workspace`, `set_primary_assistant_workspace`,
-  `delete_assistant_workspace`, `reset_assistant_workspace`). Loads and saves
-  `IDENTITY.md`, `SOUL.md`, and `USER.md` through `read_file_content` /
-  `write_file_content` using POSIX `/` joins (treating missing files as empty
-  drafts), supports `reset_workspace_persona_files`, and switches to Sessions via
-  `selectWorkspace` or `startQuickPromptInSession`.
-- `src/agentsCatalogStore.ts`: Multi-Agent Team store backing `AgentsScene`.
-  Loads modes (`get_available_modes`), subagents (`list_subagents`), available
-  tools (`list_agent_tool_names` via `invokeRawCommand`), and built-in profile
-  views (`get_agent_profile_configs` via `invokeRawCommand`); drives custom mode
-  CRUD (`create_custom_agent`, `update_custom_agent`, `delete_custom_agent`,
-  `get_custom_agent_detail`, `reload_custom_agents`), subagent CRUD and runtime
-  overrides (`create_subagent`, `update_subagent`, `delete_subagent`,
-  `get_subagent_detail`, `reload_subagents`, `update_subagent_config` with
-  `parentAgentType`), and built-in profile tool configuration
-  (`set_agent_profile_config`, `reset_agent_profile_config`). Gates custom
-  mutations on remote workspaces and honors `peerSupports("tool_catalog")`.
-- `src/skillsCatalogStore.ts`: Skills & Marketplace store backing `SkillsScene`.
-  Normalizes both `SkillInfo[]` and `{ skills, diagnostics }` from
-  `get_skill_configs` (`invokeRawCommand`), reads/writes global disable toggles
-  (`get_global_skill_settings`, `set_global_skill_disabled`), previews
-  `SKILL.md` via POSIX `${skill.path}/SKILL.md`, validates and installs/deletes
-  local folder skills (`validate_skill_path`, `add_skill`, `delete_skill` via
-  `invokeRawCommand`), and browses/installs marketplace packages
-  (`list_skill_market`, `search_skill_market`, `download_skill_market`). Blocks
-  local-folder installs on remote workspaces and in Peer Device Mode.
-- `src/routinesStore.ts`: Scheduled Cron Routines store backing `RoutinesScene`.
-  Notifies host readiness (`notify_cron_host_ready`), subscribes to
-  `cron://jobs-changed` (released via `cleanup()`), manages `list_cron_jobs`,
-  `create_cron_job`, `update_cron_job` (flattened `jobId`), and
-  `delete_cron_job` across `every` / `cron` / `at` schedules, preserves existing
-  `"session"` targets when editing, projects calendar day occurrences and
-  next-24-hour runs, and omits `reportPolicy` in Peer Device Mode when
-  `peerSupports("background_result_delivery_v1") === false`.
-- `src/gitWorkbenchStore.ts`: Git Workbench store backing `GitScene` (both full-screen
-  and `{ compact?: boolean }` `AuxPane` layouts). Uses an `effect` over
-  `activeWorkspace()` to probe `git_is_repository` and `git_get_repository_trust`
-  (recovering `trust_required` via `git_trust_repository` and offering agent
-  initialization for `not_a_repository`), drives `git_get_status`, `git_get_diff`,
-  `git_add_files`, flat `git_reset_files` (`staged: true` unstages; `staged: false`
-  discards tracked/conflict edits, with `delete_file` for untracked Discard),
-  `git_commit`, `git_pull`, `git_push`, AI commit messages
-  (`quick_commit_message` with `generate_commit_message` fallback), branches
-  (`git_get_enhanced_branches` / `git_get_branches`, checkout, create, delete),
-  history (`git_get_commits` + `git_get_graph`), and Worktrees (`git_list_worktrees`,
-  `git_add_worktree`, `git_remove_worktree`). Never calls `git_get_graph` or
-  worktree commands when `workspaceKind === "remote"`.
-- `src/spacesStore.ts`: Spaces / MiniApps store backing `SpacesScene`. Lists
-  Spaces (`list_miniapps`), tracks and stops running workers
-  (`miniapp_worker_list_running`, `miniapp_worker_stop`), inspects full source
-  and version history (`get_miniapp` via `invokeCommand`, `get_miniapp_versions`
-  via `invokeRawCommand`), deletes Spaces (`delete_miniapp`), launches Space
-  creation prompts via `startQuickPromptInSession(..., "Ultimate")`, and states
-  explicit desktop-webview and Peer Device Mode boundaries.
-- `src/connectorsStore.ts`: Controller-local Messaging Bots & Mobile Relay store
-  backing the Connectors section in `DevicesScene`. Wraps `remote_connect_*`
-  commands (`remote_connect_status`, `remote_connect_get_methods`,
-  `remote_connect_get_form_state`, `remote_connect_stop_bot`,
-  `remote_connect_get_bot_verbose_mode`, `remote_connect_set_bot_verbose_mode`
-  via `invokeRawCommand`; `remote_connect_set_form_state`,
-  `remote_connect_configure_bot`, `remote_connect_start`, `remote_connect_stop`,
-  `remote_connect_weixin_qr_start`, `remote_connect_weixin_qr_poll` via
-  `invokeCommand`), displaying an explicit `Controller local` badge while
-  driving a Peer device.
-- `src/agentEvents.ts`: follows a running dialog turn (`agentic://text-chunk`,
-  `agentic://dialog-turn-completed` / `-failed`) and remembers the `turnId` the
-  host reported in `agentic://dialog-turn-started`, which is what `Stop` addresses.
-  A turn event for another session only updates `runningTurns` (the rows read it);
-  the transcript, the streaming text and the composer stay on the open session.
-  A chunk marked `contentType: "thinking"` is a reasoning model's notes, not its
-  answer: it goes to `thinkingText` and is drawn as its own collapsed block, and
-  `clearStreamedText()` forgets both streams together.
-- `src/settingsStore.ts` also carries `AI execution`, `Session memory`, `Tools`
-  and `Agent hooks` sections; their fields are dotted leaf paths
-  (`ai.computer_use_enabled`, `memories.max_unused_days`, …) so a write replaces
-  that one value instead of the `ai` object that holds the models and keys.
-- `src/settingsStore.ts` also carries an `AI execution` section: the `ai.*`
-  scalars the desktop page reconciles are plain paths, so they need no store of
-  their own. `tool_presentation_mode` is a select over the values the host's
-  `ToolPresentationMode` deserializes (`native`, `ptc`, `ptc_python`).
-- `src/diagnosticsStore.ts`: where this run writes its logs, read once per
-  `Log files` section. `get_runtime_logging_info` answers the effective level, the
-  session folder, `app.log` and the previous run's ending; `reveal_in_explorer` and
-  `export_diagnostics_bundle` are the two actions over those files, and the exported
-  path is revealed after it is written. Both reply shapes come from Rust structs, so
-  field names are read in camelCase and snake_case; a host without the command
-  renders "reports no log location" rather than an error. The log level and the
-  sensitive-payload switch are config and stay in `settingsStore.ts`.
-- `src/dispatchStore.ts`: detached dispatch. `dispatch_list_targets` fills the
-  target row, `dispatch_submit` takes ids this surface mints plus an explicit
-  approval policy, and the job list is `dispatch_list_jobs` with no target — the
-  controller's own index, whose state field is `lastState`. Nothing about a job is
-  cached beyond the last read: the target owns it.
-- `src/dispatchObserver.ts`: one observed job. `dispatch_status` is polled every
-  1.8 s while the job is alive and the cursor sent is always the one the target
-  returned for a page this surface already rendered — never the cursor of a page
-  that failed to render, or the events in it are lost. `cursorReset` means the
-  target rewrote its log: drop the transcript and replay from zero. The fold keeps
-  state rows, assistant text with consecutive chunks merged, thinking kept apart,
-  tool lifecycle rows and failures; it drops per-round metrics, subagent nesting and
-  the assembly frames. Answering a permission is `dispatch_answer` with the
-  protocol's reply kind, and the composer means `dispatch_append` while the turn
-  runs but `dispatch_continue` with a minted `turnId` once it has finished. The poll
-  is released by `cleanup` when the scene unmounts, so a job never keeps polling for
-  a panel that is gone.
-- `src/mentionStore.ts`: the composer's `Reference` picker. It searches the active
-  workspace's file names through `search_files` — the read the Files scene already
-  uses — once the typing settles, and a pressed row puts the desktop composer's tag
-  into the message: `#file:<name>`, or `#dir:<name>` for a directory. That tag is
-  text, not a wire field: the runtime does not expand it, so the agent resolves the
-  name with its own tools. The tag goes in where the caret is through the composer's
-  `InputRef.insertText` (its `onChange` reports the new text); a runtime without the
-  widget appends it instead. The panel draws at most eight names and says when the
-  host matched more, and a host that refuses the command says so rather than drawing
-  an empty list. The same panel is what a typed `@` opens: `mentionTriggerAt` reads
-  the token the caret sits in, the panel then draws no query field of its own, and a
-  pressed row replaces that token instead of appending after it. Since `Input` does
-  report a caret, do not conclude an inline trigger is impossible here without
-  reading `onSelectionChange` / `onCaretMove` / `insertText` in the widget types
-  first — that mistake sat in this document once. Two habits this file keeps: the
-  token's range comes from the edit that produced it (a caret report can lag a
-  press), and the composer is a controlled `Input` (`value={composerText()}`), so a
-  replacement is a text write rather than a select-and-insert.
-- `src/permissionPolicyStore.ts`: the tool-permission policy behind the
-  `Permissions` section. The mode is not a stored field but a combination of
-  `policy.preset`, `interaction.auto_approve_ask` and `approval.strategy`, so
-  switching it rewrites those three and keeps `policy.rules`; full access needs a
-  second press. The rule list has its own draft (`ruleDraft`, opened by
-  `beginRulesDraft`, whose ids are reset to `rule-1`, `rule-2`, … so a save is
-  testable) and `saveRuleDraft` writes the whole document once, which is what makes
-  the drawn order the evaluation order; a row with a blank action or resource is
-  refused rather than stored as a catch-all. Automatic approval lives in the same
-  document: `approvalSettings` / `saveApproval` rewrite `approval` alone (the mode
-  must not move), `saveDecisionModel` writes the two `ai.decision_model` leaves, and
-  the decision-model key goes to the vault through
-  `save_decision_model_credential` / `clear_decision_model_credential`.
-  `src/permissionStore.ts` is a different thing — the live approval prompt answered
-  from the session scene.
-- `src/taskModelStore.ts`: the models the product's own small tasks run on
-  (`ai.task_models.session_title` / `.git_commit`). `TaskModelSelection` is a serde
-  enum, so a row reads `"Inherit"` or `{"Fixed":{"model_id":…}}` and `chooseTaskModel`
-  writes the whole object back; the picker lists `ai.models` by name.
-- `src/modelSettingsStore.ts`: the credential path — `ai.models` is one config path
-  holding an array, so it is read and written whole. `saveModelDraft` appends an
-  entry with its request URL resolved from the format, `deleteModel` removes one,
-  and `setModelEnabled` / `saveModelLimits` patch a single entry's `enabled` and its
-  `context_window` / `max_tokens` pair through `patchModel`, which rebuilds the list
-  so fields this page does not draw survive. The pair is checked against the host's
-  40% ceiling (`MAX_CONFIGURED_OUTPUT_TOKENS_RATIO_PERCENT`) before it is sent, and
-  an empty field clears that limit rather than storing zero. The `Add model` form
-  also fills itself from this machine's models.dev projection: `loadModelCatalog`
-  reads `get_local_models_dev_catalogs` once per session into `modelCatalog`, a
-  provider fills the endpoint's format, base URL and a default name, and a model
-  fills the model name plus the catalog's `context` / `output` — a model without
-  limits leaves the typed pair alone instead of writing zeroes. That command
-  describes this machine, so the picker is only drawn when `peerScope()` is null,
-  and a host that answers `Command not found` simply leaves it empty.
-- `src/terminalProfiles.ts`: named terminal profiles per workspace root — a shell
-  and an optional startup command, kept in this surface's own
-  `openbitfun.nsh.terminal-profiles.v1`. `openProfile` starts the shell under the
-  profile's name and types the command into it. The desktop's
+- `src/modelDiscoveryStore.ts`: the request URL preview the host computes
+  (`resolve_ai_model_request_url`, cached per input), remote `/models`
+  discovery (`list_ai_models_by_config`; transient configs carry no
+  `request_url`, the host derives it) with stale-reply coordination, batch
+  import as one `ai_model_upsert` intent (the host mints ids and clamps each
+  output limit), endpoint testing (`test_ai_config_connection`), and
+  subscription account/quota loading (`list_subscription_accounts`,
+  `get_subscription_account_quota`).
+- Settings writes are typed intents (`src/settingsMutations.ts`): models
+  (`ai_model_upsert` / `ai_model_delete`), task models (`set_task_model`),
+  permissions (`set_permission_mode`, `upsert_permission_rule` /
+  `delete_permission_rule` naming the rule they expect at that index,
+  `set_approval_settings`), web search (`set_web_search_provider`) and ACP
+  (`set_acp_client_permission_mode`); each answers with the updated view. Field
+  bounds and defaults come from `get_settings_schema`, the language goes through
+  `i18n_set_language`, single values are leaf `set_config` writes, and a file
+  save sends `expectedHash` (the host's `FILE_CONFLICT` becomes Overwrite /
+  Reload). No store writes back a document it read earlier; a host without one
+  of these commands gets the "update the host" sentence, never a fallback.
+- `src/agentModeStore.ts`: the agent picker behind the composer. The rules are the
+  host's: `get_session_mode_catalog` answers the entries in draw order (the four
+  harness profiles, then the agents and external ACP agents the host resolves, with
+  `claw` / `multitask` / `plan` left out and retired aliases resolved), which entries
+  the open session may switch to (`switchable`: a session that already ran a turn
+  keeps its agent) and the `defaultModeId` a new session starts as, resolved from
+  `app.flow_chat`. A switchable press is written with `update_session_mode`, which
+  refuses a started session (`session_mode_locked`) and records the pick as
+  `last_mode_id`; a non-switchable press offers a new session in that agent. A pick
+  made with no session open is recorded when the session created with it opens. A
+  host without the catalog command gets its `get_available_modes` rows as listed,
+  with a notice that ordering and defaults need an update — the store never
+  re-derives the rules.
   `manualTerminalProfileService` records bind a profile to a chat session, which is
   not what a tab is here, so they are read by neither surface.
 - `src/sessionStatusStore.ts`: the mark a session row shows — running, waiting for
-  approval, queued, last turn failed, not read yet. It is derived from the turn
-  events, the permission prompts, the queue and the `openbitfun.nsh.session-seen.v1`
-  stamps written when a session is opened, so no state is invented on the host.
+  approval, queued, last turn failed, not read yet. Running, approval and queued come
+  from live events and the host queue; unread and failed are the host's (`unread` /
+  `failed` in the session page's activities, derived from its unread receipt), and
+  opening a session acknowledges that receipt with `mark_session_seen`. Nothing is
+  kept in local storage; the stamps older builds stored under
+  `openbitfun.nsh.session-seen.v1` are handed to the host once per session (with
+  `seenThroughMs`) and then removed.
 - `src/permissionStore.ts`: the approval prompt. `subscribe_permission_requests`
   plus `list_pending_permission_requests` seed it, `permission://event` keeps it
   current, and `respond_permission` answers. It stays silent when a host has no
@@ -351,12 +210,14 @@ Two rules follow:
   question index to a label or a list of labels. A mailbox read only drops prompts
   older than the read (`seenAt`), because a question that arrives while it is in
   flight cannot be in the snapshot.
-- `src/sendPolicyStore.ts`: the mid-turn send policy, `app.flow_chat.send_during_turn`
-  (`immediate` steering or `queue`). The composer's primary action asks it on every
-  send, so it cannot live in the settings table: `SessionsScene.submitComposer`
-  decides between `sendTurn` and `enqueueMessage`, and both routes keep their own
-  button while a turn runs. The host skips the field while the policy is the
-  default, so an absent value means `immediate`.
+- `src/sendPolicyStore.ts`: the mid-turn send policy setting,
+  `app.flow_chat.send_during_turn` (`immediate` steering or `queue`), read for the
+  composer's labels and written by Settings. The composer does not apply it: every
+  send is `submit_user_message`, where the host applies the policy and answers
+  `started` / `steered` / `queued`; the secondary mid-turn button sends an explicit
+  `sendDuringTurn` for that one message. A host without the command still starts a
+  turn on an idle session and answers a mid-turn send with an "update the host"
+  notice instead of guessing.
 - `src/webSearchStore.ts`: the web-search provider and its key. `ai.web_search` is
   read as one document and written back whole, so a provider this surface does not
   draw and unknown fields of a drawn one survive; the key is not part of it —
@@ -367,18 +228,17 @@ Two rules follow:
   composer's `Actions` menu runs. Every write re-reads `app.ai_experience` and merges,
   because other sections write `voice_input` and the neighbouring switches into the
   same object; a disabled action stays in the list and out of the menu.
-- `src/queueStore.ts`: messages written while a turn runs and held until it
-  finishes. The host owns the queue (`manage_dialog_queue`: `list`, `submit`,
-  `cancel`, `promote`, `reorder`), so the panel draws the host's snapshot and the
-  host drains it. `moveQueued` re-reads a snapshot before it reorders, because
-  `supportsReorder` is answered per reply and never inferred from a version, and it
-  names that read's `revision` so a queue another surface changed in between is
-  refused instead of overwritten; a row this surface holds is swapped in place
-  instead. Rows the host holds back keep the host's `status` and `reason`, which the
-  panel shows, so `steering_pending` and `blocked` do not read as merely waiting. A
-  host that does not answer that command gets the local fallback
-  (`openbitfun.nsh.pending-queue.v1`), whose drain `agentEvents` runs from the
-  turn-completed and turn-failed handlers — never from a timer.
+- `src/queueStore.ts`: messages the host holds until the running turn finishes.
+  The host owns the queue (`manage_dialog_queue`: `list`, `cancel`, `promote`,
+  `reorder`; messages enter it through `submit_user_message`), so the panel draws the
+  host's snapshot and the host drains it. `moveQueued` re-reads a snapshot before it
+  reorders, because `supportsReorder` is answered per reply and never inferred from a
+  version, and it names that read's `revision` so a queue another surface changed in
+  between is refused instead of overwritten. Rows the host holds back keep the host's
+  `status` and `reason`. There is no local fallback: a host or peer without the
+  queue gets an explicit "update the host" line while a turn runs. Rows older builds
+  kept under `openbitfun.nsh.pending-queue.v1` are submitted to the host queue once
+  and the key is removed only when every row was taken.
 - `src/mcpStore.ts`: MCP servers. `get_mcp_servers` lists them and
   `start` / `stop` / `restart` / `delete_mcp_server` act on one at a time; the
   configuration is the stored Cursor-format document, read with
@@ -436,8 +296,11 @@ Two rules follow:
   ticket so a late answer from an older query cannot overwrite a newer one. A
   failing source is collected into `searchNotice` and the other groups still
   render, because a search that returns nothing because one provider refused is
-  worse than a partial answer. There is also no `Cmd+K`: NSH delivers keys only
-  to a focused input, so the panel opens from the sidebar's own field.
+  worse than a partial answer. `mod+k` opens the panel. Groups cover actions,
+  settings, sessions, messages, files, workspaces and assistants across the
+  opened workspaces; file search on a remote workspace answers as unsupported
+  rather than searching locally, and a message hit publishes `searchRevealTurn`
+  so the Sessions scene scrolls to that turn once it is loaded.
 - `src/modelStore.ts`: the composer's model and reasoning choices. Two rules are
   worth keeping: a model change carries the session's current reasoning preset only
   when the new model is known to declare it (the host validates the pair, so an
@@ -445,19 +308,19 @@ Two rules follow:
   means "the model's own default", which is not the same as leaving the field out,
   as a host too old to report the setting does.
 - `src/settingsStore.ts`: the settings table (`SETTINGS_SECTIONS`), the values read
-  per path, and the writes. A scalar path is written as it is; a field inside an
-  object config (`app`, `editor`, `terminal`, `app.ai_experience`) patches the
-  object and writes it back, which is the shape the desktop stores. A field the host
+  per path, and the writes. Every field writes its own dotted leaf path
+  (`app.auto_update`, `editor.font_size`, `app.ai_experience.enable_workspace_search`);
+  never patch a parent object (`app`, `app.ai_experience`) from a load-time snapshot,
+  because a leaf written since then (by another row or another store such as quick
+  actions) would be silently reverted. A field the host
   may not have stored yet carries `FieldSpec.defaultValue` — the value the host
   would use — so the row is readable and writable instead of empty, the section says
   `The host stores no value yet; these are its defaults.`, and the first edit creates
   the path. Do not read such an object once at mount and treat its absence as a
-  failure. The interface language is shown, not switched: applying a locale is not
-  scriptable and this surface has no resource catalogs of its own. Three things the
-  table needs beyond a plain scalar live here too: `kind: "model"` draws a row of
-  chips whose values are a configured model id, the product's two roles or `null`
-  (rendered by `ModelChoice`, which marks an id the host no longer configures
-  instead of letting it read as "follow"); `maxPath` lets a stored sibling lower a
+  failure. Three things the table needs beyond a plain scalar live here too:
+  `kind: "model"` draws a dropdown whose values are an enabled chat model id, the
+  product's two roles or `null` (an id the host no longer configures is marked
+  instead of reading as "follow"); `maxPath` lets a stored sibling lower a
   field's own maximum, which is how the memory extraction window is capped by the
   retention; and `memoryWindowRefusal` refuses that pair when it would invert. A row
   whose save button text is long must not be given a fixed-width container: the
@@ -562,7 +425,14 @@ Two rules follow:
   profiles, auth repair), `RemoteFileBrowserModal` (POSIX navigation, mkdir, rename,
   delete, rebind conflict, CLI fallback), and `PortForwardModal` (`raw: true` vs
   `raw: false` payload checks).
-  All six `test/*.test.tsx` suites wrap `createBackend().handlers["openbitfun.invoke"]`
+- `test/external-import.test.tsx`: `Settings → External import` request shapes
+  (discovery snapshot, switch mutation and revision, MCP plan/apply with the
+  `stale` outcome, removed-session list and restore), the older-host fallback,
+  a failed read, the remote-workspace refusal and Peer Device Mode.
+- `test/assistants-studio.test.tsx`: the assistants gallery and config page
+  (avatar picker, in-place name edit preserving the other frontmatter fields,
+  failed identity write, the assistant's sessions) and primary-first ordering.
+  All `test/*.test.tsx` suites wrap `createBackend().handlers["openbitfun.invoke"]`
   or `createDeviceBackend()` locally without modifying `test/support.ts`.
 
 ## Commands
@@ -600,25 +470,32 @@ OPENBITFUN_USER_ROOT="$PWD/.openbitfun/desktop-nsh/user" \
   ./target/debug/openbitfun-desktop
 ```
 
-A rebuild there is `nsh package` plus a window restart; the transport indicator
-at the top of `NavPanel` (`App.tsx`) must read `tauri`, or the window is
-talking to fixtures and proves nothing.
+A rebuild there is `nsh package` plus a window restart; the workspace list must
+be the machine's own (`transportKind()` reads `tauri`), or the window is talking
+to fixtures and proves nothing.
+
+The native desktop (`src/apps/desktop-nsh`) mounts this same `App.tsx` over the
+in-process backend; `test/native-host.test.tsx` runs it headless through
+`test/fixtures/nativeApp.tsx`, which installs the same JSON wire connection and
+NSH desktop shell with the wire carried over `openbitfun.wire*` host calls.
 
 ## Verification
 
 - UI, transport and request-shape changes: run `nsh check`, `nsh test .` (runs
-  `App.test.tsx` plus all 6 scene suites: `test/sessions-ux.test.tsx`,
-  `test/personal-hub.test.tsx`, `test/agents-skills.test.tsx`,
-  `test/routines-git-spaces.test.tsx`, `test/workbench-connectors.test.tsx`, and
-  `test/ssh-remote.test.tsx`; each test plays the embedding host through
+  `App.test.tsx` plus every scene suite under `test/`, among them
+  `test/sessions-ux.test.tsx`, `test/personal-hub.test.tsx`,
+  `test/agents-skills.test.tsx`, `test/routines-git-spaces.test.tsx`,
+  `test/workbench-connectors.test.tsx`, `test/ssh-remote.test.tsx`,
+  `test/external-import.test.tsx` and `test/assistants-studio.test.tsx`; each test plays the embedding host through
   `openbitfun.invoke`, so request shapes are asserted).
   The harness drives more than presses and typing: `submit`, `clear`, `value`,
   `keyboard`, `scroll`, `clipboard`, `screenshot` and `waitUntil` exist on `app`
   too, so "no test can reach this" is worth checking against that list before it is
   written down. `app.submit(field)` is what a Return on a field does, and it is how
   the composer's send-on-Return is covered.
-- Bridge changes (`host.js`, `src/bridge.ts`): also run the desktop window once
-  and confirm the `NavPanel` header transport indicator reads `tauri`, not `dev`.
+- Bridge changes (`host.js`, `src/bridge.ts`, the connections and shells): run
+  `test/native-host.test.tsx` and `test/real-tauri-contracts.test.tsx`, and run
+  the desktop window once to confirm it reaches the real host, not fixtures.
 - `nsh run` compiles the host module at startup and only rebuilds the app bundle
   after that: restart the dev server after editing `host.js`, or the window keeps
   calling into the old module (`no host function …`).

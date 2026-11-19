@@ -12,6 +12,7 @@ mod models;
 mod permission;
 mod product_control;
 mod session;
+mod settings_mutations;
 mod skills;
 mod snapshot;
 mod soft;
@@ -73,6 +74,16 @@ pub(crate) fn dispatch<'a>(
         "get_config" => Box::pin(config::get_config(args)),
         "get_configs" => Box::pin(config::get_configs(args)),
         "set_config" => Box::pin(config::set_config(state, args)),
+        // Typed settings mutations (wave 3 config).
+        "ai_model_upsert" => Box::pin(settings_mutations::ai_model_upsert(args)),
+        "ai_model_delete" => Box::pin(settings_mutations::ai_model_delete(args)),
+        "set_task_model" => Box::pin(settings_mutations::set_task_model(args)),
+        "set_permission_mode" => Box::pin(settings_mutations::set_permission_mode(args)),
+        "upsert_permission_rule" => Box::pin(settings_mutations::upsert_permission_rule(args)),
+        "delete_permission_rule" => Box::pin(settings_mutations::delete_permission_rule(args)),
+        "set_approval_settings" => Box::pin(settings_mutations::set_approval_settings(args)),
+        "set_web_search_provider" => Box::pin(settings_mutations::set_web_search_provider(args)),
+        "get_settings_schema" => Box::pin(settings_mutations::get_settings_schema(args)),
         "get_web_search_credential_status" => Box::pin(config::get_web_search_credential_status(args)),
         "save_web_search_credential" => Box::pin(config::save_web_search_credential(args)),
         "clear_web_search_credential" => Box::pin(config::clear_web_search_credential(args)),
@@ -470,6 +481,15 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "save_decision_model_credential",
     "search_session_content",
     "set_config",
+    "ai_model_upsert",
+    "ai_model_delete",
+    "set_task_model",
+    "set_permission_mode",
+    "upsert_permission_rule",
+    "delete_permission_rule",
+    "set_approval_settings",
+    "set_web_search_provider",
+    "get_settings_schema",
     "set_external_mcp_server_decision_command",
     "set_external_mcp_servers_enabled_command",
     "set_external_source_conflict_choice_command",

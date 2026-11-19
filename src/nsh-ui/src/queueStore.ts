@@ -1,31 +1,34 @@
-// Messages written while a turn is running, kept until they are sent.
+// Messages waiting for a running turn, as the host queues them.
 //
-// The desktop surface has two mid-turn policies: send immediately (live
-// steering, which this composer does by default) and queue until the turn
-// finishes. The queue itself belongs to the host: `manage_dialog_queue` takes a
-// client-chosen turn id, reports the queue it holds (`list`), and drains it when
-// the running turn settles, so a queued message survives a reload of this
-// surface and keeps its place next to whatever another surface queued.
+// The queue belongs to the host: `manage_dialog_queue` reports what it holds
+// (`list`), drains it when the running turn settles, and lets any client cancel,
+// promote or reorder a row, so a queued message survives a reload of this
+// surface and keeps its place next to whatever another surface (mobile, a bot,
+// another desktop) queued. Whether a message is queued at all is decided by the
+// host too (`submit_user_message`), not here.
 //
-// A host that does not answer `manage_dialog_queue` (older build, or a fixture
-// without it) gets a local list instead: same rows, same actions, but the drain
-// is driven by this surface from the turn-completion event and the list is
-// stored under `openbitfun.nsh.pending-queue.v1`.
+// There is no local fallback: a host or peer without the queue gets an explicit
+// "update the host" state instead of a list that only drains while this window
+// is open. Rows an earlier build kept under `openbitfun.nsh.pending-queue.v1` are
+// handed to the host queue once (migration) and then forgotten.
 
 import { Storage, signal } from "nsh";
 import { invokeCommand } from "./bridge";
 import { peerScope, peerSupports } from "./peerState";
 import { queuedCounts } from "./sessionStatusStore";
-import { activeSessionId, agentTypeOf, runningTurnId, sendTurn } from "./state";
+import { tr } from "./i18n";
+import { activeSessionId, agentTypeOf, runningTurnId } from "./state";
 
 export interface QueuedMessage {
   id: string;
   content: string;
-  /** `steered` and friends come from the host queue; a local row is only queued. */
+  /** `queued`, `blocked` or `steering_pending`, as the host reports the row. */
   status: string;
   /** Why the host is holding the row back (`blocked` and friends). */
   reason: string;
-  source: "host" | "local";
+  source: "host";
+  /** How many images the host holds with the message. */
+  attachmentCount?: number;
 }
 
 interface HostQueueItem {
@@ -48,15 +51,13 @@ interface HostQueueSnapshot {
   used?: number;
 }
 
-const STORAGE_KEY = "openbitfun.nsh.pending-queue.v1";
-/** The React queue caps itself at 20; an unbounded list is a memory leak with a UI. */
-const MAX_QUEUE_DEPTH = 20;
+const LEGACY_STORAGE_KEY = "openbitfun.nsh.pending-queue.v1";
 
 export const queuedMessages = signal<QueuedMessage[]>([]);
 export const queueNotice = signal("");
-/** Why this surface, not the host, is holding the queue; empty when the host does. */
+/** Why there is no queue for this session (the host or peer needs an update); empty otherwise. */
 export const queueFallbackReason = signal("");
-/** `null` until the host has been asked; `false` means this surface keeps the list. */
+/** `null` until the host has been asked; `false` means it has no queue. */
 export const hostQueueAvailable = signal<boolean | null>(null);
 /**
  * Whether the host can move a row inside its own queue. `null` means the last
@@ -84,7 +85,7 @@ function idFor(sessionId: string, turnId: string): string {
 async function callQueue(sessionId: string, request: Record<string, unknown>): Promise<HostQueueSnapshot> {
   return invokeCommand<HostQueueSnapshot>("manage_dialog_queue", {
     sessionId,
-    ...(hostEpoch ? { queueEpoch: hostEpoch } : {}),
+    ...(hostEpoch && sessionId === hostSessionId ? { queueEpoch: hostEpoch } : {}),
     ...request,
   });
 }
@@ -109,25 +110,37 @@ function adoptSnapshot(sessionId: string, snapshot: HostQueueSnapshot): void {
       status: item.status ?? "queued",
       reason: item.reason ?? "",
       source: "host",
+      ...(item.attachmentCount ? { attachmentCount: item.attachmentCount } : {}),
     });
   }
   queuedMessages.set([...others, ...rows]);
   queuedCounts.update(current => ({ ...current, [sessionId]: rows.length }));
 }
 
+function markQueueUnavailable(sessionId: string): void {
+  hostQueueAvailable.set(false);
+  queuedMessages.update(current => current.filter(item => !item.id.startsWith(`${sessionId}\u0000`)));
+  queuedCounts.update(current => ({ ...current, [sessionId]: 0 }));
+  hostSessionId = sessionId;
+  const peer = peerScope();
+  queueFallbackReason.set(
+    peer
+      ? tr("chat.queue.peerNoQueue", { device: peer.label ?? tr("chat.queue.thatDevice") })
+      : tr("chat.queue.hostUpdateRequired"),
+  );
+}
+
 /**
- * Asks the host what it holds for a session. Falls back to the local list once.
- * `force` re-reads a session already known, which is how the rows follow a drain.
+ * Asks the host what it holds for a session. `force` re-reads a session already
+ * known, which is how the rows follow a drain or a message another client queued.
  */
 export async function loadQueueForSession(sessionId: string | null, force = false): Promise<void> {
   if (!sessionId) return;
   if (!force && sessionId === hostSessionId) return;
-  // A peer that did not advertise its dialog queue keeps messages here, and says
-  // so, instead of holding a row the host will never start.
+  // A peer that did not advertise its dialog queue has none; say so instead of
+  // drawing an empty queue.
   if (peerScope() && peerSupports("dialog_queue_v1") === false) {
-    hostQueueAvailable.set(false);
-    awaitingLocalFallback(sessionId);
-    queueFallbackReason.set(`${peerScope()?.label ?? "That device"} does not keep a queue; messages wait here`);
+    markQueueUnavailable(sessionId);
     return;
   }
   try {
@@ -135,126 +148,81 @@ export async function loadQueueForSession(sessionId: string | null, force = fals
     hostQueueAvailable.set(true);
     queueFallbackReason.set("");
   } catch {
-    // A host without the queue keeps its messages here instead, and says which
-    // machine refused so the user knows where the message is waiting.
-    hostQueueAvailable.set(false);
-    awaitingLocalFallback(sessionId);
-    if (peerScope()) {
-      queueFallbackReason.set(`${peerScope()?.label ?? "That device"} does not keep a queue; messages wait here`);
-    }
+    markQueueUnavailable(sessionId);
   }
-}
-
-function awaitingLocalFallback(sessionId: string): void {
-  const kept = queuedMessages().filter(item => item.id.startsWith(`${sessionId}\u0000`));
-  queuedMessages.set(kept.map(item => ({ ...item, source: "local" as const })));
-  hostSessionId = sessionId;
-}
-
-export async function loadQueue(): Promise<void> {
-  try {
-    const raw = await Storage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const parsed: unknown = JSON.parse(raw);
-    const items = Array.isArray(parsed) ? parsed : [];
-    const restored: QueuedMessage[] = [];
-    for (const entry of items) {
-      const item = entry as { id?: unknown; sessionId?: unknown; content?: unknown };
-      if (typeof item?.sessionId !== "string" || typeof item?.content !== "string") continue;
-      if (!item.content.trim()) continue;
-      const turnId = typeof item.id === "string" && item.id ? item.id : `restored-${nextId++}`;
-      restored.push({
-        id: idFor(item.sessionId, turnId),
-        content: item.content,
-        status: "queued",
-        reason: "",
-        source: "local",
-      });
-    }
-    queuedMessages.set(restored.slice(-MAX_QUEUE_DEPTH));
-  } catch {
-    // A queue that cannot be read starts empty; nothing else depends on it.
-  }
-}
-
-function persistLocal(): void {
-  const rows = queuedMessages()
-    .filter(item => item.source === "local")
-    .map(item => {
-      const [sessionId, turnId] = item.id.split("\u0000");
-      return { id: turnId, sessionId, content: item.content };
-    });
-  void Storage.setItem(STORAGE_KEY, JSON.stringify(rows)).catch(() => {
-    // Storage is a convenience here: a full store keeps the queue for this run.
-  });
 }
 
 /**
- * Queues the composer's text for the selected session. The host keeps it when it
- * has a queue; otherwise it waits here and starts when the turn settles.
+ * Hands the rows an earlier build kept in this surface's storage to the host
+ * queue, once. A row the host refuses stays stored for the next run, so nothing
+ * the user wrote is dropped; the key is removed only when every row was taken.
  */
-export async function enqueueMessage(text: string): Promise<boolean> {
-  const sessionId = activeSessionId();
-  const content = text.trim();
-  if (!sessionId || !content) return false;
-  if (queueForSession(sessionId).length >= MAX_QUEUE_DEPTH) {
-    queueNotice.set(`The queue holds ${MAX_QUEUE_DEPTH} messages; send or delete one first`);
-    return false;
+export async function loadQueue(): Promise<void> {
+  let raw: string | null = null;
+  try {
+    raw = await Storage.getItem(LEGACY_STORAGE_KEY);
+  } catch {
+    return;
   }
-  const turnId = `nsh-${Date.now().toString(36)}-${nextId++}`;
-  if (hostQueueAvailable() !== false) {
+  if (!raw) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  const rows = (Array.isArray(parsed) ? parsed : []).filter(
+    (entry): entry is { id?: unknown; sessionId: string; content: string } =>
+      typeof (entry as { sessionId?: unknown })?.sessionId === "string"
+      && typeof (entry as { content?: unknown })?.content === "string"
+      && Boolean((entry as { content: string }).content.trim()),
+  );
+  const kept: unknown[] = [];
+  for (const row of rows) {
+    const turnId = typeof row.id === "string" && row.id ? row.id : `nsh-migrated-${Date.now().toString(36)}-${nextId++}`;
     try {
-      const snapshot = await callQueue(sessionId, {
+      const listed = await invokeCommand<HostQueueSnapshot>("manage_dialog_queue", {
+        sessionId: row.sessionId,
+        action: "list",
+      });
+      await invokeCommand<HostQueueSnapshot>("manage_dialog_queue", {
+        sessionId: row.sessionId,
+        queueEpoch: listed.queueEpoch,
         action: "submit",
         message: {
           turnId,
-          content,
-          displayContent: content,
-          // The queued turn runs as the agent its session runs as.
-          agentType: agentTypeOf(sessionId),
+          content: row.content,
+          displayContent: row.content,
+          agentType: agentTypeOf(row.sessionId),
           attachments: [],
           metadata: {},
         },
       });
-      adoptSnapshot(sessionId, snapshot);
-      hostQueueAvailable.set(true);
-      queueNotice.set("");
-      return true;
     } catch {
-      // Fall through: the host refused, so this surface holds the message.
-      hostQueueAvailable.set(false);
+      kept.push(row);
     }
   }
-  queuedMessages.update(current => [
-    ...current,
-    { id: idFor(sessionId, turnId), content, status: "queued", reason: "", source: "local" },
-  ]);
-  queueNotice.set("");
-  persistLocal();
-  return true;
+  const write = kept.length
+    ? Storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(kept))
+    : Storage.removeItem(LEGACY_STORAGE_KEY);
+  await Promise.resolve(write).catch(() => undefined);
 }
 
 export async function removeQueued(id: string): Promise<void> {
   const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
-  if (!row) return;
   const sessionId = activeSessionId();
-  if (row.source === "host" && sessionId) {
-    const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
-    try {
-      adoptSnapshot(sessionId, await callQueue(sessionId, {
-        action: "cancel",
-        turnId,
-        operationId: `cancel-${nextId++}`,
-      }));
-      return;
-    } catch {
-      // The host kept it; leave the row in place rather than lying about it.
-      queueNotice.set("The host did not cancel that message");
-      return;
-    }
+  if (!row || !sessionId) return;
+  const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
+  try {
+    adoptSnapshot(sessionId, await callQueue(sessionId, {
+      action: "cancel",
+      turnId,
+      operationId: `cancel-${nextId++}`,
+    }));
+  } catch {
+    // The host kept it; leave the row in place rather than lying about it.
+    queueNotice.set(tr("chat.queue.cancelRefused"));
   }
-  queuedMessages.update(current => current.filter(item => item.id !== row.id));
-  persistLocal();
 }
 
 /** Hands a queued message back to the composer and drops it from the queue. */
@@ -262,70 +230,54 @@ export async function takeQueued(id: string): Promise<string> {
   const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
   if (!row) return "";
   await removeQueued(row.id);
-  return row.content;
+  // Only a row the host actually let go of goes back to the composer.
+  return queuedMessages().some(item => item.id === row.id) ? "" : row.content;
 }
 
-/**
- * Sends one queued message now: a host row is promoted, which the host turns into
- * steering when a turn is running, and a local row goes through the composer's
- * own route.
- */
+/** Sends one queued message now: the host promotes it, steering a running turn. */
 export async function sendQueuedNow(id: string): Promise<void> {
   const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
-  if (!row) return;
   const sessionId = activeSessionId();
-  if (row.source === "host" && sessionId) {
-    const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
-    try {
-      adoptSnapshot(sessionId, await callQueue(sessionId, {
-        action: "promote",
-        turnId,
-        operationId: `promote-${nextId++}`,
-        expectedActiveTurnId: runningTurnId(),
-      }));
-    } catch {
-      queueNotice.set("The host did not promote that message");
-    }
-    return;
+  if (!row || !sessionId) return;
+  const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
+  try {
+    adoptSnapshot(sessionId, await callQueue(sessionId, {
+      action: "promote",
+      turnId,
+      operationId: `promote-${nextId++}`,
+      expectedActiveTurnId: runningTurnId(),
+    }));
+  } catch {
+    queueNotice.set(tr("chat.queue.promoteRefused"));
   }
-  await removeQueued(row.id);
-  await sendTurn(row.content);
 }
 
 /**
  * Moves one queued message up or down the queue (`direction` of -1 or 1).
  *
- * A host row is moved by the host, because the queue that drains may not be this
- * surface's: the snapshot is read again first — support is negotiated from a fresh
- * reply, never remembered from an older one — and the reorder names the revision
- * that read was issued at, so a queue another surface changed in between is refused
- * instead of being overwritten. A local row is simply swapped in place.
+ * The snapshot is read again first — support is negotiated from a fresh reply,
+ * never remembered from an older one — and the reorder names the revision that
+ * read was issued at, so a queue another surface changed in between is refused
+ * instead of being overwritten.
  */
 export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
   const row = queuedMessages().find(item => item.id === id || item.id.endsWith(`\u0000${id}`));
-  if (!row) return;
   const sessionId = activeSessionId();
-  if (!sessionId) return;
-  if (row.source === "local") {
-    moveLocal(row, direction);
-    return;
-  }
+  if (!row || !sessionId) return;
   const turnId = row.id.slice(row.id.indexOf("\u0000") + 1);
   let snapshot: HostQueueSnapshot;
   try {
     snapshot = await callQueue(sessionId, { action: "list" });
   } catch {
-    queueNotice.set("The host did not answer its queue");
+    queueNotice.set(tr("chat.queue.listRefused"));
     return;
   }
   adoptSnapshot(sessionId, snapshot);
   if (hostQueueReorderSupported() !== true) {
-    queueNotice.set("This host does not reorder its queue");
+    queueNotice.set(tr("chat.queue.reorderUnsupported"));
     return;
   }
-  const turnIds = queueForSession(sessionId)
-    .filter(item => item.source === "host")
-    .map(item => item.id);
+  const turnIds = queueForSession(sessionId).map(item => item.id);
   const index = turnIds.indexOf(turnId);
   const target = index + direction;
   // A row that left the queue, or an end already reached, has nothing to move.
@@ -343,40 +295,6 @@ export async function moveQueued(id: string, direction: -1 | 1): Promise<void> {
     }));
     queueNotice.set("");
   } catch {
-    queueNotice.set("The host did not reorder that message");
+    queueNotice.set(tr("chat.queue.reorderRefused"));
   }
-}
-
-/** Swaps one surface-held row with its neighbour, keeping the rest in place. */
-function moveLocal(row: QueuedMessage, direction: -1 | 1): void {
-  const sessionId = activeSessionId();
-  if (!sessionId) return;
-  const prefix = `${sessionId}\u0000`;
-  const all = queuedMessages();
-  const isLocal = (item: QueuedMessage): boolean => item.id.startsWith(prefix) && item.source === "local";
-  const own = all.filter(isLocal);
-  const index = own.findIndex(item => item.id === row.id);
-  const target = index + direction;
-  if (index < 0 || target < 0 || target >= own.length) return;
-  const swapped = own.slice();
-  swapped[index] = own[target];
-  swapped[target] = own[index];
-  // Only this session's local slots are rewritten, so a host row of another
-  // session keeps its position in the same signal.
-  let cursor = 0;
-  const next = all.map(item => (isLocal(item) ? swapped[cursor++] : item));
-  queuedMessages.set(next);
-  persistLocal();
-}
-
-/**
- * Starts a turn with the oldest locally queued message for a session that just
- * went idle. A host queue drains itself, so this only runs for the fallback list.
- */
-export async function drainQueue(sessionId: string): Promise<void> {
-  if (sessionId !== activeSessionId()) return;
-  const head = queueForSession(sessionId).find(item => item.source === "local");
-  if (!head) return;
-  await removeQueued(head.id);
-  await sendTurn(head.content);
 }

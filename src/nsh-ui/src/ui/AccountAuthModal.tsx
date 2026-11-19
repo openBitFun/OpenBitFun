@@ -34,12 +34,10 @@ import {
   radii,
   textLineHeight,
   textSize,
-  textTracking,
 } from "../theme";
-import { Icon } from "./icons";
 import { MOTION_DURATION, paintTransition } from "./motion";
 import { ModalDialog, pushToast } from "./overlays";
-import { Badge, Button, InlineBanner, StatusDot } from "./primitives";
+import { Button, InlineBanner, StatusDot } from "./primitives";
 
 export { onAccountAuthChanged, type AccountAuthChangeListener };
 
@@ -309,25 +307,24 @@ export function AccountAuthModal() {
                       flexDirection: "row",
                       alignItems: "center",
                       justifyContent: "space-between",
+                      flexWrap: "wrap",
                       gap: 12,
-                      paddingHorizontal: 14,
-                      paddingVertical: 12,
-                      borderRadius: radii.md,
+                      paddingHorizontal: 16,
+                      paddingVertical: 14,
+                      borderRadius: radii.lg,
                       borderCurve: "continuous",
                       borderWidth: 1,
-                      borderColor: palette().border,
-                      backgroundColor: palette().surfaceTertiary,
+                      borderColor: palette().borderSubtle,
+                      backgroundColor: palette().panelRaised,
                       ...paintTransition(MOTION_DURATION.fast),
                     }}
                   >
                     <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
                       <Text
                         style={{
-                          color: palette().textMuted,
-                          fontSize: textSize(10.5),
-                          fontWeight: "600",
-                          letterSpacing: textTracking(10.5, true),
-                          lineHeight: textLineHeight(10.5, 1.3),
+                          color: palette().textSecondary,
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.3),
                         }}
                       >
                         {tr("home.oneTimeCode")}
@@ -335,9 +332,9 @@ export function AccountAuthModal() {
                       <Text
                         style={{
                           color: palette().text,
-                          fontSize: textSize(21),
-                          lineHeight: textLineHeight(21, 1.2),
-                          fontWeight: "700",
+                          fontSize: textSize(22),
+                          lineHeight: textLineHeight(22, 1.2),
+                          fontWeight: "600",
                           fontFamily: fontMono,
                           letterSpacing: 2,
                           fontVariant: ["tabular-nums"],
@@ -368,13 +365,7 @@ export function AccountAuthModal() {
                       alignItems: "center",
                       justifyContent: "space-between",
                       gap: 10,
-                      paddingHorizontal: 12,
-                      paddingVertical: 9,
-                      borderRadius: radii.md,
-                      borderCurve: "continuous",
-                      borderWidth: 1,
-                      borderColor: palette().borderSubtle,
-                      backgroundColor: palette().surfaceSubtle,
+                      paddingHorizontal: 4,
                     }}
                   >
                     <Text
@@ -382,8 +373,8 @@ export function AccountAuthModal() {
                         flex: 1,
                         minWidth: 0,
                         color: palette().textSecondary,
-                        fontSize: textSize(11.5),
-                        lineHeight: textLineHeight(11.5, 1.38),
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.38),
                         fontFamily: fontMono,
                         numberOfLines: 1,
                         textOverflow: "ellipsis-middle",
@@ -394,7 +385,7 @@ export function AccountAuthModal() {
                     <View style={{ flexShrink: 0 }}>
                       <Button
                         label={tr("home.openGithub")}
-                        variant="secondary"
+                        variant="ghost"
                         size="sm"
                         leadingIcon="external-link"
                         accessibilityLabel="home-github-open-url"
@@ -432,58 +423,28 @@ export function AccountAuthModal() {
           )}
         </If>
 
-        {/* Signed-Out Welcome Card */}
+        {/* Signed out: one plain paragraph, no box. */}
         <If when={!githubAuthFlow() && !isAccountSignedIn()}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-start",
-              gap: 12,
-              padding: 14,
-              borderRadius: radii.lg,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().border,
-              backgroundColor: palette().panelRaised,
-            }}
-          >
-            <View
+          <View style={{ gap: 4, paddingHorizontal: 4 }}>
+            <Text
               style={{
-                width: 34,
-                height: 34,
-                flexShrink: 0,
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor: palette().surfaceTertiary,
-                alignItems: "center",
-                justifyContent: "center",
+                color: palette().text,
+                fontSize: textSize(14),
+                fontWeight: "600",
+                lineHeight: textLineHeight(14, 1.35),
               }}
             >
-              <Icon name="shield" size={16} color={palette().accent} />
-            </View>
-            <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-              <Text
-                style={{
-                  color: palette().text,
-                  fontSize: textSize(13.5),
-                  fontWeight: "600",
-                  lineHeight: textLineHeight(13.5, 1.32),
-                }}
-              >
-                {tr("auth.githubCardTitle")}
-              </Text>
-              <Text
-                style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.48),
-                }}
-              >
-                {tr("auth.githubCardBody")}
-              </Text>
-            </View>
+              {tr("auth.githubCardTitle")}
+            </Text>
+            <Text
+              style={{
+                color: palette().textSecondary,
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.5),
+              }}
+            >
+              {tr("auth.githubCardBody")}
+            </Text>
           </View>
         </If>
 
@@ -494,53 +455,48 @@ export function AccountAuthModal() {
               flexDirection: "row",
               alignItems: "center",
               gap: 12,
-              padding: 14,
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              minHeight: 44,
               borderRadius: radii.lg,
               borderCurve: "continuous",
               borderWidth: 1,
-              borderColor: palette().border,
+              borderColor: palette().borderSubtle,
               backgroundColor: palette().panelRaised,
             }}
           >
-            <View
-              style={{
-                width: 34,
-                height: 34,
-                flexShrink: 0,
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().successBorder,
-                backgroundColor: palette().successSoft,
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Icon name="check-circle" size={16} color={palette().success} />
-            </View>
+            <StatusDot kind="success" size={8} />
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <Text
                   style={{
                     color: palette().text,
-                    fontSize: textSize(13.5),
+                    fontSize: textSize(14),
                     fontWeight: "600",
-                    lineHeight: textLineHeight(13.5, 1.32),
+                    lineHeight: textLineHeight(14, 1.32),
                     numberOfLines: 1,
                     textOverflow: "ellipsis",
                   }}
                 >
                   {accountHandle()}
                 </Text>
-                <Badge label={tr("home.signedIn")} tone="success" />
+                <Text
+                  style={{
+                    color: palette().textSecondary,
+                    fontSize: textSize(13),
+                    lineHeight: textLineHeight(13, 1.32),
+                  }}
+                >
+                  {tr("home.signedIn")}
+                </Text>
               </View>
               <If when={githubUser()?.email ?? ""}>
                 {email => (
                   <Text
                     style={{
                       color: palette().textMuted,
-                      fontSize: textSize(11.5),
-                      lineHeight: textLineHeight(11.5, 1.38),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.38),
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
                     }}

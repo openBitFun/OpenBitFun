@@ -3556,6 +3556,12 @@ async fn handle_chat(
     // ── Remote device branch ──
     // When switched to a remote device, send the message via RPC.
     if state.active_remote_device.is_some() {
+        // Session commands run through this host's command owner; a remote
+        // device's session is not one of them, so say so instead of sending
+        // the command text to that device's agent as an ordinary prompt.
+        if crate::agentic::session_policy::parse_session_command(message).is_some() {
+            return result_from_menu(state, MenuView::plain(s.session_command_remote_unsupported));
+        }
         let session_id = match state.current_session_id.clone() {
             Some(id) => id,
             None => return result_from_menu(state, need_session_view(state, s)),
@@ -3600,6 +3606,10 @@ async fn handle_chat(
         }
 
         let session_id = state.current_session_id.clone().unwrap();
+        if let Some((command, arg)) = crate::agentic::session_policy::parse_session_command(message)
+        {
+            return run_session_command(state, &session_id, command, arg.as_deref(), s).await;
+        }
         let turn_id = format!("turn_{}", uuid::Uuid::new_v4());
 
         // Pick the agent type from the actual session — NOT a hardcoded
@@ -3638,6 +3648,44 @@ async fn handle_chat(
 
         result_from_menu_with_forward(state, view, Some(forward))
     } // end local branch
+}
+
+/// Runs `/compact`, `/init` or `/reload` through the same owner the desktop
+/// slash menu uses, so a bot offers exactly the commands the composer offers.
+async fn run_session_command(
+    state: &mut BotChatState,
+    session_id: &str,
+    command: crate::agentic::session_policy::SessionCommandId,
+    arg: Option<&str>,
+    s: &'static BotStrings,
+) -> HandleResult {
+    use crate::agentic::coordination::{
+        get_global_scheduler, DialogTriggerSource, SessionCommandOutcome, SESSION_COMMAND_BUSY_CODE,
+    };
+    let Some(scheduler) = get_global_scheduler() else {
+        return result_from_menu(
+            state,
+            MenuView::plain(format!(
+                "{}Dialog scheduler is not initialized",
+                s.session_command_failed_prefix
+            )),
+        );
+    };
+    let text = match scheduler
+        .execute_session_command(session_id, command, arg, DialogTriggerSource::Bot)
+        .await
+    {
+        Ok(SessionCommandOutcome::CompactionStarted { .. }) => {
+            s.session_command_compact_started.to_string()
+        }
+        Ok(SessionCommandOutcome::InitStarted { .. }) => s.session_command_init_started.to_string(),
+        Ok(SessionCommandOutcome::Reloaded { .. }) => s.session_command_reloaded.to_string(),
+        Err(error) if error.to_string().contains(SESSION_COMMAND_BUSY_CODE) => {
+            s.session_command_busy.to_string()
+        }
+        Err(error) => format!("{}{error}", s.session_command_failed_prefix),
+    };
+    result_from_menu(state, MenuView::plain(text))
 }
 
 // ── Forwarded turn execution (largely unchanged) ──────────────────
@@ -3716,13 +3764,29 @@ pub(crate) async fn execute_forwarded_turn_with_submission(
         )
         .await;
     drop(submission_finished);
-    if let Err(e) = submission {
-        let msg = format!("{}{e}", s.send_failed_prefix);
-        return ForwardedTurnResult {
-            completed_remote_tools: Vec::new(),
-            display_text: msg.clone(),
-            full_text: msg,
-        };
+    match submission {
+        Err(e) => {
+            let msg = format!("{}{e}", s.send_failed_prefix);
+            return ForwardedTurnResult {
+                completed_remote_tools: Vec::new(),
+                display_text: msg.clone(),
+                full_text: msg,
+            };
+        }
+        // The message joined the running turn, whose own watcher reports the
+        // result; watching it here too would deliver that answer twice.
+        Ok(
+            openbitfun_services_integrations::remote_connect::RemoteDialogSubmitOutcome::Steered {
+                ..
+            },
+        ) => {
+            return ForwardedTurnResult {
+                completed_remote_tools: Vec::new(),
+                display_text: s.message_steered.to_string(),
+                full_text: String::new(),
+            };
+        }
+        Ok(_) => {}
     }
 
     // No wall-clock cap: a long turn keeps running on this host, so the chat
@@ -4312,6 +4376,15 @@ async fn execute_remote_forward(
         return empty();
     }
     let turn_id = match sent {
+        Ok(reply)
+            if reply["resp"] == "steering_accepted" && reply["session_id"] == target.session_id =>
+        {
+            return ForwardedTurnResult {
+                completed_remote_tools: Vec::new(),
+                display_text: s.message_steered.to_string(),
+                full_text: String::new(),
+            };
+        }
         Ok(reply)
             if reply["resp"] == "message_sent" && reply["session_id"] == target.session_id =>
         {
@@ -6609,5 +6682,54 @@ mod remote_device_flow_tests {
             "Session storage is unavailable"
         );
         assert!(parse_remote_response("not json").is_err());
+    }
+}
+
+#[cfg(test)]
+mod session_policy_tests {
+    use super::*;
+
+    fn paired_state() -> BotChatState {
+        let mut state = BotChatState::new("session-policy-chat".into());
+        state.paired = true;
+        state.display_mode = BotDisplayMode::Assistant;
+        state.current_session_id = Some("session-policy-missing".into());
+        state
+    }
+
+    #[tokio::test]
+    async fn local_bot_runs_session_commands_instead_of_forwarding_them_as_chat() {
+        let strings = strings_for(BotLanguage::EnUS);
+        let mut state = paired_state();
+        let result = handle_chat(&mut state, "/compact", Vec::new(), strings).await;
+        // The command reached the shared session-command owner (which refuses
+        // the unknown session); it was not forwarded to the agent as a prompt.
+        assert!(result.forward_to_session.is_none());
+        assert!(
+            result
+                .reply
+                .starts_with(strings.session_command_failed_prefix),
+            "{}",
+            result.reply
+        );
+
+        // Text that only starts like a command is still an ordinary message.
+        let result = handle_chat(&mut state, "/compact now please", Vec::new(), strings).await;
+        assert!(result.forward_to_session.is_some());
+    }
+
+    #[tokio::test]
+    async fn remote_device_bot_refuses_session_commands_loudly() {
+        let strings = strings_for(BotLanguage::EnUS);
+        let mut state = paired_state();
+        state.active_remote_device = Some(RemoteDeviceTarget {
+            device_id: "other-device".into(),
+            device_name: "Other device".into(),
+        });
+        let result = handle_chat(&mut state, "/reload skills", Vec::new(), strings).await;
+        assert!(result.forward_to_session.is_none());
+        assert!(result
+            .reply
+            .contains(strings.session_command_remote_unsupported));
     }
 }

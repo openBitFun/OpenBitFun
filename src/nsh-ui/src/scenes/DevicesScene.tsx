@@ -1,4 +1,4 @@
-import { cleanup, computed, Scroll, signal, Text, View, type ViewRef } from "nsh";
+import { cleanup, computed, Scroll, signal, Text, View } from "nsh";
 import { TextView } from "nsh/base";
 import { invokeCommand, invokeRawCommand } from "../bridge";
 import {
@@ -28,6 +28,14 @@ import {
   stopRelayConnector,
   telegramToken,
   weixinQr,
+  weixinVerifyCode,
+  agreeRemoteDisclaimer,
+  declineRemoteDisclaimer,
+  openRemoteDisclaimer,
+  remoteDisclaimerAgreed,
+  remoteDisclaimerOpen,
+  remoteControlSaving,
+  setRemoteControlAllowed,
 } from "../connectorsStore";
 import {
   hiddenDevices,
@@ -63,6 +71,14 @@ import {
   cancelDispatch,
   dispatchApprovalPolicy,
   dispatchFormOpen,
+  dispatchBaseRef,
+  dispatchIncludeUncommitted,
+  dispatchModel,
+  dispatchProbe,
+  dispatchTargetReady,
+  dispatchTitle,
+  chooseDispatchTarget,
+  probeDispatchTarget,
   dispatchJobs,
   dispatchNotice,
   dispatchPrompt,
@@ -97,26 +113,27 @@ import { peerBusy, peerError, peerReconnecting, peerScope } from "../peerState";
 import { enterPeer, leavePeer, reconnectPeer } from "../peerStore";
 import { activeScene, resetForDeviceChange, runStep } from "../state";
 import { forgetTerminals } from "../terminalStore";
-import {
-  fontMono,
-  palette,
-  radii,
-  textLineHeight,
-  textSize,
-  textStyle,
-  textTracking,
-} from "../theme";
+import { fontMono, palette, radii, textLineHeight, textSize, textStyle } from "../theme";
 import { onAccountAuthChanged, openAccountAuthModal } from "../ui/AccountAuthModal";
+import { ObpPairingCard } from "./ObpPairingCard";
 import { Icon, type IconName } from "../ui/icons";
-import { createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
-import { MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "../ui/motion";
-import { DropdownMenu, ModalDialog, SelectDropdown } from "../ui/overlays";
 import {
-  Badge,
+  InsetGroup,
+  InsetRow,
+  MoreMenu,
+  QrCodeView,
+  StudioBody,
+  StudioEmpty,
+  StudioHeader,
+  StudioSection,
+  studioCompact,
+  trackStudioWidth,
+} from "../ui/studio";
+import { createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
+import { ModalDialog, SelectDropdown, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import {
   Button,
-  ConfigSection,
-  DeviceGlyph,
-  EmptyStateCard,
+  ConfigRow,
   IconButton,
   InlineBanner,
   InputBox,
@@ -125,7 +142,9 @@ import {
   StatusDot,
   StatusPill,
   ToggleSwitch,
+  type StatusDotKind,
 } from "../ui/primitives";
+
 
 interface DeviceRow {
   id: string;
@@ -144,9 +163,10 @@ const editingDeviceId = signal<string | null>(null);
 const aliasValue = signal("");
 const showHiddenDevices = signal(false);
 const activeChannelModal = signal<ChannelId | null>(null);
-const deviceMenuId = signal<string | null>(null);
-const deviceMenuAnchors = signal<Record<string, ViewRef | null>>({});
 const connectingDeviceId = signal<string | null>(null);
+const removingDeviceId = signal<string | null>(null);
+const removeDeviceBusy = signal(false);
+const removeDeviceError = signal("");
 
 function isExplicitlySignedOut(): boolean {
   return accountStatus()?.loggedIn === false && githubUser() === null;
@@ -185,27 +205,31 @@ function approvalPolicyHint(value: string): string {
   return entry ? tr(entry.hintKey) : "";
 }
 
-function setDeviceAnchor(id: string, el: ViewRef | null): void {
-  deviceMenuAnchors.update(current => {
-    if (current[id] === el) return current;
-    return { ...current, [id]: el };
-  });
-}
-
-function inferDeviceGlyphKind(device: DeviceRow): string {
-  const hint = `${device.platform} ${device.alias ?? ""} ${device.name}`.toLowerCase();
-  if (hint.includes("docker") || hint.includes("container")) return "container";
-  if (hint.includes("linux") || hint.includes("server") || hint.includes("build") || hint.includes("ssh")) {
-    return "server";
+/**
+ * Removes a device from the account (`account_delete_device`, positional
+ * `targetDeviceId`). Removing this machine signs it out, as on the desktop.
+ */
+export async function removeAccountDevice(deviceId: string): Promise<void> {
+  if (removeDeviceBusy()) return;
+  const device = devices().find(item => item.id === deviceId);
+  const name = device?.alias || device?.name || deviceId;
+  const isLocal = deviceId === localDeviceId();
+  removeDeviceBusy.set(true);
+  removeDeviceError.set("");
+  try {
+    await invokeRawCommand<unknown>("account_delete_device", { targetDeviceId: deviceId });
+    removingDeviceId.set(null);
+    pushToast(isLocal ? tr("devices.currentDeviceRemoved") : tr("devices.deviceRemoved", { name }), "success");
+    if (isLocal) {
+      devices.set([]);
+      await loadAccountState();
+    }
+    await loadDevices();
+  } catch (error) {
+    removeDeviceError.set(localizeHostError(error instanceof Error ? error.message : String(error)));
+  } finally {
+    removeDeviceBusy.set(false);
   }
-  if (hint.includes("ios") || hint.includes("android") || hint.includes("mobile") || hint.includes("phone")) {
-    return "mobile";
-  }
-  if (hint.includes("studio") || hint.includes("desktop") || hint.includes("workstation") || hint.includes("windows")) {
-    return "desktop";
-  }
-  if (hint.includes("cloud") || hint.includes("relay")) return "cloud";
-  return "laptop";
 }
 
 /** Persists a device alias; `null` clears it and the account falls back to the name. */
@@ -351,44 +375,88 @@ function pairingUrl(): string {
   );
 }
 
-function stateDotKind(text: string): "success" | "danger" | "accent" {
+
+function stateDotKind(text: string): StatusDotKind {
   const lower = text.toLowerCase();
   if (lower.includes("succeed")) return "success";
   if (lower.includes("fail") || lower.includes("cancel") || lower.includes("error")) return "danger";
   return "accent";
 }
 
+function jobDotKind(state: string): StatusDotKind {
+  if (state === "succeeded") return "success";
+  if (state === "failed" || state === "cancelled") return "danger";
+  return "accent";
+}
+
+/** A status dot with its text beside it: the one status mark a header or row carries. */
+function InlineStatus(props: { kind: StatusDotKind; label: string; pulse?: boolean; accessibilityLabel?: string }) {
+  return (
+    <View
+      accessibilityLabel={props.accessibilityLabel}
+      style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}
+    >
+      <StatusDot kind={props.kind} size={7} pulse={props.pulse} />
+      <Text
+        style={{
+          color: palette().textSecondary,
+          fontSize: textSize(13),
+          fontVariant: ["tabular-nums"],
+          lineHeight: textLineHeight(13, 1.35),
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+/** Quiet trailing text on a section header line. */
+function QuietText(props: { label: string }) {
+  return (
+    <Text
+      style={{
+        color: palette().textSecondary,
+        fontSize: textSize(13),
+        fontVariant: ["tabular-nums"],
+        lineHeight: textLineHeight(13, 1.35),
+      }}
+    >
+      {props.label}
+    </Text>
+  );
+}
+
+/** A wrapping secondary line under an inset row's label. */
+function RowNote(props: { text: string }) {
+  return (
+    <Text
+      style={{
+        color: palette().textMuted,
+        fontSize: textSize(12),
+        lineHeight: textLineHeight(12, 1.45),
+      }}
+    >
+      {props.text}
+    </Text>
+  );
+}
+
 function ObservedEventRow(props: { row: () => DispatchRow }) {
   return (
     <View>
       <If when={props.row().kind === "state"}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 7,
-            maxWidth: "100%",
-            paddingHorizontal: 10,
-            paddingVertical: 4,
-            borderRadius: radii.pill,
-            borderCurve: "continuous",
-            alignSelf: "flex-start",
-            backgroundColor: palette().panelRaised,
-            borderWidth: 1,
-            borderColor: palette().borderSubtle,
-          }}
-        >
-          <StatusDot kind={stateDotKind(props.row().text)} size={5.5} />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <StatusDot kind={stateDotKind(props.row().text)} size={6} />
           <Text
             style={{
               flexShrink: 1,
               minWidth: 0,
               color: palette().textSecondary,
               fontFamily: fontMono,
-              fontSize: textSize(10.5),
-              fontWeight: "500",
+              fontSize: textSize(12),
               fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(10.5, 1.38),
+              lineHeight: textLineHeight(12, 1.4),
               numberOfLines: 2,
               textOverflow: "ellipsis",
             }}
@@ -402,33 +470,28 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
         <View
           style={{
             borderLeftWidth: 2,
-            borderColor: palette().borderStrong,
+            borderColor: palette().borderSubtle,
             paddingLeft: 10,
-            paddingVertical: 6,
-            paddingRight: 10,
-            borderRadius: radii.xs,
-            borderCurve: "continuous",
-            backgroundColor: palette().surfaceSubtle,
-            gap: 3,
+            paddingVertical: 2,
+            gap: 2,
           }}
         >
           <Text
             style={{
               color: palette().textMuted,
-              fontSize: textSize(10),
+              fontSize: textSize(12),
               fontWeight: "600",
-              letterSpacing: textTracking(10, true),
-              lineHeight: textLineHeight(10, 1.3),
+              lineHeight: textLineHeight(12, 1.35),
             }}
           >
-            {tr("devices.thinkingHeader")}
+            {tr("devices.polish.thinking")}
           </Text>
           <Text
             style={{
               minWidth: 0,
               color: palette().textMuted,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.48),
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.5),
             }}
           >
             {props.row().text}
@@ -437,26 +500,9 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
       </If>
 
       <If when={props.row().kind === "tool"}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "flex-start",
-            gap: 8,
-            borderLeftWidth: 2,
-            borderColor: palette().accent,
-            paddingHorizontal: 10,
-            paddingVertical: 7,
-            borderRadius: radii.sm,
-            borderCurve: "continuous",
-            backgroundColor: palette().panelRaised,
-            borderWidth: 1,
-            borderTopColor: palette().borderSubtle,
-            borderRightColor: palette().borderSubtle,
-            borderBottomColor: palette().borderSubtle,
-          }}
-        >
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, minWidth: 0 }}>
           <View style={{ flexShrink: 0, marginTop: 2 }}>
-            <Icon name="wrench" size={12} color={palette().accent} />
+            <Icon name="wrench" size={12} color={palette().textMuted} />
           </View>
           <Text
             style={{
@@ -464,8 +510,8 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
               minWidth: 0,
               color: palette().textSecondary,
               fontFamily: fontMono,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.42),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.45),
             }}
           >
             {props.row().text}
@@ -474,20 +520,7 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
       </If>
 
       <If when={props.row().kind === "error"}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "flex-start",
-            gap: 8,
-            borderLeftWidth: 2,
-            borderColor: palette().danger,
-            paddingHorizontal: 10,
-            paddingVertical: 7,
-            borderRadius: radii.sm,
-            borderCurve: "continuous",
-            backgroundColor: palette().dangerSoft,
-          }}
-        >
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, minWidth: 0 }}>
           <View style={{ flexShrink: 0, marginTop: 2 }}>
             <Icon name="alert-circle" size={13} color={palette().danger} />
           </View>
@@ -496,8 +529,8 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
               flex: 1,
               minWidth: 0,
               color: palette().danger,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.45),
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.45),
             }}
           >
             {localizeHostError(props.row().text)}
@@ -510,9 +543,9 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
           style={{
             alignSelf: "flex-end",
             maxWidth: "82%",
-            paddingHorizontal: 13,
+            paddingHorizontal: 12,
             paddingVertical: 8,
-            borderRadius: radii.xl,
+            borderRadius: radii.lg,
             borderCurve: "continuous",
             backgroundColor: palette().userBubble,
           }}
@@ -521,8 +554,8 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
             style={{
               minWidth: 0,
               color: palette().userBubbleText,
-              fontSize: textSize(12.5),
-              lineHeight: textLineHeight(12.5, 1.48),
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.48),
             }}
           >
             {props.row().text}
@@ -531,97 +564,102 @@ function ObservedEventRow(props: { row: () => DispatchRow }) {
       </If>
 
       <If when={props.row().kind === "assistant"}>
-        <View
-          style={{
-            borderLeftWidth: 2,
-            borderColor: palette().borderSubtle,
-            paddingLeft: 12,
-            paddingVertical: 2,
-          }}
-        >
-          <TextView
-            markdown={props.row().text}
-            selectable={true}
-            links="open"
-            codeBlockActions={createMarkdownCodeActions()}
-            styles={createMarkdownStyles({ compact: true, baseFontSize: 12.5 })}
-          />
-        </View>
+        <TextView
+          markdown={props.row().text}
+          selectable={true}
+          links="open"
+          codeBlockActions={createMarkdownCodeActions()}
+          styles={createMarkdownStyles({ compact: true, baseFontSize: 13 })}
+        />
       </If>
     </View>
   );
+}
+
+function observerMenuItems(): DropdownMenuItem[] {
+  const items: DropdownMenuItem[] = [
+    {
+      id: "poll",
+      label: tr("devices.pollTargetLog"),
+      icon: "refresh",
+      accessibilityLabel: "dispatch-observe-poll",
+      onSelect: () => void pollObservedJob(),
+    },
+  ];
+  if (!observedJobFinished()) {
+    items.push({
+      id: "cancel",
+      label: tr("devices.cancelJob"),
+      icon: "stop",
+      danger: true,
+      accessibilityLabel: "dispatch-observe-cancel",
+      onSelect: () => void cancelObservedJob(),
+    });
+  }
+  items.push(
+    { id: "sep", label: "", separator: true },
+    {
+      id: "close",
+      label: tr("common.close"),
+      icon: "close",
+      accessibilityLabel: "dispatch-observe-close",
+      onSelect: () => closeObservedJob(),
+    },
+  );
+  return items;
 }
 
 function DispatchObserverPanel() {
   cleanup(() => closeObservedJob());
   return (
     <If when={observedJobId()}>
-      <ConfigSection
+      <StudioSection
         title={tr("devices.observedJob")}
-        subtitle={observedJobTitle() || undefined}
-        bodyPadding={16}
-        extra={
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              gap: 6,
-            }}
-          >
+        accessibilityLabel="dispatch-observer"
+        trailing={
+          <>
             <If when={observedState()}>
               {state => (
-                <StatusPill
+                <InlineStatus
+                  kind={jobDotKind(state())}
                   label={state()}
-                  kind={
-                    state() === "succeeded"
-                      ? "success"
-                      : state() === "failed" || state() === "cancelled"
-                        ? "danger"
-                        : "accent"
-                  }
                   pulse={!observedJobFinished()}
                 />
               )}
             </If>
-            <IconButton
-              icon="refresh"
-              size="sm"
-              tooltip={tr("devices.pollTargetLog")}
-              accessibilityLabel="dispatch-observe-poll"
-              onPress={() => void pollObservedJob()}
-            />
             <If when={observedJobFinished()}>
               <Button
                 label={tr("devices.syncResult")}
-                variant="primary"
+                variant="secondary"
                 size="sm"
                 leadingIcon="download"
                 accessibilityLabel="dispatch-observe-sync"
                 onPress={() => void syncObservedResult()}
               />
             </If>
-            <If when={!observedJobFinished()}>
-              <Button
-                label={tr("devices.cancelJob")}
-                variant="danger"
-                size="sm"
-                accessibilityLabel="dispatch-observe-cancel"
-                onPress={() => void cancelObservedJob()}
-              />
-            </If>
-            <Button
-              label={tr("common.close")}
-              variant="ghost"
-              size="sm"
-              accessibilityLabel="dispatch-observe-close"
-              onPress={() => closeObservedJob()}
+            <MoreMenu
+              accessibilityLabel="dispatch-observe-menu"
+              tooltip={tr("common.actions")}
+              items={observerMenuItems()}
             />
-          </View>
+          </>
         }
       >
-        <View style={{ gap: 14 }}>
+        <View style={{ gap: 14, minWidth: 0 }}>
+          <If when={observedJobTitle()}>
+            {title => (
+              <Text
+                style={{
+                  paddingHorizontal: 4,
+                  color: palette().textSecondary,
+                  fontSize: textSize(13),
+                  lineHeight: textLineHeight(13, 1.45),
+                }}
+              >
+                {title()}
+              </Text>
+            )}
+          </If>
           <If when={observedNotice()}>
             {notice => <InlineBanner tone="neutral" message={localizeHostError(notice())} />}
           </If>
@@ -629,114 +667,97 @@ function DispatchObserverPanel() {
             <InlineBanner tone="warning" message={tr("devices.observedTruncated")} />
           </If>
           <If when={observedPending().length > 0}>
-            <Each of={observedPending()} key={request => request.requestId}>
-              {request => (
-                <View
-                  style={{
-                    gap: 12,
-                    paddingHorizontal: 14,
-                    paddingVertical: 13,
-                    borderRadius: radii.md,
-                    borderCurve: "continuous",
-                    borderWidth: 1,
-                    borderColor: palette().accentBorder,
-                    backgroundColor: palette().accentSoft,
-                  }}
-                >
-                  <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-                    <View
-                      style={{
-                        width: 28,
-                        height: 28,
-                        flexShrink: 0,
-                        borderRadius: radii.sm,
-                        borderCurve: "continuous",
-                        backgroundColor: palette().panelRaised,
-                        borderWidth: 1,
-                        borderColor: palette().accentBorder,
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      <Icon name="shield" size={14} color={palette().accent} />
-                    </View>
-                    <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-                      <Text
-                        style={{
-                          color: palette().text,
-                          fontSize: textSize(13),
-                          fontWeight: "600",
-                          lineHeight: textLineHeight(13, 1.35),
-                        }}
-                      >
-                        {request().title}
-                      </Text>
-                      <Text
-                        style={{
-                          color: palette().textSecondary,
-                          fontFamily: fontMono,
-                          fontSize: textSize(11.5),
-                          lineHeight: textLineHeight(11.5, 1.44),
-                        }}
-                      >
-                        {request().detail}
-                      </Text>
-                    </View>
-                  </View>
+            <InsetGroup>
+              <Each of={observedPending()} key={request => request.requestId}>
+                {(request, index) => (
                   <View
                     style={{
-                      flexDirection: "row",
-                      flexWrap: "wrap",
-                      alignItems: "center",
-                      justifyContent: "flex-end",
-                      gap: 8,
+                      gap: 12,
+                      paddingHorizontal: 16,
+                      paddingVertical: 14,
+                      borderTopWidth: index() === 0 ? 0 : 1,
+                      borderColor: palette().borderSubtle,
                     }}
                   >
-                    <Button
-                      label={tr("sessions.reject")}
-                      variant="danger"
-                      size="sm"
-                      accessibilityLabel={`dispatch-permission-reject-${request().requestId}`}
-                      onPress={() => void answerObservedPermission(request().requestId, "reject")}
-                    />
-                    <Button
-                      label={tr("devices.always")}
-                      variant="secondary"
-                      size="sm"
-                      accessibilityLabel={`dispatch-permission-always-${request().requestId}`}
-                      onPress={() => void answerObservedPermission(request().requestId, "always")}
-                    />
-                    <Button
-                      label={tr("sessions.allowOnce")}
-                      variant="primary"
-                      size="sm"
-                      accessibilityLabel={`dispatch-permission-once-${request().requestId}`}
-                      onPress={() => void answerObservedPermission(request().requestId, "once")}
-                    />
+                    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+                      <View style={{ paddingTop: 2 }}>
+                        <Icon name="shield" size={16} color={palette().textMuted} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+                        <Text
+                          style={{
+                            color: palette().text,
+                            fontSize: textSize(14),
+                            fontWeight: "600",
+                            lineHeight: textLineHeight(14, 1.35),
+                          }}
+                        >
+                          {request().title}
+                        </Text>
+                        <Text
+                          style={{
+                            color: palette().textSecondary,
+                            fontFamily: fontMono,
+                            fontSize: textSize(12),
+                            lineHeight: textLineHeight(12, 1.45),
+                          }}
+                        >
+                          {request().detail}
+                        </Text>
+                      </View>
+                    </View>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        justifyContent: "flex-end",
+                        gap: 8,
+                      }}
+                    >
+                      <Button
+                        label={tr("sessions.reject")}
+                        variant="ghost"
+                        size="sm"
+                        accessibilityLabel={`dispatch-permission-reject-${request().requestId}`}
+                        onPress={() => void answerObservedPermission(request().requestId, "reject")}
+                      />
+                      <Button
+                        label={tr("devices.always")}
+                        variant="secondary"
+                        size="sm"
+                        accessibilityLabel={`dispatch-permission-always-${request().requestId}`}
+                        onPress={() => void answerObservedPermission(request().requestId, "always")}
+                      />
+                      <Button
+                        label={tr("sessions.allowOnce")}
+                        variant="primary"
+                        size="sm"
+                        accessibilityLabel={`dispatch-permission-once-${request().requestId}`}
+                        onPress={() => void answerObservedPermission(request().requestId, "once")}
+                      />
+                    </View>
                   </View>
-                </View>
-              )}
-            </Each>
+                )}
+              </Each>
+            </InsetGroup>
           </If>
 
-          {/* Typed Event Rail */}
           <View
             style={{
-              borderRadius: radii.md,
+              borderRadius: radii.lg,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().borderSubtle,
-              backgroundColor: palette().surfaceTertiary,
-              boxShadow: palette().shadowInset,
-              padding: 14,
+              backgroundColor: palette().panelRaised,
+              paddingHorizontal: 16,
+              paddingVertical: 14,
             }}
           >
-            <Scroll style={{ maxHeight: 280, minHeight: 0 }}>
-              <View style={{ gap: 10 }}>
+            <Scroll style={{ maxHeight: 320, minHeight: 0 }}>
+              <View style={{ gap: 12 }}>
                 <If when={observedRows().length === 0}>
-                  <Text style={textStyle("caption")}>
-                    {tr("devices.noJobEvents")}
-                  </Text>
+                  <Text style={textStyle("caption")}>{tr("devices.noJobEvents")}</Text>
                 </If>
                 <Each of={observedRows()} key={row => row.id}>
                   {row => <ObservedEventRow row={row} />}
@@ -750,9 +771,7 @@ function DispatchObserverPanel() {
               size="md"
               value={observedDraft()}
               placeholder={
-                observedJobFinished()
-                  ? tr("devices.followUpPlaceholder")
-                  : tr("devices.steerPlaceholder")
+                observedJobFinished() ? tr("devices.followUpPlaceholder") : tr("devices.steerPlaceholder")
               }
               accessibilityLabel="dispatch-observe-message"
               style={{ flex: 1, minWidth: 0 }}
@@ -770,12 +789,33 @@ function DispatchObserverPanel() {
             />
           </View>
         </View>
-      </ConfigSection>
+      </StudioSection>
     </If>
   );
 }
 
-function DispatchCard() {
+function JobActions(props: { jobId: string; onObserve: () => void }) {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+      <Button
+        label={tr("devices.observe")}
+        variant="secondary"
+        size="sm"
+        accessibilityLabel={`dispatch-observe-${props.jobId}`}
+        onPress={props.onObserve}
+      />
+      <Button
+        label={tr("common.cancel")}
+        variant="ghost"
+        size="sm"
+        accessibilityLabel={`dispatch-cancel-${props.jobId}`}
+        onPress={() => void cancelDispatch(props.jobId)}
+      />
+    </View>
+  );
+}
+
+function DispatchSection() {
   ensureDispatch();
   const chosen = () => selectedTarget();
   const needsPath = () => {
@@ -784,311 +824,492 @@ function DispatchCard() {
   };
   return (
     <If when={dispatchSupported() !== false}>
-      <View style={{ gap: 20 }}>
-        <ConfigSection
-          title={tr("devices.dispatchTitle")}
-          subtitle={tr("devices.dispatchSubtitle")}
-          flush
-          extra={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <IconButton
-                icon="refresh"
-                size="sm"
-                tooltip={tr("devices.refreshJobs")}
-                accessibilityLabel="dispatch-refresh"
-                onPress={() => void refreshDispatchJobs()}
-              />
-              <Button
-                label={tr("devices.newJob")}
-                variant="primary"
-                size="sm"
-                leadingIcon="plus"
-                accessibilityLabel="dispatch-form-toggle"
-                onPress={() => {
-                  const hadPath = Boolean(dispatchWorkspacePath().trim());
-                  openDispatchForm();
-                  if (!hadPath && needsPath()) dispatchWorkspacePath.set("");
-                }}
-              />
-            </View>
-          }
-        >
-          <View>
-            <If when={dispatchNotice()}>
-              {notice => (
-                <View style={{ padding: 14, borderBottomWidth: 1, borderColor: palette().borderSubtle }}>
-                  <InlineBanner tone="neutral" message={localizeHostError(notice())} />
-                </View>
-              )}
-            </If>
-            <If when={dispatchJobs().length === 0}>
-              <View
+      <StudioSection
+        title={tr("devices.dispatchTitle")}
+        accessibilityLabel="dispatch-section"
+        footnote={tr("devices.dispatchSubtitle")}
+        trailing={
+          <>
+            <IconButton
+              icon="refresh"
+              size="sm"
+              tooltip={tr("devices.refreshJobs")}
+              accessibilityLabel="dispatch-refresh"
+              onPress={() => void refreshDispatchJobs()}
+            />
+            <Button
+              label={tr("devices.newJob")}
+              variant="secondary"
+              size="sm"
+              leadingIcon="plus"
+              accessibilityLabel="dispatch-form-toggle"
+              onPress={() => {
+                const hadPath = Boolean(dispatchWorkspacePath().trim());
+                openDispatchForm();
+                if (!hadPath && needsPath()) dispatchWorkspacePath.set("");
+              }}
+            />
+          </>
+        }
+      >
+        <View style={{ gap: 12, minWidth: 0 }}>
+          <If when={dispatchNotice()}>
+            {notice => <InlineBanner tone="neutral" message={localizeHostError(notice())} />}
+          </If>
+          <If
+            when={dispatchJobs().length > 0}
+            else={
+              <Text
                 style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 12,
-                  paddingHorizontal: 16,
-                  paddingVertical: 18,
+                  paddingHorizontal: 4,
+                  color: palette().textMuted,
+                  fontSize: textSize(13),
+                  lineHeight: textLineHeight(13, 1.45),
                 }}
               >
+                {tr("devices.noJobsYet")}
+              </Text>
+            }
+          >
+            <InsetGroup accessibilityLabel="dispatch-jobs">
+              <Each of={dispatchJobs()} key={job => job.jobId}>
+                {(job, index) => (
+                  <InsetRow
+                    first={index() === 0}
+                    leading={<StatusDot kind={jobDotKind(job().state)} size={7} pulse={job().state === "running"} />}
+                    label={`${job().title || job().promptPreview || job().jobId} · ${job().target?.displayName ?? job().target?.kind ?? tr("common.local")}`}
+                    value={job().state}
+                    trailing={
+                      studioCompact() ? undefined : (
+                        <JobActions jobId={job().jobId} onObserve={() => void openObservedJob(job())} />
+                      )
+                    }
+                    below={
+                      studioCompact() ? (
+                        <JobActions jobId={job().jobId} onObserve={() => void openObservedJob(job())} />
+                      ) : undefined
+                    }
+                  />
+                )}
+              </Each>
+            </InsetGroup>
+          </If>
+        </View>
+      </StudioSection>
+
+      <ModalDialog
+        open={dispatchFormOpen()}
+        title={tr("devices.newJobTitle")}
+        subtitle={tr("devices.newJobSubtitle")}
+        size="md"
+        accessibilityLabel="dispatch-job-modal"
+        onClose={() => dispatchFormOpen.set(false)}
+        footer={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Button
+              label={tr("common.cancel")}
+              variant="ghost"
+              size="sm"
+              onPress={() => dispatchFormOpen.set(false)}
+            />
+            <Button
+              label={tr("devices.submitJob")}
+              variant="primary"
+              size="sm"
+              accessibilityLabel="dispatch-submit"
+              disabled={!dispatchTargetReady()}
+              tooltip={dispatchTargetReady() ? undefined : dispatchProbe()?.message || tr("devices.dispatchNotReady")}
+              onPress={() => void submitDispatch()}
+            />
+          </View>
+        }
+      >
+        <View style={{ gap: 14 }}>
+          <View style={{ gap: 6 }}>
+            <Text style={textStyle("label", { color: palette().textSecondary })}>
+              {tr("devices.targetHost")}
+            </Text>
+            <SelectDropdown
+              options={dispatchTargets().map(target => ({
+                value: targetKey(target),
+                label: `${target.displayName} (${target.kind}${target.online === false ? `, ${tr("devices.offline")}` : ""})`,
+                icon: target.kind === "ssh" ? ("server" as const) : ("laptop" as const),
+                accessibilityLabel: `dispatch-target-${targetKey(target)}`,
+              }))}
+              value={dispatchTargetKey()}
+              placeholder={tr("devices.chooseTargetHost")}
+              fullWidth={true}
+              accessibilityLabel="dispatch-target-select"
+              onChange={val => chooseDispatchTarget(val)}
+            />
+            <If when={dispatchProbe()}>
+              {probe => (
                 <View
-                  style={{
-                    width: 34,
-                    height: 34,
-                    flexShrink: 0,
-                    borderRadius: radii.sm,
-                    borderCurve: "continuous",
-                    borderWidth: 1,
-                    borderColor: palette().borderSubtle,
-                    backgroundColor: palette().surfaceTertiary,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <Icon name="activity" size={15} color={palette().textMuted} />
-                </View>
-                <Text
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    color: palette().textMuted,
-                    fontSize: textSize(12.5),
-                    lineHeight: textLineHeight(12.5, 1.48),
-                  }}
-                >
-                  {tr("devices.noJobsYet")}
-                </Text>
-              </View>
-            </If>
-            <Each of={dispatchJobs()} key={job => job.jobId}>
-              {(job, index) => (
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 12,
-                    paddingHorizontal: 16,
-                    paddingVertical: 13,
-                    borderTopWidth: index() === 0 ? 0 : 1,
-                    borderColor: palette().borderSubtle,
-                    ...paintTransition(MOTION_DURATION.fast),
-                  }}
-                  hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+                  accessibilityLabel="dispatch-probe-status"
+                  style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 24 }}
                 >
                   <StatusDot
                     kind={
-                      job().state === "succeeded"
+                      probe().status === "ready"
                         ? "success"
-                        : job().state === "failed" || job().state === "cancelled"
-                          ? "danger"
-                          : "accent"
+                        : probe().status === "checking"
+                          ? "muted"
+                          : "danger"
                     }
-                    size={6.5}
-                    pulse={job().state === "running"}
                   />
                   <Text
                     style={{
-                      color: palette().text,
-                      fontSize: textSize(13),
-                      fontWeight: "500",
-                      lineHeight: textLineHeight(13, 1.38),
                       flex: 1,
                       minWidth: 0,
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
+                      color: probe().status === "ready" || probe().status === "checking"
+                        ? palette().textMuted
+                        : palette().danger,
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.4),
                     }}
                   >
-                    {`${job().title || job().promptPreview || job().jobId} · ${job().target?.displayName ?? job().target?.kind ?? tr("common.local")}`}
+                    {probe().status === "checking"
+                      ? tr("devices.dispatchChecking")
+                      : probe().status === "ready"
+                        ? tr("devices.dispatchReady")
+                        : probe().status === "failed"
+                          ? tr("devices.dispatchProbeFailed", { error: probe().message })
+                          : probe().message}
                   </Text>
-                  <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
-                    <Badge
-                      label={job().state}
-                      tone={
-                        job().state === "succeeded"
-                          ? "success"
-                          : job().state === "failed" || job().state === "cancelled"
-                            ? "danger"
-                            : "accent"
-                      }
-                    />
+                  <If when={probe().status === "failed" || probe().status === "not-ready"}>
                     <Button
-                      label={tr("devices.observe")}
-                      variant="secondary"
-                      size="sm"
-                      accessibilityLabel={`dispatch-observe-${job().jobId}`}
-                      onPress={() => void openObservedJob(job())}
-                    />
-                    <Button
-                      label={tr("common.cancel")}
+                      label={tr("common.retry")}
                       variant="ghost"
                       size="sm"
-                      accessibilityLabel={`dispatch-cancel-${job().jobId}`}
-                      onPress={() => void cancelDispatch(job().jobId)}
+                      accessibilityLabel="dispatch-probe-retry"
+                      onPress={() => void probeDispatchTarget()}
                     />
-                  </View>
+                  </If>
                 </View>
               )}
-            </Each>
+            </If>
           </View>
-        </ConfigSection>
-
-        <ModalDialog
-          open={dispatchFormOpen()}
-          title={tr("devices.newJobTitle")}
-          subtitle={tr("devices.newJobSubtitle")}
-          size="md"
-          accessibilityLabel="dispatch-job-modal"
-          onClose={() => dispatchFormOpen.set(false)}
-          footer={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Button
-                label={tr("common.cancel")}
-                variant="ghost"
-                size="sm"
-                onPress={() => dispatchFormOpen.set(false)}
-              />
-              <Button
-                label={tr("devices.submitJob")}
-                variant="primary"
-                size="sm"
-                accessibilityLabel="dispatch-submit"
-                onPress={() => void submitDispatch()}
+          <If when={needsPath()}>
+            <InputBox
+              label={tr("devices.targetWorkspacePath")}
+              leadingIcon="folder"
+              monospace
+              value={dispatchWorkspacePath()}
+              placeholder="/path/on/that/host"
+              accessibilityLabel="dispatch-workspace"
+              onChange={val => dispatchWorkspacePath.set(val)}
+            />
+          </If>
+          <InputBox
+            label={tr("devices.prompt")}
+            multiline
+            minHeight={88}
+            value={dispatchPrompt()}
+            placeholder={tr("devices.promptPlaceholder")}
+            accessibilityLabel="dispatch-prompt"
+            onChange={val => dispatchPrompt.set(val)}
+            onSubmit={() => void submitDispatch()}
+          />
+          <InputBox
+            label={tr("devices.dispatchTitleLabel")}
+            value={dispatchTitle()}
+            placeholder={tr("devices.dispatchTitlePlaceholder")}
+            accessibilityLabel="dispatch-title"
+            onChange={val => dispatchTitle.set(val)}
+          />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
+            <View style={{ flex: 1, minWidth: 180 }}>
+              <InputBox
+                label={tr("devices.dispatchBaseRef")}
+                hint={tr("devices.dispatchBaseRefHint")}
+                monospace
+                value={dispatchBaseRef()}
+                placeholder="HEAD"
+                accessibilityLabel="dispatch-base-ref"
+                onChange={val => dispatchBaseRef.set(val)}
               />
             </View>
-          }
-        >
-          <View style={{ gap: 14 }}>
-            <View style={{ gap: 6 }}>
+            <View style={{ flex: 1, minWidth: 180, gap: 6 }}>
               <Text style={textStyle("label", { color: palette().textSecondary })}>
-                {tr("devices.targetHost")}
+                {tr("devices.dispatchModel")}
               </Text>
               <SelectDropdown
-                options={dispatchTargets().map(target => ({
-                  value: targetKey(target),
-                  label: `${target.displayName} (${target.kind}${target.online === false ? `, ${tr("devices.offline")}` : ""})`,
-                  icon: target.kind === "ssh" ? ("server" as const) : ("laptop" as const),
-                  accessibilityLabel: `dispatch-target-${targetKey(target)}`,
-                }))}
-                value={dispatchTargetKey()}
-                placeholder={tr("devices.chooseTargetHost")}
+                options={[
+                  {
+                    value: "",
+                    label: tr("devices.dispatchModelDefault"),
+                    accessibilityLabel: "dispatch-model-default",
+                  },
+                  ...(dispatchProbe()?.availableModels ?? []).map(model => ({
+                    value: model,
+                    label: model === dispatchProbe()?.defaultModel
+                      ? tr("devices.dispatchModelTargetDefault", { model })
+                      : model,
+                    accessibilityLabel: `dispatch-model-${model}`,
+                  })),
+                ]}
+                value={dispatchModel()}
                 fullWidth={true}
-                accessibilityLabel="dispatch-target-select"
-                onChange={val => dispatchTargetKey.set(val)}
+                accessibilityLabel="dispatch-model-select"
+                onChange={val => dispatchModel.set(val)}
               />
-            </View>
-            <If when={needsPath()}>
-              <InputBox
-                label={tr("devices.targetWorkspacePath")}
-                leadingIcon="folder"
-                monospace
-                value={dispatchWorkspacePath()}
-                placeholder="/path/on/that/host"
-                accessibilityLabel="dispatch-workspace"
-                onChange={val => dispatchWorkspacePath.set(val)}
-              />
-            </If>
-            <InputBox
-              label={tr("devices.prompt")}
-              multiline
-              minHeight={88}
-              value={dispatchPrompt()}
-              placeholder={tr("devices.promptPlaceholder")}
-              accessibilityLabel="dispatch-prompt"
-              onChange={val => dispatchPrompt.set(val)}
-              onSubmit={() => void submitDispatch()}
-            />
-            <View style={{ gap: 6 }}>
-              <Text style={textStyle("label", { color: palette().textSecondary })}>
-                {tr("devices.approvalPolicy")}
-              </Text>
-              <SegmentedTabs
-                size="sm"
-                value={dispatchApprovalPolicy()}
-                options={DISPATCH_APPROVAL_POLICIES.map(policy => ({
-                  value: policy.value,
-                  label: approvalPolicyLabel(policy.value, policy.label),
-                  accessibilityLabel: `dispatch-approval-${policy.value}`,
-                }))}
-                onChange={value => dispatchApprovalPolicy.set(value)}
-              />
-              <If when={approvalPolicyHint(dispatchApprovalPolicy())}>
-                {hint => <Text style={textStyle("caption")}>{hint()}</Text>}
-              </If>
             </View>
           </View>
-        </ModalDialog>
+          <ConfigRow
+            label={tr("devices.dispatchIncludeUncommitted")}
+            description={tr("devices.dispatchIncludeUncommittedHint")}
+            divider={false}
+          >
+            <ToggleSwitch
+              value={dispatchIncludeUncommitted()}
+              accessibilityLabel="dispatch-include-uncommitted"
+              onChange={next => dispatchIncludeUncommitted.set(next)}
+            />
+          </ConfigRow>
+          <View style={{ gap: 6 }}>
+            <Text style={textStyle("label", { color: palette().textSecondary })}>
+              {tr("devices.approvalPolicy")}
+            </Text>
+            <SegmentedTabs
+              size="sm"
+              value={dispatchApprovalPolicy()}
+              options={DISPATCH_APPROVAL_POLICIES.map(policy => ({
+                value: policy.value,
+                label: approvalPolicyLabel(policy.value, policy.label),
+                accessibilityLabel: `dispatch-approval-${policy.value}`,
+              }))}
+              onChange={value => dispatchApprovalPolicy.set(value)}
+            />
+            <If when={approvalPolicyHint(dispatchApprovalPolicy())}>
+              {hint => <Text style={textStyle("caption")}>{hint()}</Text>}
+            </If>
+          </View>
+        </View>
+      </ModalDialog>
 
-        <DispatchObserverPanel />
-      </View>
+      <DispatchObserverPanel />
     </If>
   );
 }
 
-function PeerDevicesCard() {
+function deviceDotKind(device: DeviceRow): StatusDotKind {
+  if (connectingDeviceId() === device.id) return "accent";
+  if (peerScope()?.deviceId === device.id) return "accent";
+  return device.online ? "success" : "muted";
+}
+
+function deviceMenuItems(device: DeviceRow): DropdownMenuItem[] {
+  const hidden = hiddenDevices()[device.id] === true;
+  return [
+    {
+      id: "up",
+      label: tr("common.up"),
+      icon: "arrow-up",
+      accessibilityLabel: `device-up-${device.id}`,
+      onSelect: () => moveListed(device.id, -1),
+    },
+    {
+      id: "down",
+      label: tr("common.down"),
+      icon: "chevron-down",
+      accessibilityLabel: `device-down-${device.id}`,
+      onSelect: () => moveListed(device.id, 1),
+    },
+    {
+      id: "hide",
+      label: hidden ? tr("devices.show") : tr("devices.hide"),
+      icon: hidden ? "eye" : "eye-off",
+      accessibilityLabel: `device-hide-${device.id}`,
+      onSelect: () => toggleDeviceVisible(device.id),
+    },
+    {
+      id: "rename",
+      label: tr("common.rename"),
+      icon: "edit",
+      accessibilityLabel: `device-rename-${device.id}`,
+      onSelect: () => {
+        aliasValue.set("");
+        editingDeviceId.set(device.id);
+      },
+    },
+    {
+      id: "remove",
+      label: device.id === localDeviceId() ? tr("devices.removeCurrentDevice") : tr("devices.removeDevice"),
+      icon: "trash",
+      danger: true,
+      separator: true,
+      accessibilityLabel: `device-remove-${device.id}`,
+      onSelect: () => {
+        removeDeviceError.set("");
+        removingDeviceId.set(device.id);
+      },
+    },
+  ];
+}
+
+function accountMenuItems(): DropdownMenuItem[] {
+  return [
+    {
+      id: "account",
+      label: signedInAccountDisplay(),
+      icon: "user",
+      accessibilityLabel: "devices-account-pill",
+      onSelect: () => openAccountAuthModal(),
+    },
+    {
+      id: "sign-out",
+      label: tr("devices.signOut"),
+      icon: "log-out",
+      disabled: authLoading(),
+      accessibilityLabel: "devices-sign-out",
+      onSelect: () => void signOutAccount(),
+    },
+  ];
+}
+
+function devicesFootnote(): string | undefined {
+  if (needsAccountSignIn()) return undefined;
+  const parts: string[] = [];
+  if (isAccountSignedIn()) parts.push(tr("devices.accountSignedInAs", { account: signedInAccountDisplay() }));
+  parts.push(formatPlural(devices().length, "devices.deviceCountOne", "devices.deviceCountOther"));
+  return parts.join(" · ");
+}
+
+function DeviceListRow(props: { device: () => DeviceRow; first: boolean }) {
+  const isPeer = () => peerScope()?.deviceId === props.device().id;
+  const isLocal = () => props.device().id === localDeviceId();
+  return (
+    <InsetRow
+      first={props.first}
+      selected={isPeer()}
+      leading={
+        <View style={{ width: 16, alignItems: "center" }}>
+          <StatusDot
+            kind={deviceDotKind(props.device())}
+            size={8}
+            pulse={connectingDeviceId() === props.device().id}
+          />
+        </View>
+      }
+      label={props.device().alias || props.device().name}
+      detail={`${props.device().platform || tr("devices.unknownPlatform")} · ${props.device().online ? tr("devices.online") : tr("devices.offline")} · ${props.device().id}`}
+      value={isPeer() ? tr("devices.activePeer") : isLocal() ? tr("devices.thisDevice") : undefined}
+      trailing={
+        <>
+          <If when={!isPeer() && props.device().online && !isLocal()}>
+            <Button
+              label={
+                connectingDeviceId() === props.device().id ? tr("devices.connectingEllipsis") : tr("common.use")
+              }
+              variant="secondary"
+              size="sm"
+              loading={connectingDeviceId() === props.device().id}
+              disabled={peerBusy()}
+              accessibilityLabel={`device-use-${props.device().id}`}
+              onPress={() => void switchToDevice(props.device())}
+            />
+          </If>
+          <MoreMenu
+            accessibilityLabel={`device-actions-${props.device().id}`}
+            tooltip={tr("devices.deviceActions")}
+            minWidth={168}
+            items={deviceMenuItems(props.device())}
+          />
+        </>
+      }
+    />
+  );
+}
+
+/** What Peer Device Mode is doing right now, under the device list. */
+function PeerModeNote() {
+  return (
+    <View accessibilityLabel="devices-peer-mode" style={{ marginTop: 14, paddingHorizontal: 4, gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <StatusDot kind={peerScope() ? "accent" : "muted"} size={7} />
+        <Text
+          style={{
+            color: palette().textSecondary,
+            fontSize: textSize(13),
+            fontWeight: "600",
+            lineHeight: textLineHeight(13, 1.35),
+          }}
+        >
+          {peerScope()
+            ? tr("devices.drivingAnother")
+            : currentLocale() === "en-US"
+              ? tr("devices.drivingAnother")
+              : tr("devices.peerModeIdle")}
+        </Text>
+      </View>
+      <Text
+        style={{
+          color: palette().textMuted,
+          fontSize: textSize(12),
+          fontVariant: ["tabular-nums"],
+          lineHeight: textLineHeight(12, 1.5),
+        }}
+      >
+        {peerScope()
+          ? tr("devices.drivingActiveSummary", {
+              label: peerScope()!.label,
+              hostKind: peerScope()!.hostKind,
+              capabilities: formatPlural(
+                peerScope()!.capabilityCount,
+                "devices.capabilityOne",
+                "devices.capabilityOther",
+              ),
+            })
+          : tr("devices.drivingIdleHint")}
+      </Text>
+      <If when={Boolean(peerScope())}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+          <Button
+            label={peerReconnecting() ? tr("nav.peerReconnecting") : tr("nav.peerReconnect")}
+            variant="secondary"
+            size="sm"
+            leadingIcon="refresh"
+            loading={peerReconnecting()}
+            disabled={peerBusy() || peerReconnecting()}
+            accessibilityLabel="peer-reconnect"
+            onPress={() => void reconnectPeer()}
+          />
+          <Button
+            label={tr("devices.thisMachine")}
+            variant="ghost"
+            size="sm"
+            disabled={peerBusy()}
+            accessibilityLabel="peer-leave"
+            onPress={() => void returnToThisMachine()}
+          />
+        </View>
+      </If>
+      <If when={peerError()}>
+        {message => (
+          <InlineBanner
+            tone="danger"
+            message={localizeHostError(message())}
+            actionLabel={peerScope() ? tr("nav.peerReconnect") : undefined}
+            onAction={peerScope() ? () => void reconnectPeer() : undefined}
+          />
+        )}
+      </If>
+    </View>
+  );
+}
+
+function DevicesSection() {
   const editingDevice = () => {
     const id = editingDeviceId();
     return id ? devices().find(device => device.id === id) ?? null : null;
   };
   return (
-    <ConfigSection
-      title={tr("devices.peerDevices")}
-      subtitle={tr("devices.peerDevicesSubtitle")}
-      flush
-      extra={
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", gap: 8 }}>
-          <If when={isAccountSignedIn()}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <View
-                role="button"
-                accessibilityLabel="devices-account-pill"
-                onPress={() => openAccountAuthModal()}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 6,
-                  paddingHorizontal: 9,
-                  paddingVertical: 4,
-                  borderRadius: radii.pill,
-                  borderCurve: "continuous",
-                  borderWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  backgroundColor: palette().surfaceSubtle,
-                  cursor: "pointer",
-                  ...pressTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{
-                  backgroundColor: palette().panelHover,
-                  borderColor: palette().border,
-                }}
-                activeStyle={tactileActiveStyle(0.97)}
-              >
-                <StatusDot kind="success" size={5.5} />
-                <Text
-                  style={{
-                    color: palette().textSecondary,
-                    fontSize: textSize(11.5),
-                    fontWeight: "500",
-                    lineHeight: textLineHeight(11.5, 1.24),
-                    numberOfLines: 1,
-                  }}
-                >
-                  {signedInAccountDisplay()}
-                </Text>
-              </View>
-              <Button
-                label={tr("devices.signOut")}
-                variant="ghost"
-                size="xs"
-                leadingIcon="log-out"
-                disabled={authLoading()}
-                accessibilityLabel="devices-sign-out"
-                onPress={() => void signOutAccount()}
-              />
-            </View>
-          </If>
-          <If when={needsAccountSignIn()}>
-            <Badge label={tr("devices.accountSignedOut")} tone="neutral" />
-          </If>
+    <StudioSection
+      title={tr("devices.polish.devicesSection")}
+      accessibilityLabel="devices-section"
+      footnote={devicesFootnote()}
+      trailing={
+        <>
           <If when={!needsAccountSignIn() && hiddenCount() > 0}>
             <PillChip
               label={tr("devices.hiddenCount", { count: hiddenCount() })}
@@ -1097,346 +1318,121 @@ function PeerDevicesCard() {
               onPress={() => showHiddenDevices.set(!showHiddenDevices())}
             />
           </If>
-          <If when={!needsAccountSignIn()}>
-            <Badge
-              label={formatPlural(devices().length, "devices.deviceCountOne", "devices.deviceCountOther")}
-              tone="neutral"
+          <If when={isAccountSignedIn()}>
+            <MoreMenu
+              accessibilityLabel="devices-account-menu"
+              tooltip={tr("devices.polish.accountActions")}
+              icon="user"
+              minWidth={200}
+              items={accountMenuItems()}
             />
           </If>
-        </View>
+        </>
       }
     >
-      <View>
-        <If when={needsAccountSignIn()}>
-          <View
-            accessibilityLabel="devices-sign-in-panel"
-            style={{
-              paddingHorizontal: 24,
-              paddingVertical: 30,
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 10,
-            }}
-          >
-            <View
-              style={{
-                width: 40,
-                height: 40,
-                flexShrink: 0,
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().border,
-                backgroundColor: palette().surfaceTertiary,
-                alignItems: "center",
-                justifyContent: "center",
-                marginBottom: 2,
-              }}
-            >
-              <Icon name="user" size={18} color={palette().accent} />
-            </View>
+      <If when={needsAccountSignIn()}>
+        <StudioEmpty
+          accessibilityLabel="devices-sign-in-panel"
+          icon="user"
+          message={tr("devices.signInRequiredTitle")}
+          detail={tr("devices.signInRequiredSubtitle")}
+          action={
+            <Button
+              label={tr("devices.signInCta")}
+              variant="primary"
+              size="md"
+              leadingIcon="log-in"
+              accessibilityLabel="devices-sign-in"
+              onPress={() => openAccountAuthModal({ autoStart: true, onSuccess: () => void loadDevices() })}
+            />
+          }
+        />
+      </If>
+      <If when={!needsAccountSignIn()}>
+        <If
+          when={devices().length > 0}
+          else={
             <Text
               style={{
-                color: palette().text,
-                fontSize: textSize(14.5),
-                fontWeight: "600",
-                letterSpacing: textTracking(14.5),
-                textAlign: "center",
-                lineHeight: textLineHeight(14.5, 1.32),
-              }}
-            >
-              {tr("devices.signInRequiredTitle")}
-            </Text>
-            <Text
-              style={{
+                paddingHorizontal: 4,
                 color: palette().textMuted,
-                fontSize: textSize(12),
-                textAlign: "center",
-                maxWidth: 440,
-                lineHeight: textLineHeight(12, 1.5),
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.45),
               }}
             >
-              {tr("devices.signInRequiredSubtitle")}
-            </Text>
-            <View style={{ marginTop: 4 }}>
-              <Button
-                label={tr("devices.signInCta")}
-                variant="primary"
-                size="md"
-                leadingIcon="log-in"
-                accessibilityLabel="devices-sign-in"
-                onPress={() =>
-                  openAccountAuthModal({ autoStart: true, onSuccess: () => void loadDevices() })
-                }
-              />
-            </View>
-          </View>
-        </If>
-        <If when={!needsAccountSignIn() && devices().length === 0}>
-          <View style={{ paddingHorizontal: 16, paddingVertical: 16 }}>
-            <Text style={textStyle("caption")}>
               {devicesLoaded() ? tr("devices.noDevices") : tr("devices.loadingDevices")}
             </Text>
-          </View>
+          }
+        >
+          <InsetGroup accessibilityLabel="devices-list">
+            <Each of={listedDevices()} key={device => device.id}>
+              {(device, index) => <DeviceListRow device={device} first={index() === 0} />}
+            </Each>
+          </InsetGroup>
         </If>
-        <If when={!needsAccountSignIn()}>
-          <Each of={listedDevices()} key={device => device.id}>
-          {(device, index) => (
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 12,
-                paddingHorizontal: 16,
-                paddingVertical: 14,
-                borderTopWidth: index() === 0 ? 0 : 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor:
-                  peerScope()?.deviceId === device().id ? palette().accentSoft : "transparent",
-                ...paintTransition(MOTION_DURATION.fast),
-              }}
-              hoverStyle={{
-                backgroundColor:
-                  peerScope()?.deviceId === device().id ? palette().accentSoft : palette().surfaceSubtle,
-              }}
-            >
-              <DeviceGlyph
-                kind={inferDeviceGlyphKind(device())}
-                size={36}
-                status={
-                  connectingDeviceId() === device().id
-                    ? "connecting"
-                    : device().online
-                      ? "online"
-                      : "muted"
-                }
-                active={peerScope()?.deviceId === device().id}
-                ringColor={palette().panelRaised}
-              />
-              <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 7, minWidth: 0 }}>
-                  <Text
-                    style={{
-                      flexShrink: 1,
-                      minWidth: 0,
-                      color: palette().text,
-                      fontSize: textSize(13.5),
-                      fontWeight: "600",
-                      letterSpacing: textTracking(13.5),
-                      lineHeight: textLineHeight(13.5, 1.32),
-                      numberOfLines: 1,
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {device().alias || device().name}
-                  </Text>
-                  <If when={device().id === localDeviceId()}>
-                    <Badge label={tr("devices.thisDevice")} tone="neutral" />
-                  </If>
-                </View>
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(11.5),
-                    fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(11.5, 1.38),
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis-middle",
-                  }}
-                >
-                  {`${device().platform || tr("devices.unknownPlatform")} · ${device().online ? tr("devices.online") : tr("devices.offline")} · ${device().id}`}
-                </Text>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
-                <If when={peerScope()?.deviceId === device().id}>
-                  <StatusPill label={tr("devices.activePeer")} kind="accent" />
-                </If>
-                <If when={peerScope()?.deviceId !== device().id && device().online && device().id !== localDeviceId()}>
-                  <Button
-                    label={
-                      connectingDeviceId() === device().id
-                        ? tr("devices.connectingEllipsis")
-                        : tr("common.use")
-                    }
-                    variant="primary"
-                    size="sm"
-                    loading={connectingDeviceId() === device().id}
-                    disabled={peerBusy()}
-                    accessibilityLabel={`device-use-${device().id}`}
-                    onPress={() => void switchToDevice(device())}
-                  />
-                </If>
-                <View ref={el => setDeviceAnchor(device().id, el)} style={{ flexShrink: 0 }}>
-                  <IconButton
-                    icon="more"
-                    size="sm"
-                    tooltip={tr("devices.deviceActions")}
-                    active={deviceMenuId() === device().id}
-                    accessibilityLabel={`device-actions-${device().id}`}
-                    onPress={() =>
-                      deviceMenuId.set(deviceMenuId() === device().id ? null : device().id)
-                    }
-                  />
-                </View>
-              </View>
-              <DropdownMenu
-                open={deviceMenuId() === device().id}
-                anchor={deviceMenuAnchors()[device().id] ?? null}
-                align="end"
-                minWidth={155}
-                items={[
-                  {
-                    id: "up",
-                    label: tr("common.up"),
-                    icon: "arrow-up",
-                    accessibilityLabel: `device-up-${device().id}`,
-                    onSelect: () => moveListed(device().id, -1),
-                  },
-                  {
-                    id: "down",
-                    label: tr("common.down"),
-                    icon: "chevron-down",
-                    accessibilityLabel: `device-down-${device().id}`,
-                    onSelect: () => moveListed(device().id, 1),
-                  },
-                  {
-                    id: "hide",
-                    label: hiddenDevices()[device().id] === true ? tr("devices.show") : tr("devices.hide"),
-                    icon: hiddenDevices()[device().id] === true ? "eye" : "eye-off",
-                    accessibilityLabel: `device-hide-${device().id}`,
-                    onSelect: () => toggleDeviceVisible(device().id),
-                  },
-                  {
-                    id: "rename",
-                    label: tr("common.rename"),
-                    icon: "edit",
-                    accessibilityLabel: `device-rename-${device().id}`,
-                    onSelect: () => {
-                      aliasValue.set("");
-                      editingDeviceId.set(device().id);
-                    },
-                  },
-                ]}
-                onClose={() => deviceMenuId.set(null)}
-              />
-            </View>
-          )}
-        </Each>
-        </If>
+      </If>
+      <If when={!needsAccountSignIn() || Boolean(peerScope())}>
+        <PeerModeNote />
+      </If>
 
-        {/* Compact Peer Mode Footer Strip */}
-        <If when={!needsAccountSignIn() || Boolean(peerScope())}>
-          <View
+      <ModalDialog
+        open={Boolean(removingDeviceId())}
+        title={
+          removingDeviceId() === localDeviceId()
+            ? tr("devices.removeCurrentDevice")
+            : tr("devices.removeDevice")
+        }
+        size="sm"
+        accessibilityLabel="device-remove-modal"
+        onClose={() => removingDeviceId.set(null)}
+        footer={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Button
+              label={tr("common.cancel")}
+              variant="ghost"
+              size="sm"
+              onPress={() => removingDeviceId.set(null)}
+            />
+            <Button
+              label={
+                removingDeviceId() === localDeviceId()
+                  ? tr("devices.removeCurrentDevice")
+                  : tr("devices.removeDevice")
+              }
+              variant="danger"
+              size="sm"
+              loading={removeDeviceBusy()}
+              accessibilityLabel="device-remove-confirm"
+              onPress={() => {
+                const id = removingDeviceId();
+                if (id) void removeAccountDevice(id);
+              }}
+            />
+          </View>
+        }
+      >
+        <View style={{ gap: 10 }}>
+          <Text
             style={{
-              gap: 8,
-              paddingHorizontal: 16,
-              paddingVertical: 12,
-              borderTopWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().surfaceSubtle,
+              color: palette().textSecondary,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.5),
             }}
           >
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-              }}
-            >
-              <View style={{ flex: 1, minWidth: 200, gap: 2 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-                  <StatusDot kind={peerScope() ? "accent" : "muted"} size={6} />
-                  <Text
-                    style={{
-                      color: palette().textSecondary,
-                      fontSize: textSize(12),
-                      fontWeight: "600",
-                      lineHeight: textLineHeight(12, 1.35),
-                    }}
-                  >
-                    {peerScope()
-                      ? tr("devices.drivingAnother")
-                      : currentLocale() === "en-US"
-                        ? tr("devices.drivingAnother")
-                        : tr("devices.peerModeIdle")}
-                  </Text>
-                </View>
-                <If when={peerScope()}>
-                  {scope => (
-                    <Text
-                      style={{
-                        color: palette().textMuted,
-                        fontSize: textSize(11.5),
-                        fontVariant: ["tabular-nums"],
-                        lineHeight: textLineHeight(11.5, 1.44),
-                      }}
-                    >
-                      {tr("devices.drivingActiveSummary", {
-                        label: scope().label,
-                        hostKind: scope().hostKind,
-                        capabilities: formatPlural(
-                          scope().capabilityCount,
-                          "devices.capabilityOne",
-                          "devices.capabilityOther",
-                        ),
-                      })}
-                    </Text>
-                  )}
-                </If>
-                <If when={!peerScope()}>
-                  <Text
-                    style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(11.5),
-                      lineHeight: textLineHeight(11.5, 1.44),
-                    }}
-                  >
-                    {tr("devices.drivingIdleHint")}
-                  </Text>
-                </If>
-              </View>
-              <If when={Boolean(peerScope())}>
-                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 6 }}>
-                  <Button
-                    label={
-                      peerReconnecting()
-                        ? tr("nav.peerReconnecting")
-                        : tr("nav.peerReconnect")
-                    }
-                    variant="secondary"
-                    size="sm"
-                    leadingIcon="refresh"
-                    loading={peerReconnecting()}
-                    disabled={peerBusy() || peerReconnecting()}
-                    accessibilityLabel="peer-reconnect"
-                    onPress={() => void reconnectPeer()}
-                  />
-                  <Button
-                    label={tr("devices.thisMachine")}
-                    variant="ghost"
-                    size="sm"
-                    disabled={peerBusy()}
-                    accessibilityLabel="peer-leave"
-                    onPress={() => void returnToThisMachine()}
-                  />
-                </View>
-              </If>
-            </View>
-            <If when={peerError()}>
-              {message => (
-                <InlineBanner
-                  tone="danger"
-                  message={localizeHostError(message())}
-                  actionLabel={peerScope() ? tr("nav.peerReconnect") : undefined}
-                  onAction={peerScope() ? () => void reconnectPeer() : undefined}
-                />
-              )}
-            </If>
-          </View>
-        </If>
-      </View>
+            {(() => {
+              const id = removingDeviceId() ?? "";
+              const device = devices().find(item => item.id === id);
+              const name = device?.alias || device?.name || id;
+              return id === localDeviceId()
+                ? tr("devices.confirmRemoveCurrentDevice", { name })
+                : tr("devices.confirmRemoveDevice", { name });
+            })()}
+          </Text>
+          <If when={removeDeviceError()}>
+            {err => <InlineBanner tone="danger" message={err()} />}
+          </If>
+        </View>
+      </ModalDialog>
 
       <ModalDialog
         open={Boolean(editingDeviceId())}
@@ -1482,249 +1478,157 @@ function PeerDevicesCard() {
           }}
         />
       </ModalDialog>
-    </ConfigSection>
+    </StudioSection>
   );
 }
 
-function ConnectorChannelRow(props: {
+function ChannelRow(props: {
   icon: IconName;
   label: string;
   description: string;
   active: boolean;
-  actionLabel: string;
   accessibilityLabel: string;
-  divider?: boolean;
   onPress: () => void;
 }) {
   return (
-    <View
-      style={{
-        minHeight: 60,
-        paddingHorizontal: 16,
-        paddingVertical: 13,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 13,
-        borderBottomWidth: props.divider === false ? 0 : 1,
-        borderColor: palette().borderSubtle,
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-    >
-      <View
-        style={{
-          position: "relative",
-          width: 36,
-          height: 36,
-          flexShrink: 0,
-          borderRadius: radii.md,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: props.active ? palette().successBorder : palette().border,
-          backgroundColor: props.active ? palette().successSoft : palette().surfaceTertiary,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <Icon
-          name={props.icon}
-          size={16}
-          color={props.active ? palette().success : palette().textSecondary}
-        />
-        <View
-          style={{
-            position: "absolute",
-            right: -2,
-            bottom: -2,
-            padding: 1.5,
-            borderRadius: radii.pill,
-            backgroundColor: palette().panelRaised,
-          }}
-        >
-          <StatusDot kind={props.active ? "success" : "muted"} size={6.5} />
-        </View>
-      </View>
-
-      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-        <Text
-          style={{
-            color: palette().text,
-            fontSize: textSize(13.5),
-            fontWeight: "500",
-            letterSpacing: textTracking(13.5),
-            lineHeight: textLineHeight(13.5, 1.34),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.label}
-        </Text>
-        <Text
-          style={{
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.42),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.description}
-        </Text>
-      </View>
-
-      <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
-        <Button
-          label={props.actionLabel}
-          variant="secondary"
-          size="sm"
-          accessibilityLabel={props.accessibilityLabel}
-          onPress={props.onPress}
-        />
-      </View>
-    </View>
+    <InsetRow
+      icon={props.icon}
+      label={props.label}
+      detail={props.description}
+      chevron
+      trailing={props.active ? <StatusDot kind="success" size={7} /> : undefined}
+      accessibilityLabel={props.accessibilityLabel}
+      onPress={props.onPress}
+    />
   );
 }
 
-function ConnectorsCard() {
+function channelMenuItems(): DropdownMenuItem[] {
+  return [
+    {
+      id: "refresh",
+      label: tr("devices.refreshChannels"),
+      icon: "refresh",
+      disabled: connectorsLoading(),
+      accessibilityLabel: "connectors-refresh",
+      onSelect: () => void loadConnectors(),
+    },
+    {
+      id: "disclaimer",
+      label: tr("devices.remote.disclaimerReview"),
+      icon: "shield",
+      accessibilityLabel: "remote-disclaimer-review",
+      onSelect: () => openRemoteDisclaimer(),
+    },
+  ];
+}
+
+function ChannelsSection() {
   ensureConnectors();
 
   return (
-    <ConfigSection
-      title={tr("devices.channelsTitle")}
-      subtitle={tr("devices.channelsSubtitle")}
-      flush
-      extra={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+    <StudioSection
+      title={tr("devices.polish.channelsSection")}
+      accessibilityLabel="channels-section"
+      footnote={connectorsSupported() === true ? tr("devices.channelsSubtitle") : undefined}
+      trailing={
+        <>
           <If when={Boolean(peerScope())}>
-            <Badge label={tr("common.controllerLocal")} tone="accent" />
+            <QuietText label={tr("common.controllerLocal")} />
           </If>
-          <IconButton
-            icon="refresh"
-            size="sm"
-            tooltip={tr("devices.refreshChannels")}
-            accessibilityLabel="connectors-refresh"
-            disabled={connectorsLoading()}
-            onPress={() => void loadConnectors()}
+          <MoreMenu
+            accessibilityLabel="channels-menu"
+            tooltip={tr("common.actions")}
+            minWidth={200}
+            items={channelMenuItems()}
           />
-        </View>
+        </>
       }
     >
-      <View>
+      <View style={{ gap: 12, minWidth: 0 }}>
         <If when={peerScope()}>
           {scope => (
-            <View style={{ padding: 14, borderBottomWidth: 1, borderColor: palette().borderSubtle }}>
-              <InlineBanner
-                tone="info"
-                icon="laptop"
-                message={tr("devices.connectorsPeerBanner", { label: scope().label })}
-              />
-            </View>
+            <InlineBanner
+              tone="info"
+              icon="laptop"
+              message={tr("devices.connectorsPeerBanner", { label: scope().label })}
+            />
           )}
         </If>
         <If when={connectorsSupported() === false}>
-          <View style={{ padding: 16 }}>
-            <EmptyStateCard
-              icon="wifi"
-              title={tr("devices.connectorsUnavailable")}
-              subtitle={tr("devices.connectorsUnavailableSubtitle")}
-            />
-          </View>
+          <StudioEmpty
+            icon="wifi"
+            message={tr("devices.connectorsUnavailable")}
+            detail={tr("devices.connectorsUnavailableSubtitle")}
+          />
         </If>
         <If when={connectorsSupported() === true}>
-          <View>
-            {/* Spacious Active Bot Bar */}
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                paddingHorizontal: 16,
-                paddingVertical: 13,
-                borderBottomWidth: 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor: palette().surfaceSubtle,
-              }}
-            >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 9, flex: 1, minWidth: 180 }}>
-                <StatusDot
-                  kind={connectorStatus()?.botConnected ? "success" : "muted"}
-                  size={6.5}
-                />
-                <Text
-                  style={{
-                    flexShrink: 1,
-                    minWidth: 0,
-                    color: connectorStatus()?.botConnected ? palette().text : palette().textSecondary,
-                    fontSize: textSize(12.5),
-                    fontWeight: "500",
-                    lineHeight: textLineHeight(12.5, 1.35),
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {connectorStatus()?.botConnected
-                    ? tr("devices.activeBot", { bot: connectorStatus()!.botConnected! })
-                    : tr("devices.noBotConnected")}
-                </Text>
-                <If when={(connectorStatus()?.clients.length ?? 0) > 0}>
-                  <Text
-                    style={{
-                      flexShrink: 0,
-                      color: palette().textMuted,
-                      fontSize: textSize(11.5),
-                      fontVariant: ["tabular-nums"],
-                    }}
-                  >
-                    {`· ${formatPlural(
-                      connectorStatus()?.clients.length ?? 0,
-                      "devices.clientOne",
-                      "devices.clientOther",
-                    )}`}
-                  </Text>
-                </If>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 12 }}>
-                <ToggleSwitch
-                  value={botVerboseMode()}
-                  label={tr("devices.verboseBotMode")}
-                  accessibilityLabel="connector-bot-verbose"
-                  disabled={connectorBusy()}
-                  onChange={next => void setBotVerboseConnectorMode(next)}
-                />
-                <If when={connectorStatus()?.botConnected ?? ""}>
+          <If when={connectorNotice()}>
+            {notice => <InlineBanner tone="success" message={localizeHostError(notice())} />}
+          </If>
+          <If when={connectorError()}>
+            {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
+          </If>
+          <InsetGroup accessibilityLabel="channels-list">
+            <InsetRow
+              first
+              label={tr("devices.remoteControlAllowed")}
+              below={<RowNote text={tr("devices.remoteControlAllowedHint")} />}
+              value={
+                connectorStatus()?.remoteControlAllowed === undefined ? tr("devices.remoteControlUnreported") : undefined
+              }
+              trailing={
+                connectorStatus()?.remoteControlAllowed !== undefined ? (
+                  <ToggleSwitch
+                    value={connectorStatus()?.remoteControlAllowed === true}
+                    disabled={remoteControlSaving()}
+                    accessibilityLabel="remote-control-allowed"
+                    onChange={next => void setRemoteControlAllowed(next)}
+                  />
+                ) : undefined
+              }
+            />
+            <InsetRow
+              leading={
+                <View style={{ width: 16, alignItems: "center" }}>
+                  <StatusDot kind={connectorStatus()?.botConnected ? "success" : "muted"} size={7} />
+                </View>
+              }
+              label={
+                connectorStatus()?.botConnected
+                  ? tr("devices.activeBot", { bot: connectorStatus()!.botConnected! })
+                  : tr("devices.noBotConnected")
+              }
+              detail={
+                (connectorStatus()?.clients.length ?? 0) > 0
+                  ? formatPlural(connectorStatus()?.clients.length ?? 0, "devices.clientOne", "devices.clientOther")
+                  : undefined
+              }
+              trailing={
+                connectorStatus()?.botConnected ? (
                   <Button
                     label={tr("devices.stopBot")}
-                    variant="danger"
+                    variant="ghost"
                     size="sm"
                     accessibilityLabel="connector-bot-stop"
                     disabled={connectorBusy()}
                     onPress={() => void stopBotConnector()}
                   />
-                </If>
-              </View>
-            </View>
-
-            <If when={connectorNotice() || connectorError()}>
-              <View
-                style={{
-                  padding: 14,
-                  gap: 8,
-                  borderBottomWidth: 1,
-                  borderColor: palette().borderSubtle,
-                }}
-              >
-                <If when={connectorNotice()}>
-                  {notice => <InlineBanner tone="success" message={localizeHostError(notice())} />}
-                </If>
-                <If when={connectorError()}>
-                  {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
-                </If>
-              </View>
-            </If>
-
-            <ConnectorChannelRow
+                ) : undefined
+              }
+            />
+            <InsetRow
+              label={tr("devices.verboseBotMode")}
+              trailing={
+                <ToggleSwitch
+                  value={botVerboseMode()}
+                  accessibilityLabel="connector-bot-verbose"
+                  disabled={connectorBusy()}
+                  onChange={next => void setBotVerboseConnectorMode(next)}
+                />
+              }
+            />
+            <ChannelRow
               icon="message-circle"
               label={tr("devices.telegram")}
               description={
@@ -1733,12 +1637,10 @@ function ConnectorsCard() {
                   : tr("devices.telegramDesc")
               }
               active={isBotActive("telegram")}
-              actionLabel={tr("common.configure")}
               accessibilityLabel="channel-toggle-telegram"
               onPress={() => activeChannelModal.set("telegram")}
             />
-
-            <ConnectorChannelRow
+            <ChannelRow
               icon="globe"
               label={tr("devices.feishu")}
               description={
@@ -1747,12 +1649,10 @@ function ConnectorsCard() {
                   : tr("devices.feishuDesc")
               }
               active={isBotActive("feishu") || isBotActive("lark")}
-              actionLabel={tr("common.configure")}
               accessibilityLabel="channel-toggle-feishu"
               onPress={() => activeChannelModal.set("feishu")}
             />
-
-            <ConnectorChannelRow
+            <ChannelRow
               icon="smartphone"
               label={tr("devices.wechat")}
               description={
@@ -1761,30 +1661,24 @@ function ConnectorsCard() {
                   : tr("devices.wechatDesc")
               }
               active={isBotActive("weixin") || isBotActive("wechat")}
-              actionLabel={tr("common.configure")}
               accessibilityLabel="channel-toggle-weixin"
               onPress={() => activeChannelModal.set("weixin")}
             />
-
-            <ConnectorChannelRow
+            <ChannelRow
               icon="wifi"
               label={tr("devices.lanServerRelay")}
               description={
                 isRelayRouteConnected("lan") || isRelayRouteConnected("openbitfun_server")
                   ? `${isRelayRouteConnected("lan") ? tr("devices.lanActive") : tr("devices.lanIdle")} · ${
-                      isRelayRouteConnected("openbitfun_server")
-                        ? tr("devices.serverActive")
-                        : tr("devices.serverIdle")
+                      isRelayRouteConnected("openbitfun_server") ? tr("devices.serverActive") : tr("devices.serverIdle")
                     }`
                   : tr("devices.relayDesc")
               }
               active={isRelayRouteConnected("lan") || isRelayRouteConnected("openbitfun_server")}
-              actionLabel={tr("common.manage")}
               accessibilityLabel="channel-toggle-relay"
-              divider={false}
               onPress={() => activeChannelModal.set("relay")}
             />
-          </View>
+          </InsetGroup>
         </If>
       </View>
 
@@ -1924,24 +1818,63 @@ function ConnectorsCard() {
               <View
                 style={{
                   gap: 10,
-                  padding: 14,
-                  borderRadius: radii.md,
-                  borderCurve: "continuous",
-                  borderWidth: 1,
+                  paddingTop: 12,
+                  borderTopWidth: 1,
                   borderColor: palette().borderSubtle,
-                  backgroundColor: palette().surfaceTertiary,
                 }}
               >
                 <Text
                   style={{
                     color: palette().text,
-                    fontSize: textSize(12.5),
+                    fontSize: textSize(13),
                     fontWeight: "500",
-                    lineHeight: textLineHeight(12.5, 1.4),
+                    lineHeight: textLineHeight(13, 1.4),
                   }}
                 >
                   {qr().message || tr("devices.qrStatus", { status: qr().status })}
                 </Text>
+                <If
+                  when={
+                    qr().status === "wait" &&
+                    qr().qrImageUrl &&
+                    !/^data:image\//i.test(qr().qrImageUrl) &&
+                    !/\.(png|jpe?g|gif|webp|svg)(\?|#|$)/i.test(qr().qrImageUrl)
+                      ? qr().qrImageUrl
+                      : ""
+                  }
+                >
+                  {content => (
+                    <View style={{ alignSelf: "flex-start", padding: 6, borderRadius: radii.md, backgroundColor: "#ffffff" }}>
+                      <QrCodeView value={content()} size={164} accessibilityLabel="connector-weixin-qr" />
+                    </View>
+                  )}
+                </If>
+                <If when={qr().status === "need_verify_code"}>
+                  <View style={{ gap: 8 }}>
+                    <Text style={textStyle("caption")}>{tr("devices.weixinVerifyHint")}</Text>
+                    <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 8 }}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <InputBox
+                          value={weixinVerifyCode()}
+                          placeholder={tr("devices.weixinVerifyPlaceholder")}
+                          accessibilityLabel="connector-weixin-verify-code"
+                          onChange={value => weixinVerifyCode.set(value)}
+                          onSubmit={() => {
+                            if (weixinVerifyCode().trim()) void pollWeixinQr();
+                          }}
+                        />
+                      </View>
+                      <Button
+                        label={tr("devices.weixinVerifySubmit")}
+                        variant="primary"
+                        size="sm"
+                        accessibilityLabel="connector-weixin-verify-submit"
+                        disabled={connectorBusy() || !weixinVerifyCode().trim()}
+                        onPress={() => void pollWeixinQr()}
+                      />
+                    </View>
+                  </View>
+                </If>
                 <If when={qr().qrImageUrl}>
                   {url => (
                     <View
@@ -1960,8 +1893,8 @@ function ConnectorsCard() {
                           minWidth: 0,
                           color: palette().textSecondary,
                           fontFamily: fontMono,
-                          fontSize: textSize(11.5),
-                          lineHeight: textLineHeight(11.5, 1.42),
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.42),
                           numberOfLines: 2,
                           textOverflow: "ellipsis-middle",
                         }}
@@ -2023,22 +1956,12 @@ function ConnectorsCard() {
         }
       >
         <View style={{ gap: 12 }}>
-          <View
-            style={{
-              gap: 10,
-              padding: 14,
-              borderRadius: radii.md,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().surfaceTertiary,
-            }}
-          >
+          <View style={{ gap: 10 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
               <Text style={textStyle("cardTitle")}>{tr("devices.localNetworkLan")}</Text>
-              <Badge
+              <InlineStatus
+                kind={isRelayRouteConnected("lan") ? "success" : "muted"}
                 label={isRelayRouteConnected("lan") ? tr("common.active") : tr("devices.idle")}
-                tone={isRelayRouteConnected("lan") ? "success" : "neutral"}
               />
             </View>
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
@@ -2082,24 +2005,21 @@ function ConnectorsCard() {
               alignItems: "center",
               justifyContent: "space-between",
               gap: 12,
-              padding: 14,
-              borderRadius: radii.md,
-              borderCurve: "continuous",
-              borderWidth: 1,
+              paddingTop: 14,
+              borderTopWidth: 1,
               borderColor: palette().borderSubtle,
-              backgroundColor: palette().surfaceTertiary,
             }}
           >
             <View style={{ flex: 1, minWidth: 180, gap: 3 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                 <Text style={textStyle("cardTitle")}>{tr("devices.cloudRelay")}</Text>
-                <Badge
+                <InlineStatus
+                  kind={isRelayRouteConnected("openbitfun_server") ? "success" : "muted"}
                   label={
                     isRelayRouteConnected("openbitfun_server")
                       ? tr("common.active")
                       : tr("devices.idle")
                   }
-                  tone={isRelayRouteConnected("openbitfun_server") ? "success" : "neutral"}
                 />
               </View>
               <Text style={textStyle("caption")}>{tr("devices.cloudRelaySubtitle")}</Text>
@@ -2126,6 +2046,40 @@ function ConnectorsCard() {
             </If>
           </View>
 
+          <If when={/^https?:\/\//i.test(pairingUrl()) ? pairingUrl() : ""}>
+            {url => (
+              <View
+                style={{
+                  flexDirection: "row",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 16,
+                  paddingTop: 14,
+                  borderTopWidth: 1,
+                  borderColor: palette().borderSubtle,
+                }}
+              >
+                <View
+                  accessibilityLabel={tr("devices.copyPairingUrl")}
+                  onPress={() => void copyPairingLink(url())}
+                  tooltip={tr("devices.copyPairingUrl")}
+                  style={{
+                    padding: 6,
+                    borderRadius: radii.md,
+                    borderCurve: "continuous",
+                    backgroundColor: "#ffffff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <QrCodeView value={url()} size={180} accessibilityLabel="connector-pairing-qr" />
+                </View>
+                <View style={{ flex: 1, minWidth: 200, gap: 6 }}>
+                  <Text style={textStyle("cardTitle")}>{tr("devices.pairingQrTitle")}</Text>
+                  <Text style={textStyle("caption")}>{tr("devices.pairingQrHint")}</Text>
+                </View>
+              </View>
+            )}
+          </If>
           <If when={pairingUrl()}>
             {url => (
               <View
@@ -2145,9 +2099,9 @@ function ConnectorsCard() {
                 <Text
                   style={{
                     color: palette().textSecondary,
-                    fontSize: textSize(11.5),
+                    fontSize: textSize(12),
                     fontFamily: fontMono,
-                    lineHeight: textLineHeight(11.5, 1.4),
+                    lineHeight: textLineHeight(12, 1.4),
                     flex: 1,
                     minWidth: 0,
                     numberOfLines: 2,
@@ -2175,7 +2129,7 @@ function ConnectorsCard() {
           </If>
         </View>
       </ModalDialog>
-    </ConfigSection>
+    </StudioSection>
   );
 }
 
@@ -2195,89 +2149,170 @@ export function DevicesScene() {
   cleanup(() => unsubAuth());
 
   return (
-    <View style={{ flex: 1, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}>
-      <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ alignItems: "center" }}>
-        <View
-          style={{
-            width: "100%",
-            maxWidth: 820,
-            paddingHorizontal: 28,
-            paddingTop: 24,
-            paddingBottom: 56,
-            gap: 28,
-          }}
-        >
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 14,
-              paddingBottom: 16,
-              borderBottomWidth: 1,
-              borderColor: palette().borderSubtle,
-            }}
-          >
-            <View
-              style={{
-                width: 38,
-                height: 38,
-                flexShrink: 0,
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().border,
-                backgroundColor: palette().panelRaised,
-                boxShadow: `${palette().shadowButton}, ${palette().innerHighlight}`,
-                alignItems: "center",
-                justifyContent: "center",
+    <View
+      onLayout={trackStudioWidth}
+      style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
+    >
+      <Scroll style={{ flex: 1, minHeight: 0 }}>
+        <StudioHeader
+          title={tr("devices.title")}
+          subtitle={tr("devices.subtitle")}
+          actions={
+            <IconButton
+              icon="refresh"
+              size="md"
+              tooltip={tr("devices.reloadTooltip")}
+              accessibilityLabel="devices-reload"
+              onPress={() => {
+                void loadAccountState();
+                void loadDevices();
+                void loadConnectors();
               }}
-            >
-              <Icon name="server" size={17} color={palette().textSecondary} />
-            </View>
-            <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-              <Text style={textStyle("pageTitle")}>{tr("devices.title")}</Text>
-              <Text style={textStyle("caption")}>{tr("devices.subtitle")}</Text>
-            </View>
-            <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
-              <If when={needsAccountSignIn()}>
-                <Button
-                  label={tr("devices.signInCta")}
-                  variant="secondary"
-                  size="sm"
-                  leadingIcon="log-in"
-                  accessibilityLabel="devices-header-sign-in"
-                  onPress={() =>
-                    openAccountAuthModal({ autoStart: true, onSuccess: () => void loadDevices() })
-                  }
-                />
-              </If>
-              <IconButton
-                icon="refresh"
-                size="sm"
-                tooltip={tr("devices.reloadTooltip")}
-                accessibilityLabel="devices-reload"
-                onPress={() => {
-                  void loadAccountState();
-                  void loadDevices();
-                  void loadConnectors();
-                }}
-              />
-            </View>
-          </View>
+            />
+          }
+        />
+        <StudioBody>
           <If when={nonAuthDevicesError()}>
             {message => (
-              <InlineBanner
-                tone="warning"
-                message={message()}
-                onDismiss={() => devicesError.set(null)}
-              />
+              <InlineBanner tone="warning" message={message()} onDismiss={() => devicesError.set(null)} />
             )}
           </If>
-          <ConnectorsCard />
-          <PeerDevicesCard />
-          <DispatchCard />
-        </View>
+          <DevicesSection />
+          <ObpPairingCard />
+          <ChannelsSection />
+          <DispatchSection />
+        </StudioBody>
       </Scroll>
+      <RemoteDisclaimerModal />
     </View>
+  );
+}
+
+
+const DISCLAIMER_KEY_ITEMS = [
+  "devices.remote.disclaimerItemGeneralRisk",
+  "devices.remote.disclaimerItemSecurity",
+  "devices.remote.disclaimerItemEncryption",
+  "devices.remote.disclaimerItemPrivacy",
+] as const;
+const DISCLAIMER_DETAIL_ITEMS = [
+  "devices.remote.disclaimerItemOpenSource",
+  "devices.remote.disclaimerItemDataUsage",
+  "devices.remote.disclaimerItemCredentials",
+  "devices.remote.disclaimerItemQrCode",
+  "devices.remote.disclaimerItemRelay",
+  "devices.remote.disclaimerItemNetwork",
+  "devices.remote.disclaimerItemBot",
+  "devices.remote.disclaimerItemBotPersistence",
+  "devices.remote.disclaimerItemMobileBrowser",
+  "devices.remote.disclaimerItemCompliance",
+  "devices.remote.disclaimerItemLiability",
+] as const;
+
+function DisclaimerList(props: { items: readonly MessageKey[]; start: number }) {
+  return (
+    <View style={{ gap: 8 }}>
+      <Each of={props.items}>
+        {(key, index) => (
+          <View style={{ flexDirection: "row", gap: 8, alignItems: "flex-start" }}>
+            <Text
+              style={{
+                width: 20,
+                flexShrink: 0,
+                color: palette().textMuted,
+                fontSize: textSize(13),
+                fontVariant: ["tabular-nums"],
+                lineHeight: textLineHeight(13, 1.5),
+              }}
+            >
+              {`${props.start + index()}.`}
+            </Text>
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                color: palette().textSecondary,
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.5),
+              }}
+            >
+              {tr(key())}
+            </Text>
+          </View>
+        )}
+      </Each>
+    </View>
+  );
+}
+
+/** The desktop's Remote Connect disclaimer: a gate before the first connection. */
+function RemoteDisclaimerModal() {
+  const detailsOpen = signal(false);
+  return (
+    <ModalDialog
+      open={remoteDisclaimerOpen()}
+      title={tr("devices.remote.disclaimerTitle")}
+      size="md"
+      accessibilityLabel="remote-disclaimer-modal"
+      onClose={() => declineRemoteDisclaimer()}
+      footer={
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Button
+            label={remoteDisclaimerAgreed() ? tr("common.close") : tr("devices.remote.disclaimerDecline")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel="remote-disclaimer-decline"
+            onPress={() => declineRemoteDisclaimer()}
+          />
+          <If when={!remoteDisclaimerAgreed()}>
+            <Button
+              label={tr("devices.remote.disclaimerAgree")}
+              variant="primary"
+              size="sm"
+              accessibilityLabel="remote-disclaimer-agree"
+              onPress={() => void agreeRemoteDisclaimer()}
+            />
+          </If>
+        </View>
+      }
+    >
+      <View style={{ gap: 14 }}>
+        <View style={{ flexDirection: "row" }}>
+          <StatusPill
+            label={
+              remoteDisclaimerAgreed()
+                ? tr("devices.remote.disclaimerStatusAgreed")
+                : tr("devices.remote.disclaimerStatusPending")
+            }
+            kind={remoteDisclaimerAgreed() ? "success" : "warning"}
+          />
+        </View>
+        <Text
+          style={{
+            color: palette().textSecondary,
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 1.55),
+          }}
+        >
+          {tr("devices.remote.disclaimerIntro")}
+        </Text>
+        <Text style={textStyle("cardTitle")}>{tr("devices.remote.disclaimerKeyRisks")}</Text>
+        <DisclaimerList items={DISCLAIMER_KEY_ITEMS} start={1} />
+        <View
+          role="button"
+          accessibilityLabel="remote-disclaimer-details"
+          onPress={() => detailsOpen.update(open => !open)}
+          style={{ flexDirection: "row", alignItems: "center", gap: 6, cursor: "pointer" }}
+        >
+          <Icon name={detailsOpen() ? "chevron-down" : "chevron-right"} size={14} color={palette().textMuted} />
+          <Text style={{ color: palette().accent, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.4) }}>
+            {tr("devices.remote.disclaimerFullDetails")}
+          </Text>
+        </View>
+        <If when={detailsOpen()}>
+          <DisclaimerList items={DISCLAIMER_DETAIL_ITEMS} start={5} />
+        </If>
+      </View>
+    </ModalDialog>
   );
 }

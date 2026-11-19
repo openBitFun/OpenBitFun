@@ -54,6 +54,15 @@ product wiring and compatibility bridges in `src/crates/assembly/core`.
 - `window_state_support` owns main-window geometry validation and atomic
   persistence in the legacy `.window-state.json` format. Do not reinstall the
   window-state plugin alongside it: the plugin's exit cache can overwrite repairs.
+- Commands and their helpers take `crate::host::State` and `crate::host::HostHandle`,
+  not `tauri::State` / `tauri::AppHandle`, so the in-process native host
+  (`native_host.rs`, `backend_protocol/`, used by `src/apps/desktop-nsh`) can run
+  them without Tauri. Keep `tauri::AppHandle`/`Webview`/`WebviewWindow` only for
+  commands that need a Tauri window; the native dispatcher answers those with
+  `unsupported_in_native_host: <command>`. Tauri-only work inside shared helpers
+  goes through `HostHandle::tauri(..)?` (explicit error) or `as_tauri()` for host
+  decoration the native UI owns (menu bar, tray). After adding or changing a
+  registered command run `pnpm run desktop-nsh:generate-dispatch`.
 
 ## Commands
 

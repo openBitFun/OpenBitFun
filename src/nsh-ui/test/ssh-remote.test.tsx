@@ -946,3 +946,43 @@ test("Sidebar SSH host row quick-connect and Local Docker / WSL target discovery
     ssh.callsFor("ssh_list_wsl_distributions").some(c => c.raw === true),
   );
 });
+
+test("Remote workspace activation reconnects a dropped link from the saved profile and marks an unrecoverable one offline", async () => {
+  const opened = [
+    { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+    { id: "ws-staging", name: "staging", rootPath: "/srv/staging", workspaceKind: "remote", connectionId: "conn-staging-2", sshHost: "staging.example.com" },
+    { id: "ws-gone", name: "gone", rootPath: "/srv/gone", workspaceKind: "remote", connectionId: "conn-gone-9", sshHost: "gone.example.com" },
+  ] as unknown as BackendOptions["openedWorkspaces"];
+  const ssh = createSshBackend({ openedWorkspaces: opened });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
+
+  await app.waitFor("OpenBitFun");
+  await app.press("Files");
+  await app.waitFor("Explorer");
+
+  // The staging link is down: activation probes it, reconnects with the vault
+  // password (empty password, the host fills it) and re-activates the workspace.
+  await app.press("workspace-row-ws-staging");
+  await app.waitUntil(() => ssh.callsFor("remote_open_workspace").length === 1);
+  expect(
+    ssh.callsFor("ssh_is_connected").some(call => call.raw && call.payload.connectionId === "conn-staging-2"),
+  ).toBe(true);
+  expect(ssh.callsFor("ssh_connect")[0]).toMatchObject({
+    raw: true,
+    payload: { config: { id: "conn-staging-2", auth: { type: "Password", password: "" } } },
+  });
+  expect(ssh.callsFor("remote_open_workspace")[0]).toMatchObject({
+    raw: true,
+    payload: { connectionId: "conn-staging-2", remotePath: "/srv/staging" },
+  });
+  expect(app.shows("remote-link-offline")).toBe(false);
+  // The host has no watcher for a remote root: the explorer says so instead of pretending to be live.
+  await app.waitFor("file-watch-unsupported");
+
+  // A workspace whose saved connection is gone is marked offline, loudly, with a way to retry.
+  await app.press("workspace-row-ws-gone");
+  await app.waitFor("remote-link-offline");
+  await app.waitFor("gone.example.com is offline");
+  await app.waitFor("remote-link-reconnect");
+  expect(ssh.callsFor("ssh_connect")).toHaveLength(1);
+});

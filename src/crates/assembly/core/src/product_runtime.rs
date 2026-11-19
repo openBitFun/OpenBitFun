@@ -65,15 +65,13 @@ use crate::agentic::session::transcript_render::{
     transcript_display_assistant_content, transcript_display_user_content,
 };
 use crate::agentic::session::{
-    CoreSessionStorePort, PromptCacheScope,
-    INTERRUPTED_TURN_MODEL_BINDING_FINGERPRINT_METADATA_KEY,
+    CoreSessionStorePort, INTERRUPTED_TURN_MODEL_BINDING_FINGERPRINT_METADATA_KEY,
     INTERRUPTED_TURN_PERMISSION_MODE_METADATA_KEY,
     INTERRUPTED_TURN_REASONING_FINGERPRINT_METADATA_KEY,
     INTERRUPTED_TURN_REASONING_PRESET_METADATA_KEY,
     INTERRUPTED_TURN_REASONING_SELECTION_METADATA_KEY,
     INTERRUPTED_TURN_RESOLVED_MODEL_ID_METADATA_KEY,
 };
-use crate::agentic::tools::implementations::skills::SkillRegistry;
 use crate::service::remote_ssh::workspace_state::{
     workspace_session_identity, WorkspaceSessionIdentity,
 };
@@ -1151,32 +1149,12 @@ impl CoreAgentRuntimeCompatibility {
         let session_id = request.session_id.trim();
         validate_persisted_session_id(session_id)?;
 
-        if self
-            .coordinator
-            .get_session_manager()
-            .get_session(session_id)
-            .is_none()
-        {
-            return Err(OpenBitFunError::NotFound(format!(
-                "Session '{session_id}' is not loaded"
-            )));
-        }
-
-        if request.target.includes_skills() {
-            SkillRegistry::global().refresh().await;
-        }
-        if request.target.includes_instructions() {
-            self.coordinator
-                .get_session_manager()
-                .invalidate_prompt_cache(
-                    session_id,
-                    PromptCacheScope::UserContext,
-                    "user_requested_instruction_reload",
-                )
-                .await;
-        }
-
-        Ok(())
+        crate::agentic::coordination::reload_loaded_session_context(
+            &self.coordinator.get_session_manager(),
+            session_id,
+            request.target,
+        )
+        .await
     }
 
     pub async fn restore_session_from_storage_path(
@@ -1569,6 +1547,9 @@ impl CoreAgentRuntimeCompatibility {
                     };
                     let unread_turn =
                         openbitfun_services_core::session::unread_completion_target(&metadata);
+                    let (unread, failed) = crate::agentic::session_policy::session_attention(
+                        metadata.unread_completion.as_deref(),
+                    );
                     SessionActivitySummary {
                         pending_approvals: approvals
                             .get(&metadata.session_id)
@@ -1584,6 +1565,8 @@ impl CoreAgentRuntimeCompatibility {
                         last_turn: metadata.last_turn,
                         unread_completion: metadata.unread_completion,
                         unread_turn,
+                        unread: Some(unread),
+                        failed: Some(failed),
                     }
                 })
                 .collect(),

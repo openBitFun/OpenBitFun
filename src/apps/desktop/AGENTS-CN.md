@@ -37,6 +37,13 @@ crate；`src/crates/assembly/core` 只保留产品装配与兼容桥接。
 - 窗口 lifecycle 行为（包括 close/minimize-to-tray 默认值）属于桌面端 surface；修改时必须保留用户已保存偏好。
 - `window_state_support` 负责主窗口布局校验，并沿用旧 `.window-state.json` 格式原子保存。
   不要同时注册 window-state 插件，其退出时写入的缓存可能覆盖修复结果。
+- 命令及其辅助函数使用 `crate::host::State` 与 `crate::host::HostHandle`，不要使用
+  `tauri::State` / `tauri::AppHandle`，以便进程内 native host（`native_host.rs`、
+  `backend_protocol/`，供 `src/apps/desktop-nsh` 使用）无需 Tauri 即可执行。只有确实需要
+  Tauri 窗口的命令才保留 `tauri::AppHandle`/`Webview`/`WebviewWindow`，native 分发器对其返回
+  `unsupported_in_native_host: <command>`。共享辅助函数里的 Tauri 专属操作通过
+  `HostHandle::tauri(..)?`（显式报错）或 `as_tauri()`（菜单栏、托盘等由 native UI 负责的宿主装饰）完成。
+  新增或修改已注册命令后运行 `pnpm run desktop-nsh:generate-dispatch`。
 
 ## 命令
 

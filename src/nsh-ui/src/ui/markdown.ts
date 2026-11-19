@@ -95,33 +95,35 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       color: p.text,
       fontFamily: fontSans,
       fontSize: textSize(base),
-      lineHeight: textLineHeight(base, 1.62),
+      lineHeight: textLineHeight(base, 1.58),
       letterSpacing: textTracking(base),
     },
     paragraph: {
       color: p.text,
       fontSize: textSize(base),
-      lineHeight: textLineHeight(base, 1.62),
+      lineHeight: textLineHeight(base, 1.58),
       marginBottom: compact ? 8 : 12,
     },
+    // The desktop's Markdown.scss rhythm: headings sit 20 below the prose they
+    // follow and 8 above their own, h1 at +3, the rest at +1 / 600.
     heading: {
       color: p.text,
       fontWeight: "600",
-      marginTop: compact ? 14 : 18,
-      marginBottom: compact ? 6 : 8,
+      marginTop: compact ? 14 : 20,
+      marginBottom: 8,
       lineHeight: textLineHeight(base + 1, 1.3),
     },
     heading1: {
-      fontSize: textSize(base + 4),
-      fontWeight: "700",
-      lineHeight: textLineHeight(base + 4, 1.25),
-      letterSpacing: textTracking(base + 4),
+      fontSize: textSize(base + 3),
+      fontWeight: "600",
+      lineHeight: textLineHeight(base + 3, 1.28),
+      letterSpacing: textTracking(base + 3),
     },
     heading2: {
-      fontSize: textSize(base + 2),
+      fontSize: textSize(base + 1),
       fontWeight: "600",
-      lineHeight: textLineHeight(base + 2, 1.28),
-      letterSpacing: textTracking(base + 2),
+      lineHeight: textLineHeight(base + 1, 1.3),
+      letterSpacing: textTracking(base + 1),
     },
     heading3: {
       fontSize: textSize(base + 1),
@@ -183,8 +185,8 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       backgroundColor: p.dangerSoft,
     },
     list: {
-      marginBottom: compact ? 8 : 11,
-      gap: compact ? 4 : 5,
+      marginBottom: compact ? 8 : 12,
+      gap: 4,
     },
     listItem: {
       color: p.text,
@@ -204,7 +206,7 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       color: p.actionSolidFg,
     },
     codeBlock: {
-      borderRadius: 10,
+      borderRadius: 12,
       borderCurve: "continuous",
       borderWidth: 1,
       borderColor: p.borderSubtle,
@@ -212,17 +214,19 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       marginVertical: compact ? 8 : 12,
       overflow: "hidden",
     },
+    // The floating action row stays see-through so the copy button reads as part
+    // of the block rather than as a bar over its first line.
     codeBlockHeader: {
-      backgroundColor: p.surfaceTertiary,
-      paddingHorizontal: 10,
-      paddingVertical: 5,
+      backgroundColor: "transparent",
+      paddingHorizontal: 8,
+      paddingVertical: 4,
     },
     codeBlockCode: {
       fontFamily: fontMono,
       fontSize: textSize(codeBase),
-      lineHeight: textLineHeight(codeBase, 1.54),
+      lineHeight: textLineHeight(codeBase, 1.52),
       color: p.text,
-      paddingHorizontal: 14,
+      paddingHorizontal: 16,
       paddingVertical: 12,
     },
     code: {
@@ -230,9 +234,9 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       fontSize: textSize(inlineCodeBase),
       color: p.text,
       backgroundColor: p.surfaceSubtle,
-      borderRadius: 5,
-      paddingHorizontal: 5,
-      paddingVertical: 1,
+      borderRadius: 4,
+      paddingHorizontal: 4,
+      paddingVertical: 0,
     },
     keyboard: {
       fontFamily: fontMono,
@@ -291,8 +295,8 @@ function buildMarkdownStyles(p: Palette, compact: boolean, base: number): TextVi
       borderColor: p.borderSubtle,
     },
     tableCell: {
-      paddingHorizontal: 12,
-      paddingVertical: 8,
+      paddingHorizontal: 16,
+      paddingVertical: 6,
       fontSize: textSize(tableBase),
       lineHeight: textLineHeight(tableBase, 1.48),
       color: p.text,

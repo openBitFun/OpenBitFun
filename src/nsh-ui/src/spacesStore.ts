@@ -1,9 +1,10 @@
 // Spaces (MiniApps) hub state and host IPC operations.
 
 import { computed, signal } from "nsh";
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { tr } from "./i18n";
 import { peerScope } from "./peerState";
-import { startQuickPromptInSession } from "./state";
+import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
 
 export interface SpaceMeta {
@@ -52,6 +53,9 @@ export const spaceInspectorBusy = signal(false);
 export const spacesError = signal("");
 export const spacesNotice = signal("");
 export const confirmingDeleteSpaceId = signal<string | null>(null);
+/** True until the first catalogue read of this scope has answered. */
+export const spacesInitialLoad = signal(true);
+export const spaceCreating = signal(false);
 
 function readStr(obj: Record<string, unknown>, ...keys: string[]): string {
   for (const key of keys) {
@@ -79,7 +83,7 @@ function normalizeSpaceMeta(raw: Record<string, unknown>): SpaceMeta {
       : {};
   return {
     id: readStr(raw, "id", "appId", "app_id"),
-    name: readStr(raw, "name") || "Untitled Space",
+    name: readStr(raw, "name") || tr("spaces.untitled"),
     description: readStr(raw, "description"),
     icon: readStr(raw, "icon"),
     category: readStr(raw, "category") || "general",
@@ -169,16 +173,16 @@ export const selectedSpaceSourceCode = computed(() => {
   const detail = selectedSpaceDetail();
   if (!detail) return "";
   const tab = spaceSourceTab();
-  if (tab === "css") return detail.source.css || "/* No CSS defined */";
-  if (tab === "ui_js") return detail.source.uiJs || "// No UI script defined";
-  if (tab === "worker_js") return detail.source.workerJs || "// No worker script defined";
-  return detail.source.html || "<!-- No HTML markup defined -->";
+  if (tab === "css") return detail.source.css || `/* ${tr("spaces.noCss")} */`;
+  if (tab === "ui_js") return detail.source.uiJs || `// ${tr("spaces.noUiJs")}`;
+  if (tab === "worker_js") return detail.source.workerJs || `// ${tr("spaces.noWorkerJs")}`;
+  return detail.source.html || `<!-- ${tr("spaces.noHtml")} -->`;
 });
 
 export function spacesPeerNotice(): string {
   const scope = peerScope();
   if (!scope) return "";
-  return `Driving peer device ${scope.label} (${scope.hostKind}): Spaces and workers listed here run on that peer. Multi-window MiniApp webviews open only in the desktop host shell.`;
+  return tr("spaces.peerNotice", { label: scope.label, hostKind: scope.hostKind });
 }
 
 export async function loadSpaces(): Promise<void> {
@@ -205,7 +209,61 @@ export async function loadSpaces(): Promise<void> {
     spacesError.set(error instanceof Error ? error.message : String(error));
   } finally {
     spacesBusy.set(false);
+    spacesInitialLoad.set(false);
   }
+}
+
+async function refreshRunningWorkers(): Promise<void> {
+  try {
+    const raw = await invokeRawCommand<string[]>("miniapp_worker_list_running", {});
+    runningSpaceWorkers.set(Array.isArray(raw) ? raw.filter(Boolean) : []);
+  } catch {
+    // An older host without the worker list keeps the last known set.
+  }
+}
+
+function eventAppId(payload: unknown): string {
+  if (payload && typeof payload === "object") {
+    const rec = payload as Record<string, unknown>;
+    return readStr(rec, "id", "appId", "app_id");
+  }
+  return "";
+}
+
+/**
+ * Follows the host's MiniApp catalogue events the way the desktop's catalogue
+ * sync does: created / updated / deleted re-read the list, worker restarts and
+ * stops move the running set. Returns the unsubscribe.
+ */
+export function subscribeSpaceEvents(): () => void {
+  const offs = [
+    listenEvent<unknown>("miniapp-created", () => void loadSpaces()),
+    listenEvent<unknown>("miniapp-updated", () => void loadSpaces()),
+    listenEvent<unknown>("miniapp-deleted", payload => {
+      const id = eventAppId(payload);
+      if (id) runningSpaceWorkers.update(ids => ids.filter(item => item !== id));
+      void loadSpaces();
+    }),
+    listenEvent<unknown>("miniapp-worker-restarted", payload => {
+      const id = eventAppId(payload);
+      if (id) {
+        runningSpaceWorkers.update(ids => (ids.includes(id) ? ids : [...ids, id]));
+      } else {
+        void refreshRunningWorkers();
+      }
+    }),
+    listenEvent<unknown>("miniapp-worker-stopped", payload => {
+      const id = eventAppId(payload);
+      if (id) {
+        runningSpaceWorkers.update(ids => ids.filter(item => item !== id));
+      } else {
+        void refreshRunningWorkers();
+      }
+    }),
+  ];
+  return () => {
+    for (const off of offs) off();
+  };
 }
 
 export async function inspectSpace(appId: string): Promise<void> {
@@ -257,7 +315,8 @@ export async function stopSpaceWorker(appId: string): Promise<void> {
       () => runningSpaceWorkers(),
     );
     runningSpaceWorkers.set(Array.isArray(refreshed) ? refreshed : []);
-    const msg = `Stopped worker for ${appId}`;
+    const name = spaces().find(item => item.id === appId)?.name ?? appId;
+    const msg = tr("spaces.workerStopped", { name });
     spacesNotice.set(msg);
     pushToast(msg, "success");
   } catch (error) {
@@ -292,8 +351,8 @@ export async function confirmDeleteSpace(appId: string): Promise<void> {
       selectedSpaceDetail.set(null);
       selectedSpaceVersions.set([]);
     }
-    spacesNotice.set("Deleted Space");
-    pushToast("Deleted Space", "success");
+    spacesNotice.set(tr("spaces.deleted"));
+    pushToast(tr("spaces.deleted"), "success");
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     spacesError.set(errMsg);
@@ -303,9 +362,39 @@ export async function confirmDeleteSpace(appId: string): Promise<void> {
   }
 }
 
+/**
+ * Why "Create with Agent" cannot start here, or "" when it can. The desktop
+ * starts MiniApp creation as a Creative session in the active workspace and
+ * refuses without a workspace or on a remote one (the Creative toolchain
+ * writes MiniApp bundles on this machine).
+ */
+export function spaceCreationBlockedReason(): string {
+  const workspace = activeWorkspace();
+  if (!workspace) return tr("spaces.createNoWorkspace");
+  if (workspace.workspaceKind === "remote") return tr("spaces.createRemoteUnsupported");
+  return "";
+}
+
 export async function createSpaceWithAgent(): Promise<void> {
   const prompt = spacePrompt().trim();
-  if (!prompt) return;
-  spacePrompt.set("");
-  await startQuickPromptInSession(`Create a MiniApp Space: ${prompt}`, "Ultimate");
+  if (spaceCreating()) return;
+  const blocked = spaceCreationBlockedReason();
+  if (blocked) {
+    spacesError.set(blocked);
+    pushToast(blocked, "error");
+    return;
+  }
+  spaceCreating.set(true);
+  spacesError.set("");
+  try {
+    await startQuickPromptInSession(prompt ? tr("spaces.createPrompt", { prompt }) : "", "Creative");
+    spacePrompt.set("");
+    pushToast(tr("spaces.createStarted"), "success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    spacesError.set(tr("spaces.createFailed", { error: message }));
+    pushToast(tr("spaces.createFailed", { error: message }), "error");
+  } finally {
+    spaceCreating.set(false);
+  }
 }

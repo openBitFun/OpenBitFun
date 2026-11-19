@@ -138,6 +138,7 @@ Rules for all four:
 - **Degrade loudly.** When a scenario cannot be supported, gate the entry point or return a clear unsupported state. Silent local fallback, fake success, empty payloads, and generic errors are regressions; local fallback also leaks local content to a remote controller.
 - **Keep blocking interaction answerable from a distance.** New permission prompts, dialogs, and pickers reach the driving surface through the existing dialog and permission-mailbox orchestration. A turn that only the desktop window can unblock deadlocks remote control and dispatch jobs.
 - **Survive disconnect.** Remote surfaces reconnect, replay by cursor, and re-hydrate; prefer resumable cursors and idempotent mutations over state that exists only while a client is attached.
+- **One UI, one protocol, display-only frontends.** Every client (desktop, phone, browser, remote controller) is the same UI connected to a backend through `BackendService` (dispatch + seq-numbered events); relays are pipes, not translators. Business rules, defaults, validation and projections belong to the backend; do not add them to a frontend. See [unified-client-architecture.md](docs/architecture/unified-client-architecture.md).
 - **Remote workspace paths are POSIX on every client OS.** Do not split or join them with host `std::path` semantics, and do not reuse a controller-side path on a peer host.
 
 Per-scenario obligations:

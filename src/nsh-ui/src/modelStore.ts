@@ -25,6 +25,8 @@ export interface ModelOption {
   provider: string;
   /** Models that cannot chat (image or speech models) are not offered. */
   chat: boolean;
+  /** The context window the catalog declares, for the composer's usage ring. */
+  contextWindow?: number;
 }
 
 export const models = signal<ModelOption[]>([]);
@@ -178,6 +180,9 @@ function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): Mod
       capabilities.length === 0 ||
       capabilities.includes("text_chat") ||
       capabilities.includes("chat"),
+    ...(typeof entry.context_window === "number" && entry.context_window > 0
+      ? { contextWindow: entry.context_window }
+      : {}),
   };
 }
 

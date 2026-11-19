@@ -64,10 +64,126 @@ pub fn resolve_request_url(base_url: &str, provider: &str, model_name: &str) -> 
     match provider.trim().to_ascii_lowercase().as_str() {
         "openai" | "nvidia" | "openrouter" => append_endpoint(&trimmed, "chat/completions"),
         "response" | "responses" => append_endpoint(&trimmed, "responses"),
+        // A base that already names the API version (`.../v1`) takes only the
+        // resource, as the stored rule does; `/v1/v1/messages` never answers.
+        "anthropic" if trimmed.ends_with("/v1") => append_endpoint(&trimmed, "messages"),
         "anthropic" => append_endpoint(&trimmed, "v1/messages"),
         "gemini" | "google" => resolve_gemini_request_url(&trimmed, model_name),
         _ => trimmed,
     }
+}
+
+/// Whether `tail` (what follows a `/models` segment) is the model-path suffix
+/// a pasted Gemini URL may carry: nothing, or `/<model>[:method][?query]`.
+fn is_gemini_models_tail(tail: &str) -> bool {
+    if tail.is_empty() {
+        return true;
+    }
+    let Some(rest) = tail.strip_prefix('/') else {
+        return false;
+    };
+    let path = rest.split('?').next().unwrap_or_default();
+    !path.contains('/') && !path.contains('#')
+}
+
+fn strip_gemini_models_suffix(url: &str) -> &str {
+    match url.rfind("/models") {
+        Some(index) if is_gemini_models_tail(&url[index + "/models".len()..]) => &url[..index],
+        _ => url,
+    }
+}
+
+/// The bare Gemini root a stored URL keeps: a pasted `/v1beta[/models/...]`
+/// or `/models/...` suffix is removed; the runtime appends the model path.
+pub fn gemini_stored_base_url(url: &str) -> String {
+    let mut current = url;
+    if let Some(index) = current.rfind("/v1beta") {
+        let tail = &current[index + "/v1beta".len()..];
+        let models_tail = tail.strip_prefix("/models").map(is_gemini_models_tail);
+        if tail.is_empty() || models_tail == Some(true) {
+            current = &current[..index];
+        }
+    }
+    current = strip_gemini_models_suffix(current);
+    current.trim_end_matches('/').to_string()
+}
+
+/// The request URL a saved model stores for a base URL and request format.
+/// The format owns the resource path; a URL that already ends in it is kept,
+/// and a trailing `#` stores the URL verbatim. This is the persisted shape
+/// every settings surface has written, so it is the one rule hosts apply on
+/// save (see `settings_mutations`).
+pub fn stored_request_url(base_url: &str, provider: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(stripped) = trimmed.strip_suffix('#') {
+        return stripped.trim_end_matches('/').to_string();
+    }
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "openai" | "nvidia" | "openrouter" => {
+            if trimmed.ends_with("chat/completions") {
+                trimmed.to_string()
+            } else {
+                format!("{trimmed}/chat/completions")
+            }
+        }
+        "response" | "responses" => {
+            if trimmed.ends_with("responses") {
+                trimmed.to_string()
+            } else {
+                format!("{trimmed}/responses")
+            }
+        }
+        "anthropic" => {
+            if trimmed.ends_with("/messages") {
+                trimmed.to_string()
+            } else if trimmed.ends_with("/v1") {
+                format!("{trimmed}/messages")
+            } else {
+                format!("{trimmed}/v1/messages")
+            }
+        }
+        "gemini" | "google" => gemini_stored_base_url(trimmed),
+        _ => trimmed.to_string(),
+    }
+}
+
+fn encode_uri_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+/// The URL a model editor shows while it is being filled in. Gemini shows the
+/// full streaming endpoint (with `{model}` until a model is named); every other
+/// format shows what [`stored_request_url`] would store.
+pub fn preview_request_url(base_url: &str, provider: &str, model_name: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let provider_lower = provider.trim().to_ascii_lowercase();
+    if matches!(provider_lower.as_str(), "gemini" | "google")
+        && !trimmed.is_empty()
+        && !trimmed.ends_with('#')
+    {
+        let model = model_name.trim();
+        let model = if model.is_empty() {
+            "{model}".to_string()
+        } else {
+            encode_uri_component(model)
+        };
+        return format!(
+            "{}/v1beta/models/{model}:streamGenerateContent?alt=sse",
+            gemini_stored_base_url(trimmed)
+        );
+    }
+    stored_request_url(base_url, provider)
 }
 
 impl TryFrom<AIModelConfig> for AIConfig {
@@ -220,6 +336,63 @@ mod tests {
         model.responses = Some(provider);
         model.provider = "anthropic".into();
         assert!(AIConfig::try_from(model).unwrap().responses.is_none());
+    }
+
+    #[test]
+    fn derived_anthropic_url_does_not_repeat_the_version() {
+        assert_eq!(
+            resolve_request_url("https://api.anthropic.com/v1", "anthropic", ""),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            resolve_request_url("https://api.anthropic.com", "anthropic", ""),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            resolve_request_url("https://api.anthropic.com/v1/messages", "anthropic", ""),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn stored_request_url_matches_what_settings_surfaces_store() {
+        use super::{preview_request_url, stored_request_url};
+        assert_eq!(
+            stored_request_url("https://api.test/v1/", "openai"),
+            "https://api.test/v1/chat/completions"
+        );
+        assert_eq!(
+            stored_request_url("https://api.test/v1", "response"),
+            "https://api.test/v1/responses"
+        );
+        assert_eq!(
+            stored_request_url("https://api.test/v1", "anthropic"),
+            "https://api.test/v1/messages"
+        );
+        assert_eq!(
+            stored_request_url("https://api.test", "anthropic"),
+            "https://api.test/v1/messages"
+        );
+        assert_eq!(
+            stored_request_url("https://api.test/custom/path#", "openai"),
+            "https://api.test/custom/path"
+        );
+        assert_eq!(
+            stored_request_url(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2:streamGenerateContent?alt=sse",
+                "gemini"
+            ),
+            "https://generativelanguage.googleapis.com"
+        );
+        assert_eq!(stored_request_url("  ", "openai"), "");
+        assert_eq!(
+            preview_request_url("https://g.test/v1beta", "gemini", "gemini 2"),
+            "https://g.test/v1beta/models/gemini%202:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(
+            preview_request_url("https://g.test", "gemini", ""),
+            "https://g.test/v1beta/models/{model}:streamGenerateContent?alt=sse"
+        );
     }
 
     #[test]

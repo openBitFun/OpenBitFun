@@ -1,13 +1,12 @@
 //! Desktop-only access to host-owned Session storage, including remote mirrors.
 
 use super::app_state::AppState;
+use crate::host::State;
 use openbitfun_core::agentic::session::CoreSessionStorePort;
 use openbitfun_core::service::session::SessionStorageLayout;
 use openbitfun_runtime_ports::SessionStorePort;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use tauri::State;
-
 #[derive(Debug, Deserialize)]
 pub struct RevealSessionStorageDirectoryRequest {
     pub workspace_id: String,

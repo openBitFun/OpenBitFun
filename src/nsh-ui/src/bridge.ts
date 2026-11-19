@@ -1,148 +1,105 @@
-import { computed, host, signal } from "nsh";
-import { PEER_CONTROLLER_LOCAL_COMMANDS } from "./generated/peerSurface";
+// The app-side bridge: the only door from the scenes and stores to a backend
+// and to the shell around the window. Scenes never call `host` directly.
+//
+// Two things are injected before the app mounts, each with a default:
+// - the backend connection (`installBackendConnection`): by default the legacy
+//   page host (`host.js`: Tauri IPC in the desktop webview, fixtures elsewhere);
+//   the native desktop installs its in-process connection instead.
+// - the window shell (`installWindowShell`): by default the Tauri webview's;
+//   the native desktop installs the NSH desktop shell.
+
+import { computed, signal } from "nsh";
+import {
+  errorMessageOf,
+  type BackendConnection,
+  type BackendEvent,
+  type ConnectionState,
+  type TransportKind,
+} from "./backendConnection";
+import { createHostPageConnection } from "./hostPageConnection";
+import { DROP_EVENT, decodePeerReply, peerRouteFor, scopeEventToSurface } from "./peerRouting";
 import { peerScope } from "./peerState";
+import { createTextChunkCoalescer, TEXT_CHUNK_EVENT } from "./textChunkCoalescer";
+import {
+  createHostPageShell,
+  type ShellActions,
+  type WindowChromeSink,
+  type WindowShell,
+} from "./windowShell";
 
-/** Which host answered: the desktop backend, or the development fixtures. */
-export type TransportKind = "tauri" | "dev";
+export type { TransportKind, ConnectionState } from "./backendConnection";
+export type { WindowChromeState, ShellActions } from "./windowShell";
+export { decodePeerReply, PEER_EVENT_SOURCE_KEY, PEER_EVENT_WRAPPED_PAYLOAD_KEY } from "./peerRouting";
 
-interface HostReply<T> {
-  ok: boolean;
-  value?: T;
-  error?: string;
-  transport?: TransportKind;
-}
+// ── Backend connection ───────────────────────────────────────────────────────
 
-interface HostEventEnvelope {
-  event: string;
-  payload: unknown;
-  /** Optional peer device attribution for forwarded peer events. */
-  peerDeviceId?: string;
-}
-
-export interface WindowChromeState {
-  native?: boolean;
-  platform?: string;
-  overlayTrafficLights?: boolean;
-  isFullscreen?: boolean;
-}
+const pageConnection = createHostPageConnection();
+const activeConnection = signal<BackendConnection>(pageConnection);
 
 const eventListeners = new Map<string, Set<(payload: unknown) => void>>();
 let channelOpen = false;
-let windowChromeInitialized = false;
+let stopEvents: (() => void) | null = null;
 
-/** The transport the last answered call used; the shell shows it. */
-export const transport = signal<TransportKind>("dev");
-
-/** True only in a native macOS Tauri window with native overlay traffic lights. */
-export const macOverlayTitlebar = signal<boolean>(false);
-/** True while the native macOS window is entering or inside fullscreen mode. */
-export const windowFullscreen = signal<boolean>(false);
-/** Left inset in px required to keep top-bar chrome clear of macOS traffic lights. */
-export const trafficLightInsetPx = computed<number>(() =>
-  macOverlayTitlebar() && !windowFullscreen() ? 78 : 0,
-);
-
-function parseFullscreenPhase(payload: unknown): boolean | null {
-  const phase =
-    typeof payload === "string"
-      ? payload
-      : payload && typeof payload === "object" && typeof (payload as { phase?: unknown }).phase === "string"
-        ? (payload as { phase: string }).phase
-        : null;
-  if (phase === "entering" || phase === "fullscreen") return true;
-  if (phase === "exiting" || phase === "windowed") return false;
-  return null;
-}
-
-/**
- * Probes host window-chrome capabilities once and subscribes to macOS native
- * fullscreen phase events. Gracefully no-ops in headless tests and plain browsers.
- */
-export async function initWindowChrome(): Promise<void> {
-  if (windowChromeInitialized) return;
-  windowChromeInitialized = true;
-  try {
-    const reply = await host.call<HostReply<WindowChromeState>>("openbitfun.windowChrome", {});
-    if (reply?.transport && reply.transport !== transport()) transport.set(reply.transport);
-    if (!reply || reply.ok !== true || !reply.value) return;
-    const overlay = reply.value.overlayTrafficLights === true;
-    macOverlayTitlebar.set(overlay);
-    windowFullscreen.set(reply.value.isFullscreen === true);
-    if (overlay) {
-      listenEvent<unknown>("window://fullscreen-chrome", payload => {
-        const next = parseFullscreenPhase(payload);
-        if (next !== null) windowFullscreen.set(next);
-      });
-    }
-  } catch {
-    // Headless test harnesses and older hosts do not expose windowChrome; stay at 0 inset.
-  }
-}
-
-/** Starts a native window drag when clicking empty titlebar chrome. No-op off native Tauri. */
-export function startWindowDrag(): void {
-  void host.call<HostReply<boolean>>("openbitfun.windowDrag", {}).catch(() => undefined);
-}
-
-/** Toggles window maximize/zoom on titlebar double-click. No-op off native Tauri. */
-export function toggleWindowMaximize(): void {
-  void host.call<HostReply<boolean>>("openbitfun.windowToggleMaximize", {}).catch(() => undefined);
-}
+/** The wire the installed connection uses; the legacy page host reports `tauri` or `dev`. */
+export const transport = computed<TransportKind>(() => activeConnection().kind);
+/** Where the backend connection stands. */
+export const connectionState = computed<ConnectionState>(() => activeConnection().state());
+/** Why the connection failed or is reconnecting; `""` otherwise. */
+export const connectionError = computed<string>(() => activeConnection().error());
 
 export function transportKind(): TransportKind {
   return transport();
 }
 
-/** Payload key injected by the Rust controller on re-emitted Peer DeviceEvents. */
-export const PEER_EVENT_SOURCE_KEY = "__openbitfunSourceDeviceId";
-/** Wrapper key used when a peer payload is not a JSON object. */
-export const PEER_EVENT_WRAPPED_PAYLOAD_KEY = "__openbitfunSourcePayload";
-
-const SURFACE_SCOPED_EVENTS = new Set<string>([
-  "terminal_event",
-  "terminal-output",
-  "terminal-exit",
-  "terminal-closed",
-  "relay://session-gap",
-  "relay://session-ready",
-  "session-record",
-  "session-state",
-  "file-system-changed",
-  "file-watch-status-changed",
-  "permission://event",
-  "account://settings-applied",
-  "ai://model-catalog-updated",
-  "session_title_generated",
-  "workspace-catalog-changed",
-  "host-catalog-changed",
-  "cron://jobs-changed",
-]);
-
-function isSurfaceScopedEvent(event: string): boolean {
-  return (
-    SURFACE_SCOPED_EVENTS.has(event) ||
-    event.startsWith("agentic://") ||
-    event.startsWith("backend-event-")
-  );
+/** The installed connection, for code that must read its `ready()` or `lastSeq()`. */
+export function backendConnection(): BackendConnection {
+  return activeConnection();
 }
 
-function readSourceDeviceId(payload: unknown, fallback?: string): string | null {
-  if (payload && typeof payload === "object") {
-    const tagged = (payload as Record<string, unknown>)[PEER_EVENT_SOURCE_KEY];
-    if (typeof tagged === "string" && tagged.length > 0) return tagged;
+/**
+ * Replaces the backend connection. Call it before the app mounts (the native
+ * desktop entry does); an already open event channel moves to the new one.
+ */
+export function installBackendConnection(connection: BackendConnection): void {
+  const previous = activeConnection();
+  if (previous === connection) return;
+  stopEvents?.();
+  stopEvents = null;
+  for (const event of eventListeners.keys()) previous.unwatch?.(event);
+  activeConnection.set(connection);
+  textChunks.clear();
+  if (channelOpen) {
+    stopEvents = connection.subscribe(deliverBatch);
+    for (const event of eventListeners.keys()) connection.watch?.(event);
   }
-  return typeof fallback === "string" && fallback.length > 0 ? fallback : null;
+  // Starting is the connection's; reading it here moves its state off `connecting`.
+  void connection.ready().catch(() => undefined);
 }
 
-function unwrapSurfacePayload(payload: unknown): unknown {
-  if (!payload || typeof payload !== "object") return payload;
-  const record = payload as Record<string, unknown>;
-  if (!(PEER_EVENT_SOURCE_KEY in record)) return payload;
-  if (PEER_EVENT_WRAPPED_PAYLOAD_KEY in record) {
-    return record[PEER_EVENT_WRAPPED_PAYLOAD_KEY];
+async function runCommand<T>(
+  action: string,
+  args: Record<string, unknown> | undefined,
+  positional: boolean,
+): Promise<T> {
+  const connection = activeConnection();
+  // backend-owned: Peer Device Mode is a routing decision the UI still makes (`peerRouting.ts`).
+  const route = peerRouteFor(peerScope(), action, args, positional);
+  if (route) {
+    let raw: unknown;
+    try {
+      raw = await connection.invoke(route.command, route.args, { positional: true });
+    } catch (error) {
+      if (errorMessageOf(error)) throw error;
+      throw new Error(`${route.command} failed for ${action}`);
+    }
+    return decodePeerReply<T>(action, raw);
   }
-  const { [PEER_EVENT_SOURCE_KEY]: _source, ...rest } = record;
-  return rest;
+  try {
+    return (await connection.invoke(action, args, { positional })) as T;
+  } catch (error) {
+    if (errorMessageOf(error)) throw error;
+    throw new Error(`${action} failed`);
+  }
 }
 
 /**
@@ -153,72 +110,8 @@ function unwrapSurfacePayload(payload: unknown): unknown {
  * Product Operation Registry keeps it on the controller (account, relay, window
  * and updater work). Peer Device Mode never falls back to local product data.
  */
-export async function invokeCommand<T>(
-  action: string,
-  request?: Record<string, unknown>,
-): Promise<T> {
-  const peer = peerScope();
-  if (peer && !PEER_CONTROLLER_LOCAL_COMMANDS.has(action)) {
-    const reply = await host.call<HostReply<string>>(
-      "openbitfun.invoke",
-      {
-        action: "account_device_rpc",
-        raw: {
-          targetDeviceId: peer.deviceId,
-          commandJson: JSON.stringify({
-            cmd: "host_invoke",
-            command: action,
-            args: { request: request ?? null },
-          }),
-          timeoutMs: null,
-        },
-      },
-      { timeout: 0 },
-    );
-    if (reply?.transport && reply.transport !== transport()) transport.set(reply.transport);
-    if (!reply || reply.ok !== true) {
-      throw new Error(reply?.error || `account_device_rpc failed for ${action}`);
-    }
-    return decodePeerReply<T>(action, reply.value);
-  }
-  // A command may legitimately outlive the 30 s host default (agent creation,
-  // large file reads on a remote workspace), so the bridge waits.
-  const reply = await host.call<HostReply<T>>(
-    "openbitfun.invoke",
-    { action, request: request ?? null },
-    { timeout: 0 },
-  );
-  if (reply?.transport && reply.transport !== transport()) transport.set(reply.transport);
-  if (!reply || reply.ok !== true) {
-    throw new Error(reply?.error || `${action} failed`);
-  }
-  return reply.value as T;
-}
-
-/**
- * Reads one `host_invoke_result` envelope a peer host returned. The transport
- * failure and the host's own refusal stay distinct messages.
- */
-export function decodePeerReply<T>(action: string, raw: unknown): T {
-  let envelope: { resp?: string; ok?: boolean; value?: unknown; error?: string; message?: string };
-  try {
-    envelope =
-      typeof raw === "string"
-        ? (JSON.parse(raw) as typeof envelope)
-        : ((raw ?? {}) as typeof envelope);
-  } catch {
-    throw new Error(`The peer sent an unreadable reply to ${action}`);
-  }
-  if (envelope.resp === "error") {
-    throw new Error(envelope.message || `The peer refused ${action}`);
-  }
-  if (envelope.resp !== "host_invoke_result") {
-    throw new Error(`The peer answered ${action} with ${envelope.resp ?? "no envelope"}`);
-  }
-  if (envelope.ok !== true) {
-    throw new Error(envelope.error || `The peer refused ${action}`);
-  }
-  return envelope.value as T;
+export function invokeCommand<T>(action: string, request?: Record<string, unknown>): Promise<T> {
+  return runCommand<T>(action, request === undefined || request === null ? undefined : { request }, false);
 }
 
 /**
@@ -232,78 +125,47 @@ export function decodePeerReply<T>(action: string, raw: unknown): T {
  * route as `invokeCommand`, only with the arguments unwrapped: a peer host reads
  * `request` when it exists and the top-level object otherwise.
  */
-export async function invokeRawCommand<T>(
-  action: string,
-  params?: Record<string, unknown>,
-): Promise<T> {
-  const peer = peerScope();
-  if (peer && !PEER_CONTROLLER_LOCAL_COMMANDS.has(action)) {
-    const reply = await host.call<HostReply<string>>(
-      "openbitfun.invoke",
-      {
-        action: "account_device_rpc",
-        raw: {
-          targetDeviceId: peer.deviceId,
-          commandJson: JSON.stringify({
-            cmd: "host_invoke",
-            command: action,
-            args: params ?? null,
-          }),
-          timeoutMs: null,
-        },
-      },
-      { timeout: 0 },
-    );
-    if (reply?.transport && reply.transport !== transport()) transport.set(reply.transport);
-    if (!reply || reply.ok !== true) {
-      throw new Error(reply?.error || `account_device_rpc failed for ${action}`);
-    }
-    return decodePeerReply<T>(action, reply.value);
-  }
-  const reply = await host.call<HostReply<T>>(
-    "openbitfun.invoke",
-    { action, raw: params ?? null },
-    { timeout: 0 },
-  );
-  if (reply?.transport && reply.transport !== transport()) transport.set(reply.transport);
-  if (!reply || reply.ok !== true) {
-    throw new Error(reply?.error || `${action} failed`);
-  }
-  return reply.value as T;
+export function invokeRawCommand<T>(action: string, params?: Record<string, unknown>): Promise<T> {
+  return runCommand<T>(action, params ?? undefined, true);
 }
 
-/** Opens the single host event channel. Safe to call more than once. */
+function dispatchEvent(event: string, payload: unknown, peerDeviceId?: string): void {
+  const listeners = eventListeners.get(event);
+  if (!listeners) return;
+  // backend-owned: local and peer streams are told apart by the source tag.
+  const scoped = scopeEventToSurface(
+    event,
+    payload,
+    peerDeviceId,
+    peerScope()?.deviceId ?? null,
+    transport() !== "dev",
+  );
+  if (scoped === DROP_EVENT) return;
+  for (const listener of [...listeners]) {
+    try {
+      listener(scoped);
+    } catch (error) {
+      console.error(`event listener failed for ${event}`, error);
+    }
+  }
+}
+
+// Wires that deliver every chunk as emitted get the same per-frame merge `host.js` does.
+const textChunks = createTextChunkCoalescer((event, payload) => dispatchEvent(event, payload));
+
+function deliverBatch(batch: readonly BackendEvent[]): void {
+  const merge = activeConnection().coalescesTextChunks !== true;
+  for (const item of batch) {
+    if (merge) textChunks.push(item.event, item.payload);
+    else dispatchEvent(item.event, item.payload, item.peerDeviceId);
+  }
+}
+
+/** Opens the single backend event channel. Safe to call more than once. */
 export function openHostEventChannel(): void {
   if (channelOpen) return;
   channelOpen = true;
-  host.on<HostEventEnvelope>("openbitfun.event", envelope => {
-    if (!envelope || typeof envelope.event !== "string") return;
-    let payload = envelope.payload;
-    if (isSurfaceScopedEvent(envelope.event)) {
-      const sourceDeviceId = readSourceDeviceId(payload, envelope.peerDeviceId);
-      const activePeerId = peerScope()?.deviceId ?? null;
-      // Real Rust tags every re-emitted peer event with `__openbitfunSourceDeviceId`
-      // (`remote_connect_api::PEER_EVENT_SOURCE_KEY`) and leaves local host events
-      // untagged (`null`). On native Tauri transport, enforce strict surface match so
-      // local and peer streams never bleed into each other; in dev/headless mocks
-      // without the Rust controller tagger, still enforce tags whenever present.
-      if (transport() === "tauri") {
-        if (sourceDeviceId !== activePeerId) return;
-      } else if (sourceDeviceId !== null && sourceDeviceId !== activePeerId) {
-        return;
-      }
-      payload = unwrapSurfacePayload(payload);
-    }
-    const listeners = eventListeners.get(envelope.event);
-    if (!listeners) return;
-    for (const listener of [...listeners]) {
-      try {
-        listener(payload);
-      } catch (error) {
-        console.error(`event listener failed for ${envelope.event}`, error);
-      }
-    }
-  });
+  stopEvents = activeConnection().subscribe(deliverBatch);
 }
 
 /** Subscribes one backend event; the returned function unsubscribes. */
@@ -313,7 +175,7 @@ export function listenEvent<T>(event: string, listener: (payload: T) => void): (
   if (!listeners) {
     listeners = new Set();
     eventListeners.set(event, listeners);
-    void host.call("openbitfun.listen", { event }).catch(() => undefined);
+    activeConnection().watch?.(event);
   }
   const entry = listener as (payload: unknown) => void;
   listeners.add(entry);
@@ -323,7 +185,180 @@ export function listenEvent<T>(event: string, listener: (payload: T) => void): (
     current.delete(entry);
     if (current.size === 0) {
       eventListeners.delete(event);
-      void host.call("openbitfun.unlisten", { event }).catch(() => undefined);
+      if (event === TEXT_CHUNK_EVENT) textChunks.clear();
+      activeConnection().unwatch?.(event);
     }
   };
+}
+
+// ── Window shell ─────────────────────────────────────────────────────────────
+
+let shell: WindowShell = createHostPageShell({
+  invokeCommand,
+  listenEvent,
+  noteTransport: kind => {
+    if (kind === "tauri" || kind === "dev") pageConnection.noteTransport(kind);
+  },
+});
+let windowChromeProbe: Promise<void> | null = null;
+
+/** Replaces the window shell. Call it before the app mounts. */
+export function installWindowShell(next: WindowShell): void {
+  shell = next;
+  windowChromeProbe = null;
+}
+
+/** True only in a native macOS window whose traffic lights sit over the app's bar. */
+export const macOverlayTitlebar = signal<boolean>(false);
+/** True while the native macOS window is entering or inside fullscreen mode. */
+export const windowFullscreen = signal<boolean>(false);
+/** The host platform the window chrome probe reported (`macos`, `windows`, `linux`). */
+export const windowPlatform = signal<string>("");
+/** True when the page runs inside a native desktop window (not fixtures). */
+export const nativeWindow = signal<boolean>(false);
+/** True while the native window is maximized (Windows/Linux frame controls). */
+export const windowMaximized = signal<boolean>(false);
+/** Widths the system's window controls take inside a hidden title bar; `null` when the shell does not say. */
+const titleBarInsets = signal<{ left: number; right: number } | null>(null);
+/** The system draws minimize / maximize / close (macOS always; a native NSH window everywhere). */
+const systemWindowControls = signal<boolean>(false);
+
+/** Left inset in px required to keep top-bar chrome clear of macOS traffic lights. */
+export const trafficLightInsetPx = computed<number>(() => {
+  if (windowFullscreen()) return 0;
+  const insets = titleBarInsets();
+  if (insets) return insets.left > 0 ? Math.ceil(insets.left) + 8 : 0;
+  return macOverlayTitlebar() ? 78 : 0;
+});
+/** Right inset in px the system's window controls take inside the app's bar (Windows, GTK). */
+export const windowControlsRightInsetPx = computed<number>(() => {
+  const right = titleBarInsets()?.right ?? 0;
+  return !windowFullscreen() && right > 0 ? Math.ceil(right) : 0;
+});
+/**
+ * Windows and Linux build the Tauri window with `decorations(false)`, so the page
+ * draws minimize / maximize / close itself; macOS keeps its traffic lights, and
+ * a native NSH window keeps the system's controls on every platform.
+ */
+export const pageDrawsWindowControls = computed<boolean>(
+  () => nativeWindow() && windowPlatform() !== "" && windowPlatform() !== "macos" && !systemWindowControls(),
+);
+
+const chromeSink: WindowChromeSink = {
+  setNative: value => nativeWindow.set(value),
+  setPlatform: value => windowPlatform.set(value),
+  setOverlayTitlebar: value => macOverlayTitlebar.set(value),
+  setFullscreen: value => windowFullscreen.set(value),
+  setMaximized: value => windowMaximized.set(value),
+  setTitleBarInsets: value => titleBarInsets.set(value),
+  setSystemWindowControls: value => systemWindowControls.set(value),
+};
+
+/**
+ * Probes the window chrome once and keeps it current. Call it while the app
+ * renders: a native shell ties its window listeners to the component.
+ */
+export function initWindowChrome(): Promise<void> {
+  if (!windowChromeProbe) windowChromeProbe = shell.probe(chromeSink).catch(() => undefined);
+  return windowChromeProbe;
+}
+
+/** The title bar regions are declared on views (`desktop={{ windowDrag }}`), not started on press. */
+export function usesNativeDragRegions(): boolean {
+  return shell.nativeDragRegions;
+}
+
+/** Shell shortcuts the native application menu carries; the page does not bind them again. */
+export function shellMenuShortcutIds(): ReadonlySet<string> {
+  return shell.menuShortcutIds;
+}
+
+/** The app's own updater answers in this window. */
+export function inAppUpdatesAvailable(): boolean {
+  return nativeWindow() && shell.inAppUpdates;
+}
+
+/** Minimizes the native window. No-op off a native window. */
+export function minimizeWindow(): void {
+  shell.minimize();
+}
+
+/** Asks the native window to close; the close request handler decides what happens. */
+export function closeWindow(): void {
+  shell.close();
+}
+
+/** Starts a native window drag when clicking empty titlebar chrome. No-op off a native window. */
+export function startWindowDrag(): void {
+  shell.startDrag();
+}
+
+/** Toggles window maximize/zoom on titlebar double-click. No-op off a native window. */
+export function toggleWindowMaximize(): void {
+  shell.toggleMaximize();
+}
+
+/** Enters or leaves full screen; rejects with the shell's reason. */
+export function toggleWindowFullscreen(): Promise<void> {
+  return shell.toggleFullscreen();
+}
+
+/** Whether the page (and so the window) has keyboard focus; `true` when unknown. */
+export function isWindowFocused(): Promise<boolean> {
+  return shell.isFocused();
+}
+
+/**
+ * Opens the native folder picker on this machine. Resolves the chosen path, or
+ * `null` when the user cancelled. Rejects when no native picker exists (fixtures,
+ * plain browser) so the caller can say so instead of silently doing nothing.
+ */
+export function pickLocalDirectory(options: { title: string; defaultPath?: string }): Promise<string | null> {
+  return shell.pickDirectory(options);
+}
+
+/** This window's own build version (never a peer's); `null` when nothing reports one. */
+export async function controllerAppVersion(): Promise<string | null> {
+  try {
+    const fromShell = await shell.appVersion();
+    if (fromShell) return fromShell;
+    return (await activeConnection().ready()).version;
+  } catch {
+    return null;
+  }
+}
+
+/** The user asked to close the main window; returns the unsubscriber. */
+export function onMainWindowCloseRequest(handler: () => void): () => void {
+  return shell.onCloseRequest(handler);
+}
+
+/** Hides the main window after a close request (macOS keeps running). */
+export function hideMainWindowAfterCloseRequest(): Promise<void> {
+  return shell.hideAfterCloseRequest();
+}
+
+/** Hides the main window behind the tray. */
+export function minimizeMainWindowToTray(): Promise<void> {
+  return shell.minimizeToTray();
+}
+
+/** Quits the application. */
+export function quitApplication(): Promise<void> {
+  return shell.quit();
+}
+
+/** Builds the application menu and the tray around `actions`. Call while rendering. */
+export function startShellIntegration(actions: ShellActions): () => void {
+  return shell.startIntegration(actions);
+}
+
+/** The unread count the tray shows. */
+export function setTrayUnreadCount(count: number): Promise<void> {
+  return shell.setTrayUnreadCount(count);
+}
+
+/** An OS notification, where the shell has them. */
+export function showSystemNotification(title: string, body: string): Promise<void> {
+  return shell.showSystemNotification(title, body);
 }

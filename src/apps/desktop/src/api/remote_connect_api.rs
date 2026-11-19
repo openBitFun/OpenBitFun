@@ -1,6 +1,7 @@
 //! Tauri commands for Remote Connect.
 
 use crate::embedded_relay_host::DesktopEmbeddedRelayHost;
+use crate::host::HostHandle;
 use openbitfun_core::agentic::tools::account_login_capability::set_account_login_available;
 use openbitfun_core::agentic::tools::page_deploy_host::set_page_deploy_handler;
 use openbitfun_core::agentic::tools::page_manage_host::set_page_manage_handler;
@@ -27,7 +28,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 
 #[cfg(test)]
@@ -205,17 +205,17 @@ pub fn set_dialog_scheduler(
     let _ = DIALOG_SCHEDULER.set(scheduler);
 }
 
-/// AppHandle used by the device-routing background task to emit UI events
+/// HostHandle used by the device-routing background task to emit UI events
 /// (presence / settings-applied) without requiring a Tauri command context.
-static ACCOUNT_APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+static ACCOUNT_APP_HANDLE: OnceLock<HostHandle> = OnceLock::new();
 
 /// Store the app handle for account device-routing events. Called once during setup.
-pub fn set_account_app_handle(app: AppHandle) {
+pub fn set_account_app_handle(app: HostHandle) {
     let _ = ACCOUNT_APP_HANDLE.set(app);
 }
 
-/// Shared AppHandle for account / peer-host bridges.
-pub fn account_app_handle() -> Option<&'static AppHandle> {
+/// Shared HostHandle for account / peer-host bridges.
+pub fn account_app_handle() -> Option<&'static HostHandle> {
     ACCOUNT_APP_HANDLE.get()
 }
 
@@ -2630,7 +2630,7 @@ async fn clear_account_login_state(revoke_relay_token: bool) {
 }
 
 #[tauri::command]
-pub async fn account_logout(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn account_logout(app: HostHandle) -> Result<(), String> {
     let mut identity = openbitfun_services_integrations::account_identity::AccountIdentityClient::from_environment()
         .await.map_err(|error| error.to_string())?;
     identity.logout().await.map_err(|error| error.to_string())?;

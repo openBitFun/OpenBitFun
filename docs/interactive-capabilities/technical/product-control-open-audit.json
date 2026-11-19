@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "6a6de5f67359bdd2aead1692c4afd1b748e601045004dc140dd73b92342dd2bc",
-  "count": 233,
+  "catalogDigest": "b18e476cf2b8f36360fc1fc9edc5dcf20454aaf4d51bf2fde4193e2c56b21dd4",
+  "count": 234,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 6,
-    "unstructuredInteraction": 195,
+    "unstructuredInteraction": 196,
     "visualSelection": 28
   },
   "entries": [
@@ -114,7 +114,8 @@
         "command:fork_session",
         "command:export_session_transcript",
         "command:archive_all_sessions",
-        "command:get_session_lineage"
+        "command:get_session_lineage",
+        "command:mark_session_seen"
       ]
     },
     {
@@ -136,7 +137,8 @@
         "command:update_session_permission_mode",
         "command:get_available_modes",
         "command:get_session_permission_mode",
-        "command:update_active_turn_permission_mode"
+        "command:update_active_turn_permission_mode",
+        "command:get_session_mode_catalog"
       ]
     },
     {
@@ -209,7 +211,9 @@
         "command:interrupt_dialog_turn",
         "command:cancel_dialog_turn",
         "command:recover_interrupted_dialog_turn",
-        "command:cancel_session"
+        "command:cancel_session",
+        "command:submit_user_message",
+        "command:stop_dialog_turn"
       ]
     },
     {
@@ -325,7 +329,9 @@
         "command:run_init_agents_md",
         "command:get_memory_paths",
         "command:reset_memory",
-        "command:compact_session"
+        "command:compact_session",
+        "command:list_session_commands",
+        "command:execute_session_command"
       ]
     },
     {
@@ -2173,6 +2179,25 @@
         "command:remote_connect_get_lan_network_info",
         "command:remote_connect_get_form_state",
         "command:remote_connect_set_form_state"
+      ]
+    },
+    {
+      "capabilityId": "feature.remote-connect",
+      "itemId": "phone-browser-access",
+      "titleZh": "在手机或浏览器中打开同一界面，扫码配对并随时撤销",
+      "titleEn": "Open the same UI on a phone or browser, pair by QR, and revoke at any time",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "「在手机或浏览器中打开同一界面」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
+      "reasonEn": "\"Open the same UI on a phone or browser\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you.",
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect"
+      },
+      "evidence": [
+        "command:obp_get_status",
+        "command:obp_set_lan_enabled",
+        "command:obp_create_pairing",
+        "command:obp_revoke_paired_client"
       ]
     },
     {

@@ -1,12 +1,11 @@
 //! Git Agent API - Provides Tauri command interface for Git Function Agent
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use log::error;
 use openbitfun_core::function_agents::{CommitMessage, CommitMessageOptions, GitFunctionAgent};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tauri::State;
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateCommitMessageRequest {

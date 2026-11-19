@@ -15,6 +15,7 @@
 
 import { signal } from "nsh";
 import { invokeCommand } from "./bridge";
+import { tr } from "./i18n";
 import type { DispatchJob } from "./dispatchStore";
 import { refreshDispatchJobs } from "./dispatchStore";
 
@@ -243,7 +244,7 @@ function readPermissions(list: Array<Record<string, unknown>> | undefined): Obse
     // the display metadata is where the engine puts a human-readable title.
     const action = readString(entry, ["action", "toolName", "tool_name"]);
     const metadata = (entry.displayMetadata ?? entry.display_metadata ?? {}) as Record<string, unknown>;
-    const title = readString(metadata, ["title", "summary"]) || (action ? `Permission: ${action}` : "Permission needed");
+    const title = readString(metadata, ["title", "summary"]) || (action ? tr("devices.store.permissionAction", { action }) : tr("devices.store.permissionNeeded"));
     const resources = Array.isArray(entry.resources) ? entry.resources.filter(value => typeof value === "string") : [];
     const detail = resources.length > 0 ? clipped(resources.join(" · "), 200) : clipped(readString(metadata, ["description", "detail"]), 200);
     result.push({ requestId, title, detail: detail || requestId });
@@ -298,7 +299,7 @@ export async function pollObservedJob(): Promise<void> {
       // transcript this surface holds no longer belongs to that cursor.
       observedRows.set([]);
       cursor = 0;
-      observedNotice.set("The target rewrote the event log; replaying it");
+      observedNotice.set(tr("devices.store.eventLogRewritten"));
       return;
     }
     applyPage(jobId, page);
@@ -373,7 +374,7 @@ export async function sendToObservedJob(): Promise<void> {
   const text = observedDraft().trim();
   if (!jobId) return;
   if (!text) {
-    observedNotice.set("A message needs text");
+    observedNotice.set(tr("devices.store.messageNeedsText"));
     return;
   }
   const steering = observedState() === "running" || observedState() === "queued";
@@ -387,7 +388,7 @@ export async function sendToObservedJob(): Promise<void> {
     }
     observedRows.set([...observedRows(), { id: nextRowId(), kind: "user", text }]);
     observedDraft.set("");
-    observedNotice.set(steering ? "Sent to the running turn" : "Next turn started");
+    observedNotice.set(steering ? tr("devices.store.sentToTurn") : tr("devices.store.nextTurnStarted"));
     if (steering && observedState() === "queued") observedState.set("running");
   } catch (error) {
     observedNotice.set(error instanceof Error ? error.message : String(error));
@@ -410,7 +411,7 @@ export async function syncObservedResult(): Promise<void> {
   try {
     const result = await invokeCommand<Record<string, unknown>>("dispatch_sync_result", { jobId });
     const head = readString(result, ["headCommit", "syncedHeadCommit", "commit"]);
-    observedNotice.set(head ? `Synced ${head.slice(0, 12)}` : "Result synced");
+    observedNotice.set(head ? tr("devices.store.syncedHead", { head: head.slice(0, 12) }) : tr("devices.store.resultSynced"));
     await refreshDispatchJobs();
   } catch (error) {
     observedNotice.set(error instanceof Error ? error.message : String(error));
@@ -426,7 +427,7 @@ export async function cancelObservedJob(): Promise<void> {
   observedBusy.set(true);
   try {
     await invokeCommand<unknown>("dispatch_cancel", { jobId });
-    observedNotice.set("Cancel requested");
+    observedNotice.set(tr("devices.dispatchCancelRequested"));
   } catch (error) {
     observedNotice.set(error instanceof Error ? error.message : String(error));
   } finally {

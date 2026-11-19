@@ -6,11 +6,12 @@
 //! - Supports streaming output and cancellation by request id
 
 use crate::api::app_state::AppState;
+use crate::host::HostHandle;
+use crate::host::State;
 use futures::StreamExt;
 use log::warn;
 use openbitfun_core::util::types::message::Message as AIMessage;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +82,7 @@ pub async fn editor_ai_cancel(
 
 #[tauri::command]
 pub async fn editor_ai_stream(
-    app: AppHandle,
+    app: HostHandle,
     state: State<'_, AppState>,
     request: EditorAiStreamRequest,
 ) -> Result<EditorAiStreamResponse, String> {

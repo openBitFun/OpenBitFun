@@ -42,6 +42,10 @@ Follow sessions, approve permissions, and keep working from Mobile Web or a WeCh
   - Inspect LAN IP addresses, network interfaces, and shareable QR invitations
   - 说明：直观展示当前可用局域网 IP 与二维码邀请卡片；二维码仅用于引导识别目标主机，仍需账号权限校验才可访问。
   - Why & how: View available LAN IPs and invitation QR cards; scanning identifies the host while still enforcing full account authorization.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在手机或浏览器中打开同一界面，扫码配对并随时撤销
+  - Open the same UI on a phone or browser, pair by QR, and revoke at any time
+  - 说明：原生桌面应用在本机提供网页界面与 OBP 协议：本机浏览器凭一次性启动链接以所有者身份连接；开启局域网后，手机扫描一次性二维码（携带自签名证书指纹）完成配对，配对设备只能执行可远程代理的命令，可在设备页随时撤销。
+  - Why & how: The native desktop serves its web UI and the OBP protocol: a browser on this computer connects as the owner through a one-time launch link; with the LAN listener on, a phone pairs by scanning a one-time QR code that carries the self-signed certificate fingerprint, runs only proxied commands, and can be revoked in Devices at any time.
 - **智能体可直接控制 / Direct Agent control** · 接入微信扫码、飞书或 Telegram 聊天机器人（每次连接一个聊天应用，与手机远控并行不悖）
   - Connect a WeChat (QR login), Feishu, or Telegram bot alongside Mobile Web
   - 说明：支持微信扫码登录或从本机私有凭据文件加载飞书 / Telegram 配置；同一主机一次连接一个聊天应用（切换前先断开当前机器人，与「手机或浏览器」远控互不影响），凭据安全保存在执行主机。

@@ -219,6 +219,29 @@ impl SharedProductControlExecutor {
     /// option and share this executor's serialization and revision sequence.
     /// Unknown internal paths remain writable for upgrade compatibility, but
     /// they are never discoverable through ProductControl.
+    /// Typed settings mutation: reads the stored value, applies one intent
+    /// (see `settings_mutations`) and commits it as a legacy-path write, all
+    /// under this executor's mutation lock so concurrent writers cannot
+    /// interleave between the read and the write. Returns the stored value.
+    pub async fn mutate_legacy_path(
+        &self,
+        path: &str,
+        mutate: impl FnOnce(&Value) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let _mutation = self.mutation_lock.lock().await;
+        let current = match self.config_service.get_config::<Value>(Some(path)).await {
+            Ok(value) => value,
+            Err(crate::util::errors::OpenBitFunError::NotFound(_)) => Value::Null,
+            Err(error) => return Err(error.to_string()),
+        };
+        let next = mutate(&current)?;
+        let applied = apply_legacy_config_mutation(&self.config_service, path, next).await?;
+        if applied.changed {
+            self.revision.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(applied.effective_value)
+    }
+
     pub async fn configure_legacy_path(&self, path: &str, value: Value) -> Result<Value, String> {
         let _mutation = self.mutation_lock.lock().await;
         let applied = apply_legacy_config_mutation(&self.config_service, path, value).await?;
@@ -315,11 +338,28 @@ fn set_nested_value(value: &mut Value, field: &str, next_value: Value) -> Result
 
 fn validate_config_semantics(path: &str, value: &Value) -> Result<(), String> {
     if path == "memories" {
-        let memories: MemoriesConfig = serde_json::from_value(value.clone())
-            .map_err(|error| format!("Invalid memory settings: {error}"))?;
-        if memories.max_rollout_age_days > memories.max_unused_days {
-            return Err("Memory rollout age must not exceed unused-memory retention".to_string());
-        }
+        openbitfun_config_contracts::settings_mutations::validate_memories_value(value)?;
+    }
+    Ok(())
+}
+
+/// Cross-field rules for a leaf write: the candidate parent object (the stored
+/// one with this leaf replaced) must satisfy the same rule a whole-object
+/// write does, so a client writing `memories.max_rollout_age_days` alone
+/// cannot bypass the memory window rule.
+async fn validate_leaf_semantics(
+    config_service: &ConfigService,
+    path: &str,
+    value: &Value,
+) -> Result<(), String> {
+    if let Some(field) = path.strip_prefix("memories.") {
+        let mut memories: Value = match config_service.get_config(Some("memories")).await {
+            Ok(memories) => memories,
+            Err(_) => serde_json::to_value(MemoriesConfig::default())
+                .map_err(|error| error.to_string())?,
+        };
+        set_nested_value(&mut memories, field, value.clone())?;
+        validate_config_semantics("memories", &memories)?;
     }
     Ok(())
 }
@@ -500,6 +540,7 @@ pub async fn apply_legacy_config_mutation_with_model_snapshot(
 ) -> Result<AppliedLegacyProductConfig, String> {
     let controlled_bindings = validate_legacy_config_mutation(path, &value)?;
     validate_config_semantics(path, &value)?;
+    validate_leaf_semantics(config_service, path, &value).await?;
     let changed = if let Some(expected) = expected_models {
         if path != "ai.models" || !expected.is_array() {
             return Err("A model snapshot requires the ai.models array path".into());
@@ -776,6 +817,25 @@ mod tests {
             .expect("clearing an optional leaf must not fail its read-back");
         assert!(cleared.changed);
         assert_eq!(cleared.effective_value, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn memory_window_rule_applies_to_leaf_writes() {
+        let (service, _dir) = test_service("memory-leaf-window").await;
+        apply_legacy_config_mutation(&service, "memories.max_unused_days", json!(5))
+            .await
+            .expect_err("a retention below the stored rollout window is refused");
+        apply_legacy_config_mutation(&service, "memories.max_rollout_age_days", json!(3))
+            .await
+            .expect("a window inside the retention is accepted");
+        apply_legacy_config_mutation(&service, "memories.max_unused_days", json!(5))
+            .await
+            .expect("the retention can now shrink to the window");
+        let error =
+            apply_legacy_config_mutation(&service, "memories.max_rollout_age_days", json!(6))
+                .await
+                .expect_err("a window past the retention is refused");
+        assert!(error.contains("rollout age"), "{error}");
     }
 
     #[tokio::test]

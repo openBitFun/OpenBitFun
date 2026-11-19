@@ -11,6 +11,8 @@ import {
 } from './rules/feature-rules.mjs';
 
 const SKIPPED_DIRECTORIES = new Set([
+  // NSH's generated build workspaces (gitignored tool output, like `target`).
+  '.nsh',
   '.openbitfun',
   '.claude',
   '.cursor',
@@ -521,7 +523,8 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
     packages: new Map([
       ['openbitfun-ai-adapters', dependencyProfile(['json'], { kind: 'dev' })],
       ['openbitfun-core', dependencyProfile(['json'], { optional: true })],
-      ['openbitfun-desktop', dependencyProfile(['json'])],
+      // Desktop's backend-protocol listener (OBP over WebSocket, loopback and LAN).
+      ['openbitfun-desktop', dependencyProfile(['json', 'ws'])],
       ['openbitfun-miniapp-market-server', dependencyProfile(['json'])],
       ['openbitfun-miniapp-market-service', dependencyProfile(['json'])],
       ['openbitfun-relay-server', dependencyProfile([])],
@@ -599,6 +602,12 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       ['openbitfun-core', { ...dependencyProfile([], { optional: true }),
         devProfile: dependencyProfile([], { kind: 'dev' }),
       }],
+      // OBP listener integration tests drive the real server as a plain and a
+      // TLS WebSocket client; the listener itself is the Axum `ws` server.
+      ['openbitfun-desktop', dependencyProfile(['connect', 'rustls-tls-native-roots'], {
+        kind: 'dev',
+        useDefaultFeatures: false,
+      })],
       // Loopback WebSocket lifecycle regressions only; the relay runtime is
       // an Axum server and does not acquire a TLS/client capability.
       ['openbitfun-relay-service', dependencyProfile(['connect', 'handshake'], {

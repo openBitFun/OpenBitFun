@@ -1,6 +1,8 @@
 //! Configuration API
 
 use crate::api::app_state::AppState;
+use crate::host::HostHandle;
+use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use log::{error, info};
 use openbitfun_core::service::config::{
@@ -11,8 +13,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Instant;
-use tauri::State;
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetConfigRequest {
@@ -212,7 +212,7 @@ mod tests {
 #[tauri::command]
 pub async fn set_config(
     _state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: HostHandle,
     startup_trace: State<'_, DesktopStartupTrace>,
     request: SetConfigRequest,
 ) -> Result<String, String> {

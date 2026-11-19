@@ -132,7 +132,15 @@ export interface InsightsReportView {
   title: string;
   subtitle: string;
   markdown: string;
+  /** The HTML rendering the host wrote beside the report, when it wrote one. */
+  htmlPath: string;
 }
+
+/** The ranges and models the desktop's insights generator offers. */
+export const INSIGHTS_DAY_OPTIONS = [7, 14, 30, 90] as const;
+export const insightsDays = signal<number>(30);
+/** `primary` or `fast`, the model slot the generator runs on. */
+export const insightsModel = signal<"primary" | "fast">("primary");
 
 export const homeQuickPrompt = signal("");
 export const homeQuickBusy = signal(false);
@@ -1036,7 +1044,13 @@ function formatInsightsReport(raw: Record<string, unknown>, fallbackPath = ""): 
 
   const directMarkdown = readString(raw, ["markdown", "content", "reportMarkdown"]);
   if (directMarkdown) {
-    return { path, title, subtitle, markdown: directMarkdown };
+    return {
+      path,
+      title,
+      subtitle,
+      markdown: directMarkdown,
+      htmlPath: readString(raw, ["html_report_path", "htmlReportPath"]),
+    };
   }
 
   const lines: string[] = [];
@@ -1146,7 +1160,8 @@ function formatInsightsReport(raw: Record<string, unknown>, fallbackPath = ""): 
   }
 
   const markdown = lines.join("\n").trim() || "No structured report content was returned.";
-  return { path, title, subtitle, markdown };
+  const htmlPath = readString(raw, ["html_report_path", "htmlReportPath"]);
+  return { path, title, subtitle, markdown, htmlPath };
 }
 
 export async function loadLatestInsights(): Promise<void> {
@@ -1196,13 +1211,16 @@ export function closeInsightsModal(): void {
   insightsModalOpen.set(false);
 }
 
-export async function generateInsightsReport(days = 30, modelId?: string): Promise<void> {
+export async function generateInsightsReport(
+  days: number = insightsDays(),
+  modelId: string = insightsModel(),
+): Promise<void> {
   ensureHomeEventSubscriptions();
   if (insightsGenerating()) return;
   insightsGenerating.set(true);
   insightsError.set("");
   insightsNotice.set("");
-  insightsProgress.set(`Analyzing the last ${days} days of sessions…`);
+  insightsProgress.set(tr("home.store.insightsAnalyzing", { days: String(days) }));
   try {
     const report = asRecord(
       await invokeCommand<Record<string, unknown>>("generate_insights", {
@@ -1214,7 +1232,7 @@ export async function generateInsightsReport(days = 30, modelId?: string): Promi
     const view = formatInsightsReport(report);
     activeInsightsReport.set(view);
     if (view.path) selectedInsightsPath.set(view.path);
-    insightsNotice.set(`Generated ${days}-day insights report.`);
+    insightsNotice.set(tr("home.store.insightsGenerated", { days: String(days) }));
     insightsModalOpen.set(true);
     void loadLatestInsights();
   } catch (error) {
@@ -1223,6 +1241,23 @@ export async function generateInsightsReport(days = 30, modelId?: string): Promi
   } finally {
     insightsGenerating.set(false);
     insightsProgress.set("");
+  }
+}
+
+/**
+ * Shows the report's HTML file in the system file manager. The file lives on
+ * the host that generated it, so a Peer's report cannot be opened here.
+ */
+export async function revealInsightsHtml(path: string): Promise<void> {
+  if (!path) return;
+  if (peerScope()) {
+    insightsError.set(tr("home.insightsHtmlPeerUnsupported"));
+    return;
+  }
+  try {
+    await invokeCommand<unknown>("reveal_in_explorer", { path });
+  } catch (error) {
+    insightsError.set(errorMessage(error));
   }
 }
 
@@ -1235,7 +1270,7 @@ export async function cancelInsights(): Promise<void> {
   } finally {
     insightsGenerating.set(false);
     insightsProgress.set("");
-    insightsNotice.set("Cancelled insights generation.");
+    insightsNotice.set(tr("home.store.insightsCancelled"));
   }
 }
 

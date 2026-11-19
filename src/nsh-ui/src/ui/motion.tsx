@@ -70,7 +70,7 @@ export const MOTION_DURATION = {
   popover: 160,
   base: 200,
   contentSwap: 200,
-  toast: 320,
+  toast: 220,
   slow: 360,
   loop: 680,
 } as const;

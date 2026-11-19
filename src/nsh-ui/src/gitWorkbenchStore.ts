@@ -2,7 +2,8 @@
 
 import { computed, signal } from "nsh";
 import { deleteWorkspaceFile, type GitFileStatus, type GitStatus, type WorkspaceRecord } from "./api";
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { createStatusPoller, subscribeWorkspaceFileChanges } from "./fileStore";
 import { peerScope } from "./peerState";
 import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
@@ -110,6 +111,40 @@ export const gitCommits = signal<GitCommitRow[]>([]);
 export const gitGraphByHash = signal<Record<string, GitGraphNodeInfo>>({});
 export const gitGraphMaxLane = signal(0);
 export const gitGraphNote = signal("");
+
+export const HISTORY_PAGE_SIZE = 50;
+export const gitHistoryHasMore = signal(false);
+export const gitHistoryLoadingMore = signal(false);
+export const historyFilter = signal("");
+export const branchFilter = signal("");
+export const confirmingForceDeleteBranch = signal<string | null>(null);
+
+/** The checkout git refused because local changes would be overwritten. */
+export interface BranchSwitchBlocker {
+  targetBranch: string;
+  files: string[];
+  kind: "tracked" | "untracked";
+}
+export const branchSwitchBlocker = signal<BranchSwitchBlocker | null>(null);
+export const switchCommitMessage = signal("");
+
+/** Paths checked in the working-copy list for a batch stage / unstage. */
+export const checkedGitPaths = signal<string[]>([]);
+
+export interface GitChangedFileRow {
+  path: string;
+  oldPath: string | null;
+  status: string;
+}
+
+export const selectedCommit = signal<GitCommitRow | null>(null);
+export const commitFiles = signal<GitChangedFileRow[]>([]);
+export const commitFilesLoading = signal(false);
+export const commitFilesNote = signal("");
+export const selectedCommitFile = signal<string | null>(null);
+export const commitFileDiff = signal("");
+export const commitFileDiffLoading = signal(false);
+export const confirmingCommitReset = signal<{ hash: string; mode: "soft" | "mixed" | "hard" } | null>(null);
 
 export const gitWorktrees = signal<GitWorktreeRow[]>([]);
 export const gitWorktreeNote = signal("");
@@ -280,6 +315,14 @@ function clearGitState(): void {
   gitWorktreeNote.set("");
   addWorktreeModalOpen.set(false);
   confirmingRemoveWorktree.set(null);
+  gitHistoryHasMore.set(false);
+  historyFilter.set("");
+  branchFilter.set("");
+  confirmingForceDeleteBranch.set(null);
+  branchSwitchBlocker.set(null);
+  switchCommitMessage.set("");
+  checkedGitPaths.set([]);
+  clearSelectedCommit();
 }
 
 export function workspaceScopeKey(ws: WorkspaceRecord | null): string {
@@ -444,7 +487,15 @@ async function loadGitStatus(ws: WorkspaceRecord, ticket: number): Promise<void>
       repositoryPath: ws.rootPath,
     });
     if (ticket !== probeTicket) return;
-    const normalized = normalizeStatus(raw);
+    await applyGitStatus(ws, normalizeStatus(raw));
+  } catch (error) {
+    if (ticket !== probeTicket) return;
+    gitError.set(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function applyGitStatus(ws: WorkspaceRecord, normalized: GitStatus | null): Promise<void> {
+  {
     gitStatus.set(normalized);
     if (!normalized) return;
 
@@ -479,10 +530,77 @@ async function loadGitStatus(ws: WorkspaceRecord, ticket: number): Promise<void>
       selectedGitDiff.set("");
       selectedGitDiffNote.set("");
     }
-  } catch (error) {
-    if (ticket !== probeTicket) return;
-    gitError.set(error instanceof Error ? error.message : String(error));
   }
+}
+
+// ── Live refresh ────────────────────────────────────────────────────────────
+
+/**
+ * One quiet status read: nothing on screen changes unless the repository did,
+ * and a failure keeps the last answer (the poller backs off instead). A changed
+ * branch or ahead/behind count also re-reads branches and history, since a
+ * commit or checkout made elsewhere moved them.
+ */
+export async function refreshGitStatusQuietly(): Promise<boolean> {
+  const ws = activeWorkspace();
+  if (!ws || gitRepoState() !== "trusted" || gitActionBusy() || gitBusy()) return true;
+  if (workspaceScopeKey(ws) !== currentScopeKey) return true;
+  const ticket = probeTicket;
+  let raw: Record<string, unknown> | null;
+  try {
+    raw = await invokeCommand<Record<string, unknown> | null>("git_get_status", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+    });
+  } catch {
+    return false;
+  }
+  if (ticket !== probeTicket || workspaceScopeKey(activeWorkspace()) !== currentScopeKey) return true;
+  const next = normalizeStatus(raw);
+  const previous = gitStatus();
+  if (JSON.stringify(next) === JSON.stringify(previous)) return true;
+  const headMoved =
+    !previous ||
+    !next ||
+    previous.current_branch !== next.current_branch ||
+    previous.ahead !== next.ahead ||
+    previous.behind !== next.behind ||
+    previous.staged.length > next.staged.length;
+  await applyGitStatus(ws, next);
+  if (headMoved && ticket === probeTicket) {
+    void loadGitBranches(ws, ticket);
+    void loadGitHistory(ws, ticket);
+  }
+  return true;
+}
+
+let quietRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleQuietRefresh(delay = 250): void {
+  if (quietRefreshTimer !== null) clearTimeout(quietRefreshTimer);
+  quietRefreshTimer = setTimeout(() => {
+    quietRefreshTimer = null;
+    void refreshGitStatusQuietly();
+  }, delay);
+}
+
+let liveRefreshInstalled = false;
+
+function installLiveRefresh(): void {
+  if (liveRefreshInstalled) return;
+  liveRefreshInstalled = true;
+  // A disk change under the workspace, or the window coming back to the front,
+  // re-reads status at once instead of waiting for the next poll.
+  subscribeWorkspaceFileChanges(() => scheduleQuietRefresh());
+  listenEvent<unknown>("tauri://focus", () => scheduleQuietRefresh(0));
+}
+
+const gitStatusPoller = createStatusPoller(refreshGitStatusQuietly);
+
+/** The Git scene's lease on the status poll (2 s local, 30 s remote, backing off on failure). */
+export function holdGitStatusPoll(): () => void {
+  installLiveRefresh();
+  return gitStatusPoller();
 }
 
 async function loadFileDiff(ws: WorkspaceRecord, target: SelectedGitFile): Promise<void> {
@@ -497,7 +615,13 @@ async function loadFileDiff(ws: WorkspaceRecord, target: SelectedGitFile): Promi
     if (selectedGitFile()?.path !== target.path || selectedGitFile()?.staged !== target.staged) {
       return;
     }
-    const text = typeof patch === "string" ? patch : "";
+    let text = typeof patch === "string" ? patch : "";
+    if (!text.trim() && target.kind === "untracked") {
+      // git has no diff for a file it does not track: show the file as all
+      // additions, the way the desktop's diff view does.
+      text = await untrackedFilePatch(ws, target.path);
+      if (selectedGitFile()?.path !== target.path) return;
+    }
     selectedGitDiff.set(text);
     if (!text.trim()) {
       selectedGitDiffNote.set(
@@ -513,6 +637,31 @@ async function loadFileDiff(ws: WorkspaceRecord, target: SelectedGitFile): Promi
     }
   } finally {
     diffLoading.set(false);
+  }
+}
+
+/** Above this, an untracked file is not read just to draw it as additions. */
+const UNTRACKED_PREVIEW_LIMIT = 512 * 1024;
+
+async function untrackedFilePatch(ws: WorkspaceRecord, path: string): Promise<string> {
+  try {
+    const fullPath = resolveRepoFilePath(ws.rootPath, path);
+    const text = await invokeCommand<string>("read_file_content", { workspaceId: ws.id, filePath: fullPath });
+    if (typeof text !== "string" || text.length > UNTRACKED_PREVIEW_LIMIT || text.includes("\u0000")) return "";
+    const relative = displayRepoFilePath(fullPath);
+    const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+    if (text.length === 0) return "";
+    return [
+      `diff --git a/${relative} b/${relative}`,
+      "new file mode 100644",
+      "--- /dev/null",
+      `+++ b/${relative}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map(line => `+${line}`),
+      "",
+    ].join("\n");
+  } catch {
+    return "";
   }
 }
 
@@ -747,16 +896,36 @@ export async function pushCurrentBranch(): Promise<void> {
   gitError.set("");
   gitNotice.set("");
   try {
-    const res = await invokeCommand<GitOpResult>("git_push", {
-      workspaceId: ws.id,
-      repositoryPath: ws.rootPath,
-      params: { remote: null, branch: null, force: false, set_upstream: false },
-    });
+    const push = (setUpstream: boolean) =>
+      invokeCommand<GitOpResult>("git_push", {
+        workspaceId: ws.id,
+        repositoryPath: ws.rootPath,
+        params: setUpstream
+          ? { remote: "origin", branch: gitStatus()?.current_branch ?? null, force: false, set_upstream: true }
+          : { remote: null, branch: null, force: false, set_upstream: false },
+      });
+    let res: GitOpResult | null;
+    let upstreamSet = false;
+    try {
+      res = await push(false);
+    } catch (error) {
+      if (!isNoUpstreamError(error instanceof Error ? error.message : String(error))) throw error;
+      res = { success: false, error: "no upstream branch" };
+    }
+    // A new branch has no upstream yet: publish it to origin, as the desktop does.
+    if (res && res.success === false && isNoUpstreamError(res.error || res.message || "")) {
+      res = await push(true);
+      upstreamSet = true;
+    }
     if (res && res.success === false) {
       gitError.set(res.error || res.message || "Push failed");
       return;
     }
-    gitNotice.set(res?.message || "Pushed branch to remote");
+    gitNotice.set(
+      upstreamSet
+        ? `Published ${gitStatus()?.current_branch ?? "branch"} to origin`
+        : res?.message || "Pushed branch to remote",
+    );
     await refreshGitAll(ws, probeTicket);
   } catch (error) {
     gitError.set(error instanceof Error ? error.message : String(error));
@@ -799,17 +968,48 @@ export async function checkoutGitBranch(branchName: string): Promise<void> {
   gitActionBusy.set(true);
   gitError.set("");
   gitNotice.set("");
+  branchSwitchBlocker.set(null);
   try {
-    const res = await invokeCommand<GitOpResult>("git_checkout_branch", {
-      workspaceId: ws.id,
-      repositoryPath: ws.rootPath,
-      branchName,
-    });
-    if (res && res.success === false) {
-      gitError.set(res.error || res.message || `Failed to checkout ${branchName}`);
+    // A remote-tracking branch checks out as a local branch that tracks it.
+    const remote = gitBranches().find(branch => branch.name === branchName && branch.remote);
+    const localName = remote ? localNameForRemoteBranch(branchName) : branchName;
+    const hasLocal = gitBranches().some(branch => !branch.remote && branch.name === localName);
+    let res: GitOpResult | null;
+    let failure = "";
+    try {
+      res =
+        remote && !hasLocal
+          ? await invokeCommand<GitOpResult>("git_create_branch", {
+              workspaceId: ws.id,
+              repositoryPath: ws.rootPath,
+              branchName: localName,
+              startPoint: branchName,
+            })
+          : await invokeCommand<GitOpResult>("git_checkout_branch", {
+              workspaceId: ws.id,
+              repositoryPath: ws.rootPath,
+              branchName: localName,
+            });
+    } catch (error) {
+      res = null;
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (res && res.success === false) failure = res.error || res.message || `Failed to checkout ${localName}`;
+    if (failure) {
+      const overwrite = parseCheckoutOverwriteFailure(failure);
+      if (overwrite) {
+        const files = overwrite.files.length > 0 ? overwrite.files : changedPathsOf(gitStatus());
+        branchSwitchBlocker.set({ targetBranch: localName, files, kind: overwrite.kind });
+        return;
+      }
+      gitError.set(
+        failure.toLowerCase().includes("resolve your current index first")
+          ? "Resolve the merge conflicts in the working copy before switching branches."
+          : failure,
+      );
       return;
     }
-    gitNotice.set(`Checked out ${branchName}`);
+    gitNotice.set(`Checked out ${localName}`);
     await refreshGitAll(ws, probeTicket);
   } catch (error) {
     gitError.set(error instanceof Error ? error.message : String(error));
@@ -874,30 +1074,55 @@ export async function deleteGitBranch(branchName: string, force = false): Promis
       force,
     });
     if (res && res.success === false) {
-      gitError.set(res.error || res.message || `Failed to delete ${branchName}`);
+      const message = res.error || res.message || `Failed to delete ${branchName}`;
+      // git refuses `-d` for a branch whose commits are not merged anywhere:
+      // ask again for a force delete instead of leaving a raw error.
+      if (!force && /not fully merged/i.test(message)) {
+        confirmingDeleteBranch.set(null);
+        confirmingForceDeleteBranch.set(branchName);
+        return;
+      }
+      gitError.set(message);
       return;
     }
     confirmingDeleteBranch.set(null);
+    confirmingForceDeleteBranch.set(null);
     gitNotice.set(`Deleted branch ${branchName}`);
     await loadGitBranches(ws, probeTicket);
   } catch (error) {
-    gitError.set(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (!force && /not fully merged/i.test(message)) {
+      confirmingDeleteBranch.set(null);
+      confirmingForceDeleteBranch.set(branchName);
+    } else {
+      gitError.set(message);
+    }
   } finally {
     gitActionBusy.set(false);
   }
 }
 
-async function loadGitHistory(ws: WorkspaceRecord, ticket: number): Promise<void> {
+async function loadGitHistory(ws: WorkspaceRecord, ticket: number, append = false): Promise<void> {
+  const skip = append ? gitCommits().length : 0;
+  // A refresh keeps as many commits as were already on screen.
+  const count = append ? HISTORY_PAGE_SIZE : Math.max(HISTORY_PAGE_SIZE, gitCommits().length);
   try {
     const commitsRaw = await invokeCommand<Array<Record<string, unknown>>>("git_get_commits", {
       workspaceId: ws.id,
       repositoryPath: ws.rootPath,
-      params: { max_count: 40 },
+      params: skip > 0 ? { max_count: count, skip } : { max_count: count },
     });
     if (ticket !== probeTicket) return;
-    gitCommits.set(
-      (Array.isArray(commitsRaw) ? commitsRaw : []).map(item => normalizeCommit(item ?? {})),
-    );
+    const page = (Array.isArray(commitsRaw) ? commitsRaw : []).map(item => normalizeCommit(item ?? {}));
+    gitHistoryHasMore.set(page.length >= count);
+    if (append) {
+      const known = new Set(gitCommits().map(commit => commit.hash));
+      gitCommits.set([...gitCommits(), ...page.filter(commit => !known.has(commit.hash))]);
+    } else {
+      gitCommits.set(page);
+    }
+    const selected = selectedCommit();
+    if (selected && !gitCommits().some(commit => commit.hash === selected.hash)) clearSelectedCommit();
   } catch (error) {
     if (ticket !== probeTicket) return;
     gitError.set(error instanceof Error ? error.message : String(error));
@@ -922,7 +1147,7 @@ async function loadGitHistory(ws: WorkspaceRecord, ticket: number): Promise<void
     }>("git_get_graph", {
       repositoryPath: ws.rootPath,
       workspaceId: ws.id,
-      maxCount: 40,
+      maxCount: Math.max(HISTORY_PAGE_SIZE, gitCommits().length),
       branchName: null,
     });
     if (ticket !== probeTicket) return;
@@ -1064,3 +1289,306 @@ export async function removeGitWorktree(worktreePath: string, force = false): Pr
     gitActionBusy.set(false);
   }
 }
+
+// ── Branch switching, upstream, history paging and commit inspection ──────────
+
+const CHECKOUT_OVERWRITE_HEADERS: Array<{ kind: "tracked" | "untracked"; text: string }> = [
+  { kind: "tracked", text: "your local changes to the following files would be overwritten by checkout:" },
+  {
+    kind: "untracked",
+    text: "the following untracked working tree files would be overwritten by checkout:",
+  },
+];
+
+/**
+ * Reads git's (C-locale) checkout diagnostic: which files block the switch. The
+ * same text comes back from a local and a remote repository. Ported from the
+ * desktop's `branchSwitchFailure.ts`.
+ */
+export function parseCheckoutOverwriteFailure(
+  error: string | null | undefined,
+): { kind: "tracked" | "untracked"; files: string[] } | null {
+  if (!error?.trim()) return null;
+  const lines = error.replace(/\r\n/g, "\n").split("\n");
+  const headerIndex = lines.findIndex(line =>
+    CHECKOUT_OVERWRITE_HEADERS.some(header => line.toLowerCase().includes(header.text)),
+  );
+  if (headerIndex < 0) return null;
+  const header = CHECKOUT_OVERWRITE_HEADERS.find(candidate =>
+    lines[headerIndex].toLowerCase().includes(candidate.text),
+  );
+  if (!header) return null;
+  const files: string[] = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^(?:please\s|aborting\.?$|error:|fatal:)/i.test(trimmed)) break;
+    files.push(trimmed);
+  }
+  return { kind: header.kind, files: [...new Set(files)] };
+}
+
+function changedPathsOf(status: GitStatus | null): string[] {
+  if (!status) return [];
+  return [
+    ...new Set([
+      ...status.staged.map(file => file.path),
+      ...status.unstaged.map(file => file.path),
+      ...status.untracked,
+      ...(status.conflicts ?? []),
+    ]),
+  ];
+}
+
+function isNoUpstreamError(message: string): boolean {
+  return /no upstream branch|has no upstream|set-upstream|--set-upstream/i.test(message);
+}
+
+/** `origin/feat/x` checks out as `feat/x`. */
+export function localNameForRemoteBranch(name: string): string {
+  const slash = name.indexOf("/");
+  return slash > 0 ? name.slice(slash + 1) : name;
+}
+
+export function dismissBranchSwitchBlocker(): void {
+  branchSwitchBlocker.set(null);
+  switchCommitMessage.set("");
+}
+
+/**
+ * Commit & switch: commits the files that block the checkout (staging them
+ * first), then retries the switch — the desktop's way out of the overwrite
+ * failure, without a stash.
+ */
+export async function commitAndSwitchBranch(): Promise<void> {
+  const ws = activeWorkspace();
+  const blocker = branchSwitchBlocker();
+  const message = switchCommitMessage().trim();
+  if (!ws || !blocker || !message) return;
+  gitActionBusy.set(true);
+  gitError.set("");
+  try {
+    const files = blocker.files.map(file => resolveRepoFilePath(ws.rootPath, file));
+    const added = await invokeCommand<GitOpResult>("git_add_files", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+      params: { files, all: false },
+    });
+    if (added && added.success === false) {
+      gitError.set(added.error || added.message || "Failed to stage the blocking files");
+      return;
+    }
+    const committed = await invokeCommand<GitOpResult>("git_commit", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+      params: { message, amend: false },
+    });
+    if (committed && committed.success === false) {
+      gitError.set(committed.error || committed.message || "Commit failed");
+      return;
+    }
+  } catch (error) {
+    gitError.set(error instanceof Error ? error.message : String(error));
+    return;
+  } finally {
+    gitActionBusy.set(false);
+  }
+  switchCommitMessage.set("");
+  await checkoutGitBranch(blocker.targetBranch);
+}
+
+export function cancelForceDeleteBranch(): void {
+  confirmingForceDeleteBranch.set(null);
+}
+
+/** Amend starts from the commit being amended, the way `git commit --amend` does. */
+export function setCommitAmend(next: boolean): void {
+  gitCommitAmend.set(next);
+  if (next && !gitCommitMessage().trim()) {
+    const last = gitCommits()[0];
+    if (last?.message) gitCommitMessage.set(last.message.trim());
+  }
+}
+
+export function toggleCheckedGitPath(path: string): void {
+  checkedGitPaths.update(current =>
+    current.includes(path) ? current.filter(item => item !== path) : [...current, path],
+  );
+}
+
+export function setCheckedGitPaths(paths: string[]): void {
+  checkedGitPaths.set([...new Set(paths)]);
+}
+
+export async function stageCheckedGitPaths(): Promise<void> {
+  const status = gitStatus();
+  const staged = new Set(status?.staged.map(file => file.path) ?? []);
+  const paths = checkedGitPaths().filter(path => !staged.has(path));
+  if (paths.length === 0) return;
+  await stageGitFiles(paths);
+  checkedGitPaths.update(current => current.filter(path => !paths.includes(path)));
+}
+
+export async function unstageCheckedGitPaths(): Promise<void> {
+  const staged = new Set(gitStatus()?.staged.map(file => file.path) ?? []);
+  const paths = checkedGitPaths().filter(path => staged.has(path));
+  if (paths.length === 0) return;
+  await unstageGitFiles(paths);
+  checkedGitPaths.update(current => current.filter(path => !paths.includes(path)));
+}
+
+export async function loadMoreGitHistory(): Promise<void> {
+  const ws = activeWorkspace();
+  if (!ws || gitHistoryLoadingMore() || !gitHistoryHasMore()) return;
+  gitHistoryLoadingMore.set(true);
+  try {
+    await loadGitHistory(ws, probeTicket, true);
+  } finally {
+    gitHistoryLoadingMore.set(false);
+  }
+}
+
+/** The empty tree: what a root commit is compared against. */
+const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+function commitRange(commit: GitCommitRow): { source: string; target: string } {
+  return {
+    source: commit.parents[0] ?? (commit.parents.length === 0 ? EMPTY_TREE_HASH : `${commit.hash}^`),
+    target: commit.hash,
+  };
+}
+
+export function clearSelectedCommit(): void {
+  selectedCommit.set(null);
+  commitFiles.set([]);
+  commitFilesNote.set("");
+  selectedCommitFile.set(null);
+  commitFileDiff.set("");
+  confirmingCommitReset.set(null);
+}
+
+/** Opens one commit: its files (`git_get_changed_files` against its first parent). */
+export async function selectCommit(commit: GitCommitRow): Promise<void> {
+  const ws = activeWorkspace();
+  if (!ws) return;
+  if (selectedCommit()?.hash === commit.hash) return;
+  clearSelectedCommit();
+  selectedCommit.set(commit);
+  commitFilesLoading.set(true);
+  try {
+    const raw = await invokeCommand<Array<Record<string, unknown>>>("git_get_changed_files", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+      params: commitRange(commit),
+    });
+    if (selectedCommit()?.hash !== commit.hash) return;
+    const rows = (Array.isArray(raw) ? raw : [])
+      .map(item => {
+        const rec = (item ?? {}) as Record<string, unknown>;
+        return {
+          path: readStr(rec, "path"),
+          oldPath: readStr(rec, "old_path", "oldPath") || null,
+          status: readStr(rec, "status") || "modified",
+        };
+      })
+      .filter(row => Boolean(row.path));
+    commitFiles.set(rows);
+    if (rows[0]) void selectCommitFile(rows[0].path);
+  } catch (error) {
+    if (selectedCommit()?.hash !== commit.hash) return;
+    commitFilesNote.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    if (selectedCommit()?.hash === commit.hash) commitFilesLoading.set(false);
+  }
+}
+
+export async function selectCommitFile(path: string): Promise<void> {
+  const ws = activeWorkspace();
+  const commit = selectedCommit();
+  if (!ws || !commit) return;
+  selectedCommitFile.set(path);
+  commitFileDiffLoading.set(true);
+  try {
+    const patch = await invokeCommand<string>("git_get_diff", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+      params: { ...commitRange(commit), files: [path] },
+    });
+    if (selectedCommitFile() !== path || selectedCommit()?.hash !== commit.hash) return;
+    commitFileDiff.set(typeof patch === "string" ? patch : "");
+  } catch (error) {
+    if (selectedCommitFile() !== path) return;
+    commitFileDiff.set("");
+    commitFilesNote.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    if (selectedCommitFile() === path) commitFileDiffLoading.set(false);
+  }
+}
+
+export async function cherryPickCommit(commit: GitCommitRow): Promise<void> {
+  const ws = activeWorkspace();
+  if (!ws) return;
+  gitActionBusy.set(true);
+  gitError.set("");
+  gitNotice.set("");
+  try {
+    const res = await invokeCommand<GitOpResult>("git_cherry_pick", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+      commitHash: commit.hash,
+      noCommit: false,
+    });
+    if (res && res.success === false) {
+      gitError.set(res.error || res.message || `Failed to cherry-pick ${commit.shortHash}`);
+      return;
+    }
+    const msg = `Cherry-picked ${commit.shortHash}`;
+    gitNotice.set(msg);
+    pushToast(msg, "success");
+    await refreshGitAll(ws, probeTicket);
+  } catch (error) {
+    gitError.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    gitActionBusy.set(false);
+  }
+}
+
+export function requestCommitReset(hash: string, mode: "soft" | "mixed" | "hard"): void {
+  confirmingCommitReset.set({ hash, mode });
+}
+
+export function cancelCommitReset(): void {
+  confirmingCommitReset.set(null);
+}
+
+export async function confirmCommitReset(): Promise<void> {
+  const ws = activeWorkspace();
+  const pending = confirmingCommitReset();
+  if (!ws || !pending) return;
+  gitActionBusy.set(true);
+  gitError.set("");
+  gitNotice.set("");
+  try {
+    const res = await invokeCommand<GitOpResult>("git_reset_to_commit", {
+      workspaceId: ws.id,
+      repositoryPath: ws.rootPath,
+      commitHash: pending.hash,
+      mode: pending.mode,
+    });
+    confirmingCommitReset.set(null);
+    if (res && res.success === false) {
+      gitError.set(res.error || res.message || "Reset failed");
+      return;
+    }
+    const msg = `Reset (${pending.mode}) to ${pending.hash.slice(0, 7)}`;
+    gitNotice.set(msg);
+    pushToast(msg, "success");
+    clearSelectedCommit();
+    await refreshGitAll(ws, probeTicket);
+  } catch (error) {
+    gitError.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    gitActionBusy.set(false);
+  }
+}
+

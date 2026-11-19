@@ -1,6 +1,8 @@
 //! ACP client API
 
 use crate::api::app_state::AppState;
+use crate::host::HostHandle;
+use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use openbitfun_acp::client::{
     AcpAvailableCommand, AcpClientInfo, AcpClientPermissionResponse, AcpClientRequirementProbe,
@@ -14,7 +16,6 @@ use openbitfun_runtime_ports::SessionStorePort;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, State};
 
 /// Workspace facts an ACP session command executes against, derived from the
 /// authoritative workspace record rather than from caller-supplied paths.
@@ -223,10 +224,10 @@ struct AcpEventEmitter {
 }
 
 impl AcpEventEmitter {
-    fn new(app: AppHandle, service: std::sync::Arc<openbitfun_acp::AcpClientService>) -> Self {
+    fn new(app: HostHandle, service: std::sync::Arc<openbitfun_acp::AcpClientService>) -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
-            let transport = openbitfun_transport::TauriTransportAdapter::new(app);
+            let transport = crate::host::HostTransportAdapter::new(app);
             while let Some(event) = receiver.recv().await {
                 crate::deliver_projected_event(&transport, event).await;
             }
@@ -370,7 +371,7 @@ pub async fn install_acp_client_cli(
 #[tauri::command]
 pub async fn create_acp_flow_session(
     state: State<'_, AppState>,
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     request: CreateAcpFlowSessionRequest,
 ) -> Result<CreateAcpFlowSessionResponse, String> {
     let service = state
@@ -437,7 +438,7 @@ pub async fn create_acp_flow_session(
 #[tauri::command]
 pub async fn start_acp_dialog_turn(
     state: State<'_, AppState>,
-    app_handle: AppHandle,
+    app_handle: HostHandle,
     request: StartAcpDialogTurnRequest,
 ) -> Result<(), String> {
     let service = state
@@ -992,6 +993,30 @@ pub async fn stop_acp_client(
         .ok_or_else(|| "ACP client service not initialized".to_string())?;
     service
         .stop_client(&request.client_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAcpClientPermissionModeRequest {
+    pub client_id: String,
+    pub permission_mode: openbitfun_acp::client::AcpClientPermissionMode,
+}
+
+/// Sets one configured client's permission mode and returns the client list,
+/// instead of a client rewriting the whole ACP JSON document.
+#[tauri::command]
+pub async fn set_acp_client_permission_mode(
+    state: State<'_, AppState>,
+    request: SetAcpClientPermissionModeRequest,
+) -> Result<Vec<AcpClientInfo>, String> {
+    let service = state
+        .acp_client_service
+        .as_ref()
+        .ok_or_else(|| "ACP client service not initialized".to_string())?;
+    service
+        .set_client_permission_mode(&request.client_id, request.permission_mode)
         .await
         .map_err(|e| e.to_string())
 }

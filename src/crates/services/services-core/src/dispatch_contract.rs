@@ -137,6 +137,76 @@ pub fn dispatch_required_target_capabilities() -> impl Iterator<Item = &'static 
         .chain(std::iter::once(DISPATCH_DETACHED_WORKER_CAPABILITY))
 }
 
+/// Why a probed target cannot run a detached job yet. Stable wire codes; the
+/// controller surface localizes them and shows `protocolError` as detail.
+pub const DISPATCH_NOT_READY_CLI_MISSING: &str = "cli_missing";
+pub const DISPATCH_NOT_READY_CAPABILITIES_MISSING: &str = "capabilities_missing";
+pub const DISPATCH_NOT_READY_INCOMPATIBLE: &str = "incompatible";
+
+/// The controller-side readiness verdict for one probed target, derived from
+/// this file's protocol version and required capability list so no client
+/// keeps its own copy of either.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchProbeReadiness {
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub missing_capabilities: Vec<String>,
+    #[serde(default)]
+    pub expected_protocol_version: u32,
+}
+
+impl DispatchProbeReadiness {
+    /// `protocol_error` is the target-side validation the probe already ran
+    /// (product, namespace, version and capabilities); it decides readiness.
+    pub fn evaluate(
+        cli_installed: bool,
+        protocol: Option<&serde_json::Value>,
+        protocol_error: Option<&str>,
+    ) -> Self {
+        let advertised: Vec<&str> = protocol
+            .and_then(|protocol| protocol.get("capabilities"))
+            .and_then(serde_json::Value::as_array)
+            .map(|items| items.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        let missing_capabilities: Vec<String> = if protocol.is_some() {
+            dispatch_required_target_capabilities()
+                .filter(|required| !advertised.contains(required))
+                .map(str::to_string)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let version_matches = protocol
+            .and_then(|protocol| protocol.get("protocolVersion"))
+            .and_then(serde_json::Value::as_u64)
+            == Some(u64::from(DISPATCH_PROTOCOL_VERSION));
+        let reason = if !cli_installed {
+            Some(DISPATCH_NOT_READY_CLI_MISSING)
+        } else if protocol.is_none() || protocol_error.is_some_and(|error| !error.trim().is_empty())
+        {
+            if version_matches && !missing_capabilities.is_empty() {
+                Some(DISPATCH_NOT_READY_CAPABILITIES_MISSING)
+            } else {
+                Some(DISPATCH_NOT_READY_INCOMPATIBLE)
+            }
+        } else if !missing_capabilities.is_empty() {
+            Some(DISPATCH_NOT_READY_CAPABILITIES_MISSING)
+        } else {
+            None
+        };
+        Self {
+            ready: reason.is_none(),
+            reason: reason.map(str::to_string),
+            missing_capabilities,
+            expected_protocol_version: DISPATCH_PROTOCOL_VERSION,
+        }
+    }
+}
+
 /// One inline image attachment on a submit/continue turn.
 ///
 /// v4 carries images as data URLs inside the request: SSH stages the request
@@ -220,6 +290,56 @@ mod tests {
         }
         assert!(!required.contains(&DISPATCH_SETUP_AUDIT_MODEL_SYNC_CAPABILITY));
         assert!(!required.contains(&DISPATCH_READ_FILE_CAPABILITY));
+    }
+
+    #[test]
+    fn probe_readiness_comes_from_the_shared_contract() {
+        let all: Vec<&str> = dispatch_required_target_capabilities().collect();
+        let ready =
+            serde_json::json!({"protocolVersion": DISPATCH_PROTOCOL_VERSION, "capabilities": all});
+        let verdict = DispatchProbeReadiness::evaluate(true, Some(&ready), None);
+        assert!(verdict.ready);
+        assert_eq!(verdict.reason, None);
+        assert_eq!(verdict.expected_protocol_version, DISPATCH_PROTOCOL_VERSION);
+
+        let missing_cli = DispatchProbeReadiness::evaluate(false, None, None);
+        assert_eq!(
+            missing_cli.reason.as_deref(),
+            Some(DISPATCH_NOT_READY_CLI_MISSING)
+        );
+
+        let partial = serde_json::json!({"protocolVersion": DISPATCH_PROTOCOL_VERSION, "capabilities": ["product_identity"]});
+        let verdict = DispatchProbeReadiness::evaluate(
+            true,
+            Some(&partial),
+            Some("dispatch target is missing required capabilities"),
+        );
+        assert!(!verdict.ready);
+        assert_eq!(
+            verdict.reason.as_deref(),
+            Some(DISPATCH_NOT_READY_CAPABILITIES_MISSING)
+        );
+        assert!(verdict
+            .missing_capabilities
+            .contains(&"persistent_jobs".to_string()));
+        assert!(!verdict
+            .missing_capabilities
+            .contains(&"product_identity".to_string()));
+
+        let old = serde_json::json!({"protocolVersion": 1, "capabilities": all});
+        let verdict = DispatchProbeReadiness::evaluate(
+            true,
+            Some(&old),
+            Some("dispatch protocol version is incompatible"),
+        );
+        assert_eq!(
+            verdict.reason.as_deref(),
+            Some(DISPATCH_NOT_READY_INCOMPATIBLE)
+        );
+
+        // A probe answer from an older controller has none of these fields.
+        let legacy: DispatchProbeReadiness = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!legacy.ready);
     }
 
     #[test]

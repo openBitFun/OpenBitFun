@@ -97,7 +97,13 @@ pub async fn probe_device(
     let protocol_error = dispatch_ssh::validate_dispatch_protocol(&protocol, None)
         .err()
         .map(|error| error.to_string());
+    let readiness = openbitfun_services_core::dispatch_contract::DispatchProbeReadiness::evaluate(
+        true,
+        Some(&protocol),
+        protocol_error.as_deref(),
+    );
     Ok(DispatchSshProbe {
+        readiness,
         cli_installed: true,
         cli_path: None,
         os: protocol

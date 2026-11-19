@@ -1,9 +1,8 @@
 //! Runtime capability API
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use openbitfun_core::service::runtime::{RuntimeCommandCapability, RuntimeManager};
-use tauri::State;
-
 #[tauri::command]
 pub async fn get_runtime_capabilities(
     _state: State<'_, AppState>,

@@ -8,5 +8,6 @@ pub mod model_pool;
 pub mod normalization;
 pub mod project_defaults;
 pub mod protected_account_models;
+pub mod settings_mutations;
 mod types;
 pub use types::*;

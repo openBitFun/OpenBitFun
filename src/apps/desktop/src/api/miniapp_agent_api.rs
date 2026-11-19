@@ -11,15 +11,9 @@
 //! MiniApp iframe through the normal `agentic://*` Tauri events, which the
 //! web-ui MiniApp bridge filters by session id and forwards into the iframe.
 
-use log::warn;
-use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
-
 use crate::api::app_state::AppState;
+use crate::host::State;
+use log::warn;
 use openbitfun_core::agentic::coordination::{
     ConversationCoordinator, DialogScheduler, DialogSubmissionPolicy, DialogTriggerSource,
 };
@@ -39,6 +33,11 @@ use openbitfun_core::miniapp::agent_context::{
 };
 use openbitfun_core::miniapp::agent_workspace::prepare_agent_workspace;
 use openbitfun_core::OpenBitFunError;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ============== Run registry ==============
 

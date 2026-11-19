@@ -1,12 +1,19 @@
 // Models for the product's own small AI tasks: generating a session title, and
 // writing a commit message. The host keeps them in `ai.task_models`, where each
-// task is either `"Inherit"` (the session's model) or `{"Fixed":{"model_id":…}}`
-// — the serde shape of `TaskModelSelection`, so the whole object is written back
-// rather than a leaf path.
+// task is `{"kind":"inherit"}` (the session's model) or
+// `{"kind":"fixed","model_id":…}` — `TaskModelSelection` is
+// `serde(tag = "kind", rename_all = "snake_case")`. A write is one
+// `set_task_model` intent: the host validates the task and selection, merges it
+// into what it stores (keeping tasks this surface does not draw) and answers with
+// every task's selection. The externally tagged shapes an earlier build of this
+// surface wrote (`"Inherit"`, `{"Fixed":{"model_id":…}}`) are still read here and
+// by the host, which rewrites them in its own shape on the next save.
 
 import { signal } from "nsh";
-import { getConfig, setConfig } from "./api";
+import { getConfig } from "./api";
 import { peerScope, peerSupports } from "./peerState";
+import { tr } from "./i18n";
+import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
 /** The tasks the host reconciles against `ai.models`, in the desktop's order. */
@@ -32,11 +39,23 @@ export const taskModelPicker = signal<string | null>(null);
 
 let loading = false;
 
-function readSelection(value: unknown): TaskModelChoice {
-  if (value === "Inherit") return { kind: "inherit", modelId: "" };
-  const fixed = (value as { Fixed?: { model_id?: unknown } } | undefined)?.Fixed;
-  if (fixed && typeof fixed.model_id === "string" && fixed.model_id) {
-    return { kind: "fixed", modelId: fixed.model_id };
+export function readSelection(value: unknown): TaskModelChoice {
+  // The host skips a task whose selection is its default (`fixed: fast`), so an
+  // absent key reads as that default, not as inherit.
+  if (value === undefined || value === null) return { kind: "fixed", modelId: "fast" };
+  if (value === "Inherit" || value === "inherit") return { kind: "inherit", modelId: "" };
+  if (value && typeof value === "object") {
+    const record = value as { kind?: unknown; model_id?: unknown; Fixed?: { model_id?: unknown } };
+    const kind = typeof record.kind === "string" ? record.kind.toLowerCase() : "";
+    if (kind === "inherit") return { kind: "inherit", modelId: "" };
+    if (kind === "fixed" && typeof record.model_id === "string" && record.model_id) {
+      return { kind: "fixed", modelId: record.model_id };
+    }
+    // Legacy externally tagged shape an earlier build of this surface wrote.
+    const fixed = record.Fixed;
+    if (fixed && typeof fixed.model_id === "string" && fixed.model_id) {
+      return { kind: "fixed", modelId: fixed.model_id };
+    }
   }
   // A shape this surface does not know is shown as inherit rather than as a
   // broken row; saving rewrites it in the shape the host understands.
@@ -50,9 +69,9 @@ function readTaskModels(document: unknown): Record<string, TaskModelChoice> {
   return result;
 }
 
-function toWire(choice: TaskModelChoice): unknown {
-  if (choice.kind === "inherit" || !choice.modelId) return "Inherit";
-  return { Fixed: { model_id: choice.modelId } };
+export function toWire(choice: TaskModelChoice): unknown {
+  if (choice.kind === "inherit" || !choice.modelId) return { kind: "inherit" };
+  return { kind: "fixed", model_id: choice.modelId };
 }
 
 /** Reads the section once; the settings scene calls this on every render. */
@@ -112,19 +131,19 @@ export function openTaskModelPicker(task: string): void {
 }
 
 export async function chooseTaskModel(task: string, choice: TaskModelChoice): Promise<void> {
-  const next = { ...taskModels(), [task]: choice };
   await runStep(async () => {
-    const document: Record<string, unknown> = {};
-    for (const row of TASK_MODEL_ROWS) document[row.id] = toWire(next[row.id] ?? { kind: "inherit", modelId: "" });
     try {
-      await setConfig("ai.task_models", document);
-      taskModels.set(next);
+      const result = await invokeSettingsMutation<{ taskModels?: unknown }>("set_task_model", {
+        task,
+        selection: toWire(choice),
+      });
+      taskModels.set(readTaskModels(result?.taskModels));
       taskModelsAbsent.set(false);
       taskModelPicker.set(null);
-      const label = TASK_MODEL_ROWS.find(row => row.id === task)?.label ?? task;
-      taskModelsNotice.set(`Saved ${label}`);
+      const label = task === "git_commit" ? tr("settings.taskModels.commitMessage") : tr("settings.taskModels.sessionTitle");
+      taskModelsNotice.set(tr("settings.notice.savedField", { label }));
     } catch (error) {
-      taskModelsNotice.set(error instanceof Error ? error.message : String(error));
+      taskModelsNotice.set(errorText(error));
     }
   });
 }

@@ -16,7 +16,7 @@ pub(crate) async fn call(
     method: String,
     mut params: Value,
 ) -> Result<Value, String> {
-    let state = app.state::<AppState>();
+    let state = crate::host::State::from(app.state::<AppState>());
     let miniapp = state
         .miniapp_manager
         .get(&instance.app_id)
@@ -121,7 +121,7 @@ pub(crate) async fn call(
                 params["appDataWorkspace"] = json!("");
             }
             let result =
-                agent::miniapp_agent_ensure_session(state, app.state(), decode(params)?).await?;
+                agent::miniapp_agent_ensure_session(state, crate::host::State::from(app.state()), decode(params)?).await?;
             host.sessions.lock().unwrap_or_else(|p| p.into_inner())
                 .entry(instance.instance_id.clone()).or_default().insert(result.session_id.clone());
             encode(result)
@@ -140,17 +140,17 @@ pub(crate) async fn call(
                 }
             }
             let result =
-                agent::miniapp_agent_run(state, app.state(), app.state(), decode(params)?).await?;
+                agent::miniapp_agent_run(state, crate::host::State::from(app.state()), crate::host::State::from(app.state()), decode(params)?).await?;
             host.sessions.lock().unwrap_or_else(|p| p.into_inner())
                 .entry(instance.instance_id.clone()).or_default().insert(result.session_id.clone());
             encode(result)
         }
         "agent.cancel" => {
-            agent::miniapp_agent_cancel(state, app.state(), decode(params)?).await?;
+            agent::miniapp_agent_cancel(state, crate::host::State::from(app.state()), decode(params)?).await?;
             Ok(Value::Null)
         }
         "agent.turnText" => {
-            encode(agent::miniapp_agent_turn_text(state, app.state(), decode(params)?).await?)
+            encode(agent::miniapp_agent_turn_text(state, crate::host::State::from(app.state()), decode(params)?).await?)
         }
         // Reloading a view does not revoke accepted work. Explicit cancellation
         // remains available by the session/turn identity owned by the application.

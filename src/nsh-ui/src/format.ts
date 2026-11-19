@@ -185,6 +185,8 @@ export interface ToolCallView {
   error?: string;
   /** Tool execution result payload, when persisted. */
   result?: unknown;
+  /** What the model was told the result was, when the host kept it apart. */
+  resultForAssistant?: string;
   /** Tool execution duration in milliseconds, when persisted. */
   durationMs?: number;
   /** Original round insertion order, when persisted. */
@@ -257,6 +259,7 @@ export function toolCallsOf(turn: unknown): ToolCallView[] {
           ? record.error
           : undefined;
     const result = nestedResult?.result ?? record.result;
+    const resultForAssistant = nestedResult?.resultForAssistant ?? nestedResult?.result_for_assistant;
     const rawDuration = nestedResult?.durationMs ?? nestedResult?.duration_ms ?? record.durationMs ?? record.duration_ms;
     const durationMs = typeof rawDuration === "number" && Number.isFinite(rawDuration) ? rawDuration : undefined;
     const orderIndex = readOrderIndex(record);
@@ -271,6 +274,7 @@ export function toolCallsOf(turn: unknown): ToolCallView[] {
         ...(success !== undefined ? { success } : {}),
         ...(error ? { error } : {}),
         ...(result === undefined ? {} : { result }),
+        ...(typeof resultForAssistant === "string" && resultForAssistant ? { resultForAssistant } : {}),
         ...(durationMs !== undefined ? { durationMs } : {}),
         ...(orderIndex !== undefined ? { orderIndex } : {}),
       },
@@ -309,6 +313,229 @@ export function toolCallsOf(turn: unknown): ToolCallView[] {
   });
 
   return collected.map(entry => entry.view);
+}
+
+/**
+ * One thing a reader sees in a turn, in the order it happened: a stretch of the
+ * answer, a block of reasoning, a tool call, or a run of exploring tool calls
+ * (reads, searches, listings) folded into one row.
+ */
+export type TranscriptItem =
+  | { kind: "text"; key: string; text: string }
+  | { kind: "thinking"; key: string; text: string; reasoningKind?: "reasoning" | "summary"; live?: boolean }
+  | { kind: "tool"; key: string; call: ToolCallView }
+  | { kind: "explore"; key: string; calls: ToolCallView[] };
+
+interface OrderedItem {
+  item: TranscriptItem;
+  orderIndex?: number;
+  kindOrder: number;
+  seq: number;
+}
+
+function itemIdOf(record: Record<string, unknown>): string {
+  const id = record.id;
+  return typeof id === "string" && id ? id : "";
+}
+
+/**
+ * The persisted turn as one ordered list per model round, merged by the
+ * `orderIndex` the host stores on every text, thinking and tool item. Without an
+ * index (older records) a round reads thinking, then its answer, then its tools —
+ * the order the live stream draws too, so nothing jumps when a turn settles.
+ * Keys are the host's item ids, so a re-read never remounts an opened card.
+ */
+export function turnItems(turn: unknown): TranscriptItem[] {
+  if (!turn || typeof turn !== "object") return [];
+  const record = turn as Record<string, unknown>;
+  const turnKey = String(record.turnId ?? record.turn_id ?? record.id ?? "turn");
+  const items: TranscriptItem[] = [];
+
+  // Tool calls stored on the turn itself (legacy shape) come first.
+  for (const call of toolCallsOf({ toolCalls: record.toolCalls ?? record.tool_calls, toolItems: record.toolItems ?? record.tool_items })) {
+    items.push({ kind: "tool", key: `tool:${call.id ?? `${turnKey}-${call.name}-${items.length}`}`, call });
+  }
+
+  const rounds = record.modelRounds ?? record.model_rounds;
+  if (Array.isArray(rounds)) {
+    rounds.forEach((round, roundIdx) => {
+      if (!round || typeof round !== "object") return;
+      const roundRecord = round as Record<string, unknown>;
+      const ordered: OrderedItem[] = [];
+      let seq = 0;
+
+      const thinking = roundRecord.thinkingItems ?? roundRecord.thinking_items;
+      if (Array.isArray(thinking)) {
+        for (const entry of thinking) {
+          if (!entry || typeof entry !== "object") continue;
+          const thinkingRecord = entry as Record<string, unknown>;
+          const text = typeof thinkingRecord.content === "string" ? thinkingRecord.content : "";
+          if (!text.trim()) continue;
+          const kind = readReasoningKind(thinkingRecord);
+          ordered.push({
+            item: {
+              kind: "thinking",
+              // The disclosure key stays the turn plus the text, as before.
+              key: `${turnKey}|thinking|${text}`,
+              text,
+              ...(kind ? { reasoningKind: kind } : {}),
+            },
+            orderIndex: readOrderIndex(thinkingRecord),
+            kindOrder: 0,
+            seq: seq++,
+          });
+        }
+      }
+
+      const textItems = roundRecord.textItems ?? roundRecord.text_items;
+      let addedText = false;
+      if (Array.isArray(textItems)) {
+        for (const entry of textItems) {
+          if (!entry || typeof entry !== "object") continue;
+          const textRecord = entry as Record<string, unknown>;
+          const text = typeof textRecord.content === "string" ? textRecord.content : "";
+          if (!text.trim()) continue;
+          addedText = true;
+          ordered.push({
+            item: { kind: "text", key: `text:${itemIdOf(textRecord) || `${turnKey}-${roundIdx}-${seq}`}`, text },
+            orderIndex: readOrderIndex(textRecord),
+            kindOrder: 1,
+            seq: seq++,
+          });
+        }
+      }
+      const assistant = (roundRecord.assistantMessage ?? roundRecord.assistant_message) as
+        | Record<string, unknown>
+        | undefined;
+      if (!addedText) {
+        const text = typeof assistant?.content === "string" ? assistant.content : "";
+        if (text.trim()) {
+          ordered.push({
+            item: { kind: "text", key: `text:${(assistant && itemIdOf(assistant)) || `${turnKey}-${roundIdx}`}`, text },
+            kindOrder: 1,
+            seq: seq++,
+          });
+        }
+      }
+
+      const roundTools = [
+        ...toolCallsOf({ toolItems: roundRecord.toolItems ?? roundRecord.tool_items, toolCalls: roundRecord.toolCalls ?? roundRecord.tool_calls }),
+        ...(assistant ? toolCallsOf({ toolCalls: assistant.toolCalls ?? assistant.tool_calls }) : []),
+      ];
+      roundTools.forEach((call, toolIdx) => {
+        ordered.push({
+          item: { kind: "tool", key: `tool:${call.id ?? `${turnKey}-${roundIdx}-${toolIdx}-${call.name}`}`, call },
+          ...(call.orderIndex !== undefined ? { orderIndex: call.orderIndex } : {}),
+          kindOrder: 2,
+          seq: seq++,
+        });
+      });
+
+      if (ordered.some(entry => entry.orderIndex !== undefined)) {
+        ordered.sort((left, right) => {
+          if (left.orderIndex !== undefined && right.orderIndex !== undefined && left.orderIndex !== right.orderIndex) {
+            return left.orderIndex - right.orderIndex;
+          }
+          if (left.orderIndex !== undefined && right.orderIndex === undefined) return -1;
+          if (left.orderIndex === undefined && right.orderIndex !== undefined) return 1;
+          if (left.kindOrder !== right.kindOrder) return left.kindOrder - right.kindOrder;
+          return left.seq - right.seq;
+        });
+      }
+      for (const entry of ordered) items.push(entry.item);
+    });
+  }
+
+  if (items.length === 0) {
+    const fallback = turnParts(turn).filter(part => part.role === "other");
+    fallback.forEach((part, index) => items.push({ kind: "text", key: `text:${turnKey}-other-${index}`, text: part.text }));
+  }
+  return groupExploreItems(items);
+}
+
+/** The tool names that only look around: reading, searching and listing. */
+export function isExploreTool(name: string): boolean {
+  const lower = name.toLowerCase().replace(/[^a-z]/g, "");
+  return (
+    lower === "read" ||
+    lower === "readfile" ||
+    lower === "grep" ||
+    lower === "glob" ||
+    lower === "ls" ||
+    lower === "listdir" ||
+    lower === "listdirectory" ||
+    lower === "searchfiles" ||
+    lower === "codebasesearch"
+  );
+}
+
+/**
+ * Folds two or more consecutive exploring tool calls into one `explore` item, the
+ * way the desktop collapses an agent looking around into "Explored …". A failed
+ * call stays out of a group so its error is never hidden behind a summary.
+ */
+export function groupExploreItems(items: TranscriptItem[]): TranscriptItem[] {
+  const grouped: TranscriptItem[] = [];
+  let run: Array<{ kind: "tool"; key: string; call: ToolCallView }> = [];
+  const flush = () => {
+    if (run.length >= 2) {
+      grouped.push({ kind: "explore", key: `explore:${run[0].key}`, calls: run.map(entry => entry.call) });
+    } else {
+      grouped.push(...run);
+    }
+    run = [];
+  };
+  for (const item of items) {
+    if (
+      item.kind === "tool" &&
+      isExploreTool(item.call.name) &&
+      !item.call.error &&
+      item.call.success !== false
+    ) {
+      run.push(item);
+      continue;
+    }
+    flush();
+    grouped.push(item);
+  }
+  flush();
+  return grouped;
+}
+
+/** Counts what an explore group did: files read and searches run. */
+export function exploreCounts(calls: ToolCallView[]): { reads: number; searches: number } {
+  let reads = 0;
+  let searches = 0;
+  for (const call of calls) {
+    const lower = call.name.toLowerCase();
+    if (lower.includes("read")) reads += 1;
+    else searches += 1;
+  }
+  return { reads, searches };
+}
+
+/** Why a persisted turn did not finish, when the host recorded it. */
+export interface TurnFailure {
+  message: string;
+  status: string;
+  detail?: Record<string, unknown>;
+}
+
+export function turnFailureOf(turn: unknown): TurnFailure | null {
+  if (!turn || typeof turn !== "object") return null;
+  const record = turn as Record<string, unknown>;
+  const status = String(record.status ?? record.state ?? "").toLowerCase();
+  const error = typeof record.error === "string" ? record.error.trim() : "";
+  const rawDetail = record.errorDetail ?? record.error_detail;
+  const detail = rawDetail && typeof rawDetail === "object" ? (rawDetail as Record<string, unknown>) : undefined;
+  const failed = status === "error" || status === "failed";
+  const cancelled = status === "cancelled" || status === "interrupted";
+  if (!error && !failed && !cancelled) return null;
+  return {
+    message: error,
+    status: failed || (error && !cancelled) ? "failed" : status,
+    ...(detail ? { detail } : {}),
+  };
 }
 
 /** Resolves the effective model name recorded on a persisted turn's rounds or metadata. */
@@ -741,3 +968,35 @@ export function formatBucket(iso: string, hourly: boolean): string {
   return hourly ? `${monthDay} ${pad(date.getHours())}:00` : monthDay;
 }
 
+
+/** A settled reply longer than this many characters opens as a preview. */
+export const LARGE_MARKDOWN_CHARS = 12_000;
+
+/**
+ * Where to cut a long markdown reply for its preview: at the last blank line
+ * before `budget` that is outside a code fence, so the preview never ends in an
+ * open fence. Returns the text's length when no cut is needed or none is safe.
+ */
+export function markdownPreviewCut(text: string, budget = 4_000): number {
+  if (text.length <= budget) return text.length;
+  let inFence = false;
+  let lastSafe = -1;
+  let index = 0;
+  while (index < text.length && index <= budget) {
+    const lineEnd = text.indexOf("\n", index);
+    const end = lineEnd === -1 ? text.length : lineEnd;
+    const line = text.slice(index, end);
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    else if (!inFence && line.trim() === "" && index > 0) lastSafe = index;
+    index = end + 1;
+  }
+  return lastSafe > 0 ? lastSafe : text.length;
+}
+
+/** How many lines a text has, for "Show N more lines" labels. */
+export function lineCountOf(text: string): number {
+  if (!text) return 0;
+  let count = 1;
+  for (let i = 0; i < text.length; i += 1) if (text.charCodeAt(i) === 10) count += 1;
+  return count;
+}

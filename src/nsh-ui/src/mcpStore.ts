@@ -740,6 +740,37 @@ export function startMcpServer(id: string): Promise<void> {
   return lifecycle(id, "start");
 }
 
+/**
+ * Turns a stored-disabled server on, the way the desktop's `MCPAPI.enableServer`
+ * does: re-read the document for a fresh fingerprint, flip that one entry's
+ * `enabled`, and write it back. The host refuses to start a disabled server, so
+ * "Enable and start" must run this first; `start` then launches it.
+ */
+export async function enableMcpServer(id: string, options: { start?: boolean } = {}): Promise<boolean> {
+  mcpBusy.set(id);
+  try {
+    await loadMcpDocument();
+    const document = mcpDocument();
+    const entry = document ? document.servers[id] : undefined;
+    if (!document || !isEntry(entry)) {
+      mcpNotice.set("The stored configuration is unavailable; reload before enabling");
+      return false;
+    }
+    if (entry.enabled === false) {
+      const servers = { ...document.servers, [id]: { ...entry, enabled: true } };
+      if (!(await saveDocument(document, servers))) return false;
+    }
+    mcpNotice.set(`Enabled ${id}`);
+  } catch (error) {
+    mcpNotice.set(error instanceof Error ? error.message : String(error));
+    return false;
+  } finally {
+    mcpBusy.set(null);
+  }
+  if (options.start) await lifecycle(id, "start");
+  return true;
+}
+
 export function stopMcpServer(id: string): Promise<void> {
   return lifecycle(id, "stop");
 }

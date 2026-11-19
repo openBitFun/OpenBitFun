@@ -11,6 +11,7 @@
 // responseHostNowMs, responseDeadlineMs }`, and the answer map is keyed by the
 // question's index as a string, holding a label or a list of labels.
 
+import { tr } from "./i18n";
 import { signal } from "nsh";
 import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { reportError } from "./state";
@@ -291,7 +292,7 @@ export async function submitQuestion(toolId: string): Promise<void> {
   const prompt = questionPrompts().find(item => item.toolId === toolId);
   if (!prompt || prompt.submitting) return;
   if (!canSubmitQuestion(prompt)) {
-    patch(toolId, item => ({ ...item, error: "Answer every question first" }));
+    patch(toolId, item => ({ ...item, error: tr("chat.question.answerAll") }));
     return;
   }
   patch(toolId, item => ({ ...item, submitting: true, error: "" }));

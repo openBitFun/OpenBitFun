@@ -1309,7 +1309,7 @@ pub struct FrontendUpdateDecisionRequest {
 
 #[tauri::command]
 pub async fn frontend_update_candidate_ready(
-    state: tauri::State<'_, Arc<FrontendWorkbenchManager>>,
+    state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>,
     webview: tauri::Webview,
     request: FrontendUpdateDecisionRequest,
 ) -> Result<Value, String> {
@@ -1329,7 +1329,7 @@ pub struct FrontendUpdateFailureRequest {
 
 #[tauri::command]
 pub async fn frontend_update_candidate_failed(
-    state: tauri::State<'_, Arc<FrontendWorkbenchManager>>,
+    state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>,
     webview: tauri::Webview,
     request: FrontendUpdateFailureRequest,
 ) -> Result<Value, String> {
@@ -1340,7 +1340,7 @@ pub async fn frontend_update_candidate_failed(
 
 #[tauri::command]
 pub async fn get_frontend_update_status(
-    state: tauri::State<'_, Arc<FrontendWorkbenchManager>>,
+    state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>,
     webview: tauri::WebviewWindow,
     request: FrontendUpdateDecisionRequest,
 ) -> Result<Value, String> {
@@ -1350,7 +1350,7 @@ pub async fn get_frontend_update_status(
 
 #[tauri::command]
 pub async fn confirm_frontend_update(
-    state: tauri::State<'_, Arc<FrontendWorkbenchManager>>,
+    state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>,
     webview: tauri::WebviewWindow,
     request: FrontendUpdateDecisionRequest,
 ) -> Result<Value, String> {
@@ -1360,7 +1360,7 @@ pub async fn confirm_frontend_update(
 
 #[tauri::command]
 pub async fn rollback_frontend_update(
-    state: tauri::State<'_, Arc<FrontendWorkbenchManager>>,
+    state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>,
     webview: tauri::WebviewWindow,
     request: FrontendUpdateDecisionRequest,
 ) -> Result<Value, String> {

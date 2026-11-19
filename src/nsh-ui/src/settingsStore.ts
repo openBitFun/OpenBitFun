@@ -1,13 +1,17 @@
 // Settings values and writes.
 //
 // Reads are per config path, because `get_configs` fails the whole batch when a
-// single path is missing on the host. Writes go back through `set_config`: a
-// scalar path writes the value, and a field inside an object config reads the
-// object, patches the field and writes the object back, which is the shape the
-// desktop stores.
+// single path is missing on the host. Every field is a dotted leaf path
+// (`app.auto_update`, `editor.font_size`, `memories.extract_model`), and a write
+// replaces that one value through `set_config`. Nothing here patches a snapshot
+// of a parent object read at load time: such a write would put back every
+// sibling as it was when the page opened, reverting what another section or
+// surface changed since (the quick-action list in `app.ai_experience`, the
+// interface language in `app`).
 
 import { signal } from "nsh";
 import { getConfig, setConfig } from "./api";
+import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import {
   SUPPORTED_LOCALES,
   currentLocale,
@@ -19,6 +23,7 @@ import {
   type AppLocale,
   type MessageKey,
 } from "./i18n";
+import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
 export type FieldKind = "boolean" | "select" | "number" | "text" | "model";
@@ -34,20 +39,30 @@ export interface FieldSpec {
   id: string;
   label: string;
   labelKey?: MessageKey;
-  /** Config path the value lives under. */
+  /** The dotted leaf config path the value lives at. */
   path: string;
-  /** Dotted field inside that object; absent when the path itself is the value. */
+  /**
+   * Legacy: a dotted field inside `path`. Read and written as the leaf
+   * `${path}.${field}`, never by patching the parent object.
+   */
   field?: string;
   kind: FieldKind;
   options?: FieldOption[];
   min?: number;
   max?: number;
   /**
-   * A ceiling another stored value sets, such as a rollout window that cannot
-   * outlive the retention it runs inside. Read at write time, so raising the
-   * retention first is what makes a larger window legal.
+   * A number the host keeps as `Option`: an empty field or 0 stores `null`
+   * ("no limit"), and the stepper offers to clear it.
    */
-  maxPath?: { path: string; field?: string };
+  clearable?: boolean;
+  /** A secret text value (a proxy password): drawn masked. */
+  masked?: boolean;
+  /** Extra words the settings search matches besides the label and description. */
+  keywords?: string[];
+  /** A select whose choices the host lists (its installed browsers), read when drawn. */
+  dynamicOptions?: () => FieldOption[];
+  /** The option an empty stored string stands for. */
+  emptyMeans?: string;
   /** The label of the empty choice a `model` field needs: what "no override" means. */
   emptyLabel?: string;
   emptyLabelKey?: MessageKey;
@@ -71,10 +86,33 @@ export interface FieldSpec {
   defaultValue?: string | number | boolean;
 }
 
+/** The settings pages, mirroring the desktop's settings registry. */
+export type SettingsPageId =
+  | "general"
+  | "appearance"
+  | "input"
+  | "models"
+  | "session-memory"
+  | "execution"
+  | "permissions"
+  | "editor"
+  | "terminal"
+  | "workspace"
+  | "external-import"
+  | "web-search"
+  | "desktop-control"
+  | "mcp"
+  | "external-agents"
+  | "automation"
+  | "usage"
+  | "diagnostics";
+
 export interface SettingsSection {
   id: string;
   title: string;
   titleKey?: MessageKey;
+  /** The settings page that draws this section. */
+  page: SettingsPageId;
   fields: FieldSpec[];
 }
 
@@ -105,6 +143,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "general",
     title: "Application",
     titleKey: "settings.section.general",
+    page: "general",
     fields: [
       {
         id: "close-button",
@@ -119,6 +158,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
           { value: "ask", label: "Ask", labelKey: "settings.opt.ask" },
         ],
         optional: true,
+        keywords: ["window", "tray", "quit"],
       },
       {
         id: "notify-dialog-completion",
@@ -128,6 +168,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.notifications.dialog_completion_notify",
         kind: "boolean",
         optional: true,
+        keywords: ["notification"],
       },
       {
         id: "notify-permission-request",
@@ -137,48 +178,20 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.notifications.permission_request_notify",
         kind: "boolean",
         optional: true,
+        keywords: ["notification", "approval"],
       },
+      // `telemetry`, `confirm_on_exit` and `restore_windows` are stored on the
+      // host but nothing reads them, so they are not drawn.
       {
         id: "auto-update",
         label: "Check for updates automatically",
         labelKey: "settings.field.autoUpdate",
         descriptionKey: "settings.field.autoUpdateDesc",
-        path: "app",
-        field: "auto_update",
+        path: "app.auto_update",
         kind: "boolean",
         optional: true,
+        keywords: ["update", "upgrade"],
       },
-      {
-        id: "telemetry",
-        label: "Send usage telemetry",
-        labelKey: "settings.field.telemetry",
-        descriptionKey: "settings.field.telemetryDesc",
-        path: "app",
-        field: "telemetry",
-        kind: "boolean",
-        optional: true,
-      },
-      {
-        id: "confirm-on-exit",
-        label: "Confirm before quitting",
-        labelKey: "settings.field.confirmOnExit",
-        descriptionKey: "settings.field.confirmOnExitDesc",
-        path: "app",
-        field: "confirm_on_exit",
-        kind: "boolean",
-        optional: true,
-      },
-      {
-        id: "restore-windows",
-        label: "Restore windows at launch",
-        labelKey: "settings.field.restoreWindows",
-        descriptionKey: "settings.field.restoreWindowsDesc",
-        path: "app",
-        field: "restore_windows",
-        kind: "boolean",
-        optional: true,
-      },
-      // A leaf path, so a toggle writes that one value instead of the whole object.
       {
         id: "prevent-sleep",
         label: "Keep the computer awake",
@@ -187,7 +200,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.prevent_sleep",
         kind: "boolean",
         optional: true,
-        defaultValue: false,
+        keywords: ["sleep", "awake"],
       },
     ],
   },
@@ -195,9 +208,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "input",
     title: "Input",
     titleKey: "settings.section.input",
+    page: "input",
     fields: [
-      // Leaf paths throughout: `app.flow_chat` and `app.ai_experience` hold values
-      // this surface does not draw, so a whole-object write would drop them.
       {
         id: "selection-toolbar",
         label: "Show excerpt actions after selecting text",
@@ -206,7 +218,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.flow_chat.auto_show_selection_toolbar",
         kind: "boolean",
         optional: true,
-        defaultValue: true,
+        keywords: ["selection", "excerpt", "toolbar"],
       },
       {
         id: "voice-input",
@@ -215,22 +227,28 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.ai_experience.voice_input.enabled",
         kind: "boolean",
         optional: true,
-        defaultValue: true,
         hint: "Runs on this machine through the host's speech service",
         hintKey: "settings.field.voiceInputHint",
+        keywords: ["voice", "speech", "dictation"],
       },
       {
         id: "voice-language",
         label: "Voice language",
         labelKey: "settings.field.voiceLanguage",
         path: "app.ai_experience.voice_input.default_language",
-        kind: "text",
+        kind: "select",
         optional: true,
-        defaultValue: "auto",
-        placeholder: "auto, zh-CN, en-US",
-        placeholderKey: "settings.placeholder.voiceLanguage",
+        options: [
+          { value: "auto", label: "Detect automatically", labelKey: "settings.opt.voiceAuto" },
+          { value: "zh", label: "Chinese", labelKey: "settings.opt.voiceZh" },
+          { value: "en", label: "English", labelKey: "settings.opt.voiceEn" },
+          { value: "yue", label: "Cantonese", labelKey: "settings.opt.voiceYue" },
+          { value: "ja", label: "Japanese", labelKey: "settings.opt.voiceJa" },
+          { value: "ko", label: "Korean", labelKey: "settings.opt.voiceKo" },
+        ],
         hint: "auto follows the language you speak",
         hintKey: "settings.field.voiceLanguageHint",
+        keywords: ["voice", "language"],
       },
       {
         id: "voice-max-seconds",
@@ -242,7 +260,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         min: 5,
         max: 300,
         optional: true,
-        defaultValue: 60,
         placeholder: "60 (5–300)",
         placeholderKey: "settings.placeholder.voiceMaxSeconds",
         unit: "s",
@@ -255,7 +272,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.ai_experience.voice_input.microphone_device_id",
         kind: "text",
         optional: true,
-        defaultValue: "",
         placeholder: "Default microphone",
         placeholderKey: "settings.placeholder.voiceMicrophone",
         hint: "Empty uses the system default input",
@@ -264,42 +280,30 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     ],
   },
   {
-    id: "ai-experience",
-    title: "AI experience",
-    titleKey: "settings.section.aiExperience",
+    id: "session",
+    title: "Session",
+    titleKey: "settings.section.session",
+    page: "session-memory",
     fields: [
       {
         id: "session-title-generation",
         label: "Let the model name new sessions",
         labelKey: "settings.field.sessionTitleGeneration",
         descriptionKey: "settings.field.sessionTitleGenerationDesc",
-        path: "app.ai_experience",
-        field: "enable_session_title_generation",
+        path: "app.ai_experience.enable_session_title_generation",
         kind: "boolean",
         optional: true,
+        keywords: ["title", "name"],
       },
       {
-        id: "workspace-search",
-        label: "Accelerated workspace search",
-        labelKey: "settings.field.workspaceSearch",
-        descriptionKey: "settings.field.workspaceSearchDesc",
-        path: "app.ai_experience",
-        field: "enable_workspace_search",
+        id: "prompt-suggestion",
+        label: "Suggest the next message",
+        labelKey: "settings.field.promptSuggestion",
+        descriptionKey: "settings.field.promptSuggestionDesc",
+        path: "app.ai_experience.enable_prompt_suggestion",
         kind: "boolean",
         optional: true,
-      },
-      {
-        // A leaf path: `app.ai_experience` also holds the quick-action list, and
-        // this switch has no reason to read-modify-write that whole object.
-        id: "commit-coauthor",
-        label: "Attribute commits to OpenBitFun",
-        labelKey: "settings.field.commitCoauthor",
-        path: "app.ai_experience.enable_git_commit_coauthor",
-        kind: "boolean",
-        optional: true,
-        defaultValue: true,
-        hint: "Adds the co-author trailer the desktop uses to generated commit messages",
-        hintKey: "settings.field.commitCoauthorHint",
+        keywords: ["suggestion", "next input"],
       },
     ],
   },
@@ -307,19 +311,16 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "editor",
     title: "Editor",
     titleKey: "settings.section.editor",
+    page: "editor",
     fields: [
       {
         id: "editor-font-size",
         label: "Font size",
         labelKey: "settings.field.editorFontSize",
         descriptionKey: "settings.field.editorFontSizeDesc",
-        path: "editor",
-        field: "font_size",
+        path: "editor.font_size",
         kind: "number",
-        min: 10,
-        max: 24,
-        placeholder: "14 (10–24)",
-        placeholderKey: "settings.placeholder.editorFontSize",
+        optional: true,
         unit: "px",
         unitKey: "settings.unit.px",
       },
@@ -328,24 +329,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Tab size",
         labelKey: "settings.field.editorTabSize",
         descriptionKey: "settings.field.editorTabSizeDesc",
-        path: "editor",
-        field: "tab_size",
+        path: "editor.tab_size",
         kind: "number",
-        min: 1,
-        max: 8,
-        placeholder: "4 (1–8)",
-        placeholderKey: "settings.placeholder.editorTabSize",
+        optional: true,
         unit: "spaces",
         unitKey: "settings.unit.spaces",
+        keywords: ["indent"],
       },
       {
         id: "editor-word-wrap",
         label: "Word wrap",
         labelKey: "settings.field.editorWordWrap",
         descriptionKey: "settings.field.editorWordWrapDesc",
-        path: "editor",
-        field: "word_wrap",
+        path: "editor.word_wrap",
         kind: "select",
+        optional: true,
         options: [
           { value: "off", label: "Off", labelKey: "settings.opt.off" },
           { value: "on", label: "On", labelKey: "settings.opt.on" },
@@ -357,9 +355,9 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Line numbers",
         labelKey: "settings.field.editorLineNumbers",
         descriptionKey: "settings.field.editorLineNumbersDesc",
-        path: "editor",
-        field: "line_numbers",
+        path: "editor.line_numbers",
         kind: "select",
+        optional: true,
         options: [
           { value: "on", label: "On", labelKey: "settings.opt.on" },
           { value: "off", label: "Off", labelKey: "settings.opt.off" },
@@ -371,9 +369,9 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Minimap",
         labelKey: "settings.field.editorMinimap",
         descriptionKey: "settings.field.editorMinimapDesc",
-        path: "editor",
-        field: "minimap.enabled",
+        path: "editor.minimap.enabled",
         kind: "boolean",
+        optional: true,
       },
     ],
   },
@@ -381,17 +379,18 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "terminal",
     title: "Terminal",
     titleKey: "settings.section.terminal",
+    page: "terminal",
     fields: [
       {
         id: "terminal-font-size",
         label: "Font size",
         labelKey: "settings.field.terminalFontSize",
         descriptionKey: "settings.field.terminalFontSizeDesc",
-        path: "terminal",
-        field: "font_size",
+        path: "terminal.font_size",
         kind: "number",
         min: 10,
         max: 24,
+        optional: true,
         placeholder: "14 (10–24)",
         placeholderKey: "settings.placeholder.terminalFontSize",
         unit: "px",
@@ -402,11 +401,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Scrollback (lines)",
         labelKey: "settings.field.terminalScrollback",
         descriptionKey: "settings.field.terminalScrollbackDesc",
-        path: "terminal",
-        field: "scrollback",
+        path: "terminal.scrollback",
         kind: "number",
         min: 100,
         max: 100000,
+        optional: true,
         placeholder: "1000 (100–100000)",
         placeholderKey: "settings.placeholder.terminalScrollback",
         unit: "lines",
@@ -417,12 +416,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Cursor",
         labelKey: "settings.field.terminalCursorStyle",
         descriptionKey: "settings.field.terminalCursorStyleDesc",
-        path: "terminal",
-        field: "cursor_style",
+        path: "terminal.cursor_style",
         kind: "select",
+        optional: true,
+        // xterm's cursor styles; `line` is not one of them.
         options: [
           { value: "block", label: "Block", labelKey: "settings.opt.block" },
-          { value: "line", label: "Line", labelKey: "settings.opt.line" },
+          { value: "underline", label: "Underline", labelKey: "settings.opt.underline" },
           { value: "bar", label: "Bar", labelKey: "settings.opt.bar" },
         ],
       },
@@ -430,8 +430,9 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "workspace",
-    title: "Workspace",
+    title: "Worktrees",
     titleKey: "settings.section.workspace",
+    page: "workspace",
     fields: [
       // `app.worktrees` is stored in camelCase by the worktree service, and the
       // Product Operation Registry names these same keys.
@@ -443,9 +444,9 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.worktrees.rootPath",
         kind: "text",
         optional: true,
-        defaultValue: "~/.openbitfun/worktrees",
         placeholder: "~/.openbitfun/worktrees",
         placeholderKey: "settings.placeholder.worktreeRoot",
+        keywords: ["worktree", "isolation"],
       },
       {
         id: "worktree-branch-prefix",
@@ -455,9 +456,9 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.worktrees.branchPrefix",
         kind: "text",
         optional: true,
-        defaultValue: "openbitfun/",
         placeholder: "openbitfun/",
         placeholderKey: "settings.placeholder.worktreeBranchPrefix",
+        keywords: ["branch"],
       },
       {
         id: "worktree-copy-changes",
@@ -467,7 +468,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.worktrees.copyLocalChanges",
         kind: "boolean",
         optional: true,
-        defaultValue: false,
       },
       {
         id: "worktree-auto-delete",
@@ -477,7 +477,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.worktrees.autoDeleteEnabled",
         kind: "boolean",
         optional: true,
-        defaultValue: true,
       },
       {
         id: "worktree-auto-delete-limit",
@@ -486,14 +485,46 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.worktreeAutoDeleteLimitDesc",
         path: "app.worktrees.autoDeleteLimit",
         kind: "number",
-        min: 0,
-        max: 100,
         optional: true,
-        defaultValue: 15,
-        placeholder: "15 (0–100)",
-        placeholderKey: "settings.placeholder.worktreeAutoDeleteLimit",
         unit: "items",
         unitKey: "settings.unit.count",
+      },
+    ],
+  },
+  {
+    id: "workspace-search",
+    title: "Workspace search",
+    titleKey: "settings.section.workspaceSearch",
+    page: "workspace",
+    fields: [
+      {
+        id: "workspace-search",
+        label: "Accelerated workspace search",
+        labelKey: "settings.field.workspaceSearch",
+        descriptionKey: "settings.field.workspaceSearchDesc",
+        path: "app.ai_experience.enable_workspace_search",
+        kind: "boolean",
+        optional: true,
+        keywords: ["search", "index", "files"],
+      },
+    ],
+  },
+  {
+    id: "git",
+    title: "Git",
+    titleKey: "settings.section.git",
+    page: "workspace",
+    fields: [
+      {
+        id: "commit-coauthor",
+        label: "Attribute commits to OpenBitFun",
+        labelKey: "settings.field.commitCoauthor",
+        path: "app.ai_experience.enable_git_commit_coauthor",
+        kind: "boolean",
+        optional: true,
+        hint: "Adds the co-author trailer the desktop uses to generated commit messages",
+        hintKey: "settings.field.commitCoauthorHint",
+        keywords: ["git", "commit", "co-author"],
       },
     ],
   },
@@ -501,6 +532,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "ai-execution",
     title: "AI execution",
     titleKey: "settings.section.aiExecution",
+    page: "execution",
     fields: [
       {
         id: "deferred-tool-loading",
@@ -518,11 +550,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.subagentConcurrencyDesc",
         path: "ai.subagent_max_concurrency",
         kind: "number",
-        min: 1,
-        max: 64,
         optional: true,
-        placeholder: "4 (1–64)",
-        placeholderKey: "settings.placeholder.subagentConcurrency",
         unit: "max",
         unitKey: "settings.unit.concurrent",
       },
@@ -533,11 +561,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.swarmConcurrencyDesc",
         path: "ai.swarm_max_concurrency",
         kind: "number",
-        min: 1,
-        max: 64,
         optional: true,
-        placeholder: "4 (1–64)",
-        placeholderKey: "settings.placeholder.swarmConcurrency",
         unit: "max",
         unitKey: "settings.unit.concurrent",
       },
@@ -556,21 +580,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         optional: true,
       },
       {
+        // `Option<u64>` on the host: `None` (the default) waits indefinitely.
         id: "tool-execution-timeout",
         label: "Tool timeout (s)",
         labelKey: "settings.field.toolExecutionTimeout",
         descriptionKey: "settings.field.toolExecutionTimeoutDesc",
         path: "ai.tool_execution_timeout_secs",
         kind: "number",
-        min: 10,
-        max: 3600,
         optional: true,
-        placeholder: "120 (10–3600)",
-        placeholderKey: "settings.placeholder.toolExecutionTimeout",
+        clearable: true,
+        defaultValue: undefined,
         unit: "s",
         unitKey: "settings.unit.seconds",
       },
       {
+        // `Option<u32>`: null or zero waits indefinitely; 180 by default.
         id: "user-question-timeout",
         label: "Waiting for an answer (s)",
         labelKey: "settings.field.userQuestionTimeout",
@@ -580,7 +604,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         min: 10,
         max: 3600,
         optional: true,
-        placeholder: "300 (10–3600)",
+        clearable: true,
+        placeholder: "180 (10–3600)",
         placeholderKey: "settings.placeholder.userQuestionTimeout",
         unit: "s",
         unitKey: "settings.unit.seconds",
@@ -603,9 +628,86 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     ],
   },
   {
+    id: "network",
+    title: "Network",
+    titleKey: "settings.section.network",
+    page: "models",
+    fields: [
+      {
+        id: "proxy-enabled",
+        label: "Use a proxy for model requests",
+        labelKey: "settings.field.proxyEnabled",
+        descriptionKey: "settings.field.proxyEnabledDesc",
+        path: "ai.proxy.enabled",
+        kind: "boolean",
+        optional: true,
+        keywords: ["proxy", "network"],
+      },
+      {
+        id: "proxy-url",
+        label: "Proxy address",
+        labelKey: "settings.field.proxyUrl",
+        path: "ai.proxy.url",
+        kind: "text",
+        optional: true,
+        placeholder: "http://127.0.0.1:7890",
+        keywords: ["proxy"],
+      },
+      {
+        id: "proxy-username",
+        label: "Proxy user name",
+        labelKey: "settings.field.proxyUsername",
+        path: "ai.proxy.username",
+        kind: "text",
+        optional: true,
+        defaultValue: "",
+        placeholderKey: "settings.placeholder.optional",
+      },
+      {
+        id: "proxy-password",
+        label: "Proxy password",
+        labelKey: "settings.field.proxyPassword",
+        path: "ai.proxy.password",
+        kind: "text",
+        masked: true,
+        optional: true,
+        defaultValue: "",
+        placeholderKey: "settings.placeholder.optional",
+      },
+      {
+        // `Option<u64>`, 600 by default; empty waits indefinitely.
+        id: "stream-idle-timeout",
+        label: "Stream idle timeout (s)",
+        labelKey: "settings.field.streamIdleTimeout",
+        descriptionKey: "settings.field.streamIdleTimeoutDesc",
+        path: "ai.stream_idle_timeout_secs",
+        kind: "number",
+        optional: true,
+        clearable: true,
+        unit: "s",
+        unitKey: "settings.unit.seconds",
+        keywords: ["timeout", "stream"],
+      },
+      {
+        id: "stream-ttft-timeout",
+        label: "First token timeout (s)",
+        labelKey: "settings.field.streamTtftTimeout",
+        descriptionKey: "settings.field.streamTtftTimeoutDesc",
+        path: "ai.stream_ttft_timeout_secs",
+        kind: "number",
+        optional: true,
+        clearable: true,
+        unit: "s",
+        unitKey: "settings.unit.seconds",
+        keywords: ["timeout", "first token"],
+      },
+    ],
+  },
+  {
     id: "diagnostics",
     title: "Diagnostics",
     titleKey: "settings.section.diagnostics",
+    page: "diagnostics",
     fields: [
       {
         id: "logging-level",
@@ -621,6 +723,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
           { value: "warn", label: "Warn", labelKey: "settings.opt.warn" },
           { value: "error", label: "Error", labelKey: "settings.opt.error" },
         ],
+        keywords: ["log"],
       },
       {
         id: "logging-sensitive",
@@ -630,7 +733,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         path: "app.logging.include_sensitive_diagnostics",
         kind: "boolean",
         optional: true,
-        defaultValue: false,
       },
     ],
   },
@@ -638,6 +740,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "memory",
     title: "Session memory",
     titleKey: "settings.section.memory",
+    page: "session-memory",
     fields: [
       {
         id: "generate-memories",
@@ -646,8 +749,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.generateMemoriesDesc",
         path: "memories.generate_memories",
         kind: "boolean",
-        defaultValue: true,
         optional: true,
+        keywords: ["memory", "remember"],
       },
       {
         id: "use-memories",
@@ -656,8 +759,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.useMemoriesDesc",
         path: "memories.use_memories",
         kind: "boolean",
-        defaultValue: true,
         optional: true,
+        keywords: ["memory", "recall"],
       },
       {
         id: "memory-btw-sessions",
@@ -666,7 +769,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.memoryBtwSessionsDesc",
         path: "memories.generate_for_btw_sessions",
         kind: "boolean",
-        defaultValue: false,
         optional: true,
       },
       {
@@ -676,7 +778,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.memoryExternalContextDesc",
         path: "memories.external_context_policy",
         kind: "select",
-        defaultValue: "clear_tool_results",
         options: [
           { value: "clear_tool_results", label: "Keep, clear the tool results", labelKey: "settings.opt.clearToolResults" },
           { value: "allow", label: "Keep as-is", labelKey: "settings.opt.keepAsIs" },
@@ -719,36 +820,34 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Model that extracts memories",
         labelKey: "settings.field.memoryExtractModel",
         descriptionKey: "settings.field.memoryExtractModelDesc",
-        path: "memories",
-        field: "extract_model",
+        path: "memories.extract_model",
         kind: "model",
         emptyLabel: "Follow the primary model",
         emptyLabelKey: "settings.field.memoryExtractModelEmpty",
         optional: true,
+        defaultValue: "",
       },
       {
         id: "memory-consolidation-model",
         label: "Model that consolidates memories",
         labelKey: "settings.field.memoryConsolidationModel",
         descriptionKey: "settings.field.memoryConsolidationModelDesc",
-        path: "memories",
-        field: "consolidation_model",
+        path: "memories.consolidation_model",
         kind: "model",
         emptyLabel: "Follow the extraction model",
         emptyLabelKey: "settings.field.memoryConsolidationModelEmpty",
         optional: true,
+        defaultValue: "",
       },
       {
         id: "memory-idle-hours",
         label: "A session must be idle for (hours)",
         labelKey: "settings.field.memoryIdleHours",
         descriptionKey: "settings.field.memoryIdleHoursDesc",
-        path: "memories",
-        field: "min_rollout_idle_hours",
+        path: "memories.min_rollout_idle_hours",
         kind: "number",
         min: 1,
         max: 48,
-        defaultValue: 6,
         placeholder: "6 (1–48)",
         placeholderKey: "settings.placeholder.memoryIdleHours",
         unit: "h",
@@ -760,15 +859,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Extract from sessions no older than (days)",
         labelKey: "settings.field.memoryRolloutAgeDays",
         descriptionKey: "settings.field.memoryRolloutAgeDaysDesc",
-        path: "memories",
-        field: "max_rollout_age_days",
+        path: "memories.max_rollout_age_days",
         kind: "number",
         min: 0,
         max: 3650,
-        // The desktop caps this at the retention window, because a rollout that
-        // outlived the memory it produced would extract into a deleted window.
-        maxPath: { path: "memories", field: "max_unused_days" },
-        defaultValue: 10,
+        // The host refuses a window longer than the retention it extracts into.
         placeholder: "10 (0–3650)",
         placeholderKey: "settings.placeholder.memoryRolloutAgeDays",
         unit: "days",
@@ -780,13 +875,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Sessions extracted per startup",
         labelKey: "settings.field.memoryRolloutsPerStartup",
         descriptionKey: "settings.field.memoryRolloutsPerStartupDesc",
-        path: "memories",
-        field: "max_rollouts_per_startup",
+        path: "memories.max_rollouts_per_startup",
         kind: "number",
         min: 1,
         max: 128,
-        defaultValue: 5,
-        placeholder: "5 (1–128)",
+        placeholder: "2 (1–128)",
         placeholderKey: "settings.placeholder.memoryRolloutsPerStartup",
         unit: "sessions",
         unitKey: "settings.unit.sessions",
@@ -797,12 +890,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Sessions scanned per startup",
         labelKey: "settings.field.memoryRolloutsScanLimit",
         descriptionKey: "settings.field.memoryRolloutsScanLimitDesc",
-        path: "memories",
-        field: "max_rollouts_scan_limit",
+        path: "memories.max_rollouts_scan_limit",
         kind: "number",
         min: 1,
         max: 50000,
-        defaultValue: 2000,
         placeholder: "2000 (1–50000)",
         placeholderKey: "settings.placeholder.memoryRolloutsScanLimit",
         unit: "sessions",
@@ -814,12 +905,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Extraction concurrency",
         labelKey: "settings.field.memoryPhase1Concurrency",
         descriptionKey: "settings.field.memoryPhase1ConcurrencyDesc",
-        path: "memories",
-        field: "phase1_max_concurrency",
+        path: "memories.phase1_max_concurrency",
         kind: "number",
         min: 1,
         max: 16,
-        defaultValue: 1,
         placeholder: "1 (1–16)",
         placeholderKey: "settings.placeholder.memoryPhase1Concurrency",
         unit: "max",
@@ -830,8 +919,9 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "tools",
-    title: "Tools",
-    titleKey: "settings.section.tools",
+    title: "Desktop control",
+    titleKey: "settings.page.desktopControl",
+    page: "desktop-control",
     fields: [
       {
         id: "computer-use",
@@ -839,10 +929,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         labelKey: "settings.field.computerUse",
         path: "ai.computer_use_enabled",
         kind: "boolean",
-        defaultValue: true,
         hint: "The host still asks for its own system consent",
         hintKey: "settings.field.computerUseHint",
         optional: true,
+        keywords: ["computer use", "desktop"],
       },
       {
         id: "browser-control-auto-connect",
@@ -850,23 +940,25 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         labelKey: "settings.field.browserControlAutoConnect",
         path: "ai.browser_control_auto_connect_on_startup",
         kind: "boolean",
-        defaultValue: false,
         hint: "The browser forgets its approval when it restarts",
         hintKey: "settings.field.browserControlAutoConnectHint",
         optional: true,
+        keywords: ["browser"],
       },
       {
+        // The choices are the browsers the host reports (`browser_control_list_browsers`).
         id: "preferred-browser",
         label: "Preferred browser",
         labelKey: "settings.field.preferredBrowser",
         path: "ai.browser_control_preferred_browser",
-        kind: "text",
-        defaultValue: "",
-        placeholder: "e.g. Chrome, Edge",
-        placeholderKey: "settings.placeholder.preferredBrowser",
-        hint: "Empty uses the system default",
-        hintKey: "settings.field.preferredBrowserHint",
+        kind: "select",
+        defaultValue: "default",
+        emptyMeans: "default",
+        dynamicOptions: () => browserOptions(),
+        hint: "The browser agents open and drive",
+        hintKey: "settings.field.preferredBrowserPick",
         optional: true,
+        keywords: ["browser", "chrome"],
       },
     ],
   },
@@ -874,6 +966,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "agent-hooks",
     title: "Agent hooks",
     titleKey: "settings.section.agentHooks",
+    page: "automation",
     fields: [
       {
         id: "hooks-enabled",
@@ -882,8 +975,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         descriptionKey: "settings.field.hooksEnabledDesc",
         path: "app.hooks.enabled",
         kind: "boolean",
-        defaultValue: false,
         optional: true,
+        keywords: ["hooks"],
       },
       {
         id: "hooks-project",
@@ -891,7 +984,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         labelKey: "settings.field.hooksProject",
         path: "app.hooks.project_hooks_enabled",
         kind: "boolean",
-        defaultValue: false,
         hint: "A project hook file runs commands from the checked-out repository",
         hintKey: "settings.field.hooksProjectHint",
         optional: true,
@@ -899,6 +991,16 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     ],
   },
 ];
+
+/** The leaf config path a field reads and writes. */
+export function leafPath(spec: Pick<FieldSpec, "path" | "field">): string {
+  return spec.field ? `${spec.path}.${spec.field}` : spec.path;
+}
+
+/** The section that owns a field, by id. */
+export function sectionOfField(spec: FieldSpec): SettingsSection | undefined {
+  return SETTINGS_SECTIONS.find(section => section.fields.some(field => field.id === spec.id));
+}
 
 /** Reactive localized title for a settings section. */
 export function sectionTitle(section: SettingsSection): string {
@@ -947,7 +1049,30 @@ export function fieldUnit(spec: FieldSpec): string | undefined {
 /** Values by config path; `undefined` means the host does not have that path. */
 export const settingsValues = signal<Record<string, unknown>>({});
 export const settingsLoaded = signal(false);
+/** A page-level message (the interface language); field notices go to their section. */
 export const settingsNotice = signal("");
+/** The latest outcome of a write, by the id of the section that owns the field. */
+export const sectionNotices = signal<Record<string, string>>({});
+/** Fields with a write in flight, by field id, so the row can show it is saving. */
+export const savingFields = signal<Record<string, boolean>>({});
+
+export function sectionNotice(sectionId: string): string {
+  return sectionNotices()[sectionId] ?? "";
+}
+
+export function setSectionNotice(sectionId: string, message: string): void {
+  sectionNotices.update(current => ({ ...current, [sectionId]: message }));
+}
+
+export function fieldSaving(spec: FieldSpec): boolean {
+  return savingFields()[spec.id] === true;
+}
+
+function noticeFor(spec: FieldSpec, message: string): void {
+  const section = sectionOfField(spec);
+  if (section) setSectionNotice(section.id, message);
+  else settingsNotice.set(message);
+}
 
 // Keep cached `settingsValues()["app"]` in sync whenever `setAppLocale(...)`
 // switches language from any surface (Settings, Sidebar, TopBar).
@@ -967,33 +1092,9 @@ onAppLocalePersisted((locale, persistedApp) => {
   });
 });
 
-function readField(source: unknown, field: string | undefined): unknown {
-  if (!field) return source;
-  let current: unknown = source;
-  for (const segment of field.split(".")) {
-    if (!current || typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
-}
-
-function patchObject(source: Record<string, unknown>, field: string, value: unknown): Record<string, unknown> {
-  const segments = field.split(".");
-  const next: Record<string, unknown> = { ...source };
-  let node = next;
-  for (const segment of segments.slice(0, -1)) {
-    const child = node[segment];
-    node[segment] = child && typeof child === "object" ? { ...(child as Record<string, unknown>) } : {};
-    node = node[segment] as Record<string, unknown>;
-  }
-  node[segments[segments.length - 1]] = value;
-  return next;
-}
-
 /** The current value of a field, or `undefined` when the host lacks it. */
 export function fieldValue(spec: FieldSpec): unknown {
-  const source = settingsValues()[spec.path];
-  return readField(source, spec.field);
+  return settingsValues()[leafPath(spec)];
 }
 
 /** Whether the host stores no value for this field at all. */
@@ -1023,19 +1124,25 @@ export async function writeAppLanguage(locale: string): Promise<void> {
   const canonical = normalizeLocale(locale);
   if (!canonical) return;
   await runStep(async () => {
-    await setAppLocale(canonical, { persistHost: true });
-    settingsNotice.set(tr("settings.notice.languageSaved", { label: localeMeta(canonical).nativeName }));
+    const persisted = await setAppLocale(canonical, { persistHost: true });
+    settingsNotice.set(
+      persisted
+        ? tr("settings.notice.languageSaved", { label: localeMeta(canonical).nativeName })
+        : tr("settings.notice.languageNotPersisted"),
+    );
   });
 }
 
 export async function loadSettingsValues(): Promise<void> {
+  // `app` is read whole only for the keyboard-shortcut overrides it carries;
+  // nothing writes it back from here.
   const paths = new Set<string>(["app"]);
-  for (const section of SETTINGS_SECTIONS) {
-    for (const field of section.fields) paths.add(field.path);
-  }
   const optional = new Set<string>();
   for (const section of SETTINGS_SECTIONS) {
-    for (const field of section.fields) if (field.optional) optional.add(field.path);
+    for (const field of section.fields) {
+      paths.add(leafPath(field));
+      if (field.optional) optional.add(leafPath(field));
+    }
   }
   await runStep(async () => {
     const entries: Record<string, unknown> = {};
@@ -1049,72 +1156,340 @@ export async function loadSettingsValues(): Promise<void> {
       }),
     );
     settingsValues.set(entries);
+    await loadSettingsDescriptor([...paths].filter(path => path !== "app"));
     settingsLoaded.set(true);
   });
 }
 
-/**
- * The ceiling a field actually accepts: a stored sibling value can lower the
- * spec's own maximum, as the rollout window is capped by the retention it runs
- * inside.
- */
-export function maxForField(spec: FieldSpec): number | undefined {
-  const own = spec.max ?? Number.POSITIVE_INFINITY;
-  if (!spec.maxPath) return spec.max;
-  const document = settingsValues()[spec.maxPath.path];
-  const base = document && typeof document === "object" ? (document as Record<string, unknown>) : {};
-  const sibling = Number(spec.maxPath.field ? base[spec.maxPath.field] : document);
-  return Number.isFinite(sibling) ? Math.min(own, sibling) : spec.max;
+/** One field as `get_settings_schema` describes it. */
+export interface SettingsFieldDescriptor {
+  type?: string;
+  nullable?: boolean;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  /** Absent when the config has no value at that path by default. */
+  default?: unknown;
+  /** Whether the host enforces `type` / `enum` / bounds on write. */
+  constrained?: boolean;
 }
 
-/**
- * The check the desktop's own memory page makes before it writes: a rollout
- * window that reaches past the retention it extracts into would produce memories
- * that are deleted on arrival, so the host refuses it and so does this page.
- *
- * The two values are read from the stored document, with the leaf paths as a
- * fallback, because this page reaches one of them through the document and the
- * other through its own config path.
- */
-function memoryWindowRefusal(spec: FieldSpec, value: unknown): string | null {
-  const field =
-    spec.path === "memories"
-      ? spec.field
-      : spec.path === "memories.max_unused_days"
-        ? "max_unused_days"
-        : undefined;
-  if (field !== "max_unused_days" && field !== "max_rollout_age_days") return null;
-  const document = settingsValues()["memories"];
-  const base = document && typeof document === "object" ? (document as Record<string, unknown>) : {};
-  const stored = (name: string): unknown => base[name] ?? settingsValues()[`memories.${name}`];
-  const age = Number(field === "max_rollout_age_days" ? value : stored("max_rollout_age_days"));
-  const unused = Number(field === "max_unused_days" ? value : stored("max_unused_days"));
-  if (!Number.isFinite(age) || !Number.isFinite(unused)) return null;
-  if (age > unused) {
-    return tr("settings.notice.memoryWindowRefusal");
-  }
-  return null;
-}
+/** `null` until read; `false` when the host cannot describe its settings. */
+export const settingsDescriptor = signal<Record<string, SettingsFieldDescriptor> | false | null>(null);
 
-export async function writeField(spec: FieldSpec, value: unknown): Promise<void> {
-  if ((spec.path === "app" && spec.field === "language") || spec.path === "app.language") {
-    await writeAppLanguage(String(value ?? ""));
-    return;
-  }
-  const refusal = memoryWindowRefusal(spec, value);
-  if (refusal) {
-    settingsNotice.set(refusal);
-    return;
-  }
-  await runStep(async () => {
-    const current = settingsValues()[spec.path];
-    let next: unknown = value;
-    if (spec.field) {
-      const base = current && typeof current === "object" ? (current as Record<string, unknown>) : {};
-      next = patchObject(base, spec.field, value);
+/**
+ * Bounds and defaults come from the host that enforces them: the value schema
+ * its product-control catalog validates writes against, and the default its
+ * config applies to an absent path. Labels, copy and layout stay here.
+ */
+export function applySettingsDescriptor(fields: Record<string, SettingsFieldDescriptor>): void {
+  for (const section of SETTINGS_SECTIONS) {
+    for (const spec of section.fields) {
+      const described = fields[leafPath(spec)];
+      if (!described) continue;
+      if (described.constrained) {
+        if (typeof described.minimum === "number") spec.min = described.minimum;
+        if (typeof described.maximum === "number") spec.max = described.maximum;
+      }
+      const fallback = described.default;
+      if (
+        spec.defaultValue === undefined &&
+        (typeof fallback === "string" || typeof fallback === "number" || typeof fallback === "boolean")
+      ) {
+        spec.defaultValue = fallback;
+      }
     }
-    await setConfig(spec.path, next);
-    settingsValues.update(values => ({ ...values, [spec.path]: next }));
-    settingsNotice.set(tr("settings.notice.savedField", { label: fieldLabel(spec) }));
+  }
+}
+
+async function loadSettingsDescriptor(paths: string[]): Promise<void> {
+  try {
+    const answer = await invokeSettingsMutation<{ fields?: Record<string, SettingsFieldDescriptor> }>(
+      "get_settings_schema",
+      { paths },
+    );
+    const fields = answer?.fields && typeof answer.fields === "object" ? answer.fields : {};
+    applySettingsDescriptor(fields);
+    settingsDescriptor.set(fields);
+  } catch (error) {
+    // An older host stores the values but cannot say their limits or defaults;
+    // the page says so instead of drawing limits it guessed.
+    settingsDescriptor.set(false);
+    settingsNotice.set(errorText(error));
+  }
+}
+
+/** The ceiling a field accepts, as the host described it (see `applySettingsDescriptor`). */
+export function maxForField(spec: FieldSpec): number | undefined {
+  return spec.max;
+}
+
+/**
+ * The host's own refusal of a memory window longer than the retention it runs
+ * inside, shown in this surface's language.
+ */
+function localizedWriteError(error: unknown): string {
+  const message = errorText(error);
+  if (/rollout age must not exceed/i.test(message)) return tr("settings.notice.memoryWindowRefusal");
+  return message;
+}
+
+/**
+ * Writes one field's leaf path. The row shows that it is saving while the write
+ * is in flight, and the outcome goes to the notice of the section that owns it.
+ */
+export async function writeField(spec: FieldSpec, value: unknown): Promise<boolean> {
+  if (leafPath(spec) === "app.language") {
+    await writeAppLanguage(String(value ?? ""));
+    return true;
+  }
+  const path = leafPath(spec);
+  let ok = false;
+  savingFields.update(current => ({ ...current, [spec.id]: true }));
+  try {
+    await runStep(async () => {
+      try {
+        await setConfig(path, value);
+        settingsValues.update(values => ({ ...values, [path]: value }));
+        noticeFor(spec, tr("settings.notice.savedField", { label: fieldLabel(spec) }));
+        ok = true;
+      } catch (error) {
+        noticeFor(spec, localizedWriteError(error));
+      }
+    });
+  } finally {
+    savingFields.update(current => {
+      const next = { ...current };
+      delete next[spec.id];
+      return next;
+    });
+  }
+  return ok;
+}
+
+/**
+ * The general application options the desktop sets through product control
+ * (`setting.application.general`): launch at login, keep awake and automatic
+ * updates. They apply on the host at once (a login item, a power assertion, the
+ * updater), which a bare config write does not, so the General page uses the
+ * same command the desktop's page does.
+ */
+export type GeneralControlOption = "launch-at-login" | "prevent-sleep" | "auto-update";
+
+/** `null` until asked; `false` when the host has no product control for this. */
+export const generalControlValues = signal<Record<string, unknown> | false | null>(null);
+export const generalControlSaving = signal<GeneralControlOption | null>(null);
+let generalControlLoading = false;
+
+export function generalControlValue(option: GeneralControlOption): boolean | undefined {
+  const values = generalControlValues();
+  if (!values) return undefined;
+  const value = values[option];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+export async function loadGeneralControl(force = false): Promise<void> {
+  if (generalControlLoading || (!force && generalControlValues() !== null)) return;
+  generalControlLoading = true;
+  try {
+    const result = await invokeCommand<{ currentOptionValues?: Record<string, unknown> }>("product_control_invoke", {
+      action: "get",
+      capabilityId: "setting.application.general",
+    });
+    const values = result?.currentOptionValues;
+    generalControlValues.set(values && typeof values === "object" ? values : false);
+  } catch {
+    // An older host, a peer without the command, or the dev fixtures: the page
+    // falls back to the config leaves and says what it cannot set.
+    generalControlValues.set(false);
+  } finally {
+    generalControlLoading = false;
+  }
+}
+
+export async function setGeneralControl(option: GeneralControlOption, value: boolean): Promise<void> {
+  generalControlSaving.set(option);
+  try {
+    await invokeCommand("product_control_invoke", {
+      action: "configure",
+      capabilityId: "setting.application.general",
+      optionId: option,
+      value,
+    });
+    generalControlValues.update(current => (current ? { ...current, [option]: value } : current));
+    setSectionNotice("general", tr("settings.notice.savedField", { label: tr(GENERAL_CONTROL_LABELS[option]) }));
+  } catch (error) {
+    setSectionNotice("general", error instanceof Error ? error.message : String(error));
+  } finally {
+    generalControlSaving.set(null);
+  }
+}
+
+export const GENERAL_CONTROL_LABELS: Record<GeneralControlOption, MessageKey> = {
+  "launch-at-login": "settings.field.launchAtLogin",
+  "prevent-sleep": "settings.field.preventSleep",
+  "auto-update": "settings.field.autoUpdate",
+};
+
+/** The memory actions the desktop's memory section offers beside its fields. */
+export const memoryActionBusy = signal<"open" | "reset" | null>(null);
+export const memoryResetPending = signal(false);
+
+/** Shows the memory folder in the host's file manager (`get_memory_paths`). */
+export async function openMemoryFolder(): Promise<void> {
+  memoryActionBusy.set("open");
+  try {
+    const paths = await invokeRawCommand<{ memoriesRootDir?: string; memories_root_dir?: string }>(
+      "get_memory_paths",
+      {},
+    );
+    const folder = paths?.memoriesRootDir ?? paths?.memories_root_dir ?? "";
+    if (!folder) throw new Error(tr("settings.memory.noFolder"));
+    await invokeCommand("reveal_in_explorer", { path: folder });
+  } catch (error) {
+    setSectionNotice("memory", error instanceof Error ? error.message : String(error));
+  } finally {
+    memoryActionBusy.set(null);
+  }
+}
+
+/** Clears every stored memory and the extraction state (`reset_memory`); settings stay. */
+export async function resetMemory(): Promise<void> {
+  memoryResetPending.set(false);
+  memoryActionBusy.set("reset");
+  try {
+    await invokeRawCommand("reset_memory", {});
+    setSectionNotice("memory", tr("settings.memory.resetDone"));
+  } catch (error) {
+    setSectionNotice("memory", error instanceof Error ? error.message : String(error));
+  } finally {
+    memoryActionBusy.set(null);
+  }
+}
+
+/** The browsers the host can drive, as `browser_control_list_browsers` lists them. */
+export const browserChoices = signal<Array<{ value: string; label: string; installed: boolean }> | null>(null);
+let browserChoicesLoading = false;
+
+export async function loadBrowserChoices(): Promise<void> {
+  if (browserChoicesLoading || browserChoices() !== null) return;
+  browserChoicesLoading = true;
+  try {
+    const result = await invokeRawCommand<{ options?: Array<{ value?: string; label?: string; installed?: boolean }> }>(
+      "browser_control_list_browsers",
+      {},
+    );
+    const options = Array.isArray(result?.options) ? result.options : [];
+    browserChoices.set(
+      options
+        .filter(option => option && typeof option.value === "string" && option.value)
+        .map(option => ({
+          value: String(option.value),
+          label: String(option.label ?? option.value),
+          installed: option.installed !== false,
+        })),
+    );
+  } catch {
+    // A host without browser control offers the system default only.
+    browserChoices.set([]);
+  } finally {
+    browserChoicesLoading = false;
+  }
+}
+
+function browserOptions(): FieldOption[] {
+  void loadBrowserChoices();
+  const listed = browserChoices() ?? [];
+  const rows: FieldOption[] = listed.map(option => ({
+    value: option.value,
+    label: option.installed ? option.label : tr("settings.field.browserNotInstalled", { name: option.label }),
+  }));
+  if (!rows.some(row => row.value === "default")) {
+    rows.unshift({ value: "default", label: tr("settings.field.browserDefault") });
+  }
+  return rows;
+}
+
+/** `SpeechModelStatus` (core-types `speech.rs`), camelCase on the wire. */
+export interface SpeechModelStatus {
+  modelId: string;
+  displayName: string;
+  description?: string;
+  languages?: string[];
+  state: "not_installed" | "downloading" | "installed" | "verifying" | "corrupt" | "deleting" | "error" | string;
+  installedBytes?: number;
+  expectedBytes?: number;
+  progress?: { downloadedBytes: number; totalBytes: number; percent: number } | null;
+  error?: string | null;
+}
+
+/**
+ * The local speech models the composer's voice input runs on. They live on the
+ * machine this window runs on (`speech_*` is controller-local), so the list is
+ * this machine's even while another device is driven.
+ * `null` until read; `false` when the host has no speech service.
+ */
+export const speechModels = signal<SpeechModelStatus[] | false | null>(null);
+export const speechNotice = signal("");
+let speechLoading = false;
+let speechListening = false;
+
+function upsertSpeechModel(status: SpeechModelStatus | null | undefined): void {
+  if (!status || typeof status.modelId !== "string") return;
+  speechModels.update(current => {
+    const list = Array.isArray(current) ? current : [];
+    const index = list.findIndex(model => model.modelId === status.modelId);
+    if (index < 0) return [...list, status];
+    const next = [...list];
+    next[index] = { ...next[index], ...status };
+    return next;
   });
+}
+
+export async function loadSpeechModels(force = false): Promise<void> {
+  if (speechLoading || (!force && speechModels() !== null)) return;
+  speechLoading = true;
+  if (!speechListening) {
+    speechListening = true;
+    listenEvent<{ status?: SpeechModelStatus }>("speech://model-download-progress", payload =>
+      upsertSpeechModel(payload?.status),
+    );
+    listenEvent<SpeechModelStatus>("speech://model-status-changed", payload => upsertSpeechModel(payload));
+  }
+  try {
+    const result = await invokeRawCommand<{ models?: SpeechModelStatus[] }>("speech_list_models", {});
+    speechModels.set(Array.isArray(result?.models) ? result.models : []);
+  } catch {
+    speechModels.set(false);
+  } finally {
+    speechLoading = false;
+  }
+}
+
+export async function downloadSpeechModel(modelId: string): Promise<void> {
+  speechNotice.set("");
+  upsertSpeechModel({ ...(findSpeechModel(modelId) ?? { modelId, displayName: modelId }), state: "downloading" });
+  try {
+    const status = await invokeCommand<SpeechModelStatus>("speech_download_model", { modelId });
+    upsertSpeechModel(status);
+  } catch (error) {
+    speechNotice.set(error instanceof Error ? error.message : String(error));
+    void loadSpeechModels(true);
+  }
+}
+
+export async function cancelSpeechModelDownload(modelId: string): Promise<void> {
+  try {
+    const status = await invokeCommand<SpeechModelStatus>("speech_cancel_model_download", { modelId });
+    upsertSpeechModel(status);
+  } catch (error) {
+    speechNotice.set(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function findSpeechModel(modelId: string): SpeechModelStatus | undefined {
+  const list = speechModels();
+  return Array.isArray(list) ? list.find(model => model.modelId === modelId) : undefined;
 }

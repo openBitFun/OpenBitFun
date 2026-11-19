@@ -293,6 +293,18 @@ const DEV_SESSION_TURNS = {
   ],
 };
 
+const devRecentOnlyWorkspaces = [
+  {
+    id: "dev-workspace-remote",
+    name: "build-host",
+    rootPath: "/srv/app",
+    workspaceKind: "remote",
+    connectionId: "dev-ssh-1",
+    sshHost: "build-host",
+    lastAccessed: 1762000000000,
+  },
+];
+
 const devWorkspaces = [
   {
     id: "dev-workspace-openbitfun",
@@ -1470,20 +1482,53 @@ const devTerminalBuffers = {};
 const DEV_FIXTURES = {
   // Workspaces & Sessions
   get_opened_workspaces: () => devWorkspaces,
-  get_recent_workspaces: () => [
-    ...devWorkspaces,
-    {
-      id: "dev-workspace-remote",
-      name: "build-host",
-      rootPath: "/srv/app",
-      workspaceKind: "remote",
-      connectionId: "dev-ssh-1",
-      sshHost: "build-host",
-      lastAccessed: 1762000000000,
-    },
-  ],
+  // Recent rows the host remembers but has not opened; reopening one moves it to
+  // the opened list, as `open_workspace` by id does on the desktop.
+  get_recent_workspaces: () => [...devWorkspaces, ...devRecentOnlyWorkspaces],
+  get_current_workspace: () => devWorkspaces.find(w => w.id === activeWorkspaceId) || null,
+  remove_recent_workspace: args => {
+    const req = payloadOf(args);
+    const idx = devRecentOnlyWorkspaces.findIndex(w => w.id === String(req.workspaceId || ""));
+    if (idx >= 0) devRecentOnlyWorkspaces.splice(idx, 1);
+    return null;
+  },
+  update_workspace_info: args => {
+    const req = payloadOf(args);
+    const ws = devWorkspaces.find(w => w.id === String(req.workspaceId || ""));
+    if (!ws) throw new Error(`Workspace not found: ${String(req.workspaceId || "")}`);
+    if (typeof req.name === "string" && req.name.trim()) ws.name = req.name.trim();
+    return ws;
+  },
+  reveal_in_explorer: () => {
+    throw new Error("The development host has no file manager");
+  },
+  reveal_session_storage_directory: () => {
+    throw new Error("The development host has no file manager");
+  },
+  export_session_transcript: args => {
+    const req = payloadOf(args);
+    return {
+      sessionId: String(req.session_id || ""),
+      transcriptPath: `/tmp/openbitfun-dev/${String(req.session_id || "session")}.md`,
+      generatedAt: Date.now(),
+    };
+  },
   open_workspace: args => {
     const req = payloadOf(args);
+    if (req.workspaceId) {
+      const id = String(req.workspaceId);
+      const opened = devWorkspaces.find(w => w.id === id);
+      if (opened) {
+        activeWorkspaceId = id;
+        return opened;
+      }
+      const idx = devRecentOnlyWorkspaces.findIndex(w => w.id === id);
+      if (idx < 0) throw new Error(`Workspace not found: ${id}`);
+      const [record] = devRecentOnlyWorkspaces.splice(idx, 1);
+      devWorkspaces.push(record);
+      activeWorkspaceId = id;
+      return record;
+    }
     const rootPath = String(req.path || "").trim();
     if (!rootPath) throw new Error("Workspace path is required");
     const existing = devWorkspaces.find(w => w.rootPath === rootPath);
@@ -1652,7 +1697,21 @@ const DEV_FIXTURES = {
     if (path === "app.language") {
       return devConfigs.app.language;
     }
-    if (!(path in devConfigs)) throw new Error(`Config path '${path}' not found`);
+    if (!(path in devConfigs)) {
+      // A dotted leaf resolves inside the document that holds it, as on the host.
+      const segments = String(path || "").split(".");
+      for (let cut = segments.length - 1; cut > 0; cut -= 1) {
+        const parent = segments.slice(0, cut).join(".");
+        if (!(parent in devConfigs)) continue;
+        let node = devConfigs[parent];
+        for (const segment of segments.slice(cut)) {
+          node = node && typeof node === "object" && !Array.isArray(node) ? node[segment] : undefined;
+        }
+        if (node !== undefined) return node;
+        break;
+      }
+      throw new Error(`Config path '${path}' not found`);
+    }
     return devConfigs[path];
   },
   set_config: args => {
@@ -1693,6 +1752,41 @@ const DEV_FIXTURES = {
       defaultTools: m.tools,
     })),
   ],
+  // session policy (wave 3)
+  get_session_mode_catalog: args => {
+    const req = payloadOf(args);
+    const profiles = ["Minimal", "Standard", "Ultimate", "Creative"];
+    const rows = DEV_FIXTURES.get_available_modes(args).filter(row => row.id.toLowerCase() !== "claw");
+    const session = devSessions.find(s => s.sessionId === req.sessionId);
+    const started = Boolean(session) && Number(session.messageCount || 0) > 0;
+    const entries = [
+      ...profiles.flatMap(name => rows.filter(row => row.id === name)),
+      ...rows.filter(row => !profiles.includes(row.id)),
+    ].map(row => ({
+      id: row.id,
+      label: row.name || row.id,
+      description: row.description || "",
+      profile: profiles.includes(row.id),
+      switchable: !started || row.id === (session && session.agentType),
+    }));
+    return {
+      entries,
+      defaultModeId: "Standard",
+      ...(session ? { sessionModeId: session.agentType || "Standard", sessionStarted: started } : {}),
+    };
+  },
+  list_session_commands: () => [
+    { id: "compact", command: "/compact", labelKey: "chat.slash.compact", description: "Summarize the conversation to free context", idleOnly: true, available: true },
+    { id: "init", command: "/init", labelKey: "chat.slash.init", description: "Generate or update AGENTS.md for this workspace", idleOnly: true, available: true },
+    { id: "reload", command: "/reload", labelKey: "chat.slash.reload", description: "Reload skills and project instructions", idleOnly: false, available: true, args: ["skills", "instructions"] },
+  ],
+  execute_session_command: args => {
+    const req = payloadOf(args);
+    const outcome = { compact: "compaction_started", init: "init_started", reload: "reloaded" }[req.id];
+    if (!outcome) throw new Error(`unknown_session_command: ${req.id}`);
+    return { id: req.id, outcome };
+  },
+  mark_session_seen: () => ({ changed: true }),
   update_session_mode: args => {
     const req = payloadOf(args);
     const session = devSessions.find(s => s.sessionId === req.sessionId);
@@ -2627,6 +2721,31 @@ const DEV_FIXTURES = {
     return null;
   },
 
+  // Workbench (round 4): disk identity, the file watcher, the terminal list and
+  // commit inspection, so the scenes are live in a plain browser too.
+  get_file_metadata: args => {
+    const req = payloadOf(args);
+    const filePath = String(req.path || "");
+    const body = Object.prototype.hasOwnProperty.call(devFileContents, filePath) ? devFileContents[filePath] : "";
+    return { path: filePath, modified: 1700000000000, size: String(body).length, isFile: true, isDir: false };
+  },
+  start_file_watch: () => null,
+  stop_file_watch: () => null,
+  retry_file_watch: () => null,
+  get_file_watch_status: () => ({ healthy: true, watchedPaths: [], failure: null }),
+  terminal_list: () => [],
+  terminal_send_command: args => {
+    const req = payloadOf(args);
+    if (req.sessionId && req.command) {
+      devTerminalBuffers[req.sessionId] = (devTerminalBuffers[req.sessionId] || "") + `${String(req.command)}\r\n$ `;
+    }
+    return null;
+  },
+  git_get_changed_files: () => [
+    { path: "src/main.rs", old_path: null, status: "modified" },
+    { path: "README.md", old_path: null, status: "modified" },
+  ],
+
   // Terminal
   terminal_get_shells: () => [
     { id: "zsh", name: "Zsh", shellType: "Zsh", path: "/bin/zsh", version: "5.9", available: true },
@@ -3478,8 +3597,18 @@ export async function createHost(player) {
   let flushTimerId = null;
 
   function fail(error) {
-    const message =
+    let message =
       typeof error === "string" ? error : error && error.message ? error.message : String(error);
+    // A command whose Rust error type is a struct (external sources report
+    // `{ code, detail, retryable }`) rejects with a plain object; keep its fields
+    // as JSON so the app can read the code instead of "[object Object]".
+    if (error && typeof error === "object" && !error.message) {
+      try {
+        message = JSON.stringify(error);
+      } catch {
+        // Keep the String() form when the object cannot be serialized.
+      }
+    }
     return { ok: false, error: message, transport };
   }
 
@@ -3612,6 +3741,21 @@ export async function createHost(player) {
     }
     if (action === "interrupt_dialog_turn" || action === "cancel_dialog_turn") {
       return stopDevDialogTurn(payloadOf(args));
+    }
+    // session policy (wave 3): the dev host starts a turn for every message (it
+    // runs one turn at a time) and stops through the same dev path.
+    if (action === "submit_user_message") {
+      const req = payloadOf(args);
+      const turnId = String(req.turnId || `dev-turn-${devTurnSeq + 1}`);
+      const started = startDevDialogTurn({ sessionId: req.sessionId, userInput: req.text, turnId });
+      return started.ok ? { ok: true, value: { outcome: "started", turnId }, transport } : started;
+    }
+    if (action === "stop_dialog_turn") {
+      const req = payloadOf(args);
+      const stopped = stopDevDialogTurn(req);
+      return stopped.ok
+        ? { ok: true, value: { turnId: String(req.dialogTurnId || ""), method: "interrupted" }, transport }
+        : stopped;
     }
     const fixture = DEV_FIXTURES[action];
     if (!fixture) {
@@ -4046,6 +4190,112 @@ export async function createHost(player) {
     }
   }
 
+  async function minimizeNativeWindow() {
+    const win = currentTauriWindow();
+    if (!win || typeof win.minimize !== "function") return { ok: true, value: false, transport };
+    try {
+      await win.minimize();
+      return { ok: true, value: true, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  // `close()` raises the native close request; the desktop prevents it and emits
+  // `openbitfun_main_window_close_requested`, which the app answers (tray, quit, ask).
+  async function closeNativeWindow() {
+    const win = currentTauriWindow();
+    if (!win || typeof win.close !== "function") return { ok: true, value: false, transport };
+    try {
+      await win.close();
+      return { ok: true, value: true, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  async function readNativeMaximized() {
+    const win = currentTauriWindow();
+    if (!win || typeof win.isMaximized !== "function") return { ok: true, value: false, transport };
+    try {
+      return { ok: true, value: Boolean(await win.isMaximized()), transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  // Windows/Linux frames are drawn by the page (`decorations(false)`), so the
+  // maximize glyph follows the window manager's own state on every resize.
+  let resizeWatch = null;
+  async function watchNativeResize() {
+    if (resizeWatch) return { ok: true, value: true, transport };
+    const win = currentTauriWindow();
+    if (!win || typeof win.onResized !== "function") return { ok: true, value: false, transport };
+    let timer = null;
+    resizeWatch = { stop: null };
+    try {
+      resizeWatch.stop = await win.onResized(() => {
+        if (timer !== null) clearTimeout(timer);
+        timer = setTimeout(async () => {
+          timer = null;
+          let maximized = false;
+          let fullscreen = false;
+          try {
+            maximized = typeof win.isMaximized === "function" ? Boolean(await win.isMaximized()) : false;
+            fullscreen = typeof win.isFullscreen === "function" ? Boolean(await win.isFullscreen()) : false;
+          } catch {
+            // The window is closing or hidden; the next resize reports again.
+          }
+          player.hostEvent("openbitfun.event", {
+            event: "window://resized",
+            payload: { maximized, fullscreen },
+          });
+        }, 120);
+      });
+      return { ok: true, value: true, transport };
+    } catch (error) {
+      resizeWatch = null;
+      return fail(error);
+    }
+  }
+
+  function readPageFocused() {
+    const focused =
+      typeof document !== "undefined" && typeof document.hasFocus === "function"
+        ? Boolean(document.hasFocus()) && document.visibilityState !== "hidden"
+        : true;
+    return { ok: true, value: focused, transport };
+  }
+
+  // This window's own build, as `@tauri-apps/api/app` `getVersion()` reads it; it
+  // never follows a peer, unlike the proxied `get_app_version` command.
+  async function readControllerVersion() {
+    if (!native) return { ok: true, value: null, transport };
+    try {
+      const version = await core.invoke("plugin:app|version");
+      return { ok: true, value: typeof version === "string" ? version : null, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  // The dialog plugin's `open`, as `@tauri-apps/plugin-dialog` invokes it.
+  async function pickNativeDirectory(args) {
+    if (!native) {
+      return fail("The development host has no native folder picker");
+    }
+    const options = { directory: true, multiple: false };
+    if (args && typeof args.title === "string" && args.title) options.title = args.title;
+    if (args && typeof args.defaultPath === "string" && args.defaultPath) options.defaultPath = args.defaultPath;
+    try {
+      const selected = await core.invoke("plugin:dialog|open", { options });
+      const path = typeof selected === "string" && selected.length > 0 ? selected : null;
+      return { ok: true, value: path, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
   return {
     async call(name, args) {
       switch (name) {
@@ -4057,6 +4307,20 @@ export async function createHost(player) {
           return dragNativeWindow();
         case "openbitfun.windowToggleMaximize":
           return toggleMaximizeNativeWindow();
+        case "openbitfun.windowMinimize":
+          return minimizeNativeWindow();
+        case "openbitfun.windowClose":
+          return closeNativeWindow();
+        case "openbitfun.windowIsMaximized":
+          return readNativeMaximized();
+        case "openbitfun.windowWatchResize":
+          return watchNativeResize();
+        case "openbitfun.windowFocused":
+          return readPageFocused();
+        case "openbitfun.pickDirectory":
+          return pickNativeDirectory(args);
+        case "openbitfun.appVersion":
+          return readControllerVersion();
         case "openbitfun.invoke": {
           if (!args || typeof args.action !== "string") {
             return fail("openbitfun.invoke needs an action");

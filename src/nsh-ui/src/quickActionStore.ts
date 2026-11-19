@@ -1,9 +1,11 @@
 // The quick actions the composer offers above the input: a label, the prompt it
-// sends, and whether it is shown. They live in `app.ai_experience.quick_actions`,
-// an object this surface also draws other fields from, so every write re-reads
-// that object first and merges only this array — a whole-object write from a
-// snapshot taken at page load would drop a setting another section just changed.
+// sends, and whether it is shown. They live in the leaf
+// `app.ai_experience.quick_actions`, which is read and written on its own, so a
+// write can never put back a sibling setting another section just changed. The
+// host applies the product defaults when the leaf was never stored, so this
+// surface keeps no copy of them.
 
+import { tr } from "./i18n";
 import { signal } from "nsh";
 import { getConfig, setConfig } from "./api";
 import { runStep } from "./state";
@@ -22,16 +24,9 @@ export interface QuickActionDraft {
   prompt: string;
 }
 
-const CONFIG_PATH = "app.ai_experience";
-const FIELD = "quick_actions";
+const LEAF_PATH = "app.ai_experience.quick_actions";
 
-/** What the desktop product ships; a host with no stored list runs these. */
-export const DEFAULT_QUICK_ACTIONS: QuickAction[] = [
-  { id: "commit", label: "Commit", prompt: "Commit all current code changes", enabled: true },
-  { id: "create_pr", label: "Create PR", prompt: "Create a Pull Request for the current branch", enabled: true },
-];
-
-export const quickActions = signal<QuickAction[]>(DEFAULT_QUICK_ACTIONS);
+export const quickActions = signal<QuickAction[]>([]);
 export const quickActionsNotice = signal("");
 export const quickActionDraft = signal<QuickActionDraft | null>(null);
 
@@ -67,16 +62,13 @@ export function ensureQuickActions(): void {
 export async function loadQuickActions(): Promise<void> {
   await runStep(async () => {
     try {
-      const config = await getConfig(CONFIG_PATH, true);
-      const stored = config && typeof config === "object"
-        ? (config as Record<string, unknown>)[FIELD]
-        : undefined;
-      const rows = readable(stored);
-      // An absent field is the host applying its defaults, not an empty list.
-      quickActions.set(rows ?? DEFAULT_QUICK_ACTIONS);
-      quickActionsNotice.set("");
-    } catch {
-      quickActions.set(DEFAULT_QUICK_ACTIONS);
+      // The host answers with its defaults when the list was never stored.
+      const rows = readable(await getConfig(LEAF_PATH, true));
+      quickActions.set(rows ?? []);
+      quickActionsNotice.set(rows ? "" : tr("chat.quickAction.unreadable"));
+    } catch (error) {
+      quickActions.set([]);
+      quickActionsNotice.set(error instanceof Error ? error.message : String(error));
     }
   });
 }
@@ -85,16 +77,7 @@ async function writeActions(next: QuickAction[], message: string): Promise<boole
   let saved = false;
   await runStep(async () => {
     try {
-      // Read first: this object holds the voice-input and suggestion settings the
-      // `Input` section writes, so merging into a fresh copy is what keeps them.
-      let base: Record<string, unknown> = {};
-      try {
-        const current = await getConfig(CONFIG_PATH, true);
-        if (current && typeof current === "object") base = current as Record<string, unknown>;
-      } catch {
-        // A host that never stored the object gets it created by this write.
-      }
-      await setConfig(CONFIG_PATH, { ...base, [FIELD]: next });
+      await setConfig(LEAF_PATH, next);
       quickActions.set(next);
       quickActionsNotice.set(message);
       saved = true;
@@ -110,7 +93,7 @@ export async function toggleQuickAction(id: string): Promise<void> {
     action.id === id ? { ...action, enabled: !action.enabled } : action,
   );
   const action = next.find(entry => entry.id === id);
-  await writeActions(next, `${action?.enabled ? "Shown" : "Hidden"}: ${action?.label ?? id}`);
+  await writeActions(next, tr(action?.enabled ? "chat.quickAction.shown" : "chat.quickAction.hidden", { label: action?.label ?? id }));
 }
 
 export function openQuickActionDraft(action?: QuickAction): void {
@@ -135,7 +118,7 @@ export async function saveQuickActionDraft(): Promise<void> {
   const label = draft.label.trim();
   const prompt = draft.prompt.trim();
   if (!label || !prompt) {
-    quickActionsNotice.set("An action needs a label and a prompt");
+    quickActionsNotice.set(tr("chat.quickAction.needsLabel"));
     return;
   }
   const existing = quickActions();

@@ -5,6 +5,7 @@
 //! update transaction against the desktop MiniApp manager.
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use openbitfun_core::infrastructure::events::{emit_global_event, BackendEvent};
 use openbitfun_core::miniapp::lifecycle::miniapp_runtime_event_payload;
 use openbitfun_core::miniapp::{
@@ -25,7 +26,7 @@ use openbitfun_services_integrations::miniapp_market::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter, Manager, State, Webview};
+use tauri::{AppHandle, Emitter, Manager, Webview};
 use tokio::io::AsyncWriteExt;
 
 const MARKET_UPLOAD_PROGRESS_EVENT: &str = "miniapp-market-upload-progress";

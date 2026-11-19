@@ -1,4 +1,5 @@
 use crate::api::app_state::AppState;
+use crate::host::State;
 use openbitfun_core::infrastructure::{
     FileSearchOutcome, FileSearchResult, FileSearchResultGroup, SearchMatchType,
 };
@@ -12,8 +13,6 @@ use openbitfun_core::service::workspace::{WorkspaceInfo, WorkspaceKind};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tauri::State;
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchRepoIndexRequest {

@@ -3,7 +3,7 @@
 // printed, so the sessions and their scrollback live here rather than in the
 // scene component.
 
-import { signal } from "nsh";
+import { computed, signal } from "nsh";
 import {
   closeTerminal,
   createTerminal,
@@ -13,8 +13,9 @@ import {
   writeTerminal,
   type TerminalShell,
 } from "./api";
-import { listenEvent } from "./bridge";
+import { invokeCommand, listenEvent } from "./bridge";
 import { Storage } from "nsh";
+import { activeWorkspaceId } from "./state";
 
 /**
  * The host emits `terminal_event` with `{ type, payload }`: `Data` carries the
@@ -42,6 +43,12 @@ export interface TerminalTab {
    * one follows the title the shell sets, which is what the desktop shows too.
    */
   named: boolean;
+  /** The workspace the shell belongs to; tabs show per workspace (null: any). */
+  workspaceId?: string | null;
+  /** The host reports an agent started this shell (`source: "agent"`). */
+  agentCreated?: boolean;
+  /** Where the host's scrollback ended at the last read, for delta replays. */
+  nextOffset?: number;
 }
 
 /** Upper bound on in-memory scrollback per terminal tab (prevents unbounded growth). */
@@ -82,6 +89,15 @@ function decodeBinaryPayload(data: unknown): string {
 }
 
 export const terminalTabs = signal<TerminalTab[]>([]);
+/** The tabs of the active workspace: a shell runs in one workspace and shows there. */
+export const visibleTerminalTabs = computed<TerminalTab[]>(() => {
+  const workspaceId = activeWorkspaceId();
+  return terminalTabs().filter(tab => !tab.workspaceId || !workspaceId || tab.workspaceId === workspaceId);
+});
+/** A running shell waiting for the user to confirm closing it. */
+export const confirmingCloseTerminal = signal<string | null>(null);
+/** The tab whose name is being edited. */
+export const renamingTerminal = signal<string | null>(null);
 /** The tab on screen; also the session input and resize go to. */
 export const terminalId = signal<string | null>(null);
 export const terminalStatus = signal<string>("idle");
@@ -165,6 +181,11 @@ function updateTab(id: string, patch: Partial<TerminalTab>): void {
 function subscribeOutput(): void {
   if (subscribed) return;
   subscribed = true;
+  // A remote shell's output notice carries no bytes: pull what is new.
+  listenEvent<{ session_id?: string; sessionId?: string }>("terminal-output", event => {
+    const id = event?.sessionId ?? event?.session_id;
+    if (id && terminalTabs().some(tab => tab.id === id)) void resyncTerminal(id);
+  });
   listenEvent<TerminalEventPayload>("terminal_event", event => {
     const payload = event?.payload;
     if (!payload?.session_id) return;
@@ -214,6 +235,7 @@ export function applyTerminalTitle(id: string, title: string): void {
 async function replayHistory(sessionId: string): Promise<void> {
   try {
     const history = await getTerminalHistory(sessionId);
+    if (typeof history?.nextOffset === "number") updateTab(sessionId, { nextOffset: history.nextOffset });
     if (!history?.data) return;
     flushPendingPtyData();
     const tab = terminalTabs().find(item => item.id === sessionId);
@@ -273,7 +295,13 @@ export async function openProfile(
   if (!opened) return;
   const command = profile.startupCommand.trim();
   if (!command) return;
-  await writeTerminal(opened, `${command}\r`);
+  // The host types the command and its newline itself, the way the desktop
+  // starts a profile; an older host without the command gets the keystrokes.
+  try {
+    await invokeCommand<unknown>("terminal_send_command", { sessionId: opened, command });
+  } catch {
+    await writeTerminal(opened, `${command}\r`);
+  }
 }
 
 /** Opens one more shell for the workspace and puts it on screen. */
@@ -285,7 +313,7 @@ export async function openTerminal(
   if (starting) return null;
   starting = true;
   subscribeOutput();
-  const index = terminalTabs().length + 1;
+  const index = visibleTerminalTabs().length + 1;
   if (!terminalShells().length) await loadTerminalShells();
   const shellId = override?.shellId ?? selectedShellId() ?? "";
   const shell = terminalShells().find(entry => entry.id === shellId);
@@ -297,8 +325,8 @@ export async function openTerminal(
       // A profile names a shell the host may no longer report; the plain type is
       // what the host still accepts then.
       ...(!shell && override?.shellType ? { shellType: override.shellType } : {}),
-      cols: 120,
-      rows: 32,
+      cols: lastSize.cols,
+      rows: lastSize.rows,
     });
     terminalTabs.update(current => [
       ...current,
@@ -308,6 +336,7 @@ export async function openTerminal(
         status: "running",
         buffer: "",
         named: Boolean(override?.title),
+        workspaceId: workspaceId ?? null,
       },
     ]);
     selectTerminal(session.id);
@@ -396,22 +425,134 @@ export function selectTerminal(id: string): void {
   terminalMessage.set(tab.status === "exited" ? "Shell exited" : "");
   resetter?.();
   if (tab.buffer) outputWriter?.(tab.buffer);
+  // A shell that was off screen still has the size it had then: give it the
+  // view's size, or its output wraps at the old width.
+  if (lastSizeKnown) void resizeTerminal(id, lastSize.cols, lastSize.rows).catch(() => undefined);
+  // A shell this surface attached to (an agent's) has no scrollback here yet.
+  if (!tab.buffer && tab.nextOffset === undefined) void replayHistory(id);
 }
 
 /** One shell for the workspace, created on first use. */
 export async function ensureTerminal(workspaceId: string | null, workingDirectory: string): Promise<void> {
-  if (terminalTabs().length || starting) return;
+  if (starting) return;
+  await reattachTerminals(workspaceId);
+  const visible = visibleTerminalTabs();
+  if (visible.length) {
+    if (!visible.some(tab => tab.id === terminalId())) selectTerminal(visible[visible.length - 1].id);
+    return;
+  }
   terminalStatus.set("starting");
   await openTerminal(workspaceId, workingDirectory);
 }
 
+const attachedWorkspaces = new Set<string>();
+
+/**
+ * Picks up the shells the host already runs for this workspace — an agent's, or
+ * the ones a previous window opened — the way the desktop's terminal panel lists
+ * `terminal_list`. Each is attached once and replays its scrollback when shown.
+ */
+export async function reattachTerminals(workspaceId: string | null): Promise<void> {
+  if (!workspaceId || attachedWorkspaces.has(workspaceId)) return;
+  attachedWorkspaces.add(workspaceId);
+  subscribeOutput();
+  let sessions: Array<Record<string, unknown>>;
+  try {
+    const raw = await invokeCommand<Array<Record<string, unknown>>>("terminal_list");
+    sessions = Array.isArray(raw) ? raw : [];
+  } catch {
+    // An older host without the list keeps the shells this surface opens.
+    return;
+  }
+  const known = new Set(terminalTabs().map(tab => tab.id));
+  const added: TerminalTab[] = [];
+  for (const session of sessions) {
+    const id = typeof session?.id === "string" ? session.id : "";
+    const owner = session.workspaceId ?? session.workspace_id;
+    if (!id || known.has(id) || owner !== workspaceId) continue;
+    const status = String(session.status ?? "running").toLowerCase();
+    added.push({
+      id,
+      title: String(session.name ?? "") || `shell ${visibleTerminalTabs().length + added.length + 1}`,
+      status: /exit|stop|dead|closed/.test(status) ? "exited" : "running",
+      buffer: "",
+      named: false,
+      workspaceId,
+      agentCreated: String(session.source ?? "").toLowerCase() === "agent",
+    });
+  }
+  if (added.length) terminalTabs.update(current => [...current, ...added]);
+}
+
+/**
+ * Catches a shell up after a gap (a remote output notice, a reconnect): reads
+ * only what the host printed after the last offset this surface has, and
+ * replays the whole scrollback when the host says that window was trimmed.
+ */
+export async function resyncTerminal(sessionId: string): Promise<void> {
+  const tab = terminalTabs().find(item => item.id === sessionId);
+  if (!tab) return;
+  if (tab.nextOffset === undefined) {
+    await replayHistory(sessionId);
+    return;
+  }
+  try {
+    const page = await getTerminalHistory(sessionId, tab.nextOffset);
+    if (!page) return;
+    if (page.truncated) {
+      updateTab(sessionId, { buffer: "", nextOffset: undefined });
+      if (terminalId() === sessionId) resetter?.();
+      await replayHistory(sessionId);
+      return;
+    }
+    updateTab(sessionId, { nextOffset: page.nextOffset });
+    if (page.data) enqueuePtyChunk(sessionId, page.data);
+  } catch {
+    // The live stream still delivers; the next notice tries again.
+  }
+}
+
+/** Clears what the view shows (the shell and its process keep running). */
+export function clearTerminalView(): void {
+  const id = terminalId();
+  if (!id) return;
+  flushPendingPtyData();
+  updateTab(id, { buffer: "" });
+  resetter?.();
+}
+
+export function renameTerminalTab(id: string, title: string): void {
+  renamingTerminal.set(null);
+  const next = title.trim();
+  if (!next) return;
+  updateTab(id, { title: next, named: true });
+}
+
+/** Closing a running shell asks first: it ends whatever runs in it. */
+export function requestCloseTerminalTab(id: string): void {
+  const tab = terminalTabs().find(item => item.id === id);
+  if (tab && tab.status === "running") {
+    confirmingCloseTerminal.set(id);
+    return;
+  }
+  void closeTerminalTab(id);
+}
+
+export function cancelCloseTerminal(): void {
+  confirmingCloseTerminal.set(null);
+}
+
+let lastSize = { cols: 120, rows: 32 };
+let lastSizeKnown = false;
+
 export async function closeTerminalTab(id: string): Promise<void> {
+  if (confirmingCloseTerminal() === id) confirmingCloseTerminal.set(null);
   pendingPtyData.delete(id);
   const remaining = terminalTabs().filter(tab => tab.id !== id);
   terminalTabs.set(remaining);
   await closeTerminal(id).catch(() => undefined);
   if (terminalId() !== id) return;
-  const next = remaining[remaining.length - 1];
+  const next = visibleTerminalTabs()[visibleTerminalTabs().length - 1];
   terminalId.set(null);
   resetter?.();
   if (next) {
@@ -433,6 +574,7 @@ export function forgetTerminals(): void {
   }
   ptyFlushRafId = null;
   pendingPtyData.clear();
+  attachedWorkspaces.clear();
   terminalTabs.set([]);
   terminalId.set(null);
   terminalStatus.set("idle");
@@ -449,6 +591,10 @@ export function sendTerminalInput(data: string): void {
 }
 
 export function sendTerminalResize(cols: number, rows: number): void {
+  if (cols > 0 && rows > 0) {
+    lastSize = { cols, rows };
+    lastSizeKnown = true;
+  }
   const id = terminalId();
   if (!id) return;
   void resizeTerminal(id, cols, rows).catch(() => undefined);

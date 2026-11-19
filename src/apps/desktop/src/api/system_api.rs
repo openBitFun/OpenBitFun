@@ -4,10 +4,11 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use openbitfun_core::service::system;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Position, Size, State};
+use tauri::{AppHandle, Manager, Position, Size};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -272,11 +273,11 @@ pub struct GetAppVersionRequest {}
 /// Returns the current application version (from `Cargo.toml` / bundle metadata).
 #[tauri::command]
 pub async fn get_app_version(
-    app: AppHandle,
+    app: crate::host::HostHandle,
     request: GetAppVersionRequest,
 ) -> Result<String, String> {
     let _ = request;
-    Ok(app.package_info().version.to_string())
+    Ok(app.app_version())
 }
 
 #[derive(Debug, Deserialize, Default)]

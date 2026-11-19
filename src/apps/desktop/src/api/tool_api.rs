@@ -1,11 +1,7 @@
 //! Tool API
 
+use crate::host::State;
 use log::error;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use tauri::State;
-
 use openbitfun_agent_runtime::sdk::AgentUserAnswersRequest;
 use openbitfun_core::agentic::tools::product_runtime::{build_tool_info, ToolInfoDto};
 use openbitfun_core::agentic::{
@@ -17,6 +13,9 @@ use openbitfun_core::agentic::{
 use openbitfun_core::product_runtime::CoreRuntimeServicesProvider;
 use openbitfun_core::service::remote_ssh::workspace_state::get_remote_workspace_manager;
 use openbitfun_core::util::elapsed_ms_u64;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::runtime::DesktopRuntimeContext;
 

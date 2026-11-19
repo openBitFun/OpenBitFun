@@ -18,6 +18,9 @@ pub mod providers;
 pub mod service;
 pub mod types;
 
+/// Typed settings mutations every host applies before its config-write transaction.
+pub use openbitfun_config_contracts::settings_mutations;
+
 pub use app_language::{
     get_app_language, get_app_language_code, short_model_user_language_instruction,
 };

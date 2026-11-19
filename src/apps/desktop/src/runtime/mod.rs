@@ -1,3 +1,4 @@
+use crate::host::HostHandle;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -71,7 +72,7 @@ impl DesktopRuntimeContext {
 
     pub(crate) fn start_permission_event_forwarding(
         &self,
-        app: tauri::AppHandle,
+        app: HostHandle,
     ) -> Result<(), openbitfun_agent_runtime::sdk::RuntimeError> {
         if self.permission_events_started.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -87,8 +88,6 @@ impl DesktopRuntimeContext {
         };
         let runtime = self.agent_runtime().clone();
         tauri::async_runtime::spawn(async move {
-            use tauri::Emitter;
-
             loop {
                 match receiver.recv().await {
                     Ok(event) => {

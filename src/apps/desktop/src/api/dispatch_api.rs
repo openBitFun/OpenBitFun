@@ -29,10 +29,9 @@ use openbitfun_core::service::remote_connect::account_runtime::AccountDevice;
 use openbitfun_core::service::remote_ssh::dispatch_ssh::DispatchSshProbe;
 use openbitfun_product_domains::detached_dispatch_control::DetachedDispatchControlRequest;
 
-use serde_json::Value;
-use tauri::State;
-
 use super::app_state::AppState;
+use crate::host::State;
+use serde_json::Value;
 
 struct AccountDeviceDispatchRpc;
 

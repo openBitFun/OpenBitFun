@@ -1,5 +1,7 @@
 //! Desktop host API for ecosystem-neutral external AI application sources.
 
+use super::AppState;
+use crate::host::State;
 use openbitfun_core::external_sources::{
     acknowledge_external_ecosystems, apply_external_source_control_action,
     choose_external_mcp_conflict, choose_external_subagent_conflict,
@@ -27,9 +29,6 @@ use openbitfun_product_domains::external_sources::{
 };
 use openbitfun_product_domains::workspace_references::WorkspaceReferenceSnapshot;
 use serde::{Deserialize, Serialize};
-use tauri::State;
-
-use super::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

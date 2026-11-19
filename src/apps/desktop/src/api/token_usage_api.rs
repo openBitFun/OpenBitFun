@@ -1,10 +1,9 @@
 //! Token usage statistics API (settings "usage statistics" page).
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use log::error;
 use openbitfun_core::service::token_usage::{TokenUsageStatisticsRequest, UsageStatistics};
-use tauri::State;
-
 #[tauri::command]
 pub async fn get_token_usage_statistics(
     request: TokenUsageStatisticsRequest,

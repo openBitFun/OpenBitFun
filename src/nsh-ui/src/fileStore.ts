@@ -6,7 +6,7 @@
 // authority on what a directory now contains.
 
 import { Clipboard, computed, signal } from "nsh";
-import { invokeCommand } from "./bridge";
+import { invokeCommand, listenEvent } from "./bridge";
 import {
   createWorkspaceDirectory,
   createWorkspaceFile,
@@ -22,7 +22,15 @@ import {
   type GitStatus,
   type WorkspaceEntry,
 } from "./api";
-import { activeWorkspaceId, activeWorkspaceRoot, onWorkspaceChanged, reportError, runStep } from "./state";
+import { peerScope } from "./peerState";
+import {
+  activeWorkspace,
+  activeWorkspaceId,
+  activeWorkspaceRoot,
+  onWorkspaceChanged,
+  reportError,
+  runStep,
+} from "./state";
 import { basename, extensionOf, formatBytes } from "./format";
 
 export type PreviewKind = "markdown" | "code" | "text" | "image" | "video" | "diff" | "binary";
@@ -34,6 +42,8 @@ export interface OpenFile {
   language: string;
   content: string;
   note?: string;
+  /** Past `LARGE_FILE_BYTES`: shown without colouring, editable on request. */
+  large?: boolean;
 }
 
 export interface PendingEdit {
@@ -49,6 +59,9 @@ export interface SearchHit {
   name: string;
   line?: number;
   preview?: string;
+  /** The text around the match on its line, when the host reports it (B28). */
+  previewBefore?: string;
+  previewAfter?: string;
 }
 
 export const dirChildren = signal<Record<string, WorkspaceEntry[]>>({});
@@ -63,10 +76,59 @@ export const searchQuery = signal<string>("");
 /** `name` matches file names, `content` greps inside files through the same command. */
 export const searchMode = signal<"name" | "content">("name");
 export const searchResults = signal<SearchHit[]>([]);
+export const searchCaseSensitive = signal(false);
+export const searchRegex = signal(false);
+export const searchWholeWord = signal(false);
+/** The host stopped at `SEARCH_MAX_RESULTS`: more matches exist than are listed. */
+export const searchTruncated = signal(false);
+export const searchRunning = signal(false);
+export const SEARCH_MAX_RESULTS = 500;
+const SEARCH_DEBOUNCE_MS = 250;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchTicket = 0;
+
+/** Searches as the user types, once typing pauses for 250 ms. */
+export function scheduleFileSearch(): void {
+  if (searchTimer !== null) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    void runFileSearch();
+  }, SEARCH_DEBOUNCE_MS);
+}
 /** The repository under the workspace root, or null when there is none. */
 export const gitStatus = signal<GitStatus | null>(null);
 /** Whether the changed-files list is expanded over the tree. */
 export const gitListOpen = signal(false);
+
+/** The open editor tabs, in the order they were opened. */
+export const openFilePaths = signal<string[]>([]);
+
+/**
+ * An unsaved edit of a file that is not the active tab. The active file's draft
+ * lives in `editingContent`; switching tabs moves it here and back, so a tab
+ * switch, a diff review or a workspace switch never drops typed text.
+ */
+export interface FileDraft {
+  text: string;
+  /** The disk text the draft was edited against. */
+  base: string;
+  /** The disk identity of `base`, when the host reported one. */
+  version: DiskVersion | null;
+}
+
+/** Disk identity read through `get_file_metadata` (local and remote alike). */
+export interface DiskVersion {
+  modified: number;
+  size: number;
+}
+
+export const drafts = signal<Record<string, FileDraft>>({});
+/** Open files whose disk copy changed under an unsaved draft (or went away). */
+export const changedOnDisk = signal<Record<string, "modified" | "deleted">>({});
+/** The file whose save found a newer copy on disk, waiting for Overwrite or Reload. */
+export const saveConflict = signal<string | null>(null);
+/** The dirty tab waiting for a Discard / Save confirmation before it closes. */
+export const confirmingCloseTab = signal<string | null>(null);
 
 export interface GitDecoration {
   /** The porcelain letter git reports: M, A, D, R, U (untracked) or C (conflict). */
@@ -252,6 +314,94 @@ function parentOf(path: string): string {
   return dirnameOf(path) || activeWorkspaceRoot();
 }
 
+/** The disk identity of `path`, or null when the host cannot say (older peer, deleted file). */
+async function readDiskVersion(workspaceId: string, path: string): Promise<DiskVersion | null> {
+  try {
+    const raw = await invokeCommand<Record<string, unknown> | null>("get_file_metadata", { workspaceId, path });
+    const modified = Number(raw?.modified ?? raw?.lastModified ?? Number.NaN);
+    if (!Number.isFinite(modified)) return null;
+    const size = Number(raw?.size ?? 0);
+    return { modified, size: Number.isFinite(size) ? size : 0 };
+  } catch {
+    return null;
+  }
+}
+
+/** BOM and newline style never count as an external change (the desktop's rule). */
+function normalizeForDiskCompare(text: string): string {
+  let value = text;
+  if (value.charCodeAt(0) === 0xfeff) value = value.slice(1);
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function sameDiskText(left: string, right: string): boolean {
+  return normalizeForDiskCompare(left) === normalizeForDiskCompare(right);
+}
+
+/** The version recorded for each file's on-screen disk text (active file or a draft's base). */
+const diskVersions = new Map<string, DiskVersion | null>();
+
+/** True when the active draft differs from the disk text it was edited against. */
+export const hasUnsavedEdit = computed(() => {
+  const draft = editingContent();
+  const file = openFile();
+  return draft !== null && file !== null && draft !== file.content;
+});
+
+/** A tab carries unsaved text: the active draft, or a stashed one. */
+export function isDirtyPath(path: string): boolean {
+  if (openFile()?.path === path) return hasUnsavedEdit();
+  return Boolean(drafts()[path]);
+}
+
+/** Every path that holds unsaved text right now. */
+export const dirtyPaths = computed<string[]>(() => {
+  const paths = Object.keys(drafts());
+  const active = openFile()?.path;
+  if (active && hasUnsavedEdit() && !paths.includes(active)) paths.push(active);
+  return paths;
+});
+
+function setDraft(path: string, draft: FileDraft | null): void {
+  drafts.update(current => {
+    if (!draft) {
+      if (!(path in current)) return current;
+      const { [path]: _dropped, ...rest } = current;
+      return rest;
+    }
+    return { ...current, [path]: draft };
+  });
+}
+
+function setChangedOnDisk(path: string, state: "modified" | "deleted" | null): void {
+  changedOnDisk.update(current => {
+    if (!state) {
+      if (!(path in current)) return current;
+      const { [path]: _dropped, ...rest } = current;
+      return rest;
+    }
+    return current[path] === state ? current : { ...current, [path]: state };
+  });
+}
+
+/** Moves the active file's unsaved text into `drafts` before another view replaces it. */
+function stashActiveDraft(): void {
+  const file = openFile();
+  const draft = editingContent();
+  if (!file || draft === null) return;
+  if (draft !== file.content) {
+    setDraft(file.path, { text: draft, base: file.content, version: diskVersions.get(file.path) ?? null });
+  } else {
+    setDraft(file.path, null);
+  }
+  editingContent.set(null);
+}
+
+function ensureTab(path: string): void {
+  rememberWorkspaceKey();
+  if (!openFilePaths().includes(path)) openFilePaths.update(tabs => [...tabs, path]);
+}
+
 /** Reads one directory into the cache; a failure stays with that directory. */
 export async function loadDirectory(path: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
@@ -280,17 +430,23 @@ export async function loadRoot(): Promise<void> {
  * Reads the repository state under the workspace root. A workspace that is not a
  * repository, or a host without git, simply leaves the tree undecorated.
  */
-export async function loadGitStatus(): Promise<void> {
+export async function loadGitStatus(options: { quiet?: boolean } = {}): Promise<boolean> {
   const workspaceId = activeWorkspaceId();
   const root = activeWorkspaceRoot();
   if (!workspaceId || !root) {
     gitStatus.set(null);
-    return;
+    return true;
   }
   try {
-    gitStatus.set(await getGitStatus(workspaceId, root));
+    const next = await getGitStatus(workspaceId, root);
+    if (activeWorkspaceId() !== workspaceId) return true;
+    // A poll that finds nothing new leaves the tree's decorations untouched.
+    if (JSON.stringify(next ?? null) !== JSON.stringify(gitStatus())) gitStatus.set(next ?? null);
+    return true;
   } catch {
-    gitStatus.set(null);
+    // A quiet poll keeps the last answer: one failed read must not blank the tree.
+    if (!options.quiet) gitStatus.set(null);
+    return false;
   }
 }
 
@@ -299,8 +455,10 @@ export async function openDiffReview(path: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
   const root = activeWorkspaceRoot();
   if (!workspaceId || !root) return;
-  editingContent.set(null);
+  stashActiveDraft();
+  openTicket += 1;
   selectedPath.set(path);
+  ensureTab(path);
   await runStep(async () => {
     try {
       const patch = await getGitDiff(workspaceId, root, { files: [path] });
@@ -329,11 +487,18 @@ export async function setExpanded(path: string, expanded: boolean): Promise<void
   }
 }
 
+let openTicket = 0;
+
+/** Above this, text opens without colouring and the editor says why. */
+export const LARGE_FILE_BYTES = 1024 * 1024;
+
 export async function openFileAt(path: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return;
-  editingContent.set(null);
+  stashActiveDraft();
+  const ticket = ++openTicket;
   selectedPath.set(path);
+  ensureTab(path);
   const kind = previewKindOf(path);
   const name = basename(path);
   if (kind === "image" || kind === "video") {
@@ -356,6 +521,7 @@ export async function openFileAt(path: string): Promise<void> {
     await runStep(async () => {
       try {
         const encoded = await readFileContent(workspaceId, path, "base64");
+        if (ticket !== openTicket) return;
         openFile.set({
           path,
           name,
@@ -364,6 +530,7 @@ export async function openFileAt(path: string): Promise<void> {
           content: `data:${mediaMimeOf(path)};base64,${encoded ?? ""}`,
         });
       } catch (error) {
+        if (ticket !== openTicket) return;
         const message = error instanceof Error ? error.message : String(error);
         openFile.set({ path, name, kind: "binary", language: "", content: "", note: message });
       }
@@ -385,14 +552,79 @@ export async function openFileAt(path: string): Promise<void> {
     return;
   }
   await runStep(async () => {
+    const stashed = drafts()[path];
+    let content: string | null = null;
+    let readError: unknown = null;
+    let version: DiskVersion | null = null;
     try {
-      const content = await readFileContent(workspaceId, path);
-      openFile.set({ path, name, kind, language: languageOf(path), content: content ?? "" });
+      [content, version] = await Promise.all([
+        readFileContent(workspaceId, path).then(text => text ?? ""),
+        readDiskVersion(workspaceId, path),
+      ]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      openFile.set({ path, name, kind: "binary", language: "", content: "", note: message });
+      readError = error;
     }
+    if (ticket !== openTicket) return;
+    const size = version?.size ?? knownSizeOf(path) ?? (content ?? "").length;
+    const large = size > LARGE_FILE_BYTES;
+    if (stashed) {
+      // The draft wins: it is reopened over the disk text it was typed against,
+      // and a disk copy that moved on meanwhile is flagged, never merged silently.
+      setDraft(path, null);
+      openFile.set({ path, name, kind, language: languageOf(path), content: stashed.base, ...(large ? { large } : {}) });
+      diskVersions.set(path, stashed.version);
+      editingContent.set(stashed.text);
+      if (readError) setChangedOnDisk(path, "deleted");
+      else if (content !== null && !sameDiskText(content, stashed.base)) setChangedOnDisk(path, "modified");
+      return;
+    }
+    if (readError) {
+      const message = readError instanceof Error ? readError.message : String(readError);
+      openFile.set({ path, name, kind: "binary", language: "", content: "", note: message });
+      return;
+    }
+    diskVersions.set(path, version);
+    setChangedOnDisk(path, null);
+    openFile.set({ path, name, kind, language: languageOf(path), content: content ?? "", ...(large ? { large } : {}) });
+    // Code and text open straight into the editor, as the desktop's editor does;
+    // Markdown opens as its rendered preview and edits on request.
+    if (EDIT_ON_OPEN_KINDS.has(kind) && !large) editingContent.set(content ?? "");
   });
+}
+
+const EDIT_ON_OPEN_KINDS = new Set<PreviewKind>(["code", "text"]);
+
+/** Re-reads the active file from disk, dropping its draft (Reload from disk). */
+export async function reloadFromDisk(path: string): Promise<void> {
+  saveConflict.set(null);
+  setChangedOnDisk(path, null);
+  setDraft(path, null);
+  if (openFile()?.path === path) editingContent.set(null);
+  await openFileAt(path);
+}
+
+/** Keeps the draft and adopts the current disk copy as its base, so the next save overwrites it. */
+export async function keepDraftOverDisk(path: string): Promise<void> {
+  const workspaceId = activeWorkspaceId();
+  setChangedOnDisk(path, null);
+  if (!workspaceId) return;
+  const file = openFile();
+  if (file?.path !== path) return;
+  try {
+    const [content, version] = await Promise.all([
+      readFileContent(workspaceId, path).then(text => text ?? ""),
+      readDiskVersion(workspaceId, path),
+    ]);
+    if (openFile()?.path !== path) return;
+    const draft = editingContent();
+    openFile.set({ ...file, content });
+    diskVersions.set(path, version);
+    // A draft equal to the old base would read as clean against the new one.
+    if (draft === null) editingContent.set(file.content);
+  } catch {
+    // The file is gone: saving recreates it from the draft.
+    diskVersions.set(path, null);
+  }
 }
 
 /**
@@ -445,10 +677,9 @@ export async function commitEdit(value: string): Promise<void> {
     if (edit.mode === "rename") {
       const next = joinPath(parentOf(edit.base), name);
       await renameWorkspaceFile(workspaceId, edit.base, next);
+      movePathState(edit.base, next);
       await refreshDirectory(parentOf(edit.base));
       void loadGitStatus();
-      if (selectedPath() === edit.base) selectedPath.set(next);
-      if (openFile()?.path === edit.base) await openFileAt(next);
       fileNotice.set(`Renamed to ${name}`);
       return;
     }
@@ -525,6 +756,76 @@ function fileUrlToPath(url: string): string {
   }
 }
 
+/** `path` itself or anything below it. */
+function isAtOrUnder(candidate: string, path: string): boolean {
+  return candidate === path || candidate.startsWith(`${path}/`) || candidate.startsWith(`${path}\\`);
+}
+
+function rebase(candidate: string, from: string, to: string): string {
+  return candidate === from ? to : `${to}${candidate.slice(from.length)}`;
+}
+
+/**
+ * A rename carries everything keyed by the old path — expanded folders, cached
+ * listings, open tabs, drafts and the selection — to the new one, so renaming a
+ * folder neither collapses the tree nor strands its open files.
+ */
+function movePathState(from: string, to: string): void {
+  expandedDirs.update(list => list.map(item => (isAtOrUnder(item, from) ? rebase(item, from, to) : item)));
+  dirChildren.update(current => {
+    const next: Record<string, WorkspaceEntry[]> = {};
+    for (const [key, entries] of Object.entries(current)) {
+      const moved = isAtOrUnder(key, from) ? rebase(key, from, to) : key;
+      next[moved] = isAtOrUnder(key, from)
+        ? entries.map(entry => ({ ...entry, path: rebase(entry.path, from, to) }))
+        : entries;
+    }
+    return next;
+  });
+  openFilePaths.update(tabs => tabs.map(tab => (isAtOrUnder(tab, from) ? rebase(tab, from, to) : tab)));
+  drafts.update(current => {
+    const next: Record<string, FileDraft> = {};
+    for (const [key, draft] of Object.entries(current)) next[isAtOrUnder(key, from) ? rebase(key, from, to) : key] = draft;
+    return next;
+  });
+  for (const [key, version] of [...diskVersions.entries()]) {
+    if (!isAtOrUnder(key, from)) continue;
+    diskVersions.delete(key);
+    diskVersions.set(rebase(key, from, to), version);
+  }
+  const selected = selectedPath();
+  if (selected && isAtOrUnder(selected, from)) selectedPath.set(rebase(selected, from, to));
+  const file = openFile();
+  if (file && isAtOrUnder(file.path, from)) {
+    const path = rebase(file.path, from, to);
+    openFile.set({ ...file, path, name: basename(path) });
+  }
+}
+
+/** A delete closes the tabs, drafts and listings under the deleted path. */
+function dropPathState(path: string): void {
+  expandedDirs.update(list => list.filter(item => !isAtOrUnder(item, path)));
+  dirChildren.update(current => {
+    const next: Record<string, WorkspaceEntry[]> = {};
+    for (const [key, entries] of Object.entries(current)) if (!isAtOrUnder(key, path)) next[key] = entries;
+    return next;
+  });
+  openFilePaths.update(tabs => tabs.filter(tab => !isAtOrUnder(tab, path)));
+  drafts.update(current => {
+    const next: Record<string, FileDraft> = {};
+    for (const [key, draft] of Object.entries(current)) if (!isAtOrUnder(key, path)) next[key] = draft;
+    return next;
+  });
+  for (const key of [...diskVersions.keys()]) if (isAtOrUnder(key, path)) diskVersions.delete(key);
+  const file = openFile();
+  if (file && isAtOrUnder(file.path, path)) {
+    editingContent.set(null);
+    openFile.set(null);
+    const next = openFilePaths()[0];
+    if (next) void openFileAt(next);
+  }
+}
+
 /**
  * A delete waits for an in-scene confirmation rather than a native alert: the
  * dialog has to be answerable from whichever surface is driving the session, and
@@ -553,10 +854,7 @@ export async function removeSelected(): Promise<void> {
     } else {
       await deleteWorkspaceFile(workspaceId, target);
     }
-    if (openFile()?.path === target) {
-      openFile.set(null);
-      editingContent.set(null);
-    }
+    dropPathState(target);
     selectedPath.set(null);
     await refreshDirectory(parentOf(target));
     void loadGitStatus();
@@ -576,12 +874,28 @@ export async function runFileSearch(): Promise<void> {
   const query = searchQuery().trim();
   const mode = searchMode();
   if (!workspaceId) return;
+  const ticket = ++searchTicket;
   if (!query) {
     searchResults.set([]);
+    searchTruncated.set(false);
     return;
   }
+  searchRunning.set(true);
   await runStep(async () => {
-    const rows = await searchWorkspaceFiles(workspaceId, query, { searchContent: mode === "content" });
+    let rows: unknown[];
+    try {
+      rows = await searchWorkspaceFiles(workspaceId, query, {
+        searchContent: mode === "content",
+        caseSensitive: searchCaseSensitive(),
+        useRegex: searchRegex(),
+        wholeWord: searchWholeWord(),
+        maxResults: SEARCH_MAX_RESULTS,
+      });
+    } finally {
+      if (ticket === searchTicket) searchRunning.set(false);
+    }
+    // A newer query (typing went on) owns the list.
+    if (ticket !== searchTicket) return;
     const root = activeWorkspaceRoot();
     const hits: SearchHit[] = [];
     for (const row of Array.isArray(rows) ? rows : []) {
@@ -591,12 +905,22 @@ export async function runFileSearch(): Promise<void> {
       const path = raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw) ? raw : joinPath(root, raw);
       const line = typeof record.line_number === "number" ? record.line_number : undefined;
       const previewSource = record.preview_inside ?? record.matched_content;
-      const preview = typeof previewSource === "string" ? previewSource.trim() : undefined;
+      const preview = typeof previewSource === "string" ? previewSource : undefined;
+      const before = typeof record.preview_before === "string" ? record.preview_before : undefined;
+      const after = typeof record.preview_after === "string" ? record.preview_after : undefined;
       // One row per match: a file can match on several lines.
       const id = line === undefined ? path : `${path}:${line}`;
       if (hits.some(hit => (hit.line === undefined ? hit.path : `${hit.path}:${hit.line}`) === id)) continue;
-      hits.push({ path, name: basename(path), ...(line === undefined ? {} : { line }), ...(preview ? { preview } : {}) });
+      hits.push({
+        path,
+        name: basename(path),
+        ...(line === undefined ? {} : { line }),
+        ...(preview ? { preview: before === undefined ? preview.trim() : preview } : {}),
+        ...(before !== undefined ? { previewBefore: before.trimStart() } : {}),
+        ...(after !== undefined ? { previewAfter: after.trimEnd() } : {}),
+      });
     }
+    searchTruncated.set(Array.isArray(rows) && rows.length >= SEARCH_MAX_RESULTS);
     searchResults.set(hits);
     if (hits.length === 0) {
       fileNotice.set(
@@ -630,13 +954,22 @@ export function beginEditFile(): void {
   const file = openFile();
   if (!file) return;
   if (file.kind !== "code" && file.kind !== "markdown" && file.kind !== "text") return;
-  editingContent.set(file.content);
+  if (editingContent() === null) editingContent.set(file.content);
   fileNotice.set("");
 }
 
-/** Discards unsaved editor changes and returns to preview/read-only mode. */
+/**
+ * Discards the unsaved text. Code and text stay in the editor with the disk
+ * copy; Markdown returns to its rendered preview.
+ */
 export function cancelEditFile(): void {
-  editingContent.set(null);
+  const file = openFile();
+  if (file && (file.kind === "code" || file.kind === "text") && !file.large) {
+    editingContent.set(file.content);
+  } else {
+    editingContent.set(null);
+  }
+  if (file) setChangedOnDisk(file.path, null);
 }
 
 /** Updates the live draft content while editing an open file. */
@@ -644,8 +977,43 @@ export function setEditingContent(text: string): void {
   editingContent.set(text);
 }
 
-/** Persists the edited content through `write_file_content` and clears the draft on success. */
-export async function saveEditedFile(): Promise<void> {
+/**
+ * SHA-256 (lowercase hex) of the UTF-8 text, which for a text file read through
+ * `read_file_content` is the hash of its bytes on disk — the identity
+ * `write_file_content` checks `expectedHash` against. `null` when this runtime
+ * has no digest at all.
+ */
+async function contentHash(text: string): Promise<string | null> {
+  try {
+    if (typeof crypto?.createHash === "function") {
+      return crypto.createHash("sha256").update(text).digest("hex");
+    }
+  } catch {
+    // Fall through to the subtle digest.
+  }
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
+}
+
+/** The host's typed refusal of a write whose disk copy moved since it was read. */
+function isFileConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("FILE_CONFLICT");
+}
+
+/**
+ * Persists the edited content through `write_file_content` with `expectedHash`,
+ * the hash of the disk text the edit was made against. The host compares it with
+ * the file under its write lock (local and remote alike) and refuses with
+ * `FILE_CONFLICT` when an agent or another editor changed or removed the file
+ * meanwhile; that refusal becomes the Overwrite / Reload choice instead of a
+ * blind overwrite. Overwrite (`force`) sends no hash.
+ */
+export async function saveEditedFile(options: { force?: boolean } = {}): Promise<void> {
   const file = openFile();
   const content = editingContent();
   const workspaceId = activeWorkspaceId();
@@ -653,16 +1021,40 @@ export async function saveEditedFile(): Promise<void> {
   fileSaving.set(true);
   try {
     await runStep(async () => {
-      await invokeCommand<unknown>("write_file_content", {
-        workspaceId,
-        workspacePath: activeWorkspaceRoot(),
-        filePath: file.path,
-        content,
-      });
+      let expectedHash: string | null = null;
+      if (!options.force) {
+        expectedHash = await contentHash(file.content);
+        if (expectedHash === null) {
+          // Without a digest the host cannot check the disk copy; ask rather than overwrite.
+          saveConflict.set(file.path);
+          return;
+        }
+      }
+      try {
+        await invokeCommand<unknown>("write_file_content", {
+          workspaceId,
+          workspacePath: activeWorkspaceRoot(),
+          filePath: file.path,
+          content,
+          ...(expectedHash !== null ? { expectedHash } : {}),
+        });
+      } catch (error) {
+        if (isFileConflict(error)) {
+          saveConflict.set(file.path);
+          return;
+        }
+        throw error;
+      }
+      saveConflict.set(null);
+      setChangedOnDisk(file.path, null);
+      diskVersions.set(file.path, await readDiskVersion(workspaceId, file.path));
       openFile.update(current =>
         current && current.path === file.path ? { ...current, content } : current,
       );
-      editingContent.set(null);
+      if (openFile()?.path === file.path) {
+        // Markdown goes back to its preview; code stays in the editor, now clean.
+        editingContent.set(file.kind === "markdown" ? null : content);
+      }
       fileNotice.set(`Saved ${file.name}`);
       void loadGitStatus();
     });
@@ -671,7 +1063,350 @@ export async function saveEditedFile(): Promise<void> {
   }
 }
 
+export function cancelSaveConflict(): void {
+  saveConflict.set(null);
+}
+
+/** Closes a tab, asking first when it holds unsaved text. */
+export function requestCloseTab(path: string): void {
+  if (isDirtyPath(path)) {
+    confirmingCloseTab.set(path);
+    return;
+  }
+  closeTab(path);
+}
+
+export function cancelCloseTab(): void {
+  confirmingCloseTab.set(null);
+}
+
+/** Saves the active dirty tab, then closes it once the save went through. */
+export async function saveAndCloseTab(path: string): Promise<void> {
+  if (openFile()?.path !== path) return;
+  await saveEditedFile();
+  if (!hasUnsavedEdit() && saveConflict() !== path) closeTab(path);
+}
+
+/** Closes a tab and drops whatever unsaved text it held. */
+export function closeTab(path: string): void {
+  if (confirmingCloseTab() === path) confirmingCloseTab.set(null);
+  const tabs = openFilePaths();
+  const index = tabs.indexOf(path);
+  const remaining = tabs.filter(item => item !== path);
+  openFilePaths.set(remaining);
+  setDraft(path, null);
+  setChangedOnDisk(path, null);
+  if (saveConflict() === path) saveConflict.set(null);
+  diskVersions.delete(path);
+  if (openFile()?.path === path) {
+    editingContent.set(null);
+    const nextPath = remaining[Math.max(0, index - 1)] ?? remaining[0] ?? null;
+    if (nextPath) {
+      void openFileAt(nextPath);
+    } else {
+      openFileTicketBump();
+      openFile.set(null);
+    }
+  }
+}
+
+/** Closes every other tab, keeping the ones with unsaved text. */
+export function closeOtherTabs(path: string): void {
+  for (const tab of openFilePaths()) {
+    if (tab !== path && !isDirtyPath(tab)) closeTab(tab);
+  }
+}
+
+function openFileTicketBump(): void {
+  openTicket += 1;
+}
+
+// ── Per-workspace tabs ──────────────────────────────────────────────────────
+
+interface WorkspaceFilesSnapshot {
+  tabs: string[];
+  drafts: Record<string, FileDraft>;
+  active: string | null;
+  versions: Array<[string, DiskVersion | null]>;
+}
+
+/** Tabs and drafts of the workspaces that are not active, restored on return. */
+const workspaceSnapshots = new Map<string, WorkspaceFilesSnapshot>();
+let snapshotKey: string | null = null;
+
+function currentWorkspaceKey(): string | null {
+  const id = activeWorkspaceId();
+  return id ? `${peerScope()?.deviceId ?? "local"}::${id}` : null;
+}
+
+function rememberWorkspaceKey(): void {
+  if (snapshotKey === null) snapshotKey = currentWorkspaceKey();
+}
+
+// ── Live updates: file watching and status polling ───────────────────────────
+
+export type FileWatchState =
+  | { kind: "idle" }
+  | { kind: "live" }
+  | { kind: "unsupported" }
+  | { kind: "failed"; message: string; hint?: string | null };
+
+/** Whether disk changes reach this surface, and why not. */
+export const fileWatchState = signal<FileWatchState>({ kind: "idle" });
+
+interface WatchedRoot {
+  key: string;
+  workspaceId: string;
+  root: string;
+}
+
+let watchedRoot: WatchedRoot | null = null;
+let watchListenersInstalled = false;
+const pendingDirectories = new Set<string>();
+const pendingFiles = new Map<string, "modify" | "remove">();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+const workspaceChangeSubscribers = new Set<() => void>();
+
+/** Hears a coalesced batch of disk changes under the active workspace (Git status, …). */
+export function subscribeWorkspaceFileChanges(handler: () => void): () => void {
+  workspaceChangeSubscribers.add(handler);
+  return () => {
+    workspaceChangeSubscribers.delete(handler);
+  };
+}
+
+interface FsEventRecord {
+  path?: unknown;
+  kind?: unknown;
+  from?: unknown;
+}
+
+function isUnderRoot(path: string, root: string): boolean {
+  const clean = root.replace(/[\\/]+$/, "");
+  return path === clean || path.startsWith(`${clean}/`) || path.startsWith(`${clean}\\`);
+}
+
+function handleFileSystemEvents(payload: unknown): void {
+  const root = activeWorkspaceRoot();
+  if (!root) return;
+  const events = (Array.isArray(payload) ? payload : [payload]) as FsEventRecord[];
+  let relevant = false;
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const kind = String(event.kind ?? "");
+    const paths = [event.path, kind === "rename" ? event.from : undefined].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+    for (const path of paths) {
+      if (!isUnderRoot(path, root)) continue;
+      relevant = true;
+      pendingDirectories.add(parentOf(path));
+      if (kind !== "create") {
+        pendingFiles.set(path, kind === "remove" || (kind === "rename" && path === event.from) ? "remove" : "modify");
+      }
+    }
+  }
+  if (!relevant) return;
+  if (flushTimer !== null) clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    void flushFileSystemChanges();
+  }, 150);
+}
+
+async function flushFileSystemChanges(): Promise<void> {
+  const directories = [...pendingDirectories];
+  const files = [...pendingFiles.entries()];
+  pendingDirectories.clear();
+  pendingFiles.clear();
+  for (const directory of directories) {
+    if (dirChildren()[directory]) void loadDirectory(directory);
+  }
+  void loadGitStatus({ quiet: true });
+  for (const handler of [...workspaceChangeSubscribers]) {
+    try {
+      handler();
+    } catch (error) {
+      console.error("file change subscriber failed", error);
+    }
+  }
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId) return;
+  for (const [path, change] of files) {
+    if (!openFilePaths().includes(path)) continue;
+    await syncOpenFileFromDisk(workspaceId, path, change);
+  }
+}
+
+/**
+ * Brings one open file in line with its disk copy: a clean active file reloads
+ * in place, a file with unsaved text is flagged so the user chooses.
+ */
+async function syncOpenFileFromDisk(workspaceId: string, path: string, change: "modify" | "remove"): Promise<void> {
+  const active = openFile()?.path === path ? openFile() : null;
+  if (!active) {
+    if (drafts()[path]) setChangedOnDisk(path, change === "remove" ? "deleted" : "modified");
+    return;
+  }
+  if (!EDITABLE_VIEW_KINDS.has(active.kind)) return;
+  let content: string | null = null;
+  try {
+    content = (await readFileContent(workspaceId, path)) ?? "";
+  } catch {
+    content = null;
+  }
+  const current = openFile();
+  if (!current || current.path !== path) return;
+  if (content === null) {
+    setChangedOnDisk(path, "deleted");
+    return;
+  }
+  if (sameDiskText(content, current.content)) return;
+  if (hasUnsavedEdit()) {
+    setChangedOnDisk(path, "modified");
+    return;
+  }
+  const version = await readDiskVersion(workspaceId, path);
+  if (openFile()?.path !== path || hasUnsavedEdit()) return;
+  diskVersions.set(path, version);
+  openFile.set({ ...current, content });
+  if (editingContent() !== null) editingContent.set(content);
+}
+
+const EDITABLE_VIEW_KINDS = new Set<PreviewKind>(["code", "markdown", "text"]);
+
+function installWatchListeners(): void {
+  if (watchListenersInstalled) return;
+  watchListenersInstalled = true;
+  listenEvent<unknown>("file-system-changed", handleFileSystemEvents);
+  listenEvent<unknown>("file-watch-status-changed", payload => {
+    const status = (payload ?? {}) as { healthy?: unknown; failure?: { detail?: unknown; hint?: unknown } | null };
+    if (status.healthy === false) {
+      fileWatchState.set({
+        kind: "failed",
+        message: typeof status.failure?.detail === "string" ? status.failure.detail : "",
+        hint: typeof status.failure?.hint === "string" ? status.failure.hint : null,
+      });
+    } else if (status.healthy === true && watchedRoot && fileWatchState().kind === "failed") {
+      fileWatchState.set({ kind: "live" });
+    }
+  });
+}
+
+/**
+ * Registers the host watcher on the active workspace root, the way the desktop
+ * explorer does. A remote workspace has no watcher on the host, so the state
+ * says so (the explorer shows it) and status polling keeps Git current.
+ */
+export function ensureWorkspaceWatch(): void {
+  installWatchListeners();
+  const ws = activeWorkspace();
+  if (!ws) return;
+  const key = `${peerScope()?.deviceId ?? "local"}::${ws.id}::${ws.rootPath}`;
+  if (watchedRoot?.key === key) return;
+  const previous = watchedRoot;
+  watchedRoot = { key, workspaceId: ws.id, root: ws.rootPath };
+  if (previous && !previous.key.startsWith(`${peerScope()?.deviceId ?? "local"}::`)) {
+    // The previous root belonged to another device; its watcher is not ours to stop.
+  } else if (previous) {
+    void invokeCommand<unknown>("stop_file_watch", { workspaceId: previous.workspaceId, path: previous.root }).catch(
+      () => undefined,
+    );
+  }
+  if (ws.workspaceKind === "remote") {
+    fileWatchState.set({ kind: "unsupported" });
+    return;
+  }
+  fileWatchState.set({ kind: "idle" });
+  void invokeCommand<unknown>("start_file_watch", { workspaceId: ws.id, path: ws.rootPath, recursive: true })
+    .then(() => {
+      if (watchedRoot?.key === key) fileWatchState.set({ kind: "live" });
+    })
+    .catch(error => {
+      if (watchedRoot?.key !== key) return;
+      fileWatchState.set({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
+    });
+}
+
+/** Re-registers every watched root after the user fixed what stopped the watcher. */
+export async function retryFileWatch(): Promise<void> {
+  const key = watchedRoot?.key;
+  try {
+    await invokeCommand<unknown>("retry_file_watch", {});
+    if (key && watchedRoot?.key === key) fileWatchState.set({ kind: "live" });
+  } catch (error) {
+    if (key && watchedRoot?.key === key) {
+      fileWatchState.set({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
+/**
+ * Polls `tick` while at least one caller holds a lease: every 2 s on a local
+ * workspace, 30 s on a remote one, doubling (to 60 s) after each failure. The
+ * desktop's Git panel refreshes on the same cadence.
+ */
+export function createStatusPoller(tick: () => Promise<boolean>): () => () => void {
+  let leases = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let failures = 0;
+  const baseDelay = () => (activeWorkspace()?.workspaceKind === "remote" ? 30_000 : 2_000);
+  const schedule = () => {
+    if (timer !== null || leases === 0) return;
+    const delay = Math.min(60_000, baseDelay() * 2 ** failures);
+    timer = setTimeout(async () => {
+      timer = null;
+      if (leases === 0) return;
+      let ok = true;
+      try {
+        ok = await tick();
+      } catch {
+        ok = false;
+      }
+      failures = ok ? 0 : Math.min(failures + 1, 5);
+      schedule();
+    }, delay);
+  };
+  return () => {
+    leases += 1;
+    schedule();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      leases = Math.max(0, leases - 1);
+      if (leases === 0 && timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+  };
+}
+
+/** The Files scene's lease on the Git decoration poll. */
+export const holdFilesStatusPoll = createStatusPoller(async () => {
+  if (!activeWorkspaceId()) return true;
+  return loadGitStatus({ quiet: true });
+});
+
 onWorkspaceChanged(() => {
+  // Park the leaving workspace's tabs and drafts; they come back with it.
+  stashActiveDraft();
+  if (snapshotKey && (openFilePaths().length > 0 || Object.keys(drafts()).length > 0)) {
+    workspaceSnapshots.set(snapshotKey, {
+      tabs: openFilePaths(),
+      drafts: drafts(),
+      active: openFile()?.path ?? null,
+      versions: [...diskVersions.entries()],
+    });
+  }
+  openTicket += 1;
+  diskVersions.clear();
+  openFilePaths.set([]);
+  drafts.set({});
+  changedOnDisk.set({});
+  saveConflict.set(null);
+  confirmingCloseTab.set(null);
   dirChildren.set({});
   expandedDirs.set([]);
   selectedPath.set(null);
@@ -686,4 +1421,14 @@ onWorkspaceChanged(() => {
   searchQuery.set("");
   searchResults.set([]);
   searchMode.set("name");
+  snapshotKey = currentWorkspaceKey();
+  const restored = snapshotKey ? workspaceSnapshots.get(snapshotKey) : undefined;
+  if (snapshotKey && restored) {
+    workspaceSnapshots.delete(snapshotKey);
+    openFilePaths.set(restored.tabs);
+    drafts.set(restored.drafts);
+    for (const [path, version] of restored.versions) diskVersions.set(path, version);
+    if (restored.active) void openFileAt(restored.active);
+  }
+  if (watchedRoot) ensureWorkspaceWatch();
 });

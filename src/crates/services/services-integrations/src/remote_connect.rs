@@ -443,8 +443,21 @@ pub struct RemoteDialogSteerOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteDialogSubmitOutcome {
-    Started { session_id: String, turn_id: String },
-    Queued { session_id: String, turn_id: String },
+    Started {
+        session_id: String,
+        turn_id: String,
+    },
+    Queued {
+        session_id: String,
+        turn_id: String,
+    },
+    /// The host's mid-turn policy injected the message into the running turn
+    /// `turn_id` instead of starting or queueing a new one.
+    Steered {
+        session_id: String,
+        turn_id: String,
+        steering_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1001,6 +1014,16 @@ pub fn remote_dialog_submit_response(
         }) => RemoteResponse::MessageSent {
             session_id,
             turn_id,
+        },
+        // Older clients read only `turn_id`, which both shapes carry.
+        Ok(RemoteDialogSubmitOutcome::Steered {
+            session_id,
+            turn_id,
+            steering_id,
+        }) => RemoteResponse::SteeringAccepted {
+            session_id,
+            turn_id,
+            steering_id,
         },
         Err(message) => RemoteResponse::Error { message },
     }

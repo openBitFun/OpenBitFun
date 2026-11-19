@@ -252,7 +252,7 @@ test("sending a message never flashes back to Welcome Studio and survives the co
 
   // BUG 3A regression check: persisted text from `textItems` and tool from `toolItems` stay visible!
   await app.waitFor("OpenBitFun 是一个跨平台 AI 编程工作台。");
-  await app.waitFor("TOOL · Read");
+  await app.waitFor("Cargo.toml");
 
   // BUG 4A regression check: live `session_title_generated` replaces "New session".
   await app.host.send("openbitfun.event", {
@@ -585,10 +585,12 @@ test("markdown TextView repaints from Dark to Light + 16px after unmounting Sess
   // Navigate to Settings (unmounts SessionsScene), switch to Light + Large 16px,
   // then return to Sessions. TextView styles must NEVER stay frozen in Dark colors!
   await app.press("Settings");
+  // Settings opens on General; the scheme lives on the Appearance page.
+  await app.press("nav-settings-page-appearance");
   await app.waitFor("appearance-light");
   await app.press("appearance-light");
   await app.press("font-level-large");
-  await app.press("Sessions");
+  await app.press("settings-nav-back");
 
   await app.waitFor("Rendered with a virtualized list.");
   const lightReplyStyle = app.spanStyle("Rendered with a virtualized list.");

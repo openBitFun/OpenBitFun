@@ -37,6 +37,12 @@ export interface SessionSummary {
    * this is also the proof that the binding can no longer change.
    */
   agentType?: string;
+  /** The host's unread receipt (`completed` / `error` / `interrupted`). */
+  unreadCompletion?: string;
+  /** Host-derived: the session holds a result nobody has looked at yet. */
+  unread?: boolean;
+  /** Host-derived: that unread result is a failed turn. */
+  failed?: boolean;
 }
 
 /**
@@ -81,6 +87,8 @@ export interface SessionPage {
   loadedTopLevelCount: number;
   nextCursor?: string;
   hasMore: boolean;
+  /** Per-session activity facts; `unread` / `failed` are absent on older hosts. */
+  activities?: Array<{ sessionId?: string; unread?: boolean; failed?: boolean }>;
 }
 
 export interface WorkspaceEntry {
@@ -107,6 +115,41 @@ export const openWorkspace = (rootPath: string) =>
 export const setActiveWorkspace = (workspaceId: string) =>
   invokeCommand<unknown>("set_active_workspace", { workspaceId });
 
+/** The workspace the host has active now, or `null` when none is. */
+export const getCurrentWorkspace = () =>
+  invokeCommand<WorkspaceRecord | null>("get_current_workspace", {});
+
+/**
+ * Reopens a recent workspace by its id, as the desktop's `switchWorkspace` does.
+ * A peer that never advertised `workspace_id_references_v1` predates id requests,
+ * so it gets the legacy root path and connection instead.
+ */
+export const openWorkspaceById = (
+  record: { id: string; rootPath: string; connectionId?: string },
+  legacyPathOnly = false,
+) =>
+  invokeCommand<WorkspaceRecord>(
+    "open_workspace",
+    legacyPathOnly
+      ? {
+          path: record.rootPath,
+          ...(record.connectionId ? { remoteConnectionId: record.connectionId } : {}),
+        }
+      : { workspaceId: record.id },
+  );
+
+export const removeRecentWorkspace = (workspaceId: string) =>
+  invokeCommand<unknown>("remove_recent_workspace", { workspaceId });
+
+export const updateWorkspaceInfo = (workspaceId: string, name: string) =>
+  invokeCommand<WorkspaceRecord>("update_workspace_info", { workspaceId, name });
+
+export const revealInExplorer = (path: string, workspaceId?: string) =>
+  invokeCommand<unknown>("reveal_in_explorer", {
+    path,
+    ...(workspaceId ? { workspaceId } : {}),
+  });
+
 export const listSessions = async (
   workspaceId: string,
   limit: number,
@@ -117,16 +160,35 @@ export const listSessions = async (
     limit,
     ...(cursor ? { cursor } : {}),
   });
+  // The host derives each row's read state; an older host only has the raw
+  // receipt on the row, which says the same thing without the split.
+  const attention = new Map<string, { unread?: boolean; failed?: boolean }>();
+  for (const activity of Array.isArray(page?.activities) ? page.activities : []) {
+    if (activity?.sessionId) attention.set(activity.sessionId, activity);
+  }
   return {
     ...page,
-    sessions: Array.isArray(page?.sessions) ? page.sessions.map(normalizeSessionSummary) : [],
+    sessions: Array.isArray(page?.sessions)
+      ? page.sessions.map(raw => {
+          const row = normalizeSessionSummary(raw);
+          const host = attention.get(row.sessionId);
+          const receipt = typeof row.unreadCompletion === "string" && row.unreadCompletion ? row.unreadCompletion : "";
+          return {
+            ...row,
+            unread: typeof host?.unread === "boolean" ? host.unread : Boolean(receipt),
+            failed: typeof host?.failed === "boolean" ? host.failed : receipt === "error",
+          };
+        })
+      : [],
   };
 };
 
-export const loadSessionTurns = (sessionId: string, workspaceId: string) =>
+/** `limit` keeps the newest N turns, the tail window the desktop opens a session with. */
+export const loadSessionTurns = (sessionId: string, workspaceId: string, limit?: number) =>
   invokeCommand<unknown[]>("load_session_turns", {
     session_id: sessionId,
     workspace_id: workspaceId,
+    ...(limit ? { limit } : {}),
   });
 
 export const getConfigs = (paths: string[]) => invokeCommand<Record<string, unknown>>("get_configs", { paths });
@@ -180,16 +242,23 @@ export const pasteWorkspaceFiles = (workspaceId: string, sourcePaths: string[], 
 export const searchWorkspaceFiles = (
   workspaceId: string,
   pattern: string,
-  options: { searchContent?: boolean } = {},
+  options: {
+    searchContent?: boolean;
+    caseSensitive?: boolean;
+    useRegex?: boolean;
+    wholeWord?: boolean;
+    maxResults?: number;
+  } = {},
 ) =>
   invokeCommand<unknown[]>("search_files", {
     workspaceId,
     pattern,
     searchContent: options.searchContent === true,
     searchId: `nsh-files-${Date.now()}`,
-    caseSensitive: false,
-    useRegex: false,
-    wholeWord: false,
+    caseSensitive: options.caseSensitive === true,
+    useRegex: options.useRegex === true,
+    wholeWord: options.wholeWord === true,
+    ...(options.maxResults ? { maxResults: options.maxResults } : {}),
   });
 
 
@@ -502,10 +571,49 @@ export const forkSession = (sourceSessionId: string, sourceTurnId: string, works
     workspace_id: workspaceId,
   });
 
+/**
+ * The whole `SessionMetadata` a `save_session_metadata` request carries, built
+ * from the catalogue row with every field the host stored kept as it was (the
+ * desktop sends its full record too). A row this surface only knows from an event
+ * may lack required fields; those get neutral values, which the host never
+ * writes because it merges only the named `fields`.
+ */
+export function sessionMetadataForSave(
+  row: (SessionSummary & Record<string, unknown>) | null | undefined,
+  patch: { sessionId: string; sessionName: string; agentType?: string },
+): Record<string, unknown> {
+  const now = Date.now();
+  const source: Record<string, unknown> = { ...(row ?? {}) };
+  // Fields this surface adds while normalizing are not part of the host record.
+  delete source.persistedStatus;
+  delete source.lastUpdated;
+  const num = (value: unknown, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const status = source.status === "archived" || source.status === "completed" ? source.status : "active";
+  return {
+    ...source,
+    sessionId: patch.sessionId,
+    sessionName: patch.sessionName,
+    agentType:
+      typeof source.agentType === "string" && source.agentType ? source.agentType : patch.agentType ?? "Standard",
+    modelName: typeof source.modelName === "string" ? source.modelName : "",
+    createdAt: num(source.createdAt, now),
+    lastActiveAt: num(source.lastActiveAt, num(row?.lastUpdated, now)),
+    turnCount: num(source.turnCount, 0),
+    messageCount: num(source.messageCount, 0),
+    toolCallCount: num(source.toolCallCount, 0),
+    status,
+  };
+}
+
+/** `copy_session` answers `SessionLineageCopyResult` in camelCase; older builds used snake_case. */
 export interface CopiedSession {
-  session_id: string;
-  session_name: string;
-  agent_type: string;
+  sessionId?: string;
+  sessionName?: string;
+  agentType?: string;
+  session_id?: string;
+  session_name?: string;
+  agent_type?: string;
 }
 
 /** Copies a session with its transcript into a new one, without changing the original. */
@@ -515,10 +623,128 @@ export const copySession = (sourceSessionId: string, workspaceId: string) =>
     workspace_id: workspaceId,
   });
 
-/** Persists the display name; the host merges the fields it is told changed. */
+/**
+ * Persists the display name; the host merges the fields it is told changed.
+ * `metadata` must deserialize as a whole Rust `SessionMetadata` (agentType,
+ * modelName, createdAt, lastActiveAt, turnCount, messageCount, toolCallCount and
+ * status are required), even though only `fields` are merged — use
+ * `sessionMetadataForSave` to build it from the catalogue row.
+ */
 export const saveSessionName = (metadata: Record<string, unknown>, workspaceId: string) =>
   invokeCommand<unknown>("save_session_metadata", {
     metadata,
     fields: ["sessionName"],
     workspace_id: workspaceId,
   });
+
+/**
+ * Drops `targetTurnId` and every turn after it (and restores the files those
+ * turns changed), which is the first half of the desktop's edit-and-rerun.
+ * `requireIdle` asks the host to refuse while a turn runs instead of cancelling
+ * it; `workspacePath` is the path older hosts resolve the workspace from.
+ */
+export const rollbackSessionToTurn = (request: {
+  sessionId: string;
+  targetTurnId: string;
+  workspaceId: string;
+  workspacePath?: string;
+}) =>
+  invokeCommand<{ status?: string; retiredTurnIds?: string[]; restoredFiles?: string[] }>(
+    "rollback_session_to_turn",
+    {
+      sessionId: request.sessionId,
+      targetTurnId: request.targetTurnId,
+      workspaceId: request.workspaceId,
+      workspacePath: request.workspacePath ?? "",
+      requireIdle: true,
+    },
+  );
+
+/**
+ * Resumes a turn the runtime interrupted (`DialogTurnData.recovery.status ==
+ * "interrupted"`). `executionGeneration` is the one the persisted record names,
+ * so a resume another surface already started is refused instead of doubled.
+ */
+export const recoverInterruptedDialogTurn = (request: {
+  sessionId: string;
+  dialogTurnId: string;
+  executionGeneration: number;
+  workspaceId?: string;
+  workspacePath?: string;
+}) => invokeCommand<unknown>("recover_interrupted_dialog_turn", request);
+
+// Turn and session policy (wave 3 session). The host decides what a message
+// written during a turn does, which modes a session may switch to, which slash
+// commands exist, how a turn stops and which sessions are unread.
+
+export interface SubmitUserMessageResult {
+  outcome: "started" | "steered" | "queued";
+  turnId: string;
+  queueItemId?: string;
+  steeringId?: string;
+}
+
+export const submitUserMessage = (request: {
+  sessionId: string;
+  workspaceId?: string;
+  text: string;
+  displayText?: string;
+  agentType?: string;
+  attachments?: Array<Record<string, unknown>>;
+  turnId?: string;
+  /** An explicit choice for this message; omitted, the host's stored policy applies. */
+  sendDuringTurn?: "immediate" | "queue";
+}) => invokeCommand<SubmitUserMessageResult>("submit_user_message", request);
+
+export interface SessionModeCatalogEntry {
+  id: string;
+  label: string;
+  description: string;
+  profile: boolean;
+  switchable: boolean;
+}
+
+export interface SessionModeCatalog {
+  entries: SessionModeCatalogEntry[];
+  defaultModeId: string;
+  sessionModeId?: string;
+  sessionStarted?: boolean;
+}
+
+export const getSessionModeCatalog = (request: {
+  workspaceId?: string;
+  workspacePath?: string;
+  sessionId?: string;
+}) => invokeCommand<SessionModeCatalog>("get_session_mode_catalog", request);
+
+export interface SessionCommandDescriptor {
+  id: string;
+  command: string;
+  labelKey: string;
+  description: string;
+  idleOnly: boolean;
+  available: boolean;
+  args?: string[];
+}
+
+export const listSessionCommands = (sessionId: string | null) =>
+  invokeCommand<SessionCommandDescriptor[]>("list_session_commands", sessionId ? { sessionId } : {});
+
+export const executeSessionCommand = (request: {
+  sessionId: string;
+  id: string;
+  arg?: string;
+  workspaceId?: string;
+}) => invokeCommand<{ id: string; outcome: string; turnId?: string }>("execute_session_command", request);
+
+export const stopDialogTurn = (sessionId: string, dialogTurnId?: string) =>
+  invokeCommand<{ turnId: string; method: string }>("stop_dialog_turn", {
+    sessionId,
+    ...(dialogTurnId ? { dialogTurnId } : {}),
+  });
+
+export const markSessionSeenOnHost = (request: {
+  sessionId: string;
+  workspaceId?: string;
+  seenThroughMs?: number;
+}) => invokeCommand<{ changed: boolean }>("mark_session_seen", request);

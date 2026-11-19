@@ -6,11 +6,12 @@
 
 use std::sync::{mpsc, Arc};
 
+use crate::host::HostHandle;
+use crate::host::State;
 use openbitfun_core::service::config::{
     subscribe_config_updates, ConfigService, ConfigUpdateEvent,
 };
 use serde::Deserialize;
-use tauri::{AppHandle, Manager, State};
 
 use crate::api::app_state::AppState;
 
@@ -221,7 +222,7 @@ where
 }
 
 /// Applies the saved preference at startup and after config imports/reloads.
-pub fn spawn_config_listener(app: AppHandle) {
+pub fn spawn_config_listener(app: HostHandle) {
     let app_state: State<'_, AppState> = app.state();
     let config_service = app_state.config_service.clone();
     let sleep_prevention = app.state::<SleepPreventionState>().inner().clone();
@@ -284,7 +285,7 @@ pub struct SetPreventSleepEnabledRequest {
 
 #[tauri::command]
 pub async fn set_prevent_sleep_enabled(
-    app: AppHandle,
+    app: HostHandle,
     request: SetPreventSleepEnabledRequest,
 ) -> Result<(), String> {
     crate::openbitfun_control_host::configure_option_from_gui(
@@ -298,7 +299,7 @@ pub async fn set_prevent_sleep_enabled(
 }
 
 pub(crate) async fn set_prevent_sleep_enabled_from_host(
-    app: &AppHandle,
+    app: &HostHandle,
     enabled: bool,
 ) -> Result<(), String> {
     let app_state = app.state::<AppState>();

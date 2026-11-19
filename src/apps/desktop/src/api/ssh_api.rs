@@ -2,13 +2,14 @@
 //!
 //! Tauri commands for SSH connection management and remote file operations.
 
+use crate::host::HostHandle;
+use crate::host::State;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::{Emitter, State};
 
 use crate::api::app_state::SSHServiceError;
 use crate::startup_trace::DesktopStartupTrace;
@@ -452,7 +453,7 @@ impl Drop for ActiveTransfer {
 
 /// Emit a throttled progress event; `terminal` always emits.
 fn emit_transfer_progress(
-    app_handle: &tauri::AppHandle,
+    app_handle: &HostHandle,
     event: &str,
     payload: impl Serialize + Clone,
     last_emit: &mut Instant,
@@ -467,7 +468,7 @@ fn emit_transfer_progress(
 }
 
 fn emit_download_progress(
-    app_handle: &tauri::AppHandle,
+    app_handle: &HostHandle,
     transfer_id: &str,
     downloaded: u64,
     total: u64,
@@ -656,7 +657,7 @@ pub struct DownloadProgressPayload {
 /// the webview.
 #[tauri::command]
 pub async fn remote_download_to_local_path(
-    app_handle: tauri::AppHandle,
+    app_handle: HostHandle,
     state: State<'_, AppState>,
     connection_id: String,
     remote_path: String,
@@ -796,7 +797,7 @@ fn local_download_name_key(name: &str) -> String {
 /// download progress.
 #[allow(clippy::too_many_arguments)]
 async fn download_directory_from_remote(
-    app_handle: &tauri::AppHandle,
+    app_handle: &HostHandle,
     state: &State<'_, AppState>,
     connection_id: &str,
     remote_dir: &str,
@@ -942,7 +943,7 @@ pub struct UploadProgressPayload {
 }
 
 fn emit_upload_progress(
-    app_handle: &tauri::AppHandle,
+    app_handle: &HostHandle,
     transfer_id: &str,
     uploaded: u64,
     total: u64,
@@ -1020,7 +1021,7 @@ fn scan_directory_total_size(dir: &std::path::Path) -> Result<u64, String> {
 /// at most one per 100 ms (plus a guaranteed final event).
 #[tauri::command]
 pub async fn remote_upload_from_local_path(
-    app_handle: tauri::AppHandle,
+    app_handle: HostHandle,
     state: State<'_, AppState>,
     connection_id: String,
     local_path: String,
@@ -1101,7 +1102,7 @@ pub async fn remote_upload_from_local_path(
 /// `upload_progress` events so the frontend can show overall directory upload
 /// progress.
 async fn upload_directory_to_remote(
-    app_handle: &tauri::AppHandle,
+    app_handle: &HostHandle,
     state: &State<'_, AppState>,
     connection_id: &str,
     local_dir: &std::path::Path,

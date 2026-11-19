@@ -72,20 +72,19 @@ export function ModalHeader(props: ModalHeaderProps) {
         alignItems: "center",
         flexShrink: 0,
         gap: 12,
-        paddingHorizontal: 20,
-        paddingVertical: 16,
-        borderBottomWidth: 1,
-        borderColor: palette().borderSubtle,
+        paddingHorizontal: 24,
+        paddingTop: 22,
+        paddingBottom: 6,
       }}
     >
       <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
         <Text
           style={{
             color: palette().text,
-            fontSize: textSize(15.5),
+            fontSize: textSize(18),
             fontWeight: "600",
-            letterSpacing: textTracking(15.5),
-            lineHeight: textLineHeight(15.5, 1.28),
+            letterSpacing: textTracking(18),
+            lineHeight: textLineHeight(18, 1.25),
           }}
         >
           {props.title}
@@ -95,8 +94,8 @@ export function ModalHeader(props: ModalHeaderProps) {
             <Text
               style={{
                 color: palette().textElevatedMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.42),
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.45),
               }}
             >
               {subtitleText()}
@@ -124,8 +123,8 @@ export function ModalHeader(props: ModalHeaderProps) {
             cursor: "pointer",
             ...pressTransition(MOTION_DURATION.fast),
           }}
-          hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-          activeStyle={tactileActiveStyle(0.94, { backgroundColor: palette().panelHover })}
+          hoverStyle={{ backgroundColor: palette().buttonSecondaryHover }}
+          activeStyle={tactileActiveStyle(0.94, { backgroundColor: palette().buttonSecondaryPressed })}
           focusVisibleStyle={{
             outlineWidth: 2,
             outlineColor: palette().borderFocus,
@@ -148,7 +147,7 @@ export function ModalBody(props: ModalBodyProps) {
   return (
     <Scroll
       style={[{ flexShrink: 1, minHeight: 0 }, props.style]}
-      contentStyle={{ paddingHorizontal: 20, paddingVertical: 18, gap: 16 }}
+      contentStyle={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 20, gap: 16 }}
     >
       {props.children}
     </Scroll>
@@ -169,10 +168,9 @@ export function ModalFooter(props: ModalFooterProps) {
         alignItems: "center",
         justifyContent: "flex-end",
         gap: 8,
-        paddingHorizontal: 20,
-        paddingVertical: 14,
-        borderTopWidth: 1,
-        borderColor: palette().borderSubtle,
+        paddingHorizontal: 24,
+        paddingTop: 4,
+        paddingBottom: 22,
         backgroundColor: "transparent",
       }}
     >
@@ -206,7 +204,7 @@ function ModalCard(props: ModalDialogProps) {
           width: "100%",
           maxWidth: modalMaxWidth(props.size ?? "md"),
           maxHeight: "90%",
-          borderRadius: radii.xl,
+          borderRadius: 22,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: palette().border,
@@ -256,7 +254,7 @@ export function ModalDialog(props: ModalDialogProps) {
           right: 0,
           bottom: 0,
           backgroundColor: palette().scrimBg,
-          backdropFilter: "blur(6px)",
+          backdropFilter: "blur(14px)",
         }}
         style={{
           position: "absolute",
@@ -308,8 +306,8 @@ export interface DropdownMenuProps {
   onClose: () => void;
 }
 
-const MENU_OUTER_RADIUS = radii.lg;
-const MENU_PADDING = 5;
+const MENU_OUTER_RADIUS = 14;
+const MENU_PADDING = 6;
 const MENU_ITEM_RADIUS = concentricRadius(MENU_OUTER_RADIUS, MENU_PADDING);
 
 function MenuSurface(props: {
@@ -409,8 +407,8 @@ function MenuSurface(props: {
                       flexDirection: "row",
                       alignItems: "center",
                       gap: 8,
-                      paddingHorizontal: 9,
-                      paddingVertical: 5,
+                      paddingHorizontal: 8,
+                      paddingVertical: 6,
                       borderRadius: MENU_ITEM_RADIUS,
                       borderCurve: "continuous",
                       backgroundColor: item().active
@@ -457,8 +455,8 @@ function MenuSurface(props: {
                       <Text
                         style={{
                           color: item().danger ? palette().danger : palette().text,
-                          fontSize: textSize(12.5),
-                          fontWeight: item().active ? "600" : "500",
+                          fontSize: textSize(13),
+                          fontWeight: item().active ? "500" : "400",
                           lineHeight: textLineHeight(12.5, 1.24),
                           numberOfLines: 1,
                           textOverflow: "ellipsis",
@@ -669,8 +667,8 @@ export interface SelectDropdownProps<T extends string = string> {
   onChange: (value: T) => void;
 }
 
-const SELECT_OUTER_RADIUS = radii.lg;
-const SELECT_PADDING = 5;
+const SELECT_OUTER_RADIUS = 14;
+const SELECT_PADDING = 6;
 const SELECT_INNER_RADIUS = concentricRadius(SELECT_OUTER_RADIUS, SELECT_PADDING);
 
 function SelectPopoverSurface<T extends string>(props: {
@@ -832,8 +830,8 @@ function SelectPopoverSurface<T extends string>(props: {
                         opt().value === props.value
                           ? palette().text
                           : palette().textSecondary,
-                      fontSize: textSize(12.5),
-                      fontWeight: opt().value === props.value ? "600" : "500",
+                      fontSize: textSize(13),
+                      fontWeight: opt().value === props.value ? "500" : "400",
                       lineHeight: textLineHeight(12.5, 1.24),
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
@@ -1284,8 +1282,8 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           flexDirection: "row",
           alignItems: "center",
           gap: 10,
-          paddingHorizontal: 14,
-          paddingVertical: 10,
+          paddingHorizontal: 16,
+          paddingVertical: 11,
           borderRadius: radii.lg,
           borderCurve: "continuous",
           borderWidth: 1,
@@ -1293,7 +1291,7 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(16px) saturate(1.2)",
           boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
-          maxWidth: 440,
+          maxWidth: 380,
         },
         motion.style,
       ]}

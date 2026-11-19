@@ -18,6 +18,7 @@
 
 mod baseline;
 mod capabilities;
+mod events;
 mod table;
 
 use std::collections::BTreeSet;
@@ -25,6 +26,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 pub use capabilities::{advertised_by, advertises, capability_map, PeerHostCapability};
+pub use events::{event_stance, EventStance, OWNER_ONLY_EVENT_PREFIXES};
 
 /// Wire schema version of the exported registry artifact.
 pub const REMOTE_SURFACE_SCHEMA_VERSION: u32 = 1;

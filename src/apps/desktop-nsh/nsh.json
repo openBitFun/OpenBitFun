@@ -1,0 +1,38 @@
+{
+  "name": "OpenBitFun",
+  "id": "com.openbitfun.desktop",
+  "version": "1.0.11",
+  "build": 1,
+  "rust": "./native",
+  "capabilities": {
+    "application": true,
+    "clipboard": true,
+    "picker": true,
+    "notifications": true,
+    "statusBar": true,
+    "openUrl": {
+      "schemes": [
+        "https",
+        "http"
+      ]
+    }
+  },
+  "window": {
+    "title": "OpenBitFun",
+    "titleBar": {
+      "style": "hidden",
+      "height": 44
+    },
+    "defaultSize": {
+      "width": 1200,
+      "height": 800
+    },
+    "defaultPosition": "center",
+    "minSize": {
+      "width": 800,
+      "height": 600
+    },
+    "restoreBounds": true,
+    "closeOnPress": false
+  }
+}

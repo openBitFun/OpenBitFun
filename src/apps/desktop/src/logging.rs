@@ -616,47 +616,124 @@ pub fn build_log_targets(config: &LogConfig) -> Vec<Target> {
     targets
 }
 
+/// Per-target levels shared by the Tauri log plugin and the native host's
+/// logger. Targets that emit hot-path trace diagnostics during event routing
+/// keep debug diagnostics, warnings and errors without drowning app traces.
+const TARGET_LEVELS: &[(&str, log::LevelFilter)] = &[
+    ("ignore", log::LevelFilter::Off),
+    ("ignore::walk", log::LevelFilter::Off),
+    ("globset", log::LevelFilter::Off),
+    ("tracing", log::LevelFilter::Off),
+    ("opentelemetry_sdk", log::LevelFilter::Off),
+    ("opentelemetry-otlp", log::LevelFilter::Off),
+    ("notify", log::LevelFilter::Warn),
+    ("html5ever", log::LevelFilter::Warn),
+    ("selectors", log::LevelFilter::Warn),
+    (
+        "openbitfun_core::agentic::events::queue",
+        log::LevelFilter::Debug,
+    ),
+    (
+        "openbitfun_core::agentic::events::router",
+        log::LevelFilter::Debug,
+    ),
+    (
+        "openbitfun_agent_runtime::event_queue",
+        log::LevelFilter::Debug,
+    ),
+    (
+        "openbitfun_agent_runtime::event_router",
+        log::LevelFilter::Debug,
+    ),
+    ("hyper_util", log::LevelFilter::Info),
+    ("h2", log::LevelFilter::Info),
+    ("portable_pty", log::LevelFilter::Info),
+    ("russh", log::LevelFilter::Info),
+    ("grep_searcher", log::LevelFilter::Warn),
+];
+
 fn configured_log_builder(log_targets: Vec<Target>) -> tauri_plugin_log::Builder {
-    tauri_plugin_log::Builder::new()
-        .level(log::LevelFilter::Trace)
-        .level_for("ignore", log::LevelFilter::Off)
-        .level_for("ignore::walk", log::LevelFilter::Off)
-        .level_for("globset", log::LevelFilter::Off)
-        .level_for("tracing", log::LevelFilter::Off)
-        .level_for("opentelemetry_sdk", log::LevelFilter::Off)
-        .level_for("opentelemetry-otlp", log::LevelFilter::Off)
-        .level_for("notify", log::LevelFilter::Warn)
-        .level_for("html5ever", log::LevelFilter::Warn)
-        .level_for("selectors", log::LevelFilter::Warn)
-        // These targets can emit hot-path trace diagnostics during event
-        // routing. Keep debug diagnostics, warnings, and errors, but avoid
-        // drowning useful app traces in mechanical noise.
-        .level_for(
-            "openbitfun_core::agentic::events::queue",
-            log::LevelFilter::Debug,
-        )
-        .level_for(
-            "openbitfun_core::agentic::events::router",
-            log::LevelFilter::Debug,
-        )
-        .level_for(
-            "openbitfun_agent_runtime::event_queue",
-            log::LevelFilter::Debug,
-        )
-        .level_for(
-            "openbitfun_agent_runtime::event_router",
-            log::LevelFilter::Debug,
-        )
-        .level_for("hyper_util", log::LevelFilter::Info)
-        .level_for("h2", log::LevelFilter::Info)
-        .level_for("portable_pty", log::LevelFilter::Info)
-        .level_for("russh", log::LevelFilter::Info)
-        .level_for("grep_searcher", log::LevelFilter::Warn)
+    let mut builder = tauri_plugin_log::Builder::new().level(log::LevelFilter::Trace);
+    for (target, level) in TARGET_LEVELS {
+        builder = builder.level_for(*target, *level);
+    }
+    builder
         .targets(log_targets)
         .rotation_strategy(RotationStrategy::KeepSome(2)) // 1 active + 2 backups
         .max_file_size(10 * 1024 * 1024)
         .timezone_strategy(TimezoneStrategy::UseLocal)
         .clear_format()
+}
+
+fn is_app_log_target(target: &str) -> bool {
+    !target.starts_with("ai") && !target.starts_with("webview") && !is_flashgrep_target(target)
+}
+
+/// The native host's runtime logger (it has no Tauri log plugin): the same
+/// per-target levels and session files as the Tauri build (`app.log`,
+/// `ai.log`, `flashgrep.log`, `webview.log`), plus stdout in debug builds.
+/// Files are not rotated within a session; old sessions are pruned by
+/// [`spawn_log_cleanup_task`].
+pub fn install_native_runtime_logging(config: &LogConfig) -> Result<(), String> {
+    let session_dir = &config.session_log_dir;
+    let file = |name: &str| -> Result<File, String> {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(session_dir.join(format!("{name}.log")))
+            .map_err(|error| format!("Failed to open {name}.log: {error}"))
+    };
+    let mut dispatch = fern::Dispatch::new().level(log::LevelFilter::Trace);
+    for (target, level) in TARGET_LEVELS {
+        dispatch = dispatch.level_for(*target, *level);
+    }
+    let plain = |out: fern::FormatCallback, message: &std::fmt::Arguments, record: &log::Record| {
+        format_log_plain(out, message, record)
+    };
+    if config.is_debug || is_embedded_webdriver_mode() {
+        dispatch = dispatch.chain(
+            fern::Dispatch::new()
+                .filter(|metadata| is_app_log_target(metadata.target()))
+                .format(plain)
+                .chain(std::io::stdout()),
+        );
+    }
+    dispatch = dispatch
+        .chain(
+            fern::Dispatch::new()
+                .filter(|metadata| is_app_log_target(metadata.target()))
+                .format(plain)
+                .chain(file("app")?),
+        )
+        .chain(
+            fern::Dispatch::new()
+                .filter(|metadata| metadata.target().starts_with("ai"))
+                .format(plain)
+                .chain(file("ai")?),
+        )
+        .chain(
+            fern::Dispatch::new()
+                .filter(|metadata| is_flashgrep_target(metadata.target()))
+                .format(plain)
+                .chain(file("flashgrep")?),
+        )
+        .chain(
+            fern::Dispatch::new()
+                .filter(|metadata| metadata.target().starts_with("webview"))
+                .format(plain)
+                .chain(file("webview")?),
+        );
+    let (_max_level, runtime_logger) = dispatch.into_log();
+    let router = GLOBAL_LOG_ROUTER
+        .get()
+        .copied()
+        .ok_or_else(|| "Global early startup logger is not installed".to_string())?;
+    let early_log_path = router.install_runtime_backend(runtime_logger)?;
+    log::info!(
+        "Runtime logging backend ready: early_startup_log_path={}",
+        early_log_path.display()
+    );
+    Ok(())
 }
 
 pub fn build_log_command_plugin<R: Runtime>() -> TauriPlugin<R> {

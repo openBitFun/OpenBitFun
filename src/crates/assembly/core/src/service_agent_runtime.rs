@@ -23,10 +23,10 @@ use openbitfun_events::AgenticEvent;
 #[cfg(feature = "remote-connect")]
 use openbitfun_runtime_ports::{
     AgentDialogSteerRequest, AgentInputAttachment, AgentSessionComposerUpdate,
-    AgentSubmissionSource, AgentTurnCancellationRequest, DialogSteerOutcome,
-    PermissionApprovalStrategy, PermissionPolicyPreset, RemoteControlStatePort,
-    RemoteControlStateRequest, RemoteControlStateSnapshot, RemoteSessionWorkspaceIdentity,
-    RuntimeServiceCapability, RuntimeServicePort, ToolPermissionConfig,
+    AgentSubmissionSource, AgentTurnCancellationRequest, DialogSteerOutcome, PermissionMode,
+    RemoteControlStatePort, RemoteControlStateRequest, RemoteControlStateSnapshot,
+    RemoteSessionWorkspaceIdentity, RuntimeServiceCapability, RuntimeServicePort,
+    ToolPermissionConfig,
 };
 use openbitfun_runtime_ports::{
     AgentDialogTurnPort, AgentDialogTurnRequest, AgentLifecycleDeliveryPort,
@@ -1170,23 +1170,37 @@ fn core_dialog_submission_policy(policy: RemoteDialogSubmissionPolicy) -> Dialog
 }
 
 #[cfg(feature = "remote-connect")]
-fn remote_dialog_scheduler_outcome_fact(
-    outcome: DialogSubmitOutcome,
-) -> RemoteDialogSchedulerOutcomeFact {
+fn remote_dialog_submit_outcome_from_user_message(
+    outcome: crate::agentic::coordination::UserMessageSubmitOutcome,
+) -> RemoteDialogSubmitOutcome {
+    use crate::agentic::coordination::UserMessageSubmitOutcome;
     match outcome {
-        DialogSubmitOutcome::Started {
+        UserMessageSubmitOutcome::Started {
             session_id,
             turn_id,
-        } => RemoteDialogSchedulerOutcomeFact::Started {
+        } => {
+            remote_dialog_submit_outcome_from_scheduler(RemoteDialogSchedulerOutcomeFact::Started {
+                session_id,
+                turn_id,
+            })
+        }
+        UserMessageSubmitOutcome::Queued {
             session_id,
             turn_id,
-        },
-        DialogSubmitOutcome::Queued {
+        } => {
+            remote_dialog_submit_outcome_from_scheduler(RemoteDialogSchedulerOutcomeFact::Queued {
+                session_id,
+                turn_id,
+            })
+        }
+        UserMessageSubmitOutcome::Steered {
             session_id,
             turn_id,
-        } => RemoteDialogSchedulerOutcomeFact::Queued {
+            steering_id,
+        } => RemoteDialogSubmitOutcome::Steered {
             session_id,
             turn_id,
+            steering_id,
         },
     }
 }
@@ -3068,6 +3082,7 @@ impl RemoteSessionTrackerHost for CoreRemoteSessionTrackerHost {
 pub(crate) struct CoreRemoteDialogRuntimeHost<'a> {
     dispatcher: &'a RemoteExecutionDispatcher,
     coordinator: Arc<ConversationCoordinator>,
+    scheduler: Arc<DialogScheduler>,
     runtime: AgentRuntime,
 }
 
@@ -3080,12 +3095,13 @@ impl<'a> CoreRemoteDialogRuntimeHost<'a> {
             .ok_or_else(|| "Dialog scheduler is not initialized".to_string())?;
         let runtime = CoreServiceAgentRuntime::agent_runtime_with_dialog_turns(
             coordinator.clone(),
-            scheduler,
+            scheduler.clone(),
         )?;
 
         Ok(Self {
             dispatcher,
             coordinator,
+            scheduler,
             runtime,
         })
     }
@@ -3414,8 +3430,11 @@ impl RemoteDialogRuntimeHost for CoreRemoteDialogRuntimeHost<'_> {
                 .map_err(|error| error.to_string())?;
         }
 
-        self.runtime
-            .submit_dialog_turn(AgentDialogTurnRequest {
+        // Mobile, bots and the desktop composer share one mid-turn rule.
+        crate::agentic::coordination::submit_user_message_with_runtime(
+            &self.runtime,
+            &self.scheduler,
+            AgentDialogTurnRequest {
                 session_id: submission.session_id,
                 message: submission.content,
                 output_schema: None,
@@ -3432,11 +3451,12 @@ impl RemoteDialogRuntimeHost for CoreRemoteDialogRuntimeHost<'_> {
                 prepended_reminders: Vec::new(),
                 attachments,
                 metadata: serde_json::Map::new(),
-            })
-            .await
-            .map(remote_dialog_scheduler_outcome_fact)
-            .map(remote_dialog_submit_outcome_from_scheduler)
-            .map_err(CoreServiceAgentRuntime::runtime_error_message)
+            },
+            None,
+        )
+        .await
+        .map(remote_dialog_submit_outcome_from_user_message)
+        .map_err(|error| error.message)
     }
 }
 
@@ -4002,17 +4022,10 @@ impl RemoteInteractionRuntimeHost for CoreRemoteInteractionRuntimeHost {
             .get_config(Some("tool_permissions"))
             .await
             .map_err(|error| error.to_string())?;
-        Ok(match config.policy.preset {
-            PermissionPolicyPreset::FullAccess => RemotePermissionMode::FullAccess,
-            PermissionPolicyPreset::Ask
-                if matches!(
-                    config.approval.strategy,
-                    PermissionApprovalStrategy::Model | PermissionApprovalStrategy::ImmediateAllow
-                ) || config.interaction.auto_approve_ask =>
-            {
-                RemotePermissionMode::Auto
-            }
-            PermissionPolicyPreset::Ask => RemotePermissionMode::Ask,
+        Ok(match config.settings_mode() {
+            PermissionMode::FullAccess => RemotePermissionMode::FullAccess,
+            PermissionMode::AutoApprove => RemotePermissionMode::Auto,
+            PermissionMode::Ask => RemotePermissionMode::Ask,
         })
     }
 
@@ -4027,23 +4040,11 @@ impl RemoteInteractionRuntimeHost for CoreRemoteInteractionRuntimeHost {
             .get_config(Some("tool_permissions"))
             .await
             .map_err(|error| error.to_string())?;
-        match mode {
-            RemotePermissionMode::Ask => {
-                config.policy.preset = PermissionPolicyPreset::Ask;
-                config.interaction.auto_approve_ask = false;
-                config.approval.strategy = PermissionApprovalStrategy::Interactive;
-            }
-            RemotePermissionMode::Auto => {
-                config.policy.preset = PermissionPolicyPreset::Ask;
-                config.interaction.auto_approve_ask = true;
-                config.approval.strategy = PermissionApprovalStrategy::Model;
-            }
-            RemotePermissionMode::FullAccess => {
-                config.policy.preset = PermissionPolicyPreset::FullAccess;
-                config.interaction.auto_approve_ask = false;
-                config.approval.strategy = PermissionApprovalStrategy::Interactive;
-            }
-        }
+        config.apply_mode(match mode {
+            RemotePermissionMode::Ask => PermissionMode::Ask,
+            RemotePermissionMode::Auto => PermissionMode::AutoApprove,
+            RemotePermissionMode::FullAccess => PermissionMode::FullAccess,
+        });
         service
             .set_config("tool_permissions", &config)
             .await
@@ -5074,6 +5075,50 @@ mod tests {
                 .expect("dialog delegate");
             assert!(ensure < delegate, "{method} must recover plugins first");
         }
+    }
+
+    #[test]
+    fn remote_and_bot_submissions_share_the_user_message_policy() {
+        // Mobile `send_message` and IM bots enter through this host; the mid-turn
+        // rule must be the one the desktop composer uses, not a second copy.
+        let source = include_str!("service_agent_runtime.rs");
+        let body = source
+            .split("impl RemoteDialogRuntimeHost for CoreRemoteDialogRuntimeHost")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn submit_dialog(").nth(1))
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("remote dialog submission");
+        assert!(body.contains("submit_user_message_with_runtime"));
+        assert!(!body.contains(".submit_dialog_turn("));
+
+        let steered = remote_dialog_submit_outcome_from_user_message(
+            crate::agentic::coordination::UserMessageSubmitOutcome::Steered {
+                session_id: "s".into(),
+                turn_id: "running".into(),
+                steering_id: "steer".into(),
+            },
+        );
+        assert_eq!(
+            steered,
+            RemoteDialogSubmitOutcome::Steered {
+                session_id: "s".into(),
+                turn_id: "running".into(),
+                steering_id: "steer".into(),
+            }
+        );
+        let queued = remote_dialog_submit_outcome_from_user_message(
+            crate::agentic::coordination::UserMessageSubmitOutcome::Queued {
+                session_id: "s".into(),
+                turn_id: "t".into(),
+            },
+        );
+        assert_eq!(
+            queued,
+            RemoteDialogSubmitOutcome::Queued {
+                session_id: "s".into(),
+                turn_id: "t".into(),
+            }
+        );
     }
 
     #[test]

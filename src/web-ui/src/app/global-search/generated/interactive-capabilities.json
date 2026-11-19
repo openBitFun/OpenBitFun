@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "6a6de5f67359bdd2aead1692c4afd1b748e601045004dc140dd73b92342dd2bc",
+  "digest": "b18e476cf2b8f36360fc1fc9edc5dcf20454aaf4d51bf2fde4193e2c56b21dd4",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -187,11 +187,11 @@
     "features": 24,
     "settings": 24,
     "userFacing": 48,
-    "documentedItems": 370,
+    "documentedItems": 371,
     "controlCoverage": {
       "direct": 63,
       "delegated": 74,
-      "interactive": 233,
+      "interactive": 234,
       "unsupported": 0
     }
   },
@@ -9562,6 +9562,7 @@
         "connection-methods",
         "start-stop-status",
         "network",
+        "phone-browser-access",
         "bots",
         "account",
         "devices",
@@ -10110,6 +10111,52 @@
       "capabilityId": "feature.remote-connect",
       "itemIds": [
         "network"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "event",
+        "eventName": "openbitfun:open-remote-connect"
+      }
+    },
+    {
+      "id": "feature.remote-connect:open:phone-browser-access",
+      "capabilityId": "feature.remote-connect",
+      "itemIds": [
+        "phone-browser-access"
       ],
       "kind": "open",
       "risk": "ui",
@@ -27836,6 +27883,17 @@
           }
         },
         {
+          "id": "phone-browser-access",
+          "titleZh": "在手机或浏览器中打开同一界面，扫码配对并随时撤销",
+          "titleEn": "Open the same UI on a phone or browser, pair by QR, and revoke at any time",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "「在手机或浏览器中打开同一界面」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
+            "reasonEn": "\"Open the same UI on a phone or browser\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you."
+          }
+        },
+        {
           "id": "bots",
           "titleZh": "接入微信扫码、飞书或 Telegram 聊天机器人（每次连接一个聊天应用，与手机远控并行不悖）",
           "titleEn": "Connect a WeChat (QR login), Feishu, or Telegram bot alongside Mobile Web",
@@ -28122,6 +28180,8 @@
         "Start or stop Remote Connect channels and inspect live connection status",
         "查看本机局域网地址、网络网卡状态与扫码邀请链接",
         "Inspect LAN IP addresses, network interfaces, and shareable QR invitations",
+        "在手机或浏览器中打开同一界面，扫码配对并随时撤销",
+        "Open the same UI on a phone or browser, pair by QR, and revoke at any time",
         "接入微信扫码、飞书或 Telegram 聊天机器人（每次连接一个聊天应用，与手机远控并行不悖）",
         "Connect a WeChat (QR login), Feishu, or Telegram bot alongside Mobile Web",
         "通过 GitHub 或邮箱验证码登录账号并查看身份状态",

@@ -18,6 +18,7 @@ import {
   activeScene,
   activeWorkspace,
   loadWorkspaces,
+  onWorkspaceChanged,
   openPathWorkspace,
   selectWorkspace,
   workspaces,
@@ -757,6 +758,7 @@ function clearConfigLookupTimer(): void {
  * switching between this controller and a Peer device (or between peers).
  */
 export function resetSshRemoteForScopeChange(): void {
+  resetRemoteLiveness();
   stopPortForwardPolling();
   clearConfigLookupTimer();
   directoryRequestTicket += 1;
@@ -1718,8 +1720,13 @@ export async function submitAuthPrompt(): Promise<void> {
       wsl: conn.wsl,
       options: conn.options,
     };
-    await connectWithConfig(config);
+    const reconnect = pendingAuthReconnect?.connectionId === conn.id ? pendingAuthReconnect : null;
+    const result = await connectWithConfig(config, reconnect ? { browseAfterConnect: false } : {});
     closeAuthPrompt();
+    if (reconnect && result) {
+      pendingAuthReconnect = null;
+      await activateReconnectedWorkspace(reconnect, result.connectionId || conn.id);
+    }
   } catch (error) {
     authPromptError.set(errorMessage(error));
   }
@@ -1964,6 +1971,7 @@ export async function openRemoteWorkspace(
         connectionId,
         remotePath: normalizedPath,
       });
+      lastActivatedRemote = remoteActivationKey(connectionId, normalizedPath);
     } catch (remoteErr) {
       // A CLI peer implements `open_remote_workspace` (`HANDLED`) without
       // `remote_open_workspace` (`CLI_NOT_IMPLEMENTED`); only fall through when
@@ -2957,3 +2965,321 @@ export function closePortForwardModal(): void {
   portForwardModalOpen.set(false);
   portForwardError.set("");
 }
+
+// ============================================================================
+// Remote workspace liveness (reconnect on activation + heartbeat)
+// ============================================================================
+//
+// Ported from the desktop's SSHRemoteProvider: activating a remote workspace
+// checks its transport (`ssh_is_connected`), reconnects from the saved profile
+// when it dropped (vault password, key or agent; credentials the vault does not
+// hold go to the auth prompt), re-activates the host's remote workspace
+// (`remote_open_workspace`) and then probes it every 30 s. A link that cannot be
+// restored is marked offline on the workspace, loudly, instead of letting Files,
+// Git and Terminal fail one command at a time.
+
+export type RemoteLinkState = "checking" | "connected" | "reconnecting" | "offline" | "auth-required";
+
+/** Liveness per connection id; the scenes read it through `remoteLinkStateOf`. */
+export const remoteLinkStates = signal<Record<string, RemoteLinkState>>({});
+/** Why a connection is offline, as the host said it. */
+export const remoteLinkErrors = signal<Record<string, string>>({});
+
+/** Background liveness check cadence for a connection in use (the desktop's). */
+export const SSH_HEARTBEAT_INTERVAL_MS = 30_000;
+const RECONNECT_BUDGET_MS = 180_000;
+const RECONNECT_RETRY_WAIT_MS = 10_000;
+const RECONNECT_ATTEMPT_TIMEOUT_MS = 30_000;
+
+interface ReconnectTarget {
+  workspaceId: string;
+  connectionId: string;
+  remotePath: string;
+}
+
+const ensureInFlight = new Map<string, Promise<boolean>>();
+const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
+let lastActivatedRemote: string | null = null;
+let pendingAuthReconnect: ReconnectTarget | null = null;
+
+function remoteActivationKey(connectionId: string, remotePath: string): string {
+  return `${currentPeerKey() ?? "local"}|${connectionId}|${normalizeRemotePath(remotePath)}`;
+}
+
+function setLinkState(connectionId: string, state: RemoteLinkState, error?: string): void {
+  remoteLinkStates.update(prev => (prev[connectionId] === state ? prev : { ...prev, [connectionId]: state }));
+  remoteLinkErrors.update(prev => {
+    if (error) return { ...prev, [connectionId]: error };
+    if (!(connectionId in prev)) return prev;
+    const { [connectionId]: _dropped, ...rest } = prev;
+    return rest;
+  });
+  if (state === "connected" || state === "offline") {
+    connectionStatuses.update(prev => ({
+      ...prev,
+      [connectionId]: state === "connected" ? "connected" : "error",
+    }));
+  }
+}
+
+/** The link state of a remote workspace, or null for a local one (or one not checked yet). */
+export function remoteLinkStateOf(ws: WorkspaceRecord | null): RemoteLinkState | null {
+  if (!ws || ws.workspaceKind !== "remote" || !ws.connectionId) return null;
+  return remoteLinkStates()[ws.connectionId] ?? null;
+}
+
+function findSavedConnection(connectionId: string): SavedConnection | undefined {
+  const canonical = canonicalSshConnectionId(connectionId);
+  return savedConnections().find(
+    conn => conn.id === connectionId || canonicalSshConnectionId(conn.id) === canonical,
+  );
+}
+
+function reconnectConfigFor(conn: SavedConnection): SSHConnectionConfig {
+  const authType = conn.authType;
+  const auth: SSHAuthMethod =
+    authType.type === "PrivateKey"
+      ? { type: "PrivateKey", keyPath: authType.keyPath, certificatePath: authType.certificatePath }
+      : authType.type === "Agent"
+        ? { type: "Agent", keyFingerprint: authType.keyFingerprint, fallbackKeyPath: authType.fallbackKeyPath }
+        : authType.type === "None"
+          ? { type: "None" }
+          : // The host fills an empty password from its vault.
+            { type: "Password", password: "" };
+  return {
+    id: conn.id,
+    name: conn.name,
+    host: conn.host,
+    port: conn.port,
+    username: conn.username,
+    auth,
+    defaultWorkspace: conn.defaultWorkspace,
+    proxyJump: conn.proxyJump,
+    proxyCommand: conn.proxyCommand,
+    container: conn.container,
+    wsl: conn.wsl,
+    options: conn.options,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function connectOnce(config: SSHConnectionConfig): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const result = await Promise.race([
+      invokeRawCommand<SSHConnectionResult>("ssh_connect", { config }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Connection timeout")), RECONNECT_ATTEMPT_TIMEOUT_MS);
+      }),
+    ]);
+    if (!result?.success) throw new Error(result?.error || "SSH connection failed");
+    if (result.serverInfo) {
+      serverInfos.update(prev => ({ ...prev, [result.connectionId || config.id]: result.serverInfo! }));
+    }
+    return result.connectionId || config.id;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function activateReconnectedWorkspace(target: ReconnectTarget, connectionId: string): Promise<void> {
+  try {
+    await invokeRawCommand<void>("remote_open_workspace", { connectionId, remotePath: target.remotePath });
+  } catch (error) {
+    if (!isMissingCommandError(error)) throw error;
+  }
+  lastActivatedRemote = remoteActivationKey(connectionId, target.remotePath);
+  setLinkState(target.connectionId, "connected");
+  if (connectionId !== target.connectionId) setLinkState(connectionId, "connected");
+  startRemoteHeartbeat(target.connectionId);
+}
+
+function openReconnectAuthPrompt(target: ReconnectTarget, conn: SavedConnection): void {
+  pendingAuthReconnect = target;
+  setLinkState(target.connectionId, "auth-required");
+  openAuthPrompt(conn);
+}
+
+/**
+ * Makes sure the transport behind a remote workspace is up. Local workspaces,
+ * and every workspace while driving a Peer device (the peer owns its own SSH
+ * sessions, and controller-local credentials must never open one there), pass
+ * straight through. Concurrent calls for the same connection share one check.
+ */
+export function ensureRemoteConnected(
+  ws: WorkspaceRecord | null,
+  options: { activate?: boolean } = {},
+): Promise<boolean> {
+  if (!ws || ws.workspaceKind !== "remote" || !ws.connectionId) return Promise.resolve(true);
+  if (currentPeerKey() !== null) return Promise.resolve(true);
+  const connectionId = ws.connectionId;
+  const running = ensureInFlight.get(connectionId);
+  if (running) return running;
+  const flight = runEnsureRemoteConnected(ws, connectionId, options.activate !== false).finally(() => {
+    ensureInFlight.delete(connectionId);
+  });
+  ensureInFlight.set(connectionId, flight);
+  return flight;
+}
+
+async function runEnsureRemoteConnected(
+  ws: WorkspaceRecord,
+  connectionId: string,
+  activate: boolean,
+): Promise<boolean> {
+  const expectedPeer = currentPeerKey();
+  const target: ReconnectTarget = { workspaceId: ws.id, connectionId, remotePath: normalizeRemotePath(ws.rootPath) };
+  if (remoteLinkStates()[connectionId] !== "connected") setLinkState(connectionId, "checking");
+  let alive: boolean;
+  try {
+    alive = Boolean(await invokeRawCommand<boolean>("ssh_is_connected", { connectionId }));
+  } catch (error) {
+    // A host that cannot answer the probe (older build) is left as it was.
+    if (currentPeerKey() === expectedPeer && remoteLinkStates()[connectionId] === "checking") {
+      remoteLinkStates.update(prev => {
+        const { [connectionId]: _dropped, ...rest } = prev;
+        return rest;
+      });
+    }
+    if (!isMissingCommandError(error)) console.warn("ssh_is_connected failed", errorMessage(error));
+    return true;
+  }
+  if (currentPeerKey() !== expectedPeer) return false;
+
+  if (alive) {
+    const key = remoteActivationKey(connectionId, target.remotePath);
+    if (activate && lastActivatedRemote !== key) {
+      try {
+        await invokeRawCommand<void>("remote_open_workspace", { connectionId, remotePath: target.remotePath });
+        lastActivatedRemote = key;
+      } catch (error) {
+        if (!isMissingCommandError(error)) {
+          setLinkState(connectionId, "offline", errorMessage(error));
+          return false;
+        }
+      }
+    }
+    setLinkState(connectionId, "connected");
+    startRemoteHeartbeat(connectionId);
+    return true;
+  }
+
+  // The transport dropped: reconnect from the saved profile.
+  stopRemoteHeartbeat(connectionId);
+  setLinkState(connectionId, "reconnecting");
+  if (savedConnections().length === 0) await loadSavedConnections();
+  if (currentPeerKey() !== expectedPeer) return false;
+  const conn = findSavedConnection(connectionId);
+  if (!conn) {
+    setLinkState(connectionId, "offline", "The saved connection for this workspace is missing on this host.");
+    return false;
+  }
+  if (conn.authType.type === "KeyboardInteractive") {
+    openReconnectAuthPrompt(target, conn);
+    return false;
+  }
+  if (conn.authType.type === "Password" && !(await checkHasStoredPassword(conn.id))) {
+    openReconnectAuthPrompt(target, conn);
+    return false;
+  }
+
+  const config = reconnectConfigFor(conn);
+  const deadline = Date.now() + RECONNECT_BUDGET_MS;
+  let lastError: unknown = null;
+  while (Date.now() < deadline) {
+    if (currentPeerKey() !== expectedPeer) return false;
+    // The user moved on to another workspace: stop spending the budget on this one.
+    if (activeWorkspace()?.connectionId !== connectionId) break;
+    try {
+      const resolvedId = await connectOnce(config);
+      if (currentPeerKey() !== expectedPeer) return false;
+      await activateReconnectedWorkspace(target, resolvedId);
+      return true;
+    } catch (error) {
+      lastError = error;
+      if (canRepairSshCredentials(conn.authType, error) && !conn.wsl && !conn.container?.local) {
+        openReconnectAuthPrompt(target, conn);
+        return false;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(RECONNECT_RETRY_WAIT_MS, remaining));
+    }
+  }
+  setLinkState(connectionId, "offline", lastError ? errorMessage(lastError) : undefined);
+  return false;
+}
+
+/** The workspace's Reconnect action: probe again, reconnecting when needed. */
+export async function retryRemoteWorkspace(ws: WorkspaceRecord | null = activeWorkspace()): Promise<boolean> {
+  if (!ws?.connectionId) return true;
+  const state = remoteLinkStates()[ws.connectionId];
+  if (state === "auth-required") {
+    const conn = findSavedConnection(ws.connectionId);
+    if (conn) {
+      openReconnectAuthPrompt(
+        { workspaceId: ws.id, connectionId: ws.connectionId, remotePath: normalizeRemotePath(ws.rootPath) },
+        conn,
+      );
+      return false;
+    }
+  }
+  return ensureRemoteConnected(ws);
+}
+
+function stopRemoteHeartbeat(connectionId: string): void {
+  const timer = heartbeats.get(connectionId);
+  if (timer !== undefined) {
+    clearInterval(timer);
+    heartbeats.delete(connectionId);
+  }
+}
+
+function startRemoteHeartbeat(connectionId: string): void {
+  if (heartbeats.has(connectionId) || currentPeerKey() !== null) return;
+  const expectedPeer = currentPeerKey();
+  let checking = false;
+  const timer = setInterval(async () => {
+    if (currentPeerKey() !== expectedPeer) {
+      stopRemoteHeartbeat(connectionId);
+      return;
+    }
+    if (checking) return;
+    checking = true;
+    try {
+      const alive = await invokeRawCommand<boolean>("ssh_is_connected", { connectionId });
+      if (currentPeerKey() !== expectedPeer) return;
+      if (!alive) {
+        stopRemoteHeartbeat(connectionId);
+        setLinkState(connectionId, "offline", "The connection was lost.");
+        const ws = activeWorkspace();
+        if (ws?.connectionId === connectionId) void ensureRemoteConnected(ws);
+      }
+    } catch {
+      // A transient invoke error is retried at the next heartbeat.
+    } finally {
+      checking = false;
+    }
+  }, SSH_HEARTBEAT_INTERVAL_MS);
+  heartbeats.set(connectionId, timer);
+}
+
+/** Drops every heartbeat and link state (Peer Device Mode in or out). */
+function resetRemoteLiveness(): void {
+  for (const id of [...heartbeats.keys()]) stopRemoteHeartbeat(id);
+  remoteLinkStates.set({});
+  remoteLinkErrors.set({});
+  lastActivatedRemote = null;
+  pendingAuthReconnect = null;
+}
+
+// Activation is the moment the desktop checks a remote workspace's link.
+onWorkspaceChanged(() => {
+  const ws = activeWorkspace();
+  if (!ws) return;
+  void ensureRemoteConnected(ws);
+});
+

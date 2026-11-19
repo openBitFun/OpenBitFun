@@ -8,8 +8,10 @@
 // them.
 
 import { signal } from "nsh";
+import { getConfig } from "./api";
 import { invokeCommand } from "./bridge";
-import { activeSessionId, activeWorkspaceRoot, agentTypeOf, runStep } from "./state";
+import { tr } from "./i18n";
+import { activeSessionId, activeWorkspaceId, activeWorkspaceRoot, agentTypeOf, runStep } from "./state";
 
 /** The targets the host can dispatch to, as `dispatch_list_targets` reports them. */
 export interface DispatchTarget {
@@ -45,6 +47,24 @@ export const dispatchWorkspacePath = signal("");
 export const dispatchPrompt = signal("");
 export const dispatchApprovalPolicy = signal("auto");
 export const dispatchFormOpen = signal(false);
+/** Per-job options `dispatch_submit` takes beside the prompt (the desktop's dialog offers the same). */
+export const dispatchIncludeUncommitted = signal(false);
+export const dispatchBaseRef = signal("HEAD");
+export const dispatchTitle = signal("");
+export const dispatchModel = signal("");
+
+export interface DispatchProbeState {
+  /** The target key this answer is for. */
+  key: string;
+  status: "checking" | "ready" | "not-ready" | "failed";
+  message: string;
+  availableModels: string[];
+  defaultModel: string;
+}
+
+/** The readiness of the selected target; Submit stays off until it is `ready`. */
+export const dispatchProbe = signal<DispatchProbeState | null>(null);
+let probeGeneration = 0;
 
 /**
  * `dispatch_submit` refuses anything else. The desktop offers the same three:
@@ -149,6 +169,111 @@ export function openDispatchForm(): void {
   dispatchFormOpen.set(true);
   dispatchNotice.set("");
   if (!dispatchWorkspacePath()) dispatchWorkspacePath.set(activeWorkspaceRoot());
+  dispatchBaseRef.set("HEAD");
+  dispatchTitle.set("");
+  dispatchModel.set("");
+  dispatchIncludeUncommitted.set(false);
+  // The baseline copies local changes the way the worktree setting says, as on the desktop.
+  void getConfig("app.worktrees", true)
+    .then(settings => {
+      const record = settings && typeof settings === "object" ? (settings as Record<string, unknown>) : {};
+      dispatchIncludeUncommitted.set(record.copyLocalChanges === true);
+    })
+    .catch(() => undefined);
+  void probeDispatchTarget();
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item)) : [];
+}
+
+/**
+ * Asks the selected target whether it can run a detached job. The controller
+ * host decides readiness from the shared dispatch contract (protocol version and
+ * required capabilities) and answers `ready`, a `reason` code and the
+ * `missingCapabilities`; this surface only words the verdict. A controller host
+ * older than that verdict says it needs an update rather than being judged by a
+ * copy of the contract kept here. A local target needs no probe; probe failures
+ * keep Submit off with the reason on screen.
+ */
+export async function probeDispatchTarget(): Promise<void> {
+  const target = selectedTarget();
+  const generation = ++probeGeneration;
+  if (!target) {
+    dispatchProbe.set(null);
+    return;
+  }
+  const key = targetKey(target);
+  if (target.kind === "local") {
+    dispatchProbe.set({ key, status: "ready", message: "", availableModels: [], defaultModel: "" });
+    return;
+  }
+  dispatchProbe.set({ key, status: "checking", message: "", availableModels: [], defaultModel: "" });
+  try {
+    // The target checks out its own worktree, so the probe sends no path.
+    const request =
+      target.kind === "ssh"
+        ? { kind: "ssh", connectionId: target.connectionId ?? "", workspacePath: "" }
+        : { kind: "device", deviceId: target.deviceId ?? "", workspacePath: "" };
+    const probe = await invokeCommand<Record<string, unknown>>("dispatch_probe_target", { target: request });
+    if (generation !== probeGeneration) return;
+    const record = probe && typeof probe === "object" ? probe : {};
+    const protocol =
+      record.protocol && typeof record.protocol === "object"
+        ? (record.protocol as Record<string, unknown>)
+        : null;
+    const protocolError = typeof record.protocolError === "string" ? record.protocolError : "";
+    const reason = typeof record.reason === "string" ? record.reason : "";
+    const missing = stringList(record.missingCapabilities);
+    let message = "";
+    if (typeof record.ready !== "boolean") {
+      // A controller host that predates the readiness verdict.
+      message = tr("devices.dispatchHostUpdateRequired");
+    } else if (!record.ready) {
+      if (reason === "cli_missing") {
+        message = tr("devices.dispatchCliMissing");
+      } else if (reason === "capabilities_missing" && missing.length > 0) {
+        message = tr("devices.dispatchCapabilitiesMissing", { list: missing.join(", ") });
+      } else if (reason === "incompatible" && !protocolError) {
+        message = tr("devices.dispatchProtocolMismatch", {
+          version: String(protocol?.protocolVersion ?? "?"),
+          expected: String(record.expectedProtocolVersion ?? "?"),
+        });
+      } else {
+        message = protocolError || reason || tr("devices.dispatchHostUpdateRequired");
+      }
+    }
+    dispatchProbe.set({
+      key,
+      status: message ? "not-ready" : "ready",
+      message,
+      availableModels: stringList(protocol?.availableModels),
+      defaultModel: typeof protocol?.defaultModel === "string" ? protocol.defaultModel : "",
+    });
+  } catch (error) {
+    if (generation !== probeGeneration) return;
+    dispatchProbe.set({
+      key,
+      status: "failed",
+      message: error instanceof Error ? error.message : String(error),
+      availableModels: [],
+      defaultModel: "",
+    });
+  }
+}
+
+/** Selects a target and checks it again. */
+export function chooseDispatchTarget(key: string): void {
+  dispatchTargetKey.set(key);
+  dispatchModel.set("");
+  void probeDispatchTarget();
+}
+
+/** Whether the probe answered `ready` for the target the form shows. */
+export function dispatchTargetReady(): boolean {
+  const target = selectedTarget();
+  const probe = dispatchProbe();
+  return Boolean(target && probe && probe.key === targetKey(target) && probe.status === "ready");
 }
 
 /** Mints the ids the submit request needs before the target owns them. */
@@ -160,17 +285,24 @@ export async function submitDispatch(): Promise<void> {
   const target = selectedTarget();
   const prompt = dispatchPrompt().trim();
   if (!target) {
-    dispatchNotice.set("No dispatch target is available from this host");
+    dispatchNotice.set(tr("devices.dispatchNoTarget"));
+    return;
+  }
+  if (!dispatchTargetReady()) {
+    dispatchNotice.set(dispatchProbe()?.message || tr("devices.dispatchNotReady"));
     return;
   }
   if (target.kind !== "local" && !dispatchWorkspacePath().trim()) {
-    dispatchNotice.set("A remote target needs the workspace path on that host");
+    dispatchNotice.set(tr("devices.dispatchNeedsPath"));
     return;
   }
   if (!prompt) {
-    dispatchNotice.set("A job needs a prompt");
+    dispatchNotice.set(tr("devices.dispatchNeedsPrompt"));
     return;
   }
+  const title = dispatchTitle().trim();
+  const model = dispatchModel().trim();
+  const workspaceId = activeWorkspaceId();
   await runStep(async () => {
     try {
       await invokeCommand<unknown>("dispatch_submit", {
@@ -181,10 +313,16 @@ export async function submitDispatch(): Promise<void> {
         agentType: agentTypeOf(activeSessionId()),
         prompt,
         approvalPolicy: dispatchApprovalPolicy(),
+        baseRef: dispatchBaseRef().trim() || "HEAD",
+        includeUncommitted: dispatchIncludeUncommitted(),
+        ...(title ? { title } : {}),
+        ...(model ? { model } : {}),
         ...(activeWorkspaceRoot() ? { sourceWorkspacePath: activeWorkspaceRoot() } : {}),
+        ...(workspaceId ? { sourceWorkspaceId: workspaceId } : {}),
       });
       dispatchPrompt.set("");
-      dispatchNotice.set(`Submitted to ${target.displayName}`);
+      dispatchTitle.set("");
+      dispatchNotice.set(tr("devices.dispatchSubmitted", { name: target.displayName }));
       await refreshDispatchJobs();
       // A local job is not detached, so this is the only place it shows up.
       dispatchFormOpen.set(false);
@@ -198,7 +336,7 @@ export async function cancelDispatch(jobId: string): Promise<void> {
   await runStep(async () => {
     try {
       await invokeCommand<unknown>("dispatch_cancel", { jobId });
-      dispatchNotice.set("Cancel requested");
+      dispatchNotice.set(tr("devices.dispatchCancelRequested"));
       await refreshDispatchJobs();
     } catch (error) {
       dispatchNotice.set(error instanceof Error ? error.message : String(error));

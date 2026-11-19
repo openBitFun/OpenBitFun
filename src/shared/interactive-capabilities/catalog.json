@@ -538,6 +538,19 @@
       "set_config",
       "canonicalize_agent_profile_configs"
     ],
+    "typedSettingsMutations": [
+      "ai_model_delete",
+      "ai_model_upsert",
+      "delete_permission_rule",
+      "get_settings_schema",
+      "resolve_ai_model_request_url",
+      "set_acp_client_permission_mode",
+      "set_approval_settings",
+      "set_permission_mode",
+      "set_task_model",
+      "set_web_search_provider",
+      "upsert_permission_rule"
+    ],
     "decisionModelCredentials": [
       "clear_decision_model_credential",
       "get_decision_model_credential_status",
@@ -912,7 +925,8 @@
             "command:fork_session",
             "command:export_session_transcript",
             "command:archive_all_sessions",
-            "command:get_session_lineage"
+            "command:get_session_lineage",
+            "command:mark_session_seen"
           ]
         },
         {
@@ -934,7 +948,8 @@
             "command:update_session_permission_mode",
             "command:get_available_modes",
             "command:get_session_permission_mode",
-            "command:update_active_turn_permission_mode"
+            "command:update_active_turn_permission_mode",
+            "command:get_session_mode_catalog"
           ]
         },
         {
@@ -1007,7 +1022,9 @@
             "command:interrupt_dialog_turn",
             "command:cancel_dialog_turn",
             "command:recover_interrupted_dialog_turn",
-            "command:cancel_session"
+            "command:cancel_session",
+            "command:submit_user_message",
+            "command:stop_dialog_turn"
           ]
         },
         {
@@ -1266,7 +1283,9 @@
             "command:run_init_agents_md",
             "command:get_memory_paths",
             "command:reset_memory",
-            "command:compact_session"
+            "command:compact_session",
+            "command:list_session_commands",
+            "command:execute_session_command"
           ]
         },
         {
@@ -6181,6 +6200,25 @@
             "command:remote_connect_get_lan_network_info",
             "command:remote_connect_get_form_state",
             "command:remote_connect_set_form_state"
+          ]
+        },
+        {
+          "id": "phone-browser-access",
+          "titleZh": "在手机或浏览器中打开同一界面，扫码配对并随时撤销",
+          "titleEn": "Open the same UI on a phone or browser, pair by QR, and revoke at any time",
+          "descriptionZh": "原生桌面应用在本机提供网页界面与 OBP 协议：本机浏览器凭一次性启动链接以所有者身份连接；开启局域网后，手机扫描一次性二维码（携带自签名证书指纹）完成配对，配对设备只能执行可远程代理的命令，可在设备页随时撤销。",
+          "descriptionEn": "The native desktop serves its web UI and the OBP protocol: a browser on this computer connects as the owner through a one-time launch link; with the LAN listener on, a phone pairs by scanning a one-time QR code that carries the self-signed certificate fingerprint, runs only proxied commands, and can be revoked in Devices at any time.",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "「在手机或浏览器中打开同一界面」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
+            "reasonEn": "\"Open the same UI on a phone or browser\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you."
+          },
+          "evidence": [
+            "command:obp_get_status",
+            "command:obp_set_lan_enabled",
+            "command:obp_create_pairing",
+            "command:obp_revoke_paired_client"
           ]
         },
         {
@@ -13799,6 +13837,9 @@
     "frontend_workbench": {
       "capabilityId": "feature.ai-assistant"
     },
+    "obp": {
+      "capabilityId": "feature.remote-connect"
+    },
     "remote_connect": {
       "capabilityId": "feature.remote-connect"
     },
@@ -13826,7 +13867,13 @@
     "config": {
       "capabilityId": "setting.application.general"
     },
+    "settings_mutation": {
+      "capabilityId": "setting.application.general"
+    },
     "session": {
+      "capabilityId": "feature.ai-assistant"
+    },
+    "session_policy": {
       "capabilityId": "feature.ai-assistant"
     },
     "session_storage_directory": {

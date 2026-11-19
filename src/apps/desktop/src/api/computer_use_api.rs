@@ -1,6 +1,7 @@
 //! Tauri commands for Computer use (permissions + settings deep links).
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use openbitfun_agent_tools::computer_use_permissions::{
     ComputerPermissionKind, ComputerPermissionReceipt, ComputerPermissionRequest,
     ComputerPermissions,
@@ -8,8 +9,6 @@ use openbitfun_agent_tools::computer_use_permissions::{
 use openbitfun_core::service::config::types::AIConfig;
 use openbitfun_core::util::process_manager;
 use serde::{Deserialize, Serialize};
-use tauri::State;
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputerUseStatusResponse {

@@ -415,7 +415,21 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
         delete customSubagentDetails[subagentId];
         return { handled: true, value: null };
       }
+      case "list_manageable_subagents": {
+        const parent = String(payload.parentAgentType ?? "");
+        return {
+          handled: true,
+          value: subagents.map(sub => ({
+            ...sub,
+            effectiveEnabled: (sub as Record<string, unknown>)[`enabledFor:${parent}`] !== false,
+          })),
+        };
+      }
       case "update_subagent_config": {
+        if (payload.parentAgentType && payload.enabled !== undefined) {
+          const target = subagents.find(s => s.id === String(payload.subagentId ?? ""));
+          if (target) target[`enabledFor:${String(payload.parentAgentType)}`] = Boolean(payload.enabled);
+        }
         const subagentId = String(payload.subagentId ?? "");
         const idx = subagents.findIndex(s => s.id === subagentId);
         if (idx >= 0) {
@@ -775,6 +789,18 @@ test("AgentsScene creates, edits, deletes custom mode and configures/resets buil
   // Built-in profile tool configuration (raw: true) & reset (raw: true)
   await app.press("agent-configure-Standard");
   await app.waitFor("Configure Profile · Standard");
+  // The profile lists the subagents Standard may call; a switch is scoped to Standard.
+  await app.waitFor("parent-subagent-Explorer");
+  expect(mock.callFor("list_manageable_subagents").at(-1)?.request).toMatchObject({
+    parentAgentType: "Standard",
+  });
+  await app.press("parent-subagent-Explorer");
+  await app.waitUntil(() => mock.callFor("update_subagent_config").length > 0);
+  expect(mock.callFor("update_subagent_config")[0]?.request).toMatchObject({
+    subagentId: "Explorer",
+    parentAgentType: "Standard",
+    enabled: false,
+  });
   await app.press("builder-tool-Bash");
   await app.press("profile-save");
 
@@ -852,16 +878,43 @@ test("AgentsScene creates, edits, configures, reloads, and deletes subagents", a
   await app.press("agent-configure-Explorer");
   await app.waitFor("Configure Subagent · Explorer");
   await app.press("subagent-enabled-toggle");
-  await app.type("subagent-model-input", "fast-small");
+  // Availability is scoped to a parent the user picks; the host never gets a guessed one.
   await app.press("subagent-config-save");
+  await app.waitFor("Choose the parent agent this availability applies to.");
+  expect(mock.callFor("update_subagent_config").length).toBe(0);
+  await app.press("subagent-parent-select");
+  await app.press("subagent-parent-Reviewer");
+  await app.press("subagent-model-select");
+  await app.press("subagent-model-fast");
+  await app.press("subagent-config-save");
+  await app.waitUntil(() => mock.callFor("update_subagent_config").length > 0);
 
   const configSub = mock.callFor("update_subagent_config")[0];
   expect(configSub?.raw).toBe(false);
   expect(configSub?.request).toMatchObject({
     subagentId: "Explorer",
     enabled: false,
-    model: "fast-small",
+    parentAgentType: "Reviewer",
   });
+  expect((configSub?.request as Record<string, unknown>).model).toBeUndefined();
+  // A built-in's model is the desktop's model selection document, not a model string.
+  await app.waitUntil(() =>
+    mock.base.settingsWrites.some(w => w.path === "ai.agent_model_selections.subagents.builtin.Explorer"),
+  );
+  expect(
+    mock.base.settingsWrites.find(w => w.path === "ai.agent_model_selections.subagents.builtin.Explorer")?.value,
+  ).toEqual({ kind: "model", model_ref: "fast" });
+
+  // Clearing the choice removes the override.
+  await app.press("subagent-model-select");
+  await app.press("subagent-model-default");
+  await app.press("subagent-config-save");
+  await app.waitUntil(
+    () =>
+      mock.base.settingsWrites.filter(w => w.path === "ai.agent_model_selections.subagents.builtin.Explorer")
+        .length === 2,
+  );
+  expect(mock.base.settingsWrites.at(-1)?.value).toBe(null);
   await app.press("agent-builder-close");
 
   // Reload triggers both reload_custom_agents and reload_subagents
@@ -1104,4 +1157,128 @@ test("AgentsScene respects peerSupports('tool_catalog') === false in Peer Device
 
   await app.press("agent-configure-Standard");
   await app.waitFor("Connected peer host does not expose the tool catalog.");
+});
+
+test("Agents and Skills load the user-level catalogue without a workspace, as the desktop does", async () => {
+  const mock = createAgentsSkillsBackend({ openedWorkspaces: [], currentWorkspaceId: null });
+  // No recent workspace either, so nothing is reopened at launch.
+  const invoke = mock.handlers["openbitfun.invoke"];
+  mock.handlers["openbitfun.invoke"] = (data: unknown) =>
+    (data as { action?: string })?.action === "get_recent_workspaces"
+      ? { ok: true, value: [], transport: "dev" }
+      : invoke(data);
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
+  await app.waitFor("No open workspace yet.");
+
+  await app.press("Agents");
+  await app.waitFor("Reviewer");
+  const modes = mock.callFor("get_available_modes")[0];
+  expect((modes?.request as Record<string, unknown> | undefined)?.workspaceId).toBeUndefined();
+  expect(mock.callFor("list_subagents").length).toBeGreaterThan(0);
+
+  await app.press("Skills");
+  await app.waitUntil(() => mock.callFor("get_skill_configs").length > 0);
+  expect(mock.callFor("get_skill_configs")[0]?.request).toMatchObject({
+    workspaceId: null,
+    workspacePath: null,
+  });
+
+  // Re-entering a scene reads the catalogue again.
+  const before = mock.callFor("get_available_modes").length;
+  await app.press("Agents");
+  await app.waitUntil(() => mock.callFor("get_available_modes").length > before);
+});
+
+test("an agent that can load skills lists them and replaces its selection per skill", async () => {
+  const mock = createAgentsSkillsBackend();
+  let enabled = ["review", "deploy"];
+  const replaced: unknown[] = [];
+  const invoke = mock.handlers["openbitfun.invoke"];
+  mock.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown>; raw?: Record<string, unknown> };
+    if (args.action === "get_available_modes") {
+      return {
+        ok: true,
+        value: [
+          {
+            id: "Standard",
+            name: "Standard",
+            description: "Balanced default profile.",
+            source: "builtin",
+            toolCount: 2,
+            defaultTools: ["Read", "Skill"],
+            configProfileId: "Standard",
+          },
+        ],
+        transport: "dev",
+      };
+    }
+    if (args.action === "get_agent_profile_configs") {
+      return { ok: true, value: { Standard: { enabled_tools: ["Read", "Skill"] } }, transport: "dev" };
+    }
+    if (args.action === "get_mode_skill_configs") {
+      expect(args.raw).toMatchObject({ modeId: "Standard" });
+      return {
+        ok: true,
+        value: ["review", "deploy"].map(key => ({
+          key,
+          name: key,
+          description: `${key} skill`,
+          effectiveEnabled: enabled.includes(key),
+          globallyEnabled: true,
+        })),
+        transport: "dev",
+      };
+    }
+    if (args.action === "replace_mode_skill_selection") {
+      replaced.push(args.request);
+      enabled = ((args.request?.enabledSkillKeys ?? []) as string[]).slice();
+      return { ok: true, value: "ok", transport: "dev" };
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
+  await app.waitFor("OpenBitFun");
+  await app.press("Agents");
+  await app.press("agent-configure-Standard");
+  await app.waitFor("mode-skill-deploy");
+  await app.press("mode-skill-deploy");
+  await app.waitUntil(() => replaced.length === 1);
+  expect(replaced[0]).toMatchObject({ modeId: "Standard", enabledSkillKeys: ["review"] });
+});
+
+test("Agents and Skills switch to the compact layout at phone width and keep their primary action", async () => {
+  const mock = createAgentsSkillsBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
+  await app.waitFor("NSH skeleton");
+
+  await app.press("Agents");
+  await app.waitFor("Reviewer");
+  const desktopTitle = Number(app.spanStyle("Agents & Subagents").fontSize);
+
+  // At phone width the shell's sidebar is put away, as a phone user would, and the
+  // scene reads its own laid-out width to move to the compact layout.
+  await app.setViewport(390, 844);
+  // The shell folds its sidebar away at phone width (or overlays it); make sure the scene is uncovered.
+  if (app.shows("compact-drawer-scrim")) await app.press("compact-drawer-scrim");
+  await app.waitUntil(() => Number(app.spanStyle("Agents & Subagents").fontSize) < desktopTitle);
+  await app.waitFor("Primary agents");
+  expect(app.texts()).toContain("Reviewer");
+  expect(app.texts()).toContain("HelperSub");
+  await app.press("agents-create-bot");
+  await app.waitFor("builder-id-input");
+  await app.press("agent-builder-close");
+  await app.waitUntil(() => !app.shows("builder-id-input"));
+
+  await app.press("toggle-drawer");
+  await app.press("Skills");
+  await app.waitFor("Skills & Capabilities");
+  if (app.shows("compact-drawer-scrim")) await app.press("compact-drawer-scrim");
+  await app.waitFor("Code Reviewer");
+  expect(Number(app.spanStyle("Skills & Capabilities").fontSize)).toBeLessThan(desktopTitle);
+  await app.press("label:skill-toggle-user::openbitfun::reviewer");
+  await app.waitUntil(() => mock.callFor("set_global_skill_disabled").length > 0);
+  await app.press("skills-install-folder-toggle");
+  await app.waitFor("skill-folder-path-input");
+  await app.press("skill-folder-close");
 });

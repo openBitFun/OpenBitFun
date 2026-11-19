@@ -1,6 +1,7 @@
 //! Git API
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use log::{error, info};
 use openbitfun_core::infrastructure::storage::StorageOptions;
@@ -24,8 +25,6 @@ use openbitfun_services_integrations::remote_ssh::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use tauri::State;
-
 /// Flattens a Git service failure into the desktop error string, keeping
 /// ownership rejections machine-recognizable across the command boundary. The
 /// wire form is produced by `trust`, shared with the app-server surface.

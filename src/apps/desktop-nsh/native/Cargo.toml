@@ -1,0 +1,107 @@
+# `openbitfun/native` and the native desktop runner.
+#
+# A workspace of its own, excluded from the repository root workspace: NSH's
+# crates need `unicode-width ^0.2.2`, which the CLI's `ratatui 0.29`
+# (`=0.2.0`) cannot share one resolution with. NSH also builds the library
+# inside its generated workspace (`../.nsh/rust`), so the package inherits
+# nothing from a workspace.
+#
+# The backend is NOT a Cargo dependency: the runner loads the desktop
+# backend library (`libopenbitfun_desktop_lib`, built by the root workspace)
+# at runtime and speaks its C ABI (`backend_protocol::ffi`), the same
+# dispatch + event-stream protocol every client uses.
+
+[workspace]
+
+[package]
+name = "openbitfun-nsh-native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+description = "OpenBitFun native NSH module (`openbitfun/native`) and desktop runner"
+publish = false
+
+[lib]
+name = "openbitfun_nsh_native"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openbitfun-nsh"
+path = "src/runner/main.rs"
+required-features = ["runner"]
+
+[dependencies]
+nsh-core = { version = "=0.6.0", default-features = false }
+serde_json = "1.0"
+tokio = { version = "1.52", default-features = false, features = ["sync"] }
+
+# Runner-only dependencies (`--features runner`); the module library that
+# NSH builds for type generation stays thin.
+serde = { version = "1.0", features = ["derive"], optional = true }
+libloading = { version = "0.8", optional = true }
+log = { version = "0.4", optional = true }
+nsh-base = { version = "=0.6.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-macos-app = { version = "=0.6.0", default-features = false, optional = true }
+nsh-platform-macos = { version = "=0.6.0", default-features = false, optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"], optional = true }
+dispatch = { version = "0.2", optional = true }
+
+[features]
+default = []
+# The runner with the NSH feature set `nsh` generates for a JS app.
+runner = [
+    "dep:serde",
+    "dep:libloading",
+    "dep:log",
+    "dep:nsh-base",
+    "dep:nsh-macos-app",
+    "dep:nsh-platform-macos",
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-app-kit",
+    "dep:dispatch",
+    "nsh-macos-app?/js",
+    "nsh-macos-app?/shader",
+    "nsh-macos-app?/editor",
+    "nsh-macos-app?/emoji-picker",
+    "nsh-macos-app?/highlight",
+    "nsh-macos-app?/math",
+    "nsh-macos-app?/plot",
+    "nsh-macos-app?/rich-editor",
+    "nsh-macos-app?/term",
+    "nsh-macos-app?/zlib",
+    "nsh-macos-app?/crypto",
+    "nsh-macos-app?/websocket",
+    "nsh-macos-app?/updater",
+    "nsh-macos-app?/svg",
+]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Same release profiles as the root workspace, so the runner and the backend
+# library it loads are built alike (`scripts/package-desktop-nsh-macos.mjs`).
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+incremental = true

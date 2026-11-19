@@ -46,6 +46,8 @@ pub mod side_question;
 // Session goal mode (/goal command)
 pub mod goal_mode;
 pub(crate) mod init_agents_md;
+/// Turn and session policy shared by every client surface
+pub mod session_policy;
 pub mod system;
 
 // Agents module

@@ -1,6 +1,7 @@
 //! Review platform Tauri commands.
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use log::error;
 use openbitfun_core::service::review_platform::{
     untrusted_repository_error_message, ReviewPlatformCiLog, ReviewPlatformDetailSection,
@@ -10,8 +11,6 @@ use openbitfun_core::service::review_platform::{
     ReviewRepositoryLocator,
 };
 use serde::Deserialize;
-use tauri::State;
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewPlatformWorkspaceSnapshotRequest {

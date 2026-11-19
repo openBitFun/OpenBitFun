@@ -7,7 +7,7 @@
 
 import { signal } from "nsh";
 import { listPendingPermissionRequests, respondPermission, subscribePermissionRequests } from "./api";
-import { listenEvent } from "./bridge";
+import { invokeCommand, listenEvent } from "./bridge";
 import { reportError } from "./state";
 
 export interface PermissionRequestView {
@@ -104,10 +104,42 @@ export async function answerPermission(
   reply: "once" | "always" | "reject",
   feedback?: string,
 ): Promise<void> {
+  answeringPermission.set({ requestId, reply });
   try {
     await respondPermission({ requestId, reply, ...(feedback ? { feedback } : {}) });
     drop(requestId);
   } catch (error) {
     reportError(error instanceof Error ? error.message : String(error));
+  } finally {
+    answeringPermission.set(null);
+  }
+}
+
+/** The request being answered and how, so its button can show progress. */
+export const answeringPermission = signal<{ requestId: string; reply: string } | null>(null);
+
+/**
+ * Answers a request and every request the host batched with it (one tool call
+ * that touches several resources asks once per resource). The host returns the
+ * ids it resolved; those leave the prompt together.
+ */
+export async function answerPermissionBatch(
+  requestId: string,
+  reply: "once" | "always" | "reject",
+  feedback?: string,
+): Promise<void> {
+  answeringPermission.set({ requestId, reply: `batch-${reply}` });
+  try {
+    const resolved = await invokeCommand<unknown>("respond_permission_batch", {
+      requestId,
+      reply,
+      ...(feedback ? { feedback } : {}),
+    });
+    const ids = Array.isArray(resolved) ? resolved.map(String) : [requestId];
+    for (const id of ids.length ? ids : [requestId]) drop(id);
+  } catch (error) {
+    reportError(error instanceof Error ? error.message : String(error));
+  } finally {
+    answeringPermission.set(null);
   }
 }

@@ -1,10 +1,11 @@
 //! Terminal API
 
+use crate::host::HostHandle;
+use crate::host::State;
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 use openbitfun_core::infrastructure::try_get_path_manager_arc;
@@ -28,6 +29,10 @@ use openbitfun_core::service::terminal::{
 
 use super::app_state::AppState;
 
+/// Cloning shares the same lazily initialized API: every user of the
+/// managed state must initialize through one guard, or concurrent first
+/// calls race to create the global terminal session manager.
+#[derive(Clone)]
 pub struct TerminalState {
     api: Arc<Mutex<Option<TerminalApi>>>,
     initialized: Arc<Mutex<bool>>,
@@ -435,7 +440,7 @@ async fn register_terminal_stream(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn emit_terminal_event(app_handle: &AppHandle, event: &TerminalEvent) -> bool {
+fn emit_terminal_event(app_handle: &HostHandle, event: &TerminalEvent) -> bool {
     if let TerminalEvent::Data { session_id, .. } | TerminalEvent::Exit { session_id, .. } = event {
         notify_terminal_replay(session_id);
     }
@@ -465,7 +470,7 @@ fn remote_terminal_signal_bytes(signal: &str) -> Option<&'static [u8]> {
 }
 
 async fn spawn_remote_pty_session(
-    app: &AppHandle,
+    app: &HostHandle,
     terminal_manager: &openbitfun_core::service::remote_ssh::RemoteTerminalManager,
     connection_id: &str,
     request: &CreateSessionRequest,
@@ -587,7 +592,7 @@ fn resolve_terminal_workspace_target(
 
 #[tauri::command]
 pub async fn terminal_create(
-    _app: AppHandle,
+    _app: HostHandle,
     mut request: CreateSessionRequest,
     state: State<'_, TerminalState>,
     app_state: State<'_, AppState>,
@@ -1112,7 +1117,7 @@ pub async fn terminal_get_history(
     })
 }
 
-pub fn start_terminal_event_loop(terminal_state: TerminalState, app_handle: AppHandle) {
+pub fn start_terminal_event_loop(terminal_state: TerminalState, app_handle: HostHandle) {
     tokio::spawn(async move {
         let api = match terminal_state.get_or_init_api().await {
             Ok(api) => api,

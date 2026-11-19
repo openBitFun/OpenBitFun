@@ -9,8 +9,10 @@
 
 import { signal } from "nsh";
 import type { InputRef } from "nsh";
-import { searchWorkspaceFiles } from "./api";
+import { executeSessionCommand, listSessionCommands, searchWorkspaceFiles } from "./api";
+import { tr, type MessageKey } from "./i18n";
 import { activeWorkspaceId, activeWorkspaceRoot, composerText } from "./state";
+import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 
 /** One row of the picker: a path the host reported, split into what a row shows. */
 export interface MentionHit {
@@ -240,4 +242,115 @@ export function insertMention(hit: MentionHit, composer: InputRef | undefined): 
     return;
   }
   composerText.set(`${text}${token}`);
+}
+
+// Slash commands. A composer that holds only `/name` (no space yet) opens the
+// command list; pressing a row or sending the exact command runs it instead of
+// starting a turn. The list and the commands are the host's
+// (`list_session_commands` / `execute_session_command`), the same ones the IM
+// bots offer, so `/compact` means the same thing whichever client typed it.
+
+export interface SlashCommand {
+  id: string;
+  command: string;
+  /** The catalog key the host names; `description` is its English fallback. */
+  labelKey: string;
+  description: string;
+  /** Commands that start or rewrite a turn wait until the running one ends. */
+  idleOnly: boolean;
+  /** Whether the host would run it right now. */
+  available: boolean;
+  args: string[];
+}
+
+/** The commands the host offers for the open session; empty until it answers. */
+export const sessionCommandList = signal<SlashCommand[]>([]);
+/** Set when the host has no session commands, so `/` explains instead of listing. */
+export const sessionCommandsUnsupported = signal(false);
+
+let commandsKey: string | null = null;
+
+/** Reads the host's command list for a session; repeated calls for it are free. */
+export async function loadSessionCommands(sessionId: string | null, force = false): Promise<void> {
+  const key = sessionId ?? "";
+  if (!force && key === commandsKey) return;
+  commandsKey = key;
+  try {
+    const rows = await listSessionCommands(sessionId);
+    if (commandsKey !== key) return;
+    sessionCommandList.set(
+      (rows ?? []).map(row => ({
+        id: String(row.id),
+        command: row.command || `/${row.id}`,
+        labelKey: row.labelKey ?? "",
+        description: row.description ?? "",
+        idleOnly: row.idleOnly === true,
+        available: row.available !== false,
+        args: Array.isArray(row.args) ? row.args : [],
+      })),
+    );
+    sessionCommandsUnsupported.set(false);
+  } catch (error) {
+    if (commandsKey !== key) return;
+    sessionCommandList.set([]);
+    sessionCommandsUnsupported.set(isMissingCommand(error, "list_session_commands"));
+  }
+}
+
+/** The label a row shows: the client catalog's text when it has the key. */
+export function slashCommandLabel(command: SlashCommand): string {
+  const key = command.labelKey as MessageKey;
+  const text = command.labelKey ? tr(key) : "";
+  return text && text !== command.labelKey ? text : command.description;
+}
+
+/** The command list the composer's text asks for, or `null` when it is not a slash token. */
+export function slashCommandsFor(text: string, running: boolean): SlashCommand[] | null {
+  if (!text.startsWith("/") || /\s/.test(text)) return null;
+  const query = text.slice(1).toLowerCase();
+  return sessionCommandList().filter(
+    entry => entry.command.slice(1).startsWith(query) && (!running || !entry.idleOnly),
+  );
+}
+
+/** The command a whole message names (`/reload skills` included), if the host offers it. */
+export function parseSlashCommand(text: string): { command: SlashCommand; arg: string } | null {
+  const trimmed = text.trim();
+  const match = /^\/([a-z_]+)(?:\s+(\S+))?$/i.exec(trimmed);
+  if (!match) return null;
+  const command = sessionCommandList().find(entry => entry.id === match[1].toLowerCase());
+  if (!command) return null;
+  const arg = (match[2] ?? "").toLowerCase();
+  if (arg && !command.args.includes(arg)) return null;
+  return { command, arg };
+}
+
+const STARTED_MESSAGES: Record<string, MessageKey> = {
+  compaction_started: "chat.slash.compactStarted",
+  init_started: "chat.slash.initStarted",
+  reloaded: "chat.slash.reloaded",
+};
+
+/** Runs a slash command for a session through the host and returns what to tell the user. */
+export async function runSlashCommand(
+  sessionId: string,
+  command: SlashCommand,
+  arg = "",
+): Promise<{ ok: boolean; message: string; outcome?: string }> {
+  const workspaceId = activeWorkspaceId();
+  try {
+    const result = await executeSessionCommand({
+      sessionId,
+      id: command.id,
+      ...(arg ? { arg } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    const key = STARTED_MESSAGES[result?.outcome ?? ""];
+    return { ok: true, message: key ? tr(key) : command.command, outcome: result?.outcome };
+  } catch (error) {
+    if (isMissingCommand(error, "execute_session_command")) {
+      return { ok: false, message: tr("chat.slash.hostUpdateRequired") };
+    }
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
 }

@@ -1,5 +1,6 @@
 use super::subagent_api::local_workspace_from_request;
 use crate::api::app_state::AppState;
+use crate::host::State;
 use log::{debug, warn};
 use openbitfun_core::agentic::agents::{
     custom_agent_model_or_default, custom_agent_review_writable_tools, default_custom_agent_tools,
@@ -8,8 +9,6 @@ use openbitfun_core::agentic::agents::{
 };
 use serde::Deserialize;
 use std::collections::HashSet;
-use tauri::State;
-
 const AGENT_ID_REGEX: &str = "^[a-zA-Z][a-zA-Z0-9_-]*$";
 
 fn reject_external_agent_mutation(

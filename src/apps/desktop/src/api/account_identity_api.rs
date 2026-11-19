@@ -1,9 +1,9 @@
 //! Controller-local adapter for the shared OpenBitFun GitHub identity.
+use crate::host::HostHandle;
 use openbitfun_product_domains::account::{
     GitHubAuthPollRequest, GitHubAuthPollResponse, GitHubAuthStart,
 };
 use openbitfun_services_integrations::account_identity::{self, AccountIdentityClient, MarketMe};
-use tauri::{AppHandle, Emitter};
 
 #[tauri::command]
 pub async fn account_github_start() -> Result<GitHubAuthStart, String> {
@@ -14,7 +14,7 @@ pub async fn account_github_start() -> Result<GitHubAuthStart, String> {
 
 #[tauri::command]
 pub async fn account_github_poll(
-    app: AppHandle,
+    app: HostHandle,
     request: GitHubAuthPollRequest,
 ) -> Result<GitHubAuthPollResponse, String> {
     let response = account_identity::poll_auth_flow(request)
@@ -44,7 +44,7 @@ pub async fn account_github_info() -> Result<Option<MarketMe>, String> {
     client.me().await.map_err(|error| error.to_string())
 }
 
-pub(crate) fn emit_identity_changed(app: &AppHandle, status: &'static str) {
+pub(crate) fn emit_identity_changed(app: &HostHandle, status: &'static str) {
     let _ = app.emit(
         "account-identity-changed",
         serde_json::json!({ "status": status }),

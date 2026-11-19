@@ -1,12 +1,14 @@
-// The AI model list: `ai.models` is one config path holding an array, so the
-// whole list is read and written back. This is the credential path — a host with
-// no model configured cannot run a turn — not the full model settings page (task
-// model pools, subscription accounts and the models.dev catalog stay with their
-// React owners).
+// The AI model list. Reads come from `ai.models`; every write is one typed intent
+// (`ai_model_upsert`, `ai_model_delete`) the host applies to the list it stores
+// right now: it mints ids, clamps the output limit, derives the stored request
+// URL, fills capability defaults and repairs default slots, then answers with
+// the stored list. This surface only parses the form text and renders.
 
 import { signal } from "nsh";
 import { getConfig, setConfig } from "./api";
 import { invokeCommand } from "./bridge";
+import { tr } from "./i18n";
+import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
 /** The persisted shape `AIModelConfig` stores; fields this surface does not edit are kept. */
@@ -33,11 +35,51 @@ export const storedModels = signal<StoredModel[]>([]);
 export const modelSettingsLoaded = signal(false);
 export const modelSettingsNotice = signal("");
 
-/** Request formats the host's providers speak, as the React model editor lists them. */
-export const MODEL_FORMATS = ["openai", "anthropic", "gemini"] as const;
+/**
+ * Request formats the host's providers speak, as the React model editor lists
+ * them. The Responses API is `responses`; `response` is an older spelling a
+ * stored entry may still carry, read as `responses`.
+ */
+export const MODEL_FORMATS = ["openai", "responses", "anthropic", "gemini"] as const;
+
+/** `response` is the legacy spelling of the Responses format. */
+export function normalizeModelFormat(provider: string | undefined): string {
+  const value = (provider ?? "").trim().toLowerCase();
+  return value === "response" ? "responses" : value || "openai";
+}
+
+/** `ModelCategory` values the form offers; the host decides the capabilities each implies. */
+export const MODEL_CATEGORIES = ["general_chat", "multimodal", "speech_recognition"] as const;
+
+/**
+ * The stored capability list. The host fills a category's defaults when it loads
+ * or saves an entry that stores none, so this surface keeps no copy of them.
+ */
+export function effectiveCapabilities(model: Pick<StoredModel, "capabilities">): string[] {
+  return Array.isArray(model.capabilities) ? model.capabilities.filter(cap => typeof cap === "string") : [];
+}
+
+/** A model the composer can run on: enabled, with an id, and able to chat. */
+export function isSelectableForCapability(model: StoredModel, capability: string): boolean {
+  return Boolean(model.id?.trim()) && model.enabled === true && effectiveCapabilities(model).includes(capability);
+}
+
+export function selectableChatModels(): StoredModel[] {
+  return storedModels().filter(model => isSelectableForCapability(model, "text_chat"));
+}
+
+/** The label a model picker shows: the entry's name and the model it calls. */
+export function modelOptionLabel(model: StoredModel): string {
+  const name = (model.name ?? "").trim();
+  const modelName = (model.model_name ?? "").trim();
+  if (name && modelName && name !== modelName) return `${name} · ${modelName}`;
+  return name || modelName || model.id;
+}
 
 /** The form the user is filling in; empty strings keep a field untouched on save. */
 export interface ModelDraft {
+  /** The stored entry this form edits; absent while adding a new one. */
+  editingId?: string;
   name: string;
   provider: string;
   modelName: string;
@@ -46,6 +88,37 @@ export interface ModelDraft {
   /** Token limits the catalog may fill; empty leaves the limit unset. */
   contextWindow: string;
   maxTokens: string;
+  /** `ModelCategory`; the capabilities follow from it, as the desktop editor writes them. */
+  category: string;
+  /** One `Name: value` per line; empty stores no custom headers. */
+  customHeaders: string;
+  /** `merge` applies the provider's headers first, `replace` sends only these. */
+  customHeadersMode: "merge" | "replace";
+  /** Skip TLS certificate checks (self-signed gateways); off by default. */
+  skipSslVerify: boolean;
+}
+
+/** `Name: value` lines into the header map the host stores; a malformed line is reported. */
+export function parseHeaderLines(text: string): Record<string, string> | string {
+  const headers: Record<string, string> = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const colon = line.indexOf(":");
+    if (colon <= 0) return line;
+    const name = line.slice(0, colon).trim();
+    const value = line.slice(colon + 1).trim();
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return line;
+    headers[name] = value;
+  }
+  return headers;
+}
+
+function headerLines(headers: unknown): string {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return "";
+  return Object.entries(headers as Record<string, unknown>)
+    .map(([name, value]) => `${name}: ${String(value ?? "")}`)
+    .join("\n");
 }
 
 const EMPTY_DRAFT: ModelDraft = {
@@ -56,6 +129,10 @@ const EMPTY_DRAFT: ModelDraft = {
   apiKey: "",
   contextWindow: "",
   maxTokens: "",
+  category: "general_chat",
+  customHeaders: "",
+  customHeadersMode: "merge",
+  skipSslVerify: false,
 };
 
 export const modelDraft = signal<ModelDraft>({ ...EMPTY_DRAFT });
@@ -199,12 +276,15 @@ export function chooseCatalogModel(modelId: string): void {
   const provider = selectedCatalogProvider();
   const model = provider?.models.find(entry => entry.id === modelId);
   if (!model) return;
+  // The catalog's own output limit may exceed what the host accepts for that
+  // window; the host clamps it on save and says so.
+  const output = model.output;
   modelDraft.update(current => ({
     ...current,
     modelName: model.id,
     name: current.name || model.label,
     contextWindow: model.context ? String(model.context) : current.contextWindow,
-    maxTokens: model.output ? String(model.output) : current.maxTokens,
+    maxTokens: output ? String(output) : current.maxTokens,
   }));
 }
 
@@ -227,16 +307,149 @@ function normalizeModels(value: unknown): StoredModel[] {
   return value.filter(entry => entry && typeof entry === "object").map(entry => entry as StoredModel);
 }
 
+/** One model intent as `ai_model_upsert` reads it: absent keeps, `null` clears. */
+export interface ModelUpsert {
+  id?: string;
+  name?: string;
+  provider?: string;
+  modelName?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  contextWindow?: number | null;
+  maxTokens?: number | null;
+  category?: string;
+  capabilities?: string[];
+  enabled?: boolean;
+  customHeaders?: Record<string, string> | null;
+  customHeadersMode?: string | null;
+  skipSslVerify?: boolean;
+}
+
+export interface ModelUpsertResult {
+  models: StoredModel[];
+  ids: string[];
+  clampedIds: string[];
+}
+
+/**
+ * Sends model intents and publishes the list the host stored. The host owns ids,
+ * the output-limit ceiling, the request URL and capability defaults; a limit it
+ * lowered is reported next to `done`.
+ */
+export async function upsertModels(models: ModelUpsert[], done: (result: ModelUpsertResult) => string): Promise<ModelUpsertResult | null> {
+  try {
+    const raw = await invokeSettingsMutation<{ models?: unknown; ids?: unknown; clampedIds?: unknown }>(
+      "ai_model_upsert",
+      { models },
+    );
+    const result: ModelUpsertResult = {
+      models: normalizeModels(raw?.models),
+      ids: Array.isArray(raw?.ids) ? raw.ids.map(String) : [],
+      clampedIds: Array.isArray(raw?.clampedIds) ? raw.clampedIds.map(String) : [],
+    };
+    storedModels.set(result.models);
+    const clamped = result.clampedIds.length > 0 ? ` ${tr("settings.models.outputClamped")}` : "";
+    modelSettingsNotice.set(`${done(result)}${clamped}`);
+    return result;
+  } catch (error) {
+    modelSettingsNotice.set(errorText(error));
+    return null;
+  }
+}
+
+/** `ai.default_models`: the slot a role resolves to, by configured model id. */
+export const DEFAULT_MODEL_SLOTS = ["primary", "fast", "economy", "image_understanding", "speech_recognition"] as const;
+export type DefaultModelSlot = (typeof DEFAULT_MODEL_SLOTS)[number];
+
+export const defaultModels = signal<Record<string, string | null>>({});
+export const defaultModelsLoaded = signal(false);
+export const defaultModelsNotice = signal("");
+/** The slot being written, so its row shows that it is saving. */
+export const defaultModelSaving = signal<string | null>(null);
+
+function readDefaultModels(value: unknown): Record<string, string | null> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, string | null> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    result[key] = typeof entry === "string" && entry ? entry : null;
+  }
+  return result;
+}
+
+export async function loadDefaultModels(): Promise<void> {
+  try {
+    defaultModels.set(readDefaultModels(await getConfig("ai.default_models", true)));
+  } catch {
+    // An older host may not store the section yet; every slot reads as unset.
+    defaultModels.set({});
+  }
+  defaultModelsLoaded.set(true);
+}
+
+/**
+ * Points one slot at a model, or clears it with `null`. Only that slot's leaf is
+ * written, so the slots this page does not draw (`search`, `image_generation`)
+ * and a slot another surface just changed are never put back.
+ */
+export async function chooseDefaultModel(slot: DefaultModelSlot, modelId: string | null): Promise<void> {
+  defaultModelSaving.set(slot);
+  try {
+    await setConfig(`ai.default_models.${slot}`, modelId);
+    defaultModels.update(current => ({ ...current, [slot]: modelId }));
+    defaultModelsNotice.set("");
+  } catch (error) {
+    defaultModelsNotice.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    defaultModelSaving.set(null);
+  }
+}
+
+/** How many default slots name a model, which a delete confirmation reports. */
+export function defaultModelReferences(id: string): number {
+  return Object.values(defaultModels()).filter(value => value === id).length;
+}
+
 export function updateDraft(patch: Partial<ModelDraft>): void {
   modelDraft.update(current => ({ ...current, ...patch }));
 }
 
 export function openModelForm(): void {
+  modelDraft.set({ ...EMPTY_DRAFT });
   modelFormOpen.set(true);
   modelSettingsNotice.set("");
   // The picker reads this machine's own catalog once; a host without the command
   // simply leaves it empty and the form stays usable by hand.
   void loadModelCatalog();
+}
+
+/**
+ * Opens the same form prefilled from a stored entry, as the desktop's editor
+ * does; saving patches that entry through `patchModel` instead of appending.
+ */
+export function openModelEditor(id: string): void {
+  const model = storedModels().find(entry => entry.id === id);
+  if (!model) {
+    modelSettingsNotice.set(`${id} is not in the stored list; reload`);
+    return;
+  }
+  modelSettingsNotice.set("");
+  modelDraft.set({
+    editingId: id,
+    name: String(model.name ?? ""),
+    provider: normalizeModelFormat(model.provider),
+    modelName: String(model.model_name ?? ""),
+    baseUrl: String(model.base_url ?? ""),
+    apiKey: String(model.api_key ?? ""),
+    contextWindow: model.context_window ? String(model.context_window) : "",
+    maxTokens: model.max_tokens ? String(model.max_tokens) : "",
+    category: MODEL_CATEGORIES.includes(model.category as (typeof MODEL_CATEGORIES)[number])
+      ? model.category
+      : "general_chat",
+    customHeaders: headerLines(model.custom_headers),
+    customHeadersMode: model.custom_headers_mode === "replace" ? "replace" : "merge",
+    skipSslVerify: model.skip_ssl_verify === true,
+  });
+  modelFormOpen.set(true);
 }
 
 export function closeModelForm(): void {
@@ -247,86 +460,81 @@ export function closeModelForm(): void {
 }
 
 /**
- * Appends the draft to `ai.models`. The endpoint is stored resolved — the format
- * decides the request path — so the runtime does not have to guess it, matching
- * what the React editor writes.
+ * Saves the form as one `ai_model_upsert` intent: a new model when the form adds
+ * one, the edited entry otherwise. The form only parses its text; the host
+ * validates the fields, normalizes the format, derives the request URL, keeps
+ * the stored capabilities unless the category changed, and clamps the output
+ * limit to what the context window allows.
  */
 export async function saveModelDraft(): Promise<void> {
   const draft = modelDraft();
-  const name = draft.name.trim();
-  const modelName = draft.modelName.trim();
-  const baseUrl = draft.baseUrl.trim();
-  const provider = draft.provider.trim() || "openai";
-  if (!name || !modelName || !baseUrl) {
-    modelSettingsNotice.set("A model needs a name, a model name and a base URL");
-    return;
-  }
-  const entry: StoredModel = {
-    id: `model_${Date.now().toString(36)}`,
-    name,
-    provider,
-    model_name: modelName,
-    base_url: baseUrl,
-    request_url: resolveRequestUrl(baseUrl, provider),
-    api_key: draft.apiKey.trim(),
-    enabled: true,
-    category: "general_chat",
-    capabilities: ["text_chat"],
-    recommended_for: [],
-  };
-  // A catalog pick fills the pair; the same ceiling the host applies is checked
-  // here so a model it would refuse is not stored.
   const contextWindow = positiveInteger(draft.contextWindow);
   const maxTokens = positiveInteger(draft.maxTokens);
   if (contextWindow === null || maxTokens === null) {
     modelSettingsNotice.set("A limit is a positive whole number of tokens, or empty");
     return;
   }
-  if (contextWindow !== undefined && maxTokens !== undefined && maxTokens * 100 > contextWindow * 40) {
-    modelSettingsNotice.set("The output limit is at most 40% of the context window");
+  const headers = parseHeaderLines(draft.customHeaders);
+  if (typeof headers === "string") {
+    modelSettingsNotice.set(`A header is one "Name: value" per line; this line is not: ${headers}`);
     return;
   }
-  entry.context_window = contextWindow ?? null;
-  entry.max_tokens = maxTokens ?? null;
-  const next = [...storedModels(), entry];
+  const hasHeaders = Object.keys(headers).length > 0;
+  const intent: ModelUpsert = {
+    ...(draft.editingId ? { id: draft.editingId } : {}),
+    name: draft.name,
+    provider: draft.provider,
+    modelName: draft.modelName,
+    baseUrl: draft.baseUrl,
+    apiKey: draft.apiKey,
+    contextWindow: contextWindow ?? null,
+    maxTokens: maxTokens ?? null,
+    category: draft.category,
+    customHeaders: hasHeaders ? headers : null,
+    customHeadersMode: hasHeaders ? draft.customHeadersMode : null,
+    skipSslVerify: draft.skipSslVerify,
+  };
+  const name = draft.name.trim();
   await runStep(async () => {
-    try {
-      await setConfig("ai.models", next);
-      storedModels.set(next);
-      closeModelForm();
-      modelSettingsNotice.set(`Added ${name}`);
-    } catch (error) {
-      modelSettingsNotice.set(error instanceof Error ? error.message : String(error));
-    }
+    const saved = await upsertModels([intent], () => (draft.editingId ? `Saved ${name}` : `Added ${name}`));
+    if (saved) closeModelForm();
   });
 }
 
+/** The model a delete is waiting to be confirmed for. */
+export const modelDeletePending = signal<string | null>(null);
+
+export function requestModelDelete(id: string | null): void {
+  modelDeletePending.set(id);
+}
+
+/**
+ * Removes one entry through `ai_model_delete`. The host's model reconciliation
+ * clears the default slots and task selections that named it, and the answer
+ * carries both lists as they are now stored.
+ */
 export async function deleteModel(id: string): Promise<void> {
-  const target = storedModels().find(entry => entry.id === id);
-  const next = storedModels().filter(entry => entry.id !== id);
+  modelDeletePending.set(null);
   await runStep(async () => {
     try {
-      await setConfig("ai.models", next);
-      storedModels.set(next);
+      const target = storedModels().find(entry => entry.id === id);
+      const raw = await invokeSettingsMutation<{ models?: unknown; defaultModels?: unknown }>("ai_model_delete", { id });
+      storedModels.set(normalizeModels(raw?.models));
+      if (raw && raw.defaultModels !== undefined) defaultModels.set(readDefaultModels(raw.defaultModels));
       modelSettingsNotice.set(`Removed ${target?.name ?? id}`);
     } catch (error) {
-      modelSettingsNotice.set(error instanceof Error ? error.message : String(error));
+      modelSettingsNotice.set(errorText(error));
     }
   });
 }
 
-/** Writes the list with one entry replaced, so fields this surface does not edit stay. */
-async function patchModel(id: string, patch: Partial<StoredModel>, done: string): Promise<void> {
-  const next = storedModels().map(entry => (entry.id === id ? { ...entry, ...patch } : entry));
+/** Changes fields of one stored entry; the rest of the entry stays as stored. */
+async function patchModel(id: string, patch: Omit<ModelUpsert, "id">, done: string): Promise<boolean> {
+  let saved = false;
   await runStep(async () => {
-    try {
-      await setConfig("ai.models", next);
-      storedModels.set(next);
-      modelSettingsNotice.set(done);
-    } catch (error) {
-      modelSettingsNotice.set(error instanceof Error ? error.message : String(error));
-    }
+    saved = (await upsertModels([{ ...patch, id }], () => done)) !== null;
   });
+  return saved;
 }
 
 export async function setModelEnabled(id: string, enabled: boolean): Promise<void> {
@@ -374,9 +582,9 @@ function positiveInteger(text: string): number | undefined | null {
 }
 
 /**
- * Stores the context window and the output ceiling. The host refuses an output
- * limit above 40% of the context window (`MAX_CONFIGURED_OUTPUT_TOKENS_RATIO_PERCENT`),
- * so the pair is checked here instead of being sent and rejected.
+ * Stores the context window and the output ceiling. The host owns the bounds: it
+ * refuses a window below its floor and lowers an output limit above the share of
+ * the window it accepts, reporting that it did.
  */
 export async function saveModelLimits(): Promise<void> {
   const draft = modelLimitsDraft();
@@ -387,42 +595,11 @@ export async function saveModelLimits(): Promise<void> {
     modelSettingsNotice.set("A limit is a positive whole number of tokens, or empty");
     return;
   }
-  if (contextWindow === undefined && maxTokens !== undefined) {
-    modelSettingsNotice.set("An output limit needs a context window beside it");
-    return;
-  }
-  if (contextWindow !== undefined && maxTokens !== undefined && maxTokens * 100 > contextWindow * 40) {
-    modelSettingsNotice.set("The output limit is at most 40% of the context window");
-    return;
-  }
   const name = storedModels().find(entry => entry.id === draft.id)?.name ?? draft.id;
-  await patchModel(
+  const saved = await patchModel(
     draft.id,
-    { context_window: contextWindow ?? null, max_tokens: maxTokens ?? null },
+    { contextWindow: contextWindow ?? null, maxTokens: maxTokens ?? null },
     `Saved the limits of ${name}`,
   );
-  modelLimitsDraft.set(null);
-}
-
-/**
- * The stored request URL for a base URL and format: the format owns the resource
- * path, and a URL that already ends in it is kept as it is.
- */
-export function resolveRequestUrl(baseUrl: string, provider: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  if (!trimmed || trimmed.endsWith("#")) return trimmed.slice(0, -1).replace(/\/+$/, "");
-  if (provider === "openai") {
-    return trimmed.endsWith("chat/completions") ? trimmed : `${trimmed}/chat/completions`;
-  }
-  if (provider === "anthropic") {
-    if (trimmed.endsWith("/messages")) return trimmed;
-    return trimmed.endsWith("/v1") ? `${trimmed}/messages` : `${trimmed}/v1/messages`;
-  }
-  if (provider === "gemini") {
-    return trimmed
-      .replace(/\/v1beta(?:\/models(?:\/[^/?#]*(?::(?:stream)?[Gg]enerateContent)?(?:\?[^]*)?)?)?$/, "")
-      .replace(/\/models(?:\/[^/?#]*(?::(?:stream)?[Gg]enerateContent)?(?:\?[^]*)?)?$/, "")
-      .replace(/\/+$/, "");
-  }
-  return trimmed;
+  if (saved) modelLimitsDraft.set(null);
 }

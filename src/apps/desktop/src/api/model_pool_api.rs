@@ -1,5 +1,6 @@
 //! Desktop transport for execution-host-owned model pools.
 
+use crate::host::State;
 use crate::runtime::DesktopRuntimeContext;
 use openbitfun_core::agentic::coordination::ConversationCoordinator;
 use openbitfun_core::service::config::get_global_config_service;
@@ -9,8 +10,6 @@ use openbitfun_core_types::model_pool::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-use tauri::State;
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveModelPoolRequest {

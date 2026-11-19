@@ -7,7 +7,9 @@
     "host": [
       "openbitfun.*"
     ],
+    "application": true,
     "clipboard": true,
+    "picker": true,
     "statusBar": true,
     "openUrl": {
       "schemes": [

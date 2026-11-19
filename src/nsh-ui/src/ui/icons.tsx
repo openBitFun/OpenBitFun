@@ -11,6 +11,7 @@ import {
   type ViewStyle,
 } from "nsh";
 import { isLightAppearance, palette } from "../theme";
+import { LUCIDE_PATHS } from "./lucideIcons";
 
 export type IconName =
   | "chat"
@@ -522,6 +523,17 @@ export interface IconProps {
   style?: StyleProp<ViewStyle>;
 }
 
+const lucidePathCache = new Map<string, Path2D>();
+
+function lucidePath(d: string): Path2D {
+  let path = lucidePathCache.get(d);
+  if (!path) {
+    path = new Path2D(d);
+    lucidePathCache.set(d, path);
+  }
+  return path;
+}
+
 export function Icon(props: IconProps) {
   return (
     <Canvas
@@ -538,8 +550,9 @@ export function Icon(props: IconProps) {
         if (size.width <= 0 || size.height <= 0) return;
         const stroke = props.color ?? palette().textSecondary;
         const px = Math.min(size.width, size.height);
-        const opticalStroke =
-          px <= 13 ? 1.95 : px <= 16 ? 1.8 : px <= 20 ? 1.68 : 1.55;
+        // The desktop draws lucide at a 1.6 stroke; small glyphs get a touch more
+        // so they hold up on 1x displays.
+        const opticalStroke = px <= 14 ? 1.8 : px <= 18 ? 1.65 : 1.6;
         cx.save();
         cx.scale(size.width / 24, size.height / 24);
         cx.strokeStyle = stroke;
@@ -547,7 +560,12 @@ export function Icon(props: IconProps) {
         cx.lineWidth = props.strokeWidth ?? opticalStroke;
         cx.lineCap = "round";
         cx.lineJoin = "round";
-        drawIconGlyph(cx, props.name);
+        const lucide = LUCIDE_PATHS[props.name];
+        if (lucide) {
+          for (const d of lucide) cx.stroke(lucidePath(d));
+        } else {
+          drawIconGlyph(cx, props.name);
+        }
         cx.restore();
       }}
     />

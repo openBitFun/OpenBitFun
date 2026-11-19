@@ -1,6 +1,7 @@
 //! Session persistence API
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use crate::runtime::{
     DesktopRuntimeContext, DesktopSessionApplicationError, DesktopSessionScopeRequest,
     UiSessionMetadataField,
@@ -21,8 +22,6 @@ use openbitfun_product_domains::product_search::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use tauri::State;
-
 fn desktop_session_scope(
     workspace_id: Option<String>,
     workspace_path: String,

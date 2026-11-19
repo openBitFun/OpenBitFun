@@ -22,6 +22,7 @@
 
 pub mod api;
 pub mod appearance;
+pub mod backend_protocol;
 mod builtin_browser_host;
 pub mod computer_use;
 pub mod crash_diagnostics;
@@ -33,6 +34,7 @@ mod frontend_asset_cache;
 pub mod frontend_workbench;
 #[cfg(target_os = "linux")]
 mod linux_browser_layout;
+pub mod host;
 pub mod logging;
 pub mod macos_menubar;
 #[cfg(target_os = "macos")]
@@ -43,6 +45,7 @@ mod macos_window_close;
 mod macos_window_resize;
 mod miniapp_desktop;
 mod miniapp_web_host;
+pub mod native_host;
 
 // Keep one macro expansion: on macOS it emits a process-wide Info.plist symbol.
 fn desktop_context() -> tauri::Context<tauri::Wry> {
@@ -60,6 +63,7 @@ mod window_state_support;
 #[cfg(target_os = "windows")]
 mod window_webview_geometry;
 
+use crate::host::{HostHandle, HostTransportAdapter};
 use openbitfun_agent_runtime::sdk::{attach_session_event_cursor, SessionEventJournal};
 use openbitfun_core::agentic::tools::computer_use_capability::set_computer_use_host_available;
 use openbitfun_core::agentic::tools::computer_use_host::ComputerUseHostRef;
@@ -71,7 +75,7 @@ use openbitfun_core::service::session_projection_store::{
 };
 use openbitfun_core::util::{elapsed_ms, TimingCollector};
 use openbitfun_events::AgenticEvent;
-use openbitfun_transport::{TauriTransportAdapter, TransportAdapter};
+use openbitfun_transport::TransportAdapter;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{
@@ -432,14 +436,65 @@ async fn webdriver_bridge_result(request: WebdriverBridgeResultRequest) -> Resul
 
 #[tauri::command]
 fn get_startup_native_trace(
-    state: tauri::State<'_, DesktopStartupTrace>,
+    state: crate::host::State<'_, DesktopStartupTrace>,
 ) -> DesktopStartupTraceSnapshot {
     state.snapshot()
 }
 
-/// Tauri application entry point
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub async fn run() {
+/// A startup step failed before any host UI exists.
+pub(crate) struct StartupFailure {
+    /// User-facing explanation.
+    pub(crate) message: String,
+    /// Whether the Tauri host shows it in a fatal-error dialog (older
+    /// failures only logged and exited; the transition release keeps that).
+    pub(crate) show_dialog: bool,
+}
+
+impl StartupFailure {
+    fn fatal(message: String) -> Self {
+        Self {
+            message,
+            show_dialog: true,
+        }
+    }
+
+    fn logged(message: String) -> Self {
+        Self {
+            message,
+            show_dialog: false,
+        }
+    }
+}
+
+/// The host-independent backend: everything `run()` prepared before it
+/// built the Tauri application, shared with the native host.
+pub(crate) struct BackendCore {
+    pub(crate) startup_started: Instant,
+    pub(crate) startup_trace_id: String,
+    pub(crate) startup_timings: TimingCollector,
+    pub(crate) log_config: logging::LogConfig,
+    pub(crate) session_log_dir: PathBuf,
+    pub(crate) startup_trace: DesktopStartupTrace,
+    pub(crate) startup_log_level: log::LevelFilter,
+    pub(crate) coordinator: Arc<openbitfun_core::agentic::coordination::ConversationCoordinator>,
+    pub(crate) scheduler: Arc<openbitfun_core::agentic::coordination::DialogScheduler>,
+    pub(crate) event_queue: Arc<openbitfun_core::agentic::events::EventQueue>,
+    pub(crate) event_router: Arc<openbitfun_core::agentic::events::EventRouter>,
+    pub(crate) workspace_search_enabled: bool,
+    pub(crate) startup_flashgrep_path: Option<PathBuf>,
+    pub(crate) app_state: AppState,
+    pub(crate) session_event_journal: Arc<SessionEventJournal>,
+    pub(crate) desktop_runtime: runtime::DesktopRuntimeContext,
+    pub(crate) coordinator_state: CoordinatorState,
+    pub(crate) scheduler_state: SchedulerState,
+    pub(crate) terminal_state: api::terminal_api::TerminalState,
+    pub(crate) path_manager: Arc<openbitfun_core::infrastructure::PathManager>,
+    pub(crate) frontend_workbench: Arc<frontend_workbench::FrontendWorkbenchManager>,
+}
+
+/// Isolates authentication storage for guarded E2E profiles. Must run before
+/// any account discovery or background refresh can touch the normal profile.
+pub(crate) fn apply_e2e_storage_guard() -> Result<(), String> {
     // E2E profiles must isolate authentication as well as ordinary config.
     // Use the existing encrypted fixture vault on every platform, before any
     // account discovery or background refresh can touch the normal profile.
@@ -448,7 +503,9 @@ pub async fn run() {
             Ok(paths) => paths,
             Err(error) => {
                 eprintln!("Failed to initialize isolated E2E authentication storage: {error}");
-                return;
+                return Err(format!(
+                    "Failed to initialize isolated E2E authentication storage: {error}"
+                ));
             }
         };
         openbitfun_core::infrastructure::subscription_auth::store::set_store_path_and_file_vault_for_test(
@@ -457,7 +514,7 @@ pub async fn run() {
         #[cfg(not(debug_assertions))]
         if std::env::var_os("OPENBITFUN_E2E_SUBSCRIPTION_CA_FILE").is_some() {
             eprintln!("Isolated subscription mock TLS requires a debug build");
-            return;
+            return Err("Isolated subscription mock TLS requires a debug build".to_string());
         }
         #[cfg(debug_assertions)]
         if let Some(certificate_path) = std::env::var_os("OPENBITFUN_E2E_SUBSCRIPTION_CA_FILE") {
@@ -466,34 +523,18 @@ pub async fn run() {
                 .and_then(|pem| openbitfun_core::infrastructure::subscription_auth::set_isolated_http_root_certificate_for_test(&pem).map_err(|error| error.to_string()));
             if let Err(error) = result {
                 eprintln!("Failed to initialize isolated E2E subscription TLS: {error}");
-                return;
+                return Err(format!(
+                    "Failed to initialize isolated E2E subscription TLS: {error}"
+                ));
             }
         }
     }
-    match miniapp_desktop::launch_manifest() {
-        Ok(Some(manifest)) => {
-            if let Err(error) = miniapp_desktop::run_shell(manifest) {
-                show_fatal_startup_error(&error);
-            }
-            return;
-        }
-        Err(error) => {
-            show_fatal_startup_error(&error);
-            return;
-        }
-        Ok(None) => {}
-    }
-    let miniapp_background = std::env::args_os().any(|arg| arg == "--miniapp-background");
-    let miniapp_host_channel = miniapp_desktop::host_channel();
-    let _miniapp_host_owner =
-        match miniapp_desktop::claim_host(miniapp_background, miniapp_host_channel).await {
-            Ok(Some(owner)) => owner,
-            Ok(None) => return,
-            Err(error) => {
-                show_fatal_startup_error(&error);
-                return;
-            }
-        };
+    Ok(())
+}
+
+/// Bootstraps the host-independent backend (configuration, plugin host,
+/// i18n, AI factory, agentic system, application state, agent runtime).
+pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailure> {
     let startup_started = Instant::now();
     let startup_trace_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -502,7 +543,6 @@ pub async fn run() {
     let mut startup_timings = TimingCollector::default();
     let in_debug = cfg!(debug_assertions) || std::env::var("DEBUG").unwrap_or_default() == "1";
     let log_config = logging::LogConfig::new(in_debug);
-    let log_targets = logging::build_log_targets(&log_config);
     let session_log_dir = log_config.session_log_dir.clone();
     if let Err(error) = logging::install_early_file_logging(&session_log_dir) {
         eprintln!(
@@ -537,19 +577,17 @@ pub async fn run() {
         openbitfun_core::agentic::system::DeliveryProfile::Desktop,
     ) {
         log::error!("Failed to select Desktop agent profile: {}", error);
-        show_fatal_startup_error(&format!(
+        return Err(StartupFailure::fatal(format!(
             "OpenBitFun could not select its Desktop agent profile and cannot continue.\n\n{error}\n\nSee early-startup.log for details."
-        ));
-        return;
+        )));
     }
 
     let step_started = Instant::now();
     if let Err(e) = openbitfun_core::service::config::initialize_global_config().await {
         log::error!("Failed to initialize global config service: {}", e);
-        show_fatal_startup_error(&format!(
+        return Err(StartupFailure::fatal(format!(
             "OpenBitFun could not initialize its configuration and cannot continue.\n\n{e}\n\nSee early-startup.log for details."
-        ));
-        return;
+        )));
     }
     if let Ok(config_service) = openbitfun_core::service::config::get_global_config_service().await
     {
@@ -656,7 +694,9 @@ pub async fn run() {
     );
     if let Err(e) = ai_factory_result {
         log::error!("Failed to initialize global AIClientFactory: {}", e);
-        return;
+        return Err(StartupFailure::logged(format!(
+            "Failed to initialize global AIClientFactory: {e}"
+        )));
     }
 
     let step_started = Instant::now();
@@ -665,7 +705,9 @@ pub async fn run() {
             Ok(state) => state,
             Err(e) => {
                 log::error!("Failed to initialize agentic system: {}", e);
-                return;
+                return Err(StartupFailure::logged(format!(
+                    "Failed to initialize agentic system: {e}"
+                )));
             }
         };
     startup_timings.record_elapsed("init_agentic_system", step_started);
@@ -674,7 +716,9 @@ pub async fn run() {
     let step_started = Instant::now();
     if let Err(e) = init_function_agents(ai_client_factory.clone()).await {
         log::error!("Failed to initialize function agents: {}", e);
-        return;
+        return Err(StartupFailure::logged(format!(
+            "Failed to initialize function agents: {e}"
+        )));
     }
     startup_timings.record_elapsed("init_function_agents", step_started);
     startup_trace.record_elapsed_step("native_pre_tauri", "init_function_agents", step_started);
@@ -700,11 +744,10 @@ pub async fn run() {
         Ok(state) => state,
         Err(e) => {
             log::error!("Failed to initialize AppState: {}", e);
-            show_fatal_startup_error(&format!(
+            return Err(StartupFailure::fatal(format!(
                 "OpenBitFun could not initialize its application state and cannot continue.\n\n{e}\n\nSee {} for details.",
                 logging::early_startup_log_path(&session_log_dir).display()
-            ));
-            return;
+            )));
         }
     };
     startup_timings.record_elapsed("initialize_app_state", step_started);
@@ -736,7 +779,9 @@ pub async fn run() {
         Ok(runtime) => runtime,
         Err(error) => {
             log::error!("Failed to initialize Desktop Agent Runtime: {}", error);
-            return;
+            return Err(StartupFailure::logged(format!(
+                "Failed to initialize Desktop Agent Runtime: {error}"
+            )));
         }
     };
     startup_timings.record_elapsed("initialize_desktop_agent_runtime", step_started);
@@ -760,6 +805,97 @@ pub async fn run() {
     let frontend_workbench = Arc::new(frontend_workbench::FrontendWorkbenchManager::new(
         &path_manager.user_data_dir(),
     ));
+
+    Ok(BackendCore {
+        startup_started,
+        startup_trace_id,
+        startup_timings,
+        log_config,
+        session_log_dir,
+        startup_trace,
+        startup_log_level,
+        coordinator,
+        scheduler,
+        event_queue,
+        event_router,
+        workspace_search_enabled,
+        startup_flashgrep_path,
+        app_state,
+        session_event_journal,
+        desktop_runtime,
+        coordinator_state,
+        scheduler_state,
+        terminal_state,
+        path_manager,
+        frontend_workbench,
+    })
+}
+
+/// Tauri application entry point
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub async fn run() {
+    // E2E profiles must isolate authentication as well as ordinary config.
+    // Use the existing encrypted fixture vault on every platform, before any
+    // account discovery or background refresh can touch the normal profile.
+    if apply_e2e_storage_guard().is_err() {
+        return;
+    }
+    match miniapp_desktop::launch_manifest() {
+        Ok(Some(manifest)) => {
+            if let Err(error) = miniapp_desktop::run_shell(manifest) {
+                show_fatal_startup_error(&error);
+            }
+            return;
+        }
+        Err(error) => {
+            show_fatal_startup_error(&error);
+            return;
+        }
+        Ok(None) => {}
+    }
+    let miniapp_background = std::env::args_os().any(|arg| arg == "--miniapp-background");
+    let miniapp_host_channel = miniapp_desktop::host_channel();
+    let _miniapp_host_owner =
+        match miniapp_desktop::claim_host(miniapp_background, miniapp_host_channel).await {
+            Ok(Some(owner)) => owner,
+            Ok(None) => return,
+            Err(error) => {
+                show_fatal_startup_error(&error);
+                return;
+            }
+        };
+    let BackendCore {
+        startup_started,
+        startup_trace_id,
+        startup_timings,
+        log_config,
+        session_log_dir,
+        startup_trace,
+        startup_log_level,
+        coordinator,
+        scheduler,
+        event_queue,
+        event_router,
+        workspace_search_enabled,
+        startup_flashgrep_path,
+        app_state,
+        session_event_journal,
+        desktop_runtime,
+        coordinator_state,
+        scheduler_state,
+        terminal_state,
+        path_manager,
+        frontend_workbench,
+    } = match bootstrap_backend_core().await {
+        Ok(core) => core,
+        Err(failure) => {
+            if failure.show_dialog {
+                show_fatal_startup_error(&failure.message);
+            }
+            return;
+        }
+    };
+    let log_targets = logging::build_log_targets(&log_config);
 
     let mut controller_dir = path_manager.user_data_dir().join("external-control");
     if !miniapp_host_channel.is_default() {
@@ -1045,9 +1181,11 @@ pub async fn run() {
 
             let app_handle = app.handle().clone();
             let workspace_startup_bootstrap_snapshot = {
-                let app_state: tauri::State<'_, api::app_state::AppState> = app.state();
-                let startup_trace_state: tauri::State<'_, startup_trace::DesktopStartupTrace> =
-                    app.state();
+                let app_state: crate::host::State<'_, api::app_state::AppState> =
+                    app.state::<api::app_state::AppState>().into();
+                let startup_trace_state: crate::host::State<'_, startup_trace::DesktopStartupTrace> =
+                    app.state::<startup_trace::DesktopStartupTrace>().into();
+                let host_handle = HostHandle::Tauri(app_handle.clone());
                 // Cap how long a slow-disk workspace snapshot may delay window creation;
                 // on timeout the frontend falls back to the existing
                 // `initialize_workspace_startup_state` command path.
@@ -1059,7 +1197,7 @@ pub async fn run() {
                             WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT,
                             prepare_workspace_startup_bootstrap_snapshot(
                                 &app_state,
-                                &app_handle,
+                                &host_handle,
                                 &startup_trace_state,
                             ),
                         )
@@ -1117,7 +1255,7 @@ pub async fn run() {
             let webdriver_started = Instant::now();
             openbitfun_webdriver::maybe_start(app_handle.clone());
             builtin_browser_host::install(app_handle.clone());
-            openbitfun_control_host::install(app_handle.clone());
+            openbitfun_control_host::install(HostHandle::Tauri(app_handle.clone()));
             miniapp_web_host::install(app_handle.clone());
             if !miniapp_background {
                 if let Err(error) = desktop_cards::install(&app_handle) {
@@ -1175,76 +1313,14 @@ pub async fn run() {
                 });
             }
 
-            let transport = Arc::new(TauriTransportAdapter::new(app_handle.clone()));
-
-            let step_started = Instant::now();
-            start_event_loop_with_transport(
+            start_backend_services(
+                HostHandle::Tauri(app_handle.clone()),
                 event_queue,
                 event_router,
-                transport,
                 session_event_journal.clone(),
+                startup_log_level,
+                &startup_trace,
             );
-            startup_trace.record_elapsed_step(
-                "native_setup",
-                "start_event_loop_with_transport",
-                step_started,
-            );
-
-            // Eagerly initialize the remote connect service so previously
-            // paired bots start listening immediately on app startup.
-            let step_started = Instant::now();
-            api::remote_connect_api::init_on_startup();
-            startup_trace.record_elapsed_step(
-                "native_setup",
-                "remote_connect_init_on_startup",
-                step_started,
-            );
-
-            // Reattach to a browser that is already running with remote
-            // debugging on, so a OpenBitFun restart does not drop the connection.
-            let step_started = Instant::now();
-            api::browser_control_api::init_on_startup();
-            startup_trace.record_elapsed_step(
-                "native_setup",
-                "browser_control_init_on_startup",
-                step_started,
-            );
-
-            {
-                let step_started = Instant::now();
-                let _terminal_state: tauri::State<'_, api::terminal_api::TerminalState> =
-                    app.state();
-                let terminal_state_inner = api::terminal_api::TerminalState::new();
-                let app_handle_clone = app_handle.clone();
-                tokio::spawn(async move {
-                    api::terminal_api::start_terminal_event_loop(
-                        terminal_state_inner,
-                        app_handle_clone,
-                    );
-                });
-                startup_trace.record_elapsed_step(
-                    "native_setup",
-                    "spawn_terminal_event_loop",
-                    step_started,
-                );
-            }
-
-            let step_started = Instant::now();
-            init_mcp_servers(app_handle.clone());
-            startup_trace.record_elapsed_step("native_setup", "init_mcp_servers", step_started);
-            let step_started = Instant::now();
-            init_acp_clients(app_handle.clone());
-            startup_trace.record_elapsed_step("native_setup", "init_acp_clients", step_started);
-
-            let step_started = Instant::now();
-            init_services(app_handle.clone(), startup_log_level);
-            api::remote_connect_api::set_account_app_handle(app_handle.clone());
-            sleep_prevention::spawn_config_listener(app_handle.clone());
-            startup_trace.record_elapsed_step("native_setup", "init_services", step_started);
-
-            let step_started = Instant::now();
-            logging::spawn_log_cleanup_task();
-            startup_trace.record_elapsed_step("native_setup", "spawn_log_cleanup_task", step_started);
 
             let step_started = Instant::now();
             startup_trace.record_elapsed_step("native_setup", "setup_tray_deferred", step_started);
@@ -1357,6 +1433,13 @@ pub async fn run() {
             api::agentic_api::create_session,
             api::agentic_api::update_session_mode,
             api::agentic_api::update_session_model,
+            // Turn and session policy (wave 3 session).
+            api::session_policy_api::submit_user_message,
+            api::session_policy_api::get_session_mode_catalog,
+            api::session_policy_api::list_session_commands,
+            api::session_policy_api::execute_session_command,
+            api::session_policy_api::stop_dialog_turn,
+            api::session_policy_api::mark_session_seen,
             api::agentic_api::get_model_routing_status,
             api::model_pool_api::get_model_pools,
             api::model_pool_api::retry_model_pool_member,
@@ -1582,6 +1665,18 @@ pub async fn run() {
             computer_use_share_forget_grant,
             computer_use_open_system_settings,
             set_config,
+            // Typed settings mutations (wave 3 config).
+            api::settings_mutation_api::ai_model_upsert,
+            api::settings_mutation_api::ai_model_delete,
+            api::settings_mutation_api::resolve_ai_model_request_url,
+            api::settings_mutation_api::set_task_model,
+            api::settings_mutation_api::set_permission_mode,
+            api::settings_mutation_api::upsert_permission_rule,
+            api::settings_mutation_api::delete_permission_rule,
+            api::settings_mutation_api::set_approval_settings,
+            api::settings_mutation_api::set_web_search_provider,
+            api::settings_mutation_api::get_settings_schema,
+            set_acp_client_permission_mode,
             save_cloud_speech_config,
             get_web_search_credential_status,
             save_web_search_credential,
@@ -2063,6 +2158,11 @@ pub async fn run() {
             api::debug_api::debug_element_picked,
             api::debug_api::debug_open_devtools,
             api::debug_api::debug_close_devtools,
+            // Backend protocol listener for browsers and phones (OBP over WebSocket)
+            backend_protocol::ws::obp_get_status,
+            backend_protocol::ws::obp_set_lan_enabled,
+            backend_protocol::ws::obp_create_pairing,
+            backend_protocol::ws::obp_revoke_paired_client,
         ])
         .build(desktop_context());
 
@@ -2110,6 +2210,84 @@ pub async fn run() {
             log::error!("Error while running tauri application: {}", e);
         }
     }
+}
+
+/// Starts the backend services every host runs once its managed state is
+/// registered: agentic event delivery, remote connect, browser control
+/// reattach, terminal events, MCP/ACP, event emitters and config listeners.
+pub(crate) fn start_backend_services(
+    host: HostHandle,
+    event_queue: Arc<openbitfun_core::agentic::events::EventQueue>,
+    event_router: Arc<openbitfun_core::agentic::events::EventRouter>,
+    session_event_journal: Arc<SessionEventJournal>,
+    startup_log_level: log::LevelFilter,
+    startup_trace: &DesktopStartupTrace,
+) {
+    let transport = Arc::new(HostTransportAdapter::new(host.clone()));
+
+    let step_started = Instant::now();
+    start_event_loop_with_transport(event_queue, event_router, transport, session_event_journal);
+    startup_trace.record_elapsed_step(
+        "native_setup",
+        "start_event_loop_with_transport",
+        step_started,
+    );
+
+    // Eagerly initialize the remote connect service so previously
+    // paired bots start listening immediately on app startup.
+    let step_started = Instant::now();
+    api::remote_connect_api::init_on_startup();
+    startup_trace.record_elapsed_step(
+        "native_setup",
+        "remote_connect_init_on_startup",
+        step_started,
+    );
+
+    // Reattach to a browser that is already running with remote
+    // debugging on, so a OpenBitFun restart does not drop the connection.
+    let step_started = Instant::now();
+    api::browser_control_api::init_on_startup();
+    startup_trace.record_elapsed_step(
+        "native_setup",
+        "browser_control_init_on_startup",
+        step_started,
+    );
+
+    {
+        let step_started = Instant::now();
+        // Share the managed state's initialization guard with commands such
+        // as `terminal_get_shells`, which may run before this task starts.
+        let terminal_state_inner = host
+            .state::<api::terminal_api::TerminalState>()
+            .inner()
+            .clone();
+        let app_handle_clone = host.clone();
+        tokio::spawn(async move {
+            api::terminal_api::start_terminal_event_loop(terminal_state_inner, app_handle_clone);
+        });
+        startup_trace.record_elapsed_step(
+            "native_setup",
+            "spawn_terminal_event_loop",
+            step_started,
+        );
+    }
+
+    let step_started = Instant::now();
+    init_mcp_servers(host.clone());
+    startup_trace.record_elapsed_step("native_setup", "init_mcp_servers", step_started);
+    let step_started = Instant::now();
+    init_acp_clients(host.clone());
+    startup_trace.record_elapsed_step("native_setup", "init_acp_clients", step_started);
+
+    let step_started = Instant::now();
+    init_services(host.clone(), startup_log_level);
+    api::remote_connect_api::set_account_app_handle(host.clone());
+    sleep_prevention::spawn_config_listener(host.clone());
+    startup_trace.record_elapsed_step("native_setup", "init_services", step_started);
+
+    let step_started = Instant::now();
+    logging::spawn_log_cleanup_task();
+    startup_trace.record_elapsed_step("native_setup", "spawn_log_cleanup_task", step_started);
 }
 
 async fn init_agentic_system() -> anyhow::Result<(
@@ -2291,15 +2469,15 @@ async fn init_function_agents(ai_client_factory: Arc<AIClientFactory>) -> anyhow
     Ok(())
 }
 
-fn init_mcp_servers(app_handle: tauri::AppHandle) {
+fn init_mcp_servers(app_handle: HostHandle) {
     tokio::spawn(async move {
         let _ = app_handle;
     });
 }
 
-fn init_acp_clients(app_handle: tauri::AppHandle) {
+fn init_acp_clients(app_handle: HostHandle) {
     tokio::spawn(async move {
-        let state: tauri::State<'_, api::AppState> = app_handle.state();
+        let state: crate::host::State<'_, api::AppState> = app_handle.state();
         if let Some(service) = state.acp_client_service.as_ref() {
             if let Err(error) = service.initialize_all().await {
                 log::warn!("Failed to initialize ACP clients: {}", error);
@@ -2459,7 +2637,7 @@ fn configure_workspace_search_daemon_env() -> Option<std::path::PathBuf> {
 /// fan it out to paired devices. Text chunks arrive here already coalesced by
 /// `TextChunkCoalescer`.
 async fn deliver_event_to_webview(
-    transport: &TauriTransportAdapter,
+    transport: &HostTransportAdapter,
     event: AgenticEvent,
     session_event_journal: &SessionEventJournal,
 ) {
@@ -2479,7 +2657,7 @@ async fn deliver_event_to_webview(
 /// Final product delivery for native and ACP projections alike. ACP records
 /// before enqueueing here; native events record after text coalescing above.
 pub(crate) async fn deliver_projected_event(
-    transport: &TauriTransportAdapter,
+    transport: &HostTransportAdapter,
     projected: openbitfun_events::AgenticFrontendEvent,
 ) {
     for hub in api::remote_connect_api::host_stream_hubs().await {
@@ -2741,7 +2919,7 @@ async fn event_loop_driver<D, F>(
 fn start_event_loop_with_transport(
     event_queue: Arc<openbitfun_core::agentic::events::EventQueue>,
     event_router: Arc<openbitfun_core::agentic::events::EventRouter>,
-    transport: Arc<TauriTransportAdapter>,
+    transport: Arc<HostTransportAdapter>,
     session_event_journal: Arc<SessionEventJournal>,
 ) {
     tokio::spawn(async move {
@@ -2756,17 +2934,17 @@ fn start_event_loop_with_transport(
     });
 }
 
-fn init_services(app_handle: tauri::AppHandle, default_log_level: log::LevelFilter) {
+fn init_services(app_handle: HostHandle, default_log_level: log::LevelFilter) {
     use openbitfun_core::{infrastructure, service};
 
     spawn_runtime_log_level_listener(default_log_level);
     spawn_workspace_search_feature_listener(app_handle.clone());
 
     tokio::spawn(async move {
-        let transport = Arc::new(TauriTransportAdapter::new(app_handle.clone()));
+        let transport = Arc::new(HostTransportAdapter::new(app_handle.clone()));
         let emitter = create_event_emitter(transport);
         let workspace_identity_watch_service = {
-            let app_state: tauri::State<'_, api::app_state::AppState> = app_handle.state();
+            let app_state: crate::host::State<'_, api::app_state::AppState> = app_handle.state();
             app_state.workspace_identity_watch_service.clone()
         };
 
@@ -2870,7 +3048,7 @@ fn spawn_runtime_log_level_listener(default_level: log::LevelFilter) {
 }
 
 fn create_event_emitter(
-    transport: Arc<TauriTransportAdapter>,
+    transport: Arc<HostTransportAdapter>,
 ) -> Arc<dyn openbitfun_core::infrastructure::events::EventEmitter> {
     use openbitfun_transport::TransportEmitter;
     let inner: Arc<dyn openbitfun_core::infrastructure::events::EventEmitter> =
@@ -2879,10 +3057,10 @@ fn create_event_emitter(
     api::miniapp_agent_api::wrap_miniapp_agent_context_cleanup_emitter(inner)
 }
 
-fn spawn_workspace_search_feature_listener(app_handle: tauri::AppHandle) {
+fn spawn_workspace_search_feature_listener(app_handle: HostHandle) {
     use openbitfun_core::service::config::{subscribe_config_updates, ConfigUpdateEvent};
 
-    let app_state: tauri::State<'_, api::AppState> = app_handle.state();
+    let app_state: crate::host::State<'_, api::AppState> = app_handle.state();
     let workspace_search_service = app_state.workspace_search_service.clone();
     let workspace_id = app_state.workspace_id.clone();
     let workspace_service = app_state.workspace_service.clone();

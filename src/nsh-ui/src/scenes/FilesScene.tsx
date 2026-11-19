@@ -1,7 +1,12 @@
 import {
+  cleanup,
+  Clipboard,
   computed,
   effect,
   Image,
+  keymap,
+  openUrl,
+  untracked,
   Scroll,
   signal,
   Text,
@@ -15,6 +20,9 @@ import {
   Editor,
   TextView,
   Tree,
+  type EditorRef,
+  type EditorSearchResult,
+  type TextViewImage,
   type TreeEntry,
   type TreeItem,
 } from "nsh/base";
@@ -22,11 +30,17 @@ import { basename, extensionOf, formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import {
   beginEditFile,
+  cancelCloseTab,
   cancelDelete,
   cancelEdit,
   cancelEditFile,
+  cancelSaveConflict,
+  changedOnDisk,
   changedPaths,
+  closeOtherTabs,
+  closeTab,
   commitEdit,
+  confirmingCloseTab,
   confirmingDelete,
   dirChildren,
   dirnameOf,
@@ -34,22 +48,42 @@ import {
   expandedDirs,
   fileNotice,
   fileSaving,
+  fileWatchState,
   gitChanges,
   gitListOpen,
   gitStatus,
+  hasUnsavedEdit,
+  holdFilesStatusPoll,
+  ensureWorkspaceWatch,
+  isDirtyPath,
   joinPath,
+  keepDraftOverDisk,
   loadDirectory,
   loadRoot,
   openDiffReview,
   openFile,
   openFileAt,
+  openFilePaths,
   pasteFromClipboard,
+  pathSep,
   pendingEdit,
   refreshDirectory,
+  reloadFromDisk,
   removeSelected,
+  requestCloseTab,
   requestDelete,
+  retryFileWatch,
   revealPath,
   runFileSearch,
+  saveAndCloseTab,
+  scheduleFileSearch,
+  searchCaseSensitive,
+  searchRegex,
+  searchRunning,
+  searchTruncated,
+  searchWholeWord,
+  type SearchHit,
+  saveConflict,
   saveEditedFile,
   searchMode,
   searchQuery,
@@ -60,7 +94,18 @@ import {
   startCreate,
   startRename,
 } from "../fileStore";
-import { activeWorkspaceRoot, auxSelectedFilePath } from "../state";
+import {
+  activeWorkspace,
+  activeWorkspaceId,
+  activeWorkspaceRoot,
+  auxSelectedFilePath,
+  composerText,
+  navigateScene,
+} from "../state";
+import { invokeCommand } from "../bridge";
+import { mentionToken } from "../mentionStore";
+import { readFileContent } from "../api";
+import { openTerminal } from "../terminalStore";
 import {
   concentricRadius,
   controlHeight,
@@ -86,28 +131,34 @@ import {
   Spinner,
   tactileActiveStyle,
 } from "../ui/motion";
-import { ContextMenuOverlay, DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
+import { ContextMenuOverlay, DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import {
-  Badge,
   Button,
   IconButton,
   InlineConfirmBar,
   InputBox,
-  SegmentedTabs,
   SplitHandle,
   TooltipBubble,
   WorkbenchSwitcher,
 } from "../ui/primitives";
+import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
+import {
+  createSceneWidth,
+  StackBackButton,
+  ToolbarDivider,
+  WORKBENCH_TOUCH_MIN,
+} from "../ui/workbenchLayout";
 
 /** A directory that has not been read yet needs one row so that it can expand. */
 const PLACEHOLDER_SUFFIX = "/\u0000loading";
 
 const EXPLORER_MIN_WIDTH = 204;
 const EXPLORER_MAX_WIDTH = 440;
-const MAX_GUIDE_DEPTH = 5;
+const MAX_GUIDE_DEPTH = 6;
+/** The desktop explorer's indent per level. */
+const INDENT_STEP = 16;
 
 const editValue = signal("");
-const openFilePaths = signal<string[]>([]);
 const explorerOpen = signal(true);
 const explorerWidth = signal(260);
 const fileDiffLayout = signal<"unified" | "split">("unified");
@@ -115,6 +166,9 @@ const fileActionsMenuOpen = signal(false);
 const fileActionsAnchor = signal<ViewRef | null>(null);
 const treeContextPos = signal<Point | null>(null);
 const treeContextOpen = signal(false);
+/** Stacked (narrow) layout: the preview is pushed over the explorer. */
+const filesStackDetail = signal(false);
+let lastStackedPath: string | null = null;
 
 const CODE_EXTENSIONS = new Set([
   "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "rs", "py", "pyi",
@@ -157,9 +211,9 @@ function fileIconForPath(path: string, isDir: boolean, isExpanded: boolean): Ico
   return "file";
 }
 
-function fileIconColor(path: string, isDir: boolean, selected: boolean): string {
+function fileIconColor(path: string, isDir: boolean, selected: boolean, expanded = false): string {
   if (selected) return palette().accent;
-  if (isDir) return palette().textSecondary;
+  if (isDir) return expanded ? palette().accent : palette().textSecondary;
   const ext = extensionOf(path);
   if (TS_JS_EXTENSIONS.has(ext)) return palette().accent;
   if (SYSTEMS_CONFIG_EXTENSIONS.has(ext)) return palette().warning;
@@ -246,47 +300,145 @@ function buildBreadcrumbs(filePath: string, rootPath: string): BreadcrumbSegment
   });
 }
 
+async function copyText(text: string): Promise<void> {
+  try {
+    await Clipboard.writeText(text);
+    pushToast(tr("files.copied"), "success");
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
 function isEditableKind(kind: string): boolean {
   return kind === "code" || kind === "markdown" || kind === "text";
 }
 
-function fileMenuItems(): DropdownMenuItem[] {
-  const hasSelection = Boolean(selectedPath());
-  const selected = selectedPath() ?? "";
-  return [
+/** The row a context menu was opened on; null for the tree's empty space (the root). */
+const treeContextTarget = signal<string | null>(null);
+let rowContextHandled = false;
+
+function isDirectoryPath(path: string): boolean {
+  return path === activeWorkspaceRoot() || knownDirectoryPaths().has(path);
+}
+
+function isRemoteWorkspace(): boolean {
+  return activeWorkspace()?.workspaceKind === "remote";
+}
+
+async function revealInSystemExplorer(path: string): Promise<void> {
+  const workspaceId = activeWorkspaceId();
+  try {
+    await invokeCommand<unknown>("reveal_in_explorer", { path, ...(workspaceId ? { workspaceId } : {}) });
+  } catch (error) {
+    pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
+  }
+}
+
+function addPathToChat(path: string, directory: boolean): void {
+  const name = basename(path) || path;
+  composerText.update(text => `${text}${text && !text.endsWith(" ") ? " " : ""}${mentionToken({ path, name, directory })}`);
+  pushToast(tr("files.addedToChat", { name }), "success");
+}
+
+function openTerminalAt(path: string): void {
+  const directory = isDirectoryPath(path) ? path : dirnameOf(path) || activeWorkspaceRoot();
+  void openTerminal(activeWorkspaceId(), directory);
+  navigateScene("terminal");
+}
+
+/**
+ * The explorer's menu, for one path (the row under the cursor) or the root.
+ * Items the workspace cannot honour (revealing a remote file in this machine's
+ * file manager) stay visible and disabled, with the reason in their label.
+ */
+function fileMenuItems(target: string | null = selectedPath()): DropdownMenuItem[] {
+  const hasSelection = Boolean(target);
+  const selected = target ?? "";
+  const directory = hasSelection ? isDirectoryPath(selected) : true;
+  const createIn = (mode: "file" | "directory") => {
+    if (target) selectedPath.set(target);
+    else selectedPath.set(null);
+    startCreate(mode);
+  };
+  const items: DropdownMenuItem[] = [];
+  if (hasSelection && !directory) {
+    items.push({
+      id: "open",
+      label: tr("files.open"),
+      icon: "file-code",
+      onSelect: () => void openFileAt(selected),
+    });
+  }
+  items.push(
     {
       id: "new-file",
       label: tr("files.newFile"),
       icon: "plus",
       accessibilityLabel: "New file",
-      onSelect: () => startCreate("file"),
+      onSelect: () => createIn("file"),
     },
     {
       id: "new-folder",
       label: tr("files.newFolder"),
       icon: "folder-plus",
       accessibilityLabel: "New folder",
-      onSelect: () => startCreate("directory"),
+      onSelect: () => createIn("directory"),
     },
     {
       id: "paste",
       label: tr("common.paste"),
       icon: "copy",
       accessibilityLabel: "Paste",
-      onSelect: () => void pasteFromClipboard(),
+      onSelect: () => void pasteFromClipboard(target ?? undefined),
     },
-    {
-      id: "sep-1",
-      label: "",
-      separator: true,
-    },
+    { id: "sep-1", label: "", separator: true },
+  );
+  if (hasSelection) {
+    items.push(
+      {
+        id: "add-to-chat",
+        label: tr("files.addToChat"),
+        icon: "at",
+        onSelect: () => addPathToChat(selected, directory),
+      },
+      {
+        id: "copy-path",
+        label: tr("files.copyPath"),
+        icon: "copy",
+        onSelect: () => void copyText(selected),
+      },
+      {
+        id: "copy-relative-path",
+        label: tr("files.copyRelativePath"),
+        onSelect: () => void copyText(relativeDisplayPath(selected, activeWorkspaceRoot())),
+      },
+      {
+        id: "reveal",
+        label: isRemoteWorkspace() ? tr("files.revealLocalOnly") : tr("files.revealInFinder"),
+        icon: "external-link",
+        disabled: isRemoteWorkspace(),
+        onSelect: () => void revealInSystemExplorer(selected),
+      },
+      {
+        id: "terminal-here",
+        label: tr("files.openTerminalHere"),
+        icon: "terminal",
+        onSelect: () => openTerminalAt(selected),
+      },
+      { id: "sep-2", label: "", separator: true },
+    );
+  }
+  items.push(
     {
       id: "rename",
       label: tr("common.rename"),
       icon: "edit",
       disabled: !hasSelection,
       accessibilityLabel: "Rename",
-      onSelect: () => startRename(),
+      onSelect: () => {
+        if (target) selectedPath.set(target);
+        startRename();
+      },
     },
     {
       id: "review-diff",
@@ -305,25 +457,13 @@ function fileMenuItems(): DropdownMenuItem[] {
       danger: true,
       disabled: !hasSelection,
       accessibilityLabel: "Delete",
-      onSelect: () => requestDelete(),
+      onSelect: () => {
+        if (target) selectedPath.set(target);
+        requestDelete();
+      },
     },
-  ];
-}
-
-function closeOpenFileTab(path: string): void {
-  const tabs = openFilePaths();
-  const idx = tabs.indexOf(path);
-  const remaining = tabs.filter(item => item !== path);
-  openFilePaths.set(remaining);
-  if (openFile()?.path === path) {
-    cancelEditFile();
-    const nextPath = remaining[Math.max(0, idx - 1)] ?? remaining[0] ?? null;
-    if (nextPath) {
-      void openFileAt(nextPath);
-    } else {
-      openFile.set(null);
-    }
-  }
+  );
+  return items;
 }
 
 function diffPatchStats(patch: string): { added: number; deleted: number } {
@@ -340,12 +480,6 @@ function diffPatchStats(patch: string): { added: number; deleted: number } {
 const openFileDiffStats = computed(() => {
   const file = openFile();
   return file?.kind === "diff" ? diffPatchStats(file.content) : { added: 0, deleted: 0 };
-});
-
-const hasUnsavedEdit = computed(() => {
-  const draft = editingContent();
-  const file = openFile();
-  return draft !== null && file !== null && draft !== file.content;
 });
 
 function relativeDisplayPath(filePath: string, rootPath: string): string {
@@ -368,8 +502,8 @@ function parentHintOf(filePath: string, rootPath: string): string {
 /** Progressively clamps deep folder indentation so filenames stay readable at depth 10+. */
 function explorerIndentLeft(depth: number): number {
   const safe = Math.max(0, depth);
-  if (safe <= MAX_GUIDE_DEPTH) return 6 + safe * 12;
-  return Math.min(120, 66 + (safe - MAX_GUIDE_DEPTH) * 8);
+  if (safe <= MAX_GUIDE_DEPTH) return 6 + safe * INDENT_STEP;
+  return Math.min(160, 6 + MAX_GUIDE_DEPTH * INDENT_STEP + (safe - MAX_GUIDE_DEPTH) * 8);
 }
 
 function guideLevelsFor(depth: number): number[] {
@@ -394,13 +528,6 @@ function decorationColor(letter: string | undefined): string {
   return palette().warning;
 }
 
-function decorationBg(letter: string | undefined): string {
-  if (letter === "A") return palette().successSoft;
-  if (letter === "U") return palette().accentSoft;
-  if (letter === "C" || letter === "D") return palette().dangerSoft;
-  return palette().warningSoft;
-}
-
 /** Calm centered borderless empty prompt (never a lonely boxed wireframe card). */
 function QuietEmptyPrompt(props: { icon: IconName; title: string; subtitle?: string }) {
   return (
@@ -412,29 +539,16 @@ function QuietEmptyPrompt(props: { icon: IconName; title: string; subtitle?: str
         maxWidth: 340,
       }}
     >
-      <View
-        style={{
-          width: 40,
-          height: 40,
-          borderRadius: radii.md,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().surfaceSubtle,
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: 2,
-        }}
-      >
-        <Icon name={props.icon} size={18} color={palette().textMuted} />
+      <View style={{ marginBottom: 4 }}>
+        <Icon name={props.icon} size={28} color={palette().textMuted} />
       </View>
       <Text
         style={{
           color: palette().text,
-          fontSize: textSize(14),
+          fontSize: textSize(15),
           fontWeight: "600",
-          letterSpacing: textTracking(14),
-          lineHeight: textLineHeight(14, 1.32),
+          letterSpacing: textTracking(15),
+          lineHeight: textLineHeight(15, 1.32),
           textAlign: "center",
         }}
       >
@@ -444,9 +558,9 @@ function QuietEmptyPrompt(props: { icon: IconName; title: string; subtitle?: str
         {sub => (
           <Text
             style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.48),
+              color: palette().textSecondary,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.48),
               textAlign: "center",
             }}
           >
@@ -608,8 +722,6 @@ function InlineSearchModeToggle() {
               justifyContent: "center",
               backgroundColor:
                 searchMode() === item().value ? palette().panelRaised : "transparent",
-              boxShadow:
-                searchMode() === item().value ? palette().shadowButton : undefined,
               cursor: "pointer",
               ...pressTransition(MOTION_DURATION.fast),
             }}
@@ -699,13 +811,7 @@ function ChangedFiles(props: { compact?: boolean }) {
                   flexShrink: 1,
                   minWidth: 0,
                   maxWidth: "100%",
-                  paddingHorizontal: 6,
-                  paddingVertical: 1,
-                  borderRadius: radii.xs,
-                  borderCurve: "continuous",
-                  borderWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  backgroundColor: palette().surfaceSubtle,
+                  paddingHorizontal: 2,
                   overflow: "hidden",
                 }}
               >
@@ -715,9 +821,8 @@ function ChangedFiles(props: { compact?: boolean }) {
                     flexShrink: 1,
                     color: palette().textMuted,
                     fontFamily: fontMono,
-                    fontSize: textSize(10),
-                    fontWeight: "500",
-                    lineHeight: textLineHeight(10, 1.32),
+                    fontSize: textSize(11),
+                    lineHeight: textLineHeight(11, 1.32),
                     numberOfLines: 1,
                     textOverflow: "ellipsis-middle",
                   }}
@@ -825,13 +930,9 @@ function ChangedFileRow(props: { path: string }) {
       <View
         style={{
           minWidth: 16,
-          height: 16,
-          paddingHorizontal: 3,
-          borderRadius: 4,
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
-          backgroundColor: decorationBg(decoration()?.letter),
         }}
       >
         <Text
@@ -846,6 +947,84 @@ function ChangedFileRow(props: { path: string }) {
           {decoration()?.letter ?? "M"}
         </Text>
       </View>
+    </View>
+  );
+}
+
+interface SearchGroup {
+  path: string;
+  hits: SearchHit[];
+}
+
+/** Hits grouped by file, in the order the host ranked their first match. */
+const searchGroups = computed<SearchGroup[]>(() => {
+  const groups = new Map<string, SearchHit[]>();
+  for (const hit of searchResults()) {
+    const list = groups.get(hit.path);
+    if (list) list.push(hit);
+    else groups.set(hit.path, [hit]);
+  }
+  return [...groups.entries()].map(([path, hits]) => ({ path, hits }));
+});
+
+function openSearchHit(hit: SearchHit): void {
+  pendingRevealLine.set(hit.line === undefined ? null : { path: hit.path, line: hit.line });
+  void revealPath(hit.path);
+}
+
+/** One match line: the text before it, the match highlighted, the text after it. */
+function SearchMatchRow(props: { hit: SearchHit }) {
+  const style = () => ({
+    fontFamily: fontMono,
+    fontSize: textSize(12),
+    lineHeight: textLineHeight(12, 1.4),
+  });
+  return (
+    <View
+      role="button"
+      accessibilityLabel={`search-hit-${props.hit.name}:${props.hit.line ?? 0}`}
+      onPress={() => openSearchHit(props.hit)}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        minHeight: 22,
+        paddingLeft: 26,
+        paddingRight: 8,
+        borderRadius: radii.xs,
+        cursor: "pointer",
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ backgroundColor: palette().panelHover }}
+      focusVisibleStyle={rowFocusRing()}
+    >
+      <Text
+        style={{
+          minWidth: 26,
+          color: palette().textMuted,
+          fontSize: textSize(11),
+          lineHeight: textLineHeight(11, 1.3),
+          fontVariant: ["tabular-nums"],
+          textAlign: "right",
+          flexShrink: 0,
+        }}
+      >
+        {String(props.hit.line ?? "")}
+      </Text>
+      <Text style={{ flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis", ...style(), color: palette().textSecondary }}>
+        {props.hit.previewBefore ?? ""}
+        <Text
+          style={{
+            ...style(),
+            color: palette().text,
+            fontWeight: "600",
+            backgroundColor: palette().warningSoft,
+          }}
+        >
+          {props.hit.preview ?? ""}
+        </Text>
+        {props.hit.previewAfter ?? ""}
+      </Text>
     </View>
   );
 }
@@ -871,15 +1050,28 @@ function SearchResults(props: { compact?: boolean }) {
       >
         <Text
           style={{
+            flex: 1,
+            minWidth: 0,
             color: palette().textMuted,
-            fontSize: textSize(10.5),
+            fontSize: textSize(11),
             fontWeight: "600",
-            lineHeight: textLineHeight(10.5, 1.32),
+            lineHeight: textLineHeight(11, 1.32),
             fontVariant: ["tabular-nums"],
+            numberOfLines: 1,
           }}
         >
-          {formatPlural(searchResults().length, "format.matchOne", "format.matchOther")}
+          {searchTruncated()
+            ? tr("files.searchTruncated", { count: formatCount(searchResults().length) })
+            : searchMode() === "content"
+              ? tr("files.searchSummary", {
+                  matches: formatPlural(searchResults().length, "format.matchOne", "format.matchOther"),
+                  files: formatCount(searchGroups().length),
+                })
+              : formatPlural(searchResults().length, "format.matchOne", "format.matchOther")}
         </Text>
+        <If when={searchRunning()}>
+          <Spinner size={10} />
+        </If>
         <IconButton
           icon="close"
           size="xs"
@@ -892,81 +1084,77 @@ function SearchResults(props: { compact?: boolean }) {
           }}
         />
       </View>
-      <Scroll style={{ maxHeight: props.compact ? 128 : 196, minHeight: 0 }}>
-        <View style={{ paddingHorizontal: 6, paddingBottom: 6, paddingTop: 2, gap: 2 }}>
-          <Each
-            of={searchResults()}
-            key={row => (row.line === undefined ? row.path : `${row.path}:${row.line}`)}
-          >
-            {row => (
-              <View
-                role="button"
-                tooltip={
-                  <TooltipBubble text={relativeDisplayPath(row().path, activeWorkspaceRoot())} />
-                }
-                onPress={() => void revealPath(row().path)}
-                style={{
-                  paddingHorizontal: 8,
-                  paddingVertical: 5,
-                  borderRadius: radii.xs,
-                  borderCurve: "continuous",
-                  gap: 2,
-                  cursor: "pointer",
-                  ...paintTransition(MOTION_DURATION.fast),
-                }}
-                hoverStyle={{ backgroundColor: palette().panelHover }}
-                activeStyle={{ opacity: 0.88 }}
-                focusVisibleStyle={rowFocusRing()}
-              >
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <Scroll style={{ maxHeight: props.compact ? 160 : 280, minHeight: 0 }}>
+        <View style={{ paddingHorizontal: 6, paddingBottom: 6, paddingTop: 2, gap: 1 }}>
+          <Each of={searchGroups()} key={group => group.path}>
+            {group => (
+              <View style={{ gap: 1 }}>
+                <View
+                  role="button"
+                  tooltip={<TooltipBubble text={relativeDisplayPath(group().path, activeWorkspaceRoot())} />}
+                  onPress={() => openSearchHit(group().hits[0])}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    minHeight: 24,
+                    paddingHorizontal: 8,
+                    borderRadius: radii.xs,
+                    cursor: "pointer",
+                    ...paintTransition(MOTION_DURATION.fast),
+                  }}
+                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  focusVisibleStyle={rowFocusRing()}
+                >
                   <Icon
-                    name={fileIconForPath(row().path, false, false)}
-                    size={13}
-                    color={fileIconColor(row().path, false, false)}
+                    name={fileIconForPath(group().path, false, false)}
+                    size={15}
+                    color={fileIconColor(group().path, false, false)}
                   />
                   <Text
                     style={{
                       color: palette().text,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.36),
+                      fontSize: textSize(13),
+                      lineHeight: textLineHeight(13, 1.3),
                       fontWeight: "500",
-                      fontVariant: ["tabular-nums"],
-                      flex: 1,
-                      minWidth: 0,
+                      flexShrink: 0,
+                      maxWidth: "60%",
                       numberOfLines: 1,
                       textOverflow: "ellipsis-middle",
                     }}
                   >
-                    {row().line === undefined ? row().name : `${row().name}:${row().line}`}
+                    {basename(group().path)}
                   </Text>
-                </View>
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(10.5),
-                    lineHeight: textLineHeight(10.5, 1.35),
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis-middle",
-                  }}
-                >
-                  {relativeDisplayPath(row().path, activeWorkspaceRoot())}
-                </Text>
-                <If when={row().preview}>
-                  {preview => (
+                  <Text
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      color: palette().textMuted,
+                      fontSize: textSize(11),
+                      lineHeight: textLineHeight(11, 1.3),
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis-start",
+                    }}
+                  >
+                    {parentHintOf(group().path, activeWorkspaceRoot())}
+                  </Text>
+                  <If when={group().hits.some(hit => hit.line !== undefined)}>
                     <Text
                       style={{
-                        color: palette().textSecondary,
-                        fontSize: textSize(10.5),
-                        fontFamily: fontMono,
-                        lineHeight: textLineHeight(10.5, 1.42),
-                        numberOfLines: 1,
-                        textOverflow: "ellipsis",
+                        color: palette().textMuted,
+                        fontSize: textSize(11),
+                        lineHeight: textLineHeight(11, 1.3),
+                        fontVariant: ["tabular-nums"],
+                        flexShrink: 0,
                       }}
                     >
-                      {preview()}
+                      {formatCount(group().hits.length)}
                     </Text>
-                  )}
-                </If>
+                  </If>
+                </View>
+                <Each of={group().hits.filter(hit => hit.line !== undefined)} key={hit => `${hit.path}:${hit.line}`}>
+                  {hit => <SearchMatchRow hit={hit()} />}
+                </Each>
               </View>
             )}
           </Each>
@@ -976,7 +1164,7 @@ function SearchResults(props: { compact?: boolean }) {
   );
 }
 
-function renderExplorerRow(entry: TreeEntry) {
+function renderExplorerRow(entry: TreeEntry, touch = false) {
   if (entry.disabled && entry.id.endsWith(PLACEHOLDER_SUFFIX)) {
     return (
       <View
@@ -1009,9 +1197,16 @@ function renderExplorerRow(entry: TreeEntry) {
   return (
     <View
       tooltip={<TooltipBubble text={relativeDisplayPath(entry.id, activeWorkspaceRoot())} />}
+      accessibilityLabel={`explorer-row-${entry.label}`}
+      onContextMenu={event => {
+        rowContextHandled = true;
+        treeContextTarget.set(entry.id);
+        treeContextPos.set(event.pagePosition);
+        treeContextOpen.set(true);
+      }}
       style={{
         position: "relative",
-        minHeight: 26,
+        minHeight: touch ? WORKBENCH_TOUCH_MIN : 24,
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
@@ -1037,7 +1232,7 @@ function renderExplorerRow(entry: TreeEntry) {
                 position: "absolute",
                 top: 0,
                 bottom: 0,
-                left: 12 + level() * 12,
+                left: 13 + level() * INDENT_STEP,
                 width: 1,
                 backgroundColor: palette().borderSubtle,
                 pointerEvents: "none",
@@ -1069,11 +1264,12 @@ function renderExplorerRow(entry: TreeEntry) {
           entry.folder || knownDirectoryPaths().has(entry.id),
           expandedDirs().includes(entry.id),
         )}
-        size={13.5}
+        size={15}
         color={fileIconColor(
           entry.id,
           entry.folder || knownDirectoryPaths().has(entry.id),
           selectedPath() === entry.id,
+          expandedDirs().includes(entry.id),
         )}
       />
       <Text
@@ -1088,8 +1284,8 @@ function renderExplorerRow(entry: TreeEntry) {
                 : entry.folder || knownDirectoryPaths().has(entry.id)
                   ? palette().text
                   : palette().textSecondary,
-          fontSize: textSize(12.5),
-          lineHeight: textLineHeight(12.5, 1.36),
+          fontSize: textSize(13),
+          lineHeight: textLineHeight(13, 1.3),
           fontWeight:
             selectedPath() === entry.id
               ? "600"
@@ -1107,13 +1303,9 @@ function renderExplorerRow(entry: TreeEntry) {
           <View
             style={{
               minWidth: 15,
-              height: 15,
-              paddingHorizontal: 3,
-              borderRadius: 4,
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
-              backgroundColor: decorationBg(letter()),
             }}
           >
             <Text
@@ -1151,29 +1343,31 @@ function renderExplorerRow(entry: TreeEntry) {
   );
 }
 
-function FileTree(props: { compact?: boolean; width: number }) {
+function FileTree(props: { compact?: boolean; width: number; stacked?: boolean }) {
+  // Stacked: the list is the whole view (the detail is pushed over it instead).
+  const split = () => Boolean(props.compact) && !props.stacked && Boolean(openFile());
   return (
     <View
       style={{
-        width: props.compact ? "100%" : props.width,
-        height: props.compact && openFile() ? "38%" : undefined,
+        width: props.compact || props.stacked ? "100%" : props.width,
+        height: split() ? "38%" : undefined,
         minWidth: 0,
-        minHeight: props.compact ? (openFile() ? 168 : 0) : 0,
-        maxHeight: props.compact && openFile() ? 304 : undefined,
-        flex: props.compact && !openFile() ? 1 : undefined,
-        flexShrink: props.compact && !openFile() ? 1 : 0,
+        minHeight: split() ? 168 : 0,
+        maxHeight: split() ? 304 : undefined,
+        flex: props.stacked || (props.compact && !openFile()) ? 1 : undefined,
+        flexShrink: props.stacked || (props.compact && !openFile()) ? 1 : 0,
         overflow: "hidden",
         flexDirection: "column",
         borderRightWidth: 0,
-        borderBottomWidth: props.compact && openFile() ? 1 : 0,
+        borderBottomWidth: split() ? 1 : 0,
         borderColor: palette().borderSubtle,
-        backgroundColor: palette().canvasSubtle,
+        backgroundColor: props.stacked ? palette().canvas : palette().canvasSubtle,
       }}
     >
-      {/* Sleek unified 2-row IDE Explorer header (single bottom hairline) */}
+      {/* Explorer header: one quiet row (title, count, ghost actions) and the search field */}
       <View
         style={{
-          paddingHorizontal: props.compact ? 8 : 10,
+          paddingHorizontal: props.compact || props.stacked ? 8 : 10,
           paddingTop: props.compact ? 6 : 8,
           paddingBottom: props.compact ? 7 : 9,
           gap: props.compact ? 5 : 7,
@@ -1182,10 +1376,13 @@ function FileTree(props: { compact?: boolean; width: number }) {
           backgroundColor: palette().canvasSubtle,
         }}
       >
+        <If when={Boolean(props.stacked) && !props.compact}>
+          <WorkbenchSwitcher />
+        </If>
         {/* Row 1: Explorer label + quiet tabular item count + New / Refresh / More */}
         <View
           style={{
-            height: 24,
+            height: props.stacked ? WORKBENCH_TOUCH_MIN : 24,
             flexDirection: "row",
             alignItems: "center",
             gap: 6,
@@ -1204,41 +1401,50 @@ function FileTree(props: { compact?: boolean; width: number }) {
           >
             {tr("files.explorer")}
           </Text>
-          <View
+          <Text
             style={{
-              paddingHorizontal: 5,
-              paddingVertical: 1,
-              borderRadius: radii.xs,
-              backgroundColor: palette().surfaceSubtle,
+              color: palette().textMuted,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.25),
+              fontVariant: ["tabular-nums"],
               flexShrink: 0,
             }}
           >
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(10),
-                fontWeight: "600",
-                lineHeight: textLineHeight(10, 1.25),
-                fontVariant: ["tabular-nums"],
-              }}
-            >
-              {formatCount(treeItems().length)}
-            </Text>
-          </View>
+            {formatCount(treeItems().length)}
+          </Text>
           <View style={{ flex: 1, minWidth: 0 }} />
+          <If when={fileWatchState().kind === "unsupported"}>
+            <View
+              accessibilityLabel="file-watch-unsupported"
+              tooltip={<TooltipBubble text={tr("files.watchUnsupportedHint")} />}
+              style={{ flexShrink: 1, minWidth: 0 }}
+            >
+              <Text
+                style={{
+                  color: palette().warning,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.25),
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {tr("files.watchUnsupported")}
+              </Text>
+            </View>
+          </If>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 1, flexShrink: 0 }}>
             <IconButton
               icon="plus"
-              size="xs"
-              iconSize={12.5}
+              size={props.stacked ? "md" : "xs"}
+              iconSize={props.stacked ? undefined : 12.5}
               tooltip={tr("files.newFile")}
               accessibilityLabel="file-quick-new"
               onPress={() => startCreate("file")}
             />
             <IconButton
               icon="refresh"
-              size="xs"
-              iconSize={12}
+              size={props.stacked ? "md" : "xs"}
+              iconSize={props.stacked ? undefined : 12}
               tooltip={tr("files.refreshExplorer")}
               accessibilityLabel="Refresh"
               onPress={() => void refreshDirectory(activeWorkspaceRoot())}
@@ -1246,8 +1452,8 @@ function FileTree(props: { compact?: boolean; width: number }) {
             <View ref={el => fileActionsAnchor.set(el)} style={{ flexShrink: 0 }}>
               <IconButton
                 icon="more"
-                size="xs"
-                iconSize={12.5}
+                size={props.stacked ? "md" : "xs"}
+                iconSize={props.stacked ? undefined : 12.5}
                 active={fileActionsMenuOpen()}
                 tooltip={tr("files.fileActions")}
                 accessibilityLabel="file-actions-menu"
@@ -1277,9 +1483,92 @@ function FileTree(props: { compact?: boolean; width: number }) {
               searchResults.set([]);
               fileNotice.set("");
             }
+            scheduleFileSearch();
           }}
           onSubmit={() => void runFileSearch()}
         />
+        <If when={searchMode() === "content" || searchQuery().trim()}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+            <FindToggle
+              label="Aa"
+              a11y="file-search-case"
+              tooltip={tr("files.matchCase")}
+              active={searchCaseSensitive()}
+              onPress={() => {
+                searchCaseSensitive.set(!searchCaseSensitive());
+                scheduleFileSearch();
+              }}
+            />
+            <FindToggle
+              label="ab"
+              a11y="file-search-word"
+              tooltip={tr("files.matchWholeWord")}
+              active={searchWholeWord()}
+              onPress={() => {
+                searchWholeWord.set(!searchWholeWord());
+                scheduleFileSearch();
+              }}
+            />
+            <FindToggle
+              label=".*"
+              a11y="file-search-regex"
+              tooltip={tr("files.useRegex")}
+              active={searchRegex()}
+              onPress={() => {
+                searchRegex.set(!searchRegex());
+                scheduleFileSearch();
+              }}
+            />
+          </View>
+        </If>
+
+        <If when={fileWatchState().kind === "failed"}>
+          <View
+            role="alert"
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              paddingHorizontal: 2,
+              paddingVertical: 4,
+            }}
+          >
+            <Icon name="warning" size={14} color={palette().warning} />
+            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+              <Text
+                style={{
+                  color: palette().text,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.38),
+                }}
+              >
+                {tr("files.watchFailed")}
+              </Text>
+              <If when={(() => { const state = fileWatchState(); return state.kind === "failed" ? state.hint ?? "" : ""; })()}>
+                {hint => (
+                  <Text
+                    style={{
+                      userSelect: "text",
+                      color: palette().textSecondary,
+                      fontFamily: fontMono,
+                      fontSize: textSize(11),
+                      lineHeight: textLineHeight(11, 1.38),
+                    }}
+                  >
+                    {hint()}
+                  </Text>
+                )}
+              </If>
+            </View>
+            <Button
+              label={tr("files.watchRetry")}
+              accessibilityLabel="file-watch-retry"
+              variant="ghost"
+              size="xs"
+              onPress={() => void retryFileWatch()}
+            />
+          </View>
+        </If>
 
         <If when={confirmingDelete()}>
           {target => (
@@ -1301,13 +1590,7 @@ function FileTree(props: { compact?: boolean; width: number }) {
                 flexDirection: "row",
                 alignItems: "center",
                 gap: 6,
-                paddingHorizontal: 8,
-                paddingVertical: 4,
-                borderRadius: radii.xs,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().borderSubtle,
-                backgroundColor: palette().panelRaised,
+                paddingLeft: 2,
               }}
             >
               <Text
@@ -1315,8 +1598,8 @@ function FileTree(props: { compact?: boolean; width: number }) {
                   flex: 1,
                   minWidth: 0,
                   color: palette().textSecondary,
-                  fontSize: textSize(10.5),
-                  lineHeight: textLineHeight(10.5, 1.38),
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.38),
                 }}
               >
                 {localizeHostError(notice())}
@@ -1353,6 +1636,12 @@ function FileTree(props: { compact?: boolean; width: number }) {
       <View
         style={{ flex: 1, minHeight: 0, overflow: "hidden" }}
         onContextMenu={event => {
+          // A row already claimed this press; the empty space below the rows is the root.
+          if (rowContextHandled) {
+            rowContextHandled = false;
+            return;
+          }
+          treeContextTarget.set(null);
           treeContextPos.set(event.pagePosition);
           treeContextOpen.set(true);
         }}
@@ -1362,9 +1651,9 @@ function FileTree(props: { compact?: boolean; width: number }) {
           expanded={expandedDirs()}
           selected={selectedPath()}
           reveal={false}
-          renderItem={renderExplorerRow}
+          renderItem={entry => renderExplorerRow(entry, Boolean(props.stacked))}
           itemClass="group rounded-md focus-visible:outline-2 focus-visible:outline-ring"
-          itemStyle={{ color: palette().text, fontSize: textSize(12.5) }}
+          itemStyle={{ color: palette().text, fontSize: textSize(13) }}
           listStyle={{ padding: 6, gap: 1 }}
           style={{ flex: 1, minHeight: 0 }}
           onExpandedChange={event => {
@@ -1382,55 +1671,106 @@ function FileTree(props: { compact?: boolean; width: number }) {
           }}
           onSelectedChange={event => {
             selectedPath.set(event.selected);
-            if (!knownDirectoryPaths().has(event.selected)) void openFileAt(event.selected);
+            if (!knownDirectoryPaths().has(event.selected)) {
+              filesStackDetail.set(true);
+              void openFileAt(event.selected);
+            }
           }}
           onAction={event => {
-            if (!knownDirectoryPaths().has(event.id)) void openFileAt(event.id);
+            if (!knownDirectoryPaths().has(event.id)) {
+              filesStackDetail.set(true);
+              void openFileAt(event.id);
+            }
           }}
         />
       </View>
       <ContextMenuOverlay
         open={treeContextOpen()}
         position={treeContextPos()}
-        items={fileMenuItems()}
+        items={fileMenuItems(treeContextTarget())}
         onClose={() => treeContextOpen.set(false)}
       />
     </View>
   );
 }
 
-const FILE_TAB_RADIUS = radii.sm;
-const FILE_TAB_INNER_RADIUS = concentricRadius(FILE_TAB_RADIUS, 2);
+const tabContextPath = signal<string | null>(null);
+const tabContextPos = signal<Point | null>(null);
 
+function tabMenuItems(): DropdownMenuItem[] {
+  const path = tabContextPath() ?? "";
+  return [
+    {
+      id: "tab-close",
+      label: tr("files.closeTab"),
+      icon: "close",
+      onSelect: () => requestCloseTab(path),
+    },
+    {
+      id: "tab-close-others",
+      label: tr("files.closeOtherTabs"),
+      disabled: openFilePaths().length < 2,
+      onSelect: () => closeOtherTabs(path),
+    },
+    { id: "tab-sep", label: "", separator: true },
+    {
+      id: "tab-copy-path",
+      label: tr("files.copyPath"),
+      icon: "copy",
+      onSelect: () => void copyText(path),
+    },
+    {
+      id: "tab-copy-relative",
+      label: tr("files.copyRelativePath"),
+      onSelect: () => void copyText(relativeDisplayPath(path, activeWorkspaceRoot())),
+    },
+    {
+      id: "tab-reveal",
+      label: tr("files.revealInExplorer"),
+      icon: "folder-open",
+      onSelect: () => void revealPath(path),
+    },
+  ];
+}
+
+/**
+ * One flat editor tab: no box, a 2 px accent under the active one, the file's
+ * own icon, a dirty dot that turns into the close button on hover, middle-click
+ * to close and a context menu, the way the desktop editor's tabs behave.
+ */
 function OpenFileTabChip(props: { path: string; compact?: boolean }) {
   const hovered = signal(false);
   const active = () => openFile()?.path === props.path;
+  const dirty = () => isDirtyPath(props.path);
 
   return (
     <View
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
+      onMouseUp={event => {
+        if (event.button === "middle") requestCloseTab(props.path);
+      }}
+      onContextMenu={event => {
+        tabContextPath.set(props.path);
+        tabContextPos.set(event.pagePosition);
+      }}
       style={{
         boxSizing: "border-box",
+        position: "relative",
         flexDirection: "row",
         alignItems: "center",
         flexShrink: 0,
         gap: 2,
-        paddingLeft: 8,
-        paddingRight: 3,
-        height: props.compact ? controlHeight.xs : controlHeight.sm,
-        borderRadius: FILE_TAB_RADIUS,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: active() ? palette().border : "transparent",
-        backgroundColor: active() ? palette().panelRaised : "transparent",
-        boxShadow: active()
-          ? `${palette().shadowButton}, ${palette().innerHighlight}`
-          : undefined,
+        paddingLeft: 10,
+        paddingRight: 4,
+        height: props.compact ? 30 : 33,
+        borderRightWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: active() ? palette().canvas : "transparent",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{
-        backgroundColor: active() ? palette().panelRaised : palette().panelHover,
+        backgroundColor: active() ? palette().canvas : palette().panelHover,
       }}
     >
       <View
@@ -1438,64 +1778,81 @@ function OpenFileTabChip(props: { path: string; compact?: boolean }) {
         tooltip={<TooltipBubble text={relativeDisplayPath(props.path, activeWorkspaceRoot())} />}
         accessibilityLabel={`file-tab-${basename(props.path)}`}
         accessibilityState={{ selected: active() }}
-        onPress={() => void openFileAt(props.path)}
+        onPress={() => {
+          if (!active()) void openFileAt(props.path);
+        }}
         style={{
           flexDirection: "row",
           alignItems: "center",
           gap: 6,
-          paddingVertical: 2,
+          height: "100%",
           paddingRight: 2,
-          borderRadius: FILE_TAB_INNER_RADIUS,
           cursor: "pointer",
-          ...pressTransition(MOTION_DURATION.fast),
         }}
-        activeStyle={tactileActiveStyle(0.97)}
         focusVisibleStyle={rowFocusRing()}
       >
         <Icon
           name={fileIconForPath(props.path, false, false)}
-          size={12.5}
-          color={fileIconColor(props.path, false, active())}
+          size={15}
+          color={fileIconColor(props.path, false, false)}
         />
         <Text
           style={{
-            maxWidth: props.compact ? 116 : 168,
+            maxWidth: props.compact ? 128 : 180,
             color: active() ? palette().text : palette().textSecondary,
-            fontSize: textSize(11.5),
-            lineHeight: textLineHeight(11.5, 1.32),
-            fontWeight: active() ? "600" : "500",
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 1.3),
+            fontWeight: active() ? "500" : "400",
+            fontStyle: changedOnDisk()[props.path] === "deleted" ? "italic" : "normal",
+            textDecorationLine: changedOnDisk()[props.path] === "deleted" ? "line-through" : "none",
             numberOfLines: 1,
             textOverflow: "ellipsis-middle",
           }}
         >
           {basename(props.path) || props.path}
         </Text>
-        <If when={active() && editingContent() !== null}>
-          <View
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: radii.pill,
-              flexShrink: 0,
-              backgroundColor: hasUnsavedEdit() ? palette().warning : palette().accent,
-            }}
+      </View>
+      <View style={{ width: 20, height: 20, alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <If
+          when={hovered() || (active() && !dirty())}
+          else={
+            <If when={dirty()}>
+              <View
+                accessibilityLabel={`file-tab-dirty-${basename(props.path)}`}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().textSecondary,
+                }}
+              />
+            </If>
+          }
+        >
+          <IconButton
+            icon="close"
+            size="xs"
+            iconSize={11}
+            tooltip={tr("files.closeTab")}
+            accessibilityLabel={`close-file-tab-${basename(props.path)}`}
+            style={{ width: 20, height: 20, borderRadius: 5 }}
+            onPress={() => requestCloseTab(props.path)}
           />
         </If>
       </View>
-      <IconButton
-        icon="close"
-        size="xs"
-        iconSize={10.5}
-        tooltip={tr("files.closeTab")}
-        accessibilityLabel={`close-file-tab-${basename(props.path)}`}
-        style={{
-          width: 18,
-          height: 18,
-          borderRadius: FILE_TAB_INNER_RADIUS,
-          opacity: active() || hovered() ? 0.86 : 0.34,
-        }}
-        onPress={() => closeOpenFileTab(props.path)}
-      />
+      <If when={active()}>
+        <View
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 2,
+            backgroundColor: palette().accent,
+            pointerEvents: "none",
+          }}
+        />
+      </If>
     </View>
   );
 }
@@ -1509,6 +1866,7 @@ function OpenFileTabStrip(props: { compact?: boolean }) {
           style={{
             flex: 1,
             minWidth: 0,
+            paddingHorizontal: 6,
             color: palette().textMuted,
             fontSize: textSize(12),
             lineHeight: textLineHeight(12, 1.35),
@@ -1522,16 +1880,484 @@ function OpenFileTabStrip(props: { compact?: boolean }) {
     >
       <Scroll
         horizontal
-        style={{ flex: 1, minWidth: props.compact ? 100 : 120 }}
+        style={{ flex: 1, minWidth: props.compact ? 100 : 120, alignSelf: "stretch" }}
         scrollbar={false}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+        <View style={{ flexDirection: "row", alignItems: "stretch", height: "100%" }}>
           <Each of={openFilePaths()} key={path => path}>
             {path => <OpenFileTabChip path={path()} compact={props.compact} />}
           </Each>
         </View>
       </Scroll>
+      <ContextMenuOverlay
+        open={tabContextPath() !== null}
+        position={tabContextPos()}
+        items={tabMenuItems()}
+        onClose={() => tabContextPath.set(null)}
+      />
     </If>
+  );
+}
+
+const editorRef = signal<EditorRef | null>(null);
+const editorCursor = signal<{ line: number; column: number; selectedLines: number } | null>(null);
+const findOpen = signal(false);
+const findQuery = signal("");
+const findCase = signal(false);
+const findWord = signal(false);
+const findRegex = signal(false);
+const findResult = signal<EditorSearchResult | null>(null);
+/** A line the editor should reveal once the file it belongs to is on screen. */
+const pendingRevealLine = signal<{ path: string; line: number } | null>(null);
+
+function openFind(): void {
+  const file = openFile();
+  if (!file || (file.kind !== "code" && editingContent() === null)) return;
+  findOpen.set(true);
+}
+
+function closeFind(): void {
+  findOpen.set(false);
+  findResult.set(null);
+  editorRef()?.focus();
+}
+
+function FindToggle(props: { label: string; a11y: string; active: boolean; tooltip: string; onPress: () => void }) {
+  return (
+    <View
+      role="checkbox"
+      accessibilityLabel={props.a11y}
+      accessibilityState={{ checked: props.active }}
+      tooltip={<TooltipBubble text={props.tooltip} />}
+      onPress={props.onPress}
+      style={{
+        minWidth: 22,
+        height: 20,
+        paddingHorizontal: 4,
+        borderRadius: 5,
+        borderWidth: 1,
+        borderColor: props.active ? palette().accentBorder : "transparent",
+        backgroundColor: props.active ? palette().accentSoft : "transparent",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ backgroundColor: props.active ? palette().accentSoft : palette().panelHover }}
+    >
+      <Text
+        style={{
+          color: props.active ? palette().accent : palette().textSecondary,
+          fontFamily: fontMono,
+          fontSize: textSize(11),
+          fontWeight: "600",
+          lineHeight: textLineHeight(11, 1.2),
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+/** The editor's find bar: the Editor's own `search`, with case / word / regex and match count. */
+function EditorFindBar() {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderBottomWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().canvasSubtle,
+      }}
+    >
+      <View style={{ flex: 1, minWidth: 0, maxWidth: 360 }}>
+        <InputBox
+          size="sm"
+          leadingIcon="search"
+          value={findQuery()}
+          placeholder={tr("files.findPlaceholder")}
+          accessibilityLabel="file-find-input"
+          autoFocus={true}
+          onChange={value => findQuery.set(value)}
+          onSubmit={() => editorRef()?.run("findNext")}
+          onKeyPress={event => {
+            if (event.key === "Escape") closeFind();
+          }}
+        />
+      </View>
+      <FindToggle label="Aa" a11y="file-find-case" tooltip={tr("files.matchCase")} active={findCase()} onPress={() => findCase.set(!findCase())} />
+      <FindToggle label="ab" a11y="file-find-word" tooltip={tr("files.matchWholeWord")} active={findWord()} onPress={() => findWord.set(!findWord())} />
+      <FindToggle label=".*" a11y="file-find-regex" tooltip={tr("files.useRegex")} active={findRegex()} onPress={() => findRegex.set(!findRegex())} />
+      <Text
+        style={{
+          minWidth: 64,
+          color: findResult()?.error ? palette().danger : palette().textMuted,
+          fontSize: textSize(11),
+          lineHeight: textLineHeight(11, 1.3),
+          fontVariant: ["tabular-nums"],
+          numberOfLines: 1,
+        }}
+      >
+        {findResult()?.error
+          ? tr("files.findInvalidRegex")
+          : !findQuery()
+            ? ""
+            : (findResult()?.count ?? 0) === 0
+              ? tr("files.findNoResults")
+              : tr("files.findCount", {
+                  current: (findResult()?.current ?? -1) + 1 || "?",
+                  total: formatCount(findResult()?.count ?? 0),
+                })}
+      </Text>
+      <IconButton icon="chevron-up" size="xs" iconSize={12} tooltip={tr("files.findPrevious")} accessibilityLabel="file-find-previous" onPress={() => editorRef()?.run("findPrevious")} />
+      <IconButton icon="chevron-down" size="xs" iconSize={12} tooltip={tr("files.findNext")} accessibilityLabel="file-find-next" onPress={() => editorRef()?.run("findNext")} />
+      <IconButton icon="close" size="xs" iconSize={11} tooltip={tr("common.close")} accessibilityLabel="file-find-close" onPress={closeFind} />
+    </View>
+  );
+}
+
+function lineEndingOf(text: string): "LF" | "CRLF" {
+  return text.includes("\r\n") ? "CRLF" : "LF";
+}
+
+/** Line and column, selection, language, line ending and encoding, as an editor's status bar shows them. */
+function EditorStatusBar() {
+  const item = (text: string) => (
+    <Text
+      style={{
+        color: palette().textMuted,
+        fontSize: textSize(11),
+        lineHeight: textLineHeight(11, 1.3),
+        fontVariant: ["tabular-nums"],
+        numberOfLines: 1,
+        flexShrink: 0,
+      }}
+    >
+      {text}
+    </Text>
+  );
+  return (
+    <View
+      style={{
+        height: 24,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 14,
+        paddingHorizontal: 12,
+        borderTopWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().canvasSubtle,
+      }}
+    >
+      <If when={openFile()?.large}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 1, minWidth: 0 }}>
+          <Icon name="warning" size={12} color={palette().warning} />
+          <Text
+            style={{
+              color: palette().warning,
+              fontSize: textSize(11),
+              lineHeight: textLineHeight(11, 1.3),
+              numberOfLines: 1,
+              flexShrink: 1,
+            }}
+          >
+            {tr("files.largeFileMode")}
+          </Text>
+        </View>
+      </If>
+      <View style={{ flex: 1 }} />
+      <If when={openFile() && isEditableKind(openFile()!.kind) ? editorCursor() : null}>
+        {cursor =>
+          item(
+            cursor().selectedLines > 1
+              ? tr("files.cursorWithLines", { line: cursor().line, column: cursor().column, lines: cursor().selectedLines })
+              : tr("files.cursor", { line: cursor().line, column: cursor().column }),
+          )
+        }
+      </If>
+      <If when={openFile() && isEditableKind(openFile()!.kind)}>
+        {item(lineEndingOf(openFile()?.content ?? ""))}
+        {item("UTF-8")}
+      </If>
+      {item(
+        openFile()?.kind === "diff"
+          ? "Diff"
+          : inferCodeLanguage(openFile()?.path ?? "") || openFile()?.language || openFile()?.kind || "",
+      )}
+    </View>
+  );
+}
+
+/** The image viewer's zoom: fitted to the pane, or a factor of the natural size. */
+const imageZoom = signal<"fit" | number>("fit");
+const imageNaturalSize = signal<{ width: number; height: number } | null>(null);
+
+function zoomImage(factor: number): void {
+  const current = imageZoom();
+  const base = current === "fit" ? 1 : current;
+  imageZoom.set(Math.min(8, Math.max(0.1, Math.round(base * factor * 100) / 100)));
+}
+
+/** Resolves a document-relative reference (`./img/a.png`, `../b.md`) against the document's folder. */
+function resolveDocumentPath(documentPath: string, reference: string): string {
+  const sep = pathSep(documentPath);
+  const cleaned = reference.split(/[?#]/)[0];
+  let decoded = cleaned;
+  try {
+    decoded = decodeURIComponent(cleaned);
+  } catch {
+    decoded = cleaned;
+  }
+  if (decoded.startsWith("/") || /^[A-Za-z]:[\\/]/.test(decoded)) return decoded;
+  const parts = dirnameOf(documentPath).split(/[\\/]/);
+  for (const segment of decoded.split(/[\\/]/)) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (parts.length > 1) parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+  return parts.join(sep);
+}
+
+function isExternalUrl(url: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[A-Za-z]:[\\/]/.test(url);
+}
+
+/** Workspace images referenced by a Markdown file, read once as data URLs. */
+const markdownImageCache = signal<Record<string, string | null>>({});
+const markdownImagePending = new Set<string>();
+
+function loadMarkdownImage(path: string): void {
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId || markdownImagePending.has(path) || path in markdownImageCache()) return;
+  markdownImagePending.add(path);
+  void readFileContent(workspaceId, path, "base64")
+    .then(encoded => {
+      const ext = extensionOf(path);
+      const mime = ext === "svg" ? "image/svg+xml" : ext === "jpg" ? "image/jpeg" : `image/${ext || "png"}`;
+      markdownImageCache.update(current => ({ ...current, [path]: encoded ? `data:${mime};base64,${encoded}` : null }));
+    })
+    .catch(() => markdownImageCache.update(current => ({ ...current, [path]: null })))
+    .finally(() => markdownImagePending.delete(path));
+}
+
+/**
+ * An image in a Markdown preview. Web and data URLs load as they are; a path
+ * inside the workspace is read through the host (`read_file_content`, base64),
+ * which works for a remote workspace too.
+ */
+function MarkdownImage(props: { image: TextViewImage; documentPath: string }) {
+  const external = isExternalUrl(props.image.src);
+  const path = external ? "" : resolveDocumentPath(props.documentPath, props.image.src);
+  if (path) loadMarkdownImage(path);
+  const source = () => (external ? props.image.src : markdownImageCache()[path] ?? "");
+  const width = typeof props.image.width === "number" ? props.image.width : undefined;
+  const height = typeof props.image.height === "number" ? props.image.height : undefined;
+  return (
+    <If
+      when={source()}
+      else={
+        <Text
+          style={{
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.4),
+            fontStyle: "italic",
+          }}
+        >
+          {markdownImageCache()[path] === null
+            ? tr("files.imageUnavailable", { name: props.image.alt || basename(path) })
+            : props.image.alt || basename(path)}
+        </Text>
+      }
+    >
+      <Image
+        src={source()}
+        accessibilityLabel={props.image.alt || basename(path || props.image.src)}
+        style={{
+          maxWidth: "100%",
+          ...(width ? { width } : {}),
+          ...(height ? { height } : {}),
+          objectFit: "contain",
+          borderRadius: radii.sm,
+        }}
+      />
+    </If>
+  );
+}
+
+/** A link in a Markdown preview: web links open outside, workspace files open here. */
+function openMarkdownLink(url: string, documentPath: string): void {
+  if (!url || url.startsWith("#")) return;
+  if (isExternalUrl(url)) {
+    if (/^https?:/i.test(url)) void openUrl(url).catch(() => undefined);
+    return;
+  }
+  void revealPath(resolveDocumentPath(documentPath, url));
+}
+
+/**
+ * The bars above the editor that need an answer: a dirty tab waiting to close,
+ * a save stopped by a newer disk copy, an open file that changed or went away
+ * on disk. Each is in-scene, so a remote controller can answer it too.
+ */
+function FileAttentionBars(props: { compact?: boolean }) {
+  return (
+    <View style={{ flexDirection: "column" }}>
+      <If when={confirmingCloseTab()}>
+        {path => (
+          <View style={{ paddingHorizontal: props.compact ? 8 : 12, paddingVertical: 6 }}>
+            <InlineConfirmBar
+              message={tr("files.closeDirtyConfirm", { name: basename(path()) })}
+              confirmLabel={tr("files.discardAndClose")}
+              cancelLabel={tr("common.cancel")}
+              danger={true}
+              onConfirm={() => closeTab(path())}
+              onCancel={cancelCloseTab}
+            />
+            <If when={openFile()?.path === path()}>
+              <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingTop: 6 }}>
+                <Button
+                  label={tr("files.saveAndClose")}
+                  accessibilityLabel="file-save-and-close"
+                  variant="primary"
+                  size="xs"
+                  loading={fileSaving()}
+                  onPress={() => void saveAndCloseTab(path())}
+                />
+              </View>
+            </If>
+          </View>
+        )}
+      </If>
+      <If when={saveConflict()}>
+        {path => (
+          <AttentionBar
+            tone="danger"
+            icon="warning"
+            message={tr("files.saveConflict", { name: basename(path()) })}
+            actions={[
+              {
+                label: tr("files.overwrite"),
+                a11y: "file-conflict-overwrite",
+                variant: "danger",
+                onPress: () => void saveEditedFile({ force: true }),
+              },
+              {
+                label: tr("files.reloadFromDisk"),
+                a11y: "file-conflict-reload",
+                variant: "secondary",
+                onPress: () => void reloadFromDisk(path()),
+              },
+              { label: tr("common.cancel"), a11y: "file-conflict-cancel", variant: "ghost", onPress: cancelSaveConflict },
+            ]}
+          />
+        )}
+      </If>
+      <If when={openFile() && !saveConflict() ? changedOnDisk()[openFile()!.path] : undefined}>
+        {state => (
+          <AttentionBar
+            tone="warning"
+            icon="warning"
+            message={
+              state() === "deleted"
+                ? tr("files.deletedOnDisk", { name: openFile()?.name ?? "" })
+                : tr("files.changedOnDisk", { name: openFile()?.name ?? "" })
+            }
+            actions={[
+              {
+                label: state() === "deleted" ? tr("files.closeTab") : tr("files.reloadFromDisk"),
+                a11y: "file-disk-reload",
+                variant: "secondary",
+                onPress: () => {
+                  const path = openFile()?.path;
+                  if (!path) return;
+                  if (state() === "deleted") closeTab(path);
+                  else void reloadFromDisk(path);
+                },
+              },
+              {
+                label: tr("files.keepMine"),
+                a11y: "file-disk-keep",
+                variant: "ghost",
+                onPress: () => {
+                  const path = openFile()?.path;
+                  if (path) void keepDraftOverDisk(path);
+                },
+              },
+            ]}
+          />
+        )}
+      </If>
+    </View>
+  );
+}
+
+interface AttentionAction {
+  label: string;
+  a11y: string;
+  variant: "primary" | "secondary" | "ghost" | "danger";
+  onPress: () => void;
+}
+
+function AttentionBar(props: {
+  tone: "warning" | "danger";
+  icon: IconName;
+  message: string;
+  actions: AttentionAction[];
+}) {
+  return (
+    <View
+      role="alert"
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderBottomWidth: 1,
+        borderColor: props.tone === "danger" ? palette().dangerBorder : palette().warningBorder,
+        backgroundColor: props.tone === "danger" ? palette().dangerSoft : palette().warningSoft,
+      }}
+    >
+      <Icon
+        name={props.icon}
+        size={14}
+        color={props.tone === "danger" ? palette().danger : palette().warning}
+      />
+      <Text
+        style={{
+          flex: 1,
+          minWidth: 160,
+          color: palette().text,
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.4),
+        }}
+      >
+        {props.message}
+      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        <Each of={props.actions} key={action => action.a11y}>
+          {action => (
+            <Button
+              label={action().label}
+              accessibilityLabel={action().a11y}
+              variant={action().variant}
+              size="xs"
+              onPress={action().onPress}
+            />
+          )}
+        </Each>
+      </View>
+    </View>
   );
 }
 
@@ -1639,6 +2465,8 @@ function PreviewBody(props: { compact?: boolean }) {
                     selectable={true}
                     styles={createMarkdownStyles({ compact: props.compact })}
                     codeBlockActions={createMarkdownCodeActions()}
+                    renderImage={image => <MarkdownImage image={image} documentPath={file().path} />}
+                    onLinkPress={event => openMarkdownLink(event.url, file().path)}
                   />
                 </View>
               </View>
@@ -1668,7 +2496,11 @@ function PreviewBody(props: { compact?: boolean }) {
             }
           >
             <View style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+              <If when={findOpen() && !props.compact}>
+                <EditorFindBar />
+              </If>
               <Editor
+                ref={ref => editorRef.set(ref)}
                 value={editingContent() ?? file().content}
                 language={
                   file().kind === "code"
@@ -1682,22 +2514,45 @@ function PreviewBody(props: { compact?: boolean }) {
                 folding={true}
                 indentGuides={true}
                 activeLine={editingContent() !== null}
+                highlighting={!file().large}
                 fontFamily={fontMono}
-                fontSize={textSize(12)}
-                lineHeight={textLineHeight(12, 1.55)}
+                fontSize={textSize(13)}
+                lineHeight={textLineHeight(13, 1.55)}
                 softWrap={file().kind !== "code"}
                 styles={createEditorStyles()}
+                search={
+                  findOpen() && findQuery()
+                    ? {
+                        query: findQuery(),
+                        caseSensitive: findCase(),
+                        wholeWord: findWord(),
+                        regex: findRegex(),
+                      }
+                    : null
+                }
                 accessibilityLabel="file-editor"
                 style={{ flex: 1, minHeight: 0, minWidth: 0 }}
                 onChange={event => {
                   if (editingContent() !== null) setEditingContent(event.value);
                 }}
+                onSelectionChange={event => {
+                  const primary = event.selections[event.selections.length - 1];
+                  if (!primary) return;
+                  const sameLine = primary.anchor.line === primary.head.line;
+                  editorCursor.set({
+                    line: primary.head.line + 1,
+                    column: primary.head.column + 1,
+                    selectedLines: sameLine ? 0 : Math.abs(primary.head.line - primary.anchor.line) + 1,
+                  });
+                }}
+                onSearchChange={event => findResult.set(event.result)}
               />
             </View>
           </If>
           <If when={file().kind === "image"}>
             <View
               style={{
+                position: "relative",
                 flex: 1,
                 minHeight: 0,
                 minWidth: 0,
@@ -1706,19 +2561,74 @@ function PreviewBody(props: { compact?: boolean }) {
                 justifyContent: "center",
               }}
             >
-              <Image
-                src={file().content}
-                accessibilityLabel={file().name}
-                style={{ flex: 1, width: "100%", objectFit: "contain" }}
-                onError={event =>
-                  fileNotice.set(
-                    tr("files.cannotShowImage", {
-                      name: file().name,
-                      error: localizeHostError(event.message),
-                    }),
-                  )
+              <View
+                style={{
+                  position: "absolute",
+                  top: 8,
+                  right: 8,
+                  zIndex: 2,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 2,
+                  padding: 2,
+                  borderRadius: radii.pill,
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  backgroundColor: palette().panelRaised,
+                  boxShadow: palette().shadowButton,
+                }}
+              >
+                <IconButton icon="minimize" size="xs" iconSize={12} tooltip={tr("files.zoomOut")} accessibilityLabel="image-zoom-out" onPress={() => zoomImage(1 / 1.25)} />
+                <Text
+                  style={{
+                    minWidth: 44,
+                    textAlign: "center",
+                    color: palette().textSecondary,
+                    fontSize: textSize(11),
+                    lineHeight: textLineHeight(11, 1.3),
+                    fontVariant: ["tabular-nums"],
+                  }}
+                >
+                  {imageZoom() === "fit" ? tr("files.zoomFit") : `${Math.round((imageZoom() as number) * 100)}%`}
+                </Text>
+                <IconButton icon="maximize" size="xs" iconSize={12} tooltip={tr("files.zoomIn")} accessibilityLabel="image-zoom-in" onPress={() => zoomImage(1.25)} />
+                <Button label={tr("files.zoomFit")} size="xs" variant={imageZoom() === "fit" ? "secondary" : "ghost"} accessibilityLabel="image-zoom-fit" onPress={() => imageZoom.set("fit")} />
+                <Button label="1:1" size="xs" variant={imageZoom() === 1 ? "secondary" : "ghost"} accessibilityLabel="image-zoom-actual" onPress={() => imageZoom.set(1)} />
+              </View>
+              <If
+                when={imageZoom() !== "fit" ? imageNaturalSize() : null}
+                else={
+                  <Image
+                    src={file().content}
+                    accessibilityLabel={file().name}
+                    style={{ flex: 1, width: "100%", objectFit: "contain" }}
+                    onLoad={event => imageNaturalSize.set(event.size)}
+                    onError={event =>
+                      fileNotice.set(
+                        tr("files.cannotShowImage", {
+                          name: file().name,
+                          error: localizeHostError(event.message),
+                        }),
+                      )
+                    }
+                  />
                 }
-              />
+              >
+                {size => (
+                  <Scroll horizontal={false} style={{ flex: 1, minHeight: 0, alignSelf: "stretch" }}>
+                    <Scroll horizontal style={{ minWidth: 0 }}>
+                      <Image
+                        src={file().content}
+                        accessibilityLabel={file().name}
+                        style={{
+                          width: size().width * (imageZoom() as number),
+                          height: size().height * (imageZoom() as number),
+                        }}
+                      />
+                    </Scroll>
+                  </Scroll>
+                )}
+              </If>
             </View>
           </If>
           <If when={file().kind === "video"}>
@@ -1750,12 +2660,16 @@ function PreviewBody(props: { compact?: boolean }) {
   );
 }
 
-function Preview(props: { compact?: boolean }) {
+function Preview(props: { compact?: boolean; stacked?: boolean }) {
+  // The aux pane splits explorer and preview vertically; stacked views show one at a time.
+  const splitBelowTree = () =>
+    Boolean(props.compact) && !props.stacked && explorerOpen() && !openFile();
+  const narrow = () => Boolean(props.compact) || Boolean(props.stacked);
   return (
     <View
       style={{
-        flex: props.compact && explorerOpen() && !openFile() ? 0 : 1,
-        flexShrink: props.compact && explorerOpen() && !openFile() ? 0 : 1,
+        flex: splitBelowTree() ? 0 : 1,
+        flexShrink: splitBelowTree() ? 0 : 1,
         minWidth: 0,
         minHeight: 0,
         overflow: "hidden",
@@ -1764,116 +2678,119 @@ function Preview(props: { compact?: boolean }) {
       }}
     >
       {/* Hide redundant empty preview bar in compact AuxPane until a file is open or explorer collapses */}
-      <If when={!props.compact || Boolean(openFile()) || !explorerOpen()}>
+      <If when={Boolean(props.stacked) || !props.compact || Boolean(openFile()) || !explorerOpen()}>
         <View
           style={{
-            minHeight: props.compact ? 36 : 44,
-            paddingHorizontal: props.compact ? 8 : 14,
-            paddingVertical: props.compact ? 4 : 6,
+            height: props.stacked ? WORKBENCH_TOUCH_MIN : props.compact ? 32 : 36,
+            paddingLeft: narrow() ? 4 : 10,
+            paddingRight: narrow() ? 6 : 10,
             flexDirection: "row",
-            flexWrap: "wrap",
             alignItems: "center",
-            gap: props.compact ? 6 : 8,
+            gap: narrow() ? 4 : 8,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvas,
           }}
         >
-          <IconButton
-            icon="panel-left"
-            size={props.compact ? "xs" : "sm"}
-            active={explorerOpen()}
-            tooltip={tr("files.toggleExplorer")}
-            accessibilityLabel="explorer-toggle"
-            onPress={() => explorerOpen.set(!explorerOpen())}
-          />
-          <If when={!props.compact}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexShrink: 0 }}>
-              <WorkbenchSwitcher />
-              <View
-                style={{
-                  width: 1,
-                  height: 16,
-                  backgroundColor: palette().borderSubtle,
-                }}
+          <If
+            when={Boolean(props.stacked)}
+            else={
+              <IconButton
+                icon="panel-left"
+                size={props.compact ? "xs" : "sm"}
+                active={explorerOpen()}
+                tooltip={tr("files.toggleExplorer")}
+                accessibilityLabel="explorer-toggle"
+                onPress={() => explorerOpen.set(!explorerOpen())}
               />
-            </View>
+            }
+          >
+            <StackBackButton
+              label={tr("files.explorer")}
+              accessibilityLabel="files-stack-back"
+              onPress={() => filesStackDetail.set(false)}
+            />
           </If>
-          <OpenFileTabStrip compact={props.compact} />
+          <If when={!narrow()}>
+            <WorkbenchSwitcher />
+            <ToolbarDivider />
+          </If>
+          <OpenFileTabStrip compact={narrow()} />
           <If when={openFile()}>
             {file => (
-              <View
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  flexWrap: "wrap",
-                  gap: 6,
-                  flexShrink: 0,
-                }}
-              >
-                <If when={editingContent() !== null}>
-                  <Badge label={tr("files.editing")} tone="warning" />
-                </If>
-                <If when={!props.compact && file().kind === "diff"}>
-                  <SegmentedTabs
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                <If when={!narrow() && file().kind === "diff"}>
+                  <IconButton
+                    icon={fileDiffLayout() === "split" ? "list" : "panel-right"}
                     size="sm"
-                    value={fileDiffLayout()}
-                    options={[
-                      { value: "unified", label: tr("files.diffUnified") },
-                      { value: "split", label: tr("files.diffSplit") },
-                    ]}
-                    onChange={next => fileDiffLayout.set(next)}
+                    active={fileDiffLayout() === "split"}
+                    tooltip={
+                      fileDiffLayout() === "split" ? tr("files.diffUnified") : tr("files.diffSplit")
+                    }
+                    accessibilityLabel="file-diff-layout"
+                    onPress={() =>
+                      fileDiffLayout.set(fileDiffLayout() === "split" ? "unified" : "split")
+                    }
                   />
                 </If>
                 <If when={file().kind === "diff"}>
                   <Button
                     label={tr("files.openFile")}
                     accessibilityLabel="file-view-source"
-                    variant="secondary"
-                    size={props.compact ? "xs" : "sm"}
+                    variant="ghost"
+                    size="xs"
                     onPress={() => void openFileAt(file().path)}
                   />
                 </If>
-                <If when={isEditableKind(file().kind) && editingContent() === null}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 0 }}>
-                    <If when={Boolean(gitChanges()[file().path])}>
-                      <Button
-                        label={tr("files.viewDiff")}
-                        accessibilityLabel="file-view-diff"
-                        variant="ghost"
-                        size={props.compact ? "xs" : "sm"}
-                        onPress={() => void openDiffReview(file().path)}
-                      />
-                    </If>
+                <If when={isEditableKind(file().kind) && !hasUnsavedEdit()}>
+                  <If when={Boolean(gitChanges()[file().path])}>
                     <Button
-                      label={tr("files.editFile")}
+                      label={tr("files.viewDiff")}
+                      accessibilityLabel="file-view-diff"
+                      variant="ghost"
+                      size="xs"
+                      onPress={() => void openDiffReview(file().path)}
+                    />
+                  </If>
+                  <If when={editingContent() === null}>
+                    <Button
+                      label={file().large ? tr("files.editAnyway") : tr("files.editFile")}
                       accessibilityLabel="file-edit"
-                      variant="secondary"
-                      size={props.compact ? "xs" : "sm"}
+                      variant="ghost"
+                      size="xs"
                       leadingIcon="edit"
                       onPress={() => beginEditFile()}
                     />
-                  </View>
-                </If>
-                <If when={isEditableKind(file().kind) && editingContent() !== null}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                  </If>
+                  <If when={editingContent() !== null && file().kind === "markdown"}>
                     <Button
-                      label={fileSaving() ? tr("common.saving") : tr("files.saveFile")}
-                      accessibilityLabel="file-save"
-                      variant="primary"
-                      size={props.compact ? "xs" : "sm"}
-                      loading={fileSaving()}
-                      onPress={() => void saveEditedFile()}
-                    />
-                    <Button
-                      label={tr("files.discardEdit")}
-                      accessibilityLabel="file-discard"
+                      label={tr("files.preview")}
+                      accessibilityLabel="file-preview"
                       variant="ghost"
-                      size={props.compact ? "xs" : "sm"}
-                      disabled={fileSaving()}
+                      size="xs"
+                      leadingIcon="eye"
                       onPress={() => cancelEditFile()}
                     />
-                  </View>
+                  </If>
+                </If>
+                <If when={isEditableKind(file().kind) && hasUnsavedEdit()}>
+                  <Button
+                    label={tr("files.discardEdit")}
+                    accessibilityLabel="file-discard"
+                    variant="ghost"
+                    size="xs"
+                    disabled={fileSaving()}
+                    onPress={() => cancelEditFile()}
+                  />
+                  <Button
+                    label={fileSaving() ? tr("common.saving") : tr("files.saveFile")}
+                    accessibilityLabel="file-save"
+                    variant="primary"
+                    size="xs"
+                    loading={fileSaving()}
+                    tooltip={tr("files.saveShortcut")}
+                    onPress={() => void saveEditedFile()}
+                  />
                 </If>
               </View>
             )}
@@ -1887,16 +2804,14 @@ function Preview(props: { compact?: boolean }) {
           <View
             style={{
               minHeight: 26,
-              paddingHorizontal: props.compact ? 8 : 14,
+              paddingHorizontal: narrow() ? 10 : 14,
               paddingVertical: 3,
               flexDirection: "row",
               alignItems: "center",
               gap: 8,
               borderBottomWidth: 1,
-              borderColor:
-                editingContent() !== null ? palette().warningBorder : palette().borderSubtle,
-              backgroundColor:
-                editingContent() !== null ? palette().warningSoft : palette().canvas,
+              borderColor: palette().borderSubtle,
+              backgroundColor: palette().canvas,
               ...paintTransition(MOTION_DURATION.fast),
             }}
           >
@@ -1960,17 +2875,17 @@ function Preview(props: { compact?: boolean }) {
               </View>
             </Scroll>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
-              <If when={editingContent() !== null}>
+              <If when={hasUnsavedEdit()}>
                 <Text
                   style={{
                     color: palette().warning,
-                    fontSize: textSize(10.5),
+                    fontSize: textSize(11),
                     fontWeight: "600",
-                    lineHeight: textLineHeight(10.5, 1.32),
+                    lineHeight: textLineHeight(11, 1.32),
                     flexShrink: 0,
                   }}
                 >
-                  {hasUnsavedEdit() ? tr("files.unsavedChanges") : tr("files.liveEdit")}
+                  {tr("files.unsavedChanges")}
                 </Text>
               </If>
               <If when={file().kind === "diff" && Boolean(file().content.trim())}>
@@ -2016,25 +2931,43 @@ function Preview(props: { compact?: boolean }) {
                   </Text>
                 )}
               </If>
-              <Badge
-                label={
-                  file().kind === "diff"
-                    ? "diff"
-                    : inferCodeLanguage(file().path) || file().language || file().kind
-                }
-                tone="neutral"
-              />
+              <Text
+                style={{
+                  color: palette().textMuted,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.32),
+                  flexShrink: 0,
+                }}
+              >
+                {file().kind === "diff"
+                  ? "diff"
+                  : inferCodeLanguage(file().path) || file().language || file().kind}
+              </Text>
             </View>
           </View>
         )}
       </If>
 
-      <PreviewBody compact={props.compact} />
+      <FileAttentionBars compact={narrow()} />
+      <PreviewBody compact={narrow()} />
+      <If when={openFile() && !narrow()}>
+        <EditorStatusBar />
+      </If>
     </View>
   );
 }
 
 export function FilesScene(props: { compact?: boolean } = {}) {
+  const sceneWidth = createSceneWidth();
+  // Opening another file (a tree row, a tab, a search hit, a changed file, the
+  // aux pane request) pushes the preview in the stacked layout.
+  effect(() => {
+    const path = openFile()?.path ?? null;
+    untracked(() => {
+      if (path && path !== lastStackedPath) filesStackDetail.set(true);
+      lastStackedPath = path;
+    });
+  });
   effect(() => {
     const root = activeWorkspaceRoot();
     if (!root || dirChildren()[root]) return;
@@ -2046,11 +2979,40 @@ export function FilesScene(props: { compact?: boolean } = {}) {
     editValue.set(edit?.value ?? "");
   });
 
+  // Live updates: the host watcher for this root, and the Git decoration poll
+  // while this scene is on screen.
   effect(() => {
+    if (!activeWorkspace()) return;
+    untracked(() => ensureWorkspaceWatch());
+  });
+  cleanup(holdFilesStatusPoll());
+
+  keymap.bind("mod+s", () => {
+    if (hasUnsavedEdit()) void saveEditedFile();
+  });
+  if (!props.compact) {
+    keymap.bind("mod+f", () => openFind());
+  }
+
+  // Each image opens fitted to the pane.
+  effect(() => {
+    void openFile()?.path;
+    untracked(() => {
+      imageZoom.set("fit");
+      imageNaturalSize.set(null);
+    });
+  });
+
+  // A search hit carries its line: reveal it once that file's editor is up.
+  effect(() => {
+    const target = pendingRevealLine();
     const file = openFile();
-    if (file?.path && !openFilePaths().includes(file.path)) {
-      openFilePaths.update(tabs => [...tabs, file.path]);
-    }
+    const ref = editorRef();
+    if (!target || !ref || file?.path !== target.path) return;
+    const line = Math.max(0, target.line - 1);
+    pendingRevealLine.set(null);
+    ref.setSelections([{ anchor: { line, column: 0 }, head: { line, column: 0 } }]);
+    ref.scrollToLine(line);
   });
 
   effect(() => {
@@ -2064,29 +3026,50 @@ export function FilesScene(props: { compact?: boolean } = {}) {
 
   return (
     <View
-      style={{
-        flex: 1,
-        minHeight: 0,
-        minWidth: 0,
-        flexDirection: props.compact ? "column" : "row",
-        backgroundColor: palette().canvas,
-      }}
+      onLayout={sceneWidth.onLayout}
+      style={{ flex: 1, minHeight: 0, minWidth: 0, flexDirection: "column" }}
     >
-      <If when={explorerOpen()}>
-        <FileTree compact={props.compact} width={explorerWidth()} />
+      <RemoteWorkspaceStatusBanner compact={props.compact} />
+      {/* Narrow: the list first; opening a file pushes the preview full width with a back control. */}
+      <If
+        when={sceneWidth.stacked()}
+        else={
+          <View
+            style={{
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+              flexDirection: props.compact ? "column" : "row",
+              backgroundColor: palette().canvas,
+            }}
+          >
+            <If when={explorerOpen()}>
+              <FileTree compact={props.compact} width={explorerWidth()} />
+            </If>
+            <If when={explorerOpen() && !props.compact}>
+              <SplitHandle
+                accessibilityLabel="Resize explorer pane"
+                onReset={() => explorerWidth.set(260)}
+                onDelta={dx =>
+                  explorerWidth.update(w =>
+                    Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, w + dx)),
+                  )
+                }
+              />
+            </If>
+            <Preview compact={props.compact} />
+          </View>
+        }
+      >
+        <View style={{ flex: 1, minHeight: 0, minWidth: 0, backgroundColor: palette().canvas }}>
+          <If
+            when={filesStackDetail() && Boolean(openFile())}
+            else={<FileTree compact={props.compact} width={explorerWidth()} stacked={true} />}
+          >
+            <Preview compact={props.compact} stacked={true} />
+          </If>
+        </View>
       </If>
-      <If when={explorerOpen() && !props.compact}>
-        <SplitHandle
-          accessibilityLabel="Resize explorer pane"
-          onReset={() => explorerWidth.set(260)}
-          onDelta={dx =>
-            explorerWidth.update(w =>
-              Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, w + dx)),
-            )
-          }
-        />
-      </If>
-      <Preview compact={props.compact} />
     </View>
   );
 }

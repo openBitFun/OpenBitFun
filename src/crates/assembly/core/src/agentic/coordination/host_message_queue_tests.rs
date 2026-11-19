@@ -1765,3 +1765,142 @@ async fn host_queue_reorder_rejects_invalid_targets_without_losing_work() {
         Some("only")
     );
 }
+
+/// The real scheduler as a `submit_user_message` target, without an Agent
+/// Runtime: steering and fresh turns go straight to its dialog port.
+struct SchedulerUserMessageTarget(Arc<DialogScheduler>);
+
+#[async_trait::async_trait]
+impl UserMessageSubmissionTarget for SchedulerUserMessageTarget {
+    fn active_turn_id(&self, session_id: &str) -> Option<String> {
+        self.0.active_dialog_turn_id(session_id)
+    }
+    fn is_busy(&self, session_id: &str) -> bool {
+        self.0.is_session_busy_or_queued(session_id)
+    }
+    async fn steer(&self, request: AgentDialogSteerRequest) -> PortResult<DialogSteerOutcome> {
+        AgentDialogTurnPort::steer_dialog_turn(self.0.as_ref(), request).await
+    }
+    async fn submit(&self, request: AgentDialogTurnRequest) -> PortResult<DialogSubmitOutcome> {
+        AgentDialogTurnPort::submit_dialog_turn(self.0.as_ref(), request).await
+    }
+    async fn enqueue(
+        &self,
+        request: AgentDialogTurnRequest,
+    ) -> PortResult<openbitfun_runtime_ports::DialogQueueSnapshot> {
+        self.0.admit_user_message(request).await
+    }
+}
+
+fn user_message(turn_id: &str, source: DialogTriggerSource) -> AgentDialogTurnRequest {
+    AgentDialogTurnRequest {
+        session_id: "host-queue-session".into(),
+        message: "written during the turn".into(),
+        output_schema: None,
+        original_message: None,
+        turn_id: Some(turn_id.into()),
+        execution: Default::default(),
+        agent_type: "Standard".into(),
+        workspace_path: None,
+        workspace_id: None,
+        remote_connection_id: None,
+        remote_ssh_host: None,
+        policy: DialogSubmissionPolicy::for_source(source),
+        reply_route: None,
+        prepended_reminders: Vec::new(),
+        attachments: Vec::new(),
+        metadata: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn user_message_queue_policy_lands_in_the_host_queue_for_every_source() {
+    let (scheduler, _, _root, epoch) = fixture().await;
+    let target = SchedulerUserMessageTarget(scheduler.clone());
+    for (turn_id, source) in [
+        ("desktop-queued", DialogTriggerSource::DesktopUi),
+        ("relay-queued", DialogTriggerSource::RemoteRelay),
+        ("bot-queued", DialogTriggerSource::Bot),
+    ] {
+        let outcome = submit_user_message(
+            &target,
+            openbitfun_config_contracts::ChatInputSendDuringTurn::Queue,
+            user_message(turn_id, source),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            UserMessageSubmitOutcome::Queued {
+                session_id: "host-queue-session".into(),
+                turn_id: turn_id.into(),
+            }
+        );
+    }
+    // Every client's queue panel sees the same rows, and they stay cancellable.
+    let listed = scheduler
+        .manage_host_queue(request(None, Action::List))
+        .await
+        .unwrap();
+    let ids: Vec<_> = listed
+        .items
+        .iter()
+        .map(|item| item.turn_id.as_str())
+        .collect();
+    assert_eq!(ids, ["desktop-queued", "relay-queued", "bot-queued"]);
+    assert!(scheduler
+        .active_turns
+        .matches_turn("host-queue-session", "active-turn"));
+    let cancelled = scheduler
+        .manage_host_queue(request(
+            Some(&epoch),
+            Action::Cancel {
+                turn_id: "bot-queued".into(),
+                operation_id: "cancel-bot".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    assert_eq!(cancelled.receipt.unwrap().status, Status::Cancelled);
+
+    // A retried admission is idempotent; a changed payload is refused.
+    let retried = scheduler
+        .admit_user_message(user_message(
+            "desktop-queued",
+            DialogTriggerSource::DesktopUi,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(retried.receipt.unwrap().status, Status::Queued);
+    let mut changed = user_message("desktop-queued", DialogTriggerSource::DesktopUi);
+    changed.message = "different".into();
+    assert!(scheduler
+        .admit_user_message(changed)
+        .await
+        .unwrap_err()
+        .message
+        .contains("idempotency_conflict"));
+}
+
+#[tokio::test]
+async fn user_message_immediate_policy_steers_the_running_turn() {
+    let (scheduler, _, _root, _) = fixture().await;
+    let target = SchedulerUserMessageTarget(scheduler.clone());
+    let outcome = submit_user_message(
+        &target,
+        openbitfun_config_contracts::ChatInputSendDuringTurn::Immediate,
+        user_message("steer-me", DialogTriggerSource::Bot),
+    )
+    .await
+    .unwrap();
+    let UserMessageSubmitOutcome::Steered { turn_id, .. } = outcome else {
+        panic!("expected steering, got {outcome:?}");
+    };
+    assert_eq!(turn_id, "active-turn");
+    // Steering is not a queue row.
+    let listed = scheduler
+        .manage_host_queue(request(None, Action::List))
+        .await
+        .unwrap();
+    assert!(listed.items.is_empty());
+}

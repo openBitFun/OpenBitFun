@@ -7,10 +7,20 @@
 
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
+import { tr } from "./i18n";
+import { setIdentityField, setIdentityName, type IdentityField } from "./identityDocument";
+
+export { setIdentityField, setIdentityName, yamlScalar, type IdentityField } from "./identityDocument";
 import { formatTimestamp } from "./format";
 import { peerScope } from "./peerState";
+import { listSessions, setActiveWorkspace, type SessionSummary } from "./api";
 import {
+  activeWorkspaceId,
+  closeWorkspace,
+  loadSessions,
+  loadWorkspaces,
   navigateScene,
+  selectSession,
   selectWorkspace,
   startQuickPromptInSession,
   workspaces,
@@ -297,7 +307,7 @@ export async function loadPersonaFile(
     personaDraft.set("");
     personaOriginal.set("");
     personaLoading.set(false);
-    personaError.set("Assistant workspace has no root path.");
+    personaError.set(tr("assistants.store.noRootPath"));
     return;
   }
 
@@ -317,7 +327,7 @@ export async function loadPersonaFile(
     if (isMissingFileError(error)) {
       personaDraft.set("");
       personaOriginal.set("");
-      personaNotice.set(`${fileName} does not exist yet — save to create it.`);
+      personaNotice.set(tr("assistants.store.fileMissing", { file: fileName }));
     } else {
       personaDraft.set("");
       personaOriginal.set("");
@@ -348,7 +358,7 @@ export async function savePersonaFile(): Promise<void> {
       content,
     });
     personaOriginal.set(content);
-    personaNotice.set(`Saved ${fileName}`);
+    personaNotice.set(tr("assistants.store.savedFile", { file: fileName }));
     if (fileName === "IDENTITY.md") {
       void loadAssistants(assistant.id);
     }
@@ -381,19 +391,36 @@ export async function createAssistant(customName = newAssistantNameInput()): Pro
     );
     const createdId = readString(created, ["id", "workspaceId", "workspace_id"]) || undefined;
     const createdRoot = readString(created, ["rootPath", "root_path"]);
-    const trimmedName = customName.trim();
+    const trimmedName = customName.replace(/\s+/g, " ").trim();
     if (trimmedName && createdId && createdRoot) {
+      // The host seeds IDENTITY.md with a frontmatter document (name, creature,
+      // vibe, avatar, emoji) and a body. Only the `name:` field is the user's
+      // choice here, so read the seeded file and rewrite that one field.
+      const identityPath = joinPersonaFilePath(createdRoot, "IDENTITY.md");
+      let seeded = "";
+      try {
+        const content = await invokeCommand<string>("read_file_content", {
+          workspaceId: createdId,
+          workspacePath: createdRoot,
+          filePath: identityPath,
+        });
+        seeded = typeof content === "string" ? content : "";
+      } catch (error) {
+        if (!isMissingFileError(error)) throw error;
+      }
       await invokeCommand<unknown>("write_file_content", {
         workspaceId: createdId,
         workspacePath: createdRoot,
-        filePath: joinPersonaFilePath(createdRoot, "IDENTITY.md"),
-        content: `# ${trimmedName}\n\nPersonal AI companion workspace.\n`,
+        filePath: identityPath,
+        content: setIdentityName(seeded, trimmedName),
       });
     }
     newAssistantModalOpen.set(false);
     newAssistantNameInput.set("");
     await loadAssistants(createdId);
-    assistantsNotice.set("Created new assistant workspace.");
+    assistantsNotice.set(tr("assistants.store.created"));
+    // The desktop opens the new assistant's page, so its identity is set next.
+    if (createdId) openAssistantConfig(createdId);
   } catch (error) {
     assistantsError.set(errorMessage(error));
   } finally {
@@ -412,7 +439,7 @@ export async function setPrimaryAssistant(workspaceId: string): Promise<void> {
     });
     primaryAssistantId.set(workspaceId);
     await loadAssistants(workspaceId);
-    assistantsNotice.set("Updated primary assistant.");
+    assistantsNotice.set(tr("assistants.store.primaryUpdated"));
   } catch (error) {
     assistantsError.set(errorMessage(error));
   } finally {
@@ -445,14 +472,14 @@ export async function executeAssistantConfirm(): Promise<void> {
       if (current && current.id === pending.id) {
         await loadPersonaFile(current, activePersonaFile());
       }
-      assistantsNotice.set("Assistant workspace reset to defaults.");
+      assistantsNotice.set(tr("assistants.store.workspaceReset"));
     } else {
       await invokeCommand<unknown>("delete_assistant_workspace", {
         workspaceId: pending.id,
       });
       confirmingAssistantAction.set(null);
       await loadAssistants();
-      assistantsNotice.set("Deleted assistant workspace.");
+      assistantsNotice.set(tr("assistants.store.deleted"));
     }
   } catch (error) {
     assistantsError.set(errorMessage(error));
@@ -474,7 +501,7 @@ export async function resetSelectedPersonaFiles(): Promise<void> {
     });
     confirmingPersonaReset.set(false);
     await loadPersonaFile(assistant, activePersonaFile());
-    personaNotice.set("Persona files reset to defaults.");
+    personaNotice.set(tr("assistants.store.personaReset"));
     void loadAssistants(assistant.id);
   } catch (error) {
     personaError.set(errorMessage(error));
@@ -505,4 +532,305 @@ export async function sendQuickPromptToAssistant(): Promise<void> {
   } finally {
     assistantQuickSending.set(false);
   }
+}
+
+/** Assistant workspaces the host currently has open (the desktop's Open / Close). */
+export const assistantWorkspaceBusy = signal<string | null>(null);
+
+export function isAssistantWorkspaceOpen(id: string): boolean {
+  return workspaces().some(item => item.id === id);
+}
+
+/** Opens the assistant's workspace on the host and makes it the active one. */
+export async function openAssistantWorkspace(assistant: AssistantWorkspaceView): Promise<void> {
+  if (assistantWorkspaceBusy()) return;
+  assistantWorkspaceBusy.set(assistant.id);
+  assistantsError.set("");
+  try {
+    await setActiveWorkspace(assistant.id);
+    await loadWorkspaces();
+    ensureAssistantInWorkspaces(assistant);
+    selectWorkspace(assistant.id, { syncHost: false });
+  } catch (error) {
+    assistantsError.set(tr("assistants.openFailed", { error: errorMessage(error) }));
+  } finally {
+    assistantWorkspaceBusy.set(null);
+  }
+}
+
+/** Closes the assistant's workspace on the host; the assistant itself stays. */
+export async function closeAssistantWorkspace(assistant: AssistantWorkspaceView): Promise<void> {
+  if (assistantWorkspaceBusy()) return;
+  assistantWorkspaceBusy.set(assistant.id);
+  assistantsError.set("");
+  try {
+    await closeWorkspace(assistant.id);
+  } catch (error) {
+    assistantsError.set(tr("assistants.closeFailed", { error: errorMessage(error) }));
+  } finally {
+    assistantWorkspaceBusy.set(null);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Gallery and configuration page (the desktop's NurseryGallery and
+// AssistantConfigPage): the scene opens on the gallery, a card opens one
+// assistant's page, and the page edits the avatar and name in IDENTITY.md,
+// opens the three persona documents and lists the assistant's sessions.
+// ---------------------------------------------------------------------------
+
+export type AssistantView = "gallery" | "config";
+export const assistantView = signal<AssistantView>("gallery");
+
+/** The desktop's official avatar preset ids (artwork drawn by `AssistantAvatar`). */
+export const ASSISTANT_AVATAR_PRESETS = ["joystick-ink-mint"] as const;
+
+/** The emoji avatars the desktop's picker offers, in its order. */
+export const ASSISTANT_EMOJI_PRESETS = [
+  "🧭",
+  "💼",
+  "🧠",
+  "🛠️",
+  "🔎",
+  "✍️",
+  "📚",
+  "🎨",
+  "📊",
+  "🧪",
+  "🚀",
+  "🤖",
+  "🧑‍💻",
+  "🗂️",
+  "💡",
+  "🛡️",
+] as const;
+
+export type IdentitySaveStatus = "idle" | "saving" | "saved" | "error";
+export const identitySaveStatus = signal<IdentitySaveStatus>("idle");
+export const identitySaveError = signal("");
+export const editingAssistantName = signal(false);
+export const assistantNameDraft = signal("");
+export const avatarPickerOpen = signal(false);
+export const avatarCustomInput = signal("");
+/** The persona document open in the editor dialog, or `null` while it is closed. */
+export const personaEditorFile = signal<PersonaFileName | null>(null);
+
+export type AssistantSessionsState = "idle" | "loading" | "ready" | "error";
+export const assistantSessions = signal<SessionSummary[]>([]);
+export const assistantSessionsState = signal<AssistantSessionsState>("idle");
+export const assistantSessionsError = signal("");
+let sessionsTicket = 0;
+let identityWriteQueue: Promise<void> = Promise.resolve();
+
+/** Opens one assistant's configuration page. */
+export function openAssistantConfig(workspaceId: string): void {
+  selectAssistant(workspaceId);
+  editingAssistantName.set(false);
+  avatarPickerOpen.set(false);
+  personaEditorFile.set(null);
+  identitySaveStatus.set("idle");
+  identitySaveError.set("");
+  assistantView.set("config");
+}
+
+/** Returns to the gallery; the selection stays so the page reopens where it was. */
+export function openAssistantGallery(): void {
+  editingAssistantName.set(false);
+  avatarPickerOpen.set(false);
+  personaEditorFile.set(null);
+  confirmingAssistantAction.set(null);
+  assistantView.set("gallery");
+}
+
+/** The assistants in gallery order: the primary first, the rest as the host listed them. */
+export function galleryAssistants(): AssistantWorkspaceView[] {
+  const primary = primaryAssistantId();
+  const list = assistants();
+  return [...list.filter(item => item.id === primary), ...list.filter(item => item.id !== primary)];
+}
+
+/**
+ * Writes identity fields into the assistant's IDENTITY.md: the stored document
+ * is read again right before the write and only the given fields change, so an
+ * edit made elsewhere since the page opened survives. Writes run one after
+ * another in the order they were asked for.
+ */
+export function saveIdentityFields(
+  assistant: AssistantWorkspaceView,
+  patch: Partial<Record<IdentityField, string>>,
+): Promise<void> {
+  // The page shows the new value at once; the host's list catches up on reload.
+  assistants.update(list =>
+    list.map(item =>
+      item.id === assistant.id
+        ? {
+            ...item,
+            name: patch.name !== undefined && patch.name.trim() ? patch.name.trim() : item.name,
+            identity: {
+              ...item.identity,
+              ...(patch.name !== undefined ? { name: patch.name.trim() || item.identity.name } : {}),
+              ...(patch.avatar !== undefined ? { avatar: patch.avatar } : {}),
+              ...(patch.emoji !== undefined ? { emoji: patch.emoji } : {}),
+            },
+          }
+        : item,
+    ),
+  );
+  const run = identityWriteQueue.then(async () => {
+    if (!assistant.rootPath) {
+      identitySaveStatus.set("error");
+      identitySaveError.set(tr("assistants.store.noRootPath"));
+      return;
+    }
+    identitySaveStatus.set("saving");
+    identitySaveError.set("");
+    const filePath = joinPersonaFilePath(assistant.rootPath, "IDENTITY.md");
+    try {
+      let current = "";
+      try {
+        const content = await invokeCommand<string>("read_file_content", {
+          workspaceId: assistant.id,
+          workspacePath: assistant.rootPath,
+          filePath,
+        });
+        current = typeof content === "string" ? content : "";
+      } catch (error) {
+        if (!isMissingFileError(error)) throw error;
+      }
+      let next = current;
+      for (const field of ["name", "avatar", "emoji"] as const) {
+        const value = patch[field];
+        if (value !== undefined) next = setIdentityField(next, field, value);
+      }
+      if (next !== current) {
+        await invokeCommand<unknown>("write_file_content", {
+          workspaceId: assistant.id,
+          workspacePath: assistant.rootPath,
+          filePath,
+          content: next,
+        });
+      }
+      identitySaveStatus.set("saved");
+      // The persona editor shows IDENTITY.md too; keep it in step when it is clean.
+      if (activePersonaFile() === "IDENTITY.md" && !personaDirty() && selectedAssistantId() === assistant.id) {
+        personaDraft.set(next);
+        personaOriginal.set(next);
+      }
+    } catch (error) {
+      identitySaveStatus.set("error");
+      identitySaveError.set(errorMessage(error));
+      void loadAssistants(assistant.id);
+    }
+  });
+  identityWriteQueue = run.catch(() => undefined);
+  return run;
+}
+
+export function beginAssistantNameEdit(): void {
+  const assistant = selectedAssistant();
+  if (!assistant) return;
+  assistantNameDraft.set(assistant.identity.name || assistant.name);
+  editingAssistantName.set(true);
+}
+
+export function cancelAssistantNameEdit(): void {
+  editingAssistantName.set(false);
+}
+
+/** Saves the typed name (Return or leaving the field); an unchanged name writes nothing. */
+export async function commitAssistantNameEdit(): Promise<void> {
+  if (!editingAssistantName()) return;
+  editingAssistantName.set(false);
+  const assistant = selectedAssistant();
+  if (!assistant) return;
+  const next = assistantNameDraft().replace(/\s+/g, " ").trim();
+  if (next === (assistant.identity.name || assistant.name)) return;
+  await saveIdentityFields(assistant, { name: next });
+}
+
+export function toggleAvatarPicker(): void {
+  const assistant = selectedAssistant();
+  avatarCustomInput.set(firstGrapheme(assistant?.identity.emoji ?? ""));
+  avatarPickerOpen.update(open => !open);
+}
+
+/** The official artwork: sets `avatar` to the preset id and keeps the emoji. */
+export async function chooseAvatarPreset(presetId: string): Promise<void> {
+  const assistant = selectedAssistant();
+  if (!assistant) return;
+  avatarPickerOpen.set(false);
+  await saveIdentityFields(assistant, { avatar: presetId });
+}
+
+/** An emoji avatar: clears the preset so the emoji is what shows. */
+export async function chooseAvatarEmoji(emoji: string): Promise<void> {
+  const assistant = selectedAssistant();
+  const value = firstGrapheme(emoji);
+  if (!assistant || !value) return;
+  avatarPickerOpen.set(false);
+  avatarCustomInput.set(value);
+  await saveIdentityFields(assistant, { avatar: "", emoji: value });
+}
+
+export function submitCustomAvatar(): Promise<void> {
+  return chooseAvatarEmoji(avatarCustomInput());
+}
+
+function firstGrapheme(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const Segmenter = (Intl as unknown as {
+    Segmenter?: new (
+      locale?: string,
+      options?: { granularity: "grapheme" },
+    ) => { segment: (text: string) => Iterable<{ segment: string }> };
+  }).Segmenter;
+  if (Segmenter) {
+    const first = new Segmenter(undefined, { granularity: "grapheme" }).segment(trimmed)[Symbol.iterator]().next();
+    return first.done ? "" : first.value.segment;
+  }
+  return Array.from(trimmed)[0] ?? "";
+}
+
+/** Opens one persona document in the editor dialog. */
+export function openPersonaEditor(fileName: PersonaFileName): void {
+  selectPersonaFile(fileName);
+  personaPreview.set(false);
+  personaEditorFile.set(fileName);
+  personaReloadToken.update(value => value + 1);
+}
+
+export function closePersonaEditor(): void {
+  personaEditorFile.set(null);
+  confirmingPersonaReset.set(false);
+}
+
+/** Reads the assistant workspace's own sessions, newest first, as the desktop's page lists them. */
+export async function loadAssistantSessions(assistant: AssistantWorkspaceView): Promise<void> {
+  const expectedPeerId = peerScope()?.deviceId ?? null;
+  const ticket = ++sessionsTicket;
+  assistantSessionsState.set("loading");
+  assistantSessionsError.set("");
+  try {
+    const page = await listSessions(assistant.id, 30);
+    if (ticket !== sessionsTicket || (peerScope()?.deviceId ?? null) !== expectedPeerId) return;
+    assistantSessions.set(page.sessions ?? []);
+    assistantSessionsState.set("ready");
+  } catch (error) {
+    if (ticket !== sessionsTicket) return;
+    assistantSessions.set([]);
+    assistantSessionsError.set(errorMessage(error));
+    assistantSessionsState.set("error");
+  }
+}
+
+/** Opens one of the assistant's sessions in the Sessions scene. */
+export async function openAssistantSession(assistant: AssistantWorkspaceView, sessionId: string): Promise<void> {
+  ensureAssistantInWorkspaces(assistant);
+  if (activeWorkspaceId() !== assistant.id) {
+    selectWorkspace(assistant.id);
+    await loadSessions();
+  }
+  navigateScene("sessions");
+  selectSession(sessionId);
 }

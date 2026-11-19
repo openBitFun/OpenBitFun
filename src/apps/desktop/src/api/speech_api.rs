@@ -1,6 +1,8 @@
 //! Desktop adapter for local speech input.
 
 use crate::api::AppState;
+use crate::host::HostHandle;
+use crate::host::State;
 use openbitfun_core_types::speech::{
     SpeechAppendAudioChunkRequest, SpeechAppendAudioChunkResponse,
     SpeechAppendRealtimeAudioRequest, SpeechCancelInputSessionRequest,
@@ -16,7 +18,6 @@ use openbitfun_events::{
     SPEECH_MODEL_PROGRESS_EVENT, SPEECH_MODEL_STATUS_CHANGED_EVENT, SPEECH_REALTIME_EVENT,
 };
 use openbitfun_services_integrations::speech::VolcengineRealtimeSpeechConfig;
-use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 pub async fn speech_list_models(
@@ -32,7 +33,7 @@ pub async fn speech_list_models(
 #[tauri::command]
 pub async fn speech_download_model(
     state: State<'_, AppState>,
-    app: AppHandle,
+    app: HostHandle,
     request: SpeechDownloadModelRequest,
 ) -> Result<SpeechModelStatus, String> {
     let progress_app = app.clone();
@@ -52,7 +53,7 @@ pub async fn speech_download_model(
 #[tauri::command]
 pub async fn speech_cancel_model_download(
     state: State<'_, AppState>,
-    app: AppHandle,
+    app: HostHandle,
     request: SpeechCancelModelDownloadRequest,
 ) -> Result<SpeechModelStatus, String> {
     let status = state
@@ -67,7 +68,7 @@ pub async fn speech_cancel_model_download(
 #[tauri::command]
 pub async fn speech_delete_model(
     state: State<'_, AppState>,
-    app: AppHandle,
+    app: HostHandle,
     request: SpeechDeleteModelRequest,
 ) -> Result<SpeechModelStatus, String> {
     let status = state
@@ -82,7 +83,7 @@ pub async fn speech_delete_model(
 #[tauri::command]
 pub async fn speech_verify_model(
     state: State<'_, AppState>,
-    app: AppHandle,
+    app: HostHandle,
     request: SpeechVerifyModelRequest,
 ) -> Result<SpeechModelStatus, String> {
     let status = state
@@ -145,7 +146,7 @@ pub async fn speech_cancel_input_session(
 #[tauri::command]
 pub async fn speech_start_realtime_session(
     state: State<'_, AppState>,
-    app: AppHandle,
+    app: HostHandle,
     request: SpeechStartRealtimeSessionRequest,
 ) -> Result<SpeechRealtimeSession, String> {
     let global_config: openbitfun_core::service::config::GlobalConfig = state
@@ -325,7 +326,7 @@ pub async fn speech_save_realtime_config(
     })
 }
 
-fn emit_status(app: &AppHandle, status: &SpeechModelStatus) {
+fn emit_status(app: &HostHandle, status: &SpeechModelStatus) {
     if let Err(error) = app.emit(SPEECH_MODEL_STATUS_CHANGED_EVENT, status) {
         log::warn!("Failed to emit speech model status event: {error}");
     }

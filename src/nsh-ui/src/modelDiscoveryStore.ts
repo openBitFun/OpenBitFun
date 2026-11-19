@@ -1,17 +1,20 @@
-// AI model URL resolution, remote `/models` discovery, transient config
-// connection testing, and optional subscription account quota loading.
+// The model editor's request-URL preview (asked of the host), remote `/models`
+// discovery, transient config connection testing, and optional subscription
+// account quota loading. The host derives request URLs and clamps output limits;
+// nothing here keeps a copy of those rules.
 
-import { signal } from "nsh";
-import { setConfig } from "./api";
+import { Clipboard, openUrl, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
+import { tr } from "./i18n";
 import {
   modelCatalog,
   modelDraft,
   modelSettingsNotice,
-  storedModels,
+  upsertModels,
   type ModelDraft,
   type StoredModel,
 } from "./modelSettingsStore";
+import { isMissingCommand } from "./settingsMutations";
 import { runStep } from "./state";
 
 export interface RemoteModelRouting {
@@ -67,9 +70,38 @@ export interface SubscriptionAccountSummary {
   connected: boolean;
   expires_at?: number | null;
   reauthentication_required?: boolean;
+  vault_unavailable?: boolean;
   suggested_format?: string;
+  /** Authorization methods the provider supports now (`browser`, `device`). */
+  login_methods?: string[];
+  /**
+   * The host's account slot id (`<provider>` or `<provider>-account-<uuid>`),
+   * the only id `get_subscription_account_quota` accepts. Filled from
+   * `list_subscription_account_instances`; an older host without that command
+   * has one slot per provider, whose id is the provider key.
+   */
+  account_id: string;
+  is_default?: boolean;
+  enabled?: boolean;
 }
 
+/** `SubscriptionQuotaWindow` / `SubscriptionQuotaMeter` (core-types `subscription.rs`). */
+export interface SubscriptionQuotaMeter {
+  id: string;
+  display_name?: string | null;
+  duration_seconds?: number | null;
+  used?: number | null;
+  limit?: number | null;
+  remaining?: number | null;
+  unit?: string | null;
+  used_percent?: number | null;
+  /** Unix seconds. */
+  resets_at?: number | null;
+  secondary?: boolean;
+  unlimited?: boolean;
+}
+
+/** The legacy single-window view an older fixture or host may still send. */
 export interface SubscriptionQuotaWindow {
   label?: string;
   used_percent?: number;
@@ -77,6 +109,7 @@ export interface SubscriptionQuotaWindow {
   reset_at?: string | number;
 }
 
+/** `SubscriptionQuotaSnapshot`: `windows` plus the optional `display.meters` view. */
 export interface SubscriptionQuotaSummary {
   account_id: string;
   provider: string;
@@ -84,61 +117,148 @@ export interface SubscriptionQuotaSummary {
   plan?: string | null;
   allowed?: boolean | null;
   has_credits?: boolean | null;
+  valid_until?: number | null;
+  windows?: SubscriptionQuotaMeter[];
+  details?: {
+    version?: number;
+    buckets?: Array<{ id: string; display_name?: string | null; windows?: SubscriptionQuotaMeter[] }>;
+  } | null;
+  display?: { version?: number; meters?: SubscriptionQuotaMeter[] } | null;
+  error?: string | null;
   primary_window?: SubscriptionQuotaWindow | null;
   secondary_window?: SubscriptionQuotaWindow | null;
   [key: string]: unknown;
 }
 
-export function isResponsesProvider(provider?: string): boolean {
-  const normalized = (provider ?? "").trim().toLowerCase();
-  return normalized === "response" || normalized === "responses";
+/** One drawn meter: a label, the percent left (when the host reported usage) and the reset. */
+export interface QuotaMeterRow {
+  id: string;
+  /** Vendor display name, or `""` when the row is named by its period alone. */
+  name: string;
+  durationSeconds?: number;
+  remainingPercent: number | null;
+  usedPercent: number | null;
+  /** Unix seconds, or a legacy string the host sent verbatim. */
+  resetsAt: number | string | null;
+  secondary: boolean;
+  unlimited: boolean;
 }
 
-/** Strip `/v1beta/models/...` or `/models/...` suffix from a Gemini URL. */
-export function geminiBaseUrl(url: string): string {
-  return url
-    .replace(/\/v1beta(?:\/models(?:\/[^/?#]*(?::(?:stream)?[Gg]enerateContent)?(?:\?[^]*)?)?)?$/, "")
-    .replace(/\/models(?:\/[^/?#]*(?::(?:stream)?[Gg]enerateContent)?(?:\?[^]*)?)?$/, "")
-    .replace(/\/+$/, "");
+function finiteQuota(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 /**
- * Compute the stored request URL from a base URL and provider format.
- * Trailing `#` forces the exact URL without appending resource paths.
+ * The meters the desktop's `quotaMeters` draws for one snapshot: the `display`
+ * view when the host sent version 1 of it, otherwise the `windows` plus the
+ * per-bucket windows of `details` v1. A snapshot from an older surface's
+ * fixture that only has `primary_window` / `secondary_window` still reads.
  */
-export function resolveRequestUrl(baseUrl: string, provider: string, _modelName = ""): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  if (!trimmed) return "";
-  if (trimmed.endsWith("#")) {
-    return trimmed.slice(0, -1).replace(/\/+$/, "");
+export function quotaMeters(snapshot: SubscriptionQuotaSummary | null | undefined): QuotaMeterRow[] {
+  if (!snapshot || snapshot.state === "unsupported") return [];
+  const toRow = (meter: SubscriptionQuotaMeter, nameOverride?: string | null): QuotaMeterRow => {
+    let used = finiteQuota(meter.used_percent);
+    if (used === undefined) {
+      const usedAmount = finiteQuota(meter.used);
+      const limit = finiteQuota(meter.limit);
+      if (usedAmount !== undefined && limit !== undefined && limit > 0) used = (usedAmount / limit) * 100;
+    }
+    const remaining = meter.unlimited || used === undefined ? null : Math.max(0, Math.min(100, 100 - used));
+    return {
+      id: meter.id,
+      name: (nameOverride ?? meter.display_name ?? "").trim(),
+      durationSeconds: finiteQuota(meter.duration_seconds),
+      remainingPercent: remaining === null ? null : Math.round(remaining),
+      usedPercent: used === undefined ? null : Math.round(used),
+      resetsAt: finiteQuota(meter.resets_at) ?? null,
+      secondary: Boolean(meter.secondary),
+      unlimited: Boolean(meter.unlimited),
+    };
+  };
+  if (snapshot.display && typeof snapshot.display === "object") {
+    return snapshot.display.version === 1 && Array.isArray(snapshot.display.meters)
+      ? snapshot.display.meters.map(meter => toRow(meter))
+      : [];
   }
-  const normalized = provider.trim().toLowerCase();
-  if (normalized === "openai") {
-    return trimmed.endsWith("chat/completions") ? trimmed : `${trimmed}/chat/completions`;
+  const rows: QuotaMeterRow[] = Array.isArray(snapshot.windows)
+    ? snapshot.windows.map(meter => toRow(meter))
+    : [];
+  if (snapshot.details?.version === 1) {
+    for (const bucket of snapshot.details.buckets ?? []) {
+      for (const window of bucket.windows ?? []) {
+        rows.push(toRow({ ...window, id: `${bucket.id}:${window.id}` }, bucket.display_name ?? null));
+      }
+    }
   }
-  if (isResponsesProvider(normalized)) {
-    return trimmed.endsWith("responses") ? trimmed : `${trimmed}/responses`;
+  if (rows.length === 0) {
+    const legacy = (win: SubscriptionQuotaWindow | null | undefined, id: string): QuotaMeterRow | null => {
+      if (!win) return null;
+      const remaining =
+        finiteQuota(win.remaining_percent) ??
+        (finiteQuota(win.used_percent) !== undefined ? 100 - (win.used_percent as number) : undefined);
+      return {
+        id,
+        name: (win.label ?? "").trim(),
+        remainingPercent: remaining === undefined ? null : Math.round(Math.max(0, Math.min(100, remaining))),
+        usedPercent: finiteQuota(win.used_percent) ?? null,
+        resetsAt: win.reset_at ?? null,
+        secondary: false,
+        unlimited: false,
+      };
+    };
+    for (const row of [legacy(snapshot.primary_window, "primary"), legacy(snapshot.secondary_window, "secondary")]) {
+      if (row) rows.push(row);
+    }
   }
-  if (normalized === "anthropic") {
-    if (trimmed.endsWith("/messages")) return trimmed;
-    return trimmed.endsWith("/v1") ? `${trimmed}/messages` : `${trimmed}/v1/messages`;
-  }
-  if (normalized === "gemini") {
-    return geminiBaseUrl(trimmed);
-  }
-  return trimmed;
+  return rows;
 }
 
-/** Build a human-readable live request URL preview for display in the editor. */
+/**
+ * Previews answered by the host's `resolve_ai_model_request_url`, by input. The
+ * rule that turns a base URL and format into a request URL lives with the host
+ * that stores it; this cache keeps the editor from asking twice for one input.
+ */
+const requestUrlPreviews = signal<Record<string, string>>({});
+const pendingPreviews = new Set<string>();
+const PREVIEW_CACHE_LIMIT = 64;
+
+function rememberPreview(key: string, value: string): void {
+  pendingPreviews.delete(key);
+  requestUrlPreviews.update(current => {
+    const keys = Object.keys(current);
+    const next = keys.length >= PREVIEW_CACHE_LIMIT ? {} : { ...current };
+    next[key] = value;
+    return next;
+  });
+}
+
+/**
+ * The request URL the editor shows for the form as typed. Reactive: it answers
+ * from the cache and asks the host once per new input. A host without the
+ * command says so instead of showing a URL this surface guessed.
+ */
 export function previewRequestUrl(baseUrl: string, provider: string, modelName?: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  if (!trimmed) return "";
-  if (provider.trim().toLowerCase() === "gemini" && !trimmed.endsWith("#")) {
-    const model = modelName?.trim();
-    const encoded = model ? encodeURIComponent(model) : "{model}";
-    return `${geminiBaseUrl(trimmed)}/v1beta/models/${encoded}:streamGenerateContent?alt=sse`;
+  const base = baseUrl.trim();
+  if (!base) return "";
+  const key = JSON.stringify([base, provider.trim(), (modelName ?? "").trim()]);
+  const known = requestUrlPreviews()[key];
+  if (known !== undefined) return known;
+  if (!pendingPreviews.has(key)) {
+    pendingPreviews.add(key);
+    void invokeCommand<{ previewUrl?: string }>("resolve_ai_model_request_url", {
+      baseUrl: base,
+      provider,
+      modelName: modelName ?? "",
+    })
+      .then(answer => rememberPreview(key, typeof answer?.previewUrl === "string" ? answer.previewUrl : ""))
+      .catch(error =>
+        rememberPreview(
+          key,
+          isMissingCommand(error, "resolve_ai_model_request_url") ? tr("settings.models.previewUnavailable") : "",
+        ),
+      );
   }
-  return resolveRequestUrl(baseUrl, provider, modelName);
+  return "";
 }
 
 interface DiscoveryOperation {
@@ -214,13 +334,13 @@ export function buildTransientModelConfig(
   const name = draft.name.trim() || modelName;
   const parsedContext = Number(draft.contextWindow.trim());
   const parsedMaxTokens = Number(draft.maxTokens.trim());
+  // No `request_url`: the host derives it from the base URL and format.
   return {
     id: `draft_${Date.now().toString(36)}`,
     name,
     provider,
     model_name: modelName,
     base_url: baseUrl,
-    request_url: resolveRequestUrl(baseUrl, provider, modelName),
     api_key: draft.apiKey.trim(),
     context_window: Number.isFinite(parsedContext) && parsedContext > 0 ? Math.trunc(parsedContext) : null,
     max_tokens: Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? Math.trunc(parsedMaxTokens) : null,
@@ -301,11 +421,9 @@ export async function detectModelsForConfig(
   }
 }
 
-function safeMaxTokens(contextWindow?: number, rawOutput?: number): number | undefined {
-  if (!rawOutput || rawOutput <= 0) return undefined;
-  if (!contextWindow || contextWindow <= 0) return rawOutput;
-  const ceiling = Math.floor((contextWindow * 40) / 100);
-  return ceiling > 0 ? Math.min(rawOutput, ceiling) : rawOutput;
+/** A provider's advertised output limit; the host clamps it to the window on save. */
+function advertisedMaxTokens(rawOutput?: number): number | undefined {
+  return rawOutput && rawOutput > 0 ? rawOutput : undefined;
 }
 
 function findCatalogMetadata(
@@ -359,7 +477,7 @@ export function mergedDiscoveredOptions(draft: ModelDraft): MergedDiscoveredMode
     seen.add(key);
     const catalogMeta = findCatalogMetadata(remote.id, draft.baseUrl, draft.provider);
     const ctx = remote.context_window ?? catalogMeta?.context;
-    const out = safeMaxTokens(ctx, remote.max_tokens ?? catalogMeta?.output);
+    const out = advertisedMaxTokens(remote.max_tokens ?? catalogMeta?.output);
     const label = remote.display_name || remote.name || catalogMeta?.label || remote.id;
     const parts: string[] = [];
     if (remote.owned_by) parts.push(remote.owned_by);
@@ -391,7 +509,7 @@ export function mergedDiscoveredOptions(draft: ModelDraft): MergedDiscoveredMode
       const key = model.id.trim().toLowerCase();
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      const out = safeMaxTokens(model.context, model.output);
+      const out = advertisedMaxTokens(model.output);
       const parts: string[] = [prov.name];
       if (model.context) parts.push(`${Math.round(model.context / 1000)}K ctx`);
       if (out) parts.push(`${Math.round(out / 1000)}K out`);
@@ -476,41 +594,34 @@ export async function addAllSelectedDiscoveredModels(draft: ModelDraft): Promise
     return false;
   }
 
-  const additions: StoredModel[] = chosenIds.map((id, idx) => {
+  // One batch intent: the host mints the ids, derives each request URL and
+  // clamps each output limit to its window, in one write.
+  const additions = chosenIds.map(id => {
     const match = options.find(opt => opt.id === id);
-    const contextWindow = match?.context_window ?? null;
-    const maxTokens = safeMaxTokens(match?.context_window, match?.max_tokens) ?? null;
     return {
-      id: `model_${Date.now().toString(36)}_${idx}`,
       name: match?.label || id,
       provider,
-      model_name: id,
-      base_url: baseUrl,
-      request_url: resolveRequestUrl(baseUrl, provider, id),
-      api_key: draft.apiKey.trim(),
-      context_window: contextWindow,
-      max_tokens: maxTokens,
-      enabled: true,
+      modelName: id,
+      baseUrl,
+      apiKey: draft.apiKey.trim(),
+      contextWindow: match?.context_window ?? null,
+      maxTokens: match?.max_tokens ?? null,
       category: "general_chat",
-      capabilities: match?.capabilities?.length ? match.capabilities : ["text_chat"],
-      recommended_for: [],
+      ...(match?.capabilities?.length ? { capabilities: match.capabilities } : {}),
     };
   });
 
-  const next = [...storedModels(), ...additions];
+  let added = false;
   await runStep(async () => {
-    try {
-      await setConfig("ai.models", next);
-      storedModels.set(next);
-      modelSettingsNotice.set(`Added ${additions.length} models`);
+    const result = await upsertModels(additions, saved => `Added ${saved.ids.length} models`);
+    if (result) {
+      added = true;
       closeDiscoveryPicker();
-    } catch (error) {
-      remoteDiscoveryError.set(
-        error instanceof Error ? error.message : String(error),
-      );
+    } else {
+      remoteDiscoveryError.set(modelSettingsNotice());
     }
   });
-  return true;
+  return added;
 }
 
 function outcomeFromResult(result: ConnectionTestResult | null | undefined): ConnectionTestOutcome {
@@ -584,33 +695,70 @@ export async function testSavedModelConnection(model: StoredModel): Promise<void
   }
 }
 
+interface SubscriptionAccountInstance {
+  account_id?: string;
+  is_default?: boolean;
+  enabled?: boolean;
+  account?: Omit<SubscriptionAccountSummary, "account_id">;
+}
+
+/**
+ * Reads the subscription providers and accounts, and each connected one's quota.
+ * `list_subscription_accounts` names every provider the host supports (signed in
+ * or not), which is what a sign-in starts from; `list_subscription_account_instances`
+ * adds the account slots, named by the id the quota command takes. A host without
+ * the instances command (older build) has one slot per provider, whose id is the
+ * provider key. The quota is never asked for by the account's email.
+ */
 export async function loadSubscriptions(force = false): Promise<void> {
   if (subscriptionsLoadedOnce && !force) return;
   subscriptionsLoadedOnce = true;
   subscriptionsLoading.set(true);
   try {
-    const raw = await invokeRawCommand<SubscriptionAccountSummary[]>(
+    const providers = await invokeRawCommand<Array<Omit<SubscriptionAccountSummary, "account_id">>>(
       "list_subscription_accounts",
       {},
-    ).catch(() => [] as SubscriptionAccountSummary[]);
-    const list = Array.isArray(raw) ? raw : [];
+    ).catch(() => [] as Array<Omit<SubscriptionAccountSummary, "account_id">>);
+    let instances: SubscriptionAccountInstance[] | null = null;
+    try {
+      const raw = await invokeRawCommand<SubscriptionAccountInstance[]>("list_subscription_account_instances", {});
+      instances = Array.isArray(raw) ? raw : null;
+    } catch {
+      instances = null;
+    }
+    const list: SubscriptionAccountSummary[] = [];
+    for (const item of instances ?? []) {
+      if (!item || !item.account || !item.account.provider) continue;
+      list.push({
+        ...(item.account as Omit<SubscriptionAccountSummary, "account_id">),
+        account_id: String(item.account_id || item.account.provider),
+        is_default: item.is_default,
+        enabled: item.enabled !== false,
+      });
+    }
+    for (const item of Array.isArray(providers) ? providers : []) {
+      if (!item || !item.provider) continue;
+      // A provider with a slot is already listed; one without is offered for sign-in.
+      if (list.some(entry => entry.provider === item.provider)) continue;
+      list.push({ ...item, account_id: item.provider });
+    }
     subscriptionAccounts.set(list);
     await Promise.all(
       list
-        .filter(item => item && item.connected && item.provider)
+        .filter(item => item.connected && item.account_id)
         .map(async item => {
           const quota = await invokeCommand<SubscriptionQuotaSummary | null>(
             "get_subscription_account_quota",
             {
               provider: item.provider,
-              accountId: item.account || item.provider,
+              accountId: item.account_id,
               forceRefresh: force,
             },
           ).catch(() => null);
           if (quota && typeof quota === "object") {
             subscriptionQuotas.update(current => ({
               ...current,
-              [item.provider]: quota,
+              [item.account_id]: quota,
             }));
           }
         }),
@@ -618,4 +766,134 @@ export async function loadSubscriptions(force = false): Promise<void> {
   } finally {
     subscriptionsLoading.set(false);
   }
+}
+
+/** A subscription sign-in in progress, as `get_subscription_login_status` reports it. */
+export interface SubscriptionLoginState {
+  provider: string;
+  sessionId: string;
+  status: "starting" | "pending" | "authorized" | "failed" | "cancelled";
+  method?: string;
+  authorizationUrl?: string;
+  userCode?: string;
+  instructions?: string;
+  error?: string;
+  /** The address could not be opened in a browser here; the panel shows it instead. */
+  urlUnopened?: boolean;
+}
+
+export const subscriptionLogin = signal<SubscriptionLoginState | null>(null);
+let loginPoll: ReturnType<typeof setTimeout> | null = null;
+const LOGIN_POLL_MS = 1500;
+const LOGIN_DEADLINE_MS = 10 * 60_000;
+
+function stopLoginPoll(): void {
+  if (loginPoll !== null) {
+    clearTimeout(loginPoll);
+    loginPoll = null;
+  }
+}
+
+/**
+ * Starts the provider's sign-in the way the desktop does: `start_subscription_login`
+ * with a session id this surface mints, the authorization address opened in the
+ * browser, then `get_subscription_login_status` polled until it settles. While
+ * another device is driven the sign-in runs there, so only the device-code method
+ * (which needs no browser on that machine) is used; a provider without it says so.
+ */
+export async function startSubscriptionSignIn(provider: string, remote: boolean, methods: string[] = []): Promise<void> {
+  stopLoginPoll();
+  const method = remote ? "device" : methods.includes("browser") || methods.length === 0 ? undefined : methods[0];
+  if (remote && methods.length > 0 && !methods.includes("device")) {
+    subscriptionLogin.set({
+      provider,
+      sessionId: "",
+      status: "failed",
+      error: "This provider signs in through a browser on the machine being driven; sign in there.",
+    });
+    return;
+  }
+  const sessionId = `nsh-login-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  subscriptionLogin.set({ provider, sessionId, status: "starting" });
+  try {
+    const started = await invokeCommand<{
+      authorization_url?: string;
+      user_code?: string | null;
+      instructions?: string;
+      method?: string;
+    }>("start_subscription_login", { provider, sessionId, ...(method ? { method } : {}) });
+    const url = started?.authorization_url ?? "";
+    let urlUnopened = false;
+    if (url) {
+      try {
+        await openUrl(url);
+      } catch {
+        urlUnopened = true;
+      }
+    }
+    subscriptionLogin.set({
+      provider,
+      sessionId,
+      status: "pending",
+      method: started?.method,
+      authorizationUrl: url,
+      userCode: started?.user_code ?? undefined,
+      instructions: started?.instructions,
+      urlUnopened,
+    });
+    const deadline = Date.now() + LOGIN_DEADLINE_MS;
+    const poll = async (): Promise<void> => {
+      loginPoll = null;
+      const current = subscriptionLogin();
+      if (!current || current.sessionId !== sessionId || current.status !== "pending") return;
+      try {
+        const snapshot = await invokeCommand<{ status?: string; error?: string | null; session_id?: string }>(
+          "get_subscription_login_status",
+          { provider, sessionId },
+        );
+        const status = snapshot?.status;
+        if (status === "authorized") {
+          subscriptionLogin.set({ ...current, status: "authorized" });
+          await loadSubscriptions(true);
+          return;
+        }
+        if (status === "failed" || status === "cancelled") {
+          subscriptionLogin.set({ ...current, status, error: snapshot?.error ?? undefined });
+          return;
+        }
+      } catch (error) {
+        subscriptionLogin.set({ ...current, status: "failed", error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      if (Date.now() > deadline) {
+        subscriptionLogin.set({ ...current, status: "failed", error: "The sign-in timed out" });
+        return;
+      }
+      loginPoll = setTimeout(() => void poll(), LOGIN_POLL_MS);
+    };
+    loginPoll = setTimeout(() => void poll(), LOGIN_POLL_MS);
+  } catch (error) {
+    subscriptionLogin.set({
+      provider,
+      sessionId,
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function cancelSubscriptionSignIn(): Promise<void> {
+  const current = subscriptionLogin();
+  stopLoginPoll();
+  subscriptionLogin.set(null);
+  if (current && current.sessionId && (current.status === "pending" || current.status === "starting")) {
+    await invokeCommand("cancel_subscription_login", { provider: current.provider, sessionId: current.sessionId }).catch(
+      () => null,
+    );
+  }
+}
+
+export function copySubscriptionLoginUrl(): void {
+  const url = subscriptionLogin()?.authorizationUrl;
+  if (url) void Clipboard.writeText(url).catch(() => undefined);
 }

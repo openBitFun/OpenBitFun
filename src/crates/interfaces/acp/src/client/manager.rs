@@ -1305,6 +1305,25 @@ impl AcpClientService {
         self.initialize_all().await
     }
 
+    /// Sets one configured client's permission mode. Only that entry changes;
+    /// the rest of the stored document is kept as it is, and clients are
+    /// re-initialized as a JSON save does so running ones pick the mode up.
+    pub async fn set_client_permission_mode(
+        self: &Arc<Self>,
+        client_id: &str,
+        mode: AcpClientPermissionMode,
+    ) -> OpenBitFunResult<Vec<AcpClientInfo>> {
+        let mut config = self.load_config_file().await?;
+        if set_permission_mode_in_config(&mut config, client_id, mode)? {
+            let value = serde_json::to_value(config).map_err(|error| {
+                OpenBitFunError::config(format!("Failed to render ACP config: {}", error))
+            })?;
+            self.config_service.set_config(CONFIG_PATH, value).await?;
+            self.initialize_all().await?;
+        }
+        self.list_clients().await
+    }
+
     pub async fn submit_permission_response(
         &self,
         request: SubmitAcpPermissionResponseRequest,
@@ -2913,6 +2932,22 @@ fn parse_config_value(value: serde_json::Value) -> OpenBitFunResult<AcpClientCon
     Ok(config)
 }
 
+/// Returns whether the stored mode changed.
+fn set_permission_mode_in_config(
+    config: &mut AcpClientConfigFile,
+    client_id: &str,
+    mode: AcpClientPermissionMode,
+) -> OpenBitFunResult<bool> {
+    let entry = config.acp_clients.get_mut(client_id).ok_or_else(|| {
+        OpenBitFunError::NotFound(format!("ACP client is not configured: {client_id}"))
+    })?;
+    if entry.permission_mode == mode {
+        return Ok(false);
+    }
+    entry.permission_mode = mode;
+    Ok(true)
+}
+
 fn build_session_key(openbitfun_session_id: &str, client_id: &str, cwd: &Path) -> String {
     format!(
         "{}:{}:{}",
@@ -3572,6 +3607,46 @@ mod recovery_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_mode_change_touches_only_the_named_client() {
+        let mut config = parse_config_value(json!({
+            "acpClients": {
+                "codex": {"command": "codex", "permissionMode": "ask"},
+                "other": {"command": "other", "args": ["--x"]}
+            }
+        }))
+        .unwrap();
+        assert!(set_permission_mode_in_config(
+            &mut config,
+            "codex",
+            AcpClientPermissionMode::AllowOnce
+        )
+        .unwrap());
+        assert_eq!(
+            config.acp_clients["codex"].permission_mode,
+            AcpClientPermissionMode::AllowOnce
+        );
+        assert_eq!(config.acp_clients["other"].args, vec!["--x".to_string()]);
+        assert!(!set_permission_mode_in_config(
+            &mut config,
+            "codex",
+            AcpClientPermissionMode::AllowOnce
+        )
+        .unwrap());
+        assert!(set_permission_mode_in_config(
+            &mut config,
+            "missing",
+            AcpClientPermissionMode::Ask
+        )
+        .is_err());
+        // The legacy bare map shape still reads.
+        let legacy = parse_config_value(json!({"codex": {"command": "codex"}})).unwrap();
+        assert_eq!(
+            legacy.acp_clients["codex"].permission_mode,
+            AcpClientPermissionMode::Ask
+        );
+    }
 
     pub(super) fn test_client_connection(id: &str) -> Arc<AcpClientConnection> {
         Arc::new(AcpClientConnection::new(

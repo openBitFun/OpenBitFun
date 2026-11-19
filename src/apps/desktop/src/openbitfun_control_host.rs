@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::host::HostHandle;
 use openbitfun_core::agentic::tools::openbitfun_control_config::{
     apply_legacy_config_mutation, apply_legacy_config_mutation_with_model_snapshot,
     config_handler_path, configure_config_backed_option, exact_config_binding,
@@ -29,7 +30,6 @@ use openbitfun_product_domains::product_control::{
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tokio::sync::oneshot;
 
@@ -168,7 +168,7 @@ pub(crate) async fn dispatch_creation_runtime(
 }
 
 async fn current_option_value(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     option: &ProductCapabilityOption,
 ) -> Result<Value, String> {
@@ -180,7 +180,9 @@ async fn current_option_value(
             provider_id,
             option_id,
         } => match desktop_provider_option(provider_id, option_id) {
+            // The native host's login item belongs to its UI runtime.
             Some(DesktopProviderOption::LaunchAtLogin) => app
+                .tauri("launch_at_login")?
                 .autolaunch()
                 .is_enabled()
                 .map(Value::Bool)
@@ -288,7 +290,7 @@ fn config_path_invalidates_ai_client(path: &str) -> bool {
 }
 
 async fn apply_backend_config_effects(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     path: &str,
     value: &Value,
@@ -335,7 +337,7 @@ async fn synchronize_required_effect(
 }
 
 async fn rollback_config_option(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     capability_id: &str,
     option: &ProductCapabilityOption,
@@ -374,7 +376,7 @@ async fn rollback_config_option(
 }
 
 async fn failed_option_transaction(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     capability_id: &str,
     option: &ProductCapabilityOption,
@@ -390,7 +392,7 @@ async fn failed_option_transaction(
 }
 
 async fn configure_option_transaction(
-    app: &AppHandle,
+    app: &HostHandle,
     capability_id: &str,
     option_id: &str,
     value: &Value,
@@ -515,7 +517,7 @@ async fn configure_option_transaction(
 }
 
 async fn inspect_desktop(
-    app: &AppHandle,
+    app: &HostHandle,
     request: &OpenBitFunControlHostRequest,
 ) -> Result<Value, String> {
     let capability_id = request
@@ -600,7 +602,7 @@ async fn inspect_desktop(
 }
 
 async fn configure_desktop(
-    app: &AppHandle,
+    app: &HostHandle,
     request: &OpenBitFunControlHostRequest,
 ) -> Result<Value, String> {
     let capability_id = request
@@ -636,7 +638,7 @@ fn binding_contract(
 }
 
 async fn apply_binding_backend_effects(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     bindings: &[ProductConfigBinding],
 ) -> Result<(), String> {
@@ -652,7 +654,7 @@ async fn apply_binding_backend_effects(
 }
 
 async fn synchronize_legacy_bindings(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     bindings: &[ProductConfigBinding],
     phase: &str,
@@ -686,7 +688,7 @@ async fn synchronize_legacy_bindings(
 }
 
 async fn rollback_legacy_config_transaction(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     path: &str,
     previous_value: Value,
@@ -702,7 +704,7 @@ async fn rollback_legacy_config_transaction(
 }
 
 async fn failed_legacy_transaction(
-    app: &AppHandle,
+    app: &HostHandle,
     state: &AppState,
     path: &str,
     previous_value: Option<Value>,
@@ -727,7 +729,7 @@ async fn failed_legacy_transaction(
 /// writes are schema-checked against every affected option, committed once,
 /// and produce the same backend and presentation effects.
 pub(crate) async fn set_config_from_gui(
-    app: &AppHandle,
+    app: &HostHandle,
     path: &str,
     value: Value,
     expected_models: Option<Value>,
@@ -803,8 +805,46 @@ pub(crate) async fn set_config_from_gui(
     }))
 }
 
+/// Typed settings mutation over the GUI config transaction: reads the stored
+/// value at `path`, applies one intent (see `settings_mutations`) and commits
+/// it through [`set_config_from_gui`], so the write gets the same schema
+/// checks, backend effects and presentation sync as any GUI write. Model-list
+/// writes carry the read value as a snapshot; a concurrent change makes the
+/// commit fail and the intent is re-applied to the fresh value. Returns the
+/// value stored at `path` afterwards.
+pub(crate) async fn mutate_config_from_gui(
+    app: &HostHandle,
+    path: &str,
+    mut mutate: impl FnMut(&Value) -> Result<Value, String>,
+) -> Result<Value, String> {
+    const ATTEMPTS: usize = 3;
+    let mut last_conflict = String::new();
+    for _ in 0..ATTEMPTS {
+        let state = app.state::<AppState>();
+        let current = read_config_or_null(&state, path).await?;
+        let next = mutate(&current)?;
+        let snapshot = (path == "ai.models").then(|| current.clone());
+        match set_config_from_gui(app, path, next, snapshot).await {
+            Ok(_) => return read_config_or_null(&state, path).await,
+            Err(error) if error.contains("SUBSCRIPTION_ACCOUNT_POOL_CONFLICT") => {
+                last_conflict = error;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_conflict)
+}
+
+async fn read_config_or_null(state: &AppState, path: &str) -> Result<Value, String> {
+    match state.config_service.get_config::<Value>(Some(path)).await {
+        Ok(value) => Ok(value),
+        Err(openbitfun_core::util::errors::OpenBitFunError::NotFound(_)) => Ok(Value::Null),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 pub(crate) async fn configure_option_from_gui(
-    app: &AppHandle,
+    app: &HostHandle,
     capability_id: &str,
     option_id: &str,
     value: Value,
@@ -836,7 +876,7 @@ fn desktop_provider_option(provider_id: &str, option_id: &str) -> Option<Desktop
 }
 
 async fn configure_desktop_provider_option(
-    app: &AppHandle,
+    app: &HostHandle,
     option: DesktopProviderOption,
     value: &Value,
 ) -> Result<(), String> {
@@ -845,6 +885,7 @@ async fn configure_desktop_provider_option(
         .ok_or_else(|| "Desktop lifecycle options require a boolean value".to_string())?;
     match option {
         DesktopProviderOption::LaunchAtLogin => {
+            let app = app.tauri("launch_at_login")?;
             if enabled {
                 app.autolaunch().enable().map_err(|error| error.to_string())
             } else {
@@ -923,7 +964,7 @@ async fn select_companion(
 }
 
 async fn execute_desktop_provider_operation(
-    app: &AppHandle,
+    app: &HostHandle,
     operation: DesktopProviderOperation,
     arguments: Option<&Value>,
 ) -> Result<Value, String> {
@@ -1103,7 +1144,7 @@ async fn execute_desktop_provider_operation(
 }
 
 async fn execute_desktop(
-    app: &AppHandle,
+    app: &HostHandle,
     request: &OpenBitFunControlHostRequest,
 ) -> Result<Value, String> {
     let capability_id = request
@@ -1174,7 +1215,7 @@ async fn execute_desktop(
 }
 
 async fn dispatch_request(
-    app: &AppHandle,
+    app: &HostHandle,
     request: OpenBitFunControlHostRequest,
 ) -> Result<Value, String> {
     match request.action {
@@ -1196,7 +1237,7 @@ async fn dispatch_request(
 }
 
 struct DesktopProductControlPort {
-    app: AppHandle,
+    app: HostHandle,
 }
 
 impl ProductControlPort for DesktopProductControlPort {
@@ -1208,7 +1249,7 @@ impl ProductControlPort for DesktopProductControlPort {
     }
 }
 
-pub(crate) fn install(app: AppHandle) {
+pub(crate) fn install(app: HostHandle) {
     set_openbitfun_control_port(Arc::new(DesktopProductControlPort { app }));
 }
 
@@ -1249,7 +1290,7 @@ pub(crate) fn mark_openbitfun_control_surface_unready() {
 /// Caller-provided source metadata is overwritten at the trusted boundary.
 #[tauri::command]
 pub(crate) async fn product_control_invoke(
-    app: AppHandle,
+    app: HostHandle,
     mut request: OpenBitFunControlHostRequest,
 ) -> Result<Value, String> {
     request.source = ProductControlSource::Gui;

@@ -88,6 +88,14 @@ pub struct SessionActivitySummary {
     pub unread_completion: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread_turn: Option<super::types::SessionLastTurn>,
+    /// The session holds a result the user has not looked at yet. Derived by
+    /// the host from `unread_completion` so every client marks the same rows;
+    /// absent on older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<bool>,
+    /// The unread result is a failed turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,23 +4,45 @@ import { type BackendOptions, createBackend, createDeviceBackend } from "./suppo
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
 interface WorkbenchBackendOptions extends BackendOptions {
+  /** Shells the host already runs (`terminal_list`), e.g. one an agent started. */
+  terminalSessions?: Array<Record<string, unknown>>;
   subscriptions?: Array<Record<string, unknown>>;
+  /** `list_subscription_account_instances`; absent means an older host without it. */
+  subscriptionInstances?: Array<Record<string, unknown>>;
   subscriptionQuotas?: Record<string, Record<string, unknown>>;
 }
 
 interface ExtendedHarness {
   handlers: Record<string, (data: unknown) => unknown>;
-  fileWrites: Array<{ workspaceId?: string; workspacePath?: string; filePath: string; content: string }>;
+  /** The base fixture's records: every command it answered and every config write. */
+  calls: Array<{ action: string; request: unknown }>;
+  settingsWrites: Array<{ path: string; value: unknown }>;
+  fileWrites: Array<{
+    workspaceId?: string;
+    workspacePath?: string;
+    filePath: string;
+    content: string;
+    expectedHash?: string;
+  }>;
   formStateWrites: Array<Record<string, unknown>>;
   configuredBots: Array<Record<string, unknown>>;
   startedConnections: Array<{ method: string; lan_ip: string | null }>;
   stoppedConnections: Array<string | null>;
   stopBotCount: () => number;
   weixinQrStarts: () => number;
+  /** Every `remote_connect_weixin_qr_poll` request, in order. */
+  weixinPolls: Array<Record<string, unknown>>;
+  /** Every `remote_connect_set_allowed` value, in order. */
+  allowedWrites: boolean[];
+  /** Every device id an `account_delete_device` named, in order. */
+  deletedDevices: string[];
   verboseWrites: boolean[];
   modelDiscoveryCalls: Array<Record<string, unknown>>;
   connectionTestCalls: Array<Record<string, unknown>>;
   savedModelLists: Array<Array<Record<string, unknown>>>;
+  quotaCalls: Array<Record<string, unknown>>;
+  /** Another writer (an agent, a second editor) changes a file on disk. */
+  externalWrite: (path: string, text: string) => void;
 }
 
 function createWorkbenchBackend(
@@ -31,6 +53,7 @@ function createWorkbenchBackend(
   const originalInvoke = base.handlers["openbitfun.invoke"];
 
   const filesText: Record<string, string> = { ...(options.fileContent ?? {}) };
+  const fileVersions: Record<string, number> = {};
   const fileWrites: ExtendedHarness["fileWrites"] = [];
   const formStateWrites: Array<Record<string, unknown>> = [];
   const configuredBots: Array<Record<string, unknown>> = [];
@@ -40,9 +63,14 @@ function createWorkbenchBackend(
   const modelDiscoveryCalls: Array<Record<string, unknown>> = [];
   const connectionTestCalls: Array<Record<string, unknown>> = [];
   const savedModelLists: Array<Array<Record<string, unknown>>> = [];
+  const quotaCalls: Array<Record<string, unknown>> = [];
 
   let stopBotCalls = 0;
   let weixinQrCalls = 0;
+  let remoteControlAllowed = true;
+  const deletedDevices: string[] = [];
+  const allowedWrites: boolean[] = [];
+  const weixinPolls: Array<Record<string, unknown>> = [];
   let botVerbose = false;
   let botConnected: string | null = null;
   let formState: Record<string, unknown> = {
@@ -66,14 +94,43 @@ function createWorkbenchBackend(
           if (hasRaw) throw new Error("write_file_content must use invokeCommand");
           const filePath = String(payload.filePath ?? "");
           const content = String(payload.content ?? "");
+          // The host checks `expectedHash` against the file under its write lock
+          // and refuses a stale save with the typed FILE_CONFLICT error.
+          if (typeof payload.expectedHash === "string") {
+            const current = Object.prototype.hasOwnProperty.call(filesText, filePath)
+              ? filesText[filePath]
+              : ((originalInvoke({ action: "read_file_content", request: { filePath } }) as { value?: unknown })?.value);
+            const actual =
+              typeof current === "string" ? crypto.createHash("sha256").update(current).digest("hex") : "";
+            if (actual !== payload.expectedHash) {
+              return { ok: false, error: "FILE_CONFLICT: File changed after it was read; refresh before saving", transport: "dev" };
+            }
+          }
           filesText[filePath] = content;
+          fileVersions[filePath] = (fileVersions[filePath] ?? 1_700_000_000_000) + 1;
           fileWrites.push({
             workspaceId: typeof payload.workspaceId === "string" ? payload.workspaceId : undefined,
             workspacePath: typeof payload.workspacePath === "string" ? payload.workspacePath : undefined,
             filePath,
             content,
+            ...(typeof payload.expectedHash === "string" ? { expectedHash: payload.expectedHash } : {}),
           });
           return { ok: true, value: null, transport: "dev" };
+        }
+        case "terminal_list": {
+          if (!options.terminalSessions) return originalInvoke(data);
+          return { ok: true, value: options.terminalSessions, transport: "dev" };
+        }
+        case "get_file_metadata": {
+          const path = String(payload.path ?? "");
+          if (fileVersions[path] !== undefined && filesText[path] !== undefined) {
+            return {
+              ok: true,
+              value: { path, modified: fileVersions[path], size: filesText[path].length },
+              transport: "dev",
+            };
+          }
+          return originalInvoke(data);
         }
         case "read_file_content": {
           const filePath = String(payload.filePath ?? "");
@@ -128,9 +185,17 @@ function createWorkbenchBackend(
             transport: "dev",
           };
         }
+        case "list_subscription_account_instances": {
+          if (!options.subscriptionInstances) return originalInvoke(data);
+          if (!hasRaw) throw new Error("list_subscription_account_instances takes no request wrapper");
+          return { ok: true, value: options.subscriptionInstances, transport: "dev" };
+        }
         case "get_subscription_account_quota": {
-          const provider = String(payload.provider ?? "");
-          const quota = options.subscriptionQuotas?.[provider] ?? null;
+          if (hasRaw) throw new Error("get_subscription_account_quota must use invokeCommand");
+          quotaCalls.push(payload);
+          const key = String(payload.accountId ?? "");
+          const quota =
+            options.subscriptionQuotas?.[key] ?? options.subscriptionQuotas?.[String(payload.provider ?? "")] ?? null;
           return { ok: true, value: quota, transport: "dev" };
         }
         case "set_config": {
@@ -169,6 +234,7 @@ function createWorkbenchBackend(
               clients: [],
               bot_connected: botConnected,
               bot_verbose_mode: botVerbose,
+              remote_control_allowed: remoteControlAllowed,
             },
             transport: "dev",
           };
@@ -266,6 +332,28 @@ function createWorkbenchBackend(
             transport: "dev",
           };
         }
+        case "account_delete_device": {
+          if (!hasRaw) throw new Error("account_delete_device takes positional targetDeviceId");
+          deletedDevices.push(String(payload.targetDeviceId ?? ""));
+          return { ok: true, value: null, transport: "dev" };
+        }
+        case "remote_connect_set_allowed": {
+          if (hasRaw) throw new Error("remote_connect_set_allowed must use request wrapper");
+          remoteControlAllowed = payload.allowed === true;
+          allowedWrites.push(remoteControlAllowed);
+          return { ok: true, value: null, transport: "dev" };
+        }
+        case "remote_connect_weixin_qr_poll": {
+          if (hasRaw) throw new Error("remote_connect_weixin_qr_poll must use request wrapper");
+          weixinPolls.push({ ...payload });
+          return {
+            ok: true,
+            value: payload.verify_code
+              ? { status: "scanned", message: "Confirm on your phone" }
+              : { status: "need_verify_code", message: "Enter the number shown in WeChat" },
+            transport: "dev",
+          };
+        }
         case "remote_connect_get_bot_verbose_mode": {
           if (!hasRaw) throw new Error("remote_connect_get_bot_verbose_mode takes no request wrapper");
           return { ok: true, value: botVerbose, transport: "dev" };
@@ -284,6 +372,8 @@ function createWorkbenchBackend(
 
   return {
     handlers,
+    calls: base.calls,
+    settingsWrites: base.settingsWrites,
     fileWrites,
     formStateWrites,
     configuredBots,
@@ -291,10 +381,18 @@ function createWorkbenchBackend(
     stoppedConnections,
     stopBotCount: () => stopBotCalls,
     weixinQrStarts: () => weixinQrCalls,
+    weixinPolls,
+    allowedWrites,
+    deletedDevices,
     verboseWrites,
     modelDiscoveryCalls,
     connectionTestCalls,
     savedModelLists,
+    quotaCalls,
+    externalWrite: (path: string, text: string) => {
+      filesText[path] = text;
+      fileVersions[path] = (fileVersions[path] ?? 1_700_000_000_000) + 1000;
+    },
   };
 }
 
@@ -309,22 +407,28 @@ test("files scene edits code and markdown files, tracks open tabs, uses dropdown
   await app.press("main.rs");
   await app.waitFor("fn main() {");
   await app.waitFor("file-tab-main.rs");
+  // The host watcher is registered on the root, as the desktop explorer does.
+  await app.waitFor("LF");
 
-  // Begin live edit and verify toolbar swaps to Save file / Discard edit.
-  await app.press("file-edit");
-  await app.waitFor("Editing");
+  // Code opens straight into the editor: nothing to save until the text changes.
+  expect(app.texts()).not.toContain("Save file");
+  await app.type("file-editor", "// edited\n");
+  await app.waitFor("Unsaved changes");
   await app.waitFor("Save file");
-  await app.waitFor("Discard edit");
 
-  // Discard cancels editing without calling write_file_content.
+  // Discard returns to the disk copy without writing.
   await app.press("file-discard");
-  await app.waitFor("Edit file");
+  await app.waitUntil(() => !app.texts().includes("Unsaved changes"));
   expect(backend.fileWrites).toHaveLength(0);
 
-  // Edit again, type into the editor, and save.
-  await app.press("file-edit");
-  await app.waitFor("Save file");
+  // A draft survives switching to another tab and back.
   await app.type("file-editor", "// edited\n");
+  await app.waitFor("Unsaved changes");
+  await app.press("README.md");
+  await app.waitFor("Markdown preview from the host.");
+  await app.waitFor("file-tab-dirty-main.rs");
+  await app.press("file-tab-main.rs");
+  await app.waitFor("Unsaved changes");
   await app.press("file-save");
   await app.waitFor("Saved main.rs");
 
@@ -335,20 +439,52 @@ test("files scene edits code and markdown files, tracks open tabs, uses dropdown
     filePath: "/repo/main.rs",
   });
   expect(backend.fileWrites[0].content).toContain("// edited");
+  // The save names the disk text it was edited against; the host enforces it.
+  expect(backend.fileWrites[0].expectedHash).toMatch(/^[0-9a-f]{64}$/);
 
-  // Open second file, verify tab bar accumulates both tabs, and edit Markdown.
+  // Markdown opens as a preview and edits on request.
   await app.press("README.md");
   await app.waitFor("Markdown preview from the host.");
   await app.waitFor("file-tab-README.md");
   await app.press("file-edit");
-  await app.waitFor("Save file");
+  await app.type("file-editor", "More notes.\n");
   await app.press("file-save");
   await app.waitFor("Saved README.md");
   expect(backend.fileWrites).toHaveLength(2);
 
-  // Close the first tab cleanly via its close IconButton.
+  // A save that finds a newer disk copy stops and asks; Overwrite writes anyway.
+  await app.press("file-edit");
+  await app.type("file-editor", "Mine.\n");
+  backend.externalWrite("/repo/README.md", "# Agent rewrote this\n");
+  await app.press("file-save");
+  await app.waitFor("file-conflict-overwrite");
+  expect(backend.fileWrites).toHaveLength(2);
+  await app.press("file-conflict-overwrite");
+  await app.waitFor("Saved README.md");
+  expect(backend.fileWrites).toHaveLength(3);
+  expect(backend.fileWrites[2].content).toContain("Mine.");
+  // Overwrite is the user's choice to replace the newer copy: it sends no hash.
+  expect(backend.fileWrites[2].expectedHash).toBeUndefined();
+
+  // A clean open file follows its disk copy when the watcher reports a change.
+  backend.externalWrite("/repo/README.md", "# Reloaded from the watcher\n");
+  await app.host.send("openbitfun.event", {
+    event: "file-system-changed",
+    payload: [{ path: "/repo/README.md", kind: "modify", timestamp: 1 }],
+  });
+  await app.waitFor("Reloaded from the watcher");
+
+  // Closing a dirty tab asks first; Discard and close drops the draft unwritten.
+  await app.press("file-tab-main.rs");
+  await app.waitUntil(() => app.texts().some(text => text.startsWith("fn main()")));
+  await app.type("file-editor", "// scratch\n");
+  await app.waitFor("Unsaved changes");
+  await app.hover("file-tab-main.rs");
   await app.press("close-file-tab-main.rs");
-  expect(app.texts()).not.toContain("fn main() {");
+  await app.waitFor("Discard and close");
+  await app.press("Discard and close");
+  await app.waitUntil(() => !app.shows("file-tab-main.rs"));
+  expect(backend.fileWrites).toHaveLength(3);
 
   // File actions dropdown creates a new file and confirms delete.
   await app.press("file-actions-menu");
@@ -368,6 +504,77 @@ test("files scene edits code and markdown files, tracks open tabs, uses dropdown
   await app.waitFor("Explorer");
 });
 
+test("files and git stack list then detail with a back control when the scene is narrow", async () => {
+  const backend = createWorkbenchBackend();
+  // A trusted repository for the Git half; everything else is the workbench host.
+  const diffRequests: Array<Record<string, unknown>> = [];
+  const gitAnswers: Record<string, (payload: Record<string, unknown>) => unknown> = {
+    git_is_repository: () => true,
+    git_get_repository_trust: () => ({
+      state: "trusted",
+      repositoryPath: "/repo",
+      detail: null,
+      manualCommand: null,
+    }),
+    git_get_diff: payload => {
+      diffRequests.push(payload);
+      return "diff --git a/main.rs b/main.rs\n--- a/main.rs\n+++ b/main.rs\n@@ -1 +1 @@\n-old\n+new staged line";
+    },
+    git_get_branches: () => [],
+    git_get_enhanced_branches: () => [],
+    git_get_commits: () => [],
+    git_get_graph: () => ({ nodes: [], maxLane: 0 }),
+    git_list_worktrees: () => [],
+  };
+  const workbenchInvoke = backend.handlers["openbitfun.invoke"];
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const args = (data ?? {}) as { action?: string; request?: unknown; raw?: unknown };
+      const answer = gitAnswers[args.action ?? ""];
+      if (!answer) return workbenchInvoke(data);
+      const payload = ((args.raw ?? args.request) ?? {}) as Record<string, unknown>;
+      return { ok: true, value: answer(payload), transport: "dev" };
+    },
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
+
+  await app.press("Files");
+  await app.waitFor("Explorer");
+  // Wide: explorer and preview sit side by side, no back control.
+  expect(app.shows("files-stack-back")).toBe(false);
+
+  await app.setViewport(560, 900);
+  // Narrow: the list is the whole view until a file is opened.
+  await app.waitFor("README.md");
+  expect(app.shows("files-stack-back")).toBe(false);
+  await app.press("main.rs");
+  await app.waitFor("files-stack-back");
+  await app.waitUntil(() => app.texts().some(text => text.startsWith("fn main()")));
+  expect(app.shows("explorer-row-README.md")).toBe(false);
+
+  // Back returns to the list; the open tab survives.
+  await app.press("files-stack-back");
+  await app.waitFor("explorer-row-README.md");
+  expect(app.shows("files-stack-back")).toBe(false);
+  expect(app.texts().some(text => text.startsWith("fn main()"))).toBe(false);
+
+  // Git: a pressed change pushes its diff with the same request; back returns to the list.
+  await app.setViewport(1440, 900);
+  await app.press("Git");
+  await app.waitFor("Working Copy");
+  await app.setViewport(560, 900);
+  await app.waitFor("label:git-staged-main.rs");
+  expect(app.shows("label:git-stack-back")).toBe(false);
+  await app.press("label:git-staged-main.rs");
+  await app.waitFor("label:git-stack-back");
+  expect(app.shows("label:git-commit-message")).toBe(false);
+  expect(diffRequests.at(-1)).toMatchObject({ params: { files: ["/repo/main.rs"], staged: true } });
+  await app.press("label:git-stack-back");
+  await app.waitFor("label:git-commit-message");
+  expect(app.shows("label:git-stack-back")).toBe(false);
+});
+
 test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and starts/stops relays via modals", async () => {
   const backend = createWorkbenchBackend({}, true);
   const app = await open("../App.tsx", {
@@ -376,13 +583,18 @@ test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and start
   });
 
   await app.press("Devices");
-  await app.waitFor("Messaging Channels");
+  // Section headers are sentence case in the calm studio layout.
+  await app.waitFor("Messaging channels");
   await app.waitFor("No bot connected");
 
   // Open Telegram channel modal, configure & start, then close modal.
   await app.press("channel-toggle-telegram");
   await app.type("connector-telegram-token", "tg-bot-token-123");
   await app.press("connector-telegram-connect");
+  // The first connection waits for the Remote Connect disclaimer, as on the desktop.
+  await app.waitFor("remote-disclaimer-agree");
+  expect(backend.configuredBots.length).toBe(0);
+  await app.press("remote-disclaimer-agree");
   await app.waitFor("Active bot: Telegram(@openbitfun_bot)");
   expect(backend.configuredBots.at(-1)).toMatchObject({
     bot_type: "telegram",
@@ -415,7 +627,22 @@ test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and start
   await app.press("connector-weixin-qr-start");
   await app.waitFor("text:https://weixin.example/qr/wx-qr-1");
   expect(backend.weixinQrStarts()).toBe(1);
+  // A non-image QR payload is drawn as a QR code, as the desktop does.
+  expect(app.shows("connector-weixin-qr")).toBe(true);
+  // need_verify_code asks for the number and sends it with the next poll only.
+  await app.press("connector-weixin-qr-poll");
+  await app.waitFor("connector-weixin-verify-code");
+  expect(backend.weixinPolls.at(-1)).toMatchObject({ session_key: "wx-qr-1", verify_code: null });
+  await app.type("connector-weixin-verify-code", "4821");
+  await app.press("connector-weixin-verify-submit");
+  await app.waitFor("Confirm on your phone");
+  expect(backend.weixinPolls.at(-1)).toMatchObject({ session_key: "wx-qr-1", verify_code: "4821" });
   await app.press("Done");
+
+  // Whether other devices may control this one.
+  await app.press("remote-control-allowed");
+  await app.waitUntil(() => backend.allowedWrites.length === 1);
+  expect(backend.allowedWrites).toEqual([false]);
 
   // Verbose bot mode toggle
   await app.press("connector-bot-verbose");
@@ -428,6 +655,8 @@ test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and start
   await app.waitFor("LAN active · Server idle");
   await app.waitFor("text:http://192.168.1.42:8787/pair");
   expect(backend.startedConnections).toContainEqual({ method: "lan", lan_ip: "192.168.1.42" });
+  // The pairing link is also a scannable QR code (180 px, level M), as on the desktop.
+  expect(app.shows("connector-pairing-qr")).toBe(true);
 
   await app.press("connector-copy-url");
   expect(app.clipboard()).toBe("http://192.168.1.42:8787/pair");
@@ -467,6 +696,16 @@ test("devices scene marks connectors controller-local on peer, uses device dropd
   await app.press("Save");
   await app.waitFor("gpu-box");
 
+  // Removing a device asks first, then calls account_delete_device positionally.
+  await app.waitFor("device-alias", { state: "gone" });
+  await app.press("device-actions-device-linux");
+  await app.press("device-remove-device-linux");
+  await app.waitFor("device-remove-confirm");
+  await app.press("device-remove-confirm");
+  await app.waitUntil(() => backend.deletedDevices.length === 1);
+  expect(backend.deletedDevices).toEqual(["device-linux"]);
+  await app.waitFor("Device \"gpu-box\" removed");
+
   // Open New Detached Dispatch Job modal and close it cleanly.
   await app.press("New job");
   await app.waitFor("New Detached Dispatch Job");
@@ -481,7 +720,7 @@ test("devices scene marks connectors controller-local on peer, uses device dropd
   expect(app.texts().join("\n")).toContain("Connectors manage this controller machine");
 });
 
-test("settings scene defaults to All sections and filters via NavPanel settings categories", async () => {
+test("settings opens on General, renders one page at a time, and finds a field by search", async () => {
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", {
     ...DESKTOP,
@@ -490,39 +729,148 @@ test("settings scene defaults to All sections and filters via NavPanel settings 
   });
 
   await app.press("Settings");
-  await app.waitFor("All sections");
-  await app.waitFor("Appearance");
-  await app.waitFor("Showing the dark scheme");
-  await app.waitFor("AI models");
-  await app.waitFor("MCP servers");
-  await app.waitFor("Usage");
+  // General is the first page, as on the desktop; other pages are not mounted.
+  await app.waitFor("Language, account, startup, updates and notifications.");
+  await app.waitFor("Interface language");
+  expect(app.texts()).not.toContain("Showing the dark scheme");
+  expect(app.shows("mcp-add")).toBe(false);
 
   // Consumer settings never expose raw dotted config key paths in visible text.
-  const allTexts = app.texts().join("\n");
-  expect(allTexts).not.toContain("app.auto_update");
-  expect(allTexts).not.toContain("app.telemetry");
-  expect(allTexts).not.toContain("editor.font_size");
-  expect(allTexts).not.toContain("memories.max_unused_days");
+  const generalTexts = app.texts().join("\n");
+  expect(generalTexts).not.toContain("app.auto_update");
+  expect(generalTexts).not.toContain("app.telemetry");
 
-  // Filter to Models & Pools only via App.tsx NavPanel SettingsNavBlock.
-  await app.press("nav-settings-cat-models");
+  // The navigation lists the desktop's five groups of pages.
+  await app.waitFor("nav-settings-page-models");
+  await app.press("nav-settings-page-models");
   await app.waitFor("Model pools");
-  expect(app.texts()).not.toContain("Showing the dark scheme");
-  expect(app.texts()).not.toContain("MCP servers");
-  expect(app.texts()).not.toContain("Log files");
+  await app.waitFor("Default models");
+  expect(app.texts()).not.toContain("Interface language");
 
-  // Filter to MCP & Web Search only.
-  await app.press("nav-settings-cat-mcp");
-  await app.waitFor("MCP servers");
-  await app.waitFor("Web search");
+  await app.press("nav-settings-page-appearance");
+  await app.waitFor("Showing the dark scheme");
   expect(app.texts()).not.toContain("Model pools");
 
-  // Switch back to All sections and verify sections return.
-  await app.press("nav-settings-cat-all");
-  await app.waitFor("Appearance");
-  await app.waitFor("AI models");
-  await app.waitFor("MCP servers");
-  await app.waitFor("Log files");
+  // Search matches a field label on another page and opens that page.
+  await app.type("settings-search", "scrollback");
+  await app.waitFor("settings-search-hit-field-terminal-scrollback");
+  await app.press("settings-search-hit-field-terminal-scrollback");
+  await app.waitFor("Maximum lines preserved in terminal scroll history");
+  expect(app.value("terminal-scrollback")).toBe("1000");
+});
+
+test("a narrow settings scene lists the pages first, pushes one full width and goes back", async () => {
+  const backend = createWorkbenchBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.waitFor("Interface language");
+  // Wide: the page itself, no in-scene page list and no back control.
+  expect(app.shows("settings-compact-page-models")).toBe(false);
+  expect(app.shows("settings-compact-back")).toBe(false);
+
+  await app.setViewport(560, 900);
+  await app.waitFor("settings-compact-page-models");
+  // The open page's description is not drawn while the list is shown.
+  expect(app.texts()).not.toContain("Language, account, startup, updates and notifications.");
+
+  // A page row pushes that page with a back control.
+  await app.press("settings-compact-page-models");
+  await app.waitFor("add-model");
+  await app.waitFor("settings-compact-back");
+  expect(app.shows("settings-compact-page-models")).toBe(false);
+
+  // Back returns to the list; the page is no longer drawn.
+  await app.press("settings-compact-back");
+  await app.waitFor("settings-compact-page-general");
+  expect(app.shows("add-model")).toBe(false);
+
+  // Widening again shows the selected page beside the navigation.
+  await app.setViewport(1440, 900);
+  await app.waitFor("add-model");
+  expect(app.shows("settings-compact-back")).toBe(false);
+});
+
+test("typed text that is not saved holds a page change until it is saved or discarded", async () => {
+  const backend = createWorkbenchBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-workspace");
+  await app.clear("worktree-branch-prefix");
+  await app.type("worktree-branch-prefix", "team/");
+  await app.waitFor("worktree-branch-prefix-save");
+
+  // Leaving asks first; keep editing stays on the page with the text intact.
+  await app.press("nav-settings-page-editor");
+  await app.waitFor("Unsaved changes");
+  await app.press("settings-unsaved-keep");
+  expect(app.value("worktree-branch-prefix")).toBe("team/");
+
+  // Save writes the typed value, then the page changes.
+  await app.press("nav-settings-page-editor");
+  await app.press("settings-unsaved-save");
+  await app.waitFor("Font size inside code and markdown previews");
+  const prefixWrite = (await backend.handlers["openbitfun.invoke"]({
+    action: "get_config",
+    request: { path: "app.worktrees.branchPrefix" },
+  })) as { value?: unknown };
+  expect(prefixWrite.value).toBe("team/");
+
+  // Discard drops the typed value and changes the page without a write.
+  await app.clear("editor-tab-size");
+  await app.type("editor-tab-size", "7");
+  await app.press("nav-settings-page-terminal");
+  await app.waitFor("Unsaved changes");
+  await app.press("settings-unsaved-discard");
+  await app.waitFor("Maximum lines preserved in terminal scroll history");
+  await app.press("nav-settings-page-editor");
+  expect(app.value("editor-tab-size")).toBe("4");
+});
+
+test("subscription quotas are read per account slot and drawn from the host's meters", async () => {
+  const backend = createWorkbenchBackend({
+    subscriptionInstances: [
+      {
+        account_id: "codex-account-3f8a1c52-9d4e-4b7a-8f21-5c6d7e8f9a0b",
+        is_default: true,
+        enabled: true,
+        account: {
+          provider: "codex",
+          display_label: "Codex",
+          account: "dev@example.com",
+          connected: true,
+          suggested_format: "responses",
+          suggested_base_url: "",
+          suggested_model: "",
+        },
+      },
+    ],
+    subscriptionQuotas: {
+      "codex-account-3f8a1c52-9d4e-4b7a-8f21-5c6d7e8f9a0b": {
+        account_id: "codex-account-3f8a1c52-9d4e-4b7a-8f21-5c6d7e8f9a0b",
+        provider: "codex",
+        state: "known",
+        plan: "Pro",
+        windows: [
+          { id: "primary", duration_seconds: 18000, used_percent: 30 },
+          { id: "secondary", duration_seconds: 604800, used_percent: 80 },
+        ],
+      },
+    },
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-models");
+  await app.waitFor("Codex");
+  // The quota is asked for by the account slot id, never by the email.
+  expect(backend.quotaCalls.at(-1)).toMatchObject({
+    provider: "codex",
+    accountId: "codex-account-3f8a1c52-9d4e-4b7a-8f21-5c6d7e8f9a0b",
+  });
+  await app.waitFor("5-hour window · 70% left");
+  await app.waitFor("Weekly · 20% left");
 });
 
 test("settings scene resolves model URL preview, tests connections, discovers remote models, and caps batch max_tokens", async () => {
@@ -530,6 +878,7 @@ test("settings scene resolves model URL preview, tests connections, discovers re
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-models");
   await app.waitFor("AI models");
 
   // Test an existing saved model row directly.
@@ -547,7 +896,7 @@ test("settings scene resolves model URL preview, tests connections, discovers re
   await app.press("model-format-anthropic");
   await app.waitFor("text:Request URL: https://proxy.example/v1/messages");
 
-  await app.press("model-format-response");
+  await app.press("model-format-responses");
   await app.waitFor("text:Request URL: https://proxy.example/v1/responses");
 
   await app.press("model-format-gemini");
@@ -569,9 +918,10 @@ test("settings scene resolves model URL preview, tests connections, discovers re
   expect(backend.modelDiscoveryCalls[0]).toMatchObject({
     provider: "openai",
     base_url: "https://proxy.example/v1",
-    request_url: "https://proxy.example/v1/chat/completions",
     api_key: "sk-demo-key",
   });
+  // The host derives the request URL from the base URL and format.
+  expect(backend.modelDiscoveryCalls[0].request_url).toBeUndefined();
 
   // Open Quick Add Models discovery modal and batch-add 2 models.
   await app.press("settings-model-select");
@@ -582,12 +932,17 @@ test("settings scene resolves model URL preview, tests connections, discovers re
   await app.press("model-discovery-option-o3-mini");
   await app.waitFor("2 selected");
   await app.press("model-discovery-confirm");
-  await app.waitFor("Added 2 models");
+  await app.waitFor("Added 2 models The output limit was lowered to what the context window allows.");
 
-  const savedBatch = backend.savedModelLists.at(-1) ?? [];
+  // One batch intent; the host clamps each output limit to its window.
+  const upserts = backend.calls.filter(call => call.action === "ai_model_upsert");
+  expect(upserts).toHaveLength(1);
+  expect((upserts[0].request as { models: unknown[] }).models).toHaveLength(2);
+  const savedBatch = (backend.settingsWrites.filter(write => write.path === "ai.models").at(-1)?.value ??
+    []) as Array<Record<string, unknown>>;
   const gpt41 = savedBatch.find(entry => entry.model_name === "gpt-4.1");
   const o3Mini = savedBatch.find(entry => entry.model_name === "o3-mini");
-  // Safe 40% ceiling of context_window: 1,000,000 * 0.4 = 400,000; 200,000 * 0.4 = 80,000.
+  // The host's ceiling: 1,000,000 * 0.4 = 400,000; 200,000 * 0.4 = 80,000.
   expect(gpt41).toMatchObject({ context_window: 1000000, max_tokens: 400000 });
   expect(o3Mini).toMatchObject({ context_window: 200000, max_tokens: 80000 });
 });
@@ -623,11 +978,16 @@ test("settings scene renders subscription quotas and switches OpenBitFun appeara
   });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-models");
   await app.waitFor("AI subscriptions");
   await app.waitFor("OpenAI Codex");
   await app.waitFor("5h window · 72% left · resets 2h");
+  // A host without account instances has one slot per provider, named by the
+  // provider key: the quota is never asked for by the account's email.
+  expect(backend.quotaCalls.at(-1)).toMatchObject({ provider: "openai_codex", accountId: "openai_codex" });
 
   // Select light preset directly from the 3×3 theme gallery.
+  await app.press("nav-settings-page-appearance");
   await app.press("appearance-swatch-openbitfun-monochrome");
   await app.waitFor("Showing the light scheme");
 
@@ -660,4 +1020,160 @@ test("terminal scene keeps theme canvas background in light scheme and manages s
   await app.waitFor("Saved Terminal 1 Watch");
   await app.waitFor("Open Terminal 1 Watch");
   await app.waitFor("default shell · pnpm test");
+});
+
+test("devices dispatch form probes the target before Submit and sends the job options", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Devices");
+  await app.waitFor("Detached dispatch");
+  await app.press("dispatch-form-toggle");
+  await app.waitFor("build-box (ssh)");
+  await app.waitFor("Ready for detached jobs");
+  const probe = backend.calls.find(c => c.action === "dispatch_probe_target");
+  expect(probe?.raw).toBe(false);
+  expect(probe?.request).toMatchObject({ target: { kind: "ssh", connectionId: "conn-1", workspacePath: "" } });
+
+  // A host without a CLI keeps Submit off and says why.
+  await app.press("dispatch-target-select");
+  await app.press("label:dispatch-target-ssh:conn-2");
+  await app.waitFor("The OpenBitFun CLI is not installed on that host.");
+  expect(app.enabled("dispatch-submit")).toBe(false);
+
+  await app.press("dispatch-target-select");
+  await app.press("label:dispatch-target-ssh:conn-1");
+  await app.waitFor("Ready for detached jobs");
+  expect(app.enabled("dispatch-submit")).toBe(true);
+
+  await app.type("dispatch-workspace", "/srv/api");
+  await app.type("dispatch-prompt", "Bump the toolchain");
+  await app.type("dispatch-title", "Toolchain bump");
+  await app.clear("dispatch-base-ref");
+  await app.type("dispatch-base-ref", "release/1.2");
+  await app.press("dispatch-model-select");
+  await app.press("dispatch-model-gpt-5-mini");
+  await app.press("dispatch-include-uncommitted");
+  await app.press("dispatch-submit");
+  await app.waitUntil(() => backend.submittedDispatch() !== null);
+  expect(backend.submittedDispatch()).toMatchObject({
+    target: { kind: "ssh", connectionId: "conn-1", workspacePath: "/srv/api" },
+    prompt: "Bump the toolchain",
+    title: "Toolchain bump",
+    baseRef: "release/1.2",
+    model: "gpt-5-mini",
+    includeUncommitted: true,
+  });
+});
+
+test("terminal scene attaches the shells the host already runs for the workspace and asks before closing a running one", async () => {
+  const backend = createWorkbenchBackend({
+    terminalSessions: [
+      {
+        id: "agent-term-1",
+        name: "cargo test",
+        workspaceId: "workspace-1",
+        status: "Running",
+        source: "agent",
+        shellType: "Zsh",
+        cwd: "/repo",
+        cols: 120,
+        rows: 32,
+      },
+      {
+        id: "other-term-9",
+        name: "elsewhere",
+        workspaceId: "workspace-2",
+        status: "Running",
+        source: "manual",
+        shellType: "Zsh",
+        cwd: "/srv/app",
+        cols: 120,
+        rows: 32,
+      },
+    ],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Terminal");
+  // The agent's shell for this workspace is attached instead of a new one being started;
+  // the other workspace's shell stays out of this list.
+  await app.waitFor("cargo test");
+  await app.waitFor("Agent");
+  expect(app.texts()).not.toContain("elsewhere");
+  expect(app.texts()).not.toContain("shell 1");
+
+  // Closing a running shell asks first.
+  await app.press("×");
+  await app.waitFor("Close shell");
+  await app.press("Cancel");
+  await app.waitFor("cargo test");
+
+  await app.press("terminal-clear");
+  await app.waitFor("cargo test");
+});
+
+
+test("a subscription provider signs in through the host's login session", async () => {
+  let signedIn = false;
+  const backend = createWorkbenchBackend({
+    subscriptions: [
+      { provider: "codex", display_label: "Codex", account: null, connected: false, login_methods: ["browser", "device"] },
+    ],
+  });
+  const loginCalls: Array<{ action: string; request: Record<string, unknown> }> = [];
+  const invoke = backend.handlers["openbitfun.invoke"];
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const args = (data ?? {}) as { action?: string; request?: Record<string, unknown>; raw?: unknown };
+      const action = args.action ?? "";
+      if (action === "start_subscription_login" || action === "get_subscription_login_status") {
+        if (!args.request) throw new Error(`${action} takes a request struct`);
+        loginCalls.push({ action, request: args.request });
+        if (action === "start_subscription_login") {
+          return {
+            ok: true,
+            value: {
+              provider: "codex",
+              session_id: args.request.sessionId,
+              method: "device",
+              authorization_url: "https://auth.example/device",
+              user_code: "ABCD-1234",
+              instructions: "Enter the code in the browser",
+            },
+            transport: "dev",
+          };
+        }
+        signedIn = true;
+        return {
+          ok: true,
+          value: { provider: "codex", session_id: args.request.sessionId, status: "authorized" },
+          transport: "dev",
+        };
+      }
+      if (action === "list_subscription_accounts" && signedIn) {
+        return {
+          ok: true,
+          value: [{ provider: "codex", display_label: "Codex", account: "dev@example.com", connected: true }],
+          transport: "dev",
+        };
+      }
+      return invoke(data);
+    },
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-models");
+  await app.waitFor("Codex");
+  await app.press("subscription-connect-codex");
+  await app.waitFor("Code: ABCD-1234");
+  const start = loginCalls.find(call => call.action === "start_subscription_login");
+  expect(start?.request).toMatchObject({ provider: "codex" });
+  expect(String(start?.request.sessionId ?? "")).not.toBe("");
+  // The status poll settles the session and the list is read again.
+  await app.waitFor("Signed in", { timeout: 6000 });
+  expect(loginCalls.some(call => call.action === "get_subscription_login_status")).toBe(true);
+  await app.waitFor("dev@example.com");
 });

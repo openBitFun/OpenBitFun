@@ -6,11 +6,10 @@
 //! full context snapshot while still flowing through the normal agentic event
 //! pipeline.
 
+use crate::api::app_state::AppState;
+use crate::host::State;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::State;
-
-use crate::api::app_state::AppState;
 
 use openbitfun_core::agentic::coordination::{
     ConversationCoordinator, DialogSubmissionPolicy, DialogTriggerSource,

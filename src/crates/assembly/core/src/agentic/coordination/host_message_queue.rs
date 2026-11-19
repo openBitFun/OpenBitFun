@@ -435,62 +435,8 @@ impl DialogScheduler {
             ));
         }
         let digest = fingerprint(&message)?;
-        {
-            let mut state = self.queue_state();
-            let s = state.sessions.get_mut(session).expect("queue initialized");
-            if let Some(e) = s.entries.get(&message.turn_id) {
-                if e.fingerprint != digest {
-                    return Err(error("idempotency_conflict: message payload changed"));
-                }
-                drop(state);
-                return Ok(self.queue_snapshot(session, Some(&message.turn_id)));
-            }
-            // Accepted duplicates remain readable/idempotent. A new message
-            // must be rejected before creating a durable queue receipt.
-            let binding = self
-                .session_manager
-                .get_session(session)
-                .ok_or_else(|| error("Session was removed"))?;
-            ensure_session_accepts_conversation(&binding)
-                .map_err(|failure| error(failure.to_string()))?;
-            if s.entries.len() + s.operations.len() >= RECEIPT_LIMIT {
-                return Err(error("Queue receipt budget exhausted; start a new session"));
-            }
-            if self.queues.depth(session) + s.entries.values().filter(|e| e.held.is_some()).count()
-                >= self.queues.max_depth()
-            {
-                return Err(error("Message queue is full"));
-            }
-            let display = message
-                .display_content
-                .as_deref()
-                .unwrap_or(&message.content);
-            let view = DialogQueueItem {
-                turn_id: message.turn_id.clone(),
-                display_content: display.chars().take(PREVIEW_CHARS).collect(),
-                preview_truncated: display.chars().count() > PREVIEW_CHARS,
-                attachment_count: message.attachments.len(),
-                agent_type: message.agent_type.clone(),
-                created_at_ms: SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64,
-                status: DialogQueueStatus::Queued,
-                reason: None,
-                target_turn_id: None,
-                steering_id: None,
-                steering_display: None,
-            };
-            s.entries.insert(
-                message.turn_id.clone(),
-                Entry {
-                    fingerprint: digest,
-                    view,
-                    held: None,
-                    after_terminal_turn: None,
-                },
-            );
-            s.order.push(message.turn_id.clone());
+        if let Some(duplicate) = self.reserve_host_entry(session, &message, digest)? {
+            return Ok(duplicate);
         }
         let binding = self
             .session_manager
@@ -537,6 +483,135 @@ impl DialogScheduler {
         s.revision += 1;
         drop(state);
         Ok(self.queue_snapshot(session, Some(&message.turn_id)))
+    }
+    /// Admits a user message from any surface through the host queue, keeping
+    /// the caller's full turn request (submission source, workspace, reply
+    /// route). The receipt makes the message visible to every client's queue
+    /// panel, cancellable and reorderable, exactly like a `Submit` action.
+    pub(super) async fn admit_user_message(
+        &self,
+        request: AgentDialogTurnRequest,
+    ) -> PortResult<DialogQueueSnapshot> {
+        let session = request.session_id.clone();
+        openbitfun_core_types::validate_session_id(&session).map_err(error)?;
+        let turn_id = request
+            .turn_id
+            .clone()
+            .filter(|id| !id.trim().is_empty() && id.len() <= 200)
+            .ok_or_else(|| error("A stable turn ID is required"))?;
+        if request.message.trim().is_empty() && request.attachments.is_empty() {
+            return Err(error("A message or an attachment is required"));
+        }
+        let _admission = self.host_queue_locks.lock(&session).await;
+        if self.session_manager.get_session(&session).is_none() {
+            if let Err(restore_error) = self
+                .coordinator
+                .restore_unloaded_session_for_admission(&session)
+                .await
+            {
+                warn!(
+                    "User message admission refused: session could not be restored: session_id={}, error={}",
+                    session, restore_error
+                );
+            }
+            if self.session_manager.get_session(&session).is_none() {
+                return Err(PortError::new(
+                    PortErrorKind::NotFound,
+                    "Session is not loaded on the execution host",
+                ));
+            }
+        }
+        // Initializes the session's queue record before the receipt is reserved.
+        let _ = self.queue_snapshot(&session, None);
+        let message = DialogQueueMessage {
+            turn_id: turn_id.clone(),
+            content: request.message.clone(),
+            display_content: request.original_message.clone(),
+            agent_type: request.agent_type.clone(),
+            attachments: request.attachments.clone(),
+            metadata: request.metadata.clone(),
+        };
+        let digest = fingerprint(&message)?;
+        if let Some(duplicate) = self.reserve_host_entry(&session, &message, digest)? {
+            return Ok(duplicate);
+        }
+        let result = AgentDialogTurnPort::submit_dialog_turn(self, request).await;
+        let mut state = self.queue_state();
+        let s = state.sessions.get_mut(&session).expect("queue initialized");
+        if let Err(err) = result {
+            s.entries.remove(&turn_id);
+            s.order.retain(|id| id != &turn_id);
+            return Err(err);
+        }
+        s.revision += 1;
+        drop(state);
+        Ok(self.queue_snapshot(&session, Some(&turn_id)))
+    }
+    /// Records a receipt for a message about to be admitted. Returns the
+    /// existing snapshot when the same turn was already accepted (idempotent
+    /// retry), and refuses a changed payload under the same turn ID.
+    fn reserve_host_entry(
+        &self,
+        session: &str,
+        message: &DialogQueueMessage,
+        digest: String,
+    ) -> PortResult<Option<DialogQueueSnapshot>> {
+        let mut state = self.queue_state();
+        let s = state.sessions.get_mut(session).expect("queue initialized");
+        if let Some(e) = s.entries.get(&message.turn_id) {
+            if e.fingerprint != digest {
+                return Err(error("idempotency_conflict: message payload changed"));
+            }
+            drop(state);
+            return Ok(Some(self.queue_snapshot(session, Some(&message.turn_id))));
+        }
+        // Accepted duplicates remain readable/idempotent. A new message
+        // must be rejected before creating a durable queue receipt.
+        let binding = self
+            .session_manager
+            .get_session(session)
+            .ok_or_else(|| error("Session was removed"))?;
+        ensure_session_accepts_conversation(&binding)
+            .map_err(|failure| error(failure.to_string()))?;
+        if s.entries.len() + s.operations.len() >= RECEIPT_LIMIT {
+            return Err(error("Queue receipt budget exhausted; start a new session"));
+        }
+        if self.queues.depth(session) + s.entries.values().filter(|e| e.held.is_some()).count()
+            >= self.queues.max_depth()
+        {
+            return Err(error("Message queue is full"));
+        }
+        let display = message
+            .display_content
+            .as_deref()
+            .unwrap_or(&message.content);
+        let view = DialogQueueItem {
+            turn_id: message.turn_id.clone(),
+            display_content: display.chars().take(PREVIEW_CHARS).collect(),
+            preview_truncated: display.chars().count() > PREVIEW_CHARS,
+            attachment_count: message.attachments.len(),
+            agent_type: message.agent_type.clone(),
+            created_at_ms: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            status: DialogQueueStatus::Queued,
+            reason: None,
+            target_turn_id: None,
+            steering_id: None,
+            steering_display: None,
+        };
+        s.entries.insert(
+            message.turn_id.clone(),
+            Entry {
+                fingerprint: digest,
+                view,
+                held: None,
+                after_terminal_turn: None,
+            },
+        );
+        s.order.push(message.turn_id.clone());
+        Ok(None)
     }
     async fn mutate_host_queue(
         &self,

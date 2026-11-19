@@ -9,8 +9,9 @@
 // reports whether that id is filled.
 
 import { signal } from "nsh";
-import { getConfig, setConfig } from "./api";
+import { getConfig } from "./api";
 import { invokeCommand } from "./bridge";
+import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
 export type WebSearchProviderId =
@@ -175,60 +176,42 @@ export async function loadWebSearch(): Promise<void> {
   });
 }
 
-/** Merges one provider's fields into the document and writes it back. */
-async function writeDocument(next: SearchDocument, label: string): Promise<void> {
+/**
+ * Sends one `set_web_search_provider` intent. The host validates the provider id,
+ * the endpoint and the auth fields, merges them into what it stores (keeping
+ * fields this surface does not draw) and answers with the stored document.
+ */
+async function writeIntent(request: Record<string, unknown>, label: string): Promise<void> {
   await runStep(async () => {
     try {
-      await setConfig(CONFIG_PATH, next);
-      webSearchConfig.set(next);
+      const next = await invokeSettingsMutation<SearchDocument>("set_web_search_provider", request);
+      if (next && typeof next === "object") webSearchConfig.set(next);
       webSearchNotice.set(`Saved ${label}`);
     } catch (error) {
-      webSearchNotice.set(error instanceof Error ? error.message : String(error));
+      webSearchNotice.set(errorText(error));
     }
   });
 }
 
 export async function chooseSearchProvider(providerId: WebSearchProviderId): Promise<void> {
-  const current = documentOf();
-  const next: SearchDocument = { ...current, provider: providerId };
-  await writeDocument(next, providerOf(providerId)?.label ?? providerId);
+  await writeIntent({ provider: providerId }, providerOf(providerId)?.label ?? providerId);
   await refreshCredentialStatus();
 }
 
 export async function setProviderCredentialId(providerId: string, credentialId: string): Promise<void> {
-  const current = documentOf();
-  const providers = providersOf(current);
-  const entry = (providers[providerId] ?? {}) as Record<string, unknown>;
-  const next: SearchDocument = {
-    ...current,
-    providers: { ...providers, [providerId]: { ...entry, credentialId } },
-  };
-  await writeDocument(next, "the credential id");
+  await writeIntent({ credentialProvider: providerId, credentialId }, "the credential id");
 }
 
 export async function setHttpAuth(patch: Partial<Required<SearchHttpAuth>>): Promise<void> {
-  const current = documentOf();
-  const providers = providersOf(current);
-  const http = (providers.openbitfun_search_http ?? {}) as SearchHttpProvider;
-  const next: SearchDocument = {
-    ...current,
-    providers: {
-      ...providers,
-      openbitfun_search_http: { ...http, auth: { ...(http.auth ?? {}), ...patch } },
-    },
-  };
-  await writeDocument(next, "the service auth");
+  const request: Record<string, unknown> = {};
+  if (patch.mode !== undefined) request.authMode = patch.mode;
+  if (patch.credentialId !== undefined) request.authCredentialId = patch.credentialId;
+  if (patch.headerName !== undefined) request.authHeaderName = patch.headerName;
+  await writeIntent(request, "the service auth");
 }
 
 export async function setHttpEndpoint(endpoint: string): Promise<void> {
-  const current = documentOf();
-  const providers = providersOf(current);
-  const http = (providers.openbitfun_search_http ?? {}) as SearchHttpProvider;
-  const next: SearchDocument = {
-    ...current,
-    providers: { ...providers, openbitfun_search_http: { ...http, endpoint } },
-  };
-  await writeDocument(next, "the service endpoint");
+  await writeIntent({ endpoint }, "the service endpoint");
 }
 
 /** Asks whether the vault holds a key for a provider. */

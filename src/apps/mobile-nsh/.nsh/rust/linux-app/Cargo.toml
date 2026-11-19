@@ -1,0 +1,38 @@
+[package]
+name = "nsh-app-openbitfun-mobile-native-linux-app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "nsh-app-openbitfun-mobile-native-linux-app"
+path = "main.rs"
+
+[dependencies]
+nsh-linux-app = { version = "=0.6.1", default-features = false }
+nsh-core = { version = "=0.6.1" }
+nsh-base = { version = "=0.6.1", default-features = false }
+app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { version = "=0.6.1", default-features = false }
+
+[features]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "webview", "websocket", "updater", "svg", "net", "sound"]
+js = ["nsh-linux-app/js"]
+shader = ["nsh-linux-app/shader"]
+editor = ["nsh-linux-app/editor"]
+emoji-picker = ["nsh-linux-app/emoji-picker"]
+highlight = ["nsh-linux-app/highlight"]
+math = ["nsh-linux-app/math"]
+plot = ["nsh-linux-app/plot"]
+rich-editor = ["nsh-linux-app/rich-editor"]
+term = ["nsh-linux-app/term"]
+zlib = ["nsh-linux-app/zlib"]
+crypto = ["nsh-linux-app/crypto"]
+webview = ["nsh-linux-app/webview"]
+websocket = ["nsh-linux-app/websocket"]
+updater = ["nsh-linux-app/updater"]
+svg = ["nsh-linux-app/svg"]
+net = ["nsh-linux-app/net"]
+sound = ["nsh-linux-app/sound"]

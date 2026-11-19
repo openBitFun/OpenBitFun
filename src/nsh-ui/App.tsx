@@ -1,7 +1,9 @@
 import {
   cleanup,
+  Clipboard,
   computed,
   effect,
+  ErrorBoundary,
   keymap,
   mount,
   Overlay,
@@ -10,21 +12,46 @@ import {
   signal,
   Text,
   View,
+  type JSX,
   type Point,
   type PressEvent,
   type ScrollRef,
   type ViewRef,
+  untracked,
 } from "nsh";
 import { Input } from "nsh/base";
 import {
+  closeWindow,
+  connectionError,
+  connectionState,
+  hideMainWindowAfterCloseRequest,
+  inAppUpdatesAvailable,
   initWindowChrome,
+  invokeCommand,
   invokeRawCommand,
+  listenEvent,
+  minimizeMainWindowToTray,
+  minimizeWindow,
+  nativeWindow,
+  onMainWindowCloseRequest,
   openHostEventChannel,
+  pageDrawsWindowControls,
+  pickLocalDirectory,
+  quitApplication,
+  shellMenuShortcutIds,
+  startShellIntegration,
   startWindowDrag,
+  toggleWindowFullscreen,
   toggleWindowMaximize,
   trafficLightInsetPx,
+  usesNativeDragRegions,
+  windowControlsRightInsetPx,
+  windowMaximized,
+  windowPlatform,
 } from "./src/bridge";
 import { subscribeAgentEvents } from "./src/agentEvents";
+import { installBackendResync } from "./src/backendResync";
+import { installServedBackend } from "./src/servedBackend";
 import { loadLocalDeviceId, localDeviceId } from "./src/devicePrefsStore";
 import { formatPlural } from "./src/format";
 import {
@@ -55,12 +82,13 @@ import {
   auxPaneSide,
   auxPaneTab,
   auxPaneWidth,
-  busy,
   canGoBack,
   canGoForward,
   clearError,
   closeSceneTab,
   closeWorkspace,
+  collapsedWorkspaces,
+  copyActiveSession,
   createSessionInWorkspace,
   deleteSessionRow,
   drawerOpen,
@@ -69,13 +97,22 @@ import {
   initAppLocale,
   isSessionArchived,
   lastError,
+  forgetRecentWorkspace,
   loadMoreSessions,
+  loadShellLayout,
   loadWorkspaces,
+  NAV_COLLAPSE_WIDTH,
+  NAV_DEFAULT_WIDTH,
   navWidth,
   navigateScene,
   openInAuxPane,
+  openPathWorkspace,
+  openRecentWorkspace,
   openSceneTabs,
+  persistShellLayout,
+  recentWorkspaces,
   renameSession,
+  renameWorkspace,
   resetForDeviceChange,
   runningTurns,
   selectSession,
@@ -91,6 +128,7 @@ import {
   toggleAuxPane,
   toggleDrawer,
   workspaces,
+  workspacesLoaded,
   type AuxPaneTab,
   type SceneId,
 } from "./src/state";
@@ -111,6 +149,7 @@ import {
   textSize,
   textTracking,
   type AppearanceId,
+  compactLayout,
 } from "./src/theme";
 import { applyAppearance, loadAppearance } from "./src/themeStore";
 import { loadFontPreference } from "./src/fontPreferenceStore";
@@ -121,7 +160,14 @@ import { ensureQuickActions } from "./src/quickActionStore";
 import { loadSeenSessions, statusOfSession } from "./src/sessionStatusStore";
 import { peerBusy, peerError, peerReconnecting, peerScope } from "./src/peerState";
 import { enterPeer, reconnectPeer } from "./src/peerStore";
-import { forgetTerminals } from "./src/terminalStore";
+import { forgetTerminals, openTerminal } from "./src/terminalStore";
+import { openFileAt } from "./src/fileStore";
+import {
+  listSessions,
+  revealInExplorer,
+  type SessionSummary,
+  type WorkspaceRecord,
+} from "./src/api";
 import {
   closeGlobalSearch,
   openGlobalSearch,
@@ -169,6 +215,7 @@ import {
   IconButton,
   InlineBanner,
   KbdHint,
+  PillChip,
   SplitHandle,
   StatusDot,
   TextField,
@@ -180,6 +227,14 @@ import {
   openAccountAuthModal,
 } from "./src/ui/AccountAuthModal";
 import { SshWorkspaceModals } from "./src/ui/SshWorkspaceModals";
+import { AboutDialog, openAboutDialog } from "./src/ui/AboutDialog";
+import {
+  clearNotifications,
+  markAllNotificationsRead,
+  notifications,
+  startNotifications,
+  unreadNotificationCount,
+} from "./src/notificationStore";
 import { HomeScene } from "./src/scenes/HomeScene";
 import { SessionsScene } from "./src/scenes/SessionsScene";
 import { AssistantsScene } from "./src/scenes/AssistantsScene";
@@ -192,13 +247,18 @@ import { TerminalScene } from "./src/scenes/TerminalScene";
 import { SpacesScene } from "./src/scenes/SpacesScene";
 import { DevicesScene, returnToThisMachine } from "./src/scenes/DevicesScene";
 import {
-  selectedCategory,
+  requestSettingsPage,
+  SETTINGS_PAGE_GROUPS,
+  SettingsNavigation,
   SettingsScene,
-  type SettingsCategory,
+  type SettingsPageEntry,
 } from "./src/scenes/SettingsScene";
 
+// A page served by a backend connects back to it over OBP (before any command runs).
+installServedBackend();
 openHostEventChannel();
 subscribeAgentEvents();
+installBackendResync();
 
 function shortcutLabel(chord: string, fallback: string): string {
   try {
@@ -243,21 +303,6 @@ const PRESET_LABEL_KEYS: Record<AppearanceId, MessageKey> = {
 const PRIMARY_NAV_SCENES: ReadonlyArray<SceneId> = ["home", "sessions", "assistants"];
 const STUDIO_ONLY_SCENES: ReadonlyArray<SceneId> = ["agents", "skills", "routines", "spaces"];
 const WORKBENCH_NAV_SCENES: ReadonlyArray<SceneId> = ["files", "git", "terminal"];
-
-const SETTINGS_NAV_CATEGORIES: ReadonlyArray<{
-  id: SettingsCategory;
-  labelKey: MessageKey;
-  icon: IconName;
-}> = [
-  { id: "all", labelKey: "settings.cat.all", icon: "layers" },
-  { id: "appearance", labelKey: "settings.cat.appearance", icon: "palette" },
-  { id: "agent", labelKey: "settings.cat.agent", icon: "bot" },
-  { id: "models", labelKey: "settings.cat.models", icon: "cpu" },
-  { id: "permissions", labelKey: "settings.cat.permissions", icon: "shield" },
-  { id: "mcp", labelKey: "settings.cat.mcp", icon: "plug" },
-  { id: "workspace", labelKey: "settings.cat.workspace", icon: "terminal-square" },
-  { id: "usage", labelKey: "settings.cat.usage", icon: "database" },
-];
 
 const AUX_TABS: ReadonlyArray<{ id: AuxPaneTab; labelKey: MessageKey; icon: IconName }> = [
   { id: "files", labelKey: "nav.files", icon: "folder" },
@@ -376,7 +421,6 @@ interface SidebarPeerDevice {
 }
 
 const studioGroupOpen = signal(true);
-const collapsedWorkspaces = signal<Record<string, boolean>>({});
 const showArchivedSessions = signal(false);
 const archiveFilterOpen = signal(false);
 const languageMenuOpen = signal(false);
@@ -392,6 +436,7 @@ const topbarWorkspaceMenuOpen = signal(false);
 const topbarWorkspaceTriggerRef = signal<ViewRef | null>(null);
 const workspaceActionMenuId = signal<string | null>(null);
 const workspaceActionAnchor = signal<ViewRef | null>(null);
+const workspaceContextPoint = signal<Point | null>(null);
 
 interface SessionContextTarget {
   sessionId: string;
@@ -435,7 +480,8 @@ const unmountedSshHosts = computed(() => {
   return savedConnections().filter(conn => !openConnectionIds.has(conn.id));
 });
 
-const DEFAULT_NAV_WIDTH = 272;
+/** The width the sidebar drag has reached, beyond the clamp, while a drag runs. */
+let navDragWidth: number | null = null;
 const DEFAULT_AUX_WIDTH = 460;
 
 function readRecordString(record: Record<string, unknown>, keys: string[]): string {
@@ -520,6 +566,23 @@ function handleTitlebarPressDown(event: PressEvent): void {
     return;
   }
   startWindowDrag();
+}
+
+/**
+ * How an empty stretch of a title bar moves the window. A native NSH window
+ * declares the region (`desktop={{ windowDrag }}`: the system drags it and a
+ * double click zooms); the Tauri webview starts the drag on the press.
+ */
+function titlebarDragRegionProps(): {
+  desktop?: { windowDrag: boolean };
+  onPressDown?: (event: PressEvent) => void;
+} {
+  return usesNativeDragRegions() ? { desktop: { windowDrag: true } } : { onPressDown: handleTitlebarPressDown };
+}
+
+/** The bar around those stretches: draggable where the system drags (its buttons stay pressable). */
+function titlebarBarProps(): { desktop?: { windowDrag: boolean } } {
+  return usesNativeDragRegions() ? { desktop: { windowDrag: true } } : {};
 }
 
 function toggleStudioGroup(): void {
@@ -633,6 +696,44 @@ function openSessionMenuAtAnchor(target: SessionContextTarget, anchor: ViewRef |
   sessionContextAnchor.set(anchor);
 }
 
+async function duplicateSessionRow(target: SessionContextTarget): Promise<void> {
+  selectSession(target.sessionId);
+  await copyActiveSession();
+  navigateScene("sessions");
+}
+
+/** Writes the session's Markdown transcript on the host and reveals the file. */
+async function exportSessionMarkdown(target: SessionContextTarget): Promise<void> {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  try {
+    const exported = await invokeCommand<{ transcriptPath?: string; transcript_path?: string }>(
+      "export_session_transcript",
+      { session_id: target.sessionId, workspace_id: workspace.id, tools: true },
+    );
+    const path = exported?.transcriptPath ?? exported?.transcript_path ?? "";
+    pushToast(tr("shell.session.exported", { title: target.title }), "success");
+    if (path && !peerScope()) {
+      await revealInExplorer(path, workspace.id).catch(() => undefined);
+    }
+  } catch (error) {
+    pushToast(tr("shell.session.exportFailed", { error: errorText(error) }), "error");
+  }
+}
+
+async function revealSessionStorage(target: SessionContextTarget): Promise<void> {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  try {
+    await invokeCommand<unknown>("reveal_session_storage_directory", {
+      workspace_id: workspace.id,
+      session_id: target.sessionId,
+    });
+  } catch (error) {
+    pushToast(tr("shell.session.openStorageFailed", { error: errorText(error) }), "error");
+  }
+}
+
 function sessionRowMenuItems(target: SessionContextTarget): DropdownMenuItem[] {
   return [
     {
@@ -654,9 +755,32 @@ function sessionRowMenuItems(target: SessionContextTarget): DropdownMenuItem[] {
       },
     },
     {
+      id: "session-duplicate",
+      label: tr("shell.session.duplicate"),
+      icon: "copy",
+      onSelect: () => void duplicateSessionRow(target),
+    },
+    {
+      id: "session-export",
+      label: tr("shell.session.exportMarkdown"),
+      icon: "download",
+      separator: true,
+      onSelect: () => void exportSessionMarkdown(target),
+    },
+    {
+      id: "session-storage",
+      label: tr("shell.session.openStorage"),
+      icon: "folder-open",
+      // The storage folder is on the host that keeps the session; a peer's has no file manager here.
+      disabled: Boolean(peerScope()),
+      hint: peerScope() ? tr("shell.ws.revealLocalOnly") : undefined,
+      onSelect: () => void revealSessionStorage(target),
+    },
+    {
       id: "session-archive",
       label: target.archived ? tr("nav.restoreThread") : tr("nav.archiveThread"),
       icon: target.archived ? "undo" : "layers",
+      separator: true,
       onSelect: () => {
         void archiveSessionRow(target.sessionId, !target.archived).then(() => {
           pushToast(
@@ -673,7 +797,6 @@ function sessionRowMenuItems(target: SessionContextTarget): DropdownMenuItem[] {
       label: tr("nav.deleteThread"),
       icon: "trash",
       danger: true,
-      separator: true,
       onSelect: () => {
         sessionDeleteTarget.set(target);
       },
@@ -737,7 +860,7 @@ function NavRow(props: {
       accessibilityState={{ selected: props.active }}
       onPress={props.onPress}
       style={{
-        height: props.compact ? 28 : 30,
+        height: 30,
         paddingHorizontal: 8,
         paddingVertical: 0,
         borderRadius: radii.sm,
@@ -761,17 +884,17 @@ function NavRow(props: {
     >
       <Icon
         name={props.icon}
-        size={props.compact ? 14 : 15}
+        size={16}
         color={props.active ? palette().chromeText : palette().chromeTextMuted}
       />
       <Text
         style={{
           flex: 1,
           minWidth: 0,
-          color: props.active ? palette().chromeText : palette().chromeTextMuted,
-          fontSize: textSize(props.compact ? 12 : 12.5),
-          lineHeight: textLineHeight(props.compact ? 12 : 12.5, 1.32),
-          fontWeight: props.active ? "600" : "500",
+          color: palette().chromeText,
+          fontSize: textSize(13),
+          lineHeight: textLineHeight(13, 1.3),
+          fontWeight: props.active ? "500" : "400",
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -788,6 +911,7 @@ function NavRow(props: {
 function NavBar() {
   return (
     <View
+      {...titlebarBarProps()}
       style={{
         height: 44,
         paddingLeft: trafficLightInsetPx() > 0 ? trafficLightInsetPx() : 10,
@@ -833,7 +957,7 @@ function NavBar() {
       </View>
       <View
         focusable={false}
-        onPressDown={handleTitlebarPressDown}
+        {...titlebarDragRegionProps()}
         style={{
           flex: 1,
           minWidth: 0,
@@ -842,23 +966,7 @@ function NavBar() {
           alignItems: "center",
           cursor: "default",
         }}
-      >
-        <Text
-          style={{
-            flex: 1,
-            minWidth: 0,
-            color: palette().chromeText,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.3),
-            letterSpacing: textTracking(13),
-            fontWeight: "600",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {tr("product.name")}
-        </Text>
-      </View>
+      />
     </View>
   );
 }
@@ -1068,85 +1176,6 @@ function SidebarDeviceSwitcher() {
   );
 }
 
-function WorkbenchNavStrip() {
-  const innerRadius = concentricRadius(radii.sm, 2.5);
-  return (
-    <View
-      role="tablist"
-      accessibilityLabel={tr("nav.workbench")}
-      style={{
-        height: 30,
-        padding: 2.5,
-        borderRadius: radii.sm,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: palette().chromeBorder,
-        backgroundColor: palette().chromeInputBg,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 2,
-      }}
-    >
-      <Each of={WORKBENCH_NAV_SCENES} key={sceneId => sceneId}>
-        {sceneId => {
-          const isActive = () => activeScene() === sceneId();
-          return (
-            <View
-              role="button"
-              accessibilityLabel={tr(SCENE_META[sceneId()].labelKey)}
-              accessibilityState={{ selected: isActive() }}
-              onPress={() => navigateScene(sceneId())}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                height: "100%",
-                paddingHorizontal: 5,
-                borderRadius: innerRadius,
-                borderCurve: "continuous",
-                backgroundColor: isActive() ? palette().chromeActive : "transparent",
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 4,
-                cursor: "pointer",
-                ...paintTransition(MOTION_DURATION.fast),
-              }}
-              hoverStyle={{
-                backgroundColor: isActive() ? palette().chromeActive : palette().chromeHover,
-              }}
-              activeStyle={{ backgroundColor: palette().chromeActive }}
-              focusVisibleStyle={{
-                outlineWidth: 2,
-                outlineColor: palette().chromeAccent,
-                outlineOffset: -1,
-              }}
-            >
-              <Icon
-                name={SCENE_META[sceneId()].icon}
-                size={12.5}
-                color={isActive() ? palette().chromeAccent : palette().chromeTextMuted}
-              />
-              <Text
-                style={{
-                  flexShrink: 1,
-                  minWidth: 0,
-                  color: isActive() ? palette().chromeText : palette().chromeTextMuted,
-                  fontSize: textSize(11.5),
-                  lineHeight: textLineHeight(11.5, 1.28),
-                  fontWeight: isActive() ? "600" : "500",
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {tr(SCENE_META[sceneId()].labelKey)}
-              </Text>
-            </View>
-          );
-        }}
-      </Each>
-    </View>
-  );
-}
 
 function SessionSidebarRow(props: {
   sessionId: string;
@@ -1160,26 +1189,29 @@ function SessionSidebarRow(props: {
   const hovered = signal(false);
   const actionsAnchor = signal<ViewRef | null>(null);
   const showMenu = () => hovered() || sessionContextTarget()?.sessionId === props.sessionId;
+  const renaming = () => sessionRenameTarget()?.sessionId === props.sessionId;
+  const target = (): SessionContextTarget => ({
+    sessionId: props.sessionId,
+    title: props.title,
+    archived: props.archived,
+  });
+  const commitRename = (text: string) => {
+    const next = text.trim();
+    sessionRenameTarget.set(null);
+    if (next && next !== props.title) void renameSession(props.sessionId, next);
+  };
 
   return (
     <View
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
-      onContextMenu={e => {
-        openSessionMenuAtPoint(
-          {
-            sessionId: props.sessionId,
-            title: props.title,
-            archived: props.archived,
-          },
-          e.pagePosition,
-        );
-      }}
+      onContextMenu={e => openSessionMenuAtPoint(target(), e.pagePosition)}
       style={{
-        height: 29,
+        position: "relative",
+        height: 26,
         paddingLeft: 8,
-        paddingRight: showMenu() ? 2 : 6,
-        borderRadius: radii.sm,
+        paddingRight: 4,
+        borderRadius: radii.xs,
         borderCurve: "continuous",
         borderWidth: 0,
         backgroundColor: props.active ? palette().chromeActive : "transparent",
@@ -1192,51 +1224,82 @@ function SessionSidebarRow(props: {
         backgroundColor: props.active ? palette().chromeActive : palette().chromeHover,
       }}
     >
-      <View
-        role="button"
-        accessibilityLabel={props.title}
-        accessibilityState={{ selected: props.active }}
-        onPress={props.onPress}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          height: "100%",
-          borderRadius: radii.xs,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 6,
-          cursor: "pointer",
-          ...paintTransition(MOTION_DURATION.fast),
-        }}
-        activeStyle={{ opacity: 0.86 }}
-        focusVisibleStyle={{
-          outlineWidth: 2,
-          outlineColor: palette().chromeAccent,
-          outlineOffset: -1,
-        }}
+      <If
+        when={renaming()}
+        else={
+          <View
+            role="button"
+            accessibilityLabel={props.title}
+            accessibilityState={{ selected: props.active }}
+            onPress={props.onPress}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              height: "100%",
+              borderRadius: radii.xs,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+              ...paintTransition(MOTION_DURATION.fast),
+            }}
+            activeStyle={{ opacity: 0.86 }}
+            focusVisibleStyle={{
+              outlineWidth: 2,
+              outlineColor: palette().chromeAccent,
+              outlineOffset: -1,
+            }}
+          >
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                color: props.active ? palette().chromeText : palette().chromeTextMuted,
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.3),
+                fontWeight: props.active ? "500" : "400",
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {props.title}
+            </Text>
+          </View>
+        }
       >
-        <Text
+        <Input
+          autoFocus
+          value={sessionRenameDraft()}
+          accessibilityLabel={`session-rename-input-${props.sessionId}`}
+          submitBehavior="submit"
           style={{
             flex: 1,
             minWidth: 0,
-            color: props.active ? palette().chromeText : palette().chromeTextMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.32),
-            fontWeight: props.active ? "500" : "400",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
+            height: 22,
+            paddingHorizontal: 6,
+            borderRadius: radii.xs,
+            borderWidth: 1,
+            borderColor: palette().chromeAccent,
+            backgroundColor: palette().chromeInputBg,
+            color: palette().chromeText,
+            placeholderColor: palette().chromeTextMuted,
+            caretColor: palette().chromeAccent,
+            fontSize: textSize(13),
           }}
-        >
-          {props.title}
-        </Text>
-      </View>
+          onChange={event => sessionRenameDraft.set(event.value)}
+          onSubmit={event => commitRename(event.text)}
+          onKeyPress={event => {
+            if (event.key === "Escape") sessionRenameTarget.set(null);
+          }}
+        />
+      </If>
 
-      <If when={showMenu() ? "" : (props.statusLabel ?? "")}>
+      <If when={showMenu() || renaming() ? "" : (props.statusLabel ?? "")}>
         {labelText => (
           <View
             accessibilityLabel={`status-${labelText()}`}
             tooltip={<TooltipBubble text={labelText()} />}
-            style={{ flexShrink: 0, alignItems: "center", justifyContent: "center" }}
+            style={{ flexShrink: 0, width: 16, alignItems: "center", justifyContent: "center" }}
           >
             <StatusDot
               surface="chrome"
@@ -1254,37 +1317,190 @@ function SessionSidebarRow(props: {
         )}
       </If>
 
-      <If when={showMenu()}>
+      <If when={!renaming()}>
         <View
           ref={el => actionsAnchor.set(el)}
           style={{
-            width: 22,
-            height: 22,
+            width: 20,
+            height: 20,
             flexShrink: 0,
             alignItems: "center",
             justifyContent: "center",
+            opacity: showMenu() ? 1 : 0,
+            marginLeft: showMenu() ? 0 : -20,
+            ...paintTransition(MOTION_DURATION.fast),
           }}
+          focusWithinStyle={{ opacity: 1, marginLeft: 0 }}
         >
           <IconButton
             icon="more"
             size="xs"
             iconSize={12}
             surface="chrome"
-            style={{ width: 22, height: 22 }}
+            style={{ width: 20, height: 20 }}
             accessibilityLabel={`session-row-actions-${props.sessionId}`}
             tooltip={tr("nav.threadActions")}
-            onPress={() => {
-              openSessionMenuAtAnchor(
-                {
-                  sessionId: props.sessionId,
-                  title: props.title,
-                  archived: props.archived,
-                },
-                actionsAnchor(),
-              );
-            }}
+            onPress={() => openSessionMenuAtAnchor(target(), actionsAnchor())}
           />
         </View>
+      </If>
+    </View>
+  );
+}
+
+// ── Sessions per workspace (lazy, keyed by workspace id) ─────────────────────
+
+const SESSION_PREVIEW_COUNT = 10;
+const OTHER_WORKSPACE_PAGE = 20;
+/** Workspaces other than the active one that the user unfolded in the sidebar. */
+const otherWorkspaceExpanded = signal<Record<string, boolean>>({});
+/** Rows past the preview are drawn only for workspaces whose list was expanded. */
+const sessionPreviewExpanded = signal<Record<string, boolean>>({});
+
+interface OtherWorkspaceSessions {
+  rows: SessionSummary[];
+  loading: boolean;
+  error: string;
+  hasMore: boolean;
+  cursor: string | null;
+}
+const otherWorkspaceSessions = signal<Record<string, OtherWorkspaceSessions>>({});
+const EMPTY_OTHER_SESSIONS: OtherWorkspaceSessions = {
+  rows: [],
+  loading: false,
+  error: "",
+  hasMore: false,
+  cursor: null,
+};
+
+/** Reads one page of another workspace's catalogue; `more` appends the next page. */
+async function loadOtherWorkspaceSessions(workspaceId: string, more = false): Promise<void> {
+  const current = otherWorkspaceSessions()[workspaceId];
+  if (current?.loading) return;
+  if (more && !current?.cursor) return;
+  const patch = (next: Partial<OtherWorkspaceSessions>) =>
+    otherWorkspaceSessions.update(all => ({
+      ...all,
+      [workspaceId]: {
+        ...(all[workspaceId] ?? EMPTY_OTHER_SESSIONS),
+        ...next,
+      },
+    }));
+  patch({ loading: true, error: "" });
+  try {
+    const page = await listSessions(
+      workspaceId,
+      OTHER_WORKSPACE_PAGE,
+      more ? current?.cursor ?? undefined : undefined,
+    );
+    const incoming = (page.sessions ?? []).filter(item => !isSessionArchived(item));
+    const known = more ? otherWorkspaceSessions()[workspaceId]?.rows ?? [] : [];
+    const seen = new Set(known.map(item => item.sessionId));
+    patch({
+      rows: [...known, ...incoming.filter(item => !seen.has(item.sessionId))],
+      loading: false,
+      hasMore: page.hasMore === true,
+      cursor: page.nextCursor ?? null,
+    });
+    if (more) sessionPreviewExpanded.update(cur => ({ ...cur, [workspaceId]: true }));
+  } catch (error) {
+    patch({ loading: false, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function previewRows(workspaceId: string, rows: SessionSummary[]): SessionSummary[] {
+  return sessionPreviewExpanded()[workspaceId] ? rows : rows.slice(0, SESSION_PREVIEW_COUNT);
+}
+
+function SidebarHint(props: { text: string; tone?: "danger" }) {
+  return (
+    <Text
+      style={{
+        paddingHorizontal: 8,
+        paddingVertical: 5,
+        color: props.tone === "danger" ? palette().danger : palette().chromeTextMuted,
+        fontSize: textSize(12),
+        lineHeight: textLineHeight(12, 1.4),
+      }}
+    >
+      {props.text}
+    </Text>
+  );
+}
+
+function SidebarTextButton(props: { label: string; accessibilityLabel: string; onPress: () => void }) {
+  return (
+    <View
+      role="button"
+      accessibilityLabel={props.accessibilityLabel}
+      onPress={props.onPress}
+      style={{
+        minHeight: 26,
+        justifyContent: "center",
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: radii.xs,
+        borderCurve: "continuous",
+        cursor: "pointer",
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ backgroundColor: palette().chromeHover }}
+      activeStyle={{ backgroundColor: palette().chromeActive }}
+      focusVisibleStyle={{
+        outlineWidth: 2,
+        outlineColor: palette().chromeAccent,
+        outlineOffset: -1,
+      }}
+    >
+      <Text
+        style={{
+          color: palette().chromeTextMuted,
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.35),
+          fontWeight: "500",
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Under a workspace's sessions: "Show N more" past the preview, "Show less" once
+ * expanded, and the host's next page when the loaded rows are all shown.
+ */
+function SessionListFooter(props: {
+  workspaceId: string;
+  total: number;
+  hostHasMore: boolean;
+  accessibilityLabel: string;
+  onLoadMore: () => void;
+}) {
+  const expandedList = () => Boolean(sessionPreviewExpanded()[props.workspaceId]);
+  const hidden = () => Math.max(0, props.total - SESSION_PREVIEW_COUNT);
+  return (
+    <View style={{ gap: 1 }}>
+      <If when={!expandedList() && hidden() > 0}>
+        <SidebarTextButton
+          label={tr("shell.showMore", { count: hidden() })}
+          accessibilityLabel={`sessions-show-more-${props.workspaceId}`}
+          onPress={() => sessionPreviewExpanded.update(cur => ({ ...cur, [props.workspaceId]: true }))}
+        />
+      </If>
+      <If when={(expandedList() || hidden() === 0) && props.hostHasMore}>
+        <SidebarTextButton
+          label={tr("nav.loadMoreThreads")}
+          accessibilityLabel={props.accessibilityLabel}
+          onPress={props.onLoadMore}
+        />
+      </If>
+      <If when={expandedList() && hidden() > 0}>
+        <SidebarTextButton
+          label={tr("shell.showLess")}
+          accessibilityLabel={`sessions-show-less-${props.workspaceId}`}
+          onPress={() => sessionPreviewExpanded.update(cur => ({ ...cur, [props.workspaceId]: false }))}
+        />
       </If>
     </View>
   );
@@ -1303,6 +1519,19 @@ function WorkspaceRowBlock(props: {
   const hovered = signal(false);
   const isCurrent = () => activeWorkspace()?.id === props.id;
   const isCollapsed = () => Boolean(collapsedWorkspaces()[props.id]);
+  /** The active workspace is open unless folded; another one only when unfolded. */
+  const expanded = () =>
+    props.showNestedSessions &&
+    (isCurrent() ? !isCollapsed() : Boolean(otherWorkspaceExpanded()[props.id]));
+  const toggleExpanded = () => {
+    if (isCurrent()) {
+      toggleWorkspaceCollapsed(props.id);
+      return;
+    }
+    const next = !otherWorkspaceExpanded()[props.id];
+    otherWorkspaceExpanded.update(cur => ({ ...cur, [props.id]: next }));
+    if (next) void loadOtherWorkspaceSessions(props.id);
+  };
   const remoteHost = () =>
     remoteSshHost({
       workspaceKind: props.workspaceKind,
@@ -1319,18 +1548,30 @@ function WorkspaceRowBlock(props: {
     props.connectionId ? connectionStatuses()[props.connectionId] ?? "disconnected" : null;
   const showActions = () => hovered() || workspaceActionMenuId() === props.id;
 
+  const openActionsMenu = () => {
+    workspaceContextPoint.set(null);
+    workspaceActionAnchor.set(actionsBtnRef());
+    workspaceActionMenuId.set(workspaceActionMenuId() === props.id ? null : props.id);
+  };
+
   return (
-    <View style={{ gap: 2 }}>
-      {/* Borderless 28px collapsible tree header — single right rail, zero reserved hover width */}
+    <View style={{ gap: 1 }}>
+      {/* 30px collapsible workspace header; the actions sit over the trailing count on hover */}
       <View
         onMouseEnter={() => hovered.set(true)}
         onMouseLeave={() => hovered.set(false)}
+        onContextMenu={e => {
+          workspaceActionAnchor.set(null);
+          workspaceContextPoint.set(e.pagePosition);
+          workspaceActionMenuId.set(props.id);
+        }}
         style={{
           position: "relative",
-          height: 28,
+          minHeight: 30,
+          height: 30,
           paddingLeft: 4,
-          paddingRight: showActions() ? 2 : 6,
-          borderRadius: radii.sm,
+          paddingRight: 6,
+          borderRadius: radii.xs,
           borderCurve: "continuous",
           backgroundColor: "transparent",
           flexDirection: "row",
@@ -1347,7 +1588,7 @@ function WorkspaceRowBlock(props: {
           accessibilityLabel={`workspace-row-${props.id}`}
           accessibilityState={{
             selected: isCurrent(),
-            expanded: props.showNestedSessions && isCurrent() && !isCollapsed(),
+            expanded: expanded(),
           }}
           tooltip={
             <TooltipBubble
@@ -1369,7 +1610,7 @@ function WorkspaceRowBlock(props: {
             borderRadius: radii.xs,
             flexDirection: "row",
             alignItems: "center",
-            gap: 5,
+            gap: 6,
             cursor: "pointer",
             ...paintTransition(MOTION_DURATION.fast),
           }}
@@ -1380,22 +1621,35 @@ function WorkspaceRowBlock(props: {
             outlineOffset: -1,
           }}
         >
-          <Icon
-            name={
-              props.showNestedSessions && isCurrent() && !isCollapsed()
-                ? "chevron-down"
-                : "chevron-right"
-            }
-            size={11}
-            color={palette().chromeTextMuted}
-          />
+          <View
+            role="button"
+            hitSlop={4}
+            accessibilityLabel={`workspace-expand-${props.id}`}
+            accessibilityState={{ expanded: expanded() }}
+            onPress={toggleExpanded}
+            style={{
+              width: 14,
+              height: 20,
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: radii.xs,
+              cursor: "pointer",
+            }}
+            hoverStyle={{ backgroundColor: palette().chromeActive }}
+          >
+            <Icon
+              name={expanded() ? "chevron-down" : "chevron-right"}
+              size={11}
+              color={palette().chromeTextMuted}
+            />
+          </View>
           <Icon
             name={workspaceKindIcon({
               workspaceKind: props.workspaceKind,
               connectionId: props.connectionId,
               sshHost: props.sshHost,
             })}
-            size={13.5}
+            size={16}
             color={isCurrent() ? palette().chromeAccent : palette().chromeTextMuted}
           />
           <View
@@ -1412,9 +1666,9 @@ function WorkspaceRowBlock(props: {
                 flexShrink: 1,
                 minWidth: 0,
                 color: isCurrent() ? palette().chromeText : palette().chromeTextMuted,
-                fontSize: textSize(12.5),
-                lineHeight: textLineHeight(12.5, 1.32),
-                fontWeight: isCurrent() ? "600" : "500",
+                fontSize: textSize(13),
+                lineHeight: textLineHeight(13, 1.3),
+                fontWeight: "600",
                 numberOfLines: 1,
                 textOverflow: "ellipsis-middle",
               }}
@@ -1425,7 +1679,7 @@ function WorkspaceRowBlock(props: {
               <Badge label={tr("ssh.ssh")} tone="neutral" size="xs" surface="chrome" />
             </If>
           </View>
-          <If when={!showActions()}>
+          <View style={{ opacity: showActions() ? 0 : 1, flexDirection: "row", alignItems: "center", gap: 6 }}>
             <If when={isRemote() && Boolean(props.connectionId)}>
               <StatusDot
                 surface="chrome"
@@ -1454,8 +1708,8 @@ function WorkspaceRowBlock(props: {
                 style={{
                   flexShrink: 0,
                   color: palette().chromeTextMuted,
-                  fontSize: textSize(10.5),
-                  lineHeight: textLineHeight(10.5, 1.3),
+                  fontSize: textSize(11),
+                  lineHeight: textLineHeight(11, 1.3),
                   fontWeight: "500",
                   fontVariant: ["tabular-nums"],
                 }}
@@ -1463,88 +1717,56 @@ function WorkspaceRowBlock(props: {
                 {String(sessionTotal())}
               </Text>
             </If>
-          </If>
+          </View>
         </View>
 
-        <If when={showActions()}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 1,
-              flexShrink: 0,
+        {/* One set of actions, always mounted: hidden until hover or keyboard focus. */}
+        <View
+          style={{
+            position: "absolute",
+            right: 3,
+            top: 4,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 1,
+            opacity: showActions() ? 1 : 0,
+            ...paintTransition(MOTION_DURATION.fast),
+          }}
+          focusWithinStyle={{ opacity: 1 }}
+        >
+          <IconButton
+            icon="plus"
+            size="xs"
+            iconSize={12}
+            surface="chrome"
+            style={{ width: 22, height: 22 }}
+            accessibilityLabel={`workspace-new-session-${props.id}`}
+            tooltip={tr("nav.newSession")}
+            onPress={() => {
+              expandWorkspace(props.id);
+              selectWorkspace(props.id);
+              void createSessionInWorkspace(tr("nav.newSession"));
+              navigateScene("sessions");
             }}
-          >
+          />
+          <View ref={el => actionsBtnRef.set(el)} style={{ flexShrink: 0 }}>
             <IconButton
-              icon="plus"
+              icon="more"
               size="xs"
               iconSize={12}
               surface="chrome"
               style={{ width: 22, height: 22 }}
-              accessibilityLabel={`workspace-new-session-${props.id}`}
-              tooltip={tr("nav.newSession")}
-              onPress={() => {
-                expandWorkspace(props.id);
-                selectWorkspace(props.id);
-                void createSessionInWorkspace(tr("nav.newSession"));
-                navigateScene("sessions");
-              }}
+              accessibilityLabel={`workspace-actions-${props.id}`}
+              tooltip={tr("nav.workspaceOptions")}
+              onPress={openActionsMenu}
             />
-            <View ref={el => actionsBtnRef.set(el)} style={{ flexShrink: 0 }}>
-              <IconButton
-                icon="more"
-                size="xs"
-                iconSize={12}
-                surface="chrome"
-                style={{ width: 22, height: 22 }}
-                accessibilityLabel={`workspace-actions-${props.id}`}
-                tooltip={tr("nav.workspaceOptions")}
-                onPress={() => {
-                  workspaceActionAnchor.set(actionsBtnRef());
-                  workspaceActionMenuId.set(
-                    workspaceActionMenuId() === props.id ? null : props.id,
-                  );
-                }}
-              />
-            </View>
           </View>
-        </If>
-
-        <If when={!showActions()}>
-          <View
-            ref={el => actionsBtnRef.set(el)}
-            role="button"
-            accessibilityLabel={`workspace-actions-${props.id}`}
-            onPress={() => {
-              workspaceActionAnchor.set(actionsBtnRef());
-              workspaceActionMenuId.set(
-                workspaceActionMenuId() === props.id ? null : props.id,
-              );
-            }}
-            style={{
-              position: "absolute",
-              right: 2,
-              top: 3,
-              width: 1,
-              height: 1,
-              opacity: 0,
-            }}
-          />
-        </If>
+        </View>
       </View>
 
-      <If when={props.showNestedSessions && isCurrent() && !isCollapsed()}>
-        <View
-          style={{
-            marginLeft: 9,
-            paddingLeft: 10,
-            paddingVertical: 1,
-            borderLeftWidth: 1,
-            borderColor: palette().chromeBorder,
-            gap: 1,
-          }}
-        >
-          <Each of={visibleSessionRows()} key={item => item.sessionId}>
+      <If when={expanded() && isCurrent()}>
+        <View style={{ paddingLeft: 20, paddingVertical: 1, gap: 1 }}>
+          <Each of={previewRows(props.id, visibleSessionRows())} key={item => item.sessionId}>
             {row => {
               const mark = () =>
                 statusOfSession()(
@@ -1569,73 +1791,373 @@ function WorkspaceRowBlock(props: {
             }}
           </Each>
           <If when={visibleSessionRows().length === 0}>
-            <Text
-              style={{
-                paddingHorizontal: 8,
-                paddingVertical: 5,
-                color: palette().chromeTextMuted,
-                fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.4),
-              }}
-            >
-              {showArchivedSessions() ? tr("nav.noArchivedSessions") : tr("nav.noSessions")}
-            </Text>
+            <SidebarHint
+              text={showArchivedSessions() ? tr("nav.noArchivedSessions") : tr("nav.noSessions")}
+            />
           </If>
-          <If when={!showArchivedSessions() && sessionHasMore()}>
-            <View
-              role="button"
-              accessibilityLabel="load-more-sessions"
-              onPress={() => void loadMoreSessions()}
-              style={{
-                minHeight: 26,
-                justifyContent: "center",
-                paddingHorizontal: 8,
-                paddingVertical: 4,
-                borderRadius: radii.xs,
-                borderCurve: "continuous",
-                cursor: "pointer",
-                ...paintTransition(MOTION_DURATION.fast),
-              }}
-              hoverStyle={{ backgroundColor: palette().chromeHover }}
-              activeStyle={{ backgroundColor: palette().chromeActive }}
-              focusVisibleStyle={{
-                outlineWidth: 2,
-                outlineColor: palette().chromeAccent,
-                outlineOffset: -1,
-              }}
-            >
-              <Text
-                style={{
-                  color: palette().chromeAccent,
-                  fontSize: textSize(11),
-                  lineHeight: textLineHeight(11, 1.35),
-                  fontWeight: "500",
+          <SessionListFooter
+            workspaceId={props.id}
+            total={visibleSessionRows().length}
+            hostHasMore={!showArchivedSessions() && sessionHasMore()}
+            accessibilityLabel="load-more-sessions"
+            onLoadMore={() => void loadMoreSessions()}
+          />
+        </View>
+      </If>
+
+      {/* Another workspace's sessions, read when its row unfolds, without switching to it */}
+      <If when={expanded() && !isCurrent()}>
+        <View style={{ paddingLeft: 20, paddingVertical: 1, gap: 1 }}>
+          <If when={otherWorkspaceSessions()[props.id]?.loading && !otherWorkspaceSessions()[props.id]?.rows.length}>
+            <SidebarHint text={tr("shell.sessionsLoading")} />
+          </If>
+          <If when={otherWorkspaceSessions()[props.id]?.error ?? ""}>
+            {message => <SidebarHint text={localizeHostError(message())} tone="danger" />}
+          </If>
+          <Each
+            of={previewRows(props.id, otherWorkspaceSessions()[props.id]?.rows ?? [])}
+            key={item => item.sessionId}
+          >
+            {row => (
+              <SessionSidebarRow
+                sessionId={row().sessionId}
+                title={sessionDisplayTitle(row())}
+                active={false}
+                archived={isSessionArchived(row())}
+                onPress={() => {
+                  const sessionId = row().sessionId;
+                  selectWorkspace(props.id);
+                  selectSession(sessionId);
+                  navigateScene("sessions");
                 }}
-              >
-                {tr("nav.loadMoreThreads")}
-              </Text>
-            </View>
+              />
+            )}
+          </Each>
+          <If
+            when={
+              otherWorkspaceSessions()[props.id] !== undefined &&
+              !otherWorkspaceSessions()[props.id]!.loading &&
+              !otherWorkspaceSessions()[props.id]!.error &&
+              otherWorkspaceSessions()[props.id]!.rows.length === 0
+            }
+          >
+            <SidebarHint text={tr("nav.noSessions")} />
           </If>
+          <SessionListFooter
+            workspaceId={props.id}
+            total={otherWorkspaceSessions()[props.id]?.rows.length ?? 0}
+            hostHasMore={Boolean(otherWorkspaceSessions()[props.id]?.hasMore)}
+            accessibilityLabel={`load-more-sessions-${props.id}`}
+            onLoadMore={() => void loadOtherWorkspaceSessions(props.id, true)}
+          />
         </View>
       </If>
     </View>
   );
 }
 
+/** Placeholder rows while the first workspace read is in flight (never "No workspace"). */
+function SidebarSkeleton() {
+  const widths = [0.62, 0.48, 0.7];
+  return (
+    <View accessibilityLabel={tr("shell.sidebarLoading")} style={{ gap: 4, paddingVertical: 2 }}>
+      <Each of={widths} key={(_w, index) => String(index)}>
+        {width => (
+          <View
+            style={{
+              height: 30,
+              paddingHorizontal: 8,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <View
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 4,
+                backgroundColor: palette().chromeHover,
+              }}
+            />
+            <View
+              style={{
+                height: 10,
+                width: `${Math.round(width() * 100)}%`,
+                borderRadius: 5,
+                backgroundColor: palette().chromeHover,
+              }}
+            />
+          </View>
+        )}
+      </Each>
+    </View>
+  );
+}
+
+const RECENT_PREVIEW_COUNT = 5;
+const recentExpanded = signal(false);
+
+/**
+ * Workspaces the host remembers but has not opened. A press reopens one through
+ * `open_workspace` (the host makes it active), and the row's remove action drops
+ * it from the host's recent list with `remove_recent_workspace`.
+ */
+function RecentWorkspacesGroup() {
+  const visible = () =>
+    recentExpanded() ? recentWorkspaces() : recentWorkspaces().slice(0, RECENT_PREVIEW_COUNT);
+  const hiddenCount = () => Math.max(0, recentWorkspaces().length - RECENT_PREVIEW_COUNT);
+  return (
+    <If when={recentWorkspaces().length > 0}>
+      <View style={{ gap: 2, paddingTop: 6 }}>
+        <View style={{ height: 24, paddingLeft: 8, flexDirection: "row", alignItems: "center" }}>
+          <Text
+            style={{
+              color: palette().chromeTextMuted,
+              fontSize: textSize(11),
+              lineHeight: textLineHeight(11, 1.3),
+              fontWeight: "500",
+              numberOfLines: 1,
+            }}
+          >
+            {tr("shell.recent")}
+          </Text>
+        </View>
+        <Each of={visible()} key={ws => ws.id}>
+          {ws => <RecentWorkspaceRow record={ws()} />}
+        </Each>
+        <If when={hiddenCount() > 0}>
+          <View
+            role="button"
+            accessibilityLabel="recent-workspaces-toggle"
+            onPress={() => recentExpanded.update(open => !open)}
+            style={{
+              height: 26,
+              paddingHorizontal: 8,
+              justifyContent: "center",
+              borderRadius: radii.sm,
+              borderCurve: "continuous",
+              cursor: "pointer",
+              ...paintTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{ backgroundColor: palette().chromeHover }}
+            focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().chromeAccent, outlineOffset: -1 }}
+          >
+            <Text
+              style={{
+                color: palette().chromeTextMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.3),
+              }}
+            >
+              {recentExpanded() ? tr("shell.showLess") : tr("shell.showMore", { count: hiddenCount() })}
+            </Text>
+          </View>
+        </If>
+      </View>
+    </If>
+  );
+}
+
+function RecentWorkspaceRow(props: { record: WorkspaceRecord }) {
+  const hovered = signal(false);
+  const label = () => basenameLabel(props.record.rootPath, props.record.name);
+  return (
+    <View
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
+      style={{
+        height: 30,
+        paddingLeft: 8,
+        paddingRight: 3,
+        borderRadius: radii.sm,
+        borderCurve: "continuous",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ backgroundColor: palette().chromeHover }}
+    >
+      <View
+        role="button"
+        accessibilityLabel={`recent-workspace-${props.record.id}`}
+        tooltip={<TooltipBubble text={tr("shell.recentReopen", { path: props.record.rootPath })} />}
+        onPress={() => void openRecentWorkspace(props.record)}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          height: "100%",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          cursor: "pointer",
+        }}
+        focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().chromeAccent, outlineOffset: -1 }}
+      >
+        <Icon name={workspaceKindIcon(props.record)} size={15} color={palette().chromeTextMuted} />
+        <Text
+          style={{
+            flex: 1,
+            minWidth: 0,
+            color: palette().chromeTextMuted,
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 1.3),
+            fontWeight: "400",
+            numberOfLines: 1,
+            textOverflow: "ellipsis-middle",
+          }}
+        >
+          {label()}
+        </Text>
+      </View>
+      <View style={{ opacity: hovered() ? 1 : 0, flexShrink: 0 }} focusWithinStyle={{ opacity: 1 }}>
+        <IconButton
+          icon="close"
+          size="xs"
+          iconSize={11}
+          surface="chrome"
+          style={{ width: 22, height: 22 }}
+          accessibilityLabel={`recent-workspace-remove-${props.record.id}`}
+          tooltip={tr("shell.recentRemove")}
+          onPress={() => {
+            const name = label();
+            void forgetRecentWorkspace(props.record.id).then(() => {
+              if (!recentWorkspaces().some(item => item.id === props.record.id)) {
+                pushToast(tr("shell.recentRemoved", { name }), "info");
+              }
+            });
+          }}
+        />
+      </View>
+    </View>
+  );
+}
+
+interface WorkspaceTarget {
+  id: string;
+  name: string;
+  rootPath: string;
+}
+
+const workspaceRenameTarget = signal<WorkspaceTarget | null>(null);
+const workspaceRenameDraft = signal("");
+const assistantActionTarget = signal<(WorkspaceTarget & { kind: "reset" | "delete" }) | null>(null);
+const assistantActionBusy = signal(false);
+
+function isAssistantWorkspace(ws: { workspaceKind?: string }): boolean {
+  return (ws.workspaceKind ?? "").trim().toLowerCase().includes("assistant");
+}
+
+function errorText(error: unknown): string {
+  return localizeHostError(error instanceof Error ? error.message : String(error));
+}
+
+async function copyWorkspacePath(path: string): Promise<void> {
+  try {
+    await Clipboard.writeText(path);
+    pushToast(tr("shell.ws.pathCopied"), "success");
+  } catch (error) {
+    pushToast(tr("shell.ws.copyPathFailed", { error: errorText(error) }), "error");
+  }
+}
+
+async function revealWorkspaceFolder(ws: WorkspaceTarget): Promise<void> {
+  try {
+    await revealInExplorer(ws.rootPath, ws.id);
+  } catch (error) {
+    pushToast(tr("shell.ws.revealFailed", { error: errorText(error) }), "error");
+  }
+}
+
+async function runAssistantAction(): Promise<void> {
+  const target = assistantActionTarget();
+  if (!target || assistantActionBusy()) return;
+  assistantActionBusy.set(true);
+  try {
+    if (target.kind === "reset") {
+      await invokeCommand<unknown>("reset_assistant_workspace", { workspaceId: target.id });
+      pushToast(tr("shell.ws.assistantReset", { name: target.name }), "success");
+    } else {
+      await invokeCommand<unknown>("delete_assistant_workspace", { workspaceId: target.id });
+      pushToast(tr("shell.ws.assistantDeleted", { name: target.name }), "success");
+    }
+    assistantActionTarget.set(null);
+    await loadWorkspaces();
+  } catch (error) {
+    pushToast(errorText(error), "error");
+  } finally {
+    assistantActionBusy.set(false);
+  }
+}
+
 function workspaceDropdownItems(workspaceId: string): DropdownMenuItem[] {
   const ws = workspaces().find(item => item.id === workspaceId);
   if (!ws) return [];
+  const remote = isRemoteWorkspaceRecord(ws);
+  const target: WorkspaceTarget = {
+    id: ws.id,
+    name: basenameLabel(ws.rootPath, ws.name),
+    rootPath: ws.rootPath,
+  };
+  const focusWorkspace = () => {
+    expandWorkspace(ws.id);
+    selectWorkspace(ws.id);
+  };
   const items: DropdownMenuItem[] = [
     {
       id: "new-session",
       label: tr("nav.newSession"),
       icon: "plus",
       onSelect: () => {
-        expandWorkspace(ws.id);
-        selectWorkspace(ws.id);
+        focusWorkspace();
         void createSessionInWorkspace(tr("nav.newSession"));
         navigateScene("sessions");
       },
+    },
+    {
+      id: "new-terminal",
+      label: tr("shell.ws.newTerminal"),
+      icon: "terminal-square",
+      onSelect: () => {
+        focusWorkspace();
+        navigateScene("terminal");
+        void openTerminal(ws.id, ws.rootPath);
+      },
+    },
+    {
+      id: "open-files",
+      label: tr("shell.ws.openFiles"),
+      icon: "folder-open",
+      onSelect: () => {
+        focusWorkspace();
+        navigateScene("files");
+      },
+    },
+    {
+      id: "rename-workspace",
+      label: tr("common.renameEllipsis"),
+      icon: "edit",
+      separator: true,
+      onSelect: () => {
+        workspaceRenameDraft.set(target.name);
+        workspaceRenameTarget.set(target);
+      },
+    },
+    {
+      id: "copy-path",
+      label: tr("shell.ws.copyPath"),
+      icon: "copy",
+      onSelect: () => void copyWorkspacePath(ws.rootPath),
+    },
+    {
+      id: "reveal-workspace",
+      label: tr("shell.ws.reveal"),
+      icon: "external-link",
+      // The file manager is this machine's: a remote root or a peer's folder has none here.
+      disabled: remote || Boolean(peerScope()),
+      hint: remote || peerScope() ? tr("shell.ws.revealLocalOnly") : undefined,
+      onSelect: () => void revealWorkspaceFolder(target),
     },
   ];
   if (ws.connectionId) {
@@ -1645,6 +2167,7 @@ function workspaceDropdownItems(workspaceId: string): DropdownMenuItem[] {
         id: "remote-browse",
         label: tr("nav.browseRemoteFiles"),
         icon: "folder",
+        separator: true,
         onSelect: () =>
           void openRemoteFileBrowser(ws.connectionId!, ws.rootPath, {
             connectionName: ws.name,
@@ -1674,12 +2197,30 @@ function workspaceDropdownItems(workspaceId: string): DropdownMenuItem[] {
       },
     );
   }
+  if (isAssistantWorkspace(ws)) {
+    items.push(
+      {
+        id: "reset-assistant",
+        label: tr("shell.ws.resetAssistant"),
+        icon: "undo",
+        separator: true,
+        onSelect: () => assistantActionTarget.set({ ...target, kind: "reset" }),
+      },
+      {
+        id: "delete-assistant",
+        label: tr("shell.ws.deleteAssistant"),
+        icon: "trash",
+        danger: true,
+        onSelect: () => assistantActionTarget.set({ ...target, kind: "delete" }),
+      },
+    );
+  }
   items.push({
     id: "close-workspace",
     label: tr("nav.closeWorkspace"),
     icon: "close",
-    danger: true,
-    separator: true,
+    danger: !isAssistantWorkspace(ws),
+    separator: !isAssistantWorkspace(ws),
     onSelect: () => {
       if (ws.connectionId) {
         void closeWorkspaceRecord(ws.id);
@@ -1689,6 +2230,114 @@ function workspaceDropdownItems(workspaceId: string): DropdownMenuItem[] {
     },
   });
   return items;
+}
+
+/** Rename and assistant reset/delete confirmations opened from a workspace menu. */
+function WorkspaceDialogs() {
+  const submitRename = () => {
+    const target = workspaceRenameTarget();
+    const next = workspaceRenameDraft().trim();
+    workspaceRenameTarget.set(null);
+    if (target && next && next !== target.name) void renameWorkspace(target.id, next);
+  };
+  return (
+    <View>
+      <ModalDialog
+        open={Boolean(workspaceRenameTarget())}
+        title={tr("shell.ws.renameTitle")}
+        size="sm"
+        accessibilityLabel="workspace-rename-modal"
+        onClose={() => workspaceRenameTarget.set(null)}
+        footer={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Button
+              label={tr("common.cancel")}
+              variant="secondary"
+              size="sm"
+              onPress={() => workspaceRenameTarget.set(null)}
+            />
+            <Button
+              label={tr("common.save")}
+              variant="primary"
+              size="sm"
+              disabled={!workspaceRenameDraft().trim()}
+              accessibilityLabel="workspace-rename-save"
+              onPress={submitRename}
+            />
+          </View>
+        }
+      >
+        <TextField
+          autoFocus
+          label={tr("shell.ws.nameLabel")}
+          value={workspaceRenameDraft()}
+          accessibilityLabel="workspace-rename-input"
+          onChange={v => workspaceRenameDraft.set(v)}
+          onSubmit={() => submitRename()}
+        />
+      </ModalDialog>
+
+      <ModalDialog
+        open={Boolean(assistantActionTarget())}
+        title={
+          assistantActionTarget()?.kind === "delete"
+            ? tr("shell.ws.deleteAssistantTitle", { name: assistantActionTarget()?.name ?? "" })
+            : tr("shell.ws.resetAssistantTitle", { name: assistantActionTarget()?.name ?? "" })
+        }
+        size="sm"
+        accessibilityLabel="assistant-action-modal"
+        onClose={() => assistantActionTarget.set(null)}
+        footer={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Button
+              label={tr("common.cancel")}
+              variant="secondary"
+              size="sm"
+              onPress={() => assistantActionTarget.set(null)}
+            />
+            <Button
+              label={
+                assistantActionTarget()?.kind === "delete"
+                  ? tr("common.delete")
+                  : tr("shell.ws.resetConfirm")
+              }
+              variant="danger"
+              size="sm"
+              loading={assistantActionBusy()}
+              accessibilityLabel="assistant-action-confirm"
+              onPress={() => void runAssistantAction()}
+            />
+          </View>
+        }
+      >
+        <View style={{ gap: 8 }}>
+          <Text
+            style={{
+              color: palette().textSecondary,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.5),
+            }}
+          >
+            {assistantActionTarget()?.kind === "delete"
+              ? tr("shell.ws.deleteAssistantMessage")
+              : tr("shell.ws.resetAssistantMessage")}
+          </Text>
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontFamily: fontMono,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.4),
+              numberOfLines: 2,
+              textOverflow: "ellipsis-middle",
+            }}
+          >
+            {assistantActionTarget()?.rootPath ?? ""}
+          </Text>
+        </View>
+      </ModalDialog>
+    </View>
+  );
 }
 
 function SettingsNavBlock() {
@@ -1735,34 +2384,292 @@ function SettingsNavBlock() {
         </Text>
       </View>
 
-      <View style={{ gap: 2, paddingTop: 4 }}>
-        <Text
+      <View style={{ paddingTop: 4 }}>
+        <SettingsNavigation />
+      </View>
+    </View>
+  );
+}
+
+// ── App updates (the desktop's update menu: check, download, install) ─────────
+// Every update command is controller local, so a driven peer never answers them.
+
+type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "ready" | "installing";
+const updatePhase = signal<UpdatePhase>("idle");
+const updateVersion = signal<string>("");
+let updateStateRead = false;
+
+async function readPendingUpdate(): Promise<void> {
+  if (updateStateRead || !inAppUpdatesAvailable()) return;
+  updateStateRead = true;
+  try {
+    const pending = await invokeCommand<{ version?: string } | null>("get_pending_update", {});
+    if (pending?.version) {
+      updateVersion.set(pending.version);
+      updatePhase.set("ready");
+    }
+  } catch (error) {
+    console.warn("Failed to read pending update", error);
+  }
+}
+
+async function checkForAppUpdates(): Promise<void> {
+  if (updatePhase() === "checking" || updatePhase() === "downloading" || updatePhase() === "installing") {
+    return;
+  }
+  const previous = updatePhase();
+  updatePhase.set("checking");
+  try {
+    const result = await invokeCommand<{
+      updateAvailable?: boolean;
+      currentVersion?: string;
+      latestVersion?: string | null;
+    }>("check_for_updates", {});
+    if (result?.updateAvailable && result.latestVersion) {
+      if (previous === "ready" && updateVersion() === result.latestVersion) {
+        updatePhase.set("ready");
+        pushToast(tr("shell.updates.readyVersion", { version: result.latestVersion }), "info");
+      } else {
+        updateVersion.set(result.latestVersion);
+        updatePhase.set("available");
+        pushToast(tr("shell.updates.available", { version: result.latestVersion }), "info");
+      }
+    } else {
+      updatePhase.set(previous === "ready" ? "ready" : "idle");
+      pushToast(tr("shell.updates.upToDate", { version: result?.currentVersion ?? "" }), "success");
+    }
+  } catch (error) {
+    updatePhase.set(previous === "ready" ? "ready" : "idle");
+    pushToast(tr("shell.updates.failed", { error: errorText(error) }), "error");
+  }
+}
+
+async function downloadAppUpdate(): Promise<void> {
+  const expected = updateVersion();
+  if (!expected || updatePhase() !== "available") return;
+  updatePhase.set("downloading");
+  try {
+    const pending = await invokeCommand<{ version?: string; installError?: string }>("download_update", {
+      expectedVersion: expected,
+    });
+    updateVersion.set(pending?.version || expected);
+    updatePhase.set("ready");
+    pushToast(tr("shell.updates.readyVersion", { version: updateVersion() }), "success");
+  } catch (error) {
+    updatePhase.set("available");
+    pushToast(tr("shell.updates.failed", { error: errorText(error) }), "error");
+  }
+}
+
+async function installAppUpdate(): Promise<void> {
+  const version = updateVersion();
+  if (!version || updatePhase() !== "ready") return;
+  updatePhase.set("installing");
+  try {
+    await invokeCommand<unknown>("install_pending_update", { version });
+  } catch (error) {
+    updatePhase.set("ready");
+    pushToast(tr("shell.updates.failed", { error: errorText(error) }), "error");
+  }
+}
+
+function updateMenuItem(): DropdownMenuItem {
+  // A native NSH window does not run Tauri's updater; the menu says so instead of failing.
+  if (!inAppUpdatesAvailable()) {
+    return {
+      id: "footer-updates",
+      label: tr("shell.updates.check"),
+      icon: "refresh",
+      disabled: true,
+      hint: tr("shell.updates.unsupported"),
+    };
+  }
+  switch (updatePhase()) {
+    case "checking":
+      return { id: "footer-updates", label: tr("shell.updates.checking"), icon: "refresh", disabled: true };
+    case "available":
+      return {
+        id: "footer-updates",
+        label: tr("shell.updates.download", { version: updateVersion() }),
+        icon: "download",
+        accessibilityLabel: "footer-update-download",
+        onSelect: () => void downloadAppUpdate(),
+      };
+    case "downloading":
+      return { id: "footer-updates", label: tr("shell.updates.downloading"), icon: "download", disabled: true };
+    case "ready":
+      return {
+        id: "footer-updates",
+        label: tr("shell.updates.install", { version: updateVersion() }),
+        icon: "refresh",
+        accessibilityLabel: "footer-update-install",
+        onSelect: () => void installAppUpdate(),
+      };
+    case "installing":
+      return { id: "footer-updates", label: tr("shell.updates.installing"), icon: "refresh", disabled: true };
+    default:
+      return {
+        id: "footer-updates",
+        label: tr("shell.updates.check"),
+        icon: "refresh",
+        accessibilityLabel: "footer-update-check",
+        onSelect: () => void checkForAppUpdates(),
+      };
+  }
+}
+
+const footerMenuOpen = signal(false);
+const footerMenuTriggerRef = signal<ViewRef | null>(null);
+
+function footerMenuItems(): DropdownMenuItem[] {
+  return [
+    {
+      id: "footer-notifications",
+      label: tr("shell.notifications.title"),
+      icon: "bell",
+      trailingHint:
+        unreadNotificationCount() > 0 ? String(unreadNotificationCount()) : undefined,
+      onSelect: () => notificationsOpen.set(true),
+    },
+    { ...updateMenuItem(), separator: true },
+    {
+      id: "footer-fullscreen",
+      label: tr("shell.fullscreen"),
+      icon: "maximize",
+      disabled: !nativeWindow(),
+      onSelect: () => void toggleMainWindowFullscreen(),
+    },
+    {
+      id: "footer-feedback",
+      label: tr("shell.feedback"),
+      icon: "message-circle",
+      // The desktop's feedback form address is a build-time setting this frontend does not carry.
+      onSelect: () => pushToast(tr("shell.feedbackUnavailable"), "warning"),
+    },
+    {
+      id: "footer-settings",
+      label: tr("nav.settings"),
+      icon: "settings",
+      separator: true,
+      shortcut: shortcutLabel("mod+,", "⌘,"),
+      onSelect: () => navigateScene("settings"),
+    },
+    {
+      id: "footer-about",
+      label: tr("shell.about.title"),
+      icon: "info",
+      accessibilityLabel: "footer-about",
+      onSelect: () => openAboutDialog(),
+    },
+  ];
+}
+
+const notificationsOpen = signal(false);
+const notificationsTriggerRef = signal<ViewRef | null>(null);
+
+function notificationMenuItems(): DropdownMenuItem[] {
+  const list = notifications();
+  const items: DropdownMenuItem[] = [
+    { id: "notifications-header", label: tr("shell.notifications.title"), header: true },
+  ];
+  if (list.length === 0) {
+    items.push({
+      id: "notifications-empty",
+      label: tr("shell.notifications.empty"),
+      icon: "inbox",
+      disabled: true,
+    });
+    return items;
+  }
+  for (const entry of list.slice(0, 12)) {
+    items.push({
+      id: `notifications-${entry.id}`,
+      label: entry.title,
+      hint: entry.body,
+      icon:
+        entry.kind === "permission" ? "shield" : entry.kind === "turn-failed" ? "alert-circle" : "check-circle",
+      active: !entry.read,
+      onSelect: () => {
+        if (entry.sessionId) {
+          selectSession(entry.sessionId);
+          navigateScene("sessions");
+        }
+        markAllNotificationsRead();
+      },
+    });
+  }
+  items.push(
+    {
+      id: "notifications-mark-read",
+      label: tr("shell.notifications.markRead"),
+      icon: "check",
+      separator: true,
+      disabled: unreadNotificationCount() === 0,
+      onSelect: () => markAllNotificationsRead(),
+    },
+    {
+      id: "notifications-clear",
+      label: tr("shell.notifications.clear"),
+      icon: "trash",
+      onSelect: () => clearNotifications(),
+    },
+  );
+  return items;
+}
+
+/** Top-bar bell: the notification history and its unread count. */
+function NotificationBell() {
+  return (
+    <View ref={el => notificationsTriggerRef.set(el)} style={{ flexShrink: 0 }}>
+      <IconButton
+        icon="bell"
+        size="sm"
+        active={notificationsOpen()}
+        accessibilityLabel="topbar-notifications"
+        tooltip={tr("shell.notifications.title")}
+        onPress={() => notificationsOpen.update(open => !open)}
+      />
+      <If when={unreadNotificationCount() > 0}>
+        <View
+          focusable={false}
+          accessibilityLabel={`notifications-unread-${unreadNotificationCount()}`}
           style={{
-            paddingHorizontal: 8,
-            paddingBottom: 4,
-            color: palette().chromeTextMuted,
-            fontSize: textSize(10.5),
-            lineHeight: textLineHeight(10.5, 1.3),
-            fontWeight: "600",
-            letterSpacing: textTracking(10.5, true),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
+            pointerEvents: "none",
+            position: "absolute",
+            right: 1,
+            top: 1,
+            minWidth: 14,
+            height: 14,
+            paddingHorizontal: 3,
+            borderRadius: radii.pill,
+            backgroundColor: palette().actionSolid,
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          {tr("nav.settingsSections")}
-        </Text>
-        <Each of={SETTINGS_NAV_CATEGORIES} key={cat => cat.id}>
-          {cat => (
-            <NavRow
-              label={tr(cat().labelKey)}
-              icon={cat().icon}
-              active={selectedCategory() === cat().id}
-              accessibilityLabel={`nav-settings-cat-${cat().id}`}
-              onPress={() => selectedCategory.set(cat().id)}
-            />
-          )}
-        </Each>
-      </View>
+          <Text
+            style={{
+              color: palette().actionSolidFg,
+              fontSize: textSize(9),
+              lineHeight: textLineHeight(9, 1.1),
+              fontWeight: "600",
+              fontVariant: ["tabular-nums"],
+            }}
+          >
+            {unreadNotificationCount() > 9 ? "9+" : String(unreadNotificationCount())}
+          </Text>
+        </View>
+      </If>
+      <DropdownMenu
+        open={notificationsOpen()}
+        anchor={notificationsTriggerRef()}
+        placement="bottom"
+        align="end"
+        minWidth={300}
+        maxHeight={460}
+        items={notificationMenuItems()}
+        onClose={() => notificationsOpen.set(false)}
+      />
     </View>
   );
 }
@@ -1828,6 +2735,15 @@ function PersistentFooter() {
       onSelect: () => void openNewWorkspaceModal(),
     },
     {
+      id: "menu-open-folder",
+      label: tr("shell.openFolder"),
+      icon: "folder-open",
+      // The native picker browses this machine only.
+      disabled: Boolean(peerScope()) || !nativeWindow(),
+      hint: peerScope() ? tr("shell.ws.revealLocalOnly") : undefined,
+      onSelect: () => void pickAndOpenWorkspaceFolder(),
+    },
+    {
       id: "menu-ssh-connections",
       label: tr("nav.sshConnections"),
       icon: "server",
@@ -1846,7 +2762,7 @@ function PersistentFooter() {
   return (
     <View
       style={{
-        height: 44,
+        height: 40,
         paddingHorizontal: 8,
         borderTopWidth: 1,
         borderColor: palette().chromeBorder,
@@ -1861,10 +2777,9 @@ function PersistentFooter() {
         accessibilityState={{ selected: activeScene() === "devices" }}
         onPress={() => navigateScene("devices")}
         style={{
-          flexShrink: 1,
-          minWidth: 0,
+          flexShrink: 0,
           height: controlHeight.sm,
-          paddingHorizontal: 8,
+          paddingHorizontal: 7,
           borderRadius: radii.sm,
           borderCurve: "continuous",
           backgroundColor:
@@ -1901,9 +2816,9 @@ function PersistentFooter() {
             minWidth: 0,
             color:
               activeScene() === "devices" ? palette().chromeText : palette().chromeTextMuted,
-            fontSize: textSize(11.5),
-            lineHeight: textLineHeight(11.5, 1.3),
-            fontWeight: activeScene() === "devices" ? "600" : "500",
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.3),
+            fontWeight: activeScene() === "devices" ? "500" : "400",
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
@@ -1921,10 +2836,9 @@ function PersistentFooter() {
         accessibilityState={{ selected: activeScene() === "settings" }}
         onPress={() => navigateScene("settings")}
         style={{
-          flexShrink: 1,
-          minWidth: 0,
+          flexShrink: 0,
           height: controlHeight.sm,
-          paddingHorizontal: 8,
+          paddingHorizontal: 7,
           borderRadius: radii.sm,
           borderCurve: "continuous",
           backgroundColor:
@@ -1959,9 +2873,9 @@ function PersistentFooter() {
             minWidth: 0,
             color:
               activeScene() === "settings" ? palette().chromeText : palette().chromeTextMuted,
-            fontSize: textSize(11.5),
-            lineHeight: textLineHeight(11.5, 1.3),
-            fontWeight: activeScene() === "settings" ? "600" : "500",
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.3),
+            fontWeight: activeScene() === "settings" ? "500" : "400",
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
@@ -1970,17 +2884,7 @@ function PersistentFooter() {
         </Text>
       </View>
 
-      <View style={{ flex: 1, minWidth: 4 }} />
-
-      <View
-        style={{
-          width: 1,
-          height: 14,
-          marginHorizontal: 2,
-          backgroundColor: palette().chromeBorder,
-          flexShrink: 0,
-        }}
-      />
+      <View style={{ flex: 1, minWidth: 0 }} />
 
       <View style={{ flexDirection: "row", alignItems: "center", gap: 1, flexShrink: 0 }}>
         {/* Quick Language Switcher (中 / EN / 繁) */}
@@ -2065,7 +2969,53 @@ function PersistentFooter() {
             onPress={() => remoteMenuOpen.update(open => !open)}
           />
         </View>
+
+        <View ref={el => footerMenuTriggerRef.set(el)} style={{ flexShrink: 0 }}>
+          <IconButton
+            icon="more"
+            size="xs"
+            iconSize={13.5}
+            surface="chrome"
+            active={footerMenuOpen()}
+            accessibilityLabel="nav-footer-menu"
+            tooltip={
+              updatePhase() === "available" || updatePhase() === "ready"
+                ? tr("shell.updates.available", { version: updateVersion() })
+                : tr("shell.footerMore")
+            }
+            onPress={() => {
+              footerMenuOpen.update(open => !open);
+              void readPendingUpdate();
+            }}
+          />
+          <If when={updatePhase() === "available" || updatePhase() === "ready"}>
+            <View
+              focusable={false}
+              accessibilityLabel="footer-update-badge"
+              style={{
+                pointerEvents: "none",
+                position: "absolute",
+                right: 3,
+                top: 3,
+                width: 6,
+                height: 6,
+                borderRadius: 3,
+                backgroundColor: palette().chromeAccent,
+              }}
+            />
+          </If>
+        </View>
       </View>
+
+      <DropdownMenu
+        open={footerMenuOpen()}
+        anchor={footerMenuTriggerRef()}
+        placement="top"
+        align="end"
+        minWidth={236}
+        items={footerMenuItems()}
+        onClose={() => footerMenuOpen.set(false)}
+      />
 
       <DropdownMenu
         open={languageMenuOpen()}
@@ -2114,14 +3064,12 @@ function NavPanel() {
           accessibilityLabel="global-search-trigger"
           onPress={() => openGlobalSearch()}
           style={{
-            height: controlHeight.md,
-            paddingHorizontal: 9,
+            height: 32,
+            paddingHorizontal: 10,
             borderRadius: radii.sm,
             borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: palette().chromeBorder,
+            borderWidth: 0,
             backgroundColor: palette().chromeInputBg,
-            boxShadow: palette().shadowInset,
             flexDirection: "row",
             alignItems: "center",
             gap: 8,
@@ -2129,7 +3077,7 @@ function NavPanel() {
             ...pressTransition(MOTION_DURATION.fast),
           }}
           hoverStyle={{
-            borderColor: palette().chromeTextMuted,
+            backgroundColor: palette().chromeHover,
           }}
           activeStyle={tactileActiveStyle(0.985)}
           focusVisibleStyle={{
@@ -2138,14 +3086,14 @@ function NavPanel() {
             outlineOffset: 1,
           }}
         >
-          <Icon name="search" size={13.5} color={palette().chromeTextMuted} />
+          <Icon name="search" size={15} color={palette().chromeTextMuted} />
           <Text
             style={{
               flex: 1,
               minWidth: 0,
               color: palette().chromeTextMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.32),
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.3),
               numberOfLines: 1,
               textOverflow: "ellipsis",
             }}
@@ -2212,10 +3160,9 @@ function NavPanel() {
                         flex: 1,
                         minWidth: 0,
                         color: palette().chromeTextMuted,
-                        fontSize: textSize(10.5),
-                        lineHeight: textLineHeight(10.5, 1.3),
-                        fontWeight: "600",
-                        letterSpacing: textTracking(10.5, true),
+                        fontSize: textSize(11),
+                        lineHeight: textLineHeight(11, 1.3),
+                        fontWeight: "500",
                         numberOfLines: 1,
                         textOverflow: "ellipsis",
                       }}
@@ -2230,7 +3177,7 @@ function NavPanel() {
                   </View>
                   <If when={studioGroupOpen()}>
                     <View style={{ gap: 1 }}>
-                      <Each of={STUDIO_ONLY_SCENES} key={sceneId => sceneId}>
+                      <Each of={[...STUDIO_ONLY_SCENES, ...WORKBENCH_NAV_SCENES]} key={sceneId => sceneId}>
                         {sceneId => (
                           <NavRow
                             compact
@@ -2244,8 +3191,6 @@ function NavPanel() {
                     </View>
                   </If>
                 </View>
-
-                <WorkbenchNavStrip />
               </View>
 
               {/* Workspaces & Nested Sessions */}
@@ -2276,10 +3221,9 @@ function NavPanel() {
                         flexShrink: 1,
                         minWidth: 0,
                         color: palette().chromeTextMuted,
-                        fontSize: textSize(10.5),
-                        lineHeight: textLineHeight(10.5, 1.3),
-                        fontWeight: "600",
-                        letterSpacing: textTracking(10.5, true),
+                        fontSize: textSize(11),
+                        lineHeight: textLineHeight(11, 1.3),
+                        fontWeight: "500",
                         numberOfLines: 1,
                         textOverflow: "ellipsis",
                       }}
@@ -2381,7 +3325,11 @@ function NavPanel() {
                   </View>
                 </If>
 
-                <If when={workspaces().length === 0}>
+                <If when={!workspacesLoaded()}>
+                  <SidebarSkeleton />
+                </If>
+
+                <If when={workspacesLoaded() && workspaces().length === 0}>
                   <View
                     style={{
                       padding: 10,
@@ -2432,6 +3380,8 @@ function NavPanel() {
                   </Each>
                 </View>
 
+                <RecentWorkspacesGroup />
+
                 <If when={sessionGrouping() === "flat"}>
                   <View style={{ gap: 2, paddingTop: 6 }}>
                     <View
@@ -2446,10 +3396,9 @@ function NavPanel() {
                       <Text
                         style={{
                           color: palette().chromeTextMuted,
-                          fontSize: textSize(10.5),
-                          lineHeight: textLineHeight(10.5, 1.3),
-                          fontWeight: "600",
-                          letterSpacing: textTracking(10.5, true),
+                          fontSize: textSize(11),
+                          lineHeight: textLineHeight(11, 1.3),
+                          fontWeight: "500",
                         }}
                       >
                         {tr("nav.sessionsGroup")}
@@ -2546,10 +3495,9 @@ function NavPanel() {
                       <Text
                         style={{
                           color: palette().chromeTextMuted,
-                          fontSize: textSize(10.5),
-                          lineHeight: textLineHeight(10.5, 1.3),
-                          fontWeight: "600",
-                          letterSpacing: textTracking(10.5, true),
+                          fontSize: textSize(11),
+                          lineHeight: textLineHeight(11, 1.3),
+                          fontWeight: "500",
                         }}
                       >
                         {tr("nav.sshHosts")}
@@ -2656,13 +3604,23 @@ function NavPanel() {
       <PersistentFooter />
 
       <DropdownMenu
-        open={Boolean(workspaceActionMenuId())}
+        open={Boolean(workspaceActionMenuId() && !workspaceContextPoint())}
         anchor={workspaceActionAnchor()}
         placement="right"
         align="start"
-        minWidth={210}
+        minWidth={220}
         items={workspaceActionMenuId() ? workspaceDropdownItems(workspaceActionMenuId()!) : []}
         onClose={() => workspaceActionMenuId.set(null)}
+      />
+
+      <ContextMenuOverlay
+        open={Boolean(workspaceActionMenuId() && workspaceContextPoint())}
+        position={workspaceContextPoint()}
+        items={workspaceActionMenuId() ? workspaceDropdownItems(workspaceActionMenuId()!) : []}
+        onClose={() => {
+          workspaceActionMenuId.set(null);
+          workspaceContextPoint.set(null);
+        }}
       />
 
       <ContextMenuOverlay
@@ -2681,56 +3639,6 @@ function NavPanel() {
         items={sessionContextTarget() ? sessionRowMenuItems(sessionContextTarget()!) : []}
         onClose={closeSessionMenus}
       />
-
-      <ModalDialog
-        open={Boolean(sessionRenameTarget())}
-        title={tr("nav.renameThreadTitle")}
-        size="sm"
-        accessibilityLabel="sidebar-session-rename-modal"
-        onClose={() => sessionRenameTarget.set(null)}
-        footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Button
-              label={tr("common.cancel")}
-              variant="secondary"
-              size="sm"
-              onPress={() => sessionRenameTarget.set(null)}
-            />
-            <Button
-              label={tr("common.save")}
-              variant="primary"
-              size="sm"
-              disabled={!sessionRenameDraft().trim()}
-              accessibilityLabel="sidebar-session-rename-save"
-              onPress={() => {
-                const target = sessionRenameTarget();
-                const next = sessionRenameDraft().trim();
-                sessionRenameTarget.set(null);
-                if (target && next) {
-                  void renameSession(target.sessionId, next);
-                }
-              }}
-            />
-          </View>
-        }
-      >
-        <TextField
-          autoFocus
-          label={tr("nav.threadName")}
-          value={sessionRenameDraft()}
-          placeholder={tr("nav.threadNamePlaceholder")}
-          accessibilityLabel="sidebar-session-rename-input"
-          onChange={v => sessionRenameDraft.set(v)}
-          onSubmit={text => {
-            const target = sessionRenameTarget();
-            const next = text.trim();
-            sessionRenameTarget.set(null);
-            if (target && next) {
-              void renameSession(target.sessionId, next);
-            }
-          }}
-        />
-      </ModalDialog>
 
       <ModalDialog
         open={Boolean(sessionDeleteTarget())}
@@ -2776,225 +3684,278 @@ function NavPanel() {
   );
 }
 
-function SceneTabItem(props: {
-  tab: SceneId;
-  active: boolean;
-  closable: boolean;
-  onRef: (node: ViewRef | null) => void;
-  onSelect: () => void;
-  onClose: () => void;
-}) {
-  const hovered = signal(false);
+// ── Scene history: the keyboard shortcuts walk the scenes the user opened ─────
 
+const pinnedSceneTabs = signal<SceneId[]>([]);
+
+/** Pinned tabs lead the strip, in the order they were pinned; the rest follow. */
+const orderedSceneTabs = computed<SceneId[]>(() => {
+  const open = openSceneTabs();
+  const pinned = pinnedSceneTabs().filter(tab => open.includes(tab));
+  return [...pinned, ...open.filter(tab => !pinned.includes(tab))];
+});
+
+function isTabPinned(tab: SceneId): boolean {
+  return pinnedSceneTabs().includes(tab);
+}
+
+function closeTab(tab: SceneId): void {
+  if (isTabPinned(tab)) return;
+  closeSceneTab(tab);
+}
+
+
+
+/** Moves the selection `delta` tabs along the strip, wrapping at the ends. */
+function cycleSceneTab(delta: number): void {
+  const tabs = orderedSceneTabs();
+  if (tabs.length < 2) return;
+  const idx = Math.max(0, tabs.indexOf(activeScene()));
+  navigateScene(tabs[(idx + delta + tabs.length) % tabs.length]);
+}
+
+
+/**
+ * Minimize / maximize / close for the frameless Windows and Linux window
+ * (`decorations(false)`); macOS keeps its native traffic lights, so this draws
+ * nothing there. Close goes through the native close request, which the desktop
+ * turns into `openbitfun_main_window_close_requested`.
+ */
+function WindowControlButton(props: {
+  id: "minimize" | "maximize" | "close";
+  label: string;
+  onPress: () => void;
+  children: JSX.Element;
+}) {
+  const wide = () => windowPlatform() === "windows";
   return (
     <View
-      ref={props.onRef}
-      onMouseEnter={() => hovered.set(true)}
-      onMouseLeave={() => hovered.set(false)}
+      role="button"
+      accessibilityLabel={`window-${props.id}`}
+      tooltip={<TooltipBubble text={props.label} />}
+      onPress={props.onPress}
       style={{
-        height: controlHeight.sm,
-        paddingRight: props.closable ? 3 : 0,
-        borderRadius: 7,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: props.active
-          ? isLightAppearance()
-            ? palette().borderStrong
-            : palette().border
-          : "transparent",
-        backgroundColor: props.active ? palette().panelRaised : "transparent",
-        boxShadow: props.active
-          ? `${palette().shadowButton}, ${palette().innerHighlight}`
-          : undefined,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 2,
-        maxWidth: 168,
+        width: wide() ? 46 : 28,
+        height: wide() ? 44 : 28,
         flexShrink: 0,
-        overflow: "hidden",
+        borderRadius: wide() ? 0 : radii.sm,
+        borderCurve: "continuous",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{
-        backgroundColor: props.active ? palette().panelRaised : palette().surfaceSubtle,
+        backgroundColor:
+          props.id === "close" && wide() ? palette().danger : palette().surfaceSubtle,
+      }}
+      activeStyle={{ opacity: 0.8 }}
+      focusVisibleStyle={{
+        outlineWidth: 2,
+        outlineColor: props.id === "close" ? palette().danger : palette().borderFocus,
+        outlineOffset: -2,
       }}
     >
-      <View
-        role="button"
-        accessibilityLabel={`scene-tab-${props.tab}`}
-        accessibilityState={{ selected: props.active }}
-        onPress={props.onSelect}
-        style={{
-          height: "100%",
-          flexShrink: 1,
-          minWidth: 0,
-          paddingLeft: 9,
-          paddingRight: props.closable ? 3 : 9,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 6,
-          cursor: "pointer",
-          ...paintTransition(MOTION_DURATION.fast),
-        }}
-        activeStyle={{ opacity: 0.85 }}
-        focusVisibleStyle={{
-          outlineWidth: 2,
-          outlineColor: palette().borderFocus,
-          outlineOffset: -2,
-        }}
-      >
-        <Icon
-          name={SCENE_META[props.tab].icon}
-          size={13}
-          color={props.active ? palette().accent : palette().textMuted}
-        />
-        <Text
-          style={{
-            flexShrink: 1,
-            minWidth: 0,
-            color: props.active ? palette().text : palette().textMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.3),
-            fontWeight: props.active ? "600" : "500",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {tr(SCENE_META[props.tab].labelKey)}
-        </Text>
-      </View>
-      <If when={props.closable}>
-        <View
-          role="button"
-          hitSlop={3}
-          accessibilityLabel={`scene-tab-close-${props.tab}`}
-          tooltip={
-            <TooltipBubble
-              text={tr("nav.closeTabLabel", { label: tr(SCENE_META[props.tab].labelKey) })}
-            />
-          }
-          onPress={props.onClose}
-          style={{
-            width: 18,
-            height: 18,
-            flexShrink: 0,
-            borderRadius: 5,
-            borderCurve: "continuous",
-            alignItems: "center",
-            justifyContent: "center",
-            opacity: hovered() || props.active ? 1 : 0,
-            cursor: "pointer",
-            ...pressTransition(MOTION_DURATION.fast),
-          }}
-          hoverStyle={{ backgroundColor: palette().dangerSoft, opacity: 1 }}
-          activeStyle={tactileActiveStyle(0.92, {
-            backgroundColor: palette().dangerSoft,
-          })}
-          focusVisibleStyle={{
-            outlineWidth: 2,
-            outlineColor: palette().borderFocus,
-            outlineOffset: 1,
-            opacity: 1,
-          }}
-        >
-          <Icon name="close" size={10} color={palette().textMuted} />
-        </View>
-      </If>
+      {props.children}
     </View>
   );
 }
 
-function SceneTopBar() {
-  const scrollRef = signal<ScrollRef | null>(null);
-  const tabRefs = new Map<SceneId, ViewRef>();
-  const scrollOffset = signal(0);
-  const viewportWidth = signal(0);
-  const contentWidth = signal(0);
-
-  const canScrollLeft = computed(
-    () => contentWidth() > viewportWidth() + 4 && scrollOffset() > 4,
+function WindowControls() {
+  const glyph = () => palette().textSecondary;
+  return (
+    <If when={pageDrawsWindowControls()}>
+      <View
+        accessibilityLabel="window-controls"
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          alignSelf: windowPlatform() === "windows" ? "stretch" : "center",
+          gap: windowPlatform() === "windows" ? 0 : 2,
+          marginRight: windowPlatform() === "windows" ? -10 : 0,
+          marginLeft: 4,
+          flexShrink: 0,
+        }}
+      >
+        <WindowControlButton id="minimize" label={tr("shell.window.minimize")} onPress={minimizeWindow}>
+          <View style={{ width: 10, height: 1, backgroundColor: glyph() }} />
+        </WindowControlButton>
+        <WindowControlButton
+          id="maximize"
+          label={windowMaximized() ? tr("shell.window.restore") : tr("shell.window.maximize")}
+          onPress={toggleWindowMaximize}
+        >
+          <If
+            when={windowMaximized()}
+            else={
+              <View
+                style={{ width: 10, height: 10, borderWidth: 1, borderColor: glyph(), borderRadius: 1.5 }}
+              />
+            }
+          >
+            <View style={{ width: 11, height: 11 }}>
+              <View
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: 0,
+                  width: 8,
+                  height: 8,
+                  borderTopWidth: 1,
+                  borderRightWidth: 1,
+                  borderColor: glyph(),
+                  borderTopRightRadius: 1.5,
+                }}
+              />
+              <View
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  bottom: 0,
+                  width: 8,
+                  height: 8,
+                  borderWidth: 1,
+                  borderColor: glyph(),
+                  borderRadius: 1.5,
+                }}
+              />
+            </View>
+          </If>
+        </WindowControlButton>
+        <WindowControlButton id="close" label={tr("shell.window.close")} onPress={closeWindow}>
+          <Icon name="close" size={12} color={glyph()} />
+        </WindowControlButton>
+      </View>
+    </If>
   );
-  const canScrollRight = computed(
-    () =>
-      contentWidth() > viewportWidth() + 4 &&
-      scrollOffset() + viewportWidth() < contentWidth() - 4,
-  );
+}
 
-  // Eased multi-stop gradient mask pinned to the non-scrolling clipping wrapper
-  // so overflowed tabs dissolve smoothly before reaching the scroll chevrons.
-  const tabStripMask = computed<string | undefined>(() => {
-    const left = canScrollLeft();
-    const right = canScrollRight();
-    if (!left && !right) return undefined;
-    const vw = Math.max(140, viewportWidth());
-    const fadePct = Math.min(20, Math.max(8, Math.round((36 / vw) * 100)));
-    const s1 = Number((fadePct * 0.35).toFixed(1));
-    const s2 = Number((fadePct * 0.72).toFixed(1));
-    const rStart = 100 - fadePct;
-    const r2 = Number((100 - fadePct * 0.72).toFixed(1));
-    const r1 = Number((100 - fadePct * 0.35).toFixed(1));
-    if (left && right) {
-      return `linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.2) ${s1}%, rgba(0, 0, 0, 0.72) ${s2}%, black ${fadePct}%, black ${rStart}%, rgba(0, 0, 0, 0.72) ${r2}%, rgba(0, 0, 0, 0.2) ${r1}%, transparent 100%)`;
-    }
-    if (left) {
-      return `linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.2) ${s1}%, rgba(0, 0, 0, 0.72) ${s2}%, black ${fadePct}%, black 100%)`;
-    }
-    return `linear-gradient(to right, black 0%, black ${rStart}%, rgba(0, 0, 0, 0.72) ${r2}%, rgba(0, 0, 0, 0.2) ${r1}%, transparent 100%)`;
-  });
+/**
+ * Opens a local folder as a workspace through the native picker. The picker is
+ * this machine's, so it is refused while a peer is driven (its paths are not
+ * this machine's) and where no native picker exists, each with its own message.
+ */
+async function pickAndOpenWorkspaceFolder(): Promise<void> {
+  if (peerScope()) {
+    pushToast(tr("shell.pickFolderPeerUnsupported"), "warning");
+    return;
+  }
+  let selected: string | null = null;
+  try {
+    selected = await pickLocalDirectory({ title: tr("shell.pickFolderTitle") });
+  } catch (error) {
+    pushToast(tr("shell.pickFolderUnavailable", { error: errorText(error) }), "warning");
+    return;
+  }
+  if (selected) await openPathWorkspace(selected);
+}
 
-  let revealTimer: ReturnType<typeof setTimeout> | null = null;
+type CloseButtonBehavior = "minimize_to_tray" | "quit" | "ask";
+const closeAskOpen = signal(false);
+let closeRequestHandling = false;
 
-  cleanup(() => {
-    if (revealTimer !== null) {
-      clearTimeout(revealTimer);
-      revealTimer = null;
-    }
-  });
+async function minimizeToTray(): Promise<void> {
+  await minimizeMainWindowToTray();
+}
 
-  effect(() => {
-    const maxOffset = Math.max(0, contentWidth() - viewportWidth());
-    if (scrollOffset() > maxOffset) {
-      scrollOffset.set(maxOffset);
-    }
-  });
+async function quitApp(): Promise<void> {
+  await quitApplication();
+}
 
-  effect(() => {
-    const current = activeScene();
-    const tabs = openSceneTabs();
-    const vw = viewportWidth();
-    const cw = contentWidth();
-    if (!tabs.includes(current)) return;
-
-    const isLastTab = tabs.length > 0 && tabs[tabs.length - 1] === current;
-    if (revealTimer !== null) clearTimeout(revealTimer);
-    revealTimer = setTimeout(() => {
-      revealTimer = null;
-      const scroller = scrollRef();
-      if (isLastTab && scroller && vw > 0 && cw > vw + 2) {
-        const targetX = Math.max(0, cw - vw);
-        scrollOffset.set(targetX);
-        scroller.scrollTo({ x: targetX, animated: !reduceMotion() });
-        return;
+/**
+ * The desktop prevents the native close and asks the page what to do, as it
+ * asks the React surface (`AppLayout.tsx`): macOS hides the window, Windows and
+ * Linux follow `app.close_button_behavior` (minimize to tray by default).
+ *
+ * backend-owned: the stored preference is the backend's; only the choice of
+ * which shell call carries it out belongs here.
+ */
+async function handleMainWindowCloseRequest(): Promise<void> {
+  if (closeRequestHandling) return;
+  closeRequestHandling = true;
+  try {
+    if (windowPlatform() === "macos" || trafficLightInsetPx() > 0) {
+      try {
+        await hideMainWindowAfterCloseRequest();
+      } catch (error) {
+        console.error("Failed to hide main window after close request", error);
       }
-      const node = tabRefs.get(current);
-      if (node) {
-        try {
-          node.reveal({ horizontal: "nearest", animated: !reduceMotion() });
-        } catch {
-          // Ignore reveal errors if a tab unmounted before layout settled.
-        }
-      }
-    }, 24);
-  });
+      return;
+    }
+    let behavior: CloseButtonBehavior = "minimize_to_tray";
+    try {
+      const stored = await invokeCommand<unknown>("get_config", {
+        path: "app.close_button_behavior",
+        skipRetryOnNotFound: true,
+      });
+      if (stored === "quit" || stored === "ask" || stored === "minimize_to_tray") behavior = stored;
+    } catch {
+      // A host that stores no preference closes to the tray, as the desktop does.
+    }
+    if (behavior === "ask") {
+      closeAskOpen.set(true);
+      return;
+    }
+    try {
+      if (behavior === "quit") await quitApp();
+      else await minimizeToTray();
+    } catch (error) {
+      console.error("Failed to handle close request", error);
+      await quitApp().catch(() => undefined);
+    }
+  } finally {
+    closeRequestHandling = false;
+  }
+}
 
-  const scrollTabsBy = (delta: number) => {
-    const scroller = scrollRef();
-    if (!scroller) return;
-    const maxOffset = Math.max(0, contentWidth() - viewportWidth());
-    const nextX = Math.max(0, Math.min(maxOffset, scrollOffset() + delta));
-    scrollOffset.set(nextX);
-    scroller.scrollTo({ x: nextX, animated: !reduceMotion() });
+function CloseAskDialog() {
+  const choose = (quit: boolean) => {
+    closeAskOpen.set(false);
+    void (quit ? quitApp() : minimizeToTray()).catch(error => {
+      console.error("Failed to handle close choice", error);
+      pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
+    });
   };
+  return (
+    <ModalDialog
+      open={closeAskOpen()}
+      title={tr("shell.closeDialog.title")}
+      size="sm"
+      accessibilityLabel="close-ask-dialog"
+      onClose={() => closeAskOpen.set(false)}
+      footer={
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Button
+            label={tr("shell.closeDialog.minimizeToTray")}
+            variant="secondary"
+            size="sm"
+            accessibilityLabel="close-ask-tray"
+            onPress={() => choose(false)}
+          />
+          <Button
+            label={tr("shell.closeDialog.quit")}
+            variant="danger"
+            size="sm"
+            accessibilityLabel="close-ask-quit"
+            onPress={() => choose(true)}
+          />
+        </View>
+      }
+    >
+      <Text
+        style={{
+          color: palette().textSecondary,
+          fontSize: textSize(13),
+          lineHeight: textLineHeight(13, 1.5),
+        }}
+      >
+        {tr("shell.closeDialog.message")}
+      </Text>
+    </ModalDialog>
+  );
+}
 
+function SceneTopBar() {
   const topbarWorkspaceItems = (): DropdownMenuItem[] => {
     const current = activeWorkspace();
     const items: DropdownMenuItem[] = workspaces().map(ws => ({
@@ -3029,29 +3990,37 @@ function SceneTopBar() {
         },
       );
     }
-    items.push({
-      id: "topbar-ws-new",
-      label: tr("nav.newWorkspace"),
-      icon: "folder-plus",
-      separator: true,
-      onSelect: () => void openNewWorkspaceModal({ step: "project" }),
-    });
+    items.push(
+      {
+        id: "topbar-ws-new",
+        label: tr("nav.newWorkspace"),
+        icon: "folder-plus",
+        separator: true,
+        onSelect: () => void openNewWorkspaceModal({ step: "project" }),
+      },
+      {
+        id: "topbar-ws-open-folder",
+        label: tr("shell.openFolder"),
+        icon: "folder-open",
+        disabled: Boolean(peerScope()) || !nativeWindow(),
+        onSelect: () => void pickAndOpenWorkspaceFolder(),
+      },
+    );
     return items;
   };
 
   return (
     <View
+      {...titlebarBarProps()}
       style={{
         height: 44,
         minWidth: 0,
         overflow: "hidden",
         paddingLeft: !drawerOpen() && trafficLightInsetPx() > 0 ? trafficLightInsetPx() : 10,
-        paddingRight: 10,
+        paddingRight: windowControlsRightInsetPx() > 0 ? windowControlsRightInsetPx() : 10,
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
-        borderBottomWidth: 1,
-        borderColor: palette().borderSubtle,
         backgroundColor: palette().canvas,
       }}
     >
@@ -3085,143 +4054,16 @@ function SceneTopBar() {
             tooltip={tr("common.forward")}
             onPress={goForwardScene}
           />
-          <View
-            focusable={false}
-            onPressDown={handleTitlebarPressDown}
-            style={{
-              height: 36,
-              justifyContent: "center",
-              paddingHorizontal: 6,
-              cursor: "default",
-            }}
-          >
-            <Text
-              style={{
-                color: palette().text,
-                fontSize: textSize(12.5),
-                lineHeight: textLineHeight(12.5, 1.3),
-                letterSpacing: textTracking(12.5),
-                fontWeight: "600",
-              }}
-            >
-              {tr("product.name")}
-            </Text>
-          </View>
         </View>
       </If>
 
-      {/* SceneBar Tabs — sleek 28px/7px geometry, hover/active close, eased overflow fade */}
+      {/* No browser-style tab strip: navigation lives in the sidebar and the
+          back/forward controls; the bar itself is a quiet, draggable title area. */}
       <View
-        style={{
-          flex: 1,
-          minWidth: 0,
-          height: "100%",
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 4,
-          overflow: "hidden",
-        }}
-      >
-        <If when={canScrollLeft()}>
-          <IconButton
-            icon="chevron-left"
-            size="xs"
-            accessibilityLabel="scene-tabs-scroll-left"
-            tooltip={tr("nav.scrollTabsLeft")}
-            onPress={() => scrollTabsBy(-160)}
-          />
-        </If>
-
-        <View
-          onLayout={e => {
-            const w = e.bounds.size.width;
-            if (w > 0 && Math.abs(w - viewportWidth()) > 0.5) {
-              viewportWidth.set(w);
-            }
-          }}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            height: 36,
-            overflow: "hidden",
-            maskImage: tabStripMask(),
-          }}
-        >
-          <Scroll
-            ref={el => scrollRef.set(el)}
-            horizontal
-            scrollbar={false}
-            onScroll={e => {
-              scrollOffset.set(e.offset.x);
-              if (e.size.width > 0) viewportWidth.set(e.size.width);
-              if (e.contentSize.width > 0) contentWidth.set(e.contentSize.width);
-            }}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              height: 36,
-            }}
-            contentStyle={{
-              flexGrow: 1,
-              flexDirection: "row",
-              alignItems: "center",
-              height: 36,
-            }}
-          >
-            <View
-              onLayout={e => {
-                const w = e.bounds.size.width;
-                if (w > 0 && Math.abs(w - contentWidth()) > 0.5) {
-                  contentWidth.set(w);
-                }
-              }}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 3,
-                height: 36,
-                paddingHorizontal: 2,
-              }}
-            >
-              <Each of={openSceneTabs()} key={tab => tab}>
-                {tab => (
-                  <SceneTabItem
-                    tab={tab()}
-                    active={activeScene() === tab()}
-                    closable={openSceneTabs().length > 1}
-                    onRef={el => {
-                      if (el) tabRefs.set(tab(), el);
-                      else tabRefs.delete(tab());
-                    }}
-                    onSelect={() => navigateScene(tab())}
-                    onClose={() => closeSceneTab(tab())}
-                  />
-                )}
-              </Each>
-            </View>
-            <View
-              focusable={false}
-              onPressDown={handleTitlebarPressDown}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                height: "100%",
-                cursor: "default",
-              }}
-            />
-          </Scroll>
-        </View>
-
-        <If when={canScrollRight()}>
-          <IconButton
-            icon="chevron-right"
-            size="xs"
-            accessibilityLabel="scene-tabs-scroll-right"
-            tooltip={tr("nav.scrollTabsRight")}
-            onPress={() => scrollTabsBy(160)}
-          />
-        </If>
-      </View>
+        focusable={false}
+        {...titlebarDragRegionProps()}
+        style={{ flex: 1, minWidth: 0, height: "100%", cursor: "default" }}
+      />
 
       {/* Trailing Workspace Dropdown & AuxPane Controls */}
       <View
@@ -3233,7 +4075,7 @@ function SceneTopBar() {
           gap: 6,
         }}
       >
-        <If when={busy()}>
+        <If when={Object.keys(runningTurns()).length > 0}>
           <View
             accessibilityLabel="topbar-busy-indicator"
             tooltip={<TooltipBubble text={tr("nav.working")} />}
@@ -3340,6 +4182,8 @@ function SceneTopBar() {
           onClose={() => topbarWorkspaceMenuOpen.set(false)}
         />
 
+        <NotificationBell />
+
         <If when={activeRemoteWorkspace()}>
           {remote => (
             <If when={Boolean(remote().connectionId)}>
@@ -3355,15 +4199,6 @@ function SceneTopBar() {
             </If>
           )}
         </If>
-
-        <View
-          style={{
-            width: 1,
-            height: 14,
-            backgroundColor: palette().borderSubtle,
-            flexShrink: 0,
-          }}
-        />
 
         <View
           style={{
@@ -3410,6 +4245,125 @@ function SceneTopBar() {
             }
             onPress={toggleAuxPane}
           />
+        </View>
+        <WindowControls />
+      </View>
+    </View>
+  );
+}
+
+/** A `file:` URL a file manager drags, as a local path (`/C:/x` becomes `C:/x`). */
+function pathFromFileUri(uri: string): string | null {
+  try {
+    const url = new URL(uri);
+    if (url.protocol !== "file:") return null;
+    const path = decodeURIComponent(url.pathname);
+    return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A file dropped on a scene outside the composer (which attaches drops itself)
+ * opens in Files when it lives in the active local workspace. A dropped local
+ * file cannot be opened in a remote or peer workspace, which is said rather than
+ * opened from this machine's disk.
+ */
+async function handleSceneFileDrop(uris: string[]): Promise<void> {
+  const paths = uris.map(pathFromFileUri).filter((p): p is string => Boolean(p));
+  if (paths.length === 0) return;
+  const ws = activeWorkspace();
+  if (!ws) {
+    pushToast(tr("shell.drop.noWorkspace"), "warning");
+    return;
+  }
+  if (peerScope() || isRemoteWorkspaceRecord(ws)) {
+    pushToast(tr("shell.drop.remoteUnsupported"), "warning");
+    return;
+  }
+  const root = ws.rootPath.replace(/[\\/]+$/, "");
+  const inside = paths.find(path => path === root || path.startsWith(`${root}/`) || path.startsWith(`${root}\\`));
+  if (!inside) {
+    pushToast(tr("shell.drop.outsideWorkspace", { name: basenameLabel(ws.rootPath, ws.name) }), "warning");
+    return;
+  }
+  navigateScene("files");
+  await openFileAt(inside);
+}
+
+/**
+ * What a scene that threw draws instead of a blank pane: the error, a retry that
+ * remounts it, and a way back to Sessions. The rest of the shell keeps working.
+ */
+function SceneErrorCard(props: { error: unknown; reset: () => void; area: "scene" | "aux" }) {
+  const message =
+    props.error instanceof Error ? props.error.message : String(props.error ?? "");
+  console.error(`The ${props.area} view failed to render`, props.error);
+  return (
+    <View
+      accessibilityLabel={`${props.area}-error-card`}
+      style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center", padding: 24 }}
+    >
+      <View
+        style={{
+          width: "100%",
+          maxWidth: 420,
+          padding: 20,
+          gap: 12,
+          borderRadius: radii.lg,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().border,
+          backgroundColor: palette().panelRaised,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Icon name="alert-circle" size={18} color={palette().danger} />
+          <Text
+            style={{
+              flex: 1,
+              color: palette().text,
+              fontSize: textSize(14),
+              lineHeight: textLineHeight(14, 1.35),
+              fontWeight: "600",
+            }}
+          >
+            {tr("shell.error.title")}
+          </Text>
+        </View>
+        <Text
+          style={{
+            color: palette().textSecondary,
+            fontFamily: fontMono,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.45),
+            numberOfLines: 6,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {message || tr("shell.error.unknown")}
+        </Text>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Button
+            label={tr("shell.error.retry")}
+            variant="primary"
+            size="sm"
+            leadingIcon="refresh"
+            accessibilityLabel={`${props.area}-error-retry`}
+            onPress={props.reset}
+          />
+          <If when={props.area === "scene"}>
+            <Button
+              label={tr("shell.error.backToSessions")}
+              variant="secondary"
+              size="sm"
+              onPress={() => {
+                navigateScene("sessions");
+                props.reset();
+              }}
+            />
+          </If>
         </View>
       </View>
     </View>
@@ -3557,7 +4511,13 @@ function AuxPane() {
       </View>
 
       <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
-        {auxElement()}
+        <ErrorBoundary
+          fallback={(error, reset) => <SceneErrorCard error={error} reset={reset} area="aux" />}
+        >
+          <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
+            {auxElement()}
+          </View>
+        </ErrorBoundary>
       </View>
     </View>
   );
@@ -3647,6 +4607,31 @@ function PeerBanner() {
   );
 }
 
+/**
+ * The backend connection, said out loud when it is not answering: a backend
+ * that failed to start or an event stream that is reconnecting must not look
+ * like an empty app.
+ */
+function BackendConnectionBanner() {
+  const message = () => {
+    const state = connectionState();
+    if (state === "failed") return tr("shell.backend.failed", { error: connectionError() || "-" });
+    if (state === "reconnecting") return tr("shell.backend.reconnecting");
+    return "";
+  };
+  return (
+    <If when={message()}>
+      <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>
+        <InlineBanner
+          tone={connectionState() === "failed" ? "danger" : "warning"}
+          message={message()}
+          accessibilityLabel="backend-connection-banner"
+        />
+      </View>
+    </If>
+  );
+}
+
 function ErrorBanner() {
   return (
     <If when={lastError()}>
@@ -3691,7 +4676,48 @@ const SEARCH_GROUPS: ReadonlyArray<{
   { kind: "session", titleKey: "search.sessions", icon: "chat" },
   { kind: "message", titleKey: "search.messages", icon: "message-circle" },
   { kind: "file", titleKey: "search.files", icon: "file-text" },
+  { kind: "workspace", titleKey: "search.workspaces", icon: "folder" },
+  { kind: "assistant", titleKey: "search.assistants", icon: "bot" },
+  { kind: "setting", titleKey: "search.settings", icon: "settings" },
 ];
+
+/** Scope chips narrow the list to one group; `all` draws every group. */
+const searchScope = signal<SearchItem["kind"] | "all">("all");
+
+/** Settings sections, matched by their localized names (the shell owns their navigation). */
+function settingsSearchItems(rawNeedle: string): SearchItem[] {
+  const needle = rawNeedle.trim().toLowerCase();
+  if (!needle) return [];
+  const items: SearchItem[] = [];
+  for (const group of SETTINGS_PAGE_GROUPS) {
+    for (const page of group.pages) {
+      const label = tr(page.labelKey);
+      const description = tr(page.descriptionKey);
+      const hit = [label, description, ...page.keywords].some(text =>
+        text.toLowerCase().includes(needle),
+      );
+      if (!hit) continue;
+      items.push({
+        id: `setting:${page.id}`,
+        kind: "setting" as const,
+        label,
+        detail: `${tr(group.labelKey)} · ${description}`,
+        target: page.id,
+      });
+    }
+  }
+  return items.slice(0, 8);
+}
+
+function runShellSearchItem(item: SearchItem): void {
+  if (item.kind === "setting") {
+    closeGlobalSearch();
+    navigateScene("settings");
+    requestSettingsPage(item.target as SettingsPageEntry["id"]);
+    return;
+  }
+  void runSearchItem(item);
+}
 
 function localizedCommandItems(rawNeedle: string): SearchItem[] {
   const needle = rawNeedle.trim().toLowerCase();
@@ -3720,6 +4746,7 @@ function localizedCommandItems(rawNeedle: string): SearchItem[] {
  */
 function SearchPanel() {
   const activeIndex = signal(0);
+  searchScope.set("all");
   const itemRefs = new Map<string, ViewRef>();
 
   // Localize command items reactively and support both English (`>files`, `>settings`)
@@ -3733,7 +4760,7 @@ function SearchPanel() {
     if (q.startsWith(">")) {
       return localizedCommandItems(q.slice(1));
     }
-    return searchItems().map(item => {
+    const hits = searchItems().map(item => {
       if (item.kind !== "command") return item;
       const def = SEARCH_COMMANDS.find(cmd => cmd.id === item.id);
       if (!def) return item;
@@ -3743,14 +4770,26 @@ function SearchPanel() {
         detail: tr(def.detailKey),
       };
     });
+    return [...localizedCommandItems(q).filter(cmd => !hits.some(hit => hit.id === cmd.id)), ...hits, ...settingsSearchItems(q)];
+  });
+
+  /** The groups that have hits, for the scope chips. */
+  const availableKinds = computed<Array<SearchItem["kind"]>>(() =>
+    SEARCH_GROUPS.map(g => g.kind).filter(kind => effectiveItems().some(item => item.kind === kind)),
+  );
+  const scopedItems = computed<SearchItem[]>(() => {
+    const scope = searchScope();
+    const list = effectiveItems();
+    if (scope === "all" || !availableKinds().includes(scope)) return list;
+    return list.filter(item => item.kind === scope);
   });
 
   const groupedRows = (kind: SearchItem["kind"]) =>
-    effectiveItems().filter(item => item.kind === kind);
+    scopedItems().filter(item => item.kind === kind);
 
   const flatResults = computed<SearchItem[]>(() => {
     const all: SearchItem[] = [];
-    const list = effectiveItems();
+    const list = scopedItems();
     for (const g of SEARCH_GROUPS) {
       for (const item of list) {
         if (item.kind === g.kind) all.push(item);
@@ -3797,7 +4836,7 @@ function SearchPanel() {
   const activateSelection = () => {
     const list = flatResults();
     const chosen = list[activeIndex()] ?? list[0];
-    if (chosen) void runSearchItem(chosen);
+    if (chosen) runShellSearchItem(chosen);
   };
 
   const hasHeaderStatus = () =>
@@ -3837,11 +4876,11 @@ function SearchPanel() {
         accessibilityLabel="global-search-dialog"
         style={{
           width: "100%",
-          maxWidth: 660,
+          maxWidth: 744,
           maxHeight: "100%",
           flexShrink: 1,
           minHeight: 0,
-          borderRadius: radii.xl,
+          borderRadius: 22,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: palette().borderStrong,
@@ -3858,10 +4897,9 @@ function SearchPanel() {
             flexDirection: "row",
             alignItems: "center",
             gap: 8,
-            paddingHorizontal: 14,
-            paddingVertical: 12,
-            borderBottomWidth: 1,
-            borderColor: palette().borderSubtle,
+            paddingHorizontal: 20,
+            paddingTop: 20,
+            paddingBottom: 12,
             flexShrink: 0,
           }}
         >
@@ -3942,6 +4980,46 @@ function SearchPanel() {
             onPress={() => closeGlobalSearch()}
           />
         </View>
+
+        {/* Scope chips: one per group that has hits, so a long list narrows in one press */}
+        <If when={availableKinds().length > 1}>
+          <View
+            style={{
+              paddingHorizontal: 20,
+              paddingBottom: 10,
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: 6,
+              borderBottomWidth: 1,
+              borderColor: palette().borderSubtle,
+              flexShrink: 0,
+            }}
+          >
+            <PillChip
+              label={tr("search.scopeAll")}
+              active={searchScope() === "all" || !availableKinds().includes(searchScope() as SearchItem["kind"])}
+              accessibilityLabel="global-search-scope-all"
+              onPress={() => {
+                searchScope.set("all");
+                activeIndex.set(0);
+              }}
+            />
+            <Each of={availableKinds()} key={kind => kind}>
+              {kind => (
+                <PillChip
+                  label={tr(SEARCH_GROUPS.find(g => g.kind === kind())!.titleKey)}
+                  active={searchScope() === kind()}
+                  badge={effectiveItems().filter(item => item.kind === kind()).length}
+                  accessibilityLabel={`global-search-scope-${kind()}`}
+                  onPress={() => {
+                    searchScope.set(kind());
+                    activeIndex.set(0);
+                  }}
+                />
+              )}
+            </Each>
+          </View>
+        </If>
 
         {/* Notices & Empty State (rendered only when needed — zero dead padding) */}
         <If when={hasHeaderStatus()}>
@@ -4049,7 +5127,7 @@ function SearchPanel() {
                               );
                               if (idx >= 0) activeIndex.set(idx);
                             }}
-                            onPress={() => void runSearchItem(item())}
+                            onPress={() => runShellSearchItem(item())}
                             style={{
                               flexDirection: "row",
                               alignItems: "center",
@@ -4204,6 +5282,164 @@ function SearchPanel() {
   );
 }
 
+/**
+ * The shell's shortcuts. Ids follow the desktop's shortcut registry so a user
+ * override stored in `app.keybindings` (`{ __version__: 1, overrides: { id: { key,
+ * ctrl, shift, alt, meta } } }`, or the legacy flat map) rebinds the same action
+ * here. OS-window fullscreen (F11, Control+Command+F) is a platform-reserved key
+ * NSH does not let an app bind, so it is offered as a command instead.
+ */
+const SHELL_SHORTCUTS: ReadonlyArray<{ id: string; keystroke: string; run: () => void }> = [
+  { id: "search.global", keystroke: "mod+k", run: () => openGlobalSearch() },
+  { id: "panel.toggleLeft", keystroke: "mod+b", run: () => toggleDrawer() },
+  { id: "panel.toggleRight", keystroke: "mod+j", run: () => toggleAuxPane() },
+  { id: "scene.openSettings", keystroke: "mod+,", run: () => navigateScene("settings") },
+  {
+    id: "chat.newSession",
+    keystroke: "mod+n",
+    run: () => {
+      void createSessionInWorkspace(tr("nav.newSession"));
+      navigateScene("sessions");
+    },
+  },
+  {
+    id: "tab.close",
+    keystroke: "mod+w",
+    run: () => {
+      const tab = activeScene();
+      if (openSceneTabs().length > 1 && !isTabPinned(tab)) closeTab(tab);
+    },
+  },
+  { id: "tab.previous", keystroke: "mod+shift+[", run: () => cycleSceneTab(-1) },
+  { id: "tab.next", keystroke: "mod+shift+]", run: () => cycleSceneTab(1) },
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => ({
+    id: `tab.switch${n}`,
+    keystroke: `mod+${n}`,
+    run: () => {
+      const tabs = orderedSceneTabs();
+      const target = n === 9 ? tabs[tabs.length - 1] : tabs[n - 1];
+      if (target) navigateScene(target);
+    },
+  })),
+];
+
+function keystrokeFromOverride(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as Record<string, unknown>;
+  if (typeof v.key !== "string" || !v.key.trim()) return null;
+  const parts: string[] = [];
+  // The desktop treats `ctrl` as the primary modifier (Command on macOS).
+  if (v.ctrl === true || v.meta === true) parts.push("mod");
+  if (v.shift === true) parts.push("shift");
+  if (v.alt === true) parts.push("alt");
+  parts.push(v.key.trim().toLowerCase());
+  return parts.join("+");
+}
+
+function readKeybindingOverrides(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {};
+  const doc = raw as Record<string, unknown>;
+  const map =
+    doc.__version__ === 1 && doc.overrides && typeof doc.overrides === "object"
+      ? (doc.overrides as Record<string, unknown>)
+      : "__version__" in doc
+        ? {}
+        : doc;
+  const out: Record<string, string> = {};
+  for (const [id, value] of Object.entries(map)) {
+    if (id.startsWith("__")) continue;
+    const keystroke = keystrokeFromOverride(value);
+    if (keystroke) out[id] = keystroke;
+  }
+  return out;
+}
+
+function bindShortcut(keystroke: string, run: () => void): (() => void) | null {
+  try {
+    return keymap.bind(keystroke, () => run());
+  } catch (error) {
+    console.warn(`Shortcut ${keystroke} cannot be bound here`, error);
+    return null;
+  }
+}
+
+function runShellShortcut(id: string): void {
+  SHELL_SHORTCUTS.find(shortcut => shortcut.id === id)?.run();
+}
+
+function bindShellShortcuts(): void {
+  const unbinders = new Map<string, () => void>();
+  // A native application menu carries some of these keys itself; binding them
+  // again would run the action twice.
+  const menuOwned = shellMenuShortcutIds();
+  for (const shortcut of SHELL_SHORTCUTS) {
+    if (menuOwned.has(shortcut.id)) continue;
+    const stop = bindShortcut(shortcut.keystroke, shortcut.run);
+    if (stop) unbinders.set(shortcut.id, stop);
+  }
+  cleanup(() => unbinders.forEach(stop => stop()));
+  void invokeCommand<unknown>("get_config", { path: "app.keybindings", skipRetryOnNotFound: true })
+    .then(raw => {
+      const overrides = readKeybindingOverrides(raw);
+      for (const shortcut of SHELL_SHORTCUTS) {
+        const keystroke = overrides[shortcut.id];
+        if (!keystroke || keystroke === shortcut.keystroke || menuOwned.has(shortcut.id)) continue;
+        const stop = bindShortcut(keystroke, shortcut.run);
+        if (!stop) continue;
+        unbinders.get(shortcut.id)?.();
+        unbinders.set(shortcut.id, stop);
+      }
+    })
+    .catch(() => undefined);
+}
+
+async function toggleMainWindowFullscreen(): Promise<void> {
+  try {
+    await toggleWindowFullscreen();
+  } catch (error) {
+    pushToast(errorText(error), "error");
+  }
+}
+
+// ── Responsive shell: one UI from phone to desktop ───────────────────────────
+
+/** Width of the whole window, measured on the root view. */
+const shellWidth = signal(0);
+/** Phone-sized layouts: the sidebar becomes an overlay drawer and side panes fill the scene. */
+const compactShell = computed(() => shellWidth() > 0 && shellWidth() < 720);
+
+function auxFillsScene(): boolean {
+  return auxPaneMaximized() || compactShell();
+}
+
+function CompactDrawer() {
+  return (
+    <View
+      style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, flexDirection: "row" }}
+    >
+      <View
+        style={{
+          width: Math.min(320, Math.max(240, shellWidth() * 0.86)),
+          height: "100%",
+          minHeight: 0,
+          flexDirection: "column",
+          backgroundColor: palette().chromeBg,
+          boxShadow: palette().shadowOverlay,
+        }}
+      >
+        <NavBar />
+        <NavPanel />
+      </View>
+      <View
+        role="button"
+        accessibilityLabel="compact-drawer-scrim"
+        onPress={() => drawerOpen.set(false)}
+        style={{ flex: 1, height: "100%", backgroundColor: palette().scrimBg }}
+      />
+    </View>
+  );
+}
+
 function App() {
   syncGlobalNativeTheme();
   void initAppLocale();
@@ -4220,10 +5456,12 @@ function App() {
   ensureQuickActions();
   void loadSeenSessions();
   void loadAccountState();
-  void loadWorkspaces();
+  void loadShellLayout();
+  void loadWorkspaces({ autoOpenRecent: true });
   void loadSavedConnections();
   void startPermissionPrompts();
   void startQuestionPrompts();
+  startNotifications();
 
   const unsubAccountAuth = onAccountAuthChanged(signedIn => {
     if (signedIn) {
@@ -4234,17 +5472,54 @@ function App() {
   });
   cleanup(() => unsubAccountAuth());
 
-  keymap.bind("mod+k", () => openGlobalSearch());
-  keymap.bind("mod+b", () => toggleDrawer());
-  keymap.bind("mod+j", () => toggleAuxPane());
-  keymap.bind("mod+,", () => navigateScene("settings"));
-  keymap.bind("mod+n", () => {
-    void createSessionInWorkspace(tr("nav.newSession"));
-    navigateScene("sessions");
+  // The layout is the user's: written back on every change once the stored one was read.
+  effect(() => persistShellLayout());
+
+  const unsubCloseRequest = onMainWindowCloseRequest(() => {
+    void handleMainWindowCloseRequest();
+  });
+  cleanup(() => unsubCloseRequest());
+
+  // The application menu and the tray are the shell's: the Tauri window builds
+  // them natively and asks the page through events, a native NSH window builds
+  // them from `nsh/desktop`. Both run the same actions.
+  const stopShellIntegration = startShellIntegration({
+    newSession: () => runShellShortcut("chat.newSession"),
+    openFolder: () => void pickAndOpenWorkspaceFolder(),
+    newWorkspace: () => void openNewWorkspaceModal({ step: "project" }),
+    openSettings: () => runShellShortcut("scene.openSettings"),
+    toggleSidebar: () => runShellShortcut("panel.toggleLeft"),
+    about: () => openAboutDialog(),
+    markAllRead: () => markAllNotificationsRead(),
+  });
+  cleanup(() => stopShellIntegration());
+
+  void initWindowChrome().then(() => {
+    if (nativeWindow()) void readPendingUpdate();
+  });
+
+  bindShellShortcuts();
+
+  // Entering a compact layout folds the sidebar away; picking a scene there closes it again.
+  let wasCompact = false;
+  effect(() => compactLayout.set(compactShell()));
+  effect(() => {
+    const compact = compactShell();
+    if (compact && !wasCompact) untracked(() => drawerOpen.set(false));
+    wasCompact = compact;
+  });
+  effect(() => {
+    activeScene();
+    activeSessionId();
+    if (untracked(() => compactShell())) untracked(() => drawerOpen.set(false));
   });
 
   return (
     <View
+      onLayout={event => {
+        const width = event.bounds.size.width;
+        if (width > 0 && Math.abs(width - shellWidth()) > 1) shellWidth.set(width);
+      }}
       style={{
         flex: 1,
         minWidth: 0,
@@ -4255,7 +5530,7 @@ function App() {
       }}
     >
       {/* Left Recessed Navigation Chrome */}
-      <If when={drawerOpen()}>
+      <If when={drawerOpen() && !compactShell()}>
         <View
           style={{
             flexDirection: "row",
@@ -4270,7 +5545,7 @@ function App() {
               width: navWidth(),
               flexShrink: 1,
               minWidth: 160,
-              maxWidth: 420,
+              maxWidth: 480,
               minHeight: 0,
               flexDirection: "column",
               backgroundColor: palette().chromeBg,
@@ -4283,8 +5558,20 @@ function App() {
             surface="chrome"
             seam={false}
             accessibilityLabel="nav-split-handle"
-            onDelta={delta => setNavWidth(navWidth() + delta)}
-            onReset={() => setNavWidth(DEFAULT_NAV_WIDTH)}
+            onDragStateChange={dragging => {
+              navDragWidth = dragging ? navWidth() : null;
+            }}
+            onDelta={delta => {
+              // The drag follows the pointer past the minimum; far enough left, it folds.
+              navDragWidth = (navDragWidth ?? navWidth()) + delta;
+              if (navDragWidth < NAV_COLLAPSE_WIDTH) {
+                navDragWidth = null;
+                drawerOpen.set(false);
+                return;
+              }
+              setNavWidth(navDragWidth);
+            }}
+            onReset={() => setNavWidth(NAV_DEFAULT_WIDTH)}
           />
         </View>
       </If>
@@ -4295,25 +5582,26 @@ function App() {
           flex: 1,
           minWidth: 0,
           minHeight: 0,
-          borderTopLeftRadius: drawerOpen() ? radii.surface : 0,
-          borderBottomLeftRadius: drawerOpen() ? radii.surface : 0,
+          borderTopLeftRadius: drawerOpen() && !compactShell() ? radii.surface : 0,
+          borderBottomLeftRadius: drawerOpen() && !compactShell() ? radii.surface : 0,
           borderTopRightRadius: 0,
           borderBottomRightRadius: 0,
           borderCurve: "continuous",
-          borderLeftWidth: drawerOpen() ? 1 : 0,
+          borderLeftWidth: drawerOpen() && !compactShell() ? 1 : 0,
           borderColor: palette().border,
           backgroundColor: palette().canvas,
-          boxShadow: drawerOpen() ? palette().shadowSceneEdge : undefined,
+          boxShadow: drawerOpen() && !compactShell() ? palette().shadowSceneEdge : undefined,
           overflow: "hidden",
           flexDirection: "column",
         }}
       >
         <SceneTopBar />
+        <BackendConnectionBanner />
         <PeerBanner />
         <ErrorBanner />
 
         <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row" }}>
-          <If when={auxPaneOpen() && auxPaneSide() === "left" && !auxPaneMaximized()}>
+          <If when={auxPaneOpen() && auxPaneSide() === "left" && !auxFillsScene()}>
             <View
               style={{
                 flexDirection: "row",
@@ -4333,13 +5621,23 @@ function App() {
             </View>
           </If>
 
-          <If when={!(auxPaneOpen() && auxPaneMaximized())}>
-            <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
-              {sceneElement()}
+          <If when={!(auxPaneOpen() && auxFillsScene())}>
+            <View
+              onFileDrop={event => void handleSceneFileDrop(event.uris)}
+              style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}
+            >
+              <ErrorBoundary
+                fallback={(error, reset) => <SceneErrorCard error={error} reset={reset} area="scene" />}
+              >
+                {/* The switch lives in a view so it stays reactive under the boundary. */}
+                <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
+                  {sceneElement()}
+                </View>
+              </ErrorBoundary>
             </View>
           </If>
 
-          <If when={auxPaneOpen() && auxPaneSide() === "right" && !auxPaneMaximized()}>
+          <If when={auxPaneOpen() && auxPaneSide() === "right" && !auxFillsScene()}>
             <View
               style={{
                 flexDirection: "row",
@@ -4359,17 +5657,23 @@ function App() {
             </View>
           </If>
 
-          <If when={auxPaneOpen() && auxPaneMaximized()}>
+          <If when={auxPaneOpen() && auxFillsScene()}>
             <AuxPane />
           </If>
         </View>
       </View>
 
+      <If when={compactShell() && drawerOpen()}>
+        <CompactDrawer />
+      </If>
       <If when={searchOpen()}>
         <SearchPanel />
       </If>
       <SshWorkspaceModals />
       <AccountAuthModal />
+      <WorkspaceDialogs />
+      <AboutDialog />
+      <CloseAskDialog />
       <ToastHost />
     </View>
   );

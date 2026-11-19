@@ -44,18 +44,18 @@ test("welcome empty state starter cards populate composer without auto-sending",
     "Summarize the workspace architecture, key modules, and data flow.",
   );
   // Populating a starter card must never auto-send the turn.
-  expect(backend.actions()).not.toContain("start_dialog_turn");
+  expect(backend.actions()).not.toContain("submit_user_message");
 
   await app.press("starter-card-git-review");
   expect(app.value("composer")).toBe(
     "Review all uncommitted Git changes and highlight risks or missing tests.",
   );
-  expect(backend.actions()).not.toContain("start_dialog_turn");
+  expect(backend.actions()).not.toContain("submit_user_message");
 
   await app.press("Send");
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
     sessionId: "session-empty",
-    userInput: "Review all uncommitted Git changes and highlight risks or missing tests.",
+    text: "Review all uncommitted Git changes and highlight risks or missing tests.",
     agentType: "Standard",
   });
 });
@@ -140,11 +140,14 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
   await app.waitFor("Inspect and update the pipeline.");
 
   // Layered progressive disclosure: compact tool strips show cleanly; reasoning & checklist/diff stay collapsed.
-  await app.waitFor("THINKING SUMMARY");
+  await app.waitFor("Thinking summary");
   expect(app.texts()).not.toContain("Checking git status and cargo workspace before patching.");
-  await app.waitFor("TOOL · bash");
-  await app.waitFor("$ cargo test -p core");
-  await app.waitFor("TOOL · todo_write");
+  // Tool rows read as a localized verb plus their target, not as a raw tool name.
+  await app.waitFor("Ran");
+  await app.waitFor("cargo test -p core");
+  await app.waitFor("Updated plan");
+  await app.waitFor("Edited");
+  await app.waitFor("main.rs");
   await app.waitFor("checklist 2/2");
   await app.waitFor("Primary model · 1.2s");
 
@@ -178,7 +181,7 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
     payload: { sessionId: "session-rich", text: "Evaluating edge cases.", contentType: "thinking" },
   });
   await app.waitFor("Thinking through the request…");
-  await app.press("label:thinking-live-thinking");
+  // Live reasoning opens by itself while the model is still thinking.
   await app.waitFor("Evaluating edge cases.");
 
   await app.host.send("openbitfun.event", {
@@ -230,13 +233,16 @@ test("conversation sub-header search, copy transcript, thread actions overlay, f
   // Literal "×" is never rendered outside open tab close buttons inside thread actions overlay.
   expect(app.texts().filter(text => text === "×")).toHaveLength(0);
 
-  // Transcript search filters and highlights matching turns.
+  // Transcript search filters and highlights matching turns (the header keeps
+  // title + status + "…"; search and copy live in the "…" menu).
+  await app.press("thread-actions-trigger");
   await app.press("transcript-search-toggle");
   await app.type("transcript-search-input", "fork");
   await app.waitFor("1 match");
   await app.press("close-transcript-search");
 
   // Copy transcript writes full user + assistant dialogue.
+  await app.press("thread-actions-trigger");
   await app.press("copy-transcript");
   expect(copied).toContain("Port the session list.");
   expect(copied).toContain("Ready to fork.");
@@ -291,6 +297,8 @@ test("layered 3-band chat input dock supports attachments, agent selector, unifi
   await app.waitFor("Profiles");
   await app.waitFor("Agents");
 
+  // Rarely used controls live in the composer's "+" menu.
+  await app.press("composer-plus");
   await app.press("Actions");
   await app.waitFor("Commit");
 });
@@ -351,9 +359,555 @@ test("sessions scene repaints reactively across dark and light Tauri palettes", 
   expect(app.spanStyle("Return sends, Shift+Return inserts a line break").color).toBe("#94949cff");
 
   await app.press("Settings");
+  // Settings opens on General; the scheme lives on the Appearance page.
+  await app.press("nav-settings-page-appearance");
   await app.waitFor("appearance-light");
   await app.press("appearance-light");
-  await app.press("Sessions");
+  // Settings replaces the nav panel with its own page list; Back returns to Sessions.
+  await app.press("settings-nav-back");
   await app.waitFor("Return sends, Shift+Return inserts a line break");
   expect(app.spanStyle("Return sends, Shift+Return inserts a line break").color).toBe("#5c6672ff");
+});
+
+test("rename sends the whole session record the host deserializes", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.press("thread-actions-trigger");
+  await app.press("Rename");
+  await app.type("session-rename", "Renamed session");
+  await app.press("Save");
+  const request = backend.calls.find(call => call.action === "save_session_metadata")?.request as
+    | { metadata: Record<string, unknown>; fields: string[] }
+    | undefined;
+  expect(request?.fields).toEqual(["sessionName"]);
+  expect(request?.metadata).toMatchObject({
+    sessionId: "session-1",
+    sessionName: "Renamed session",
+    agentType: "Standard",
+    status: "active",
+  });
+  for (const field of ["modelName", "createdAt", "lastActiveAt", "turnCount", "messageCount", "toolCallCount"]) {
+    expect(field in (request?.metadata ?? {})).toBe(true);
+  }
+  // Fields this surface adds while normalizing never reach the host record.
+  expect("persistedStatus" in (request?.metadata ?? {})).toBe(false);
+});
+
+test("a persisted round keeps its order and every tool card shows its result", async () => {
+  const backend = createBackend({
+    sessions: [{ sessionId: "session-ordered", sessionName: "Ordered", lastUpdated: 1763100000000, messageCount: 2, agentType: "Standard" }],
+  });
+  withCustomTurns(backend, {
+    "session-ordered": [
+      {
+        turnId: "turn-o-1",
+        userMessage: { id: "u", content: "Run the suite." },
+        status: "completed",
+        modelRounds: [
+          {
+            id: "round-1",
+            textItems: [
+              { id: "t-1", content: "Let me run the tests.", orderIndex: 0 },
+              { id: "t-2", content: "All tests passed.", orderIndex: 2 },
+            ],
+            toolItems: [
+              {
+                id: "tool-1",
+                toolName: "ExecCommand",
+                orderIndex: 1,
+                toolCall: { id: "tool-1", input: { cmd: "cargo test -p core" } },
+                toolResult: { success: true, result: { output: "test result: ok. 12 passed", exit_code: 0 } },
+              },
+              {
+                id: "tool-2",
+                toolName: "Read",
+                orderIndex: 3,
+                toolCall: { id: "tool-2", input: { file_path: "/repo/missing.rs" } },
+                toolResult: { success: false, result: null, error: "No such file" },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("All tests passed.");
+  const texts = app.texts();
+  const before = texts.indexOf("Let me run the tests.");
+  const command = texts.indexOf("cargo test -p core");
+  const after = texts.indexOf("All tests passed.");
+  expect(before).toBeGreaterThanOrEqual(0);
+  expect(command).toBeGreaterThan(before);
+  expect(after).toBeGreaterThan(command);
+  // A successful exit code is a hover hint, not a mark on the row.
+  expect(texts).not.toContain("exit 0");
+
+  await app.press("tool-card-ExecCommand");
+  await app.waitFor("test result: ok. 12 passed");
+  expect(app.texts()).toContain("Output");
+
+  // A failed call says so and shows the host's error.
+  await app.waitFor("Failed");
+  await app.press("tool-card-Read");
+  await app.waitFor("No such file");
+});
+
+test("a live round cuts its text at each tool call and shows the tool's result", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+
+  const send = (event: string, payload: Record<string, unknown>) =>
+    app.host.send("openbitfun.event", { event, payload: { sessionId: "session-1", turnId: "turn-live", ...payload } });
+  await send("agentic://dialog-turn-started", {});
+  await send("agentic://text-chunk", { roundId: "r1", text: "First I check the build." });
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: { event_type: "Started", tool_id: "live-1", tool_name: "ExecCommand", params: { cmd: "cargo build" } },
+  });
+  await app.waitFor("Running");
+  await send("agentic://tool-event", {
+    roundId: "r1",
+    toolEvent: {
+      event_type: "Completed",
+      tool_id: "live-1",
+      tool_name: "ExecCommand",
+      result: { output: "Finished dev profile", exit_code: 0 },
+      duration_ms: 1200,
+    },
+  });
+  await send("agentic://text-chunk", { roundId: "r1", text: " The build is clean." });
+  await app.waitFor("The build is clean.");
+  const texts = app.texts();
+  expect(texts.indexOf("First I check the build.")).toBeLessThan(texts.indexOf("cargo build"));
+  expect(texts.indexOf("cargo build")).toBeLessThan(texts.indexOf("The build is clean."));
+
+  await app.press("tool-card-ExecCommand");
+  await app.waitFor("Finished dev profile");
+});
+
+test("a running turn keeps streaming while another session is open", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-bg", userInput: "Keep going" },
+  });
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: "session-1", turnId: "turn-bg", roundId: "r1", text: "Part one." },
+  });
+  await app.waitFor("Part one.");
+
+  await app.press("Terminal migration >> nth=0");
+  await app.waitFor("Port the terminal.");
+  expect(app.texts()).not.toContain("Part one.");
+  // While the session is away its turn keeps arriving.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://text-chunk",
+    payload: { sessionId: "session-1", turnId: "turn-bg", roundId: "r1", text: " Part two." },
+  });
+  expect(app.texts().join("\n")).not.toContain("Part two.");
+
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Part one. Part two.");
+  expect(app.texts()).toContain("Keep going");
+});
+
+test("a turn footer forks from that turn and opens the fork", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+  await app.press("fork-turn-turn-1");
+  expect(backend.calls.find(call => call.action === "fork_session")?.request).toMatchObject({
+    source_session_id: "session-1",
+    source_turn_id: "turn-1",
+    workspace_id: "workspace-1",
+  });
+  // The fork the host answered with is the session now open.
+  await app.waitFor("Fork of turn-1");
+  await app.waitUntil(() =>
+    backend.calls.some(call => call.action === "load_session_turns" && (call.request as { session_id?: string })?.session_id === "session-fork"),
+  );
+});
+
+test("the permission pill writes the session's mode", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("composer-plus");
+  await app.press("composer-plus");
+  await app.press("permission-mode-pill");
+  await app.press("permission-mode-full_access");
+  expect(backend.calls.find(call => call.action === "update_session_permission_mode")?.request).toMatchObject({
+    sessionId: "session-1",
+    mode: "full_access",
+    workspaceId: "workspace-1",
+  });
+  await app.waitFor("Full access");
+});
+
+test("editing a user message rolls back to that turn and reruns it", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Add the plan and fix the imports.");
+  await app.press("edit-rerun-turn-2");
+  await app.waitFor("Roll back and rerun");
+  await app.press("Roll back and rerun");
+  expect(backend.calls.find(call => call.action === "rollback_session_to_turn")?.request).toMatchObject({
+    sessionId: "session-1",
+    targetTurnId: "turn-2",
+    workspaceId: "workspace-1",
+    requireIdle: true,
+  });
+  await app.waitUntil(() => backend.actions().includes("submit_user_message"));
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
+    sessionId: "session-1",
+    text: "Add the plan and fix the imports.",
+  });
+});
+
+test("the context ring reports the window the host measured", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+  expect(app.shows("context-usage")).toBe(false);
+  await app.host.send("openbitfun.event", {
+    event: "agentic://token-usage-updated",
+    payload: { sessionId: "session-1", turnId: "t", inputTokens: 1200, outputTokens: 300, maxContextTokens: 128000, isSubagent: false },
+  });
+  await app.waitFor("context-usage");
+  await app.press("context-usage");
+  await app.waitFor("1.2K of 128K tokens (1%)");
+});
+
+test("slash commands run the host command instead of sending a turn", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+
+  // The menu is the host's list, the one the IM bots offer too.
+  await app.waitUntil(() => backend.actions().includes("list_session_commands"));
+  await app.type("composer", "/co");
+  await app.waitFor("slash-command-compact");
+  await app.press("slash-command-compact");
+  expect(backend.calls.find(call => call.action === "execute_session_command")?.request).toMatchObject({
+    sessionId: "session-1",
+    id: "compact",
+    workspaceId: "workspace-1",
+  });
+  expect(app.value("composer")).toBe("");
+
+  await app.type("composer", "/reload skills");
+  await app.submit("composer");
+  const reload = backend.calls.filter(call => call.action === "execute_session_command").at(-1);
+  expect(reload?.request).toMatchObject({ sessionId: "session-1", id: "reload", arg: "skills" });
+  expect(backend.actions()).not.toContain("submit_user_message");
+  // The per-command host calls the composer used to choose itself are gone.
+  expect(backend.actions()).not.toContain("compact_session");
+  expect(backend.actions()).not.toContain("reload_session_context");
+});
+
+test("a host without session commands says so instead of listing a client copy", async () => {
+  const backend = createBackend();
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const action = (data as { action?: string })?.action;
+      if (action === "list_session_commands" || action === "execute_session_command") {
+        return { ok: false, error: `Command not found: ${action}` };
+      }
+      return backend.handlers["openbitfun.invoke"]!(data);
+    },
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+  await app.type("composer", "/");
+  await app.waitFor("This host has no session commands. Update OpenBitFun on it to use /compact, /init and /reload.");
+  expect(app.shows("slash-command-compact")).toBe(false);
+});
+
+test("the host decides whether a mid-turn message steers or queues", async () => {
+  const backend = createBackend({ hostQueue: true });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+
+  backend.setRunningTurn("session-1", "turn-9");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-9" },
+  });
+  await app.waitFor("Steer running turn…");
+
+  // The stored policy is the host's; the composer forwards the message as is.
+  await app.type("composer", "Also check the tests");
+  await app.press("Steer");
+  await app.waitUntil(() => backend.userMessages.length === 1);
+  expect(backend.userMessages[0]).toMatchObject({ sessionId: "session-1", outcome: "steered", turnId: "turn-9" });
+  const steer = backend.calls.find(call => call.action === "submit_user_message")?.request as Record<string, unknown>;
+  expect(steer).toMatchObject({ sessionId: "session-1", text: "Also check the tests", workspaceId: "workspace-1" });
+  expect(steer.sendDuringTurn).toBeUndefined();
+  expect(app.value("composer")).toBe("");
+
+  // The explicit secondary button asks the host to queue this one message.
+  await app.type("composer", "Then the docs");
+  await app.press("Queue");
+  await app.waitFor("Then the docs");
+  expect(backend.userMessages[1]).toMatchObject({ outcome: "queued", text: "Then the docs" });
+  const queued = backend.calls.filter(call => call.action === "submit_user_message").at(-1)?.request;
+  expect(queued).toMatchObject({ sendDuringTurn: "queue" });
+  // No client-side queue copy and no client steering call.
+  expect(backend.actions()).not.toContain("steer_dialog_turn");
+  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
+});
+
+test("a host without a queue or submit_user_message is told to update, nothing is kept here", async () => {
+  const backend = createBackend();
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      if ((data as { action?: string })?.action === "submit_user_message") {
+        return { ok: false, error: "Command not found: submit_user_message" };
+      }
+      return backend.handlers["openbitfun.invoke"]!(data);
+    },
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+
+  // An idle session still starts its turn on the older host.
+  await app.type("composer", "Start here");
+  await app.press("Send");
+  await app.waitUntil(() => backend.actions().includes("start_dialog_turn"));
+  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
+    sessionId: "session-1",
+    userInput: "Start here",
+    workspaceId: "workspace-1",
+  });
+
+  // During a turn the message stays in the composer with the update notice.
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-9" },
+  });
+  await app.waitFor("Steer running turn…");
+  // Without the host queue there is an explicit state, not a local list.
+  await app.waitFor("This host has no message queue. Update OpenBitFun on it to queue messages during a turn.");
+  await app.type("composer", "Mid-turn note");
+  await app.submit("composer");
+  await app.waitFor("send-host-update");
+  expect(app.value("composer")).toBe("Mid-turn note");
+  expect(backend.actions()).not.toContain("steer_dialog_turn");
+  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
+});
+
+test("stop goes through the host's stop, which picks interrupt or cancel", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
+  backend.setRunningTurn("session-1", "turn-9");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-started",
+    payload: { sessionId: "session-1", turnId: "turn-9" },
+  });
+  await app.waitFor("Steer running turn…");
+  await app.press("Stop");
+  await app.waitUntil(() => backend.actions().includes("stop_dialog_turn"));
+  expect(backend.calls.find(call => call.action === "stop_dialog_turn")?.request).toMatchObject({
+    sessionId: "session-1",
+    dialogTurnId: "turn-9",
+  });
+  expect(backend.actions()).not.toContain("interrupt_dialog_turn");
+  expect(backend.actions()).not.toContain("cancel_dialog_turn");
+});
+
+test("unread marks are the host's, and legacy local seen marks are handed over once", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", {
+    ...DESKTOP,
+    host: { handlers: backend.handlers },
+    storage: { "openbitfun.nsh.session-seen.v1": JSON.stringify({ "session-2": 1762950000000 }) },
+  });
+  await app.waitFor("NSH skeleton");
+  // The legacy stamp travels to the host with the row's workspace, once.
+  await app.waitUntil(() => backend.seenMarks.some(mark => mark.sessionId === "session-2"));
+  expect(backend.seenMarks.find(mark => mark.sessionId === "session-2")).toMatchObject({
+    sessionId: "session-2",
+    seenThroughMs: 1762950000000,
+  });
+  await app.waitUntil(() => app.storage()["openbitfun.nsh.session-seen.v1"] === undefined);
+  expect(backend.calls.find(call => call.action === "mark_session_seen")?.request).toMatchObject({
+    workspaceId: "workspace-1",
+  });
+
+  // Opening a session acknowledges the host receipt; no local stamp is written.
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitUntil(() => backend.seenMarks.some(mark => mark.sessionId === "session-1"));
+  expect(app.storage()["openbitfun.nsh.session-seen.v1"]).toBeUndefined();
+});
+
+test("a long history opens on its newest turns and loads earlier ones on request", async () => {
+  const turns = Array.from({ length: 3 }, (_, index) => ({
+    turnId: `turn-${index + 1}`,
+    userMessage: { id: `u-${index}`, content: `Question ${index + 1}` },
+    modelRounds: [{ textItems: [{ id: `t-${index}`, content: `Answer ${index + 1}` }] }],
+  }));
+  const backend = createBackend({
+    sessions: [
+      { sessionId: "session-long", sessionName: "Long history", lastUpdated: 1763100000000, messageCount: 80, turnCount: 40, agentType: "Standard" } as never,
+    ],
+  });
+  withCustomTurns(backend, { "session-long": turns });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("Answer 3");
+  const first = backend.calls.find(call => call.action === "load_session_turns")?.request;
+  expect(first).toMatchObject({ session_id: "session-long", limit: 30 });
+  await app.waitFor("load-earlier-turns");
+  await app.press("load-earlier-turns");
+  await app.waitUntil(() =>
+    backend.calls.some(call => call.action === "load_session_turns" && (call.request as { limit?: number })?.limit === 60),
+  );
+});
+
+test("an approval can be rejected with a reason the agent receives", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("Approval needed: run_command");
+  await app.press("reject-with-reason-perm-1");
+  await app.type("reject-reason-perm-1", "Use the dry-run flag first");
+  await app.press("Reject with reason");
+  expect(backend.calls.find(call => call.action === "respond_permission")?.request).toMatchObject({
+    requestId: "perm-1",
+    reply: "reject",
+    feedback: "Use the dry-run flag first",
+  });
+  await app.waitFor("Approval needed: run_command", { state: "gone" });
+});
+
+test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream completes", async () => {
+  const bigOutput = Array.from({ length: 120 }, (_, line) => `line ${line} of a long build log`).join("\n");
+  const hugeReply = Array.from({ length: 600 }, (_, line) => `Paragraph ${line}: the long reply keeps going.\n`).join("\n");
+  const turns = Array.from({ length: 200 }, (_, index) => ({
+    turnId: `perf-${index + 1}`,
+    userMessage: { id: `u-${index}`, content: `Question ${index + 1}` },
+    status: "completed",
+    modelRounds: [
+      {
+        id: `round-${index}`,
+        textItems: [
+          { id: `t-${index}-a`, content: `Looking at step ${index + 1}.`, orderIndex: 0 },
+          { id: `t-${index}-b`, content: index === 199 ? hugeReply : `Answer ${index + 1}`, orderIndex: 2 },
+        ],
+        toolItems: [
+          {
+            id: `tool-${index}`,
+            toolName: "ExecCommand",
+            orderIndex: 1,
+            toolCall: { id: `tool-${index}`, input: { cmd: `cargo test --step ${index + 1}` } },
+            toolResult: { success: true, result: { output: `${bigOutput}\nstep ${index + 1} done`, exit_code: 0 } },
+          },
+        ],
+      },
+    ],
+  }));
+  const backend = createBackend({
+    sessions: [
+      { sessionId: "session-perf", sessionName: "Long day", lastUpdated: 1763100000000, messageCount: 400, turnCount: 200, agentType: "Standard" } as never,
+    ],
+  });
+  withCustomTurns(backend, { "session-perf": turns });
+  // A manual clock: every host event resolves once the app is quiet, and with the
+  // system clock each wait would also sit out real idle time; this one measures
+  // the app's own work per chunk.
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers }, clock: {} });
+
+  const started = Date.now();
+  await app.waitFor("Answer 199", { timeout: 20_000 });
+  const renderMs = Date.now() - started;
+  expect(renderMs).toBeLessThan(20_000);
+  // Tool output stays collapsed and is not laid out until the row is opened.
+  expect(app.texts().join("\n")).not.toContain("step 1 done");
+  // The oversized reply opens as a preview and lays out the rest on request.
+  expect(app.texts().join("\n")).toContain("Paragraph 0:");
+  expect(app.texts().join("\n")).not.toContain("Paragraph 599:");
+  const fullReply = app.texts().find(text => text.startsWith("Show the full reply"));
+  expect(fullReply).toBeTruthy();
+  await app.press(fullReply!);
+  await app.waitFor("Paragraph 599: the long reply keeps going.");
+
+  // A settled card opens on press.
+  const outputShown = () => app.texts().some(text => text.includes("step 1 done"));
+  await app.press("tool-card-ExecCommand >> nth=0");
+  await app.waitUntil(outputShown);
+
+  const send = (event: string, payload: Record<string, unknown>) =>
+    app.host.send("openbitfun.event", { event, payload: { sessionId: "session-perf", turnId: "perf-live", ...payload } });
+  await send("agentic://dialog-turn-started", { userInput: "Stream a lot" });
+  const streamStarted = Date.now();
+  for (let chunk = 0; chunk < 2000; chunk += 1) {
+    await send("agentic://text-chunk", { roundId: "r-live", text: chunk === 1999 ? " stream-finished." : `w${chunk} ` });
+  }
+  await app.waitUntil(() => app.texts().some(text => text.includes("stream-finished.")), { timeout: 20_000 });
+  // About a millisecond per chunk headless with 200 settled turns on screen: the
+  // settled rows are not evaluated again while the live reply grows.
+  expect(Date.now() - streamStarted).toBeLessThan(30_000);
+  await send("agentic://dialog-turn-completed", {});
+  await app.waitFor("Streaming response…", { state: "gone", timeout: 10_000 });
+  // The settled card the reader opened stays open across the reload.
+  expect(outputShown()).toBe(true);
+}, 120_000);
+
+test("a narrow chat runs full width with the composer controls in its + menu", async () => {
+  const backend = createBackend();
+  const app = await open("../App.tsx", { ...DESKTOP, width: 1440, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Attach");
+  expect(app.shows("agent-picker")).toBe(true);
+
+  await app.setViewport(480, 900);
+  await app.waitFor("Attach", { state: "gone" });
+  expect(app.shows("agent-picker")).toBe(false);
+  expect(app.shows("composer-plus")).toBe(true);
+  // On a narrow column the row keeps only "+" and Send (both 44 pt touch targets).
+  expect(app.shows("Send")).toBe(true);
+  expect(app.shows("thread-actions-trigger")).toBe(true);
+
+  // The "+" menu holds attach, agent, model and the rarely used controls.
+  await app.press("composer-plus");
+  await app.waitFor("Attach");
+  expect(app.shows("Reference")).toBe(true);
+  expect(app.shows("permission-mode-pill")).toBe(true);
+  await app.press("agent-picker");
+  await app.waitFor("Profiles");
+
+  // Back to a wide window, the row shows its controls again.
+  await app.setViewport(1440, 900);
+  await app.waitFor("agent-picker");
 });

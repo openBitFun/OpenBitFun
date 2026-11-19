@@ -7,7 +7,7 @@
 
 import { Storage, signal, type Signal } from "nsh";
 import { setLocale as setNshLocale } from "nsh/i18n";
-import { getConfig, setConfig } from "./api";
+import { getConfig } from "./api";
 import { invokeCommand } from "./bridge";
 import { peerScope } from "./peerState";
 import { enUSMessages, type MessageKey } from "./locales/en-US";
@@ -321,15 +321,15 @@ export async function loadAppLocale(opts?: { forceHost?: boolean }): Promise<App
 
 /**
  * Switches the active UI locale immediately, syncs NSH native widgets,
- * persists to local `Storage`, and (unless `persistHost: false`) merges
- * `app.language` into the host's `app` config so sibling keys survive.
+ * persists to local `Storage`, and (unless `persistHost: false`) asks the host
+ * to keep it through `i18n_set_language`. Resolves `false` when the host did not.
  */
 export async function setAppLocale(
   locale: string,
   opts?: { persistHost?: boolean },
-): Promise<void> {
+): Promise<boolean> {
   const canonical = normalizeLocale(locale);
-  if (!canonical) return;
+  if (!canonical) return false;
 
   localeMutationVersion += 1;
   currentLocale.set(canonical);
@@ -343,38 +343,22 @@ export async function setAppLocale(
 
   if (opts?.persistHost === false) {
     notifyLocalePersisted(canonical);
-    return;
+    return true;
   }
 
-  if (peerScope() !== null) {
-    // Keep UI language changes controller-local while driving a peer device.
-    try {
-      await invokeCommand("i18n_set_language", { language: canonical });
-    } catch {
-      // Older controller or dev fixture without `i18n_set_language`.
-    }
-    notifyLocalePersisted(canonical);
-    return;
-  }
-
-  let mergedApp: Record<string, unknown> | undefined;
+  // `i18n_set_language` owns the language: the host validates the locale,
+  // stores `app.language` as a leaf and applies its runtime effects. It is
+  // controller-local, so while a peer device is driven the change stays on this
+  // machine. No whole `app` document is read or written back from here.
+  let persisted = true;
   try {
-    const existing = await getConfig("app", true).catch(() => undefined);
-    const base =
-      existing && typeof existing === "object" && !Array.isArray(existing)
-        ? (existing as Record<string, unknown>)
-        : {};
-    mergedApp = { ...base, language: canonical };
-    await setConfig("app", mergedApp);
+    await invokeCommand("i18n_set_language", { language: canonical });
   } catch {
-    // Fall back to ControllerLocal `i18n_set_language` when `set_config("app")` is unavailable.
-    try {
-      await invokeCommand("i18n_set_language", { language: canonical });
-    } catch {
-      // In-memory + Storage switch still succeeded.
-    }
+    // The UI already switched; the caller says the host did not keep it.
+    persisted = false;
   }
-  notifyLocalePersisted(canonical, mergedApp);
+  notifyLocalePersisted(canonical);
+  return persisted;
 }
 
 function extractRawErrorMessage(raw: unknown): string {

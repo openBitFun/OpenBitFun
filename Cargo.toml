@@ -58,6 +58,9 @@ members = [
 
 exclude = [
     "OpenBitFun-Installer/src-tauri",
+    # The native NSH desktop runner resolves its own graph: NSH's crates need
+    # a newer unicode-width than the CLI's ratatui pins.
+    "src/apps/desktop-nsh/native",
     "third_party/eioc",
     "third_party/tao",
     "third_party/wry",
@@ -312,6 +315,9 @@ russh-sftp = "2.1"
 russh-keys = "0.45"
 shellexpand = "3"
 rustls = { version = "0.23", default-features = false }
+# Backend protocol LAN listener: self-signed certificate and TLS accept.
+rcgen = { version = "0.14", default-features = false }
+tokio-rustls = { version = "0.26", default-features = false }
 
 [patch.crates-io]
 # Restore compatibility with Rust's never-type fallback in the Linux D-Bus calls.

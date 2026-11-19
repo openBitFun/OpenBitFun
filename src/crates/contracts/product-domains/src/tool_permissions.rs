@@ -576,6 +576,50 @@ pub struct ToolPermissionConfig {
     pub approval: PermissionApprovalConfig,
 }
 
+impl ToolPermissionConfig {
+    /// The mode a settings surface shows for this stored config. Unlike
+    /// [`PermissionMode::from_config`] (what the runtime evaluates), a model or
+    /// immediate approval strategy also reads as automatic approval, because
+    /// that is how every settings surface and remote control has presented it.
+    pub fn settings_mode(&self) -> PermissionMode {
+        match self.policy.preset {
+            PermissionPolicyPreset::FullAccess => PermissionMode::FullAccess,
+            PermissionPolicyPreset::Ask
+                if self.interaction.auto_approve_ask
+                    || matches!(
+                        self.approval.strategy,
+                        PermissionApprovalStrategy::Model
+                            | PermissionApprovalStrategy::ImmediateAllow
+                    ) =>
+            {
+                PermissionMode::AutoApprove
+            }
+            PermissionPolicyPreset::Ask => PermissionMode::Ask,
+        }
+    }
+
+    /// Projects one user-facing mode onto the stored knobs, keeping the rule
+    /// list and the approval tuning. Every surface (desktop settings, remote
+    /// control, typed config mutations) switches the mode through this one
+    /// mapping, so a mode never means different stored fields on two clients.
+    pub fn apply_mode(&mut self, mode: PermissionMode) {
+        self.policy.preset = mode.preset();
+        self.interaction.auto_approve_ask = mode.auto_approve_ask();
+        self.approval.strategy = match mode {
+            PermissionMode::AutoApprove => PermissionApprovalStrategy::Model,
+            PermissionMode::Ask | PermissionMode::FullAccess => {
+                PermissionApprovalStrategy::Interactive
+            }
+        };
+        if mode == PermissionMode::AutoApprove
+            && self.approval.model_kind == PermissionApprovalModelKind::Chat
+            && self.approval.chat_model_id.trim().is_empty()
+        {
+            self.approval.chat_model_id = PermissionApprovalConfig::default().chat_model_id;
+        }
+    }
+}
+
 /// Ordered inputs used to resolve one effective static permission ruleset.
 ///
 /// Product defaults are the initial baseline. The user preset and global

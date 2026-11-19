@@ -1,12 +1,13 @@
 //! Agentic API
 
+use crate::host::HostHandle;
+use crate::host::State;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, State};
 
 use crate::api::app_state::AppState;
 use crate::api::session_storage_path::{
@@ -96,7 +97,7 @@ fn worktree_error(
 /// Builds the session scope carried by Desktop session commands. The ID is the
 /// workspace identity; the path and SSH fields are only consulted for pre-ID
 /// clients and are otherwise IO projections.
-fn desktop_session_scope(
+pub(crate) fn desktop_session_scope(
     workspace_id: Option<String>,
     workspace_path: String,
     remote_connection_id: Option<String>,
@@ -1557,7 +1558,7 @@ pub fn list_pending_permission_requests(
 
 #[tauri::command]
 pub fn subscribe_permission_requests(
-    app: AppHandle,
+    app: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
 ) -> Result<(), String> {
     runtime
@@ -2108,7 +2109,9 @@ pub(crate) async fn create_desktop_session(
 
 #[tauri::command]
 pub async fn update_session_mode(
+    app: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
+    coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: UpdateSessionModeRequest,
 ) -> Result<(), String> {
     let session_id = request.session_id.trim().to_string();
@@ -2125,6 +2128,18 @@ pub async fn update_session_mode(
         request.include_internal,
     )
     .await?;
+    // A started session keeps the mode its transcript was produced under; the
+    // rule used to live only in each UI, so another client could rebind it.
+    if let Some(session) = coordinator.get_session_manager().get_session(&session_id) {
+        openbitfun_core::agentic::session_policy::check_session_mode_rebind(
+            &openbitfun_core::agentic::session_policy::SessionModeFacts {
+                mode_id: session.agent_type.clone(),
+                started: !session.dialog_turn_ids.is_empty(),
+            },
+            &request.mode_id,
+        )?;
+    }
+    let mode_id = request.mode_id.clone();
     runtime
         .agent_runtime()
         .update_session_mode(AgentSessionModeUpdateRequest {
@@ -2133,7 +2148,11 @@ pub async fn update_session_mode(
             agent_route_key: None,
         })
         .await
-        .map_err(|error| format!("Failed to update session mode: {}", error.into_message()))
+        .map_err(|error| format!("Failed to update session mode: {}", error.into_message()))?;
+    if !request.include_internal {
+        crate::api::session_policy_api::remember_last_mode(&app, &mode_id).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2625,7 +2644,7 @@ pub async fn manage_dialog_queue(
 
 #[tauri::command]
 pub async fn start_dialog_turn(
-    _app: AppHandle,
+    _app: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
     request: StartDialogTurnRequest,
 ) -> Result<StartDialogTurnResponse, String> {
@@ -2694,7 +2713,7 @@ fn desktop_dialog_turn_request(
     })
 }
 
-pub(super) fn desktop_user_message_metadata(
+pub(crate) fn desktop_user_message_metadata(
     metadata: Option<serde_json::Value>,
 ) -> serde_json::Map<String, serde_json::Value> {
     match metadata {
@@ -2704,7 +2723,7 @@ pub(super) fn desktop_user_message_metadata(
     }
 }
 
-fn desktop_image_attachment(image: ImageContextData) -> AgentInputAttachment {
+pub(crate) fn desktop_image_attachment(image: ImageContextData) -> AgentInputAttachment {
     let mut metadata = serde_json::Map::new();
     if let Some(image_path) = image.image_path {
         metadata.insert(
@@ -3190,7 +3209,7 @@ fn is_blank_text(value: Option<&String>) -> bool {
     value.map(|s| s.trim().is_empty()).unwrap_or(true)
 }
 
-fn resolve_missing_image_payloads(
+pub(crate) fn resolve_missing_image_payloads(
     image_contexts: Vec<ImageContextData>,
 ) -> Result<Vec<ImageContextData>, String> {
     let mut resolved = Vec::with_capacity(image_contexts.len());

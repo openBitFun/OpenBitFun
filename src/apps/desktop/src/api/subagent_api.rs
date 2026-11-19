@@ -1,6 +1,7 @@
 //! Subagent API
 
 use crate::api::app_state::AppState;
+use crate::host::State;
 use log::warn;
 use openbitfun_core::agentic::agents::{
     AgentInfo, CustomSubagent, CustomSubagentDetail, CustomSubagentKind, SubAgentSource,
@@ -9,8 +10,6 @@ use openbitfun_core::agentic::agents::{
 use openbitfun_core::service::config::model_pool::AgentModelSelection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use tauri::State;
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListSubagentsRequest {

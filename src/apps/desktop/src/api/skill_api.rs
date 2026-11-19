@@ -1,5 +1,6 @@
 //! Skill Management API
 
+use crate::host::State;
 use log::info;
 use openbitfun_core::service::workspace::{WorkspaceInfo, WorkspaceKind};
 use regex::Regex;
@@ -10,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
-use tauri::State;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio::time::{timeout, Duration};

@@ -80,8 +80,13 @@ zstd = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 tower-http = { workspace = true, features = ["fs"] }
+# Backend protocol (OBP) LAN listener: TLS with a self-signed, QR-pinned certificate.
+rustls = { workspace = true, features = ["std", "tls12"] }
+tokio-rustls = { workspace = true, features = ["tls12"] }
+rcgen = { workspace = true, features = ["crypto", "ring"] }
+rand = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
 minisign-verify = { workspace = true }
@@ -93,6 +98,8 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+# OBP listener integration tests: a real WebSocket client (plain and TLS).
+tokio-tungstenite = { workspace = true, features = ["connect", "rustls-tls-native-roots"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Observe the native navigation delegate retained by the existing Tauri runtime.

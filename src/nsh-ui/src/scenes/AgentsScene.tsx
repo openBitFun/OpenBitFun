@@ -1,4 +1,4 @@
-import { computed, effect, Scroll, signal, Text, View, type ViewRef } from "nsh";
+import { computed, effect, lifecycle, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
 import {
   agentKindFilter,
   agentSearchQuery,
@@ -11,6 +11,20 @@ import {
   availableModes,
   availableSubagents,
   builderDraft,
+  POOL_TOKEN_PREFIX,
+  parentSubagents,
+  parentSubagentsError,
+  parentSubagentsFor,
+  parentSubagentsLoading,
+  parentSubagentSaving,
+  setParentSubagentEnabled,
+  modeSkills,
+  modeSkillsError,
+  modeSkillsFor,
+  modeSkillsLoading,
+  modeSkillsSaving,
+  resetModeSkills,
+  setModeSkillEnabled,
   builderError,
   builderLoading,
   builderOpen,
@@ -45,18 +59,26 @@ import {
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import { peerScope, peerSupports } from "../peerState";
+import { loadModels, modelSettingsLoaded, storedModels } from "../modelSettingsStore";
+import { ensurePools, pools } from "../poolStore";
 import { activeWorkspace, activeWorkspaceId } from "../state";
-import {
-  fontMono,
-  isLightAppearance,
-  palette,
-  radii,
-  textLineHeight,
-  textSize,
-  textTracking,
-} from "../theme";
-import { BotCharacter, Icon, type BotVariant } from "../ui/icons";
+import { palette, textLineHeight, textSize, textTracking } from "../theme";
+import { BotCharacter, type BotVariant } from "../ui/icons";
 import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
+import {
+  GalleryGrid,
+  GallerySkeleton,
+  MoreMenu,
+  StudioBody,
+  StudioEmpty,
+  StudioHeader,
+  StudioSection,
+  StudioToolbar,
+  galleryCardHoverStyle,
+  galleryCardStyle,
+  studioCompact,
+  trackStudioWidth,
+} from "../ui/studio";
 import {
   DropdownMenu,
   ModalDialog,
@@ -69,7 +91,6 @@ import {
   Button,
   ConfigRow,
   ConfigSection,
-  EmptyStateCard,
   IconButton,
   InlineBanner,
   InputBox,
@@ -77,7 +98,6 @@ import {
   SearchInput,
   SegmentedTabs,
   ToggleSwitch,
-  type BadgeTone,
 } from "../ui/primitives";
 
 function sourceOptions(): ReadonlyArray<SelectDropdownOption<AgentSourceFilter>> {
@@ -102,30 +122,6 @@ function detectHarnessKey(item: AgentCatalogItem): HarnessKey | null {
   return null;
 }
 
-function harnessHaloColors(item: AgentCatalogItem): { bg: string; border: string } | null {
-  const key = detectHarnessKey(item);
-  if (!key) return null;
-  const light = isLightAppearance();
-  if (key === "minimal") {
-    return light
-      ? { bg: "rgba(124, 58, 237, 0.09)", border: "rgba(124, 58, 237, 0.24)" }
-      : { bg: "rgba(167, 139, 250, 0.12)", border: "rgba(167, 139, 250, 0.28)" };
-  }
-  if (key === "standard") {
-    return light
-      ? { bg: "rgba(22, 163, 74, 0.09)", border: "rgba(22, 163, 74, 0.24)" }
-      : { bg: "rgba(74, 222, 128, 0.12)", border: "rgba(74, 222, 128, 0.28)" };
-  }
-  if (key === "ultimate") {
-    return light
-      ? { bg: "rgba(217, 119, 6, 0.10)", border: "rgba(217, 119, 6, 0.26)" }
-      : { bg: "rgba(245, 158, 11, 0.12)", border: "rgba(245, 158, 11, 0.28)" };
-  }
-  return light
-    ? { bg: "rgba(29, 86, 216, 0.09)", border: "rgba(29, 86, 216, 0.24)" }
-    : { bg: "rgba(96, 165, 250, 0.12)", border: "rgba(96, 165, 250, 0.28)" };
-}
-
 function harnessBotVariant(item: AgentCatalogItem): BotVariant | undefined {
   const key = detectHarnessKey(item);
   if (key === "minimal") return "violet";
@@ -147,12 +143,6 @@ function cardBadgeLabel(item: AgentCatalogItem): string {
   if (item.source === "builtin") return tr("common.builtin");
   if (item.source === "external") return tr("common.external");
   return tr("common.custom");
-}
-
-function cardBadgeTone(item: AgentCatalogItem): BadgeTone {
-  if (item.kind === "subagent") return isCustomSource(item.source) ? "accent" : "neutral";
-  if (isCustomSource(item.source)) return "accent";
-  return "neutral";
 }
 
 function editActionLabel(item: AgentCatalogItem): string {
@@ -249,265 +239,219 @@ function resetCatalogFilters(): void {
   agentSearchQuery.set("");
 }
 
+/** Kind and identity line under a card's name: "Built-in · Standard". */
+function cardMetaLine(item: AgentCatalogItem): string {
+  return [cardBadgeLabel(item), distinctSubtitle(item)].filter(Boolean).join(" · ");
+}
+
+function botMenuItems(item: AgentCatalogItem): DropdownMenuItem[] {
+  const open = () => {
+    resetToolFilterState();
+    void openAgentInspector(item);
+  };
+  const remote = isRemoteAgentWorkspace();
+  const items: DropdownMenuItem[] = isCustomSource(item.source)
+    ? [
+        {
+          id: "edit",
+          label: remote ? tr("agents.inspectBot") : tr("agents.editBot"),
+          hint: remote ? tr("agents.remoteReadonlyHint") : tr("agents.editBotHint"),
+          icon: remote ? "eye" : "edit",
+          accessibilityLabel: `agent-menu-edit-${item.id}`,
+          onSelect: open,
+        },
+      ]
+    : [
+        {
+          id: "configure",
+          label: item.source === "external" ? tr("agents.inspectBot") : tr("agents.configureTools"),
+          icon: item.source === "external" ? "eye" : "sliders",
+          accessibilityLabel: `agent-menu-configure-${item.id}`,
+          onSelect: open,
+        },
+      ];
+  items.push({
+    id: "reload",
+    label: tr("agents.reloadCatalog"),
+    icon: "refresh",
+    onSelect: () => void reloadAgentsCatalog(),
+  });
+  if (isCustomSource(item.source)) {
+    items.push({
+      id: "delete",
+      label: tr("common.delete"),
+      icon: "trash",
+      danger: true,
+      separator: true,
+      disabled: remote,
+      accessibilityLabel: `agent-menu-delete-${item.id}`,
+      onSelect: () => confirmDeleteAgentUid.set(item.uid),
+    });
+  }
+  return items;
+}
+
+/** A flat gallery card: avatar, name, one quiet status mark, description, actions. */
 function BotCard(props: { item: AgentCatalogItem }) {
-  const menuOpen = signal(false);
-  const menuAnchor = signal<ViewRef | null>(null);
-  const halo = () => harnessHaloColors(props.item);
   const isDisabledSubagent = () => props.item.kind === "subagent" && !props.item.effectiveEnabled;
-  const subtitle = () => distinctSubtitle(props.item);
 
   return (
     <View
       style={{
-        position: "relative",
-        minWidth: 0,
+        ...galleryCardStyle(),
         height: "100%",
-        flexDirection: "column",
         justifyContent: "space-between",
-        borderRadius: radii.lg,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: isDisabledSubagent() ? palette().borderSubtle : palette().border,
-        backgroundColor: isDisabledSubagent() ? palette().surfaceTertiary : palette().panelRaised,
-        boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
-        padding: 18,
-        gap: 14,
-        opacity: isDisabledSubagent() ? 0.72 : 1,
+        gap: 12,
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{
-        backgroundColor: palette().panelHover,
-        borderColor: palette().borderStrong,
-      }}
+      hoverStyle={galleryCardHoverStyle()}
     >
-      <View style={{ flex: 1, gap: 10, minWidth: 0 }}>
+      <View style={{ gap: 10, minWidth: 0 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12, minWidth: 0 }}>
-          <View
-            style={{
-              width: 42,
-              height: 42,
-              flexShrink: 0,
-              borderRadius: radii.pill,
-              borderWidth: 1,
-              borderColor: halo()?.border ?? palette().borderSubtle,
-              backgroundColor: halo()?.bg ?? palette().surfaceSubtle,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <BotCharacter
-              variant={harnessBotVariant(props.item)}
-              seed={props.item.name}
-              size={34}
-              ringColor={isDisabledSubagent() ? palette().surfaceTertiary : palette().panelRaised}
-              status={
-                props.item.kind === "subagent"
-                  ? props.item.effectiveEnabled
-                    ? "online"
-                    : "idle"
-                  : "online"
-              }
-            />
+          <View style={{ flexShrink: 0, opacity: isDisabledSubagent() ? 0.55 : 1 }}>
+            <BotCharacter variant={harnessBotVariant(props.item)} seed={props.item.name} size={32} />
           </View>
 
-          <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 7, minWidth: 0 }}>
-              <Text
-                style={{
-                  flexShrink: 1,
-                  minWidth: 0,
-                  color: palette().text,
-                  fontSize: textSize(14),
-                  fontWeight: "600",
-                  letterSpacing: textTracking(14),
-                  lineHeight: textLineHeight(14, 1.3),
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {props.item.name}
-              </Text>
-              <Badge label={cardBadgeLabel(props.item)} tone={cardBadgeTone(props.item)} />
-              <If when={isDisabledSubagent()}>
-                <Badge label={tr("common.disabled")} tone="neutral" />
-              </If>
-            </View>
-
-            <If when={subtitle()}>
-              {sub => (
-                <Text
-                  style={{
-                    minWidth: 0,
-                    color: palette().textMuted,
-                    fontFamily: fontMono,
-                    fontSize: textSize(11),
-                    lineHeight: textLineHeight(11, 1.35),
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis-middle",
-                  }}
-                >
-                  {sub()}
-                </Text>
-              )}
-            </If>
+          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+            <Text
+              style={{
+                minWidth: 0,
+                color: palette().text,
+                fontSize: textSize(14),
+                fontWeight: "600",
+                letterSpacing: textTracking(14),
+                lineHeight: textLineHeight(14, 1.3),
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {props.item.name}
+            </Text>
+            <Text
+              style={{
+                minWidth: 0,
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {cardMetaLine(props.item)}
+            </Text>
           </View>
+
+          <If when={isDisabledSubagent()}>
+            <Text
+              style={{
+                flexShrink: 0,
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
+              }}
+            >
+              {tr("common.disabled")}
+            </Text>
+          </If>
         </View>
 
         <Text
           style={{
             minWidth: 0,
             color: palette().textSecondary,
-            fontSize: textSize(12.5),
-            lineHeight: textLineHeight(12.5, 1.5),
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 1.5),
             numberOfLines: 2,
             textOverflow: "ellipsis",
           }}
         >
           {props.item.description || tr("common.noDescription")}
         </Text>
-      </View>
 
-      <View
-        style={{
-          gap: 10,
-          paddingTop: 12,
-          borderTopWidth: 1,
-          borderColor: palette().borderSubtle,
-        }}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
-          <Icon name="wrench" size={11.5} color={palette().textMuted} />
-          <Text
-            style={{
-              flex: 1,
-              minWidth: 0,
-              color: palette().textMuted,
-              fontSize: textSize(11.5),
-              fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(11.5, 1.35),
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {botSummaryLine(props.item)}
-          </Text>
-        </View>
-
-        <View
+        <Text
           style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
+            minWidth: 0,
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            fontVariant: ["tabular-nums"],
+            lineHeight: textLineHeight(12, 1.4),
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
           }}
         >
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
-            <If when={props.item.kind === "mode"}>
-              <Button
-                label={tr("agents.startThread")}
-                variant="secondary"
-                size="sm"
-                leadingIcon="chat"
-                accessibilityLabel={`agent-start-thread-${props.item.id}`}
-                onPress={() => startThreadWithMode(props.item.id)}
-              />
-            </If>
-            <Button
-              label={editActionLabel(props.item)}
-              variant="ghost"
-              size="sm"
-              leadingIcon={
-                isCustomSource(props.item.source)
-                  ? isRemoteAgentWorkspace()
-                    ? "eye"
-                    : "edit"
-                  : props.item.source === "external"
-                    ? "eye"
-                    : "sliders"
-              }
-              accessibilityLabel={`agent-configure-${props.item.id}`}
-              onPress={() => {
-                resetToolFilterState();
-                void openAgentInspector(props.item);
-              }}
-            />
-          </View>
-
-          <View ref={el => menuAnchor.set(el)} style={{ flexShrink: 0 }}>
-            <IconButton
-              icon="more"
-              size="sm"
-              active={menuOpen()}
-              accessibilityLabel={`agent-actions-${props.item.id}`}
-              tooltip={tr("agents.botActions")}
-              onPress={() => menuOpen.update(open => !open)}
-            />
-          </View>
-        </View>
+          {botSummaryLine(props.item)}
+        </Text>
       </View>
 
-      <DropdownMenu
-        open={menuOpen()}
-        anchor={menuAnchor()}
-        align="end"
-        minWidth={196}
-        onClose={() => menuOpen.set(false)}
-        items={[
-          ...(isCustomSource(props.item.source)
-            ? [
-                {
-                  id: "edit",
-                  label: isRemoteAgentWorkspace() ? tr("agents.inspectBot") : tr("agents.editBot"),
-                  hint: isRemoteAgentWorkspace()
-                    ? tr("agents.remoteReadonlyHint")
-                    : tr("agents.editBotHint"),
-                  icon: isRemoteAgentWorkspace() ? "eye" : "edit",
-                  accessibilityLabel: `agent-menu-edit-${props.item.id}`,
-                  onSelect: () => {
-                    resetToolFilterState();
-                    void openAgentInspector(props.item);
-                  },
-                } satisfies DropdownMenuItem,
-              ]
-            : [
-                {
-                  id: "configure",
-                  label:
-                    props.item.source === "external"
-                      ? tr("agents.inspectBot")
-                      : tr("agents.configureTools"),
-                  icon: props.item.source === "external" ? "eye" : "sliders",
-                  accessibilityLabel: `agent-menu-configure-${props.item.id}`,
-                  onSelect: () => {
-                    resetToolFilterState();
-                    void openAgentInspector(props.item);
-                  },
-                } satisfies DropdownMenuItem,
-              ]),
-          {
-            id: "reload",
-            label: tr("agents.reloadCatalog"),
-            icon: "refresh",
-            onSelect: () => void reloadAgentsCatalog(),
-          },
-          ...(isCustomSource(props.item.source)
-            ? [
-                {
-                  id: "delete",
-                  label: tr("common.delete"),
-                  icon: "trash",
-                  danger: true,
-                  separator: true,
-                  disabled: isRemoteAgentWorkspace(),
-                  accessibilityLabel: `agent-menu-delete-${props.item.id}`,
-                  onSelect: () => {
-                    confirmDeleteAgentUid.set(props.item.uid);
-                  },
-                } satisfies DropdownMenuItem,
-              ]
-            : []),
-        ]}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+        <If when={props.item.kind === "mode"}>
+          <Button
+            label={tr("agents.startThread")}
+            variant="secondary"
+            size="sm"
+            leadingIcon="chat"
+            accessibilityLabel={`agent-start-thread-${props.item.id}`}
+            onPress={() => startThreadWithMode(props.item.id)}
+          />
+        </If>
+        <Button
+          label={editActionLabel(props.item)}
+          variant="ghost"
+          size="sm"
+          accessibilityLabel={`agent-configure-${props.item.id}`}
+          onPress={() => {
+            resetToolFilterState();
+            void openAgentInspector(props.item);
+          }}
+        />
+        <View style={{ flex: 1, minWidth: 0 }} />
+        <MoreMenu
+          accessibilityLabel={`agent-actions-${props.item.id}`}
+          tooltip={tr("agents.botActions")}
+          items={botMenuItems(props.item)}
+        />
+      </View>
+    </View>
+  );
+}
+
+/** A quiet filter control: an icon that opens a menu of choices and tints while one is applied. */
+function FilterMenu<T extends string>(props: {
+  value: T;
+  defaultValue: T;
+  options: ReadonlyArray<SelectDropdownOption<T>>;
+  accessibilityLabel: string;
+  tooltip: string;
+  onChange: (value: T) => void;
+}) {
+  const open = signal(false);
+  const anchor = signal<ViewRef | null>(null);
+  return (
+    <View ref={el => anchor.set(el)} style={{ flexShrink: 0 }}>
+      <IconButton
+        icon="filter"
+        size="md"
+        active={open() || props.value !== props.defaultValue}
+        tooltip={props.tooltip}
+        accessibilityLabel={props.accessibilityLabel}
+        onPress={() => open.update(value => !value)}
       />
+      <If when={open()}>
+        <DropdownMenu
+          open={true}
+          anchor={anchor()}
+          align="end"
+          minWidth={180}
+          items={props.options.map(option => ({
+            id: option.value,
+            label: option.label,
+            active: option.value === props.value,
+            accessibilityLabel: option.accessibilityLabel,
+            onSelect: () => props.onChange(option.value),
+          }))}
+          onClose={() => open.set(false)}
+        />
+      </If>
     </View>
   );
 }
@@ -889,6 +833,8 @@ function AgentBuilderModal() {
             </ConfigSection>
 
             <ToolMultiSelect />
+            <ParentSubagentsSection />
+            <ModeSkillsSection />
 
             <If when={builderDraft().mode === "edit-custom" && builderDraft().kind === "subagent"}>
               <ConfigSection
@@ -929,10 +875,12 @@ function AgentBuilderModal() {
                     options={availableModes().map(mode => ({
                       value: mode.id,
                       label: mode.name,
+                      accessibilityLabel: `subagent-parent-${mode.id}`,
                     }))}
-                    value={builderDraft().parentAgentType}
+                    value={builderDraft().parentChosen ? builderDraft().parentAgentType : null}
+                    placeholder={tr("agents.chooseParent")}
                     accessibilityLabel="subagent-parent-select"
-                    onChange={next => updateBuilderDraft({ parentAgentType: next })}
+                    onChange={next => updateBuilderDraft({ parentAgentType: next, parentChosen: true })}
                   />
                 </ConfigRow>
               </ConfigSection>
@@ -968,6 +916,8 @@ function AgentBuilderModal() {
             </ConfigSection>
 
             <ToolMultiSelect />
+            <ParentSubagentsSection />
+            <ModeSkillsSection />
           </View>
         </If>
 
@@ -996,46 +946,37 @@ function AgentBuilderModal() {
                   options={availableModes().map(mode => ({
                     value: mode.id,
                     label: mode.name,
+                    accessibilityLabel: `subagent-parent-${mode.id}`,
                   }))}
-                  value={builderDraft().parentAgentType}
+                  value={builderDraft().parentChosen ? builderDraft().parentAgentType : null}
+                  placeholder={tr("agents.chooseParent")}
                   accessibilityLabel="subagent-parent-select"
-                  onChange={next => updateBuilderDraft({ parentAgentType: next })}
+                  onChange={next => updateBuilderDraft({ parentAgentType: next, parentChosen: true })}
                 />
               </ConfigRow>
 
-              <View style={{ paddingHorizontal: 16, paddingVertical: 14 }}>
-                <InputBox
-                  label={tr("agents.modelOverride")}
-                  hint={tr("agents.modelPlaceholder")}
+              <ConfigRow
+                label={tr("agents.modelOverride")}
+                description={tr("agents.modelSelectorHint")}
+                controlAlign="stretch"
+                divider={false}
+              >
+                <SelectDropdown
                   size="md"
-                  monospace
+                  fullWidth
+                  searchable
+                  options={subagentModelOptions(true)}
                   value={builderDraft().model}
-                  placeholder={tr("agents.modelPlaceholder")}
-                  accessibilityLabel="subagent-model-input"
+                  accessibilityLabel="subagent-model-select"
                   onChange={model => updateBuilderDraft({ model })}
                 />
-              </View>
+              </ConfigRow>
             </ConfigSection>
 
             <ConfigSection
               title={tr("agents.defaultToolsTitle", { count: formatCount(builderDraft().tools.length) })}
             >
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                <If when={builderDraft().tools.length === 0}>
-                  <Text
-                    style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.45),
-                    }}
-                  >
-                    {tr("agents.noDefaultTools")}
-                  </Text>
-                </If>
-                <Each of={builderDraft().tools} key={tool => tool}>
-                  {tool => <Badge label={tool()} tone="neutral" />}
-                </Each>
-              </View>
+              <ToolListText empty={tr("agents.noDefaultTools")} />
             </ConfigSection>
           </View>
         </If>
@@ -1058,29 +999,29 @@ function AgentBuilderModal() {
               >
                 {tr("agents.readonlyNotice")}
               </Text>
-              <If when={builderDraft().tools.length === 0}>
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(11.5),
-                    lineHeight: textLineHeight(11.5, 1.4),
-                  }}
-                >
-                  {tr("agents.noToolBindings")}
-                </Text>
-              </If>
-              <If when={builderDraft().tools.length > 0}>
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                  <Each of={builderDraft().tools} key={tool => tool}>
-                    {tool => <Badge label={tool()} tone="neutral" />}
-                  </Each>
-                </View>
-              </If>
+              <ToolListText empty={tr("agents.noToolBindings")} />
             </View>
           </ConfigSection>
         </If>
       </View>
     </ModalDialog>
+  );
+}
+
+/** The draft's tools as one quiet, selectable line instead of a wall of badges. */
+function ToolListText(props: { empty: string }) {
+  return (
+    <Text
+      style={{
+        minWidth: 0,
+        color: builderDraft().tools.length > 0 ? palette().textSecondary : palette().textMuted,
+        fontSize: textSize(13),
+        lineHeight: textLineHeight(13, 1.55),
+        userSelect: "text",
+      }}
+    >
+      {builderDraft().tools.length > 0 ? builderDraft().tools.join(" · ") : props.empty}
+    </Text>
   );
 }
 
@@ -1131,270 +1072,390 @@ function AgentDeleteModal() {
   );
 }
 
+/** The skills one primary agent runs with; each switch rewrites that agent's selection. */
+function ModeSkillsSection() {
+  const visible = () =>
+    builderDraft().kind === "mode" &&
+    (builderDraft().mode === "configure-profile" || builderDraft().mode === "edit-custom") &&
+    modeSkillsFor() === builderDraft().id;
+  return (
+    <If when={visible()}>
+      <ConfigSection
+        title={tr("agents.modeSkillsTitle")}
+        subtitle={tr("agents.modeSkillsHint")}
+        flush
+        controlWidth={120}
+        extra={
+          <Button
+            label={tr("common.reset")}
+            variant="ghost"
+            size="sm"
+            disabled={modeSkillsSaving() || isRemoteAgentWorkspace()}
+            accessibilityLabel="mode-skills-reset"
+            onPress={() => void resetModeSkills(builderDraft().id)}
+          />
+        }
+      >
+        <If when={modeSkillsError() ?? ""}>
+          {err => (
+            <View style={{ padding: 12 }}>
+              <InlineBanner tone="danger" message={localizeHostError(err())} />
+            </View>
+          )}
+        </If>
+        <If when={!modeSkillsLoading() && modeSkills().length === 0 && !modeSkillsError()}>
+          <View style={{ padding: 14 }}>
+            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+              {tr("agents.modeSkillsEmpty")}
+            </Text>
+          </View>
+        </If>
+        <Each of={modeSkills()} key={row => row.key}>
+          {(row, index) => (
+            <ConfigRow
+              label={row().name}
+              description={
+                row().globallyEnabled ? row().description : tr("agents.modeSkillGloballyOff")
+              }
+              divider={index() < modeSkills().length - 1}
+            >
+              <ToggleSwitch
+                value={row().effectiveEnabled}
+                disabled={modeSkillsSaving() || !row().globallyEnabled || isRemoteAgentWorkspace()}
+                accessibilityLabel={`mode-skill-${row().key}`}
+                onChange={next => void setModeSkillEnabled(builderDraft().id, row().key, next)}
+              />
+            </ConfigRow>
+          )}
+        </Each>
+      </ConfigSection>
+    </If>
+  );
+}
+
+/** The subagents a primary agent may call, each switchable for that agent only. */
+function ParentSubagentsSection() {
+  const visible = () =>
+    builderDraft().kind === "mode" &&
+    (builderDraft().mode === "configure-profile" || builderDraft().mode === "edit-custom") &&
+    parentSubagentsFor() === builderDraft().id;
+  return (
+    <If when={visible()}>
+      <ConfigSection
+        title={tr("agents.parentSubagentsTitle")}
+        subtitle={tr("agents.parentSubagentsHint")}
+        flush
+        controlWidth={120}
+      >
+        <If when={parentSubagentsError() ?? ""}>
+          {err => (
+            <View style={{ padding: 12 }}>
+              <InlineBanner tone="danger" message={localizeHostError(err())} />
+            </View>
+          )}
+        </If>
+        <If when={parentSubagentsLoading() && parentSubagents().length === 0}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 14 }}>
+            <Spinner size={14} />
+            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+              {tr("common.loading")}
+            </Text>
+          </View>
+        </If>
+        <If when={!parentSubagentsLoading() && parentSubagents().length === 0 && !parentSubagentsError()}>
+          <View style={{ padding: 14 }}>
+            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+              {tr("agents.parentSubagentsEmpty")}
+            </Text>
+          </View>
+        </If>
+        <Each of={parentSubagents()} key={item => item.uid}>
+          {(item, index) => (
+            <ConfigRow
+              label={item().name}
+              description={item().description || item().id}
+              divider={index() < parentSubagents().length - 1}
+            >
+              <ToggleSwitch
+                value={item().effectiveEnabled}
+                disabled={Boolean(parentSubagentSaving()) || isRemoteAgentWorkspace()}
+                accessibilityLabel={`parent-subagent-${item().id}`}
+                onChange={next => void setParentSubagentEnabled(builderDraft().id, item().id, next)}
+              />
+            </ConfigRow>
+          )}
+        </Each>
+      </ConfigSection>
+    </If>
+  );
+}
+
+/** The model choices a subagent can take, as the desktop's agent model selector lists them. */
+function subagentModelOptions(includePools: boolean): SelectDropdownOption<string>[] {
+  const options: SelectDropdownOption<string>[] = [
+    { value: "", label: tr("agents.modelDefault"), accessibilityLabel: "subagent-model-default" },
+    { value: "inherit", label: tr("agents.modelInherit"), accessibilityLabel: "subagent-model-inherit" },
+    { value: "primary", label: tr("agents.modelPrimary"), accessibilityLabel: "subagent-model-primary" },
+    { value: "fast", label: tr("agents.modelFast"), accessibilityLabel: "subagent-model-fast" },
+  ];
+  for (const model of storedModels()) {
+    if (!model.id || model.enabled === false) continue;
+    options.push({
+      value: model.id,
+      label: model.name || model.model_name || model.id,
+      description: model.model_name && model.model_name !== model.name ? model.model_name : undefined,
+      accessibilityLabel: `subagent-model-${model.id}`,
+    });
+  }
+  if (includePools) {
+    for (const pool of pools()) {
+      options.push({
+        value: `${POOL_TOKEN_PREFIX}${pool.id}`,
+        label: tr("agents.modelPool", { name: pool.name }),
+        icon: "layers",
+        accessibilityLabel: `subagent-model-pool-${pool.id}`,
+      });
+    }
+  }
+  // A stored choice this list no longer offers stays visible instead of reading as unset.
+  const current = builderDraft().model.trim();
+  if (current && !options.some(option => option.value === current)) {
+    options.push({ value: current, label: current });
+  }
+  return options;
+}
+
+// The gallery is drawn in two sections; each reads its own slice so a filter
+// change recomputes once instead of per card.
+const filteredModeAgents = computed(() => filteredAgents().filter(item => item.kind === "mode"));
+const filteredSubagentAgents = computed(() => filteredAgents().filter(item => item.kind === "subagent"));
+
+/** The quiet count beside a section header. */
+function SectionCount(props: { count: number }) {
+  return (
+    <Text
+      style={{
+        color: palette().textMuted,
+        fontSize: textSize(12),
+        fontVariant: ["tabular-nums"],
+        lineHeight: textLineHeight(12, 1.35),
+      }}
+    >
+      {formatCount(props.count)}
+    </Text>
+  );
+}
+
 export function AgentsScene() {
+  if (!modelSettingsLoaded()) void loadModels();
+  ensurePools();
+  // The catalogue does not need a workspace (the host answers user-level
+  // entries without one, as the desktop asks). It reloads on every scene entry,
+  // when the workspace or Peer changes, and when the window regains focus.
+  let enteredScene = false;
   effect(() => {
     const workspace = activeWorkspace();
     const peer = peerScope();
-    if (!workspace) return;
-    const key = `${peer?.deviceId ?? "local"}:${workspace.id}:${workspace.rootPath}`;
-    if (agentsLoadedKey() !== key) {
+    const key = `${peer?.deviceId ?? "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    if (!enteredScene || untracked(() => agentsLoadedKey()) !== key) {
+      enteredScene = true;
       void loadAgentsCatalog(key);
     }
   });
+  let lastLifecycle = untracked(() => lifecycle());
+  effect(() => {
+    const state = lifecycle();
+    const regained = state === "active" && lastLifecycle !== "active";
+    lastLifecycle = state;
+    if (!regained) return;
+    const workspace = untracked(() => activeWorkspace());
+    const peer = untracked(() => peerScope());
+    const key = `${peer?.deviceId ?? "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    void loadAgentsCatalog(key);
+  });
+
+  const openCreate = () => {
+    resetToolFilterState();
+    openCreateBotBuilder("mode");
+  };
 
   return (
-    <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}>
-      {/* Unified Studio Scene Header grounded on palette().canvas, rail-aligned with maxWidth: 960 body */}
-      <View
-        style={{
-          paddingHorizontal: 24,
-          paddingVertical: 16,
-          borderBottomWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().canvas,
-          alignItems: "center",
-        }}
-      >
-        <View
-          style={{
-            width: "100%",
-            maxWidth: 960,
-            alignSelf: "center",
-            flexDirection: "row",
-            flexWrap: "wrap",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <View
-            style={{
-              width: 36,
-              height: 36,
-              flexShrink: 0,
-              borderRadius: radii.md,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().panelRaised,
-              boxShadow: palette().shadowButton,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Icon name="bot" size={17} color={palette().accent} />
-          </View>
-
-          <View style={{ flex: 1, minWidth: 180, gap: 3 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <Text
-                style={{
-                  color: palette().text,
-                  fontSize: textSize(22),
-                  fontWeight: "600",
-                  letterSpacing: textTracking(22),
-                  lineHeight: textLineHeight(22, 1.22),
-                }}
-              >
-                {tr("agents.title")}
-              </Text>
-              <Badge
-                label={
-                  agentsLoading()
-                    ? tr("common.loading")
-                    : formatPlural(allCatalogAgents().length, "agents.botCountOne", "agents.botCountOther")
-                }
-                tone="neutral"
+    <View
+      onLayout={trackStudioWidth}
+      style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
+    >
+      <Scroll style={{ flex: 1, minHeight: 0 }}>
+        <StudioHeader
+          title={tr("agents.title")}
+          subtitle={tr("agents.pageSubtitle")}
+          actions={
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <IconButton
+                icon="refresh"
+                size="md"
+                accessibilityLabel="agents-reload"
+                tooltip={tr("agents.reload")}
+                disabled={agentsLoading()}
+                onPress={() => void reloadAgentsCatalog()}
+              />
+              <Button
+                label={tr("agents.createBot")}
+                leadingIcon="plus"
+                variant="primary"
+                size="md"
+                accessibilityLabel="agents-create-bot"
+                disabled={isRemoteAgentWorkspace()}
+                tooltip={isRemoteAgentWorkspace() ? tr("agents.unavailableRemote") : undefined}
+                onPress={openCreate}
               />
             </View>
-            <Text
-              style={{
-                maxWidth: 620,
-                color: palette().textMuted,
-                fontSize: textSize(12.5),
-                lineHeight: textLineHeight(12.5, 1.44),
-              }}
-            >
-              {tr("agents.subtitle")}
-            </Text>
-          </View>
-
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <IconButton
-              icon="refresh"
-              size="md"
-              accessibilityLabel="agents-reload"
-              tooltip={tr("agents.reload")}
-              disabled={agentsLoading()}
-              onPress={() => void reloadAgentsCatalog()}
-            />
-            <Button
-              label={tr("agents.createBot")}
-              leadingIcon="plus"
-              variant="primary"
-              size="md"
-              accessibilityLabel="agents-create-bot"
-              disabled={isRemoteAgentWorkspace()}
-              tooltip={isRemoteAgentWorkspace() ? tr("agents.unavailableRemote") : undefined}
-              onPress={() => {
-                resetToolFilterState();
-                openCreateBotBuilder("mode");
-              }}
-            />
-          </View>
-        </View>
-      </View>
-
-      <Scroll
-        style={{ flex: 1, minHeight: 0 }}
-        contentStyle={{ paddingHorizontal: 24, paddingVertical: 20, alignItems: "center" }}
-      >
-        <View
-          style={{
-            width: "100%",
-            maxWidth: 960,
-            gap: 16,
-          }}
-        >
-          {/* Filter & Search Toolbar — locked to exact controlHeight.md (32px) baseline */}
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <SegmentedTabs
-              size="md"
-              options={[
-                { value: "all", label: tr("agents.allBots"), badge: allCatalogAgents().length, accessibilityLabel: "agents-tab-all" },
-                { value: "mode", label: tr("agents.primaryAgents"), badge: availableModes().length, accessibilityLabel: "agents-tab-mode" },
-                { value: "subagent", label: tr("agents.subagents"), badge: availableSubagents().length, accessibilityLabel: "agents-tab-subagent" },
-              ]}
-              value={agentKindFilter()}
-              onChange={next => agentKindFilter.set(next)}
-            />
-
-            <SearchInput
-              size="md"
-              value={agentSearchQuery()}
-              placeholder={tr("agents.searchPlaceholder")}
-              countLabel={
-                hasActiveFilter()
-                  ? `${formatCount(filteredAgents().length)}/${formatCount(allCatalogAgents().length)}`
-                  : undefined
+          }
+          extra={
+            <StudioToolbar
+              leading={
+                <SegmentedTabs
+                  size="sm"
+                  options={[
+                    { value: "all", label: tr("common.all"), accessibilityLabel: "agents-tab-all" },
+                    { value: "mode", label: tr("agents.tabPrimary"), accessibilityLabel: "agents-tab-mode" },
+                    { value: "subagent", label: tr("agents.subagents"), accessibilityLabel: "agents-tab-subagent" },
+                  ]}
+                  value={agentKindFilter()}
+                  onChange={next => agentKindFilter.set(next)}
+                />
               }
-              accessibilityLabel="agents-search-input"
-              style={{ flex: 1, minWidth: 180 }}
-              onChange={val => agentSearchQuery.set(val)}
+              trailing={
+                <>
+                  <SearchInput
+                    size="md"
+                    value={agentSearchQuery()}
+                    placeholder={tr("agents.searchPlaceholder")}
+                    countLabel={
+                      hasActiveFilter()
+                        ? `${formatCount(filteredAgents().length)}/${formatCount(allCatalogAgents().length)}`
+                        : undefined
+                    }
+                    accessibilityLabel="agents-search-input"
+                    style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
+                    onChange={val => agentSearchQuery.set(val)}
+                  />
+                  <FilterMenu
+                    value={agentSourceFilter()}
+                    defaultValue="all"
+                    options={sourceOptions()}
+                    accessibilityLabel="agents-source-select"
+                    tooltip={tr("agents.sourceFilter")}
+                    onChange={next => agentSourceFilter.set(next)}
+                  />
+                  <If when={hasActiveFilter()}>
+                    <Button
+                      label={tr("common.clear")}
+                      variant="ghost"
+                      size="sm"
+                      accessibilityLabel="agents-filters-clear"
+                      onPress={resetCatalogFilters}
+                    />
+                  </If>
+                </>
+              }
             />
+          }
+        />
 
-            <SelectDropdown
-              size="md"
-              options={sourceOptions()}
-              value={agentSourceFilter()}
-              accessibilityLabel="agents-source-select"
-              minWidth={148}
-              onChange={next => agentSourceFilter.set(next)}
-            />
+        <StudioBody>
+          <If when={isRemoteAgentWorkspace() || Boolean(peerScope()) || Boolean(agentsCatalogError()) || Boolean(agentsNotice())}>
+            <View style={{ gap: 8 }}>
+              <If when={isRemoteAgentWorkspace()}>
+                <InlineBanner tone="warning" message={tr("agents.remoteUnsupportedBanner")} />
+              </If>
 
-            <If when={hasActiveFilter()}>
-              <Button
-                label={tr("common.clear")}
-                variant="ghost"
-                size="md"
-                accessibilityLabel="agents-filters-clear"
-                onPress={resetCatalogFilters}
-              />
-            </If>
-          </View>
+              <If when={peerScope()}>
+                {scope => (
+                  <InlineBanner
+                    tone="info"
+                    icon="laptop"
+                    message={
+                      peerSupports("tool_catalog") === false
+                        ? tr("agents.peerNoToolCatalog", { label: scope().label })
+                        : tr("agents.peerCatalogNotice", { label: scope().label })
+                    }
+                  />
+                )}
+              </If>
 
-          <If when={isRemoteAgentWorkspace()}>
-            <InlineBanner
-              tone="warning"
-              message={tr("agents.remoteUnsupportedBanner")}
-            />
-          </If>
+              <If when={agentsCatalogError() ?? ""}>
+                {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
+              </If>
 
-          <If when={peerScope()}>
-            {scope => (
-              <InlineBanner
-                tone="info"
-                icon="laptop"
-                message={
-                  peerSupports("tool_catalog") === false
-                    ? tr("agents.peerNoToolCatalog", { label: scope().label })
-                    : tr("agents.peerCatalogNotice", { label: scope().label })
-                }
-              />
-            )}
-          </If>
-
-          <If when={agentsCatalogError() ?? ""}>
-            {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
-          </If>
-
-          <If when={agentsNotice() ?? ""}>
-            {notice => (
-              <InlineBanner
-                tone="neutral"
-                icon="check-circle"
-                message={localizeHostError(notice())}
-                onDismiss={() => agentsNotice.set(null)}
-              />
-            )}
+              <If when={agentsNotice() ?? ""}>
+                {notice => (
+                  <InlineBanner
+                    tone="neutral"
+                    icon="check-circle"
+                    message={localizeHostError(notice())}
+                    onDismiss={() => agentsNotice.set(null)}
+                  />
+                )}
+              </If>
+            </View>
           </If>
 
           <If when={agentsLoading() && allCatalogAgents().length === 0}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 12 }}>
-              <Spinner size={14} />
-              <Text
-                style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.4),
-                }}
-              >
-                {tr("agents.loading")}
-              </Text>
-            </View>
+            <GallerySkeleton count={4} height={156} />
           </If>
 
           <If when={!agentsLoading() && filteredAgents().length === 0}>
-            <EmptyStateCard
+            <StudioEmpty
               icon="bot"
-              title={hasActiveFilter() ? tr("agents.emptyFilteredTitle") : tr("agents.emptyTitle")}
-              subtitle={
-                hasActiveFilter()
-                  ? tr("agents.emptyFilteredSubtitle")
-                  : tr("agents.emptySubtitle")
+              message={hasActiveFilter() ? tr("agents.emptyFilteredTitle") : tr("agents.emptyTitle")}
+              detail={hasActiveFilter() ? tr("agents.emptyFilteredSubtitle") : tr("agents.emptySubtitle")}
+              action={
+                hasActiveFilter() ? (
+                  <Button
+                    label={tr("common.resetFilter")}
+                    variant="secondary"
+                    size="sm"
+                    onPress={resetCatalogFilters}
+                  />
+                ) : isRemoteAgentWorkspace() ? undefined : (
+                  <Button
+                    label={tr("agents.createBot")}
+                    variant="secondary"
+                    size="sm"
+                    leadingIcon="plus"
+                    onPress={openCreate}
+                  />
+                )
               }
-              actionLabel={
-                hasActiveFilter()
-                  ? tr("common.resetFilter")
-                  : isRemoteAgentWorkspace()
-                    ? undefined
-                    : tr("agents.createBot")
-              }
-              onAction={() => {
-                if (hasActiveFilter()) {
-                  resetCatalogFilters();
-                } else {
-                  resetToolFilterState();
-                  openCreateBotBuilder("mode");
-                }
-              }}
             />
           </If>
 
-          {/* Responsive 2-Column Studio Gallery Grid */}
-          <If when={filteredAgents().length > 0}>
-            <View
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-                gap: 14,
-              }}
+          <If when={filteredModeAgents().length > 0}>
+            <StudioSection
+              title={tr("agents.sectionPrimary")}
+              trailing={<SectionCount count={filteredModeAgents().length} />}
             >
-              <Each of={filteredAgents()} key={item => item.uid}>
-                {item => <BotCard item={item()} />}
-              </Each>
-            </View>
+              <GalleryGrid>
+                <Each of={filteredModeAgents()} key={item => item.uid}>
+                  {item => <BotCard item={item()} />}
+                </Each>
+              </GalleryGrid>
+            </StudioSection>
           </If>
-        </View>
+
+          <If when={filteredSubagentAgents().length > 0}>
+            <StudioSection
+              title={tr("agents.subagents")}
+              trailing={<SectionCount count={filteredSubagentAgents().length} />}
+            >
+              <GalleryGrid>
+                <Each of={filteredSubagentAgents()} key={item => item.uid}>
+                  {item => <BotCard item={item()} />}
+                </Each>
+              </GalleryGrid>
+            </StudioSection>
+          </If>
+        </StudioBody>
       </Scroll>
 
       <AgentBuilderModal />

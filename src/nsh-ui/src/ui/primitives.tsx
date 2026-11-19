@@ -30,6 +30,7 @@ import {
   textSize,
   textTracking,
   type ControlSize,
+  touchSlop,
 } from "../theme";
 import { BotCharacter, Icon, type IconName } from "./icons";
 import {
@@ -123,8 +124,8 @@ export function TooltipBubble(props: TooltipBubbleProps) {
         flexDirection: "row",
         alignItems: "center",
         gap: 5,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        paddingHorizontal: 9,
+        paddingVertical: 5,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         borderWidth: 1,
@@ -147,9 +148,9 @@ export function TooltipBubble(props: TooltipBubbleProps) {
                 flexShrink: 1,
                 minWidth: 0,
                 color: palette().text,
-                fontSize: textSize(11),
-                fontWeight: "500",
-                lineHeight: textLineHeight(11, 1.2),
+                fontSize: textSize(11.5),
+                fontWeight: "400",
+                lineHeight: textLineHeight(11.5, 1.35),
               }}
             >
               {props.text ?? ""}
@@ -299,27 +300,16 @@ function btnFg(variant: ButtonVariant, surface: ControlSurface = "canvas"): stri
   return surface === "chrome" ? palette().chromeText : palette().text;
 }
 
-function btnShadow(variant: ButtonVariant): string | undefined {
-  if (variant === "primary") {
-    const bevel = isLightAppearance()
-      ? "inset 0 1px 0 rgba(255, 255, 255, 0.16)"
-      : "inset 0 1px 0 rgba(255, 255, 255, 0.35)";
-    return `${palette().shadowButton}, ${bevel}`;
-  }
-  if (variant === "accent") {
-    return `${palette().shadowButton}, inset 0 1px 0 rgba(255, 255, 255, 0.18)`;
-  }
-  if (variant === "secondary") {
-    return isLightAppearance() ? palette().shadowButton : undefined;
-  }
+function btnShadow(_variant: ButtonVariant): string | undefined {
+  // React's design system draws every button flat: no bevel, no contact shadow.
   return undefined;
 }
 
 function btnPadX(size: ButtonSize): number {
-  if (size === "xs") return 8;
-  if (size === "sm") return 10;
-  if (size === "lg") return 18;
-  return 13;
+  if (size === "xs") return 9;
+  if (size === "sm") return 12;
+  if (size === "lg") return 20;
+  return 16;
 }
 
 function btnGap(size: ButtonSize): number {
@@ -344,7 +334,8 @@ function btnIconPx(size: ButtonSize): number {
 }
 
 function btnRadius(size: ButtonSize, pill?: boolean): number {
-  if (pill) return radii.pill;
+  // Buttons are pills by default, as in the desktop's design system; `pill={false}` opts out.
+  if (pill !== false) return radii.pill;
   if (size === "xs") return radii.xs;
   if (size === "lg") return radii.md;
   return radii.sm;
@@ -355,7 +346,7 @@ export function Button(props: ButtonProps) {
     <View
       role="button"
       disabled={Boolean(props.disabled || props.loading)}
-      hitSlop={(props.size ?? "md") === "xs" ? 3 : undefined}
+      hitSlop={touchSlop(controlHeight[props.size ?? "md"], (props.size ?? "md") === "xs" ? 3 : undefined)}
       tooltip={resolveTooltip(props.tooltip, props.label)}
       accessibilityLabel={props.accessibilityLabel}
       accessibilityState={{
@@ -395,7 +386,7 @@ export function Button(props: ButtonProps) {
         backgroundColor: btnHoverBg(props.variant ?? "secondary", props.surface ?? "canvas"),
         borderColor: btnHoverBorder(props.variant ?? "secondary", props.surface ?? "canvas"),
       }}
-      activeStyle={tactileActiveStyle(0.97, {
+      activeStyle={tactileActiveStyle(0.98, {
         backgroundColor: btnPressedBg(props.variant ?? "secondary", props.surface ?? "canvas"),
       })}
       focusVisibleStyle={focusRingStyle()}
@@ -427,9 +418,9 @@ export function Button(props: ButtonProps) {
           fontWeight:
             (props.variant ?? "secondary") === "primary" ||
             (props.variant ?? "secondary") === "accent"
-              ? "600"
-              : "500",
-          lineHeight: textLineHeight(btnFontPx(props.size ?? "md"), 1.14),
+              ? "500"
+              : "400",
+          lineHeight: textLineHeight(btnFontPx(props.size ?? "md"), 1.2),
           textAlign: "center",
           numberOfLines: 1,
           textOverflow: "ellipsis",
@@ -483,7 +474,7 @@ export function IconButton(props: IconButtonProps) {
     <View
       role="button"
       disabled={props.disabled}
-      hitSlop={(props.size ?? "sm") === "xs" ? 3 : undefined}
+      hitSlop={touchSlop(controlHeight[props.size ?? "sm"], (props.size ?? "sm") === "xs" ? 3 : undefined)}
       tooltip={resolveTooltip(props.tooltip)}
       accessibilityLabel={props.accessibilityLabel}
       accessibilityState={{
@@ -499,7 +490,7 @@ export function IconButton(props: IconButtonProps) {
           width: iconBtnBox(props.size ?? "sm"),
           height: iconBtnBox(props.size ?? "sm"),
           flexShrink: 0,
-          borderRadius: (props.size ?? "sm") === "xs" ? radii.xs : radii.sm,
+          borderRadius: (props.size ?? "sm") === "xs" ? radii.xs : 6,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: props.active
@@ -529,9 +520,9 @@ export function IconButton(props: IconButtonProps) {
             ? palette().dangerSoft
             : props.surface === "chrome"
               ? palette().chromeHover
-              : palette().surfaceSubtle,
+              : palette().buttonSecondaryHover,
       }}
-      activeStyle={tactileActiveStyle(0.94, {
+      activeStyle={tactileActiveStyle(0.96, {
         backgroundColor:
           props.tone === "danger"
             ? palette().dangerHoverBg
@@ -596,7 +587,7 @@ export interface ConfigSectionProps {
 export function ConfigSection(props: ConfigSectionProps) {
   const effectiveInset = () => (props.flush ? 0 : (props.bodyPadding ?? 14));
   return (
-    <View style={[{ gap: 10 }, props.style]}>
+    <View style={[{ gap: 12 }, props.style]}>
       <View
         style={{
           flexDirection: "row",
@@ -697,13 +688,13 @@ export function ConfigRow(props: ConfigRowProps) {
     <View
       style={[
         {
-          minHeight: 52,
+          minHeight: 56,
           marginHorizontal: ConfigSectionInsetContext() > 0 ? -ConfigSectionInsetContext() : 0,
-          paddingHorizontal: 16,
-          paddingVertical: 12,
+          paddingHorizontal: 18,
+          paddingVertical: 14,
           flexDirection: "row",
           alignItems: "center",
-          gap: 20,
+          gap: 32,
           borderTopWidth: props.topDivider ? 1 : 0,
           borderBottomWidth: props.divider === false ? 0 : 1,
           borderColor: palette().borderSubtle,
@@ -719,10 +710,9 @@ export function ConfigRow(props: ConfigRowProps) {
         <Text
           style={{
             color: palette().text,
-            fontSize: textSize(13.5),
+            fontSize: textSize(13),
             fontWeight: "500",
-            letterSpacing: textTracking(13.5),
-            lineHeight: textLineHeight(13.5, 1.32),
+            lineHeight: textLineHeight(13, 1.35),
           }}
         >
           {props.label}
@@ -734,7 +724,8 @@ export function ConfigRow(props: ConfigRowProps) {
                 color: palette().textMuted,
                 fontSize: textSize(12),
                 fontVariant: props.descriptionTabular ? ["tabular-nums"] : undefined,
-                lineHeight: textLineHeight(12, 1.42),
+                lineHeight: textLineHeight(12, 1.45),
+                maxWidth: 520,
               }}
             >
               {desc()}
@@ -999,8 +990,8 @@ export function Badge(props: BadgeProps) {
           alignItems: "center",
           justifyContent: "center",
           maxWidth: "100%",
-          paddingHorizontal: isXs() ? 5 : 6,
-          paddingVertical: isXs() ? 1 : 1.5,
+          paddingHorizontal: isXs() ? 5 : 7,
+          paddingVertical: isXs() ? 1 : 2,
           borderRadius: props.pill ? radii.pill : isXs() ? 4 : 5,
           borderCurve: "continuous",
           borderWidth: hasBorder() ? 1 : 0,
@@ -1015,10 +1006,10 @@ export function Badge(props: BadgeProps) {
       <Text
         style={{
           color: badgeColors(props.tone ?? "neutral", props.surface ?? "canvas").fg,
-          fontSize: textSize(isXs() ? 9.5 : 10),
+          fontSize: textSize(isXs() ? 10 : 11),
           fontWeight: "500",
           fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(isXs() ? 9.5 : 10, 1.22),
+          lineHeight: textLineHeight(isXs() ? 10 : 11, 1.22),
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -1352,12 +1343,10 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
           maxWidth: "100%",
           gap: 2,
           padding: SEGMENT_PADDING,
-          borderRadius: SEGMENT_OUTER_RADIUS,
+          borderRadius: radii.pill,
           borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderSubtle,
+          borderWidth: 0,
           backgroundColor: palette().segmentedTrackBg,
-          boxShadow: palette().shadowInset,
         },
         props.style,
       ]}
@@ -1379,20 +1368,14 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
               gap: 5,
               paddingHorizontal: (props.size ?? "md") === "sm" ? 9 : 11,
               paddingVertical: 0,
-              borderRadius: SEGMENT_INNER_RADIUS,
+              borderRadius: radii.pill,
               borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor:
-                option().value === props.value
-                  ? isLightAppearance()
-                    ? "transparent"
-                    : palette().border
-                  : "transparent",
+              borderWidth: 0,
               backgroundColor:
-                option().value === props.value ? palette().panelRaised : "transparent",
+                option().value === props.value ? palette().segmentedThumbBg : "transparent",
               boxShadow:
-                option().value === props.value
-                  ? `${palette().shadowButton}, ${palette().innerHighlight}`
+                option().value === props.value && isLightAppearance()
+                  ? "0 1px 2px rgba(0, 0, 0, 0.08)"
                   : undefined,
               cursor: "pointer",
               ...pressTransition(MOTION_DURATION.fast),
@@ -1400,7 +1383,7 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
             hoverStyle={{
               backgroundColor:
                 option().value === props.value
-                  ? palette().panelRaised
+                  ? palette().segmentedThumbBg
                   : palette().surfaceSubtle,
             }}
             activeStyle={tactileActiveStyle(0.98)}
@@ -1422,9 +1405,9 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                 flexShrink: 1,
                 minWidth: 0,
                 color:
-                  option().value === props.value ? palette().text : palette().textMuted,
-                fontSize: textSize((props.size ?? "md") === "sm" ? 11.5 : 12),
-                fontWeight: option().value === props.value ? "600" : "500",
+                  option().value === props.value ? palette().text : palette().textSecondary,
+                fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 12.5),
+                fontWeight: option().value === props.value ? "500" : "400",
                 lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 11.5 : 12, 1.24),
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
@@ -1479,7 +1462,7 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
     <View
       role="switch"
       disabled={props.disabled}
-      hitSlop={props.label ? undefined : 4}
+      hitSlop={touchSlop(18, props.label ? undefined : 4)}
       accessibilityLabel={props.accessibilityLabel}
       accessibilityState={{
         checked: isChecked(),
@@ -1505,14 +1488,11 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
       <View
         style={{
           boxSizing: "border-box",
-          width: 34,
-          height: 19,
+          width: 30,
+          height: 18,
           flexShrink: 0,
           borderRadius: radii.pill,
-          backgroundColor: isChecked() ? palette().actionSolid : palette().toggleTrackOff,
-          boxShadow: isChecked()
-            ? "inset 0 1px 1px rgba(0, 0, 0, 0.16)"
-            : `inset 0 0 0 1px ${palette().border}, ${palette().shadowInset}`,
+          backgroundColor: isChecked() ? palette().switchOn : palette().toggleTrackOff,
           padding: 2,
           flexDirection: "row",
           alignItems: "center",
@@ -1521,17 +1501,17 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
       >
         <View
           style={{
-            width: 15,
-            height: 15,
+            width: 14,
+            height: 14,
             borderRadius: radii.pill,
-            backgroundColor: isChecked() ? palette().actionSolidFg : palette().toggleThumbOff,
-            boxShadow: "0 1px 2px rgba(0, 0, 0, 0.30), 0 0.5px 1px rgba(0, 0, 0, 0.18)",
-            transform: [{ translateX: isChecked() ? 15 : 0 }],
-            transitionProperty: reduceMotion()
-              ? "background-color"
-              : "transform, background-color",
-            transitionDuration: reduceMotion() ? 100 : 150,
-            transitionTimingFunction: MOTION_EASE_STANDARD,
+            backgroundColor: isChecked() ? "#ffffff" : palette().toggleThumbOff,
+            boxShadow: "0 1px 2px rgba(0, 0, 0, 0.18)",
+            transform: [{ translateX: isChecked() ? 12 : 0 }],
+            transitionProperty: reduceMotion() ? "background-color" : "transform",
+            transitionDuration: reduceMotion() ? 100 : 160,
+            transitionTimingFunction: reduceMotion()
+              ? MOTION_EASE_STANDARD
+              : "spring(520, 36)",
           }}
         />
       </View>
@@ -1756,10 +1736,10 @@ export function StatusPill(props: StatusPillProps) {
           flexShrink: 1,
           minWidth: 0,
           color: statusColors(props.kind ?? "neutral").fg,
-          fontSize: textSize(isXs() ? 10 : 10.5),
+          fontSize: textSize(isXs() ? 10 : 11),
           fontWeight: "500",
           fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(isXs() ? 10 : 10.5, 1.22),
+          lineHeight: textLineHeight(isXs() ? 10 : 11, 1.22),
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -1967,7 +1947,7 @@ export function IconCircleButton(props: IconCircleButtonProps) {
     <View
       role="button"
       disabled={props.disabled}
-      hitSlop={(props.size ?? 30) < 26 ? 4 : undefined}
+      hitSlop={touchSlop(props.size ?? 30, (props.size ?? 30) < 26 ? 4 : undefined)}
       tooltip={resolveTooltip(props.tooltip)}
       accessibilityLabel={props.accessibilityLabel}
       accessibilityState={{ disabled: Boolean(props.disabled) }}
@@ -2341,7 +2321,6 @@ export function TextField(props: TextFieldProps) {
               : palette().border,
           backgroundColor:
             props.surface === "chrome" ? palette().chromeInputBg : palette().inputBg,
-          boxShadow: palette().shadowInset,
           opacity: props.disabled ? 0.55 : 1,
           ...paintTransition(MOTION_DURATION.fast),
         }}
@@ -2361,7 +2340,7 @@ export function TextField(props: TextFieldProps) {
             ? undefined
             : {
                 borderColor: props.error ? palette().danger : palette().fieldFocusBorder,
-                boxShadow: `0 0 0 3px ${props.error ? palette().dangerSoft : palette().accentSoft}`,
+                boxShadow: props.error ? `0 0 0 3px ${palette().dangerSoft}` : undefined,
               }
         }
       >
@@ -2516,7 +2495,6 @@ export function SearchInput(props: SearchInputProps) {
             props.surface === "chrome" ? palette().chromeBorder : palette().border,
           backgroundColor:
             props.surface === "chrome" ? palette().chromeInputBg : palette().inputBg,
-          boxShadow: palette().shadowInset,
           ...paintTransition(MOTION_DURATION.fast),
         },
         props.style,
@@ -2527,8 +2505,6 @@ export function SearchInput(props: SearchInputProps) {
       }}
       focusWithinStyle={{
         borderColor: palette().fieldFocusBorder,
-        boxShadow:
-          props.surface === "chrome" ? undefined : `0 0 0 3px ${palette().accentSoft}`,
       }}
     >
       <Icon

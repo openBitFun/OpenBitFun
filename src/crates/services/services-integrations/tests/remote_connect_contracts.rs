@@ -2298,6 +2298,25 @@ fn remote_connect_execution_response_helpers_preserve_wire_shape() {
         }
     );
 
+    // The host's mid-turn policy steered the message into the running turn.
+    // Older clients read only `turn_id`, which this answer carries too.
+    let steered = remote_dialog_submit_response(Ok(RemoteDialogSubmitOutcome::Steered {
+        session_id: "session-1".to_string(),
+        turn_id: "turn-running".to_string(),
+        steering_id: "steering-9".to_string(),
+    }));
+    assert_eq!(
+        steered,
+        RemoteResponse::SteeringAccepted {
+            session_id: "session-1".to_string(),
+            turn_id: "turn-running".to_string(),
+            steering_id: "steering-9".to_string(),
+        }
+    );
+    let wire = serde_json::to_value(&steered).unwrap();
+    assert_eq!(wire["resp"], "steering_accepted");
+    assert_eq!(wire["turn_id"], "turn-running");
+
     assert_eq!(
         remote_dialog_steer_response(Ok(RemoteDialogSteerOutcome {
             session_id: "session-1".to_string(),

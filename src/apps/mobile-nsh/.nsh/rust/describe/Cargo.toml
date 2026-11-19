@@ -1,0 +1,14 @@
+[package]
+name = "nsh-app-openbitfun-mobile-native-describe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "nsh-app-openbitfun-mobile-native-describe"
+path = "main.rs"
+
+[dependencies]
+nsh-core = { version = "=0.6.1", features = ["declarations"] }
+app_openbitfun_mobile_native = { package = "openbitfun-mobile-native", path = "/Users/liwenbo/ide_dev/repo/OpenBitFun/src/apps/mobile-nsh/native" }
+workspace-hack = { package = "nsh-app-openbitfun-mobile-native-hack", path = "../hack" }

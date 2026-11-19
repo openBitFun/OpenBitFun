@@ -1,16 +1,18 @@
 // The permission policy the host applies to tool calls, read from
 // `tool_permissions` and reduced to the three modes the desktop offers.
 //
-// The write mirrors the desktop page: the mode is not a field, it is a
-// combination of `policy.preset`, `interaction.auto_approve_ask` and
-// `approval.strategy`, so switching it rewrites those three and keeps the rule
-// list and every other field the host stored. The rule list and the automatic
-// approval settings are edited here too, through the same whole-document write,
-// because `ToolPermissionConfig` is exactly those three fields.
+// Every write is one typed intent the host applies to the policy it stores now:
+// `set_permission_mode` (the host projects the mode onto `policy.preset`,
+// `interaction.auto_approve_ask` and `approval.strategy`), `upsert_permission_rule`
+// / `delete_permission_rule` (each carrying the rule it expects at that index, so
+// an edit made elsewhere meanwhile is refused instead of overwritten) and
+// `set_approval_settings` (the host validates and bounds the tuning). Each answers
+// with the updated view, which is what this store publishes.
 
 import { signal } from "nsh";
 import { getConfig, setConfig } from "./api";
 import { invokeCommand } from "./bridge";
+import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
 export type PermissionMode = "ask" | "auto" | "full_access";
@@ -48,8 +50,6 @@ export const PERMISSION_EFFECTS: ReadonlyArray<{ value: PermissionEffect; label:
   { value: "deny", label: "Deny" },
 ];
 
-const DEFAULT_APPROVAL_MODEL_ID = "fast";
-
 interface ApprovalConfig {
   strategy?: string;
   model_kind?: string;
@@ -79,6 +79,8 @@ export interface PermissionRuleDraft {
   action: string;
   resource: string;
   effect: PermissionEffect;
+  /** The stored index this row was opened from; absent for a row added in the draft. */
+  origin?: number;
 }
 
 /** The automatic approval settings the desktop groups under one heading. */
@@ -156,7 +158,7 @@ function normalize(value: unknown): ToolPermissionConfig {
             chat_model_id: typeof approval.chat_model_id === "string" ? approval.chat_model_id : "",
             timeout_ms:
               typeof approval.timeout_ms === "number" && approval.timeout_ms > 0
-                ? Math.min(approval.timeout_ms, 300000)
+                ? approval.timeout_ms
                 : 30000,
             on_ask: approval.on_ask === "reject" ? "reject" : "user",
             on_error: approval.on_error === "reject" ? "reject" : "ask",
@@ -202,33 +204,49 @@ function approvalOf(config: ToolPermissionConfig): ApprovalSettings {
   return {
     modelKind: approval.model_kind === "decision" ? "decision" : "chat",
     chatModelId: typeof approval.chat_model_id === "string" ? approval.chat_model_id : "",
-    timeoutSeconds: Math.min(300, Math.max(1, seconds)),
+    timeoutSeconds: Math.max(1, seconds),
     onAsk: approval.on_ask === "reject" ? "reject" : "user",
     onError: approval.on_error === "reject" ? "reject" : "ask",
   };
 }
 
-/**
- * Writes the whole `tool_permissions` document and republishes what it now says.
- * The command is one struct of exactly `policy`, `interaction` and `approval`, so
- * a field this surface does not draw is always carried over from `stored`.
- */
-async function writePolicy(
-  next: ToolPermissionConfig,
+/** The view a typed permission command answers with. */
+interface PermissionView {
+  mode?: string;
+  rules?: PermissionRule[];
+  approval?: ApprovalConfig;
+}
+
+/** Publishes the host's answer; the record it describes is the new `stored`. */
+function applyView(view: PermissionView | null | undefined): void {
+  if (!view || typeof view !== "object") return;
+  const rules = Array.isArray(view.rules) ? view.rules : [];
+  const mode: PermissionMode =
+    view.mode === "full_access" ? "full_access" : view.mode === "auto_approve" || view.mode === "auto" ? "auto" : "ask";
+  stored = {
+    policy: { preset: mode === "full_access" ? "full_access" : "ask", rules },
+    interaction: { auto_approve_ask: mode === "auto" },
+    ...(view.approval ? { approval: view.approval } : {}),
+  };
+  permissionMode.set(mode);
+  permissionRules.set(rulesOf(stored));
+  permissionRuleCount.set(rules.length);
+  approvalSettings.set(approvalOf(stored));
+}
+
+/** Sends one permission intent and publishes the view the host answers with. */
+async function runPolicyIntent(
+  command: string,
+  request: Record<string, unknown>,
   message: string,
   notice: (text: string) => void,
 ): Promise<boolean> {
   try {
-    await setConfig("tool_permissions", next);
-    stored = next;
-    permissionMode.set(modeOf(next));
-    permissionRules.set(rulesOf(next));
-    permissionRuleCount.set(next.policy.rules.length);
-    approvalSettings.set(approvalOf(next));
+    applyView(await invokeSettingsMutation<PermissionView>(command, request));
     notice(message);
     return true;
   } catch (error) {
-    notice(error instanceof Error ? error.message : String(error));
+    notice(errorText(error));
     return false;
   }
 }
@@ -351,27 +369,10 @@ export async function choosePermissionMode(mode: PermissionMode): Promise<void> 
     return;
   }
   pendingFullAccess.set(false);
-  const current = stored;
-  if (!current) return;
-  const approval: ApprovalConfig = {
-    strategy: mode === "auto" ? "model" : "interactive",
-    model_kind: current.approval?.model_kind ?? "chat",
-    chat_model_id:
-      mode === "auto"
-        ? current.approval?.chat_model_id?.trim() || DEFAULT_APPROVAL_MODEL_ID
-        : current.approval?.chat_model_id ?? "",
-    timeout_ms: current.approval?.timeout_ms ?? 30000,
-    on_ask: current.approval?.on_ask ?? "user",
-    on_error: current.approval?.on_error ?? "ask",
-  };
-  const next: ToolPermissionConfig = {
-    policy: { ...current.policy, preset: mode === "full_access" ? "full_access" : "ask" },
-    interaction: { ...current.interaction, auto_approve_ask: mode === "auto" },
-    approval,
-  };
   await runStep(async () => {
-    await writePolicy(
-      next,
+    await runPolicyIntent(
+      "set_permission_mode",
+      { mode },
       `Saved ${PERMISSION_MODES.find(entry => entry.value === mode)?.label ?? mode}`,
       text => permissionsNotice.set(text),
     );
@@ -384,9 +385,10 @@ export function beginRulesDraft(): void {
   draftSequence = 0;
   rulesNotice.set("");
   ruleDraft.set(
-    permissionRules().map(rule =>
-      draftRuleOf({ action: rule.action, resource: rule.resource, effect: rule.effect }),
-    ),
+    permissionRules().map((rule, index) => ({
+      ...draftRuleOf({ action: rule.action, resource: rule.resource, effect: rule.effect }),
+      origin: index,
+    })),
   );
 }
 
@@ -424,59 +426,101 @@ export function discardRuleDraft(): void {
   rulesNotice.set("");
 }
 
+type RuleFields = Omit<PermissionRuleDraft, "localId" | "origin">;
+
+/** One rule intent in the order the host must apply it. */
+type RuleOp =
+  | { command: "delete_permission_rule"; request: { index: number; expected: RuleFields } }
+  | {
+      command: "upsert_permission_rule";
+      request: { index?: number; expected?: RuleFields; rule?: RuleFields; moveTo?: number };
+    };
+
+function fieldsOfDraft(rule: PermissionRuleDraft): RuleFields {
+  return { action: rule.action.trim(), resource: rule.resource.trim(), effect: rule.effect };
+}
+
+function sameRule(left: RuleFields, right: RuleFields): boolean {
+  return left.action === right.action && left.resource === right.resource && left.effect === right.effect;
+}
+
 /**
- * Saves the rule list in the order it is drawn. Order matters to the host — the
- * first matching rule decides — so the list is written as it stands.
+ * The rule intents that turn the stored list into the draft: removals (from the
+ * end, so indexes stay valid), in-place edits, appends, then moves into the drawn
+ * order. Every op names the rule it expects at its index, so a list another
+ * surface changed meanwhile stops the save instead of being overwritten.
+ */
+export function planRuleOps(storedRules: RuleFields[], draft: PermissionRuleDraft[]): RuleOp[] {
+  const ops: RuleOp[] = [];
+  const list = storedRules.map((rule, index) => ({ rule, key: `s${index}` }));
+  const keyOf = (row: PermissionRuleDraft, position: number) =>
+    row.origin !== undefined ? `s${row.origin}` : `d${position}`;
+  const kept = new Set(draft.filter(row => row.origin !== undefined).map(row => `s${row.origin}`));
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (kept.has(list[index].key)) continue;
+    ops.push({ command: "delete_permission_rule", request: { index, expected: list[index].rule } });
+    list.splice(index, 1);
+  }
+  draft.forEach((row, position) => {
+    if (row.origin === undefined) return;
+    const index = list.findIndex(entry => entry.key === keyOf(row, position));
+    const next = fieldsOfDraft(row);
+    if (index < 0 || sameRule(list[index].rule, next)) return;
+    ops.push({ command: "upsert_permission_rule", request: { index, expected: list[index].rule, rule: next } });
+    list[index] = { rule: next, key: list[index].key };
+  });
+  draft.forEach((row, position) => {
+    if (row.origin !== undefined) return;
+    const next = fieldsOfDraft(row);
+    ops.push({ command: "upsert_permission_rule", request: { rule: next } });
+    list.push({ rule: next, key: keyOf(row, position) });
+  });
+  draft.forEach((row, position) => {
+    const index = list.findIndex(entry => entry.key === keyOf(row, position));
+    if (index < 0 || index === position) return;
+    ops.push({ command: "upsert_permission_rule", request: { index, expected: list[index].rule, moveTo: position } });
+    const [moved] = list.splice(index, 1);
+    list.splice(position, 0, moved);
+  });
+  return ops;
+}
+
+/**
+ * Saves the rule list in the order it is drawn — order matters to the host, the
+ * last matching rule decides — as the rule intents `planRuleOps` lists. The host
+ * validates each rule; the first refusal stops the save and is shown.
  */
 export async function saveRuleDraft(): Promise<void> {
   const draft = ruleDraft();
-  const current = stored;
-  if (!draft || !current) return;
-  if (draft.some(rule => !rule.action.trim())) {
-    rulesNotice.set("Every rule needs an action, or * for all of them");
-    return;
-  }
-  if (draft.some(rule => !rule.resource.trim())) {
-    rulesNotice.set("Every rule needs a resource, for example workspace/*");
-    return;
-  }
-  const rules: PermissionRule[] = draft.map(rule => ({
-    action: rule.action.trim(),
-    resource: rule.resource.trim(),
-    effect: rule.effect,
-  }));
+  if (!draft) return;
+  const storedRules = permissionRules().map(rule => ({ action: rule.action, resource: rule.resource, effect: rule.effect }));
+  const ops = planRuleOps(storedRules, draft);
   await runStep(async () => {
-    const saved = await writePolicy(
-      { ...current, policy: { ...current.policy, rules } },
-      `Saved ${rules.length} rule${rules.length === 1 ? "" : "s"}`,
-      text => rulesNotice.set(text),
-    );
-    if (saved) ruleDraft.set(null);
+    for (const op of ops) {
+      const ok = await runPolicyIntent(op.command, op.request, "", text => rulesNotice.set(text));
+      if (!ok) return;
+    }
+    const count = permissionRuleCount();
+    rulesNotice.set(`Saved ${count} rule${count === 1 ? "" : "s"}`);
+    ruleDraft.set(null);
   });
 }
 
 /**
  * Writes one automatic approval change. The mode owns `approval.strategy`, so an
- * edit here never turns automatic approval on or off by itself.
+ * edit here never turns automatic approval on or off by itself; the host bounds
+ * the timeout and validates the model choice.
  */
 export async function saveApproval(change: Partial<ApprovalSettings>): Promise<void> {
-  const current = stored;
-  const settings = approvalSettings();
-  if (!current || !settings) return;
-  const merged = { ...settings, ...change };
-  const approval: ApprovalConfig = {
-    strategy: current.approval?.strategy ?? (modeOf(current) === "auto" ? "model" : "interactive"),
-    model_kind: merged.modelKind,
-    chat_model_id: merged.chatModelId.trim(),
-    timeout_ms: Math.round(merged.timeoutSeconds * 1000),
-    on_ask: merged.onAsk,
-    on_error: merged.onError,
-  };
+  const request: Record<string, unknown> = {};
+  if (change.modelKind !== undefined) request.modelKind = change.modelKind;
+  if (change.chatModelId !== undefined) request.chatModelId = change.chatModelId;
+  if (change.timeoutSeconds !== undefined) request.timeoutSeconds = Math.round(change.timeoutSeconds);
+  if (change.onAsk !== undefined) request.onAsk = change.onAsk;
+  if (change.onError !== undefined) request.onError = change.onError;
   await runStep(async () => {
-    await writePolicy(
-      { ...current, approval },
-      "Saved automatic approval",
-      text => approvalNotice.set(text),
+    await runPolicyIntent("set_approval_settings", request, "Saved automatic approval", text =>
+      approvalNotice.set(text),
     );
   });
 }

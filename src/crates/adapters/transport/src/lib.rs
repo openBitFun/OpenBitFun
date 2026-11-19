@@ -12,3 +12,4 @@ pub use traits::TransportAdapter;
 
 #[cfg(feature = "tauri-adapter")]
 pub use adapters::TauriTransportAdapter;
+pub use adapters::{EventSink, SinkTransportAdapter};

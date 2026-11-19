@@ -13,13 +13,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::host::HostHandle;
 use openbitfun_product_domains::remote_surface::{
     capability_map, digest as remote_surface_digest, peer_host_verdict, peer_stance,
     retired_reason, PeerHostKind, PeerHostVerdict, PeerStance,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Notify};
 
 use super::remote_connect_api::{account_app_handle, current_device_id_for_peer, RelayRoute};
@@ -639,7 +639,7 @@ fn with_peer_turn_origin(command: &str, mut args: Value) -> Value {
 }
 
 async fn bridge_via_webview(
-    app: &AppHandle,
+    app: &HostHandle,
     command: &str,
     args: Value,
 ) -> Result<HostInvokeBridgeResult, String> {

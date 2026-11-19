@@ -143,12 +143,15 @@ test("session header actions archive, rename and send a turn", async () => {
 
   await app.type("composer", "Continue the migration");
   await app.press("Send");
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
+  // Every send is the host's `submit_user_message`, addressed to the session's
+  // own workspace; the host decides whether it starts, steers or queues.
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
     sessionId: "session-1",
-    userInput: "Continue the migration",
+    text: "Continue the migration",
     agentType: "Standard",
     workspaceId: "workspace-1",
   });
+  expect(backend.userMessages[0]).toMatchObject({ outcome: "started" });
 
   await app.press("thread-actions-trigger");
   await app.press("Archive");
@@ -204,6 +207,7 @@ test("settings switches the scheme it draws and remembers the choice", async () 
 
   await app.waitFor("NSH skeleton");
   await app.press("Settings");
+  await app.press("nav-settings-page-appearance");
   await app.waitFor("Showing the dark scheme");
 
   await app.press("appearance-light");
@@ -225,7 +229,8 @@ test("a message sent while a turn runs steers that turn instead of starting anot
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
-  // The host reports the turn it started, which is what the composer addresses.
+  // The host reports the turn it started; it is the host that addresses it.
+  backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
@@ -235,14 +240,17 @@ test("a message sent while a turn runs steers that turn instead of starting anot
   await app.type("composer", "Also check the tests");
   await app.press("Steer");
 
-  const steer = backend.calls.find(call => call.action === "steer_dialog_turn")?.request;
-  expect(steer).toMatchObject({
+  await app.waitUntil(() => backend.userMessages.length === 1);
+  // The stored policy (`immediate`) is applied by the host, not by this surface.
+  expect(backend.userMessages[0]).toMatchObject({
     sessionId: "session-1",
-    dialogTurnId: "turn-9",
-    content: "Also check the tests",
-    displayContent: "Also check the tests",
+    text: "Also check the tests",
+    outcome: "steered",
+    turnId: "turn-9",
   });
-  // Steering lands in the turn that is already running, not in a second one.
+  // Steering lands in the turn that is already running, not in a second one,
+  // and this surface no longer picks the steer command itself.
+  expect(backend.actions()).not.toContain("steer_dialog_turn");
   expect(backend.actions()).not.toContain("start_dialog_turn");
 });
 
@@ -263,14 +271,15 @@ async function waitForCalls(
   throw new Error(`${action} never reached the host`);
 }
 
-test("a queued message waits for the running turn and then starts one", async () => {
-  const backend = createBackend();
+test("a queued message waits in the host queue; this window never drains it", async () => {
+  const backend = createBackend({ hostQueue: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.waitFor("NSH skeleton");
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
+  backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
@@ -280,26 +289,41 @@ test("a queued message waits for the running turn and then starts one", async ()
   await app.type("composer", "Then look at the docs");
   await app.press("Queue");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
-  // Queueing is not sending: the running turn is untouched until it settles.
+  // Queueing is not steering, and nothing is kept in this surface's storage.
+  expect(backend.userMessages[0]).toMatchObject({ outcome: "queued", text: "Then look at the docs" });
   expect(backend.actions()).not.toContain("steer_dialog_turn");
-  expect(backend.actions()).not.toContain("start_dialog_turn");
-  // The queue lives in this surface and survives a restart.
-  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toContain("Then look at the docs");
+  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
 
+  backend.setRunningTurn("session-1", null);
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-completed",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
+  // The host drains its queue; this window only re-reads the rows.
+  const lists = await waitForCalls(backend, "manage_dialog_queue", 2);
+  expect(lists.every(call => (call.request as { action?: string })?.action === "list")).toBe(true);
+  expect(backend.actions()).not.toContain("start_dialog_turn");
+});
 
-  // The drain runs from the completion handler, so wait for the turn it starts.
-  const started = await waitForCalls(backend, "start_dialog_turn");
-  expect(started).toHaveLength(1);
-  expect(started[0]?.request).toMatchObject({
-    sessionId: "session-1",
-    userInput: "Then look at the docs",
+test("rows an earlier build kept locally are handed to the host queue once", async () => {
+  const backend = createBackend({ hostQueue: true });
+  const app = await open("./App.tsx", {
+    ...DESKTOP,
+    host: { handlers: backend.handlers },
+    storage: {
+      "openbitfun.nsh.pending-queue.v1": JSON.stringify([
+        { id: "nsh-old-1", sessionId: "session-1", content: "Left over from before" },
+      ]),
+    },
   });
-  // The drained message leaves the queue instead of waiting forever.
-  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBe("[]");
+  await app.waitFor("NSH skeleton");
+  const submits = await waitForCalls(backend, "manage_dialog_queue", 2);
+  const submit = submits.find(call => (call.request as { action?: string })?.action === "submit");
+  expect(submit?.request).toMatchObject({
+    sessionId: "session-1",
+    message: { turnId: "nsh-old-1", content: "Left over from before" },
+  });
+  await app.waitUntil(() => app.storage()["openbitfun.nsh.pending-queue.v1"] === undefined);
 });
 
 test("a host with a dialog queue keeps the message and promotes it on request", async () => {
@@ -310,6 +334,7 @@ test("a host with a dialog queue keeps the message and promotes it on request", 
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
+  backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
@@ -320,17 +345,14 @@ test("a host with a dialog queue keeps the message and promotes it on request", 
   await app.press("Queue");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
 
-  // The host owns the row: a submit with a turn id this surface chose, and the
-  // list above is the snapshot the host returned.
-  const submit = backend.calls.find(call =>
-    call.action === "manage_dialog_queue" && (call.request as { action?: string })?.action === "submit");
+  // The host owns the row: the press asked it to queue this one message, and
+  // the list above is the snapshot the host returned.
+  const submit = backend.calls.find(call => call.action === "submit_user_message");
   expect(submit?.request).toMatchObject({
     sessionId: "session-1",
-    message: {
-      content: "Hold this until the turn ends",
-      agentType: "Standard",
-      attachments: [],
-    },
+    text: "Hold this until the turn ends",
+    agentType: "Standard",
+    sendDuringTurn: "queue",
   });
   // Nothing reaches the running turn until the host promotes it.
   expect(backend.actions()).not.toContain("steer_dialog_turn");
@@ -353,6 +375,7 @@ test("a host queue reorders its own rows against the revision it just read", asy
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
+  backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
@@ -369,10 +392,7 @@ test("a host queue reorders its own rows against the revision it just read", asy
   // The first row moves to the end: "before nothing" is how the host spells last.
   await app.press("Down >> nth=0");
 
-  const submits = backend.calls
-    .filter(call =>
-      call.action === "manage_dialog_queue" && (call.request as { action?: string })?.action === "submit")
-    .map(call => (call.request as { message?: { turnId?: string } })?.message?.turnId ?? "");
+  const submits = backend.userMessages.filter(message => message.outcome === "queued").map(message => message.turnId);
   expect(submits).toHaveLength(2);
   // The host, not this surface, moved it: one reorder naming the revision the
   // fresh snapshot reported, which is the count of every mutation so far.
@@ -395,6 +415,7 @@ test("a queued row the host is holding back says why", async () => {
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
+  backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
@@ -405,9 +426,7 @@ test("a queued row the host is holding back says why", async () => {
   await app.press("Queue");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
 
-  const submit = backend.calls.find(call =>
-    call.action === "manage_dialog_queue" && (call.request as { action?: string })?.action === "submit");
-  const turnId = String((submit?.request as { message?: { turnId?: string } })?.message?.turnId ?? "");
+  const turnId = backend.userMessages.find(message => message.outcome === "queued")?.turnId ?? "";
   expect(turnId).not.toBe("");
   // The host starts holding the row back; the next snapshot says so.
   options.hostQueueBlocked![turnId] = "the workspace folder is not readable";
@@ -447,9 +466,9 @@ test("a clipboard image rides into the turn as an attachment", async () => {
   await app.type("composer", "What is in this image?");
   await app.press("Send");
 
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
-    userInput: "What is in this image?",
-    imageContexts: [
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
+    text: "What is in this image?",
+    attachments: [
       {
         mime_type: "image/png",
         image_name: "pasted image.png",
@@ -508,7 +527,8 @@ test("the composer's agent comes from the host catalogue and the shared preferen
   await app.waitFor("Agent: Creative");
   // The catalogue is asked for by workspace: that is what the host resolves an
   // agent against, and what makes a remote workspace answer with its own agents.
-  expect(backend.calls.find(call => call.action === "get_available_modes")?.request).toMatchObject({
+  // Its order, eligibility and default are the host's (`get_session_mode_catalog`).
+  expect(backend.calls.find(call => call.action === "get_session_mode_catalog")?.request).toMatchObject({
     workspaceId: "workspace-1",
     workspacePath: "/repo",
   });
@@ -559,18 +579,15 @@ test("a started session keeps its agent; one with no turn takes the pick", async
   expect(backend.sessionModeWrites).toEqual([
     { sessionId: "session-fresh", modeId: "Ultimate", workspaceId: "workspace-1" },
   ]);
-  // The pick is remembered where the desktop keeps it, so the other surface's
-  // harness control opens on the agent this one chose.
-  expect(backend.settingsWrites).toContainEqual({
-    path: "app.flow_chat.last_mode_id",
-    value: "Ultimate",
-  });
+  // The host records the pick as `last_mode_id` itself; this surface no longer
+  // writes the preference.
+  expect(backend.settingsWrites.some(write => write.path === "app.flow_chat.last_mode_id")).toBe(false);
   await app.waitFor("Agent: Ultimate");
 
   // The next turn runs as the agent the session is bound to, not as a constant.
   await app.type("composer", "Run as Ultimate");
   await app.press("Send");
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
     sessionId: "session-fresh",
     agentType: "Ultimate",
   });
@@ -599,12 +616,12 @@ test("a host without an agent catalogue says so and stays on Standard", async ()
   // The panel names the command that did not answer, and offers a re-read rather
   // than pretending the catalogue is empty.
   await app.waitFor("Reload");
-  expect(app.texts().some(text => text.includes("does not offer an agent catalogue"))).toBe(true);
+  expect(app.texts().some(text => text.includes("does not offer an agent catalog"))).toBe(true);
   // Nothing is invented to fill the panel, and the composer still sends.
   expect(app.texts()).not.toContain("Ultimate");
   await app.type("composer", "Send without a catalogue");
   await app.press("Send");
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
     agentType: "Standard",
   });
 });
@@ -779,14 +796,15 @@ test("files scene greps inside files and opens the hit", async () => {
   await app.press("search-mode-content");
   await app.type("file-search", "hello");
   await app.keyboard.press("Return");
-  // A content hit carries the line number and the matching line as its preview.
-  await app.waitFor("main.rs:2");
+  // Content hits are grouped under their file; each carries its line number and
+  // the matching line as its preview (workbench round 4: grouped search).
+  await app.waitFor("search-hit-main.rs:2");
   expect(backend.calls.find(call => call.action === "search_files")?.request).toMatchObject({
     pattern: "hello",
     searchContent: true,
   });
   expect(app.texts().join("\n")).toContain('println!("hello");');
-  await app.press("main.rs:2");
+  await app.press("search-hit-main.rs:2");
   await app.waitFor("fn main() {");
 });
 
@@ -887,10 +905,11 @@ test("the transcript shows tool cards from a turn", async () => {
 
   await app.waitFor("NSH skeleton");
   await app.press("NSH skeleton >> nth=0");
-  await app.waitFor("TOOL · read_file");
+  // A read is titled by its verb and the file it read, not by the raw tool name.
+  await app.waitFor("NavPanel.tsx");
   const texts = app.texts().join("\n");
-  expect(texts).toContain("TOOL · read_file");
-  expect(texts).toContain("src/web-ui/src/app/NavPanel.tsx");
+  expect(texts).toContain("Read");
+  expect(texts).toContain("NavPanel.tsx");
 });
 
 test("a reasoning model's streamed notes never become its answer", async () => {
@@ -910,7 +929,7 @@ test("a reasoning model's streamed notes never become its answer", async () => {
     event: "agentic://text-chunk",
     payload: { sessionId: "session-1", text: "Weigh the options.", contentType: "thinking" },
   });
-  await app.waitFor("THINKING");
+  await app.waitFor("Thinking");
   expect(app.texts().join("\n")).toContain("streaming");
 
   await app.host.send("openbitfun.event", {
@@ -932,7 +951,7 @@ test("a persisted reasoning block stays collapsed until it is opened", async () 
 
   await app.waitFor("Terminal migration");
   await app.press("Terminal migration");
-  await app.waitFor("THINKING");
+  await app.waitFor("Thinking");
 
   // Collapsed, as the desktop keeps it: the header says how much there is, the
   // notes themselves are not in the transcript yet.
@@ -1004,9 +1023,10 @@ test("a running turn streams its text and can be stopped", async () => {
   await app.waitFor("Streamed reply");
   expect(app.texts().join("\n")).toContain("Streamed reply");
 
-  // Stop addresses the turn the host said it started.
+  // Stop addresses the turn the host said it started; the host picks interrupt
+  // or cancel itself.
   await app.press("Stop");
-  expect(backend.calls.find(call => call.action === "interrupt_dialog_turn")?.request).toMatchObject({
+  expect(backend.calls.find(call => call.action === "stop_dialog_turn")?.request).toMatchObject({
     sessionId: "session-1",
     dialogTurnId: "turn-live",
   });
@@ -1148,11 +1168,20 @@ test("settings scene reads the configured fields", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-general");
   await app.waitFor("Application");
-  const texts = app.texts().join("\n");
-  expect(texts).toContain("Close button");
-  expect(texts).toContain("Font size inside code and markdown previews · Current: 14");
-  expect(texts).toContain("Maximum lines preserved in terminal scroll history · Current: 1000");
+  expect(app.texts().join("\n")).toContain("Close button");
+  // Settings opens one page at a time: the editor's rows are not drawn here.
+  expect(app.shows("editor-font-size")).toBe(false);
+
+  // A number field shows the stored value in its own input, read from the leaf
+  // inside the document the host stores.
+  await app.press("nav-settings-page-editor");
+  await app.waitFor("Font size inside code and markdown previews");
+  expect(app.value("editor-font-size")).toBe("14");
+  await app.press("nav-settings-page-terminal");
+  await app.waitFor("Maximum lines preserved in terminal scroll history");
+  expect(app.value("terminal-scrollback")).toBe("1000");
   // Values are read one path at a time, so a path a host lacks cannot fail the page.
   expect(backend.actions()).toContain("get_config");
 });
@@ -1162,48 +1191,62 @@ test("settings scene writes toggles, selects and numbers", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-general");
   await app.waitFor("Application");
 
   await app.press("notify-permission-request");
   expect(backend.settingsWrites).toContainEqual({ path: "app.notifications.permission_request_notify", value: true });
 
+  // Each field writes its own leaf; the `editor` document is never replaced.
+  await app.press("nav-settings-page-editor");
   await app.press("editor-word-wrap-on");
-  expect(backend.settingsWrites).toContainEqual({
-    path: "editor",
-    value: { font_size: 14, tab_size: 4, word_wrap: "on", line_numbers: "on", minimap: { enabled: true } },
-  });
+  expect(backend.settingsWrites).toContainEqual({ path: "editor.word_wrap", value: "on" });
 
+  // Save only appears once the typed value differs from the stored one.
+  expect(app.shows("editor-font-size-save")).toBe(false);
+  await app.clear("editor-font-size");
   await app.type("editor-font-size", "16");
   await app.press("Save Font size >> nth=0");
-  const editorWrite = backend.settingsWrites.filter(write => write.path === "editor").pop();
-  expect(editorWrite?.value).toMatchObject({ font_size: 16, tab_size: 4, word_wrap: "on" });
+  expect(backend.settingsWrites).toContainEqual({ path: "editor.font_size", value: 16 });
+
+  // The stepper saves at once and clamps to the field's range.
+  await app.press("editor-tab-size-increase");
+  expect(backend.settingsWrites).toContainEqual({ path: "editor.tab_size", value: 5 });
+  await app.clear("editor-tab-size");
+  await app.type("editor-tab-size", "99");
+  await app.submit("editor-tab-size");
+  expect(backend.settingsWrites).toContainEqual({ path: "editor.tab_size", value: 8 });
+  expect(backend.settingsWrites.some(write => write.path === "editor")).toBe(false);
 });
 
-test("settings writes an application toggle back into the whole app object", async () => {
+test("settings writes application toggles as leaves, never a stale whole object", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-general");
   await app.waitFor("Interface language");
-  await app.waitFor("Restore windows at launch");
+  await app.waitFor("Check for updates automatically");
+  // Stored switches nothing reads are not drawn.
+  expect(app.texts()).not.toContain("Restore windows at launch");
+  expect(app.shows("telemetry")).toBe(false);
 
-  await app.press("telemetry");
-  const write = backend.settingsWrites.filter(entry => entry.path === "app").pop();
-  // A field inside `app` is written by patching the object, not by replacing it.
-  expect(write?.value).toMatchObject({
-    language: "en-US",
-    auto_update: true,
-    telemetry: true,
-    confirm_on_exit: true,
-    restore_windows: true,
-  });
+  // Another surface changes the app document after this page read it; a write
+  // here must not put the old document back.
+  await app.press("auto-update");
+  expect(backend.settingsWrites).toContainEqual({ path: "app.auto_update", value: false });
 
+  await app.press("nav-settings-page-workspace");
   await app.press("workspace-search");
-  const experience = backend.settingsWrites.filter(entry => entry.path === "app.ai_experience").pop();
-  expect(experience?.value).toMatchObject({
-    enable_session_title_generation: true,
-    enable_workspace_search: true,
+  expect(backend.settingsWrites).toContainEqual({ path: "app.ai_experience.enable_workspace_search", value: true });
+  await app.press("nav-settings-page-session-memory");
+  await app.press("session-title-generation");
+  expect(backend.settingsWrites).toContainEqual({
+    path: "app.ai_experience.enable_session_title_generation",
+    value: false,
   });
+  // Neither `app` nor `app.ai_experience` (which holds the quick-action list) is rewritten.
+  expect(backend.settingsWrites.some(write => write.path === "app" || write.path === "app.ai_experience")).toBe(false);
 });
 
 test("settings preserves explicit zh-CN app.language override when writing sibling app toggles", async () => {
@@ -1223,17 +1266,13 @@ test("settings preserves explicit zh-CN app.language override when writing sibli
   await app.waitFor("OpenBitFun");
   // Works both before and after Wave 2 wires `initAppLocale()` into `App.tsx`.
   await app.press(app.shows("设置") ? "设置" : "Settings");
-  await app.waitFor("telemetry");
+  await app.press("nav-settings-page-general");
+  await app.waitFor("auto-update");
 
-  await app.press("telemetry");
-  const write = backend.settingsWrites.filter(entry => entry.path === "app").pop();
-  expect(write?.value).toMatchObject({
-    language: "zh-CN",
-    auto_update: true,
-    telemetry: true,
-    confirm_on_exit: true,
-    restore_windows: true,
-  });
+  // A sibling switch writes its own leaf, so the stored language is never touched.
+  await app.press("auto-update");
+  expect(backend.settingsWrites).toContainEqual({ path: "app.auto_update", value: false });
+  expect(backend.settingsWrites.some(entry => entry.path === "app")).toBe(false);
 });
 
 test("settings switches interface language live across English, Simplified Chinese, and Traditional Chinese", async () => {
@@ -1241,44 +1280,35 @@ test("settings switches interface language live across English, Simplified Chine
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-general");
   await app.waitFor("Interface language");
   await app.waitFor("Application");
 
   // Switch live to Simplified Chinese -> entire shell + settings repaint immediately.
+  // The host keeps the language through `i18n_set_language`; no `app` document is
+  // read and written back from here.
   await app.press("app-language-zh-CN");
   await app.waitFor("界面语言");
   await app.waitFor("常规");
   expect(app.shows("设置")).toBe(true);
-  const zhCnWrite = backend.settingsWrites.filter(entry => entry.path === "app").pop();
-  expect(zhCnWrite?.value).toMatchObject({
-    language: "zh-CN",
-    auto_update: true,
-    telemetry: false,
-    confirm_on_exit: true,
-    restore_windows: true,
-  });
+  const languageCalls = () =>
+    backend.calls
+      .filter(call => call.action === "i18n_set_language")
+      .map(call => (call.request as { language?: string })?.language);
+  expect(languageCalls().pop()).toBe("zh-CN");
 
   // Switch live to Traditional Chinese -> repaints immediately with canonical zh-TW copy.
   await app.press("app-language-zh-TW");
   await app.waitFor("介面語言");
   expect(app.shows("設定")).toBe(true);
-  const zhTwWrite = backend.settingsWrites.filter(entry => entry.path === "app").pop();
-  expect(zhTwWrite?.value).toMatchObject({
-    language: "zh-TW",
-    auto_update: true,
-    restore_windows: true,
-  });
+  expect(languageCalls().pop()).toBe("zh-TW");
 
   // Switch back to English -> restores cleanly and persists canonical en-US.
   await app.press("app-language-en-US");
   await app.waitFor("Interface language");
   await app.waitFor("Application");
-  const enWrite = backend.settingsWrites.filter(entry => entry.path === "app").pop();
-  expect(enWrite?.value).toMatchObject({
-    language: "en-US",
-    auto_update: true,
-    restore_windows: true,
-  });
+  expect(languageCalls().pop()).toBe("en-US");
+  expect(backend.settingsWrites.some(entry => entry.path === "app")).toBe(false);
 });
 
 test("i18n normalizes locales, translates reactively across en-US/zh-CN/zh-TW, and formats durations cleanly", async () => {
@@ -1384,6 +1414,7 @@ test("settings scene lists the configured models and appends one", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-models");
   await app.waitFor("AI models");
   await app.waitFor("Configured model");
 
@@ -1408,15 +1439,111 @@ test("settings scene lists the configured models and appends one", async () => {
       api_key: "sk-ant-test",
       enabled: true,
       category: "general_chat",
+      // The host's defaults for the category, not a copy kept by this surface.
       capabilities: ["text_chat"],
     },
   ]);
+  // One typed intent, not a whole list this page read earlier.
+  expect(backend.calls.filter(call => call.action === "ai_model_upsert")).toHaveLength(1);
 
+  // Removing asks first, and says the default slot that names the model.
   await app.press("model-actions-model-1");
   await app.press("remove-model-model-1");
+  await app.waitFor("Remove Configured model? 1 default slot(s) name it and will be cleared.");
+  expect(backend.settingsWrites.filter(entry => entry.path === "ai.models")).toHaveLength(1);
+  await app.press("id:model-delete-confirm-model-1 >> Delete");
   await app.waitFor("Removed Configured model");
   const removals = backend.settingsWrites.filter(entry => entry.path === "ai.models");
   expect((removals.pop()?.value as unknown[]).length).toBe(1);
+  // The default slot that named it no longer resolves to a missing model.
+  expect(backend.settingsWrites).toContainEqual({ path: "ai.default_models", value: { primary: null } });
+});
+
+test("a host older than the typed settings commands says so instead of writing whole documents", async () => {
+  const backend = createBackend({ legacySettingsHost: true });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-models");
+  await app.waitFor("Configured model");
+  await app.press("add-model");
+  await app.type("model-name", "Work model");
+  await app.type("model-model-name", "gpt-4.1-mini");
+  await app.type("model-base-url", "https://api.openai.com/v1");
+  await app.press("save-model");
+  await app.waitFor("This host is older than this window and cannot apply this change. Update OpenBitFun on it.");
+  // No fallback to the whole-list write the command replaced.
+  expect(backend.settingsWrites.some(write => write.path === "ai.models")).toBe(false);
+
+  await app.press("nav-settings-page-permissions");
+  await app.waitFor("Edit rules");
+  await app.press("permission-mode-auto");
+  await app.waitFor("This host is older than this window and cannot apply this change. Update OpenBitFun on it.");
+  expect(backend.settingsWrites.some(write => write.path === "tool_permissions")).toBe(false);
+});
+
+test("field limits and defaults come from the host's settings descriptor", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-editor");
+  await app.waitFor("editor-font-size");
+  const described = backend.calls.find(call => call.action === "get_settings_schema")?.request as {
+    paths?: string[];
+  };
+  expect(described?.paths).toContain("editor.font_size");
+  expect(described?.paths).toContain("memories.max_unused_days");
+  // The catalog allows 32 px; the page no longer caps it at a literal of its own.
+  await app.clear("editor-font-size");
+  await app.type("editor-font-size", "30");
+  await app.submit("editor-font-size");
+  expect(backend.settingsWrites).toContainEqual({ path: "editor.font_size", value: 30 });
+});
+
+test("an existing model opens in the form, prefilled, and saves in place", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-models");
+  await app.waitFor("Configured model");
+  await app.press("model-actions-model-1");
+  await app.press("model-edit-model-1");
+  await app.waitFor("Edit Configured model");
+  expect(app.value("model-model-name")).toBe("gpt-4.1-mini");
+  await app.press("model-format-responses");
+  await app.press("save-model");
+  await app.waitFor("Saved Configured model");
+  const written = backend.settingsWrites.filter(entry => entry.path === "ai.models").pop()?.value as Array<
+    Record<string, unknown>
+  >;
+  // One entry, patched in place: fields the form does not draw stay.
+  expect(written).toHaveLength(1);
+  expect(written[0]).toMatchObject({
+    id: "model-1",
+    provider: "responses",
+    request_url: "https://api.openai.com/v1/responses",
+    category: "general_chat",
+    api_key: "sk-configured",
+  });
+});
+
+test("default models write one slot of the stored section", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-models");
+  await app.waitFor("Default models");
+  await app.press("default-model-fast");
+  await app.press("default-model-fast-model-1");
+  // Only that slot's leaf is written, so no other slot can be put back.
+  expect(backend.settingsWrites).toContainEqual({ path: "ai.default_models.fast", value: "model-1" });
+  await app.press("default-model-fast");
+  await app.press("default-model-fast-none");
+  expect(backend.settingsWrites).toContainEqual({ path: "ai.default_models.fast", value: null });
+  expect(backend.settingsWrites.some(write => write.path === "ai.default_models")).toBe(false);
 });
 
 test("a configured model takes its enabled flag and its limits from this page", async () => {
@@ -1424,6 +1551,7 @@ test("a configured model takes its enabled flag and its limits from this page", 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-models");
   await app.waitFor("Configured model");
   await app.waitFor("model-enabled-model-1");
 
@@ -1442,16 +1570,19 @@ test("a configured model takes its enabled flag and its limits from this page", 
   await app.type("model-context-model-1", "200000");
   await app.type("model-max-tokens-model-1", "90000");
   await app.press("model-limits-save-model-1");
-  // The host refuses an output ceiling above 40% of the context window, so this
-  // page refuses it first and writes nothing.
-  await app.waitFor("The output limit is at most 40% of the context window");
-  expect(backend.settingsWrites.filter(entry => entry.path === "ai.models")).toHaveLength(1);
+  // The host owns the ceiling: it lowers an output limit above the share of the
+  // window it accepts and says so; this page keeps no copy of the rule.
+  await app.waitFor("Saved the limits of Configured model The output limit was lowered to what the context window allows.");
+  const clamped = backend.settingsWrites.filter(entry => entry.path === "ai.models").pop()?.value as Array<
+    Record<string, unknown>
+  >;
+  expect(clamped[0]).toMatchObject({ context_window: 200000, max_tokens: 80000 });
 
-  // A fresh form, so the field starts empty instead of carrying the refused value.
-  await app.press("model-limits-cancel-model-1");
+  // The form reopens on the stored limits; a value inside the ceiling is kept.
   await app.press("model-actions-model-1");
   await app.press("model-limits-model-1");
-  await app.type("model-context-model-1", "200000");
+  expect(app.value("model-max-tokens-model-1")).toBe("80000");
+  await app.clear("model-max-tokens-model-1");
   await app.type("model-max-tokens-model-1", "32000");
   await app.press("model-limits-save-model-1");
   await app.waitFor("Saved the limits of Configured model");  const limited = backend.settingsWrites.filter(entry => entry.path === "ai.models").pop()?.value as Array<
@@ -1465,6 +1596,7 @@ test("the model form fills itself from this machine's catalog", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-models");
   await app.waitFor("Configured model");
   await app.press("add-model");
   await app.waitFor("Discover a model: pick a provider, then a model, and the form fills itself.");
@@ -1500,6 +1632,7 @@ test("a host without a model catalog still takes a model by hand", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-models");
   await app.waitFor("Configured model");
   await app.press("add-model");
   await app.waitFor("Base URL");
@@ -1533,9 +1666,11 @@ test("the search field answers with sessions, messages and files, and runs what 
   // `search_files` are grouped by kind rather than merged into one list.
   await app.waitFor("Terminal is wired to terminal_create.");
   expect(app.texts()).toContain("Messages");
+  // Every opened workspace is asked once, the active one first.
   const searched = backend.calls.filter(call => call.action === "search_session_content");
-  expect(searched).toHaveLength(1);
+  expect(searched).toHaveLength(2);
   expect(searched[0].request).toMatchObject({ workspaceId: "workspace-1", query: "terminal" });
+  expect(searched[1].request).toMatchObject({ workspaceId: "workspace-2", query: "terminal" });
 
   // Running a session hit closes the panel and opens that session.
   await app.press("label:global-search-item-session:session-2");
@@ -1570,6 +1705,7 @@ test("stored key bindings are shown, not edited", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-input");
   await app.waitFor("Keyboard shortcuts");
   // The count is the host's document; this surface has no shortcut registry, so
   // the row states that instead of offering an editor that would change nothing.
@@ -1587,34 +1723,27 @@ test("session memory takes its models and its window from this page", async () =
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-session-memory");
   await app.waitFor("Session memory");
   await app.waitFor("Model that extracts memories");
 
-  // A configured model is written onto the stored document, so the fields this
-  // page does not draw stay where they were.
+  // A configured model is written to its own leaf, so the fields this page does
+  // not draw stay where they were.
+  await app.press("memory-extract-model");
   await app.press("memory-extract-model-model-1");
   await app.waitFor("Saved Model that extracts memories");
-  const written = backend.settingsWrites.filter(entry => entry.path === "memories").pop()?.value as Record<
-    string,
-    unknown
-  >;
-  expect(written).toMatchObject({
-    extract_model: "model-1",
-    max_unused_days: 30,
-    max_rollouts_per_startup: 5,
-  });
+  expect(backend.settingsWrites).toContainEqual({ path: "memories.extract_model", value: "model-1" });
 
   // "Follow" is a null, not an empty string the host would read as a model id.
+  await app.press("memory-extract-model");
   await app.press("memory-extract-model-inherit");
-  const cleared = backend.settingsWrites.filter(entry => entry.path === "memories").pop()?.value as Record<
-    string,
-    unknown
-  >;
-  expect(cleared.extract_model).toBeNull();
+  expect(backend.settingsWrites).toContainEqual({ path: "memories.extract_model", value: null });
+  expect(backend.settingsWrites.some(entry => entry.path === "memories")).toBe(false);
 
   // A rollout window that outlives the retention is refused with the reason, and
   // nothing is written: the host would reject the pair as well.
   const before = backend.settingsWrites.length;
+  await app.clear("memory-max-unused-days");
   await app.type("memory-max-unused-days", "5");
   await app.press("memory-max-unused-days-save");
   await app.waitFor(
@@ -1622,16 +1751,18 @@ test("session memory takes its models and its window from this page", async () =
   );
   expect(backend.settingsWrites).toHaveLength(before);
 
-  // Typing a window above the retention clamps to it instead of storing a value
-  // the pair cannot hold.
+  // A window above the retention is the host's refusal too; one inside it saves.
   expect(app.texts().some(text => text.includes("older than"))).toBe(true);
+  await app.clear("memory-max-unused-days");
+  await app.clear("memory-rollout-age-days");
   await app.type("memory-rollout-age-days", "40");
   await app.press("memory-rollout-age-days-save");
-  await app.waitFor("Saved Extract from sessions no older than (days)");  const clamped = backend.settingsWrites.filter(entry => entry.path === "memories").pop()?.value as Record<
-    string,
-    unknown
-  >;
-  expect(clamped.max_rollout_age_days).toBe(30);
+  expect(backend.settingsWrites.some(entry => entry.path === "memories.max_rollout_age_days")).toBe(false);
+  await app.clear("memory-rollout-age-days");
+  await app.type("memory-rollout-age-days", "30");
+  await app.press("memory-rollout-age-days-save");
+  await app.waitFor("Saved Extract from sessions no older than (days)");
+  expect(backend.settingsWrites).toContainEqual({ path: "memories.max_rollout_age_days", value: 30 });
 });
 
 test("a connected MCP server's resources are browsed and read through the host", async () => {
@@ -1639,6 +1770,7 @@ test("a connected MCP server's resources are browsed and read through the host",
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
   await app.waitFor("Filesystem · fs-server");
   await app.press("mcp-resources-fs-server");
   await app.waitFor("Resources of fs-server");
@@ -1686,6 +1818,7 @@ test("settings creates a model pool the host keeps, and deletes it", async () =>
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-models");
   await app.waitFor("Model pools");
   await app.waitFor("No pool yet.");
 
@@ -1737,8 +1870,12 @@ test("the devices list hides a device and keeps the arrangement in app storage",
 
   await app.press("Devices");
   await app.waitFor("Studio");
-  // The stored order wins over the default (local device first).
-  const names = app.texts().filter(text => text === "Studio" || text === "builder");
+  // The stored order wins over the default (local device first). Read the device list only:
+  // the navigation panel has a "Studio" group label of its own.
+  const shown = app.texts();
+  const names = shown
+    .slice(Math.max(0, shown.indexOf("Your devices")))
+    .filter(text => text === "Studio" || text === "builder");
   expect(names[0]).toBe("builder");
 
   await app.press("device-actions-device-linux");
@@ -1868,7 +2005,7 @@ test("driving another device routes product commands through the peer transport"
   expect(app.texts()).not.toContain("peer workspace on device-linux");
 });
 
-test("a peer that advertises no dialog queue keeps queued text on this surface", async () => {
+test("a peer without the queue or the send command is told to update; nothing waits here", async () => {
   const backend = createDeviceBackend({
     onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
     // A host that never states the queue capability: nothing may be submitted to it.
@@ -1894,19 +2031,22 @@ test("a peer that advertises no dialog queue keeps queued text on this surface",
     payload: { sessionId: "device-linux-session", turnId: "turn-1" },
   });
   await app.waitFor("Steer running turn…");
+  await app.waitFor("builder has no message queue. Update OpenBitFun there to queue messages during a turn.");
   await app.type("composer", "Queue this here");
   await app.press("Queue");
-  await app.waitFor("Queued 1 · starts when the running turn finishes");
-  await app.waitFor("builder does not keep a queue; messages wait here");
+  // The older peer has no `submit_user_message`: the message stays in the
+  // composer with an explicit notice instead of a local list.
+  await app.waitFor("send-host-update");
+  expect(app.value("composer")).toBe("Queue this here");
 
-  // The probe that found no queue is fine; a submit to a host without one is not.
-  const queueActions = backend.calls
+  const peerCommands = backend.calls
     .filter(call => call.action === "account_device_rpc")
     .map(call => JSON.parse(String((call.request as Record<string, unknown>).commandJson)))
-    .filter((envelope: { command?: string }) => envelope.command === "manage_dialog_queue")
-    .map((envelope: { args?: { request?: { action?: string } } }) => envelope.args?.request?.action);
-  expect(queueActions).toEqual(["list"]);
-  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toContain("Queue this here");
+    .map((envelope: { command?: string; args?: { request?: { action?: string } } }) =>
+      envelope.command === "manage_dialog_queue" ? `queue:${envelope.args?.request?.action}` : envelope.command);
+  expect(peerCommands.filter(command => String(command).startsWith("queue:submit"))).toEqual([]);
+  expect(peerCommands).toContain("submit_user_message");
+  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
 });
 
 test("devices scene saves an alias through the account command", async () => {
@@ -1933,7 +2073,9 @@ test("terminal scene creates a host session", async () => {
   await app.waitFor("running");
   expect(backend.actions()).toContain("terminal_create");
   const createCall = backend.calls.find(call => call.action === "terminal_create");
-  expect(createCall?.request).toMatchObject({ cols: 120, rows: 32 });
+  // The shell starts at the view's measured size (120 x 32 before the view reports one).
+  const size = createCall?.request as { cols?: number; rows?: number };
+  expect((size.cols ?? 0) > 0 && (size.rows ?? 0) > 0).toBe(true);
   // A reattached view replays what the shell already printed before live output.
   expect(backend.actions()).toContain("terminal_get_history");
   expect(backend.calls.find(call => call.action === "terminal_get_history")?.request).toMatchObject({
@@ -2003,9 +2145,13 @@ test("terminal tabs keep their own shell and switch without losing output", asyn
 
   await app.press("shell 1");
   await app.waitFor("shell 1");
-  // Closing a tab closes its host session and falls back to the other one.
+  // Closing a running shell asks first; confirming closes its host session and
+  // falls back to the other one.
   await app.press("× >> nth=0");
-  expect(backend.actions()).toContain("terminal_close");
+  await app.waitFor("Close shell");
+  expect(backend.actions()).not.toContain("terminal_close");
+  await app.press("Close shell");
+  await app.waitUntil(() => backend.actions().includes("terminal_close"));
   await app.waitFor("shell 2");
 });
 
@@ -2112,25 +2258,30 @@ test("settings assigns a model to a product task, in the shape the host reads", 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-session-memory");
   await app.waitFor("Task models");
-  // The seeded section binds the title task to a configured model, and lets the
-  // commit task inherit; the model is shown by name, not by id.
-  await app.waitFor("Configured model");
+  // The seeded section is in the shape an earlier build of this surface wrote
+  // (`{"Fixed":…}` / `"Inherit"`); it still reads, and the model is shown by
+  // name, not by id.
+  await app.waitFor("Configured model · gpt-4.1-mini");
   await app.waitFor("inherits the session's model");
 
   await app.press("task-model-git_commit");
   await app.press("task-model-choice-git_commit-model-1");
   const write = backend.settingsWrites.filter(entry => entry.path === "ai.task_models").pop();
-  // `TaskModelSelection` is a plain serde enum: a unit variant and a struct one.
+  // `TaskModelSelection` is `serde(tag = "kind", rename_all = "snake_case")`.
   expect(write?.value).toEqual({
-    session_title: { Fixed: { model_id: "model-1" } },
-    git_commit: { Fixed: { model_id: "model-1" } },
+    session_title: { kind: "fixed", model_id: "model-1" },
+    git_commit: { kind: "fixed", model_id: "model-1" },
   });
 
   await app.press("task-model-session_title");
   await app.press("task-model-inherit-session_title");
   const cleared = backend.settingsWrites.filter(entry => entry.path === "ai.task_models").pop();
-  expect(cleared?.value).toEqual({ session_title: "Inherit", git_commit: { Fixed: { model_id: "model-1" } } });
+  expect(cleared?.value).toEqual({
+    session_title: { kind: "inherit" },
+    git_commit: { kind: "fixed", model_id: "model-1" },
+  });
 });
 
 test("settings exposes the AI execution scalars the host reconciles", async () => {
@@ -2138,17 +2289,24 @@ test("settings exposes the AI execution scalars the host reconciles", async () =
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-execution");
   await app.waitFor("AI execution");
   await app.press("deferred-tool-loading");
   expect(backend.settingsWrites).toContainEqual({ path: "ai.enable_deferred_tool_loading", value: false });
 
   // A select writes the value the host's enum deserializes.
+  await app.press("tool-presentation-mode");
   await app.press("tool-presentation-mode-ptc_python");
   expect(backend.settingsWrites).toContainEqual({ path: "ai.tool_presentation_mode", value: "ptc_python" });
 
+  await app.clear("subagent-concurrency");
   await app.type("subagent-concurrency", "8");
   await app.press("Save Parallel subagents >> nth=0");
   expect(backend.settingsWrites).toContainEqual({ path: "ai.subagent_max_concurrency", value: 8 });
+
+  // A timeout the host keeps as `Option` clears to null ("no limit").
+  await app.press("user-question-timeout-clear");
+  expect(backend.settingsWrites).toContainEqual({ path: "ai.user_question_timeout_secs", value: null });
 });
 
 test("settings reads the permission policy and writes the mode back as the desktop does", async () => {
@@ -2156,6 +2314,7 @@ test("settings reads the permission policy and writes the mode back as the deskt
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-permissions");
   await app.waitFor("Permissions");
   await app.waitFor(
     "1 rule in force. Global rules apply to every workspace; project and agent rules can still override them.",
@@ -2198,6 +2357,7 @@ test("the rule editor and automatic approval write the policy document the deskt
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-permissions");
   await app.waitFor("Edit rules");
 
   // A draft is a copy: adding and reordering changes nothing until it is saved.
@@ -2232,12 +2392,21 @@ test("the rule editor and automatic approval write the policy document the deskt
     approval: { strategy: "interactive" },
   });
 
-  // An empty resource is refused in the panel instead of being written.
+  // The save is rule intents (an append, then a move into the drawn order), each
+  // naming the rule it expects at its index.
+  const ruleCalls = backend.calls.filter(call => call.action === "upsert_permission_rule");
+  expect(ruleCalls.map(call => call.request)).toEqual([
+    { rule: { action: "*", resource: "workspace/*", effect: "deny" } },
+    { index: 1, expected: { action: "*", resource: "workspace/*", effect: "deny" }, moveTo: 0 },
+  ]);
+
+  // An empty resource is refused by the host and nothing is written.
+  const writesBefore = backend.settingsWrites.filter(write => write.path === "tool_permissions").length;
   await app.press("edit-permission-rules");
   await app.press("add-permission-rule");
   await app.press("save-permission-rules");
   await app.waitFor("Every rule needs a resource, for example workspace/*");
-  expect(backend.settingsWrites.filter(write => write.path === "tool_permissions").length).toBe(1);
+  expect(backend.settingsWrites.filter(write => write.path === "tool_permissions").length).toBe(writesBefore);
 });
 
 test("automatic approval picks a model, its fallbacks, and the decision model key", async () => {
@@ -2245,6 +2414,7 @@ test("automatic approval picks a model, its fallbacks, and the decision model ke
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-permissions");
   await app.waitFor("Automatic approval");
   // The settings only matter in Auto, and the section says so where they are absent.
   await app.waitFor(
@@ -2442,6 +2612,7 @@ test("external agents report why a client cannot run, and the document is writte
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-external-agents");
   await app.waitFor("External agents");
   // A running client and one whose adapter is missing, each with its own state.
   await app.waitFor("OpenCode · opencode");
@@ -2474,8 +2645,10 @@ test("a host without ACP commands hides the external-agents section", async () =
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
-  await app.waitFor("Usage");
-  expect(app.texts()).not.toContain("External agents");
+  await app.press("nav-settings-page-external-agents");
+  // The page says why it is empty instead of drawing an empty list.
+  await app.waitFor("This host does not offer external agents.");
+  expect(app.shows("acp-json-toggle")).toBe(false);
 });
 
 test("usage draws the host's totals for the chosen range", async () => {
@@ -2483,6 +2656,7 @@ test("usage draws the host's totals for the chosen range", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-usage");
   await app.waitFor("Usage");
   await app.waitFor("42 requests · 120K tokens");
   await app.waitFor("90.0K in · 30.0K out · 40.0K cached · 5.0K cache writes");
@@ -2510,6 +2684,7 @@ test("usage draws the fixed six-month activity grid beside the range", async () 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-usage");
   await app.waitFor("Usage");
   // Only the two days inside the window are counted, not the bucket from 2020.
   await app.waitFor("Each cell is one day; the busiest day is darkest. 4.0K tokens over the window.");
@@ -2533,6 +2708,7 @@ test("a host that refuses the activity window keeps the range and says why", asy
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-usage");
   await app.waitFor("42 requests · 120K tokens");
   await app.waitFor("This host would not answer the six-month activity window.");
   expect(app.texts().join("\n")).not.toContain("tokens over the window.");
@@ -2543,6 +2719,7 @@ test("a host that offers no usage statistics says so instead of showing zeros", 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-usage");
   await app.waitFor("This host reports no usage statistics, so nothing is invented here.");
   expect(app.texts()).not.toContain("0 requests · 0 tokens");
 });
@@ -2572,6 +2749,7 @@ test("usage lists the busiest five rows and offers the rest", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-usage");
   await app.waitFor("model-0 · openai");
   await app.waitFor("model-4");
   // The sixth model is behind the cut, and the row count says so.
@@ -2595,6 +2773,7 @@ test("usage filters the rows it draws, and switching to groups starts clean", as
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-usage");
   await app.waitFor("model-0 · openai");
 
   await app.type("usage-entry-filter", "model-3");
@@ -2627,6 +2806,7 @@ test("content width is a stepper over the preference both frontends keep", async
   });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-appearance");
   await app.waitFor("1100px · the transcript column, shared with the desktop surface");
   await app.waitFor("Narrowest 600px");
 
@@ -2649,6 +2829,7 @@ test("a stored content width below the floor falls back to the default", async (
   });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-appearance");
   await app.waitFor("900px · the transcript column, shared with the desktop surface");
 });
 
@@ -2668,6 +2849,7 @@ test("log files show the run's folder, the crash hint, and pack a bundle on requ
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-diagnostics");
   await app.waitFor("Log files");
   await app.waitFor("Effective level debug");
   await app.waitFor("/tmp/openbitfun/logs/session-7");
@@ -2681,8 +2863,12 @@ test("log files show the run's folder, the crash hint, and pack a bundle on requ
   await waitForCalls(backend, "reveal_in_explorer");
   expect(backend.reveals).toEqual(["/tmp/openbitfun/logs/session-7"]);
 
-  // Exporting packs the bundle and then reveals where it landed.
+  // Exporting asks first what the bundle may contain, then packs it and
+  // reveals where it landed.
   await app.press("logging-export");
+  await app.waitFor("Export diagnostics bundle?");
+  expect(backend.actions()).not.toContain("export_diagnostics_bundle");
+  await app.press("id:logging-export-confirm >> Export");
   await waitForCalls(backend, "reveal_in_explorer", 2);
   await app.waitFor("Exported /tmp/openbitfun/logs/diagnostics/openbitfun-diagnostics.zip");
   expect(backend.reveals[1]).toBe("/tmp/openbitfun/logs/diagnostics/openbitfun-diagnostics.zip");
@@ -2693,6 +2879,7 @@ test("a host that reports no log folder says so and offers no actions", async ()
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-diagnostics");
   await app.waitFor("Log files");
   await app.waitFor("This host reports no log location.");
   expect(app.texts()).not.toContain("Effective level");
@@ -2720,6 +2907,7 @@ test("settings writes tool and hook switches as leaf paths, not whole objects", 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-automation");
   await app.waitFor("Agent hooks");
   await app.waitFor("Honor project hook files");
 
@@ -2728,21 +2916,25 @@ test("settings writes tool and hook switches as leaf paths, not whole objects", 
   expect(backend.settingsWrites).toContainEqual({ path: "app.hooks.project_hooks_enabled", value: true });
   expect(backend.settingsWrites.some(write => write.path === "app.hooks" || write.path === "app")).toBe(false);
 
+  await app.press("nav-settings-page-desktop-control");
   await app.press("computer-use");
   expect(backend.settingsWrites).toContainEqual({ path: "ai.computer_use_enabled", value: false });
   // `ai` holds the model list and API keys, so it is never rewritten here.
   expect(backend.settingsWrites.some(write => write.path === "ai")).toBe(false);
 
-  await app.type("preferred-browser", "Safari");
-  await app.press("Save Preferred browser >> nth=0");
+  // The browsers are the ones the host lists, not free text.
+  await app.press("preferred-browser");
+  await app.press("preferred-browser-chrome");
   expect(backend.settingsWrites).toContainEqual({
     path: "ai.browser_control_preferred_browser",
-    value: "Safari",
+    value: "chrome",
   });
 
+  await app.press("nav-settings-page-general");
   await app.press("prevent-sleep");
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
 
+  await app.press("nav-settings-page-diagnostics");
   await app.press("logging-sensitive");
   expect(backend.settingsWrites).toContainEqual({
     path: "app.logging.include_sensitive_diagnostics",
@@ -2755,19 +2947,23 @@ test("settings reaches the session-memory switches", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-session-memory");
   await app.waitFor("Session memory");
-  await app.waitFor("Days before unused memories expire · Current: 30");
+  await app.waitFor("Days before unused memories expire");
+  expect(app.value("memory-max-unused-days")).toBe("30");
 
   await app.press("generate-memories");
   expect(backend.settingsWrites).toContainEqual({ path: "memories.generate_memories", value: false });
 
   // An enum the host deserializes: skip extraction for polluted sessions.
+  await app.press("memory-external-context");
   await app.press("memory-external-context-skip_session");
   expect(backend.settingsWrites).toContainEqual({
     path: "memories.external_context_policy",
     value: "skip_session",
   });
 
+  await app.clear("memory-max-unused-days");
   await app.type("memory-max-unused-days", "90");
   await app.press("Save Forget after (days) >> nth=0");
   expect(backend.settingsWrites).toContainEqual({ path: "memories.max_unused_days", value: 90 });
@@ -2780,15 +2976,16 @@ test("a host that stores no task models shows the defaults and can create the se
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-session-memory");
   await app.waitFor("The host stores no value yet; these are its defaults.");
-  await app.waitFor("fast (default)");
+  await app.waitFor("Names a session from its first message · Default");
   await app.press("task-model-git_commit");
   await app.press("task-model-inherit-git_commit");
   // The first write creates the section the host never had.
   const write = backend.settingsWrites.filter(entry => entry.path === "ai.task_models").pop();
   expect(write?.value).toEqual({
-    session_title: { Fixed: { model_id: "fast" } },
-    git_commit: "Inherit",
+    session_title: { kind: "fixed", model_id: "fast" },
+    git_commit: { kind: "inherit" },
   });
 });
 
@@ -2799,10 +2996,13 @@ test("a field the host stores nothing for shows its default and stays writable",
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-general");
   await app.waitFor("Keep the computer awake");
   await app.waitFor("Keep your computer awake during active runs · Default");
-  await app.waitFor("Extract useful facts and preferences from conversations · Default");
   await app.press("prevent-sleep");
+  expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
+  await app.press("nav-settings-page-session-memory");
+  await app.waitFor("Extract useful facts and preferences from conversations · Default");
   expect(backend.settingsWrites).toContainEqual({ path: "app.prevent_sleep", value: true });
 });
 test("settings carries the input and workspace groups as leaf writes", async () => {
@@ -2810,6 +3010,7 @@ test("settings carries the input and workspace groups as leaf writes", async () 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-input");
   await app.waitFor("Input");
   await app.waitFor("Show excerpt actions after selecting text");
 
@@ -2825,6 +3026,7 @@ test("settings carries the input and workspace groups as leaf writes", async () 
     value: false,
   });
 
+  await app.clear("voice-max-seconds");
   await app.type("voice-max-seconds", "120");
   await app.press("Save Longest recording (s) >> nth=0");
   expect(backend.settingsWrites).toContainEqual({
@@ -2832,6 +3034,7 @@ test("settings carries the input and workspace groups as leaf writes", async () 
     value: 120,
   });
 
+  await app.press("nav-settings-page-workspace");
   await app.waitFor("Worktree folder");
   await app.press("worktree-auto-delete");
   expect(backend.settingsWrites).toContainEqual({
@@ -2849,6 +3052,7 @@ test("commit attribution writes its own leaf, and external import states where i
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-workspace");
   await app.waitFor("Attribute commits to OpenBitFun");
   // The fixture stores no value, so the drawn default is on and a press turns it off.
   await app.press("commit-coauthor");
@@ -2857,21 +3061,25 @@ test("commit attribution writes its own leaf, and external import states where i
     value: false,
   });
 
-  // The page the desktop has is named, and pointed at the section that does work here.
+  // A host without the external-source commands is told apart from an empty
+  // one, and the page still points at the section that does work here.
+  await app.press("nav-settings-page-external-import");
   await app.waitFor("External imports");
-  await app.waitFor(
-    "Importing content from other AI applications — their agents, accounts, skills and pets — reads their home folders on the machine running the desktop app, so it stays in that app. Agent clients this front end can drive are under External agents above.",
-  );
+  await app.waitFor("This host does not support external import. Update the serving host to use it.");
+  await app.waitFor("This host does not support restoring removed source sessions. Update the serving host and retry.");
+  await app.press("external-import-open-agents");
+  await app.waitFor("Coding agents this app can run through ACP.");
 });
 
 test("the stored mid-turn policy decides whether a composer message steers or queues", async () => {
-  const backend = createBackend();
+  const backend = createBackend({ hostQueue: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   // The default is steering, which is what the composer has always done.
   await app.waitFor("NSH skeleton");
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Message");
+  backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
@@ -2879,6 +3087,7 @@ test("the stored mid-turn policy decides whether a composer message steers or qu
   await app.waitFor("Steer running turn…");
 
   await app.press("Settings");
+  await app.press("nav-settings-page-input");
   await app.waitFor("Message sending");
   await app.press("mid-turn-policy-queue");
   expect(backend.settingsWrites).toContainEqual({
@@ -2886,12 +3095,17 @@ test("the stored mid-turn policy decides whether a composer message steers or qu
     value: "queue",
   });
 
-  await app.press("Sessions");
+  // Settings swaps the nav panel for its page list; Back returns to Sessions.
+  await app.press("settings-nav-back");
   await app.waitFor("Queue follow-up…");
   await app.type("composer", "Wait for the turn");
   await app.press("Queue");
   await app.waitFor("Queued 1 · starts when the running turn finishes");
-  // The policy only changes the default: nothing was steered into the turn.
+  // The primary press carries no choice of its own: the host read the stored
+  // policy and queued the message, so nothing was steered into the turn.
+  const submit = backend.calls.filter(call => call.action === "submit_user_message").at(-1)?.request as Record<string, unknown>;
+  expect(submit.sendDuringTurn).toBeUndefined();
+  expect(backend.userMessages.at(-1)).toMatchObject({ outcome: "queued", text: "Wait for the turn" });
   expect(backend.actions()).not.toContain("steer_dialog_turn");
 });
 test("web search picks a provider, keeps the document, and the key goes to the vault", async () => {
@@ -2899,6 +3113,7 @@ test("web search picks a provider, keeps the document, and the key goes to the v
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-web-search");
   await app.waitFor("Web search");
   await app.waitFor("No key is stored for this provider");
 
@@ -2933,36 +3148,38 @@ test("quick actions edit the stored list and the composer menu runs one", async 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-automation");
   await app.waitFor("Quick actions");
   await app.waitFor("Commit all current code changes");
 
   // Hidden actions stay in the stored list; the menu is what filters them.
   await app.press("quick-action-toggle-create_pr");
-  const hidden = backend.settingsWrites.filter(write => write.path === "app.ai_experience").pop();
-  const rows = (hidden?.value as { quick_actions?: Array<{ id: string; enabled: boolean }> }).quick_actions ?? [];
+  // The list is its own leaf, so the rest of `app.ai_experience` is never rewritten.
+  const hidden = backend.settingsWrites.filter(write => write.path === "app.ai_experience.quick_actions").pop();
+  const rows = (hidden?.value as Array<{ id: string; enabled: boolean }>) ?? [];
   expect(rows.find(row => row.id === "create_pr")?.enabled).toBe(true);
-  // The rest of the object is merged, not replaced.
-  expect((hidden?.value as { enable_workspace_search?: boolean }).enable_workspace_search).toBe(false);
+  expect(backend.settingsWrites.some(write => write.path === "app.ai_experience")).toBe(false);
 
   await app.press("quick-action-add");
   await app.type("quick-action-label", "Release notes");
   await app.type("quick-action-prompt", "Draft the release notes");
   await app.press("quick-action-save");
-  const added = backend.settingsWrites.filter(write => write.path === "app.ai_experience").pop();
-  const addedRows = (added?.value as { quick_actions?: Array<{ label: string; prompt: string }> }).quick_actions ?? [];
+  const added = backend.settingsWrites.filter(write => write.path === "app.ai_experience.quick_actions").pop();
+  const addedRows = (added?.value as Array<{ label: string; prompt: string }>) ?? [];
   expect(addedRows.some(row => row.label === "Release notes" && row.prompt === "Draft the release notes")).toBe(true);
 
   // The composer's menu lists the shown actions and sends the prompt as a turn.
-  await app.press("Sessions");
+  await app.press("settings-nav-back");
   await app.waitFor("NSH skeleton");
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Message");
+  await app.press("composer-plus");
   await app.press("Actions");
   await app.waitFor("Release notes");
   await app.press("Commit");
-  await waitForCalls(backend, "start_dialog_turn");
-  const turn = backend.calls.find(call => call.action === "start_dialog_turn")?.request;
-  expect(turn).toMatchObject({ userInput: "Commit all current code changes", sessionId: "session-1" });
+  await waitForCalls(backend, "submit_user_message");
+  const turn = backend.calls.find(call => call.action === "submit_user_message")?.request;
+  expect(turn).toMatchObject({ text: "Commit all current code changes", sessionId: "session-1" });
 });
 test("a file reference picked in the composer travels in the message", async () => {
   const backend = createBackend();
@@ -2974,6 +3191,8 @@ test("a file reference picked in the composer travels in the message", async () 
 
   // The picker searches the workspace the session runs in, with the same read the
   // Files scene searches with, so a remote workspace answers from its own files.
+  // The picker is in the composer's "+" menu.
+  await app.press("composer-plus");
   await app.press("Reference");
   await app.type("mention-query", "readme");
   await app.waitFor("README.md");
@@ -2990,9 +3209,9 @@ test("a file reference picked in the composer travels in the message", async () 
   await app.press("Send");
   // The message itself is trimmed on the way out, so the tag lands without the
   // trailing space the token carries for the next word.
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
     sessionId: "session-1",
-    userInput: "Explain the setup #file:README.md",
+    text: "Explain the setup #file:README.md",
   });
 });
 
@@ -3010,13 +3229,13 @@ test("Return takes the offered reference first, then sends the message", async (
   // Return with a row on offer takes the tag, as the desktop's picker does, and
   // nothing is sent yet.
   await app.submit("composer");
-  expect(backend.actions()).not.toContain("start_dialog_turn");
+  expect(backend.actions()).not.toContain("submit_user_message");
   expect(app.value("composer")).toBe("Explain #file:README.md ");
 
   // The next Return sends what the composer holds.
   await app.submit("composer");
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
-    userInput: "Explain #file:README.md",
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
+    text: "Explain #file:README.md",
   });
 });
 
@@ -3042,8 +3261,8 @@ test("typing @ in the message opens the picker and is replaced by the tag", asyn
   // The typed token goes away and the tag takes its place, in one message.
   await app.press("mention-option-README.md");
   await app.press("Send");
-  expect(backend.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
-    userInput: "Explain #file:README.md",
+  expect(backend.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
+    text: "Explain #file:README.md",
   });
 });
 
@@ -3054,6 +3273,7 @@ test("the reference picker says when nothing matches and when the host cannot se
   await app.waitFor("NSH skeleton");
   await app.press("NSH skeleton >> nth=0");
 
+  await app.press("composer-plus");
   await app.press("Reference");
   await app.type("mention-query", "zzz");
   await app.waitFor("No file names match “zzz”");
@@ -3064,14 +3284,15 @@ test("the reference picker says when nothing matches and when the host cannot se
   const other = await open("./App.tsx", { ...DESKTOP, host: { handlers: refusing.handlers } });
   await other.waitFor("NSH skeleton");
   await other.press("NSH skeleton >> nth=0");
+  await other.press("composer-plus");
   await other.press("Reference");
   await other.type("mention-query", "main");
   await other.waitFor("This host cannot search its files: Command not found: search_files");
   // The composer keeps working: the reference is an addition, not a requirement.
   await other.type("composer", "No reference this time");
   await other.press("Send");
-  expect(refusing.calls.find(call => call.action === "start_dialog_turn")?.request).toMatchObject({
-    userInput: "No reference this time",
+  expect(refusing.calls.find(call => call.action === "submit_user_message")?.request).toMatchObject({
+    text: "No reference this time",
   });
 });
 
@@ -3085,6 +3306,7 @@ test("the font baseline the host stores sets the size the whole surface draws", 
 
   const baseline = (px: number) => `${px}px · the host's font baseline, shared with the desktop surface`;
   await app.press("Settings");
+  await app.press("nav-settings-page-appearance");
   await app.waitFor(baseline(18));
 
   // A preset writes the level alone: the desktop drops the custom px with it.
@@ -3130,6 +3352,7 @@ test("a host that stores no font baseline keeps the default size", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-appearance");
   await app.waitFor("14px · the host's font baseline, shared with the desktop surface");
   // Nothing is written until the user asks for another size.
   expect(backend.settingsWrites.filter(write => write.path === "font")).toHaveLength(0);
@@ -3148,13 +3371,23 @@ test("MCP servers start, add through the document, and refuse a stale write", as
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
   await app.waitFor("MCP servers");
   await app.waitFor("Filesystem · fs-server");
   await app.waitFor("Docs · remote-docs");
 
-  // A stopped server is started through the host, and the row then reports the
-  // status the host says it has.
+  // A stopped, disabled server is enabled in the stored document first (the
+  // host refuses to start a disabled one), then started through the host, and
+  // the row then reports the status the host says it has.
   await app.press("mcp-start-remote-docs");
+  await waitForCalls(backend, "start_mcp_server");
+  const enabled = JSON.parse(backend.mcpSaves[0].jsonConfig) as {
+    mcpServers: Record<string, { enabled?: boolean; keepMe?: string }>;
+  };
+  expect(enabled.mcpServers["remote-docs"].enabled).toBe(true);
+  expect(enabled.mcpServers["fs-server"].keepMe).toBe("unknown field");
+  const actions = backend.actions();
+  expect(actions.lastIndexOf("save_mcp_json_config")).toBeLessThan(actions.indexOf("start_mcp_server"));
   expect(backend.calls.find(call => call.action === "start_mcp_server")?.request).toMatchObject({
     serverId: "remote-docs",
   });
@@ -3167,8 +3400,8 @@ test("MCP servers start, add through the document, and refuse a stale write", as
   await app.press("mcp-draft-transport-stdio");
   await app.type("mcp-draft-command", "npx");
   await app.press("mcp-draft-save");
-  await waitForCalls(backend, "save_mcp_json_config");
-  const added = JSON.parse(backend.mcpSaves[0].jsonConfig) as {
+  await waitForCalls(backend, "save_mcp_json_config", 2);
+  const added = JSON.parse(backend.mcpSaves[1].jsonConfig) as {
     mcpServers: Record<string, { command?: string; enabled?: boolean; keepMe?: string }>;
   };
   expect(added.mcpServers.weather.command).toBe("npx");
@@ -3180,8 +3413,8 @@ test("MCP servers start, add through the document, and refuse a stale write", as
   await app.press("mcp-json-toggle");
   await app.waitFor("Save JSON");
   await app.press("mcp-json-save");
-  await waitForCalls(backend, "save_mcp_json_config", 2);
-  expect(backend.mcpSaves[1].jsonConfig).toBe(backend.mcpSaves[0].jsonConfig);
+  await waitForCalls(backend, "save_mcp_json_config", 3);
+  expect(backend.mcpSaves[2].jsonConfig).toBe(backend.mcpSaves[1].jsonConfig);
 
   // A document that moved after it was read is not overwritten: the save is
   // refused, the reason is shown, and nothing is written.
@@ -3189,7 +3422,7 @@ test("MCP servers start, add through the document, and refuse a stale write", as
   await app.press("mcp-json-save");
   await app.waitFor("The MCP configuration changed elsewhere; reloaded it");
   await app.waitFor("Not saved");
-  expect(backend.mcpSaves).toHaveLength(2);
+  expect(backend.mcpSaves).toHaveLength(3);
 });
 
 test("a remote MCP server authorizes through the host's browser flow", async () => {
@@ -3197,6 +3430,7 @@ test("a remote MCP server authorizes through the host's browser flow", async () 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
   await app.waitFor("Docs · remote-docs");
   // Only a server with an address has an authorization entry.
   expect(app.shows("mcp-auth-fs-server")).toBe(false);
@@ -3227,6 +3461,7 @@ test("an OAuth flow can be cancelled, and a typed authorization value reaches th
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
   await app.waitFor("Docs · remote-docs");
   await app.press("mcp-auth-remote-docs");
   await app.press("mcp-auth-start");
@@ -3256,6 +3491,7 @@ test("a pasted MCP configuration imports only the entries this form can express"
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
   await app.waitFor("Docs · remote-docs");
   await app.press("mcp-import");
   await app.waitFor("Import servers");
@@ -3288,4 +3524,489 @@ test("a pasted MCP configuration imports only the entries this form can express"
   expect(saved.mcpServers["fs-server"].keepMe).toBe("unknown field");
   expect(saved.mcpServers["fs-server"].command).toBe("npx");
   await app.waitFor("Imported 1 server; each is stored disabled");
+});
+
+// ── App shell & navigation (round 4) ─────────────────────────────────────────
+
+/** A native desktop window on `platform`, as host.js reports it, recording every window call. */
+function nativeWindowHandlers(
+  backend: ReturnType<typeof createBackend>,
+  platform: "windows" | "linux" | "macos",
+  options: { focused?: boolean } = {},
+) {
+  const windowCalls: string[] = [];
+  const record = (name: string, value: unknown = true) => () => {
+    windowCalls.push(name);
+    return { ok: true, value };
+  };
+  return {
+    windowCalls,
+    handlers: {
+      ...backend.handlers,
+      "openbitfun.windowChrome": () => ({
+        ok: true,
+        value: { native: true, platform, overlayTrafficLights: platform === "macos", isFullscreen: false },
+      }),
+      "openbitfun.windowIsMaximized": record("isMaximized", false),
+      "openbitfun.windowWatchResize": record("watchResize"),
+      "openbitfun.windowMinimize": record("minimize"),
+      "openbitfun.windowToggleMaximize": record("toggleMaximize"),
+      "openbitfun.windowClose": record("close"),
+      "openbitfun.windowFocused": () => ({ ok: true, value: options.focused ?? true }),
+      "openbitfun.appVersion": () => ({ ok: true, value: "1.4.2" }),
+    },
+  };
+}
+
+test("the sidebar lists opened workspaces and keeps recent ones apart", async () => {
+  const backend = createBackend({
+    recentOnlyWorkspaces: [{ id: "workspace-old", name: "legacy-app", rootPath: "/old/legacy", workspaceKind: "local" }],
+  });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("label:workspace-row-workspace-1");
+  await app.waitFor("Recent");
+  expect(app.shows("label:workspace-row-workspace-old")).toBe(false);
+  expect(app.shows("label:recent-workspace-workspace-old")).toBe(true);
+
+  // Reopening a recent workspace goes through open_workspace by id, never
+  // set_active_workspace on a workspace the host has not opened.
+  const before = backend.calls.filter(call => call.action === "set_active_workspace").length;
+  await app.press("label:recent-workspace-workspace-old");
+  await app.waitFor("label:workspace-row-workspace-old");
+  expect(backend.calls.find(call => call.action === "open_workspace")?.request).toMatchObject({
+    workspaceId: "workspace-old",
+  });
+  const switches = backend.calls.filter(call => call.action === "set_active_workspace");
+  expect(switches.slice(before).some(call => (call.request as { workspaceId?: string }).workspaceId === "workspace-old")).toBe(false);
+  expect(app.shows("label:recent-workspace-workspace-old")).toBe(false);
+});
+
+test("removing a recent workspace asks the host to forget it", async () => {
+  const backend = createBackend({
+    recentOnlyWorkspaces: [{ id: "workspace-old", name: "legacy-app", rootPath: "/old/legacy", workspaceKind: "local" }],
+  });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("label:recent-workspace-remove-workspace-old");
+  await app.press("label:recent-workspace-remove-workspace-old");
+  await app.waitUntil(() => backend.actions().includes("remove_recent_workspace"));
+  expect(backend.calls.find(call => call.action === "remove_recent_workspace")?.request).toMatchObject({
+    workspaceId: "workspace-old",
+  });
+  await app.waitUntil(() => !app.shows("label:recent-workspace-workspace-old"));
+});
+
+test("startup follows the host's current workspace instead of the first row", async () => {
+  const backend = createBackend({ currentWorkspaceId: "workspace-2" });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call => call.action === "list_persisted_sessions_page" &&
+        (call.request as { workspace_id?: string }).workspace_id === "workspace-2",
+    ),
+  );
+  // The host already has it active, so the surface does not switch it again.
+  expect(backend.actions()).not.toContain("set_active_workspace");
+  await app.waitFor("topbar-workspace-chip");
+});
+
+test("with nothing opened, startup reopens the most recent workspace", async () => {
+  const backend = createBackend({
+    openedWorkspaces: [],
+    currentWorkspaceId: null,
+    recentOnlyWorkspaces: [{ id: "workspace-old", name: "legacy-app", rootPath: "/old/legacy", workspaceKind: "local" }],
+  });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitUntil(() => backend.actions().includes("open_workspace"));
+  // The fixture's own two recents are not opened either; the first recent row is reopened.
+  const reopened = backend.calls.find(call => call.action === "open_workspace")?.request as { workspaceId?: string };
+  expect(typeof reopened?.workspaceId).toBe("string");
+  expect(app.texts()).not.toContain("No workspace is open yet.");
+});
+
+test("Windows draws its own window controls and routes them to the native window", async () => {
+  const backend = createBackend();
+  const native = nativeWindowHandlers(backend, "windows");
+  const app = await open("./App.tsx", { ...DESKTOP, platform: "windows", host: { handlers: native.handlers } });
+
+  await app.waitFor("label:window-minimize");
+  await app.press("label:window-minimize");
+  await app.press("label:window-maximize");
+  await app.press("label:window-close");
+  for (const call of ["minimize", "toggleMaximize", "close"]) {
+    expect(native.windowCalls).toContain(call);
+  }
+  // The tray is built once the shell is up, as the desktop frontend does.
+  await app.waitUntil(() => backend.actions().includes("initialize_tray_after_startup"));
+});
+
+test("macOS keeps its traffic lights and hides the window on a close request", async () => {
+  const backend = createBackend();
+  const native = nativeWindowHandlers(backend, "macos");
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: native.handlers } });
+
+  await app.waitFor("NSH skeleton");
+  expect(app.shows("label:window-minimize")).toBe(false);
+  await app.host.send("openbitfun.event", { event: "openbitfun_main_window_close_requested", payload: null });
+  await app.waitUntil(() => backend.actions().includes("hide_main_window_after_close_request"));
+  expect(backend.actions()).not.toContain("quit_app");
+});
+
+test("a Windows close request follows app.close_button_behavior", async () => {
+  // No stored preference: the window goes to the tray.
+  const trayBackend = createBackend();
+  const tray = nativeWindowHandlers(trayBackend, "windows");
+  const trayApp = await open("./App.tsx", { ...DESKTOP, platform: "windows", host: { handlers: tray.handlers } });
+  await trayApp.waitFor("label:window-close");
+  await trayApp.host.send("openbitfun.event", { event: "openbitfun_main_window_close_requested", payload: null });
+  await trayApp.waitUntil(() => trayBackend.actions().includes("minimize_to_tray"));
+  expect(trayBackend.actions()).not.toContain("quit_app");
+
+  // `ask` puts the choice in the page, where a remote controller could answer it too.
+  const askBackend = createBackend({
+    configs: { "app.close_button_behavior": "ask", appearance: { theme: "dark" } },
+  });
+  const ask = nativeWindowHandlers(askBackend, "windows");
+  const askApp = await open("./App.tsx", { ...DESKTOP, platform: "windows", host: { handlers: ask.handlers } });
+  await askApp.waitFor("label:window-close");
+  await askApp.host.send("openbitfun.event", { event: "openbitfun_main_window_close_requested", payload: null });
+  await askApp.waitFor("Close OpenBitFun");
+  await askApp.press("label:close-ask-quit");
+  await askApp.waitUntil(() => askBackend.actions().includes("quit_app"));
+  expect(askBackend.actions()).not.toContain("minimize_to_tray");
+});
+
+test("the workspace menu renames, copies the path and reveals a local folder", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("label:workspace-actions-workspace-1");
+  await app.press("label:workspace-actions-workspace-1");
+  await app.press("Copy path");
+  await app.waitUntil(() => app.clipboard() === "/repo");
+
+  await app.press("label:workspace-actions-workspace-1");
+  await app.press("Reveal in file manager");
+  await app.waitUntil(() => backend.actions().includes("reveal_in_explorer"));
+  expect(backend.calls.find(call => call.action === "reveal_in_explorer")?.request).toMatchObject({
+    path: "/repo",
+    workspaceId: "workspace-1",
+  });
+
+  await app.rightClick("label:workspace-row-workspace-1");
+  await app.press("Rename…");
+  await app.waitFor("label:workspace-rename-input");
+  await app.clear("label:workspace-rename-input");
+  await app.type("label:workspace-rename-input", "Studio");
+  await app.press("label:workspace-rename-save");
+  await app.waitUntil(() => backend.actions().includes("update_workspace_info"));
+  expect(backend.calls.find(call => call.action === "update_workspace_info")?.request).toMatchObject({
+    workspaceId: "workspace-1",
+    name: "Studio",
+  });
+  await app.waitFor("Studio");
+});
+
+test("a remote workspace's menu does not offer this machine's file manager", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("label:workspace-actions-workspace-2");
+  await app.press("label:workspace-actions-workspace-2");
+  await app.waitFor("Reveal in file manager");
+  expect(app.enabled("Reveal in file manager")).toBe(false);
+});
+
+test("the session row menu duplicates, exports and renames in place", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("label:session-row-actions-session-2");
+  await app.press("label:session-row-actions-session-2");
+  await app.press("Duplicate");
+  await app.waitUntil(() => backend.actions().includes("copy_session"));
+  expect(backend.calls.find(call => call.action === "copy_session")?.request).toMatchObject({
+    source_session_id: "session-2",
+    workspace_id: "workspace-1",
+  });
+
+  await app.press("label:session-row-actions-session-1");
+  await app.press("Rename…");
+  await app.waitFor("label:session-rename-input-session-1");
+  await app.clear("label:session-rename-input-session-1");
+  await app.type("label:session-rename-input-session-1", "Renamed inline");
+  await app.submit("label:session-rename-input-session-1");
+  await app.waitUntil(() => backend.actions().includes("save_session_metadata"));
+  await app.waitFor("Renamed inline");
+});
+
+test("the sidebar layout is kept in app storage and read back on the next launch", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("NSH skeleton");
+  await app.press("drawer-more");
+  await app.press("label:nav-toggle-grouping");
+  await app.waitUntil(() => (app.storage()["openbitfun.nsh.shell-layout.v1"] ?? "").includes('"sessionGrouping":"flat"'));
+
+  const next = await open("./App.tsx", {
+    ...DESKTOP,
+    host: { handlers: createBackend().handlers },
+    storage: { "openbitfun.nsh.shell-layout.v1": JSON.stringify({ drawerOpen: false, navWidth: 999, junk: 1 }) },
+  });
+  // The stored drawer state wins, and an out-of-range width is clamped rather than dropped.
+  await next.waitFor("label:toggle-drawer");
+  expect(next.shows("global-search-trigger")).toBe(false);
+});
+
+test("a failed turn and an approval land in the notification history", async () => {
+  const backend = createBackend();
+  const native = nativeWindowHandlers(backend, "macos", { focused: false });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: native.handlers } });
+
+  await app.waitFor("NSH skeleton");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://dialog-turn-failed",
+    payload: { sessionId: "session-2", turnId: "turn-9", reason: "provider refused" },
+  });
+  await app.waitFor("label:notifications-unread-1");
+  // The window has no focus, so the OS notification goes out too.
+  await app.waitUntil(() => backend.actions().includes("send_system_notification"));
+  expect(backend.calls.find(call => call.action === "send_system_notification")?.request).toMatchObject({
+    title: "OpenBitFun task stopped",
+  });
+  // The tray counts the session whose result nobody has seen yet.
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call => call.action === "set_tray_unread_count" && (call.request as { count?: number }).count === 1,
+    ),
+  );
+
+  await app.press("label:topbar-notifications");
+  await app.waitFor("OpenBitFun task stopped");
+  await app.press("Mark all as read");
+  await app.waitUntil(() => !app.shows("label:notifications-unread-1"));
+});
+
+test("About comes from the native menu and shows this window's build", async () => {
+  const backend = createBackend();
+  const native = nativeWindowHandlers(backend, "macos");
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: native.handlers } });
+
+  await app.waitFor("NSH skeleton");
+  await app.host.send("openbitfun.event", { event: "openbitfun_menu_about", payload: null });
+  await app.waitFor("About OpenBitFun");
+  await app.waitFor("1.4.2");
+  expect(app.texts()).toContain("MIT License");
+});
+
+test("the footer menu checks for updates and offers the download", async () => {
+  const backend = createBackend();
+  const native = nativeWindowHandlers(backend, "macos");
+  const handlers = {
+    ...native.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const args = (data ?? {}) as { action?: string };
+      if (args.action === "check_for_updates") {
+        return {
+          ok: true,
+          value: { updateAvailable: true, currentVersion: "1.4.2", latestVersion: "1.5.0" },
+        };
+      }
+      if (args.action === "get_pending_update") return { ok: true, value: null };
+      if (args.action === "download_update") return { ok: true, value: { version: "1.5.0" } };
+      return backend.handlers["openbitfun.invoke"](data);
+    },
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers } });
+
+  await app.waitFor("label:nav-footer-menu");
+  await app.press("label:nav-footer-menu");
+  await app.press("Check for updates");
+  await app.waitFor("Update 1.5.0 available");
+  await app.waitFor("label:footer-update-badge");
+  await app.press("label:nav-footer-menu");
+  await app.press("Download update 1.5.0");
+  await app.waitFor("Update 1.5.0 is ready to install");
+});
+
+test("global search groups workspaces and settings pages beside sessions", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.waitFor("global-search-trigger");
+  await app.press("global-search-trigger");
+  await app.type("global-search-input", "remote");
+  await app.waitFor("label:global-search-item-workspace:workspace-2");
+  expect(app.texts()).toContain("Workspaces");
+  // Message hits are read from every opened workspace, not only the active one.
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call => call.action === "search_session_content" &&
+        (call.request as { workspaceId?: string }).workspaceId === "workspace-2",
+    ),
+  );
+  await app.press("label:global-search-item-workspace:workspace-2");
+  await app.waitUntil(() =>
+    backend.calls.some(
+      call => call.action === "set_active_workspace" &&
+        (call.request as { workspaceId?: string }).workspaceId === "workspace-2",
+    ),
+  );
+});
+
+test("general options go through product control, which applies them on the host", async () => {
+  const backend = createBackend();
+  const controlCalls: Array<Record<string, unknown>> = [];
+  const values: Record<string, unknown> = { "launch-at-login": false, "prevent-sleep": false, "auto-update": true };
+  const invoke = backend.handlers["openbitfun.invoke"];
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> };
+      if (args.action === "product_control_invoke") {
+        // A `{ request }` command, as the desktop serves it.
+        const request = args.request ?? {};
+        controlCalls.push(request);
+        if (request.action === "get") {
+          return { ok: true, value: { currentOptionValues: { ...values } }, transport: "dev" };
+        }
+        values[String(request.optionId)] = request.value;
+        return { ok: true, value: { status: "applied" }, transport: "dev" };
+      }
+      return invoke(data);
+    },
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-general");
+  await app.waitFor("Start the app when you sign in to this computer.");
+  await app.press("launch-at-login");
+  expect(controlCalls).toContainEqual({
+    action: "configure",
+    capabilityId: "setting.application.general",
+    optionId: "launch-at-login",
+    value: true,
+  });
+  // Keeping the computer awake is applied by the host, not only stored.
+  await app.press("prevent-sleep");
+  expect(controlCalls).toContainEqual({
+    action: "configure",
+    capabilityId: "setting.application.general",
+    optionId: "prevent-sleep",
+    value: true,
+  });
+  expect(backend.settingsWrites.some(write => write.path === "app.prevent_sleep")).toBe(false);
+});
+
+test("MCP enable flips the stored flag, and delete asks first", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-mcp");
+  await app.waitFor("Docs · remote-docs");
+
+  // The menu's Enable enables; it does not open the editor or start the server.
+  await app.press("mcp-actions-remote-docs");
+  await app.press("mcp-enable-remote-docs");
+  await waitForCalls(backend, "save_mcp_json_config");
+  const saved = JSON.parse(backend.mcpSaves[0].jsonConfig) as {
+    mcpServers: Record<string, { enabled?: boolean }>;
+  };
+  expect(saved.mcpServers["remote-docs"].enabled).toBe(true);
+  expect(backend.actions()).not.toContain("start_mcp_server");
+  expect(app.shows("mcp-draft-save")).toBe(false);
+
+  await app.press("mcp-actions-fs-server");
+  await app.press("mcp-delete-fs-server");
+  await app.waitFor("Delete Filesystem? It stops and is removed from the stored configuration.");
+  expect(backend.actions()).not.toContain("delete_mcp_server");
+  await app.press("id:mcp-delete-confirm-fs-server >> Delete");
+  await waitForCalls(backend, "delete_mcp_server");
+});
+
+test("memory folder opens on the host and clearing memories asks first", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  let resets = 0;
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const args = (data ?? {}) as { action?: string; raw?: unknown };
+      // Both commands take no arguments, so they are positional.
+      if (args.action === "get_memory_paths") {
+        return { ok: true, value: { memoriesRootDir: "/tmp/openbitfun/memories" }, transport: "dev" };
+      }
+      if (args.action === "reset_memory") {
+        resets += 1;
+        return { ok: true, value: { success: true }, transport: "dev" };
+      }
+      return invoke(data);
+    },
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-session-memory");
+  await app.press("memory-open-folder");
+  await waitForCalls(backend, "reveal_in_explorer");
+  expect(backend.reveals).toContain("/tmp/openbitfun/memories");
+
+  await app.press("memory-reset");
+  await app.waitFor("Clear every stored memory and the extraction state? This cannot be undone.");
+  expect(resets).toBe(0);
+  await app.press("id:memory-reset-confirm >> Clear memories");
+  await app.waitFor("Cleared the stored memories");
+  expect(resets).toBe(1);
+});
+
+test("voice input lists this machine's speech models and downloads one", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  const downloads: unknown[] = [];
+  const handlers = {
+    ...backend.handlers,
+    "openbitfun.invoke": (data: unknown) => {
+      const args = (data ?? {}) as { action?: string; request?: Record<string, unknown>; raw?: unknown };
+      if (args.action === "speech_list_models") {
+        if (!("raw" in args)) throw new Error("speech_list_models takes no request");
+        return {
+          ok: true,
+          value: {
+            models: [
+              {
+                modelId: "sensevoice-small-int8",
+                displayName: "SenseVoice Small",
+                state: "not_installed",
+                expectedBytes: 240 * 1024 * 1024,
+              },
+            ],
+          },
+          transport: "dev",
+        };
+      }
+      if (args.action === "speech_download_model") {
+        downloads.push(args.request);
+        return {
+          ok: true,
+          value: { modelId: "sensevoice-small-int8", displayName: "SenseVoice Small", state: "installed", installedBytes: 240 * 1024 * 1024 },
+          transport: "dev",
+        };
+      }
+      return invoke(data);
+    },
+  };
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-input");
+  await app.waitFor("SenseVoice Small");
+  await app.press("speech-download-sensevoice-small-int8");
+  expect(downloads).toEqual([{ modelId: "sensevoice-small-int8" }]);
+  await app.waitFor("Ready");
 });

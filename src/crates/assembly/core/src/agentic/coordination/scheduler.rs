@@ -13,6 +13,16 @@
 #[path = "host_message_queue.rs"]
 mod host_message_queue;
 use host_message_queue::HostQueueState;
+#[path = "session_commands.rs"]
+mod session_commands;
+#[path = "user_message.rs"]
+mod user_message;
+pub(crate) use session_commands::reload_loaded_session_context;
+pub use session_commands::{reload_target_of, SessionCommandOutcome, SESSION_COMMAND_BUSY_CODE};
+pub use user_message::{
+    configured_send_during_turn, submit_user_message, submit_user_message_with_runtime,
+    RuntimeUserMessageTarget, UserMessageSubmissionTarget, UserMessageSubmitOutcome,
+};
 
 use super::coordinator::{
     ensure_session_accepts_conversation, resolve_loaded_session_storage_by_id,

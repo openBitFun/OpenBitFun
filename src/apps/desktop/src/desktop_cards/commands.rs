@@ -2,12 +2,11 @@
 
 use std::sync::Arc;
 
+use super::DesktopCards;
+use crate::host::State;
 use openbitfun_core::agentic::tools::desktop_card_host::DesktopCardRecord;
 use serde::Deserialize;
 use serde_json::Value;
-use tauri::State;
-
-use super::DesktopCards;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
