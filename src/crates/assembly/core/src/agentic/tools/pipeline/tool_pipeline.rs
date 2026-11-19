@@ -16,8 +16,8 @@ use crate::agentic::tools::tool_result_storage;
 #[cfg(feature = "opencode-plugin-host")]
 use crate::agentic::WorkspaceBinding;
 use crate::native_hooks::{self, NativeHookSessionFacts};
+use crate::util::elapsed_ms_u64;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
-use crate::util::{elapsed_ms_u64, truncate_at_char_boundary};
 use futures::future::join_all;
 use log::{debug, error, info, warn};
 use openbitfun_agent_runtime::permission::{
@@ -713,50 +713,21 @@ fn permission_resource_case_sensitivity(
     }
 }
 
-fn approval_resource_summary(resource: &str) -> String {
-    let mut summary = resource.trim().replace('\n', " ").replace('\r', " ");
-    for marker in [
-        "api_key",
-        "api-key",
-        "token",
-        "password",
-        "secret",
-        "authorization",
-    ] {
-        let lower = summary.to_ascii_lowercase();
-        if let Some(start) = lower.find(marker) {
-            let end = summary[start..]
-                .find(|character: char| {
-                    character.is_whitespace() || character == ',' || character == ';'
-                })
-                .map(|offset| start + offset)
-                .unwrap_or(summary.len());
-            summary.replace_range(start..end, "[REDACTED]");
-        }
-    }
-    if summary.len() > 160 {
-        let boundary = truncate_at_char_boundary(&summary, 160).len();
-        summary.truncate(boundary);
-        summary.push('…');
-    }
-    summary
-}
-
 fn permission_decision_input(
     request: &PermissionRequest,
-    current_user_message: Option<&str>,
+    task: &ToolTask,
+    description: String,
+    input_schema: serde_json::Value,
 ) -> PermissionDecisionInput {
     PermissionDecisionInput {
         request_id: request.request_id.clone(),
-        action: request.action.clone(),
         tool_identity: request.source.identity.clone(),
-        resource_summaries: request
-            .resources
-            .iter()
-            .map(|resource| approval_resource_summary(resource))
-            .collect(),
+        tool_description: description,
+        tool_input_schema: input_schema,
+        tool_arguments: task.invocation.effective_arguments.clone(),
+        recent_tool_calls: task.options.recent_tool_calls.clone(),
         workspace_scope: request.project_path.clone(),
-        current_user_message: current_user_message.map(ToOwned::to_owned),
+        current_user_message: task.options.current_user_message.clone(),
         delegation: request.delegation.as_ref().map(|delegation| {
             openbitfun_runtime_ports::PermissionDecisionDelegation {
                 parent_session_id: delegation.parent_session_id.clone(),
@@ -1167,9 +1138,59 @@ impl ToolPipeline {
         Ok(PermissionPlanDraft::Requests(requests))
     }
 
+    async fn permission_decision_inputs(
+        &self,
+        requests: &[PermissionRequest],
+        tasks: &[ToolTask],
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<PermissionDecisionInput>, openbitfun_runtime_ports::PortError> {
+        let missing_context = || {
+            openbitfun_runtime_ports::PortError::new(
+                openbitfun_runtime_ports::PortErrorKind::NotAvailable,
+                "Permission approval lost its tool invocation or definition",
+            )
+        };
+        let mut inputs = Vec::with_capacity(requests.len());
+        for request in requests {
+            let task = tasks
+                .iter()
+                .find(|task| {
+                    request.tool_call_id.as_deref() == Some(task.tool_call.tool_id.as_str())
+                })
+                .ok_or_else(missing_context)?;
+            let tool = self
+                .tool_registry
+                .read()
+                .await
+                .get_tool(task.effective_tool_name())
+                .ok_or_else(missing_context)?;
+            let context = self.build_tool_use_context(task, cancellation.clone());
+            let description = tool
+                .description_with_context(Some(&context))
+                .await
+                .map_err(|error| {
+                    openbitfun_runtime_ports::PortError::new(
+                        openbitfun_runtime_ports::PortErrorKind::Backend,
+                        error.to_string(),
+                    )
+                })?;
+            let schema = tool
+                .input_schema_for_model_with_context(Some(&context))
+                .await;
+            inputs.push(permission_decision_input(
+                request,
+                task,
+                description,
+                schema,
+            ));
+        }
+        Ok(inputs)
+    }
+
     async fn register_permission_requests(
         &self,
         requests: Vec<PermissionRequest>,
+        tasks: &[ToolTask],
         dialog_turn_id: &str,
         options: &ToolExecutionOptions,
         cancellation_token: &CancellationToken,
@@ -1201,13 +1222,13 @@ impl ToolPipeline {
                     dialog_turn_id,
                     requests.len()
                 );
-                let inputs = requests
-                    .iter()
-                    .map(|request| {
-                        permission_decision_input(request, options.current_user_message.as_deref())
-                    })
-                    .collect();
-                let evaluated = provider.evaluate(inputs, cancellation_token.clone()).await;
+                let evaluated = match self
+                    .permission_decision_inputs(&requests, tasks, cancellation_token)
+                    .await
+                {
+                    Ok(inputs) => provider.evaluate(inputs, cancellation_token.clone()).await,
+                    Err(error) => Err(error),
+                };
                 match evaluated {
                     Ok(values)
                         if values.len() == requests.len()
@@ -1857,6 +1878,16 @@ impl ToolPipeline {
                     groups.push((approve, vec![request]));
                 }
             }
+            let approval_tasks = if !auto_approve
+                && base_options.permission_approval_strategy == PermissionApprovalStrategy::Model
+            {
+                task_ids
+                    .iter()
+                    .filter_map(|task_id| self.state_manager.get_task(task_id))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             for (approve, requests) in groups {
                 let mut options = base_options.clone();
                 if auto_approve && !approve {
@@ -1866,6 +1897,7 @@ impl ToolPipeline {
                 match self
                     .register_permission_requests(
                         requests,
+                        &approval_tasks,
                         &dialog_turn_id,
                         &options,
                         &parent_cancellation,
@@ -2148,6 +2180,7 @@ impl ToolPipeline {
                 PermissionExecutionPlan::Awaiting(
                     self.register_permission_requests(
                         requests,
+                        std::slice::from_ref(task),
                         &task.context.dialog_turn_id,
                         &approval_options,
                         cancellation_token,
@@ -3794,14 +3827,6 @@ mod tests {
     use std::time::SystemTime;
     use tokio::time::{sleep, Duration};
 
-    #[test]
-    fn approval_resource_summary_truncates_multibyte_text_safely() {
-        let summary = approval_resource_summary(&"中".repeat(54));
-
-        assert_eq!(summary, format!("{}…", "中".repeat(53)));
-        assert!(summary.is_char_boundary(summary.len()));
-    }
-
     fn loaded_spec(tool_name: &str, catalog_generation: u64) -> LoadedDeferredToolSpec {
         LoadedDeferredToolSpec {
             tool_name: tool_name.to_string(),
@@ -4893,6 +4918,142 @@ mod tests {
             tool_call_id: parent_tool_call_id.to_string(),
         });
         context
+    }
+
+    #[derive(Default)]
+    struct RecordingApprovalProvider(Mutex<Vec<PermissionDecisionInput>>);
+
+    #[async_trait]
+    impl PermissionDecisionPort for RecordingApprovalProvider {
+        async fn evaluate(
+            &self,
+            batch: Vec<PermissionDecisionInput>,
+            _: CancellationToken,
+        ) -> Result<Vec<PermissionDecision>, openbitfun_runtime_ports::PortError> {
+            let decisions = batch
+                .iter()
+                .map(|input| PermissionDecision {
+                    request_id: input.request_id.clone(),
+                    outcome: PermissionDecisionOutcome::Allow,
+                    probability: None,
+                    risk_class: None,
+                    reason_code: None,
+                })
+                .collect();
+            self.0.lock().unwrap().extend(batch);
+            Ok(decisions)
+        }
+    }
+
+    #[tokio::test]
+    async fn model_approval_carries_batched_inputs_and_effective_deferred_call() {
+        let manager = permission_test_manager(Arc::new(MemoryPermissionStore::default()));
+        let provider = Arc::new(RecordingApprovalProvider::default());
+        let pipeline = test_tool_pipeline()
+            .with_permission_request_manager(manager.clone())
+            .with_permission_decision_provider(provider.clone());
+        let executed = Arc::new(AtomicUsize::new(0));
+        register_v2_file_test_tool(
+            &pipeline,
+            vec![PermissionIntent::new("edit", vec!["src/main.rs".into()])],
+            executed.clone(),
+        )
+        .await;
+        let options = ToolExecutionOptions {
+            permission_approval_strategy: PermissionApprovalStrategy::Model,
+            current_user_message: Some("Apply the requested changes".into()),
+            recent_tool_calls: vec![openbitfun_runtime_ports::PermissionDecisionToolCall {
+                tool: "Read".into(),
+                arguments: json!({"path":"src/main.rs"}),
+            }],
+            ..Default::default()
+        };
+        let mut calls = vec![
+            test_tool_call("first", "Write"),
+            test_tool_call("second", "Write"),
+        ];
+        calls[0].arguments = json!({"path":"src/main.rs","content":"完整参数\n".repeat(100)});
+        calls[1].arguments = json!({"path":"src/other.rs","nested":{"flag":true}});
+        let results = pipeline
+            .execute_tools(calls.clone(), permission_test_context(), options.clone())
+            .await
+            .unwrap();
+        assert!(results.iter().all(|result| !result.result.is_error));
+        assert_eq!(executed.load(Ordering::SeqCst), 2);
+        {
+            let inputs = provider.0.lock().unwrap();
+            assert_eq!(inputs.len(), 2);
+            for (input, call) in inputs.iter().zip(&calls) {
+                assert_eq!(input.tool_arguments, call.arguments);
+                assert_eq!(input.tool_description, "File permission test tool");
+                assert_eq!(input.tool_input_schema, json!({"type":"object"}));
+                assert_eq!(input.recent_tool_calls, options.recent_tool_calls);
+                assert_eq!(input.current_user_message, options.current_user_message);
+            }
+        }
+        // Nested/deferred authorization may have no state-manager entry. Use
+        // its resolved invocation, including rewritten input, not outer args.
+        let arguments = json!({"path":"src/main.rs","content":"rewritten input"});
+        let task = ToolTask::new_resolved(
+            test_tool_call("nested", CALL_DEFERRED_TOOL_NAME),
+            ResolvedToolInvocation::direct("Write", arguments.clone()),
+            None,
+            permission_test_context(),
+            options,
+        );
+        let context = pipeline.build_tool_use_context(&task, CancellationToken::new());
+        let authorization = pipeline
+            .authorize_permission_intents(
+                &task,
+                "Write",
+                vec![PermissionIntent::new("edit", vec!["src/main.rs".into()])],
+                &context,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(authorization, PermissionAuthorization::Allowed));
+        let inputs = provider.0.lock().unwrap();
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[2].tool_identity, "Write");
+        assert_eq!(inputs[2].tool_arguments, arguments);
+        assert!(manager.pending_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn model_approval_missing_definition_uses_headless_error_fallback() {
+        let manager = permission_test_manager(Arc::new(MemoryPermissionStore::default()));
+        let provider = Arc::new(RecordingApprovalProvider::default());
+        let pipeline = test_tool_pipeline()
+            .with_permission_request_manager(manager.clone())
+            .with_permission_decision_provider(provider.clone());
+        let task = ToolTask::new(
+            test_tool_call("missing-definition", "MissingTool"),
+            permission_test_context(),
+            ToolExecutionOptions {
+                permission_approval_strategy: PermissionApprovalStrategy::Model,
+                permission_user_input_available: false,
+                permission_approval_on_error: PermissionApprovalOnError::Ask,
+                ..Default::default()
+            },
+        );
+        let context = pipeline.build_tool_use_context(&task, CancellationToken::new());
+        let authorization = pipeline
+            .authorize_permission_intents(
+                &task,
+                "MissingTool",
+                vec![PermissionIntent::new("edit", vec!["src/main.rs".into()])],
+                &context,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            authorization,
+            PermissionAuthorization::UserRejected { .. }
+        ));
+        assert!(provider.0.lock().unwrap().is_empty());
+        assert!(manager.pending_requests().is_empty());
     }
 
     #[tokio::test]

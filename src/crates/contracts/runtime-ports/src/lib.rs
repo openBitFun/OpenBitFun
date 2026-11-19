@@ -60,7 +60,8 @@ pub use openbitfun_product_domains::tool_permissions::{
 pub use permission::{
     PermissionAuditStorePort, PermissionDecision, PermissionDecisionDelegation,
     PermissionDecisionInput, PermissionDecisionOutcome, PermissionDecisionPort,
-    PermissionGrantStorePort, PermissionReasonCode, PermissionReplyStorePort, PermissionRiskClass,
+    PermissionDecisionToolCall, PermissionGrantStorePort, PermissionReasonCode,
+    PermissionReplyStorePort, PermissionRiskClass,
 };
 #[cfg(feature = "plugin-runtime")]
 pub use plugin::{

@@ -76,7 +76,7 @@
     "fullAccessConfirm": "启用完全访问",
     "cancel": "取消",
     "autoApprove": "自动审批",
-    "autoApproveDescription": "执行前自动判断操作是否安全；不确定的请求仍可交给用户确认或直接拒绝。",
+    "autoApproveDescription": "对需要审批的操作，由模型评估风险并决定是否允许执行；不确定时，仍可能交由你确认。",
     "automaticApprovalSectionTitle": "自动审批",
     "automaticApprovalSectionDescription": "配置权限请求在进入用户确认前的自动判断和失败处理方式。",
     "approvalModel": "自动审批模型",
