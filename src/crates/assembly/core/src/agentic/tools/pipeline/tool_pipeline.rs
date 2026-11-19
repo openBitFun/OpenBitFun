@@ -1791,8 +1791,9 @@ impl ToolPipeline {
             if !validation.result {
                 continue;
             }
-            let intents =
-                tool.permission_intents(&task.invocation.effective_arguments, &tool_context)?;
+            let intents = tool
+                .prepare_permission_intents(&task.invocation.effective_arguments, &tool_context)
+                .await?;
             let draft = self
                 .draft_permission_plan(
                     task.clone(),
@@ -2050,6 +2051,28 @@ impl ToolPipeline {
     }
 
     async fn cleanup_permission_plans(&self, task_ids: &[String], reason: String) {
+        for task_id in task_ids {
+            if let Some(task) = self.state_manager.get_task(task_id) {
+                let context = self.build_tool_use_context(&task, CancellationToken::new());
+                let tool = self
+                    .tool_registry
+                    .read()
+                    .await
+                    .get_tool(task.effective_tool_name());
+                if let Some(tool) = tool {
+                    tool.release_permission_preparation(task.effective_arguments(), &context)
+                        .await;
+                    if task.original_effective_arguments != *task.effective_arguments() {
+                        tool.release_permission_preparation(
+                            &task.original_effective_arguments,
+                            &context,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+
         {
             // Hook approvals are scoped to the batch that produced them; a
             // later call must be evaluated on its own merits.
@@ -2815,7 +2838,9 @@ impl ToolPipeline {
             self.await_prepared_permission_plan(&tool_id, &cancellation_token)
                 .await
         } else {
-            let permission_intents = tool.permission_intents(&tool_args, &tool_context)?;
+            let permission_intents = tool
+                .prepare_permission_intents(&tool_args, &tool_context)
+                .await?;
             self.authorize_permission_intents(
                 &task,
                 &tool_name,
@@ -3629,7 +3654,9 @@ impl ToolPipeline {
                     .unwrap_or_else(|| "Invalid edited tool input".to_string()),
             ));
         }
-        let intents = tool.permission_intents(&arguments, &context)?;
+        let intents = tool
+            .prepare_permission_intents(&arguments, &context)
+            .await?;
         if let PermissionPlanDraft::Rejected { reason } = self
             .draft_permission_plan(
                 task.clone(),

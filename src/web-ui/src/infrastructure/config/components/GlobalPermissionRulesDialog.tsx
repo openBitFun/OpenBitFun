@@ -40,6 +40,8 @@ const GLOBAL_PERMISSION_ACTION_OPTIONS: SelectOption[] = [
   { value: 'read', label: 'read' },
   { value: 'edit', label: 'edit' },
   { value: 'delete', label: 'delete' },
+  { value: 'process.execute', label: 'process.execute' },
+  { value: 'process.execute.read_only', label: 'process.execute.read_only' },
   { value: 'bash', label: 'bash' },
   { value: 'git', label: 'git' },
   { value: 'websearch', label: 'websearch' },

@@ -951,6 +951,22 @@ impl Tool for WrappedTool {
         self.original_tool.permission_intents(input, context)
     }
 
+    async fn prepare_permission_intents(
+        &self,
+        input: &Value,
+        context: &ToolUseContext,
+    ) -> crate::util::errors::OpenBitFunResult<Vec<openbitfun_agent_tools::PermissionIntent>> {
+        self.original_tool
+            .prepare_permission_intents(input, context)
+            .await
+    }
+
+    async fn release_permission_preparation(&self, input: &Value, context: &ToolUseContext) {
+        self.original_tool
+            .release_permission_preparation(input, context)
+            .await;
+    }
+
     async fn validate_input(
         &self,
         input: &Value,

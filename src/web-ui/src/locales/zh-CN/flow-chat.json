@@ -170,6 +170,7 @@
     "allowAlways": "始终允许此范围",
     "allowAlwaysCommand": "始终允许此命令",
     "allowAlwaysCommandDescription": "仅对当前项目中完全相同的命令（含参数）生效，不会放行其他命令。",
+    "allowAlwaysCommandContextDescription": "仅对当前项目中使用相同 shell、工作目录和终端模式执行的完全相同命令生效。",
     "allowAlwaysTooltip": "在 {{projectPath}} 中记住当前操作的授权，仅对以下范围生效：\n{{resources}}",
     "allowAlwaysTooltipCurrentProject": "在当前项目中记住当前操作的授权，仅对以下范围生效：\n{{resources}}",
     "allowAlwaysTooltipNoGrant": "此请求没有可保存的访问范围；始终允许仅应用于本次请求。",
@@ -1118,7 +1119,7 @@
       "changeFailedSessionInUse": "此会话正在另一个 OpenBitFun 实例中被写入。请关闭其他实例后重试。",
       "ask": {
         "label": "需要确认",
-        "description": "普通工作区编辑与常规查询自动放行；命令执行、删除和敏感操作需要确认。"
+        "description": "普通工作区编辑与已识别的只读命令自动放行；其他命令、删除和敏感操作需要确认。"
       },
       "auto": {
         "label": "自动审批",

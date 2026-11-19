@@ -5,6 +5,7 @@
 
 #[cfg(feature = "acp-bridge")]
 pub mod acp_tool_bridge;
+pub mod command_permission;
 #[cfg(feature = "computer-use-contract")]
 pub mod computer_use;
 #[cfg(feature = "computer-use-contract")]

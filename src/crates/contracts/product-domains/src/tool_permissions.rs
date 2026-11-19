@@ -230,6 +230,7 @@ impl PermissionPolicyPreset {
                 // These are defaults, not bypasses: later user/project/agent rules
                 // and independent constraint layers remain authoritative.
                 for action in [
+                    "process.execute.read_only",
                     "process.control",
                     "process.read_output",
                     "schedule.manage",

@@ -149,6 +149,18 @@ pub trait Tool: Send + Sync {
         }
     }
 
+    /// Host-aware, non-executing preparation after input validation and Hook rewrites.
+    async fn prepare_permission_intents(
+        &self,
+        input: &Value,
+        context: &ToolUseContext,
+    ) -> OpenBitFunResult<Vec<PermissionIntent>> {
+        self.permission_intents(input, context)
+    }
+
+    /// Release invocation-owned host selections after completion or cancellation.
+    async fn release_permission_preparation(&self, _input: &Value, _context: &ToolUseContext) {}
+
     /// Whether this tool manages its own execution timeout (for example via the
     /// subagent timeout handle) and should not be wrapped by the global tool
     /// pipeline timeout.

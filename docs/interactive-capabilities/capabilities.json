@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "f6a8cfe524a1d9986008e03e14e410d9b7946bc6eb54026bcfecd81ee44530c8",
+  "digest": "3d50d21ee69fe9a54f064e9364529f0effb58315ba85093d302cb7f6d395cfd9",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -33371,8 +33371,8 @@
           "id": "default-permission-posture",
           "titleZh": "在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换",
           "titleEn": "Switch the default permission mode between Ask (default), Auto-approve, and Full access",
-          "descriptionZh": "“需要确认”默认放行普通工作区编辑、常规查询、任务调度和会话间消息，对命令执行、删除、敏感文件和发布操作保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。",
-          "descriptionEn": "Ask allows ordinary workspace edits, routine queries, scheduling, and messages between sessions, while keeping commands, deletions, sensitive files, and publishing subject to confirmation; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.",
+          "descriptionZh": "“需要确认”默认放行普通工作区编辑、已识别的只读命令、任务调度和会话间消息，对其他命令、删除、敏感文件和发布操作保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。",
+          "descriptionEn": "Ask allows ordinary workspace edits, recognized read-only commands, scheduling, and messages between sessions, while keeping other commands, deletions, sensitive files, and publishing subject to confirmation; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
@@ -33448,12 +33448,14 @@
       "tipsZh": [
         "“自动审批”模式下，只有默认设为“自动审批”时下方的模型类型、超时与回退下拉框才可编辑；若在远程控制或手机端使用，建议将“不确定时”和“出错时”保留为“询问”，这样远端也能收到审批卡片而不会静默失败。",
         "填写专用决策模型（Jev）的 API Key 后，记得点击输入框右侧的保存图标写入主机加密凭据库；清空密钥同理点击删除图标。",
-        "即使开启“完全访问”，OpenBitFun 内置的产品级硬性安全边界依然生效；项目级规则可在具体工作区中覆盖全局规则。"
+        "即使开启“完全访问”，OpenBitFun 内置的产品级硬性安全边界依然生效；项目级规则可在具体工作区中覆盖全局规则。",
+        "命令规则选择 process.execute，并用 git clone * 这样的参数模式匹配已解析的单条命令；尾部 * 不会跨过 &&、管道或重定向。其他命令和文件访问仍分别检查；无法解析的命令继续请求确认。已有 bash 规则仍可使用。"
       ],
       "tipsEn": [
         "The Auto-approve screener, timeout, and fallback controls become editable once the default mode is set to Auto-approve; keeping both fallbacks on Ask ensures mobile or Remote Connect sessions can still approve edge cases interactively.",
         "After typing a dedicated Jev decision-model API key, click the Save icon beside the password box to store it in the host encrypted credential vault.",
-        "Even in Full access mode, hard product safety boundaries remain enforced, and project-scoped rules can still refine global defaults."
+        "Even in Full access mode, hard product safety boundaries remain enforced, and project-scoped rules can still refine global defaults.",
+        "Use process.execute with an argument pattern such as git clone * to match a parsed command. A trailing * does not span &&, pipelines, or redirections. Other commands and file accesses are checked separately; unsupported syntax still asks for approval. Existing bash rules remain usable."
       ],
       "agentExamplesZh": [
         "打开权限规则设置，我想开启自动审批",
