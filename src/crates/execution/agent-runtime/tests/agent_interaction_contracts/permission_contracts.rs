@@ -1119,3 +1119,64 @@ async fn grant_management_is_project_scoped_and_audit_remains_append_only() {
         PermissionWaitOutcome::Cancelled { .. }
     ));
 }
+
+#[test]
+fn business_actions_and_grants_are_scoped_without_tool_name_aliases() {
+    let baseline = PermissionPolicyPreset::Ask.baseline_rules();
+    let policy = ResolvedPermissionPolicy::new(baseline.clone(), Vec::new());
+    let write = PermissionIntent::new("process.write_input", vec!["exec:1".into()]);
+    let grant = PermissionGrant {
+        project_id: "project-a".into(),
+        action: "process.write_input".into(),
+        resource: "exec:1".into(),
+        created_at_ms: 1,
+    };
+    let evaluate = |intent: PermissionIntent, grants: &[PermissionGrant]| {
+        plan_permission_intents(
+            vec![intent],
+            &policy,
+            grants,
+            PermissionResourceCaseSensitivity::Sensitive,
+        )
+    };
+    assert_eq!(
+        evaluate(write.clone(), &[grant.clone()]),
+        PermissionIntentPlan::Allowed
+    );
+    assert!(matches!(
+        evaluate(
+            PermissionIntent::new("process.write_input", vec!["exec:2".into()]),
+            &[grant.clone()]
+        ),
+        PermissionIntentPlan::RequiresApproval(_)
+    ));
+    assert!(matches!(
+        evaluate(
+            PermissionIntent::new("terminal.control", vec!["exec:1".into()]),
+            &[grant.clone()]
+        ),
+        PermissionIntentPlan::RequiresApproval(_)
+    ));
+    let old_grant = PermissionGrant {
+        action: "custom_tool".into(),
+        resource: "WriteStdin".into(),
+        ..grant
+    };
+    assert!(matches!(
+        evaluate(write.clone(), &[old_grant]),
+        PermissionIntentPlan::RequiresApproval(_)
+    ));
+    for effect in [PermissionEffect::Allow, PermissionEffect::Deny] {
+        let mut rules = baseline.clone();
+        rules.push(PermissionRule::new("custom_tool", "WriteStdin", effect));
+        assert!(matches!(
+            plan_permission_intents(
+                vec![write.clone()],
+                &ResolvedPermissionPolicy::new(rules, Vec::new()),
+                &[],
+                PermissionResourceCaseSensitivity::Sensitive
+            ),
+            PermissionIntentPlan::RequiresApproval(_)
+        ));
+    }
+}

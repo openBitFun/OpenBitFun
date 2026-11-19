@@ -1118,7 +1118,7 @@
       "changeFailedSessionInUse": "此会话正在另一个 OpenBitFun 实例中被写入。请关闭其他实例后重试。",
       "ask": {
         "label": "需要确认",
-        "description": "外部访问，修改文件和执行命令需要确认。"
+        "description": "普通工作区编辑与常规查询自动放行；命令执行、删除和敏感操作需要确认。"
       },
       "auto": {
         "label": "自动审批",

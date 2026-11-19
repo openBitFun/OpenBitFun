@@ -28,8 +28,8 @@ Set the default safety posture for agent tool calls (Ask, Auto-approve, or Full 
 
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换
   - Switch the default permission mode between Ask (default), Auto-approve, and Full access
-  - 说明：“需要确认”对写入和命令执行保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。
-  - Why & how: Ask keeps a human in the loop for writes and shell commands; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.
+  - 说明：“需要确认”默认放行普通工作区编辑、常规查询、任务调度和会话间消息，对命令执行、删除、敏感文件和发布操作保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。
+  - Why & how: Ask allows ordinary workspace edits, routine queries, scheduling, and messages between sessions, while keeping commands, deletions, sensitive files, and publishing subject to confirmation; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 为自动审批选择聊天审查模型或专用 Jev 决策模型并加密保存凭据
   - Choose a chat screener model or dedicated Jev decision model for auto-approval with encrypted credentials
   - 说明：聊天模型模式默认优先选用“快速模型”（亦可改为“主模型”或任一已启用模型）；专用决策模型模式默认使用 jev-latest，其 API Key 仅加密保存在当前执行主机。

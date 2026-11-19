@@ -1118,7 +1118,7 @@
       "changeFailedSessionInUse": "This session is open for writing in another OpenBitFun instance. Close the other instance and try again.",
       "ask": {
         "label": "Ask",
-        "description": "External access, file changes, and command execution require confirmation."
+        "description": "Ordinary workspace edits and routine queries run automatically. Commands, deletions, and sensitive operations require confirmation."
       },
       "auto": {
         "label": "Automatic approval",

@@ -9712,8 +9712,8 @@
           "id": "default-permission-posture",
           "titleZh": "在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换",
           "titleEn": "Switch the default permission mode between Ask (default), Auto-approve, and Full access",
-          "descriptionZh": "“需要确认”对写入和命令执行保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。",
-          "descriptionEn": "Ask keeps a human in the loop for writes and shell commands; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.",
+          "descriptionZh": "“需要确认”默认放行普通工作区编辑、常规查询、任务调度和会话间消息，对命令执行、删除、敏感文件和发布操作保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。",
+          "descriptionEn": "Ask allows ordinary workspace edits, routine queries, scheduling, and messages between sessions, while keeping commands, deletions, sensitive files, and publishing subject to confirmation; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
