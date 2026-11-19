@@ -1,0 +1,22 @@
+{
+  "name": "OpenBitFun",
+  "id": "com.openbitfun.nshui",
+  "version": "0.1.0",
+  "build": 82,
+  "capabilities": {
+    "host": [
+      "openbitfun.*"
+    ],
+    "clipboard": true,
+    "statusBar": true,
+    "openUrl": {
+      "schemes": [
+        "https",
+        "http"
+      ]
+    }
+  },
+  "web": {
+    "host": "./host.js"
+  }
+}

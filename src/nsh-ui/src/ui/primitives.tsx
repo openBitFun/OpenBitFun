@@ -1,0 +1,3168 @@
+// Reusable OpenBitFun Tauri-grade UI primitives built from NSH Views and native
+// Canvas icons. Every signal and prop is read inside JSX prop expressions because
+// NSH component bodies execute once.
+
+import {
+  PanResponder,
+  Text,
+  View,
+  context,
+  reduceMotion,
+  signal,
+  type Align,
+  type InputRef,
+  type JSX,
+  type Placement,
+  type StyleProp,
+  type ViewStyle,
+} from "nsh";
+import { Input, Tooltip } from "nsh/base";
+import { tr, type MessageKey } from "../i18n";
+import { activeScene, type SceneId } from "../state";
+import {
+  concentricRadius,
+  controlHeight,
+  fontMono,
+  isLightAppearance,
+  palette,
+  radii,
+  textLineHeight,
+  textSize,
+  textTracking,
+  type ControlSize,
+} from "../theme";
+import { BotCharacter, Icon, type IconName } from "./icons";
+import {
+  MOTION_DURATION,
+  MOTION_EASE_STANDARD,
+  Spinner,
+  paintTransition,
+  popoverOrigin,
+  pressTransition,
+  tactileActiveStyle,
+} from "./motion";
+
+// --- Styled Tooltip Bubble (`nsh/base` <Tooltip>) ---
+
+// Shared warm-window state: once a toolbar tooltip has opened, hovering an
+// adjacent tooltip within 380ms opens it immediately with zero entrance delay.
+const tooltipWarm = signal(false);
+let tooltipWarmTimer: ReturnType<typeof setTimeout> | null = null;
+let tooltipCoolTimer: ReturnType<typeof setTimeout> | null = null;
+
+function markTooltipOpened(): void {
+  if (tooltipCoolTimer) {
+    clearTimeout(tooltipCoolTimer);
+    tooltipCoolTimer = null;
+  }
+  if (tooltipWarm()) return;
+  if (tooltipWarmTimer) clearTimeout(tooltipWarmTimer);
+  // Defer warming past the first tooltip's 125ms entrance so it completes smoothly.
+  tooltipWarmTimer = setTimeout(() => {
+    tooltipWarmTimer = null;
+    tooltipWarm.set(true);
+  }, 140);
+}
+
+function markTooltipClosed(): void {
+  if (tooltipWarmTimer) {
+    clearTimeout(tooltipWarmTimer);
+    tooltipWarmTimer = null;
+  }
+  tooltipWarm.set(true);
+  if (tooltipCoolTimer) clearTimeout(tooltipCoolTimer);
+  tooltipCoolTimer = setTimeout(() => {
+    tooltipCoolTimer = null;
+    tooltipWarm.set(false);
+  }, 380);
+}
+
+function tooltipStartingStyle(placement: Placement, instant: boolean): ViewStyle {
+  if (instant || reduceMotion()) return { opacity: 0 };
+  if (placement === "bottom") {
+    return { opacity: 0, transform: [{ translateY: -3 }, { scale: 0.97 }] };
+  }
+  if (placement === "left") {
+    return { opacity: 0, transform: [{ translateX: 3 }, { scale: 0.97 }] };
+  }
+  if (placement === "right") {
+    return { opacity: 0, transform: [{ translateX: -3 }, { scale: 0.97 }] };
+  }
+  return { opacity: 0, transform: [{ translateY: 3 }, { scale: 0.97 }] };
+}
+
+export interface TooltipBubbleProps {
+  text?: string;
+  shortcut?: string;
+  placement?: Placement;
+  align?: Align;
+  offset?: number;
+  delay?: number;
+  children?: JSX.Element;
+}
+
+/**
+ * Styled floating micro-tooltip backed by `nsh/base` `<Tooltip>`, with
+ * trigger-aligned transform origin, warm-window instant subsequent hovers,
+ * whisper-quiet hairline framing, compact shadow, and reduced-motion fade.
+ */
+export function TooltipBubble(props: TooltipBubbleProps) {
+  return (
+    <Tooltip
+      placement={props.placement ?? "top"}
+      align={props.align ?? "center"}
+      offset={props.offset ?? 5}
+      delay={props.delay !== undefined ? props.delay : tooltipWarm() ? 0 : 420}
+      onOpen={markTooltipOpened}
+      onClose={markTooltipClosed}
+      startingStyle={tooltipStartingStyle(props.placement ?? "top", tooltipWarm())}
+      endingStyle={{
+        opacity: 0,
+      }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 5,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: radii.xs,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().border,
+        backgroundColor: palette().popoverBg,
+        boxShadow: palette().shadowTooltip,
+        maxWidth: 260,
+        transformOrigin: popoverOrigin(props.placement ?? "top", props.align ?? "center"),
+        transitionProperty: reduceMotion() || tooltipWarm() ? "opacity" : "opacity, transform",
+        transitionDuration: tooltipWarm() ? 0 : reduceMotion() ? 90 : 120,
+        transitionTimingFunction: MOTION_EASE_STANDARD,
+      }}
+    >
+      <If
+        when={Boolean(props.children)}
+        else={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
+            <Text
+              style={{
+                flexShrink: 1,
+                minWidth: 0,
+                color: palette().text,
+                fontSize: textSize(11),
+                fontWeight: "500",
+                lineHeight: textLineHeight(11, 1.2),
+              }}
+            >
+              {props.text ?? ""}
+            </Text>
+            <If when={props.shortcut ?? ""}>
+              {keys => (
+                <Text
+                  style={{
+                    flexShrink: 0,
+                    color: palette().textElevatedMuted,
+                    fontFamily: fontMono,
+                    fontSize: textSize(10),
+                    fontWeight: "500",
+                    fontVariant: ["tabular-nums"],
+                    lineHeight: textLineHeight(10, 1.2),
+                  }}
+                >
+                  {keys()}
+                </Text>
+              )}
+            </If>
+          </View>
+        }
+      >
+        {props.children}
+      </If>
+    </Tooltip>
+  );
+}
+
+/**
+ * Auto-wraps plain string tooltips in a styled `<TooltipBubble>`; passes JSX through.
+ * When `redundantLabel` is supplied (e.g. `Button`'s visible label), a plain string
+ * tooltip that merely repeats that label is suppressed to avoid noisy echo tooltips.
+ */
+function resolveTooltip(
+  tip?: string | JSX.Element,
+  redundantLabel?: string,
+): JSX.Element | undefined {
+  if (!tip) return undefined;
+  if (typeof tip === "string") {
+    const trimmed = tip.trim();
+    if (!trimmed) return undefined;
+    if (redundantLabel && trimmed === redundantLabel.trim()) return undefined;
+    return <TooltipBubble text={trimmed} />;
+  }
+  return tip;
+}
+
+function focusRingStyle(): ViewStyle {
+  return {
+    outlineWidth: 2,
+    outlineColor: palette().borderFocus,
+    outlineOffset: 2,
+  };
+}
+
+// --- Buttons (unmistakable CTA hierarchy, unified controlHeight, tactile 140ms GPU transitions) ---
+
+export type ButtonVariant =
+  | "primary"
+  | "accent"
+  | "secondary"
+  | "outline"
+  | "ghost"
+  | "danger";
+export type ButtonSize = ControlSize;
+export type ControlSurface = "canvas" | "chrome";
+
+export interface ButtonProps {
+  label: string;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  surface?: ControlSurface;
+  pill?: boolean;
+  /** Stretch horizontally to fill its parent container (default `false`: hugs content). */
+  fullWidth?: boolean;
+  leadingIcon?: IconName;
+  trailingIcon?: IconName;
+  loading?: boolean;
+  disabled?: boolean;
+  tooltip?: string | JSX.Element;
+  accessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+  onPress: () => void;
+}
+
+function btnBg(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
+  if (variant === "primary") return palette().actionPrimaryBg;
+  if (variant === "accent") return palette().actionSolid;
+  if (variant === "danger") return palette().dangerSoft;
+  if (variant === "outline" || variant === "ghost") return "transparent";
+  return surface === "chrome" ? palette().chromeInputBg : palette().buttonSecondaryBg;
+}
+
+function btnHoverBg(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
+  if (variant === "primary") return palette().actionPrimaryHover;
+  if (variant === "accent") return palette().actionSolidHover;
+  if (variant === "danger") return palette().dangerHoverBg;
+  if (variant === "outline" || variant === "ghost") {
+    return surface === "chrome" ? palette().chromeHover : palette().surfaceSubtle;
+  }
+  return surface === "chrome" ? palette().chromeHover : palette().buttonSecondaryHover;
+}
+
+function btnPressedBg(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
+  if (variant === "primary") return palette().actionPrimaryPressed;
+  if (variant === "accent") return palette().actionSolid;
+  if (variant === "danger") return palette().dangerHoverBg;
+  if (variant === "outline" || variant === "ghost") {
+    return surface === "chrome" ? palette().chromeActive : palette().panelHover;
+  }
+  return surface === "chrome" ? palette().chromeActive : palette().buttonSecondaryPressed;
+}
+
+function btnBorder(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
+  if (variant === "primary") return palette().actionPrimaryBorder;
+  if (variant === "accent") return "transparent";
+  if (variant === "danger") return palette().dangerBorder;
+  if (variant === "ghost") return "transparent";
+  if (variant === "secondary") {
+    if (surface === "chrome") return palette().chromeBorder;
+    return isLightAppearance() ? palette().border : palette().borderSubtle;
+  }
+  return surface === "chrome" ? palette().chromeBorder : palette().border;
+}
+
+function btnHoverBorder(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
+  if (variant === "primary") return palette().actionPrimaryBorder;
+  if (variant === "accent") return "transparent";
+  if (variant === "danger") return palette().dangerBorder;
+  if (variant === "ghost") return "transparent";
+  if (variant === "secondary") {
+    if (surface === "chrome") return palette().chromeBorder;
+    return isLightAppearance() ? palette().borderStrong : palette().border;
+  }
+  return surface === "chrome" ? palette().chromeBorder : palette().borderStrong;
+}
+
+function btnFg(variant: ButtonVariant, surface: ControlSurface = "canvas"): string {
+  if (variant === "primary") return palette().actionPrimaryFg;
+  if (variant === "accent") return palette().actionSolidFg;
+  if (variant === "danger") return palette().danger;
+  if (variant === "ghost") {
+    return surface === "chrome" ? palette().chromeTextMuted : palette().textSecondary;
+  }
+  return surface === "chrome" ? palette().chromeText : palette().text;
+}
+
+function btnShadow(variant: ButtonVariant): string | undefined {
+  if (variant === "primary") {
+    const bevel = isLightAppearance()
+      ? "inset 0 1px 0 rgba(255, 255, 255, 0.16)"
+      : "inset 0 1px 0 rgba(255, 255, 255, 0.35)";
+    return `${palette().shadowButton}, ${bevel}`;
+  }
+  if (variant === "accent") {
+    return `${palette().shadowButton}, inset 0 1px 0 rgba(255, 255, 255, 0.18)`;
+  }
+  if (variant === "secondary") {
+    return isLightAppearance() ? palette().shadowButton : undefined;
+  }
+  return undefined;
+}
+
+function btnPadX(size: ButtonSize): number {
+  if (size === "xs") return 8;
+  if (size === "sm") return 10;
+  if (size === "lg") return 18;
+  return 13;
+}
+
+function btnGap(size: ButtonSize): number {
+  if (size === "xs") return 4.5;
+  if (size === "sm") return 5.5;
+  if (size === "lg") return 7;
+  return 6;
+}
+
+function btnFontPx(size: ButtonSize): number {
+  if (size === "xs") return 11;
+  if (size === "sm") return 12.5;
+  if (size === "lg") return 13.5;
+  return 13;
+}
+
+function btnIconPx(size: ButtonSize): number {
+  if (size === "xs") return 12;
+  if (size === "sm") return 13.5;
+  if (size === "lg") return 15;
+  return 14;
+}
+
+function btnRadius(size: ButtonSize, pill?: boolean): number {
+  if (pill) return radii.pill;
+  if (size === "xs") return radii.xs;
+  if (size === "lg") return radii.md;
+  return radii.sm;
+}
+
+export function Button(props: ButtonProps) {
+  return (
+    <View
+      role="button"
+      disabled={Boolean(props.disabled || props.loading)}
+      hitSlop={(props.size ?? "md") === "xs" ? 3 : undefined}
+      tooltip={resolveTooltip(props.tooltip, props.label)}
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{
+        disabled: Boolean(props.disabled || props.loading),
+        busy: Boolean(props.loading),
+      }}
+      onPress={() => {
+        if (!props.disabled && !props.loading) props.onPress();
+      }}
+      style={[
+        {
+          boxSizing: "border-box",
+          height: controlHeight[props.size ?? "md"],
+          width: props.fullWidth ? "100%" : "fit-content",
+          alignSelf: props.fullWidth ? "stretch" : undefined,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          minWidth: 0,
+          maxWidth: "100%",
+          gap: btnGap(props.size ?? "md"),
+          paddingHorizontal: btnPadX(props.size ?? "md"),
+          paddingVertical: 0,
+          borderRadius: btnRadius(props.size ?? "md", props.pill),
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: btnBorder(props.variant ?? "secondary", props.surface ?? "canvas"),
+          backgroundColor: btnBg(props.variant ?? "secondary", props.surface ?? "canvas"),
+          boxShadow: btnShadow(props.variant ?? "secondary"),
+          cursor: props.disabled || props.loading ? "not-allowed" : "pointer",
+          ...pressTransition(MOTION_DURATION.fast),
+        },
+        props.style,
+      ]}
+      hoverStyle={{
+        backgroundColor: btnHoverBg(props.variant ?? "secondary", props.surface ?? "canvas"),
+        borderColor: btnHoverBorder(props.variant ?? "secondary", props.surface ?? "canvas"),
+      }}
+      activeStyle={tactileActiveStyle(0.97, {
+        backgroundColor: btnPressedBg(props.variant ?? "secondary", props.surface ?? "canvas"),
+      })}
+      focusVisibleStyle={focusRingStyle()}
+      disabledStyle={{
+        opacity: 0.4,
+      }}
+    >
+      <If when={Boolean(props.loading)}>
+        <Spinner
+          size={(props.size ?? "md") === "xs" ? 11 : 13}
+          color={btnFg(props.variant ?? "secondary", props.surface ?? "canvas")}
+        />
+      </If>
+      <If when={!props.loading && (props.leadingIcon ?? "") ? props.leadingIcon! : ""}>
+        {iconName => (
+          <Icon
+            name={iconName() as IconName}
+            size={btnIconPx(props.size ?? "md")}
+            color={btnFg(props.variant ?? "secondary", props.surface ?? "canvas")}
+          />
+        )}
+      </If>
+      <Text
+        style={{
+          flexShrink: 1,
+          minWidth: 0,
+          color: btnFg(props.variant ?? "secondary", props.surface ?? "canvas"),
+          fontSize: textSize(btnFontPx(props.size ?? "md")),
+          fontWeight:
+            (props.variant ?? "secondary") === "primary" ||
+            (props.variant ?? "secondary") === "accent"
+              ? "600"
+              : "500",
+          lineHeight: textLineHeight(btnFontPx(props.size ?? "md"), 1.14),
+          textAlign: "center",
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+      <If when={props.trailingIcon ?? ""}>
+        {iconName => (
+          <Icon
+            name={iconName() as IconName}
+            size={btnIconPx(props.size ?? "md")}
+            color={btnFg(props.variant ?? "secondary", props.surface ?? "canvas")}
+          />
+        )}
+      </If>
+    </View>
+  );
+}
+
+export type IconButtonSize = ControlSize;
+export type IconButtonTone = "default" | "danger";
+
+export interface IconButtonProps {
+  icon: IconName;
+  size?: IconButtonSize;
+  surface?: ControlSurface;
+  tone?: IconButtonTone;
+  iconSize?: number;
+  active?: boolean;
+  disabled?: boolean;
+  tooltip?: string | JSX.Element;
+  accessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+  onPress: () => void;
+}
+
+function iconBtnBox(size: IconButtonSize): number {
+  return controlHeight[size];
+}
+
+function iconBtnGlyph(size: IconButtonSize): number {
+  if (size === "xs") return 13;
+  if (size === "sm") return 14.5;
+  if (size === "lg") return 17.5;
+  return 16;
+}
+
+export function IconButton(props: IconButtonProps) {
+  return (
+    <View
+      role="button"
+      disabled={props.disabled}
+      hitSlop={(props.size ?? "sm") === "xs" ? 3 : undefined}
+      tooltip={resolveTooltip(props.tooltip)}
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{
+        disabled: Boolean(props.disabled),
+        selected: Boolean(props.active),
+      }}
+      onPress={() => {
+        if (!props.disabled) props.onPress();
+      }}
+      style={[
+        {
+          boxSizing: "border-box",
+          width: iconBtnBox(props.size ?? "sm"),
+          height: iconBtnBox(props.size ?? "sm"),
+          flexShrink: 0,
+          borderRadius: (props.size ?? "sm") === "xs" ? radii.xs : radii.sm,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: props.active
+            ? props.tone === "danger"
+              ? palette().dangerBorder
+              : props.surface === "chrome"
+                ? palette().chromeBorder
+                : palette().borderSubtle
+            : "transparent",
+          backgroundColor: props.active
+            ? props.tone === "danger"
+              ? palette().dangerSoft
+              : props.surface === "chrome"
+                ? palette().chromeActive
+                : palette().panelHover
+            : "transparent",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: props.disabled ? "not-allowed" : "pointer",
+          ...pressTransition(MOTION_DURATION.fast),
+        },
+        props.style,
+      ]}
+      hoverStyle={{
+        backgroundColor:
+          props.tone === "danger"
+            ? palette().dangerSoft
+            : props.surface === "chrome"
+              ? palette().chromeHover
+              : palette().surfaceSubtle,
+      }}
+      activeStyle={tactileActiveStyle(0.94, {
+        backgroundColor:
+          props.tone === "danger"
+            ? palette().dangerHoverBg
+            : props.surface === "chrome"
+              ? palette().chromeActive
+              : palette().panelHover,
+      })}
+      focusVisibleStyle={focusRingStyle()}
+      disabledStyle={{
+        opacity: 0.44,
+      }}
+    >
+      <Icon
+        name={props.icon}
+        size={props.iconSize ?? iconBtnGlyph(props.size ?? "sm")}
+        color={
+          props.tone === "danger"
+            ? palette().danger
+            : props.surface === "chrome"
+              ? props.active
+                ? palette().chromeText
+                : palette().chromeTextMuted
+              : props.active
+                ? palette().text
+                : palette().textSecondary
+        }
+      />
+    </View>
+  );
+}
+
+// --- Settings / Editorial Sections (macOS / Linear lifted matte grouped cards) ---
+
+const ConfigSectionInsetContext = context<number>(0);
+const ConfigSectionControlWidthContext = context<number | undefined>(undefined);
+const ConfigRowInRailContext = context<boolean>(false);
+
+export interface ConfigSectionProps {
+  title: string;
+  subtitle?: string;
+  extra?: JSX.Element;
+  /**
+   * Inner body padding in px. Defaults to `14` so freeform sections never collide
+   * with card borders; `<ConfigRow>` automatically compensates with negative
+   * horizontal margin so row dividers stay crisp edge-to-edge. Pass `flush` (or
+   * `bodyPadding={0}`) for pure `ConfigRow`-only lists that want tight top/bottom edges.
+   */
+  bodyPadding?: number;
+  /** Removes default card body padding (`bodyPadding = 0`). */
+  flush?: boolean;
+  /**
+   * Optional shared right-side control rail width (e.g. `280` or `300`) inherited
+   * by every `<ConfigRow>` inside this section so stacked controls align along
+   * one razor-straight vertical rail.
+   */
+  controlWidth?: number;
+  bodyStyle?: StyleProp<ViewStyle>;
+  children?: JSX.Element;
+  style?: StyleProp<ViewStyle>;
+}
+
+export function ConfigSection(props: ConfigSectionProps) {
+  const effectiveInset = () => (props.flush ? 0 : (props.bodyPadding ?? 14));
+  return (
+    <View style={[{ gap: 10 }, props.style]}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 12,
+          paddingHorizontal: 2,
+        }}
+      >
+        <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+          <Text
+            style={{
+              color: palette().text,
+              fontSize: textSize(15),
+              fontWeight: "600",
+              letterSpacing: textTracking(15),
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(15, 1.28),
+            }}
+          >
+            {props.title}
+          </Text>
+          <If when={props.subtitle ?? ""}>
+            {sub => (
+              <Text
+                style={{
+                  color: palette().textMuted,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.44),
+                }}
+              >
+                {sub()}
+              </Text>
+            )}
+          </If>
+        </View>
+        <If when={Boolean(props.extra)}>
+          <View style={{ flexShrink: 0 }}>{props.extra}</View>
+        </If>
+      </View>
+      <View
+        style={[
+          {
+            borderRadius: radii.lg,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            borderColor: palette().border,
+            backgroundColor: palette().panelRaised,
+            boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
+            padding: effectiveInset(),
+            overflow: "hidden",
+          },
+          props.bodyStyle,
+        ]}
+      >
+        <ConfigSectionInsetContext.Provider value={effectiveInset()}>
+          <ConfigSectionControlWidthContext.Provider value={props.controlWidth}>
+            {props.children}
+          </ConfigSectionControlWidthContext.Provider>
+        </ConfigSectionInsetContext.Provider>
+      </View>
+    </View>
+  );
+}
+
+export type ConfigRowControlAlign = "end" | "stretch";
+
+export interface ConfigRowProps {
+  label: string;
+  description?: string;
+  /** Renders a bottom hairline divider (default `true`). Pass `false` on the last row. */
+  divider?: boolean;
+  /** Renders a top hairline divider (useful when list loops separate rows with `!first`). */
+  topDivider?: boolean;
+  /**
+   * Fixed width (in px, e.g. `280` or `300`) for the right-side control column so
+   * stacked rows lock to one razor-straight vertical rail. Inherits from
+   * `<ConfigSection controlWidth={...}>` when omitted.
+   */
+  controlWidth?: number;
+  /**
+   * Alignment of controls inside the right-side column (`"end"` right-aligns
+   * switches/badges/pills; `"stretch"` fills `controlWidth` edge-to-edge for
+   * inputs, selects, and `InlineFieldSaveGroup`). Defaults to `"end"`.
+   */
+  controlAlign?: ConfigRowControlAlign;
+  /** Enables tabular numerals on `description` (e.g. numeric current values). */
+  descriptionTabular?: boolean;
+  controlStyle?: StyleProp<ViewStyle>;
+  style?: StyleProp<ViewStyle>;
+  children?: JSX.Element;
+}
+
+export function ConfigRow(props: ConfigRowProps) {
+  const resolvedControlWidth = () =>
+    props.controlWidth ?? ConfigSectionControlWidthContext();
+  const isStretch = () => (props.controlAlign ?? "end") === "stretch";
+  return (
+    <View
+      style={[
+        {
+          minHeight: 52,
+          marginHorizontal: ConfigSectionInsetContext() > 0 ? -ConfigSectionInsetContext() : 0,
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 20,
+          borderTopWidth: props.topDivider ? 1 : 0,
+          borderBottomWidth: props.divider === false ? 0 : 1,
+          borderColor: palette().borderSubtle,
+          ...paintTransition(MOTION_DURATION.fast),
+        },
+        props.style,
+      ]}
+      hoverStyle={{
+        backgroundColor: palette().surfaceSubtle,
+      }}
+    >
+      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: textSize(13.5),
+            fontWeight: "500",
+            letterSpacing: textTracking(13.5),
+            lineHeight: textLineHeight(13.5, 1.32),
+          }}
+        >
+          {props.label}
+        </Text>
+        <If when={props.description ?? ""}>
+          {desc => (
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                fontVariant: props.descriptionTabular ? ["tabular-nums"] : undefined,
+                lineHeight: textLineHeight(12, 1.42),
+              }}
+            >
+              {desc()}
+            </Text>
+          )}
+        </If>
+      </View>
+      <If when={Boolean(props.children)}>
+        <View
+          style={[
+            {
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: isStretch() ? "flex-start" : "flex-end",
+              flexShrink: 0,
+              minWidth: 0,
+              width: resolvedControlWidth(),
+              maxWidth: resolvedControlWidth() !== undefined ? "60%" : undefined,
+              gap: 8,
+            },
+            props.controlStyle,
+          ]}
+        >
+          <ConfigRowInRailContext.Provider
+            value={resolvedControlWidth() !== undefined && isStretch()}
+          >
+            {props.children}
+          </ConfigRowInRailContext.Provider>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+export interface InlineFieldSaveGroupProps {
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  placeholder?: string;
+  /** Compact Save button label (defaults to `tr("common.save")`). */
+  saveLabel?: string;
+  /**
+   * Explicit dirty state overriding the default `value.trim().length > 0`.
+   * When dirty, the Save button illuminates with `saveVariant` (`"primary"` by default);
+   * when pristine, it stays calm and subtly disabled.
+   */
+  dirty?: boolean;
+  /** Allow pressing Save even when pristine/empty (default `false`). */
+  allowEmptySave?: boolean;
+  /** Unified height aligned to `controlHeight.sm` (28px, default) or `controlHeight.md` (32px). */
+  size?: "sm" | "md";
+  /** Highlight variant when dirty (default `"primary"`). */
+  saveVariant?: "primary" | "accent";
+  /**
+   * Fixed outer width in px when standalone (default `280`). When placed inside
+   * a `<ConfigRow controlWidth={...} controlAlign="stretch">` and omitted, fills
+   * the row's rail width edge-to-edge.
+   */
+  width?: number;
+  /** Uniform compact Save button minimum width in px (default `64`) so stacked rows align cleanly. */
+  buttonWidth?: number;
+  monospace?: boolean;
+  masked?: boolean;
+  error?: string;
+  readonly?: boolean;
+  disabled?: boolean;
+  loading?: boolean;
+  surface?: ControlSurface;
+  inputAccessibilityLabel?: string;
+  saveAccessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+}
+
+/**
+ * Laser-aligned `[InputBox (flex: 1)] [compact fixed-width Save button]` control
+ * group for settings rows and inline forms. Locks stacked rows onto one crisp
+ * right-hand vertical rail, highlights unmistakably when dirty, and saves on Enter.
+ */
+export function InlineFieldSaveGroup(props: InlineFieldSaveGroupProps) {
+  const isDirty = () =>
+    props.dirty !== undefined ? props.dirty : props.value.trim().length > 0;
+  const canSave = () =>
+    !props.disabled &&
+    !props.readonly &&
+    !props.loading &&
+    (Boolean(props.allowEmptySave) || isDirty());
+
+  return (
+    <View
+      style={[
+        {
+          flexDirection: "row",
+          alignItems: props.error ? "flex-start" : "center",
+          gap: 8,
+          minWidth: 0,
+          flex: ConfigRowInRailContext() && props.width === undefined ? 1 : undefined,
+          flexShrink: ConfigRowInRailContext() && props.width === undefined ? 1 : 0,
+          width:
+            props.width !== undefined
+              ? props.width
+              : ConfigRowInRailContext()
+                ? "100%"
+                : 280,
+          maxWidth: "100%",
+        },
+        props.style,
+      ]}
+    >
+      <InputBox
+        size={props.size ?? "sm"}
+        value={props.value}
+        placeholder={props.placeholder}
+        monospace={props.monospace}
+        masked={props.masked}
+        error={props.error}
+        readonly={props.readonly}
+        disabled={props.disabled}
+        surface={props.surface}
+        accessibilityLabel={props.inputAccessibilityLabel}
+        style={{ flex: 1, minWidth: 0 }}
+        onChange={props.onChange}
+        onSubmit={() => {
+          if (canSave()) props.onSave();
+        }}
+      />
+      <Button
+        label={props.saveLabel ?? tr("common.save")}
+        variant={isDirty() && !props.disabled && !props.readonly ? (props.saveVariant ?? "primary") : "secondary"}
+        size={props.size ?? "sm"}
+        surface={props.surface}
+        loading={props.loading}
+        disabled={!canSave()}
+        accessibilityLabel={props.saveAccessibilityLabel}
+        style={{ minWidth: props.buttonWidth ?? 64 }}
+        onPress={() => {
+          if (canSave()) props.onSave();
+        }}
+      />
+    </View>
+  );
+}
+
+export interface KbdHintProps {
+  keys: string;
+  surface?: ControlSurface;
+}
+
+export function KbdHint(props: KbdHintProps) {
+  return (
+    <View
+      style={{
+        flexShrink: 0,
+        paddingHorizontal: 5,
+        paddingVertical: 1,
+        borderRadius: 5,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: props.surface === "chrome" ? palette().chromeBorder : palette().border,
+        backgroundColor:
+          props.surface === "chrome" ? palette().chromeBg : palette().surfaceTertiary,
+      }}
+    >
+      <Text
+        style={{
+          color:
+            props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
+          fontFamily: fontMono,
+          fontSize: textSize(10),
+          fontWeight: "500",
+          fontVariant: ["tabular-nums"],
+          lineHeight: textLineHeight(10, 1.3),
+          numberOfLines: 1,
+        }}
+      >
+        {props.keys}
+      </Text>
+    </View>
+  );
+}
+
+export type BadgeTone = "neutral" | "accent" | "success" | "warning" | "danger";
+export type BadgeSize = "xs" | "sm";
+
+export interface BadgeProps {
+  label: string;
+  tone?: BadgeTone;
+  size?: BadgeSize;
+  surface?: ControlSurface;
+  pill?: boolean;
+  /** Force a hairline border even on neutral metadata tags (default: borderless for neutral). */
+  bordered?: boolean;
+  style?: StyleProp<ViewStyle>;
+}
+
+function badgeColors(
+  tone: BadgeTone,
+  surface: ControlSurface = "canvas",
+): { bg: string; border: string; fg: string; borderless?: boolean } {
+  if (tone === "accent") {
+    if (surface === "chrome") {
+      return {
+        bg: palette().chromeActive,
+        border: "transparent",
+        fg: palette().chromeAccent,
+        borderless: true,
+      };
+    }
+    return {
+      bg: palette().accentSoft,
+      border: palette().accentBorder,
+      fg: palette().accent,
+    };
+  }
+  if (tone === "success") {
+    return {
+      bg: palette().successSoft,
+      border: palette().successBorder,
+      fg: palette().success,
+    };
+  }
+  if (tone === "warning") {
+    return {
+      bg: palette().warningSoft,
+      border: palette().warningBorder,
+      fg: palette().warning,
+    };
+  }
+  if (tone === "danger") {
+    return {
+      bg: palette().dangerSoft,
+      border: palette().dangerBorder,
+      fg: palette().danger,
+    };
+  }
+  if (surface === "chrome") {
+    return {
+      bg: palette().chromeHover,
+      border: palette().chromeBorder,
+      fg: palette().chromeTextMuted,
+      borderless: true,
+    };
+  }
+  return {
+    bg: palette().surfaceSubtle,
+    border: palette().borderSubtle,
+    fg: palette().textSecondary,
+    borderless: true,
+  };
+}
+
+export function Badge(props: BadgeProps) {
+  const isXs = () => (props.size ?? "sm") === "xs";
+  const hasBorder = () => {
+    if (props.bordered !== undefined) return props.bordered;
+    return !badgeColors(props.tone ?? "neutral", props.surface ?? "canvas").borderless;
+  };
+  return (
+    <View
+      style={[
+        {
+          flexShrink: 0,
+          alignItems: "center",
+          justifyContent: "center",
+          maxWidth: "100%",
+          paddingHorizontal: isXs() ? 5 : 6,
+          paddingVertical: isXs() ? 1 : 1.5,
+          borderRadius: props.pill ? radii.pill : isXs() ? 4 : 5,
+          borderCurve: "continuous",
+          borderWidth: hasBorder() ? 1 : 0,
+          borderColor: hasBorder()
+            ? badgeColors(props.tone ?? "neutral", props.surface ?? "canvas").border
+            : "transparent",
+          backgroundColor: badgeColors(props.tone ?? "neutral", props.surface ?? "canvas").bg,
+        },
+        props.style,
+      ]}
+    >
+      <Text
+        style={{
+          color: badgeColors(props.tone ?? "neutral", props.surface ?? "canvas").fg,
+          fontSize: textSize(isXs() ? 9.5 : 10),
+          fontWeight: "500",
+          fontVariant: ["tabular-nums"],
+          lineHeight: textLineHeight(isXs() ? 9.5 : 10, 1.22),
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+export interface SplitHandleProps {
+  onDelta: (dx: number) => void;
+  onDragStateChange?: (dragging: boolean) => void;
+  onReset?: () => void;
+  surface?: ControlSurface;
+  seam?: boolean;
+  accessibilityLabel?: string;
+}
+
+/**
+ * Tactile vertical split resize handle: optional 1px full-height seam hairline
+ * paired with a centered GPU-scaled pill grip that reveals smoothly on hover/drag.
+ */
+export function SplitHandle(props: SplitHandleProps) {
+  const hovered = signal(false);
+  const dragging = signal(false);
+  let lastDx = 0;
+
+  const responder = PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => {
+      lastDx = 0;
+      dragging.set(true);
+      props.onDragStateChange?.(true);
+    },
+    onPanResponderMove: (_e, state) => {
+      const delta = state.dx - lastDx;
+      lastDx = state.dx;
+      if (delta !== 0) props.onDelta(delta);
+    },
+    onPanResponderRelease: () => {
+      dragging.set(false);
+      props.onDragStateChange?.(false);
+    },
+    onPanResponderTerminate: () => {
+      dragging.set(false);
+      props.onDragStateChange?.(false);
+    },
+  });
+
+  return (
+    <View
+      {...responder.panHandlers}
+      accessibilityLabel={props.accessibilityLabel ?? "Resize pane"}
+      onPress={e => {
+        if (e.clickCount >= 2) props.onReset?.();
+      }}
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
+      style={{
+        position: "relative",
+        width: 9,
+        flexShrink: 0,
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "ew-resize",
+        backgroundColor: "transparent",
+      }}
+    >
+      <If when={props.seam !== false}>
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            width: 1,
+            backgroundColor: dragging()
+              ? props.surface === "chrome"
+                ? palette().chromeAccent
+                : palette().accent
+              : hovered()
+                ? props.surface === "chrome"
+                  ? palette().chromeBorder
+                  : palette().borderStrong
+                : props.surface === "chrome"
+                  ? palette().chromeBorder
+                  : palette().borderSubtle,
+            ...paintTransition(MOTION_DURATION.fast),
+          }}
+        />
+      </If>
+      <View
+        style={{
+          width: 3,
+          height: 44,
+          borderRadius: radii.pill,
+          opacity: dragging() || hovered() ? 1 : 0,
+          transform: reduceMotion()
+            ? undefined
+            : [{ scaleY: dragging() ? 1.1 : hovered() ? 0.84 : 0.62 }],
+          backgroundColor: dragging()
+            ? props.surface === "chrome"
+              ? palette().chromeAccent
+              : palette().accent
+            : props.surface === "chrome"
+              ? palette().chromeBorder
+              : palette().borderStrong,
+          transitionProperty: reduceMotion()
+            ? "opacity, background-color"
+            : "opacity, transform, background-color",
+          transitionDuration: reduceMotion() ? 100 : MOTION_DURATION.fast,
+          transitionTimingFunction: MOTION_EASE_STANDARD,
+        }}
+      />
+    </View>
+  );
+}
+
+// --- Compatibility exports refined for OpenBitFun Tauri aesthetics ---
+
+export type ActionButtonVariant = "primary" | "accent" | "secondary" | "ghost" | "danger";
+export type ActionButtonSize = ControlSize;
+
+export interface ActionButtonProps {
+  label: string;
+  variant?: ActionButtonVariant;
+  size?: ActionButtonSize;
+  surface?: ControlSurface;
+  fullWidth?: boolean;
+  leadingIcon?: IconName;
+  trailingIcon?: IconName;
+  loading?: boolean;
+  disabled?: boolean;
+  tooltip?: string | JSX.Element;
+  accessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+  onPress: () => void;
+}
+
+export function ActionButton(props: ActionButtonProps) {
+  return (
+    <Button
+      label={props.label}
+      variant={props.variant ?? "secondary"}
+      size={props.size ?? "md"}
+      surface={props.surface}
+      fullWidth={props.fullWidth}
+      leadingIcon={props.leadingIcon}
+      trailingIcon={props.trailingIcon}
+      loading={props.loading}
+      disabled={props.disabled}
+      tooltip={props.tooltip}
+      accessibilityLabel={props.accessibilityLabel}
+      style={props.style}
+      onPress={props.onPress}
+    />
+  );
+}
+
+export type SemanticTone = "neutral" | "accent" | "success" | "warning" | "danger";
+
+export interface PillChipProps {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  badge?: string | number;
+  icon?: IconName;
+  tone?: SemanticTone | (string & {});
+  maxWidth?: number;
+  accessibilityLabel?: string;
+  onPress?: () => void;
+}
+
+function pillColors(active: boolean, tone?: string): { bg: string; border: string; fg: string } {
+  if (active) {
+    return { bg: palette().accentSoft, border: palette().accentBorder, fg: palette().accent };
+  }
+  if (tone === "accent") {
+    return { bg: palette().accentSoft, border: palette().accentBorder, fg: palette().accent };
+  }
+  if (tone === "success") {
+    return { bg: palette().successSoft, border: palette().successBorder, fg: palette().success };
+  }
+  if (tone === "warning") {
+    return { bg: palette().warningSoft, border: palette().warningBorder, fg: palette().warning };
+  }
+  if (tone === "danger") {
+    return { bg: palette().dangerSoft, border: palette().dangerBorder, fg: palette().danger };
+  }
+  if (tone && tone !== "neutral") {
+    return { bg: palette().panelRaised, border: palette().border, fg: tone };
+  }
+  return { bg: palette().panelRaised, border: palette().border, fg: palette().textSecondary };
+}
+
+export function PillChip(props: PillChipProps) {
+  return (
+    <View
+      role={props.onPress ? "button" : undefined}
+      disabled={props.disabled}
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={
+        props.active !== undefined || props.disabled !== undefined
+          ? {
+              selected: props.active !== undefined ? Boolean(props.active) : undefined,
+              disabled: props.disabled !== undefined ? Boolean(props.disabled) : undefined,
+            }
+          : undefined
+      }
+      onPress={
+        props.onPress
+          ? () => {
+              if (!props.disabled) props.onPress?.();
+            }
+          : undefined
+      }
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        flexShrink: 0,
+        maxWidth: props.maxWidth ?? "100%",
+        gap: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: radii.pill,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: pillColors(Boolean(props.active), props.tone).border,
+        backgroundColor: pillColors(Boolean(props.active), props.tone).bg,
+        cursor: props.onPress ? (props.disabled ? "not-allowed" : "pointer") : "default",
+        ...(props.onPress ? pressTransition(MOTION_DURATION.fast) : paintTransition(MOTION_DURATION.fast)),
+      }}
+      hoverStyle={
+        props.onPress
+          ? {
+              backgroundColor: props.active ? palette().accentSoft : palette().panelHover,
+              borderColor: props.active ? palette().accent : palette().borderStrong,
+            }
+          : undefined
+      }
+      activeStyle={props.onPress ? tactileActiveStyle(0.97) : undefined}
+      focusVisibleStyle={props.onPress ? focusRingStyle() : undefined}
+      disabledStyle={{ opacity: 0.45 }}
+    >
+      <If when={props.icon ?? ""}>
+        {iconName => (
+          <Icon
+            name={iconName() as IconName}
+            size={12}
+            color={pillColors(Boolean(props.active), props.tone).fg}
+          />
+        )}
+      </If>
+      <Text
+        style={{
+          flexShrink: 1,
+          minWidth: 0,
+          color: pillColors(Boolean(props.active), props.tone).fg,
+          fontSize: textSize(11),
+          fontWeight: props.active ? "600" : "500",
+          lineHeight: textLineHeight(11, 1.32),
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+      <If when={props.badge !== undefined && props.badge !== null ? String(props.badge) : ""}>
+        {badgeText => (
+          <View
+            style={{
+              flexShrink: 0,
+              paddingHorizontal: 5,
+              paddingVertical: 1,
+              borderRadius: radii.pill,
+              backgroundColor: props.active ? palette().actionSolid : palette().panelRaised,
+            }}
+          >
+            <Text
+              style={{
+                color: props.active ? palette().actionSolidFg : palette().textMuted,
+                fontSize: textSize(10),
+                fontWeight: "600",
+                fontVariant: ["tabular-nums"],
+                lineHeight: textLineHeight(10, 1.3),
+                numberOfLines: 1,
+              }}
+            >
+              {badgeText()}
+            </Text>
+          </View>
+        )}
+      </If>
+    </View>
+  );
+}
+
+export interface SegmentedTabOption<T extends string> {
+  value: T;
+  label: string;
+  badge?: string | number;
+  icon?: IconName;
+  accessibilityLabel?: string;
+}
+
+export interface SegmentedTabsProps<T extends string> {
+  options: ReadonlyArray<SegmentedTabOption<T>>;
+  value: T;
+  size?: "sm" | "md";
+  style?: StyleProp<ViewStyle>;
+  onChange: (value: T) => void;
+}
+
+const SEGMENT_OUTER_RADIUS = 9;
+const SEGMENT_PADDING = 3;
+const SEGMENT_INNER_RADIUS = concentricRadius(SEGMENT_OUTER_RADIUS, SEGMENT_PADDING);
+
+export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
+  return (
+    <View
+      role="tablist"
+      style={[
+        {
+          boxSizing: "border-box",
+          height: controlHeight[props.size ?? "md"],
+          flexDirection: "row",
+          alignItems: "center",
+          width: "fit-content",
+          flexShrink: 0,
+          maxWidth: "100%",
+          gap: 2,
+          padding: SEGMENT_PADDING,
+          borderRadius: SEGMENT_OUTER_RADIUS,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().borderSubtle,
+          backgroundColor: palette().segmentedTrackBg,
+          boxShadow: palette().shadowInset,
+        },
+        props.style,
+      ]}
+    >
+      <Each of={props.options} key={option => option.value}>
+        {option => (
+          <View
+            role="tab"
+            accessibilityLabel={option().accessibilityLabel}
+            accessibilityState={{ selected: option().value === props.value }}
+            onPress={() => props.onChange(option().value)}
+            style={{
+              boxSizing: "border-box",
+              height: "100%",
+              flexDirection: "row",
+              alignItems: "center",
+              flexShrink: 1,
+              minWidth: 0,
+              gap: 5,
+              paddingHorizontal: (props.size ?? "md") === "sm" ? 9 : 11,
+              paddingVertical: 0,
+              borderRadius: SEGMENT_INNER_RADIUS,
+              borderCurve: "continuous",
+              borderWidth: 1,
+              borderColor:
+                option().value === props.value
+                  ? isLightAppearance()
+                    ? "transparent"
+                    : palette().border
+                  : "transparent",
+              backgroundColor:
+                option().value === props.value ? palette().panelRaised : "transparent",
+              boxShadow:
+                option().value === props.value
+                  ? `${palette().shadowButton}, ${palette().innerHighlight}`
+                  : undefined,
+              cursor: "pointer",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{
+              backgroundColor:
+                option().value === props.value
+                  ? palette().panelRaised
+                  : palette().surfaceSubtle,
+            }}
+            activeStyle={tactileActiveStyle(0.98)}
+            focusVisibleStyle={focusRingStyle()}
+          >
+            <If when={option().icon ?? ""}>
+              {iconName => (
+                <Icon
+                  name={iconName() as IconName}
+                  size={12}
+                  color={
+                    option().value === props.value ? palette().text : palette().textMuted
+                  }
+                />
+              )}
+            </If>
+            <Text
+              style={{
+                flexShrink: 1,
+                minWidth: 0,
+                color:
+                  option().value === props.value ? palette().text : palette().textMuted,
+                fontSize: textSize((props.size ?? "md") === "sm" ? 11.5 : 12),
+                fontWeight: option().value === props.value ? "600" : "500",
+                lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 11.5 : 12, 1.24),
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {option().label}
+            </Text>
+            <If
+              when={
+                option().badge !== undefined && option().badge !== null
+                  ? String(option().badge)
+                  : ""
+              }
+            >
+              {badgeText => (
+                <Text
+                  style={{
+                    flexShrink: 0,
+                    color:
+                      option().value === props.value
+                        ? palette().accent
+                        : palette().textMuted,
+                    fontSize: textSize(10.5),
+                    fontWeight: "600",
+                    fontVariant: ["tabular-nums"],
+                    lineHeight: textLineHeight(10.5, 1.24),
+                  }}
+                >
+                  {badgeText()}
+                </Text>
+              )}
+            </If>
+          </View>
+        )}
+      </Each>
+    </View>
+  );
+}
+
+export interface ToggleSwitchProps {
+  value?: boolean;
+  checked?: boolean;
+  label?: string;
+  accessibilityLabel?: string;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}
+
+export function ToggleSwitch(props: ToggleSwitchProps) {
+  const isChecked = () => Boolean(props.value ?? props.checked);
+  return (
+    <View
+      role="switch"
+      disabled={props.disabled}
+      hitSlop={props.label ? undefined : 4}
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{
+        checked: isChecked(),
+        disabled: Boolean(props.disabled),
+      }}
+      onPress={() => {
+        if (!props.disabled) props.onChange(!isChecked());
+      }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        flexShrink: props.label ? 1 : 0,
+        minWidth: 0,
+        gap: 8,
+        cursor: props.disabled ? "not-allowed" : "pointer",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ opacity: props.disabled ? 0.48 : 0.94 }}
+      activeStyle={props.disabled ? undefined : tactileActiveStyle(0.96)}
+      focusVisibleStyle={focusRingStyle()}
+      disabledStyle={{ opacity: 0.48 }}
+    >
+      <View
+        style={{
+          boxSizing: "border-box",
+          width: 34,
+          height: 19,
+          flexShrink: 0,
+          borderRadius: radii.pill,
+          backgroundColor: isChecked() ? palette().actionSolid : palette().toggleTrackOff,
+          boxShadow: isChecked()
+            ? "inset 0 1px 1px rgba(0, 0, 0, 0.16)"
+            : `inset 0 0 0 1px ${palette().border}, ${palette().shadowInset}`,
+          padding: 2,
+          flexDirection: "row",
+          alignItems: "center",
+          ...paintTransition(MOTION_DURATION.fast),
+        }}
+      >
+        <View
+          style={{
+            width: 15,
+            height: 15,
+            borderRadius: radii.pill,
+            backgroundColor: isChecked() ? palette().actionSolidFg : palette().toggleThumbOff,
+            boxShadow: "0 1px 2px rgba(0, 0, 0, 0.30), 0 0.5px 1px rgba(0, 0, 0, 0.18)",
+            transform: [{ translateX: isChecked() ? 15 : 0 }],
+            transitionProperty: reduceMotion()
+              ? "background-color"
+              : "transform, background-color",
+            transitionDuration: reduceMotion() ? 100 : 150,
+            transitionTimingFunction: MOTION_EASE_STANDARD,
+          }}
+        />
+      </View>
+      <If when={props.label ?? ""}>
+        {labelText => (
+          <Text
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              color: palette().text,
+              fontSize: textSize(12.5),
+              fontWeight: "500",
+              lineHeight: textLineHeight(12.5, 1.36),
+            }}
+          >
+            {labelText()}
+          </Text>
+        )}
+      </If>
+    </View>
+  );
+}
+
+export interface SectionCardProps {
+  title?: string;
+  subtitle?: string;
+  right?: JSX.Element;
+  trailing?: JSX.Element;
+  children?: JSX.Element;
+  style?: StyleProp<ViewStyle>;
+}
+
+export function SectionCard(props: SectionCardProps) {
+  return (
+    <View
+      style={[
+        {
+          borderRadius: radii.lg,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().border,
+          backgroundColor: palette().panelRaised,
+          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
+          padding: 16,
+          gap: 14,
+        },
+        props.style,
+      ]}
+    >
+      <If when={Boolean(props.title || props.subtitle || props.right || props.trailing)}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+            <If when={props.title ?? ""}>
+              {titleText => (
+                <Text
+                  style={{
+                    color: palette().text,
+                    fontSize: textSize(14),
+                    fontWeight: "600",
+                    letterSpacing: textTracking(14),
+                    fontVariant: ["tabular-nums"],
+                    lineHeight: textLineHeight(14, 1.3),
+                  }}
+                >
+                  {titleText()}
+                </Text>
+              )}
+            </If>
+            <If when={props.subtitle ?? ""}>
+              {subtitleText => (
+                <Text
+                  style={{
+                    color: palette().textMuted,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.44),
+                  }}
+                >
+                  {subtitleText()}
+                </Text>
+              )}
+            </If>
+          </View>
+          <If when={Boolean(props.right || props.trailing)}>
+            <View style={{ flexShrink: 0 }}>{props.right ?? props.trailing}</View>
+          </If>
+        </View>
+      </If>
+      {props.children}
+    </View>
+  );
+}
+
+export type StatusDotKind = "accent" | "warning" | "danger" | "success" | "muted";
+
+export interface StatusDotProps {
+  kind?: StatusDotKind;
+  size?: number;
+  pulse?: boolean;
+  surface?: ControlSurface;
+  accessibilityLabel?: string;
+}
+
+function dotColor(kind: StatusDotKind, surface: ControlSurface = "canvas"): string {
+  if (kind === "success") return palette().success;
+  if (kind === "warning") return palette().warning;
+  if (kind === "danger") return palette().danger;
+  if (kind === "muted") {
+    return surface === "chrome" ? palette().chromeTextMuted : palette().textMuted;
+  }
+  return surface === "chrome" ? palette().chromeAccent : palette().accent;
+}
+
+export function StatusDot(props: StatusDotProps) {
+  return (
+    <View
+      accessibilityLabel={props.accessibilityLabel}
+      style={{
+        position: "relative",
+        width: props.size ?? 6,
+        height: props.size ?? 6,
+        flexShrink: 0,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <If when={Boolean(props.pulse) && !reduceMotion()}>
+        <View
+          style={{
+            position: "absolute",
+            width: props.size ?? 6,
+            height: props.size ?? 6,
+            borderRadius: radii.pill,
+            backgroundColor: dotColor(props.kind ?? "accent", props.surface ?? "canvas"),
+            opacity: 0.55,
+            animationName: "ping",
+            animationDuration: 1450,
+            animationTimingFunction: "cubic-bezier(0, 0, 0.2, 1)",
+            animationIterationCount: "infinite",
+          }}
+        />
+      </If>
+      <View
+        style={{
+          width: props.size ?? 6,
+          height: props.size ?? 6,
+          borderRadius: radii.pill,
+          backgroundColor: dotColor(props.kind ?? "accent", props.surface ?? "canvas"),
+        }}
+      />
+    </View>
+  );
+}
+
+export type StatusPillKind = "neutral" | "accent" | "success" | "warning" | "danger";
+
+export interface StatusPillProps {
+  label: string;
+  kind?: StatusPillKind;
+  size?: BadgeSize;
+  pulse?: boolean;
+  style?: StyleProp<ViewStyle>;
+}
+
+function statusColors(kind: StatusPillKind): {
+  bg: string;
+  border: string;
+  fg: string;
+  borderless?: boolean;
+} {
+  if (kind === "success") {
+    return { bg: palette().successSoft, border: palette().successBorder, fg: palette().success };
+  }
+  if (kind === "warning") {
+    return { bg: palette().warningSoft, border: palette().warningBorder, fg: palette().warning };
+  }
+  if (kind === "danger") {
+    return { bg: palette().dangerSoft, border: palette().dangerBorder, fg: palette().danger };
+  }
+  if (kind === "accent") {
+    return { bg: palette().accentSoft, border: palette().accentBorder, fg: palette().accent };
+  }
+  return {
+    bg: palette().surfaceSubtle,
+    border: "transparent",
+    fg: palette().textSecondary,
+    borderless: true,
+  };
+}
+
+export function StatusPill(props: StatusPillProps) {
+  const isXs = () => (props.size ?? "sm") === "xs";
+  const hasBorder = () => !statusColors(props.kind ?? "neutral").borderless;
+  return (
+    <View
+      style={[
+        {
+          flexDirection: "row",
+          alignItems: "center",
+          flexShrink: 0,
+          maxWidth: "100%",
+          gap: isXs() ? 4.5 : 5,
+          paddingHorizontal: isXs() ? 6.5 : 7.5,
+          paddingVertical: isXs() ? 1 : 1.5,
+          borderRadius: radii.pill,
+          borderCurve: "continuous",
+          borderWidth: hasBorder() ? 1 : 0,
+          borderColor: hasBorder()
+            ? statusColors(props.kind ?? "neutral").border
+            : "transparent",
+          backgroundColor: statusColors(props.kind ?? "neutral").bg,
+        },
+        props.style,
+      ]}
+    >
+      <StatusDot
+        size={isXs() ? 5 : 5.5}
+        kind={props.kind === "neutral" ? "muted" : (props.kind ?? "muted")}
+        pulse={props.pulse}
+      />
+      <Text
+        style={{
+          flexShrink: 1,
+          minWidth: 0,
+          color: statusColors(props.kind ?? "neutral").fg,
+          fontSize: textSize(isXs() ? 10 : 10.5),
+          fontWeight: "500",
+          fontVariant: ["tabular-nums"],
+          lineHeight: textLineHeight(isXs() ? 10 : 10.5, 1.22),
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+export type AvatarStatus = "online" | "busy" | "running" | "idle" | "offline" | "error";
+
+export interface AgentAvatarProps {
+  label: string;
+  emoji?: string;
+  size?: number;
+  status?: AvatarStatus | (string & {});
+  ringColor?: string;
+}
+
+export function AgentAvatar(props: AgentAvatarProps) {
+  return (
+    <BotCharacter
+      seed={props.label}
+      size={props.size ?? 34}
+      status={props.status}
+      ringColor={props.ringColor}
+    />
+  );
+}
+
+export interface TapOptionRowProps {
+  label: string;
+  detail?: string;
+  selected?: boolean;
+  accessibilityLabel?: string;
+  onPress: () => void;
+}
+
+export function TapOptionRow(props: TapOptionRowProps) {
+  return (
+    <View
+      role="button"
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={
+        props.selected !== undefined ? { selected: Boolean(props.selected) } : undefined
+      }
+      onPress={props.onPress}
+      style={{
+        flexDirection: "row",
+        alignItems: props.detail ? "flex-start" : "center",
+        gap: 10,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: props.selected ? palette().accentBorder : palette().border,
+        backgroundColor: props.selected ? palette().accentSoft : palette().surfaceSubtle,
+        cursor: "pointer",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{
+        backgroundColor: props.selected ? palette().accentSoft : palette().panelHover,
+        borderColor: props.selected ? palette().accent : palette().borderStrong,
+      }}
+      activeStyle={tactileActiveStyle(0.99, {
+        backgroundColor: props.selected ? palette().accentSoft : palette().panelHover,
+      })}
+      focusVisibleStyle={focusRingStyle()}
+    >
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: textSize(12),
+            fontWeight: props.selected ? "600" : "500",
+            lineHeight: textLineHeight(12, 1.38),
+          }}
+        >
+          {props.label}
+        </Text>
+        <If when={props.detail ?? ""}>
+          {detailText => (
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(11),
+                lineHeight: textLineHeight(11, 1.42),
+              }}
+            >
+              {detailText()}
+            </Text>
+          )}
+        </If>
+      </View>
+      <If when={Boolean(props.selected)}>
+        <View style={{ flexShrink: 0, marginTop: props.detail ? 2 : 0 }}>
+          <Icon name="check" size={14} color={palette().accent} />
+        </View>
+      </If>
+    </View>
+  );
+}
+
+export interface FloatingPillProps {
+  children?: JSX.Element;
+  onPress?: () => void;
+  accessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+}
+
+export function FloatingPill(props: FloatingPillProps) {
+  return (
+    <View
+      role={props.onPress ? "button" : undefined}
+      accessibilityLabel={props.accessibilityLabel}
+      onPress={props.onPress}
+      style={[
+        {
+          flexDirection: "row",
+          alignItems: "center",
+          maxWidth: "100%",
+          gap: 8,
+          paddingHorizontal: 12,
+          paddingVertical: 5,
+          borderRadius: radii.pill,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().borderStrong,
+          backgroundColor: palette().popoverBg,
+          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
+          cursor: props.onPress ? "pointer" : "default",
+          ...(props.onPress ? pressTransition(MOTION_DURATION.fast) : paintTransition(MOTION_DURATION.fast)),
+        },
+        props.style,
+      ]}
+      hoverStyle={
+        props.onPress
+          ? {
+              borderColor: palette().borderFocus,
+              backgroundColor: palette().panelHover,
+            }
+          : undefined
+      }
+      activeStyle={props.onPress ? tactileActiveStyle(0.97) : undefined}
+      focusVisibleStyle={props.onPress ? focusRingStyle() : undefined}
+    >
+      {props.children}
+    </View>
+  );
+}
+
+export type IconCircleVariant = "primary" | "subtle" | "solid" | "accent" | "warm" | "ghost";
+
+export interface IconCircleButtonProps {
+  icon: IconName;
+  size?: number;
+  iconSize?: number;
+  variant?: IconCircleVariant;
+  disabled?: boolean;
+  tooltip?: string | JSX.Element;
+  accessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+  onPress: () => void;
+}
+
+function circleBg(variant: IconCircleVariant): string {
+  if (variant === "primary") return palette().actionPrimaryBg;
+  if (variant === "solid") return palette().actionPrimaryBg;
+  if (variant === "accent") return palette().actionSolid;
+  if (variant === "warm") return palette().brandWarm;
+  if (variant === "ghost") return "transparent";
+  return palette().buttonSecondaryBg;
+}
+
+function circleHoverBg(variant: IconCircleVariant): string {
+  if (variant === "primary") return palette().actionPrimaryHover;
+  if (variant === "solid") return palette().actionPrimaryHover;
+  if (variant === "accent") return palette().actionSolidHover;
+  if (variant === "warm") return palette().brandWarm;
+  if (variant === "ghost") return palette().surfaceSubtle;
+  return palette().buttonSecondaryHover;
+}
+
+function circleBorder(variant: IconCircleVariant): string {
+  if (variant === "primary") return palette().actionPrimaryBorder;
+  if (variant === "solid") return palette().actionPrimaryBorder;
+  if (variant === "accent") return "transparent";
+  if (variant === "warm") return palette().brandWarm;
+  if (variant === "ghost") return "transparent";
+  return palette().border;
+}
+
+function circleIconColor(variant: IconCircleVariant): string {
+  if (variant === "primary") return palette().actionPrimaryFg;
+  if (variant === "solid") return palette().actionPrimaryFg;
+  if (variant === "accent") return palette().actionSolidFg;
+  if (variant === "warm") return palette().brandWarmFg;
+  return palette().textSecondary;
+}
+
+export function IconCircleButton(props: IconCircleButtonProps) {
+  return (
+    <View
+      role="button"
+      disabled={props.disabled}
+      hitSlop={(props.size ?? 30) < 26 ? 4 : undefined}
+      tooltip={resolveTooltip(props.tooltip)}
+      accessibilityLabel={props.accessibilityLabel}
+      accessibilityState={{ disabled: Boolean(props.disabled) }}
+      onPress={() => {
+        if (!props.disabled) props.onPress();
+      }}
+      style={[
+        {
+          boxSizing: "border-box",
+          width: props.size ?? 30,
+          height: props.size ?? 30,
+          flexShrink: 0,
+          borderRadius: radii.pill,
+          borderWidth: 1,
+          borderColor: circleBorder(props.variant ?? "subtle"),
+          backgroundColor: circleBg(props.variant ?? "subtle"),
+          boxShadow:
+            (props.variant ?? "subtle") === "ghost"
+              ? undefined
+              : palette().shadowButton,
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: props.disabled ? "not-allowed" : "pointer",
+          ...pressTransition(MOTION_DURATION.fast),
+        },
+        props.style,
+      ]}
+      hoverStyle={{
+        backgroundColor: circleHoverBg(props.variant ?? "subtle"),
+        borderColor:
+          (props.variant ?? "subtle") === "primary" ||
+          (props.variant ?? "subtle") === "solid" ||
+          (props.variant ?? "subtle") === "accent" ||
+          (props.variant ?? "subtle") === "warm" ||
+          (props.variant ?? "subtle") === "ghost"
+            ? circleBorder(props.variant ?? "subtle")
+            : palette().borderStrong,
+        opacity: (props.variant ?? "subtle") === "warm" ? 0.92 : 1,
+      }}
+      activeStyle={tactileActiveStyle(0.94)}
+      focusVisibleStyle={focusRingStyle()}
+      disabledStyle={{ opacity: (props.variant ?? "subtle") === "primary" ? 0.34 : 0.44 }}
+    >
+      <Icon
+        name={props.icon}
+        size={props.iconSize ?? 15}
+        color={circleIconColor(props.variant ?? "subtle")}
+      />
+    </View>
+  );
+}
+
+const WORKBENCH_ITEMS: ReadonlyArray<{ id: SceneId; labelKey: MessageKey; icon: IconName }> = [
+  { id: "files", labelKey: "nav.files", icon: "folder" },
+  { id: "git", labelKey: "nav.git", icon: "git-branch" },
+  { id: "terminal", labelKey: "nav.terminal", icon: "terminal-square" },
+];
+
+export function WorkbenchSwitcher() {
+  return (
+    <View
+      role="tablist"
+      style={{
+        boxSizing: "border-box",
+        height: controlHeight.md,
+        flexDirection: "row",
+        alignItems: "center",
+        width: "fit-content",
+        flexShrink: 0,
+        gap: 2,
+        padding: SEGMENT_PADDING,
+        borderRadius: SEGMENT_OUTER_RADIUS,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().segmentedTrackBg,
+        boxShadow: palette().shadowInset,
+      }}
+    >
+      <Each of={WORKBENCH_ITEMS} key={item => item.id}>
+        {item => (
+          <View
+            role="tab"
+            accessibilityLabel={`workbench-switch-${item().id}`}
+            accessibilityState={{ selected: activeScene() === item().id }}
+            onPress={() => activeScene.set(item().id)}
+            style={{
+              boxSizing: "border-box",
+              height: "100%",
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 5,
+              paddingHorizontal: 10,
+              paddingVertical: 0,
+              borderRadius: SEGMENT_INNER_RADIUS,
+              borderCurve: "continuous",
+              borderWidth: 1,
+              borderColor:
+                activeScene() === item().id
+                  ? isLightAppearance()
+                    ? "transparent"
+                    : palette().border
+                  : "transparent",
+              backgroundColor:
+                activeScene() === item().id ? palette().panelRaised : "transparent",
+              boxShadow:
+                activeScene() === item().id
+                  ? `${palette().shadowButton}, ${palette().innerHighlight}`
+                  : undefined,
+              cursor: "pointer",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{
+              backgroundColor:
+                activeScene() === item().id ? palette().panelRaised : palette().surfaceSubtle,
+            }}
+            activeStyle={tactileActiveStyle(0.98)}
+            focusVisibleStyle={focusRingStyle()}
+          >
+            <Icon
+              name={item().icon}
+              size={13}
+              color={activeScene() === item().id ? palette().text : palette().textMuted}
+            />
+            <Text
+              style={{
+                color: activeScene() === item().id ? palette().text : palette().textMuted,
+                fontSize: textSize(12),
+                fontWeight: activeScene() === item().id ? "600" : "500",
+                lineHeight: textLineHeight(12, 1.24),
+                numberOfLines: 1,
+              }}
+            >
+              {tr(item().labelKey)}
+            </Text>
+          </View>
+        )}
+      </Each>
+    </View>
+  );
+}
+
+export interface EmptyStateCardProps {
+  title: string;
+  subtitle?: string;
+  icon?: IconName;
+  actionLabel?: string;
+  onAction?: () => void;
+  style?: StyleProp<ViewStyle>;
+}
+
+export function EmptyStateCard(props: EmptyStateCardProps) {
+  return (
+    <View
+      style={[
+        {
+          borderRadius: radii.lg,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().borderSubtle,
+          backgroundColor: palette().panelRaised,
+          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
+          paddingHorizontal: 24,
+          paddingVertical: 26,
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+        },
+        props.style,
+      ]}
+    >
+      <If when={props.icon ?? ""}>
+        {iconName => (
+          <View
+            style={{
+              width: 38,
+              height: 38,
+              flexShrink: 0,
+              borderRadius: radii.md,
+              borderCurve: "continuous",
+              borderWidth: 1,
+              borderColor: palette().borderSubtle,
+              backgroundColor: palette().surfaceSubtle,
+              alignItems: "center",
+              justifyContent: "center",
+              marginBottom: 2,
+            }}
+          >
+            <Icon name={iconName() as IconName} size={17} color={palette().textMuted} />
+          </View>
+        )}
+      </If>
+      <Text
+        style={{
+          color: palette().text,
+          fontSize: textSize(14),
+          fontWeight: "600",
+          letterSpacing: textTracking(14),
+          textAlign: "center",
+          lineHeight: textLineHeight(14, 1.32),
+        }}
+      >
+        {props.title}
+      </Text>
+      <If when={props.subtitle ?? ""}>
+        {subtitleText => (
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(12),
+              textAlign: "center",
+              maxWidth: 420,
+              lineHeight: textLineHeight(12, 1.48),
+            }}
+          >
+            {subtitleText()}
+          </Text>
+        )}
+      </If>
+      <If when={props.actionLabel && props.onAction ? props.actionLabel : ""}>
+        {labelText => (
+          <View style={{ marginTop: 6 }}>
+            <Button
+              label={labelText()}
+              variant="primary"
+              size="sm"
+              onPress={() => props.onAction?.()}
+            />
+          </View>
+        )}
+      </If>
+    </View>
+  );
+}
+
+export interface InlineConfirmBarProps {
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+export function InlineConfirmBar(props: InlineConfirmBarProps) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 10,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: props.danger ? palette().dangerBorder : palette().warningBorder,
+        backgroundColor: props.danger ? palette().dangerSoft : palette().warningSoft,
+      }}
+    >
+      <Text
+        style={{
+          flex: 1,
+          minWidth: 140,
+          color: palette().text,
+          fontSize: textSize(12),
+          fontWeight: "500",
+          lineHeight: textLineHeight(12, 1.42),
+        }}
+      >
+        {props.message}
+      </Text>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          flexShrink: 0,
+          gap: 6,
+          marginLeft: "auto",
+        }}
+      >
+        <Button
+          label={props.cancelLabel ?? tr("common.cancel")}
+          variant="ghost"
+          size="sm"
+          onPress={props.onCancel}
+        />
+        <Button
+          label={props.confirmLabel ?? tr("common.confirm")}
+          variant={props.danger ? "danger" : "primary"}
+          size="sm"
+          onPress={props.onConfirm}
+        />
+      </View>
+    </View>
+  );
+}
+
+// --- Canonical Input & Search Primitives (`TextField`, `InputBox`, `SearchInput`) ---
+
+export type InputSize = "sm" | "md" | "lg";
+
+export interface TextFieldProps {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit?: (text: string) => void;
+  onKeyPress?: (e: { key: string }) => void;
+  label?: string;
+  hint?: string;
+  error?: string;
+  placeholder?: string;
+  size?: InputSize;
+  leadingIcon?: IconName;
+  trailing?: JSX.Element;
+  clearable?: boolean;
+  clearLabel?: string;
+  multiline?: boolean;
+  minHeight?: number;
+  monospace?: boolean;
+  masked?: boolean;
+  readonly?: boolean;
+  disabled?: boolean;
+  autoFocus?: boolean;
+  surface?: ControlSurface;
+  accessibilityLabel?: string;
+  inputRef?: InputRef | ((node: InputRef) => void);
+  style?: StyleProp<ViewStyle>;
+}
+
+/**
+ * Canonical rounded text field aligned to `controlHeight`, with calm recessed
+ * depth, hairline border, soft accent focus glow, explicit reactive text &
+ * placeholder colors, optional leading icon, trailing slot, and clear action.
+ */
+export function TextField(props: TextFieldProps) {
+  return (
+    <View style={[{ gap: 5, minWidth: 0 }, props.style]}>
+      <If when={props.label ?? ""}>
+        {labelText => (
+          <Text
+            style={{
+              color:
+                props.surface === "chrome" ? palette().chromeText : palette().textSecondary,
+              fontSize: textSize(12),
+              fontWeight: "500",
+              lineHeight: textLineHeight(12, 1.35),
+            }}
+          >
+            {labelText()}
+          </Text>
+        )}
+      </If>
+      <View
+        style={{
+          boxSizing: "border-box",
+          height: props.multiline ? undefined : controlHeight[props.size ?? "md"],
+          minHeight: props.multiline ? (props.minHeight ?? 84) : undefined,
+          flexDirection: "row",
+          alignItems: props.multiline ? "flex-start" : "center",
+          gap: 8,
+          paddingHorizontal: (props.size ?? "md") === "sm" ? 9 : 11,
+          paddingVertical: props.multiline ? 8 : 0,
+          borderRadius: (props.size ?? "md") === "lg" ? radii.md : radii.sm,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: props.error
+            ? palette().danger
+            : props.surface === "chrome"
+              ? palette().chromeBorder
+              : palette().border,
+          backgroundColor:
+            props.surface === "chrome" ? palette().chromeInputBg : palette().inputBg,
+          boxShadow: palette().shadowInset,
+          opacity: props.disabled ? 0.55 : 1,
+          ...paintTransition(MOTION_DURATION.fast),
+        }}
+        hoverStyle={
+          props.disabled
+            ? undefined
+            : {
+                borderColor: props.error
+                  ? palette().danger
+                  : props.surface === "chrome"
+                    ? palette().chromeBorder
+                    : palette().borderStrong,
+              }
+        }
+        focusWithinStyle={
+          props.disabled
+            ? undefined
+            : {
+                borderColor: props.error ? palette().danger : palette().fieldFocusBorder,
+                boxShadow: `0 0 0 3px ${props.error ? palette().dangerSoft : palette().accentSoft}`,
+              }
+        }
+      >
+        <If when={props.leadingIcon ?? ""}>
+          {iconName => (
+            <View style={{ flexShrink: 0, marginTop: props.multiline ? 2 : 0 }}>
+              <Icon
+                name={iconName() as IconName}
+                size={(props.size ?? "md") === "sm" ? 13 : 14}
+                color={
+                  props.surface === "chrome"
+                    ? palette().chromeTextMuted
+                    : palette().textMuted
+                }
+              />
+            </View>
+          )}
+        </If>
+        <Input
+          ref={props.inputRef}
+          value={props.value}
+          placeholder={props.placeholder}
+          multiline={props.multiline}
+          masked={props.masked}
+          readonly={Boolean(props.readonly || props.disabled)}
+          autoFocus={props.autoFocus}
+          accessibilityLabel={props.accessibilityLabel ?? props.label ?? props.placeholder}
+          onChange={e => {
+            if (!props.disabled) props.onChange(e.value);
+          }}
+          onSubmit={e => props.onSubmit?.(e.text)}
+          onKeyPress={props.onKeyPress}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            minHeight: props.multiline ? Math.max(48, (props.minHeight ?? 84) - 16) : undefined,
+            color: props.surface === "chrome" ? palette().chromeText : palette().text,
+            placeholderColor:
+              props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
+            caretColor: palette().accent,
+            fontFamily: props.monospace ? fontMono : undefined,
+            fontSize: textSize(
+              props.monospace ? 12 : (props.size ?? "md") === "sm" ? 12 : 13,
+            ),
+            lineHeight: props.multiline
+              ? textLineHeight(props.monospace ? 12 : 13, 1.5)
+              : undefined,
+          }}
+        />
+        <If
+          when={Boolean(
+            props.clearable && props.value.length > 0 && !props.readonly && !props.disabled,
+          )}
+        >
+          <IconButton
+            icon="close"
+            size="xs"
+            iconSize={11}
+            surface={props.surface}
+            tooltip={props.clearLabel ?? tr("common.clear")}
+            accessibilityLabel={props.clearLabel ?? tr("common.clear")}
+            onPress={() => props.onChange("")}
+            style={{ width: 20, height: 20 }}
+          />
+        </If>
+        <If when={Boolean(props.trailing)}>
+          <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 4 }}>
+            {props.trailing}
+          </View>
+        </If>
+      </View>
+      <If when={props.error ?? ""}>
+        {errText => (
+          <Text
+            style={{
+              color: palette().danger,
+              fontSize: textSize(11.5),
+              lineHeight: textLineHeight(11.5, 1.4),
+            }}
+          >
+            {errText()}
+          </Text>
+        )}
+      </If>
+      <If when={!props.error && (props.hint ?? "") ? props.hint! : ""}>
+        {hintText => (
+          <Text
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(11.5),
+              lineHeight: textLineHeight(11.5, 1.4),
+            }}
+          >
+            {hintText()}
+          </Text>
+        )}
+      </If>
+    </View>
+  );
+}
+
+export type InputBoxProps = TextFieldProps;
+
+/**
+ * Canonical shared input primitive (alias for `TextField`) giving every scene
+ * consistent height, hairline framing, focus glow, and optional leading/trailing
+ * affordances without hand-rolling raw `<Input>` boxes.
+ */
+export function InputBox(props: InputBoxProps) {
+  return <TextField {...props} />;
+}
+
+export interface SearchInputProps {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit?: (text: string) => void;
+  onKeyPress?: (e: { key: string }) => void;
+  placeholder?: string;
+  shortcut?: string;
+  countLabel?: string;
+  clearLabel?: string;
+  size?: InputSize;
+  pill?: boolean;
+  surface?: ControlSurface;
+  autoFocus?: boolean;
+  accessibilityLabel?: string;
+  inputRef?: InputRef | ((node: InputRef) => void);
+  style?: StyleProp<ViewStyle>;
+}
+
+/**
+ * Compact desktop search field aligned to `controlHeight`, with leading search
+ * glyph, explicit reactive `<Input>` color, inline clear action, and optional
+ * shortcut/match counter.
+ */
+export function SearchInput(props: SearchInputProps) {
+  return (
+    <View
+      style={[
+        {
+          boxSizing: "border-box",
+          height: controlHeight[props.size ?? "md"],
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 7,
+          paddingHorizontal: 10,
+          paddingVertical: 0,
+          borderRadius: props.pill ? radii.pill : radii.sm,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor:
+            props.surface === "chrome" ? palette().chromeBorder : palette().border,
+          backgroundColor:
+            props.surface === "chrome" ? palette().chromeInputBg : palette().inputBg,
+          boxShadow: palette().shadowInset,
+          ...paintTransition(MOTION_DURATION.fast),
+        },
+        props.style,
+      ]}
+      hoverStyle={{
+        borderColor:
+          props.surface === "chrome" ? palette().chromeBorder : palette().borderStrong,
+      }}
+      focusWithinStyle={{
+        borderColor: palette().fieldFocusBorder,
+        boxShadow:
+          props.surface === "chrome" ? undefined : `0 0 0 3px ${palette().accentSoft}`,
+      }}
+    >
+      <Icon
+        name="search"
+        size={13}
+        color={
+          props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted
+        }
+      />
+      <Input
+        ref={props.inputRef}
+        value={props.value}
+        placeholder={props.placeholder ?? `${tr("common.search")}…`}
+        autoFocus={props.autoFocus}
+        accessibilityLabel={props.accessibilityLabel ?? props.placeholder ?? tr("common.search")}
+        onChange={e => props.onChange(e.value)}
+        onSubmit={e => props.onSubmit?.(e.text)}
+        onKeyPress={props.onKeyPress}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          color: props.surface === "chrome" ? palette().chromeText : palette().text,
+          placeholderColor:
+            props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
+          caretColor: palette().accent,
+          fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 12.5),
+        }}
+      />
+      <If when={props.countLabel ?? ""}>
+        {count => (
+          <Text
+            style={{
+              flexShrink: 0,
+              color:
+                props.surface === "chrome"
+                  ? palette().chromeTextMuted
+                  : palette().textMuted,
+              fontSize: textSize(10.5),
+              fontWeight: "500",
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(10.5, 1.3),
+            }}
+          >
+            {count()}
+          </Text>
+        )}
+      </If>
+      <If when={props.value.length > 0}>
+        <IconButton
+          icon="close"
+          size="xs"
+          iconSize={11}
+          surface={props.surface}
+          tooltip={props.clearLabel ?? tr("common.clearSearch")}
+          accessibilityLabel={props.clearLabel ?? tr("common.clearSearch")}
+          onPress={() => props.onChange("")}
+          style={{ width: 20, height: 20 }}
+        />
+      </If>
+      <If when={props.value.length === 0 && (props.shortcut ?? "") ? props.shortcut! : ""}>
+        {keys => <KbdHint keys={keys()} surface={props.surface} />}
+      </If>
+    </View>
+  );
+}
+
+export interface SceneHeaderProps {
+  title: string;
+  subtitle?: string;
+  icon?: IconName;
+  badge?: string;
+  leading?: JSX.Element;
+  trailing?: JSX.Element;
+  compact?: boolean;
+  borderBottom?: boolean;
+  style?: StyleProp<ViewStyle>;
+}
+
+/**
+ * Standardized scene header always grounded on `palette().canvas` (never
+ * `palette().panel`), guaranteeing readable contrast across all 9 presets
+ * including split-polarity Monochrome.
+ */
+export function SceneHeader(props: SceneHeaderProps) {
+  return (
+    <View
+      style={[
+        {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 12,
+          paddingHorizontal: props.compact ? 14 : 24,
+          paddingVertical: props.compact ? 10 : 18,
+          backgroundColor: palette().canvas,
+          borderBottomWidth: props.borderBottom ? 1 : 0,
+          borderColor: palette().borderSubtle,
+        },
+        props.style,
+      ]}
+    >
+      <If when={Boolean(props.leading)}>
+        <View style={{ flexShrink: 0 }}>{props.leading}</View>
+      </If>
+      <If when={props.icon ?? ""}>
+        {iconName => (
+          <View
+            style={{
+              width: props.compact ? 28 : 36,
+              height: props.compact ? 28 : 36,
+              flexShrink: 0,
+              borderRadius: radii.md,
+              borderCurve: "continuous",
+              borderWidth: 1,
+              borderColor: palette().borderSubtle,
+              backgroundColor: palette().panelRaised,
+              boxShadow: palette().shadowButton,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon
+              name={iconName() as IconName}
+              size={props.compact ? 15 : 17}
+              color={palette().textSecondary}
+            />
+          </View>
+        )}
+      </If>
+      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 8 }}>
+          <Text
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              color: palette().text,
+              fontSize: textSize(props.compact ? 15 : 22),
+              fontWeight: "600",
+              letterSpacing: textTracking(props.compact ? 15 : 22),
+              lineHeight: textLineHeight(props.compact ? 15 : 22, 1.22),
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.title}
+          </Text>
+          <If when={props.badge ?? ""}>
+            {label => <Badge label={label()} tone="neutral" />}
+          </If>
+        </View>
+        <If when={props.subtitle ?? ""}>
+          {sub => (
+            <Text
+              style={{
+                color: palette().textMuted,
+                fontSize: textSize(12.5),
+                maxWidth: 620,
+                lineHeight: textLineHeight(12.5, 1.44),
+                numberOfLines: 2,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {sub()}
+            </Text>
+          )}
+        </If>
+      </View>
+      <If when={Boolean(props.trailing)}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
+          {props.trailing}
+        </View>
+      </If>
+    </View>
+  );
+}
+
+export type InlineBannerTone = "info" | "success" | "warning" | "danger" | "neutral";
+
+export interface InlineBannerProps {
+  tone?: InlineBannerTone;
+  title?: string;
+  message: string;
+  icon?: IconName;
+  /** Optional custom trailing CTA slot aligned cleanly to the right (e.g. Sign In button). */
+  action?: JSX.Element;
+  actionLabel?: string;
+  onAction?: () => void;
+  onDismiss?: () => void;
+  accessibilityLabel?: string;
+  style?: StyleProp<ViewStyle>;
+}
+
+function bannerStyleTokens(tone: InlineBannerTone): {
+  bg: string;
+  border: string;
+  fg: string;
+  defaultIcon: IconName;
+} {
+  if (tone === "danger") {
+    return {
+      bg: palette().dangerSoft,
+      border: palette().dangerBorder,
+      fg: palette().danger,
+      defaultIcon: "alert-circle",
+    };
+  }
+  if (tone === "warning") {
+    return {
+      bg: palette().warningSoft,
+      border: palette().warningBorder,
+      fg: palette().warning,
+      defaultIcon: "warning",
+    };
+  }
+  if (tone === "success") {
+    return {
+      bg: palette().successSoft,
+      border: palette().successBorder,
+      fg: palette().success,
+      defaultIcon: "check-circle",
+    };
+  }
+  if (tone === "info") {
+    return {
+      bg: palette().accentSoft,
+      border: palette().accentBorder,
+      fg: palette().accent,
+      defaultIcon: "info",
+    };
+  }
+  return {
+    bg: palette().surfaceTertiary,
+    border: palette().border,
+    fg: palette().textSecondary,
+    defaultIcon: "info",
+  };
+}
+
+/**
+ * Dismissible semantic inline banner for error alerts, warnings, and notices.
+ */
+export function InlineBanner(props: InlineBannerProps) {
+  return (
+    <View
+      role="alert"
+      accessibilityLabel={props.accessibilityLabel}
+      style={[
+        {
+          flexDirection: "row",
+          alignItems: props.title ? "flex-start" : "center",
+          gap: 10,
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderRadius: radii.md,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: bannerStyleTokens(props.tone ?? "info").border,
+          backgroundColor: bannerStyleTokens(props.tone ?? "info").bg,
+        },
+        props.style,
+      ]}
+    >
+      <View
+        style={{
+          flexShrink: 0,
+          height: textLineHeight(12.5, 1.38),
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Icon
+          name={props.icon ?? bannerStyleTokens(props.tone ?? "info").defaultIcon}
+          size={15}
+          color={bannerStyleTokens(props.tone ?? "info").fg}
+        />
+      </View>
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <If when={props.title ?? ""}>
+          {t => (
+            <Text
+              style={{
+                color: palette().text,
+                fontSize: textSize(12.5),
+                fontWeight: "600",
+                lineHeight: textLineHeight(12.5, 1.38),
+              }}
+            >
+              {t()}
+            </Text>
+          )}
+        </If>
+        <Text
+          style={{
+            color: props.title ? palette().textSecondary : palette().text,
+            fontSize: textSize(props.title ? 12 : 12.5),
+            lineHeight: textLineHeight(props.title ? 12 : 12.5, 1.44),
+          }}
+        >
+          {props.message}
+        </Text>
+      </View>
+      <If
+        when={Boolean(
+          props.action ||
+            (props.actionLabel && props.onAction) ||
+            props.onDismiss,
+        )}
+      >
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            alignSelf: "center",
+            flexShrink: 0,
+            gap: 8,
+          }}
+        >
+          <If when={Boolean(props.action)}>{props.action}</If>
+          <If when={props.actionLabel && props.onAction ? props.actionLabel : ""}>
+            {label => (
+              <Button
+                label={label()}
+                size="xs"
+                variant="secondary"
+                onPress={() => props.onAction?.()}
+              />
+            )}
+          </If>
+          <If when={Boolean(props.onDismiss)}>
+            <IconButton
+              icon="close"
+              size="xs"
+              iconSize={12}
+              tooltip={tr("common.dismiss")}
+              accessibilityLabel={tr("common.dismissNotice")}
+              onPress={() => props.onDismiss?.()}
+            />
+          </If>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+export interface SkeletonBlockProps {
+  width?: ViewStyle["width"];
+  height?: number;
+  borderRadius?: number;
+  style?: StyleProp<ViewStyle>;
+}
+
+/** Subtle pulse loading placeholder respecting `reduceMotion()`. */
+export function SkeletonBlock(props: SkeletonBlockProps) {
+  return (
+    <View
+      style={[
+        {
+          width: props.width ?? "100%",
+          height: props.height ?? 14,
+          borderRadius: props.borderRadius ?? radii.xs,
+          borderCurve: "continuous",
+          backgroundColor: palette().skeletonBg,
+          animationName: reduceMotion() ? "none" : "pulse",
+          animationDuration: 1500,
+          animationTimingFunction: "ease-in-out",
+          animationIterationCount: "infinite",
+        },
+        props.style,
+      ]}
+    />
+  );
+}
+
+export interface KpiCellProps {
+  label: string;
+  value: string | number;
+  detail?: string;
+  icon?: IconName;
+  tone?: SemanticTone;
+  /** Renders muted calmer typography for unavailable / sentinel values. */
+  valueMuted?: boolean;
+  borderLeft?: boolean;
+  align?: "start" | "center";
+  valueFirst?: boolean;
+  style?: StyleProp<ViewStyle>;
+}
+
+function kpiValueColor(tone?: SemanticTone, muted?: boolean): string {
+  if (muted) return palette().textMuted;
+  if (tone === "accent") return palette().accent;
+  if (tone === "success") return palette().success;
+  if (tone === "warning") return palette().warning;
+  if (tone === "danger") return palette().danger;
+  return palette().text;
+}
+
+function KpiLabelRow(props: { label: string; icon?: IconName; centered: boolean }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: props.centered ? "center" : "flex-start",
+        gap: 5,
+        minWidth: 0,
+        maxWidth: "100%",
+      }}
+    >
+      <If when={props.icon ?? ""}>
+        {iconName => (
+          <View style={{ flexShrink: 0 }}>
+            <Icon name={iconName() as IconName} size={12} color={palette().textMuted} />
+          </View>
+        )}
+      </If>
+      <Text
+        style={{
+          flex: props.centered ? undefined : 1,
+          flexShrink: 1,
+          minWidth: 0,
+          maxWidth: "100%",
+          color: palette().textMuted,
+          fontSize: textSize(11),
+          fontWeight: "500",
+          lineHeight: textLineHeight(11, 1.35),
+          textAlign: props.centered ? "center" : "left",
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
+}
+
+function KpiValueText(props: {
+  value: string | number;
+  tone?: SemanticTone;
+  muted?: boolean;
+  centered: boolean;
+}) {
+  return (
+    <Text
+      adjustsFontSizeToFit
+      minimumFontScale={0.72}
+      style={{
+        maxWidth: "100%",
+        color: kpiValueColor(props.tone, props.muted),
+        fontSize: textSize(props.muted ? 14 : 20),
+        fontWeight: props.muted ? "500" : "600",
+        letterSpacing: props.muted ? 0 : textTracking(20),
+        fontVariant: ["tabular-nums"],
+        lineHeight: textLineHeight(props.muted ? 14 : 20, 1.2),
+        textAlign: props.centered ? "center" : "left",
+        numberOfLines: 1,
+      }}
+    >
+      {String(props.value)}
+    </Text>
+  );
+}
+
+/**
+ * Calm tabular-numerals KPI telemetry cell matching `src/web-ui`'s
+ * PersonalOverview 5-column metric strip. Uses native `adjustsFontSizeToFit` so
+ * numbers shrink gracefully instead of ellipsizing on narrow panes or large font scales.
+ */
+export function KpiCell(props: KpiCellProps) {
+  return (
+    <View
+      style={[
+        {
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          alignItems: props.align === "center" ? "center" : "stretch",
+          paddingHorizontal: 14,
+          paddingVertical: 14,
+          gap: 5,
+          borderLeftWidth: props.borderLeft ? 1 : 0,
+          borderColor: palette().borderSubtle,
+        },
+        props.style,
+      ]}
+    >
+      <If
+        when={Boolean(props.valueFirst)}
+        else={
+          <KpiLabelRow
+            label={props.label}
+            icon={props.icon}
+            centered={props.align === "center"}
+          />
+        }
+      >
+        <KpiValueText
+          value={props.value}
+          tone={props.tone}
+          muted={props.valueMuted}
+          centered={props.align === "center"}
+        />
+      </If>
+      <If
+        when={Boolean(props.valueFirst)}
+        else={
+          <KpiValueText
+            value={props.value}
+            tone={props.tone}
+            muted={props.valueMuted}
+            centered={props.align === "center"}
+          />
+        }
+      >
+        <KpiLabelRow
+          label={props.label}
+          icon={props.icon}
+          centered={props.align === "center"}
+        />
+      </If>
+      <If when={props.detail ?? ""}>
+        {detail => (
+          <Text
+            style={{
+              maxWidth: "100%",
+              color: palette().textMuted,
+              fontSize: textSize(10),
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(10, 1.35),
+              textAlign: props.align === "center" ? "center" : "left",
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {detail()}
+          </Text>
+        )}
+      </If>
+    </View>
+  );
+}
+
+export type DeviceKind =
+  | "laptop"
+  | "desktop"
+  | "server"
+  | "container"
+  | "mobile"
+  | "cloud"
+  | "remote";
+
+export interface DeviceGlyphProps {
+  kind?: DeviceKind | (string & {});
+  size?: number;
+  status?: string;
+  active?: boolean;
+  ringColor?: string;
+}
+
+function deviceKindIcon(kind?: string): IconName {
+  const k = (kind ?? "").trim().toLowerCase();
+  if (k.includes("server") || k.includes("ssh") || k.includes("linux") || k.includes("build")) {
+    return "server";
+  }
+  if (k.includes("docker") || k.includes("container")) return "container";
+  if (k.includes("mobile") || k.includes("phone") || k.includes("ios") || k.includes("android")) {
+    return "smartphone";
+  }
+  if (k.includes("cloud") || k.includes("relay")) return "cloud";
+  if (k.includes("desktop") || k.includes("workstation") || k.includes("monitor")) {
+    return "monitor";
+  }
+  return "laptop";
+}
+
+function deviceStatusKind(status?: string): StatusDotKind {
+  const s = (status ?? "").trim().toLowerCase();
+  if (s === "online" || s === "connected" || s === "ready" || s === "active") return "success";
+  if (s === "connecting" || s === "syncing" || s === "running") return "accent";
+  if (s === "warning" || s === "degraded" || s === "idle") return "warning";
+  if (s === "error" || s === "failed" || s === "offline") return "danger";
+  return "muted";
+}
+
+function deviceStatusIsTransient(status?: string): boolean {
+  const s = (status ?? "").trim().toLowerCase();
+  return s === "connecting" || s === "syncing" || s === "running";
+}
+
+/**
+ * Clean hardware glyph emblem (`laptop`, `monitor`, `server`, `container`,
+ * `smartphone`, `cloud`) for peer devices, SSH hosts, and workstations.
+ */
+export function DeviceGlyph(props: DeviceGlyphProps) {
+  return (
+    <View
+      style={{
+        position: "relative",
+        width: props.size ?? 34,
+        height: props.size ?? 34,
+        flexShrink: 0,
+        borderRadius: Math.round((props.size ?? 34) * 0.28),
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: props.active ? palette().accentBorder : palette().border,
+        backgroundColor: props.active ? palette().accentSoft : palette().surfaceTertiary,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Icon
+        name={deviceKindIcon(props.kind)}
+        size={Math.max(14, Math.round((props.size ?? 34) * 0.52))}
+        color={props.active ? palette().accent : palette().textSecondary}
+      />
+      <If when={(props.status ?? "").trim()}>
+        {st => (
+          <View
+            style={{
+              position: "absolute",
+              right: -2,
+              bottom: -2,
+              padding: 1.5,
+              borderRadius: radii.pill,
+              backgroundColor: props.ringColor ?? palette().canvas,
+            }}
+          >
+            <StatusDot
+              size={Math.max(6, Math.round((props.size ?? 34) * 0.22))}
+              kind={deviceStatusKind(st())}
+              pulse={deviceStatusIsTransient(st())}
+            />
+          </View>
+        )}
+      </If>
+    </View>
+  );
+}

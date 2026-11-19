@@ -1,0 +1,6 @@
+{
+  "build": {
+    "devUrl": "http://127.0.0.1:8790",
+    "frontendDist": "../../src/nsh-ui/.nsh/out/OpenBitFun"
+  }
+}

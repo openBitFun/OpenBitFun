@@ -1,0 +1,4084 @@
+// Host module of the OpenBitFun NSH frontend.
+//
+// The NSH engine runs inside the OpenBitFun desktop window but in its own
+// JavaScript realm, so it cannot see `window.__TAURI__` itself. This module is
+// the page-side half of the bridge and is the only place that talks to the
+// native host:
+//
+//   host.call("openbitfun.invoke", { action, request })  -> Tauri IPC, one command
+//   host.call("openbitfun.listen", { event })           -> subscribe a backend event
+//   host.call("openbitfun.unlisten", { event })         -> release it
+//   player event "openbitfun.event"                     -> { event, payload }
+//
+// `nsh package --target web` copies this file into the site as host.<digest>.js
+// and the page runs `createHost(player)` before the app starts.
+//
+// Without a native host (a plain browser during `nsh run --target web`, or a
+// headless `nsh test`) every call answers from the fixtures below, so the whole
+// shell is developable and testable without the desktop binary.
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+function normalizeDevLocale(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase().replace(/_/g, "-");
+  if (
+    lower === "zh-tw" ||
+    lower === "zh-hk" ||
+    lower === "zh-mo" ||
+    lower === "zh-hant" ||
+    lower.startsWith("zh-hant-")
+  ) {
+    return "zh-TW";
+  }
+  if (
+    lower === "zh" ||
+    lower === "zh-cn" ||
+    lower === "zh-sg" ||
+    lower === "zh-hans" ||
+    lower.startsWith("zh-hans-") ||
+    lower.startsWith("zh-")
+  ) {
+    return "zh-CN";
+  }
+  if (lower === "en" || lower === "en-us" || lower.startsWith("en-")) {
+    return "en-US";
+  }
+  return null;
+}
+
+function readDevUrlLocale() {
+  try {
+    const search =
+      globalThis.location && typeof globalThis.location.search === "string"
+        ? globalThis.location.search
+        : "";
+    if (!search) return null;
+    const params = new URLSearchParams(search);
+    return normalizeDevLocale(params.get("lang") || params.get("locale"));
+  } catch {
+    return null;
+  }
+}
+
+function readDevUrlAuthLoggedOut() {
+  try {
+    const search =
+      globalThis.location && typeof globalThis.location.search === "string"
+        ? globalThis.location.search
+        : "";
+    if (!search) return false;
+    const params = new URLSearchParams(search);
+    const raw = (params.get("auth") || "").trim().toLowerCase();
+    return raw === "logged_out" || raw === "loggedout" || raw === "signed_out" || raw === "false";
+  } catch {
+    return false;
+  }
+}
+
+function payloadOf(args) {
+  if (!args || typeof args !== "object") return {};
+  if (args.request !== undefined && args.request !== null) return args.request;
+  if (args.raw !== undefined && args.raw !== null) return args.raw;
+  return {};
+}
+
+function defaultPersonaContent(fileName, workspaceLabel) {
+  const name = workspaceLabel || "Personal Assistant";
+  switch (fileName) {
+    case "IDENTITY.md":
+      return `# Identity\n\n- **Name**: ${name}\n- **Role**: Autonomous engineering & research partner\n- **Tone**: Calm, direct, and verification-first\n`;
+    case "SOUL.md":
+      return `# Soul\n\n1. Prioritize clarity over ceremony.\n2. Surface uncertainties and trade-offs explicitly before mutating shared state.\n3. Keep every remote or unattended action safe and reversible.\n`;
+    case "USER.md":
+      return `# User Preferences\n\n- Preferred language: English\n- Code style: Explicit types, concise diffs, no silent fallbacks\n- Daily digest window: 09:00 local time\n`;
+    case "SKILL.md":
+      return `---\nname: studio-skill\ndescription: Guided workflow skill fixture for the Personal Agent Studio.\n---\n\n# Overview\n\nUse this skill to inspect context, verify invariants, and summarize outcomes cleanly.\n`;
+    default:
+      return `# OpenBitFun\n\nThis content comes from the NSH development fixture, not from the host.\n`;
+  }
+}
+
+const DEV_SESSION_TURNS = {
+  "dev-session-1": [
+    {
+      id: "turn-1",
+      turnId: "turn-1",
+      turnIndex: 0,
+      sessionId: "dev-session-1",
+      timestamp: 1763023200000,
+      userMessage: {
+        id: "user-1",
+        content: "Summarize today's highlights across my notes and AI consumer tools.",
+        timestamp: 1763023200000,
+      },
+      modelRounds: [
+        {
+          id: "round-1",
+          turnId: "turn-1",
+          roundIndex: 0,
+          timestamp: 1763023201000,
+          effectiveModelName: "Studio Primary",
+          durationMs: 1180,
+          thinkingItems: [],
+          toolItems: [],
+          textItems: [
+            {
+              id: "text-1",
+              content:
+                "Here is today's brief across your saved notes and consumer AI tools:\n\n- **Local-first companions**: Minimal matte surfaces with collapsible side drawers are replacing multi-bar dashboards so conversations stay calm and legible.\n- **Voice & quick capture**: Single-line capsule composers with inline attachment and mention triggers keep capture under two seconds.\n- **Scheduled digests**: Morning workspace briefings and diff watchdogs are queued for 09:00 local time.\n\nWant me to turn any of these into a recurring morning routine?",
+              isStreaming: false,
+              isMarkdown: true,
+              orderIndex: 0,
+              timestamp: 1763023202000,
+            },
+          ],
+        },
+      ],
+      status: "completed",
+    },
+    {
+      id: "turn-2",
+      turnId: "turn-2",
+      turnIndex: 1,
+      sessionId: "dev-session-1",
+      timestamp: 1763023960000,
+      userMessage: {
+        id: "user-2",
+        content: "Help me pick a crisp focus for this afternoon's session.",
+        timestamp: 1763023960000,
+      },
+      modelRounds: [
+        {
+          id: "round-2",
+          turnId: "turn-2",
+          roundIndex: 0,
+          timestamp: 1763023961000,
+          effectiveModelName: "Studio Primary",
+          durationMs: 940,
+          thinkingItems: [
+            {
+              id: "think-1",
+              content: "Reviewed open routines, workspace notes, and pending git changes to suggest three focused options.",
+              reasoningKind: "reasoning",
+              isStreaming: false,
+              isCollapsed: true,
+              orderIndex: 0,
+              timestamp: 1763023961000,
+            },
+          ],
+          toolItems: [],
+          textItems: [
+            {
+              id: "text-2",
+              content:
+                "Three calm, high-leverage blocks for this afternoon:\n\n1. **Finish persona tuning** — refine `SOUL.md` and `IDENTITY.md` for your primary assistant.\n2. **Review staged UI changes** — inspect the working copy diff and record a clean commit.\n3. **Test Telegram handoff** — send a quick prompt from your phone over the active bot channel.",
+              isStreaming: false,
+              isMarkdown: true,
+              orderIndex: 1,
+              timestamp: 1763023962000,
+            },
+          ],
+        },
+      ],
+      status: "completed",
+    },
+  ],
+  "dev-session-2": [
+    {
+      id: "turn-3",
+      turnId: "turn-3",
+      turnIndex: 0,
+      sessionId: "dev-session-2",
+      timestamp: 1763010000000,
+      userMessage: {
+        id: "user-3",
+        content: "Pull the action items out of docs/notes.md.",
+        timestamp: 1763010000000,
+      },
+      modelRounds: [
+        {
+          id: "round-3",
+          turnId: "turn-3",
+          roundIndex: 0,
+          timestamp: 1763010001000,
+          effectiveModelName: "Studio Primary",
+          durationMs: 760,
+          thinkingItems: [],
+          toolItems: [],
+          textItems: [
+            {
+              id: "text-3",
+              content:
+                "From `docs/notes.md`, there are two open items:\n\n- Verify both dark charcoal and warm alabaster palettes across all 12 scenes.\n- Keep all remote workspace and Peer Device guards degrading cleanly.",
+              isStreaming: false,
+              isMarkdown: true,
+              orderIndex: 0,
+              timestamp: 1763010002000,
+            },
+          ],
+        },
+      ],
+      status: "completed",
+    },
+  ],
+  "dev-session-3": [
+    {
+      id: "turn-4",
+      turnId: "turn-4",
+      timestamp: 1762980000000,
+      userMessage: {
+        id: "user-4",
+        content: "Draft a relaxed two-day coastal weekend itinerary with light driving.",
+        timestamp: 1762980000000,
+      },
+      modelRounds: [
+        {
+          id: "round-4",
+          assistantMessage: {
+            id: "assistant-4",
+            content:
+              "### Coastal Weekend Plan\n\n- **Saturday morning**: Coastal trail walk, bakery coffee stop, and tide-pool overlook before noon.\n- **Saturday afternoon**: Waterfront bookshop browse and early dinner near the harbor.\n- **Sunday**: Slow breakfast, botanical garden loop, and an unhurried drive back by 4 PM.",
+          },
+        },
+      ],
+    },
+  ],
+  "dev-session-4": [
+    {
+      id: "turn-5",
+      turnId: "turn-5",
+      timestamp: 1762940000000,
+      userMessage: {
+        id: "user-5",
+        content: "Review repository architecture boundaries at a glance.",
+        timestamp: 1762940000000,
+      },
+      modelRounds: [
+        {
+          id: "round-5",
+          assistantMessage: {
+            id: "assistant-5",
+            content:
+              "Dependencies flow strictly downward from `interfaces` -> `assembly` -> `adapters` -> `services` -> `execution` -> `contracts`. UI scenes in `src/nsh-ui` remain transport-agnostic through `src/bridge.ts` and `host.js`.",
+          },
+        },
+      ],
+    },
+  ],
+  "dev-session-notes-1": [
+    {
+      id: "turn-notes-1",
+      turnId: "turn-notes-1",
+      timestamp: 1763015000000,
+      userMessage: {
+        id: "user-notes-1",
+        content: "Capture the key takeaways from this week's reading.",
+        timestamp: 1763015000000,
+      },
+      modelRounds: [
+        {
+          id: "round-notes-1",
+          assistantMessage: {
+            id: "assistant-notes-1",
+            content:
+              "Key takeaways saved to `journal.md`:\n\n- Calm ambient interfaces keep attention on one conversation at a time.\n- Progressive disclosure lets technical depth stay one click away without crowding the canvas.",
+          },
+        },
+      ],
+    },
+  ],
+};
+
+const devWorkspaces = [
+  {
+    id: "dev-workspace-openbitfun",
+    name: "OpenBitFun",
+    rootPath: "/workspace/demo",
+    workspaceKind: "local",
+    lastAccessed: 1763024000000,
+  },
+  {
+    id: "dev-workspace-notes",
+    name: "Personal Notes",
+    rootPath: "/workspace/notes",
+    workspaceKind: "local",
+    lastAccessed: 1763015000000,
+  },
+];
+
+let activeWorkspaceId = "dev-workspace-openbitfun";
+
+let devSessions = [
+  {
+    sessionId: "dev-session-1",
+    sessionName: "Daily AI consumer tools digest",
+    lastUpdated: 1763024000000,
+    createdAt: 1763020000000,
+    messageCount: 4,
+    workspaceId: "dev-workspace-openbitfun",
+    agentType: "Standard",
+    modelName: "gpt-4.1-mini",
+    status: "completed",
+  },
+  {
+    sessionId: "dev-session-2",
+    sessionName: "Summarize desktop notes",
+    lastUpdated: 1763010000000,
+    createdAt: 1763008000000,
+    messageCount: 2,
+    workspaceId: "dev-workspace-openbitfun",
+    agentType: "Standard",
+    modelName: "gpt-4.1-mini",
+    status: "completed",
+  },
+  {
+    sessionId: "dev-session-3",
+    sessionName: "Plan weekend trip",
+    lastUpdated: 1762980000000,
+    createdAt: 1762978000000,
+    messageCount: 2,
+    workspaceId: "dev-workspace-openbitfun",
+    agentType: "Creative",
+    modelName: "gpt-4.1-mini",
+    status: "completed",
+  },
+  {
+    sessionId: "dev-session-4",
+    sessionName: "Review repository architecture",
+    lastUpdated: 1762940000000,
+    createdAt: 1762938000000,
+    messageCount: 2,
+    workspaceId: "dev-workspace-openbitfun",
+    agentType: "Standard",
+    modelName: "gpt-4.1-mini",
+    status: "completed",
+  },
+  {
+    sessionId: "dev-session-5",
+    sessionName: "Archived research scratchpad",
+    lastUpdated: 1762800000000,
+    createdAt: 1762790000000,
+    messageCount: 2,
+    workspaceId: "dev-workspace-openbitfun",
+    agentType: "Minimal",
+    modelName: "gpt-4.1-mini",
+    persistedStatus: "archived",
+    status: "archived",
+  },
+  {
+    sessionId: "dev-session-notes-1",
+    sessionName: "Weekly reading notes",
+    lastUpdated: 1763015000000,
+    createdAt: 1763012000000,
+    messageCount: 2,
+    workspaceId: "dev-workspace-notes",
+    agentType: "Creative",
+    modelName: "gpt-4.1-mini",
+    status: "completed",
+  },
+];
+
+let devMcpServers = [];
+let devMcpJsonConfig = "{\n  \"mcpServers\": {}\n}";
+let devMcpFingerprint = 1;
+let devAcpJsonConfig = "{\n  \"acpClients\": {}\n}\n";
+
+let devConfigs = {
+  "appearance.theme": "dark",
+  "appearance.language": "en-US",
+  "terminal.defaultShell": "/bin/zsh",
+  "editor.fontSize": 13,
+  app: {
+    language: "en-US",
+    auto_update: true,
+    telemetry: false,
+    confirm_on_exit: true,
+    restore_windows: true,
+    keybindings: { "session.new": "Mod+N" },
+  },
+  "app.language": "en-US",
+  "app.logging.level": "info",
+  "app.prevent_sleep": false,
+  "app.logging.include_sensitive_diagnostics": false,
+  "app.hooks.enabled": true,
+  "app.hooks.project_hooks_enabled": false,
+  "app.flow_chat": {
+    default_mode_strategy: "follow_last",
+    last_mode_id: "Standard",
+    auto_show_selection_toolbar: true,
+    send_during_turn: "immediate",
+  },
+  "app.ai_experience": {
+    enable_session_title_generation: true,
+    enable_workspace_search: true,
+    quick_actions: [
+      { id: "commit", label: "Commit", prompt: "Commit all current code changes", enabled: true },
+      { id: "create_pr", label: "Create PR", prompt: "Create a Pull Request", enabled: true },
+    ],
+  },
+  "app.worktrees.rootPath": "~/.openbitfun/worktrees",
+  "app.worktrees.branchPrefix": "openbitfun/",
+  "app.worktrees.copyLocalChanges": false,
+  "app.worktrees.autoDeleteEnabled": true,
+  "app.worktrees.autoDeleteLimit": 15,
+  editor: { fontSize: 13, font_size: 14, tab_size: 4, word_wrap: "off", line_numbers: "on" },
+  terminal: { defaultShell: "/bin/zsh", font_size: 14, scrollback: 1000, cursor_style: "block" },
+  font: { uiSize: { level: "default" } },
+  "ai.models": [
+    {
+      id: "model-1",
+      name: "Studio Primary",
+      provider: "openai",
+      model_name: "gpt-4.1-mini",
+      base_url: "https://api.openai.com/v1",
+      request_url: "https://api.openai.com/v1/chat/completions",
+      enabled: true,
+      category: "general_chat",
+      capabilities: ["text_chat", "chat"],
+      context_window: 128000,
+      max_tokens: 16384,
+    },
+    {
+      id: "model-2",
+      name: "Studio Reasoning",
+      provider: "openai",
+      model_name: "o3-mini",
+      base_url: "https://api.openai.com/v1",
+      request_url: "https://api.openai.com/v1/chat/completions",
+      enabled: true,
+      category: "general_chat",
+      capabilities: ["text_chat", "chat", "reasoning"],
+      context_window: 200000,
+      max_tokens: 65536,
+    },
+  ],
+  "ai.default_models": { primary: "model-1", fast: "model-1" },
+  "ai.task_models": {
+    session_title: { Fixed: { model_id: "model-1" } },
+    git_commit: "Inherit",
+  },
+  "ai.web_search": {
+    provider: "exa_mcp_free",
+    providers: {
+      exa_mcp_free: {},
+      tavily: { credentialId: "tavily-search-api" },
+    },
+  },
+  "ai.decision_model": { model_name: "gpt-4.1-mini", endpoint: "https://api.openai.com/v1" },
+  "ai.enable_deferred_tool_loading": true,
+  "ai.subagent_max_concurrency": 4,
+  "ai.swarm_max_concurrency": 4,
+  "ai.subagent_batch_execution_policy": "force_parallel",
+  "ai.tool_presentation_mode": "native",
+  "ai.computer_use_enabled": true,
+  "ai.browser_control_auto_connect_on_startup": false,
+  "ai.browser_control_preferred_browser": "",
+  tool_permissions: {
+    policy: {
+      preset: "ask",
+      rules: [{ action: "run_command", resource: "git status", effect: "allow" }],
+    },
+    interaction: { auto_approve_ask: false },
+    approval: {
+      strategy: "interactive",
+      model_kind: "chat",
+      chat_model_id: "fast",
+      timeout_ms: 30000,
+      on_ask: "user",
+      on_error: "ask",
+    },
+  },
+  memories: {
+    generate_memories: true,
+    generate_for_btw_sessions: false,
+    use_memories: true,
+    external_context_policy: "clear_tool_results",
+    max_raw_memories_for_consolidation: 64,
+    max_unused_days: 30,
+    max_rollout_age_days: 10,
+    max_rollouts_per_startup: 5,
+    max_rollouts_scan_limit: 2000,
+    min_rollout_idle_hours: 6,
+    phase1_max_concurrency: 1,
+    extract_model: null,
+    consolidation_model: null,
+  },
+};
+
+const devFiles = {
+  "/workspace/demo": [
+    { name: "src", path: "/workspace/demo/src", isDirectory: true },
+    { name: "docs", path: "/workspace/demo/docs", isDirectory: true },
+    { name: "README.md", path: "/workspace/demo/README.md", isDirectory: false, size: 1280 },
+  ],
+  "/workspace/demo/src": [
+    { name: "web-ui", path: "/workspace/demo/src/web-ui", isDirectory: true },
+    { name: "nsh-ui", path: "/workspace/demo/src/nsh-ui", isDirectory: true },
+  ],
+  "/workspace/demo/src/nsh-ui": [
+    { name: "App.tsx", path: "/workspace/demo/src/nsh-ui/App.tsx", isDirectory: false, size: 4200 },
+  ],
+  "/workspace/demo/src/web-ui": [],
+  "/workspace/demo/docs": [
+    { name: "notes.md", path: "/workspace/demo/docs/notes.md", isDirectory: false, size: 640 },
+  ],
+  "/workspace/notes": [
+    { name: "journal.md", path: "/workspace/notes/journal.md", isDirectory: false, size: 512 },
+  ],
+};
+
+const devFileContents = {
+  "/workspace/demo/README.md":
+    "# OpenBitFun\n\nPersonal Agent Studio running on the NSH web target fixture host.\n",
+  "/workspace/demo/docs/notes.md":
+    "# Studio Notes\n\n- Verify dark matte charcoal and warm alabaster palettes.\n- Exercise Sessions, Assistants, Agents, Skills, Routines, Git, and Spaces.\n",
+  "/workspace/notes/journal.md":
+    "# Personal Journal\n\n- Keep the daily workspace smooth and distraction-free.\n",
+  "/workspace/demo/src/nsh-ui/App.tsx":
+    "// Development fixture preview\nexport function AppPreview() {\n  return null;\n}\n",
+  "/workspace/assistants/nova/IDENTITY.md": defaultPersonaContent("IDENTITY.md", "Nova"),
+  "/workspace/assistants/nova/SOUL.md": defaultPersonaContent("SOUL.md", "Nova"),
+  "/workspace/assistants/nova/USER.md": defaultPersonaContent("USER.md", "Nova"),
+  "/workspace/assistants/atlas/IDENTITY.md": defaultPersonaContent("IDENTITY.md", "Atlas Researcher"),
+  "/workspace/assistants/atlas/SOUL.md": defaultPersonaContent("SOUL.md", "Atlas Researcher"),
+  "/workspace/assistants/atlas/USER.md": defaultPersonaContent("USER.md", "Atlas Researcher"),
+  "/workspace/skills/code-review-coach/SKILL.md":
+    "---\nname: code-review-coach\ndescription: Reviews staged diffs for invariants, edge cases, and test coverage.\n---\n\n# Code Review Coach\n\nInspect changed files, trace callers, and flag silent fallbacks.\n",
+  "/workspace/demo/.openbitfun/skills/release-checklist/SKILL.md":
+    "---\nname: release-checklist\ndescription: Validates build gates, changelogs, and compatibility contracts before release.\n---\n\n# Release Checklist\n\nRun focused verification gates and confirm upgrade compatibility.\n",
+  "/builtin/skills/research-synthesis/SKILL.md":
+    "---\nname: research-synthesis\ndescription: Synthesizes architectural notes and open questions into structured briefs.\n---\n\n# Research Synthesis\n\nCross-reference sources and organize findings clearly.\n",
+};
+
+// Assistants state
+let devAssistants = [
+  {
+    id: "dev-assistant-nova",
+    name: "Nova",
+    rootPath: "/workspace/assistants/nova",
+    workspaceType: "normal",
+    workspaceKind: "assistant",
+    assistantId: "nova",
+    languages: ["markdown"],
+    openedAt: "2026-11-01T09:00:00Z",
+    lastAccessed: "2026-11-18T12:00:00Z",
+    description: "Primary personal assistant for planning, writing, and daily synthesis.",
+    tags: ["primary", "personal"],
+    relatedPaths: [],
+  },
+  {
+    id: "dev-assistant-atlas",
+    name: "Atlas Researcher",
+    rootPath: "/workspace/assistants/atlas",
+    workspaceType: "normal",
+    workspaceKind: "assistant",
+    assistantId: "atlas",
+    languages: ["markdown"],
+    openedAt: "2026-11-10T10:00:00Z",
+    lastAccessed: "2026-11-17T18:00:00Z",
+    description: "Deep literature & codebase investigator with calm structured reports.",
+    tags: ["research"],
+    relatedPaths: [],
+  },
+];
+let primaryAssistantId = "dev-assistant-nova";
+let assistantSeq = 3;
+
+// Agents & Subagents state
+const ALL_AGENT_TOOLS = [
+  "Read",
+  "Write",
+  "Edit",
+  "Grep",
+  "Glob",
+  "Bash",
+  "WebSearch",
+  "WebFetch",
+  "Task",
+  "TodoWrite",
+  "Skill",
+];
+
+const devBuiltinModes = [
+  { id: "Minimal", name: "Minimal", description: "Read-mostly edits.", source: "builtin", isReadonly: false, toolCount: 5, defaultTools: ["Read", "Grep", "Glob", "Edit", "TodoWrite"] },
+  { id: "Standard", name: "Standard", description: "The default profile.", source: "builtin", isReadonly: false, toolCount: 9, defaultTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash", "WebSearch", "Task", "TodoWrite"] },
+  { id: "Ultimate", name: "Ultimate", description: "The widest tool set.", source: "builtin", isReadonly: false, toolCount: 11, defaultTools: [...ALL_AGENT_TOOLS] },
+  { id: "Creative", name: "Creative", description: "Explores alternatives.", source: "builtin", isReadonly: false, toolCount: 8, defaultTools: ["Read", "Write", "Edit", "Grep", "Glob", "WebSearch", "Task", "Skill"] },
+  { id: "DeepResearch", name: "Deep research", description: "Builds a report.", source: "builtin", isReadonly: true, toolCount: 5, defaultTools: ["Read", "Grep", "Glob", "WebSearch", "WebFetch"] },
+];
+
+const devCustomModes = [
+  {
+    agentId: "StudioArchitect",
+    kind: "mode",
+    name: "Studio Architect",
+    description: "Designs cross-platform systems and boundary contracts.",
+    prompt: "Focus on clean layers, explicit contracts, and zero regressions.",
+    tools: ["Read", "Grep", "Glob", "WebSearch", "TodoWrite"],
+    readonly: true,
+    review: false,
+    model: "primary",
+    path: "/workspace/agents/StudioArchitect.md",
+    userContextPolicy: [],
+    level: "user",
+    source: "user",
+  },
+];
+
+const devAgentProfiles = {
+  Minimal: {
+    profile_id: "Minimal",
+    enabled_tools: ["Read", "Grep", "Glob", "Edit", "TodoWrite"],
+    default_tools: ["Read", "Grep", "Glob", "Edit", "TodoWrite"],
+    disabled_user_skills: [],
+    enabled_user_skills: [],
+  },
+  Standard: {
+    profile_id: "Standard",
+    enabled_tools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash", "WebSearch", "Task", "TodoWrite"],
+    default_tools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash", "WebSearch", "Task", "TodoWrite"],
+    disabled_user_skills: [],
+    enabled_user_skills: [],
+  },
+  Ultimate: {
+    profile_id: "Ultimate",
+    enabled_tools: [...ALL_AGENT_TOOLS],
+    default_tools: [...ALL_AGENT_TOOLS],
+    disabled_user_skills: [],
+    enabled_user_skills: [],
+  },
+  Creative: {
+    profile_id: "Creative",
+    enabled_tools: ["Read", "Write", "Edit", "Grep", "Glob", "WebSearch", "Task", "Skill"],
+    default_tools: ["Read", "Write", "Edit", "Grep", "Glob", "WebSearch", "Task", "Skill"],
+    disabled_user_skills: [],
+    enabled_user_skills: [],
+  },
+};
+
+const devSubagents = [
+  {
+    key: "builtin:Explore",
+    id: "Explore",
+    name: "Explore",
+    description: "Fast read-only repository explorer for locating symbols and tracing flows.",
+    prompt: "Explore the codebase quickly using read-only search tools.",
+    isReadonly: true,
+    isReview: false,
+    toolCount: 3,
+    defaultTools: ["Read", "Grep", "Glob"],
+    defaultEnabled: true,
+    effectiveEnabled: true,
+    source: "builtin",
+    subagentSource: "builtin",
+    model: "fast",
+    supportsFollowUp: true,
+  },
+  {
+    key: "builtin:CodeReviewer",
+    id: "CodeReviewer",
+    name: "Code Reviewer",
+    description: "Audits changes for correctness, edge cases, and boundary discipline.",
+    prompt: "Inspect diffs and verify invariants before approval.",
+    isReadonly: true,
+    isReview: true,
+    toolCount: 4,
+    defaultTools: ["Read", "Grep", "Glob", "Bash"],
+    defaultEnabled: true,
+    effectiveEnabled: true,
+    source: "builtin",
+    subagentSource: "builtin",
+    model: "primary",
+    supportsFollowUp: true,
+  },
+  {
+    key: "user:ReleaseShepherd",
+    id: "ReleaseShepherd",
+    name: "Release Shepherd",
+    description: "Prepares release notes, checks gates, and summarizes deployment readiness.",
+    prompt: "Coordinate verification gates and compile clean release summaries.",
+    isReadonly: false,
+    isReview: false,
+    toolCount: 5,
+    defaultTools: ["Read", "Write", "Edit", "Grep", "Bash"],
+    defaultEnabled: true,
+    effectiveEnabled: true,
+    source: "user",
+    subagentSource: "user",
+    level: "user",
+    path: "/workspace/subagents/ReleaseShepherd.md",
+    model: "primary",
+    modelIsExplicit: true,
+    supportsFollowUp: true,
+  },
+  {
+    key: "project:DocsCurator",
+    id: "DocsCurator",
+    name: "Docs Curator",
+    description: "Keeps architecture documents and surface parity tables accurate.",
+    prompt: "Audit documentation against implemented code.",
+    isReadonly: false,
+    isReview: false,
+    toolCount: 4,
+    defaultTools: ["Read", "Write", "Edit", "Glob"],
+    defaultEnabled: true,
+    effectiveEnabled: true,
+    source: "project",
+    subagentSource: "project",
+    level: "project",
+    path: "/workspace/demo/.openbitfun/subagents/DocsCurator.md",
+    model: "fast",
+    modelIsExplicit: true,
+    supportsFollowUp: false,
+  },
+];
+
+// Skills & Marketplace state
+const devSkills = [
+  {
+    key: "user:code-review-coach",
+    name: "code-review-coach",
+    description: "Reviews staged diffs for invariants, edge cases, and test coverage.",
+    path: "/workspace/skills/code-review-coach",
+    entryFile: "SKILL.md",
+    level: "user",
+    sourceSlot: "openbitfun-user",
+    sourceId: "openbitfun",
+    sourceLabel: "OpenBitFun",
+    dirName: "code-review-coach",
+    isBuiltin: false,
+    isShadowed: false,
+    allowUserInvocation: true,
+  },
+  {
+    key: "project:release-checklist",
+    name: "release-checklist",
+    description: "Validates build gates, changelogs, and compatibility contracts before release.",
+    path: "/workspace/demo/.openbitfun/skills/release-checklist",
+    entryFile: "SKILL.md",
+    level: "project",
+    sourceSlot: "openbitfun-project",
+    sourceId: "openbitfun",
+    sourceLabel: "OpenBitFun",
+    dirName: "release-checklist",
+    isBuiltin: false,
+    isShadowed: false,
+    allowUserInvocation: true,
+  },
+  {
+    key: "builtin:research-synthesis",
+    name: "research-synthesis",
+    description: "Synthesizes architectural notes and open questions into structured briefs.",
+    path: "/builtin/skills/research-synthesis",
+    entryFile: "SKILL.md",
+    level: "user",
+    sourceSlot: "openbitfun-system",
+    sourceId: "openbitfun",
+    sourceLabel: "Built-in",
+    dirName: "research-synthesis",
+    isBuiltin: true,
+    isShadowed: false,
+    allowUserInvocation: true,
+  },
+];
+
+let disabledUserSkillKeys = [];
+let disabledProjectSkillKeys = [];
+
+const devMarketSkills = [
+  {
+    id: "changelog-writer",
+    name: "Changelog Writer",
+    description: "Drafts structured release notes from commit ranges and pull requests.",
+    source: "openbitfun/skills",
+    installs: 1420,
+    url: "https://example.invalid/skills/changelog-writer",
+    installId: "openbitfun/skills@changelog-writer",
+    marketName: "OpenBitFun Registry",
+  },
+  {
+    id: "security-audit",
+    name: "Security Audit",
+    description: "Scans workspaces for secret leaks, unsafe process spawns, and boundary violations.",
+    source: "openbitfun/skills",
+    installs: 2890,
+    url: "https://example.invalid/skills/security-audit",
+    installId: "openbitfun/skills@security-audit",
+    marketName: "OpenBitFun Registry",
+  },
+  {
+    id: "api-docgen",
+    name: "API Doc Generator",
+    description: "Builds typed reference docs from Rust and TypeScript service contracts.",
+    source: "community/skills",
+    installs: 980,
+    url: "https://example.invalid/skills/api-docgen",
+    installId: "community/skills@api-docgen",
+    marketName: "Community",
+  },
+  {
+    id: "triage-assistant",
+    name: "Issue Triage Assistant",
+    description: "Categorizes incoming bug reports and maps them to owning subsystems.",
+    source: "community/skills",
+    installs: 745,
+    url: "https://example.invalid/skills/triage-assistant",
+    installId: "community/skills@triage-assistant",
+    marketName: "Community",
+  },
+];
+
+// Cron / Routines state
+function buildDefaultCronJobs() {
+  const now = Date.now();
+  return [
+    {
+      id: "cron-morning-digest",
+      name: "Morning Workspace Digest",
+      schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+      payload: { text: "Summarize unread threads, pending reviews, and workspace changes." },
+      enabled: true,
+      reportPolicy: "always",
+      target: {
+        kind: "workspace",
+        workspace: {
+          workspaceId: "dev-workspace-openbitfun",
+          workspacePath: "/workspace/demo",
+        },
+        launch: { agentType: "Standard", modelId: null },
+      },
+      createdAtMs: now - 7 * DAY_MS,
+      configUpdatedAtMs: now - DAY_MS,
+      updatedAtMs: now - HOUR_MS,
+      state: {
+        nextRunAtMs: now + 2 * HOUR_MS,
+        lastTriggerAtMs: now - 22 * HOUR_MS,
+        lastRunStartedAtMs: now - 22 * HOUR_MS,
+        lastRunFinishedAtMs: now - 22 * HOUR_MS + 18000,
+        lastDurationMs: 18000,
+        lastRunStatus: "ok",
+        lastError: null,
+        activeTurnId: null,
+        consecutiveFailures: 0,
+        coalescedRunCount: 0,
+      },
+    },
+    {
+      id: "cron-diff-watchdog",
+      name: "Uncommitted Diff Watchdog",
+      schedule: { kind: "every", everyMs: 6 * HOUR_MS },
+      payload: { text: "Check git diff for accidental debug logs or missing tests." },
+      enabled: true,
+      reportPolicy: "conditional",
+      target: {
+        kind: "workspace",
+        workspace: {
+          workspaceId: "dev-workspace-openbitfun",
+          workspacePath: "/workspace/demo",
+        },
+        launch: { agentType: "Minimal", modelId: null },
+      },
+      createdAtMs: now - 5 * DAY_MS,
+      configUpdatedAtMs: now - 2 * DAY_MS,
+      updatedAtMs: now - 3 * HOUR_MS,
+      state: {
+        nextRunAtMs: now + 5 * HOUR_MS,
+        lastTriggerAtMs: now - HOUR_MS,
+        lastRunStartedAtMs: now - HOUR_MS,
+        lastRunFinishedAtMs: now - HOUR_MS + 9400,
+        lastDurationMs: 9400,
+        lastRunStatus: "ok",
+        lastError: null,
+        activeTurnId: null,
+        consecutiveFailures: 0,
+        coalescedRunCount: 0,
+      },
+    },
+    {
+      id: "cron-weekly-audit",
+      name: "Weekly Dependency Audit",
+      schedule: { kind: "cron", expr: "0 10 * * 1", tz: "UTC" },
+      payload: { text: "Review outdated packages and verify boundary checks." },
+      enabled: false,
+      reportPolicy: "inherit",
+      target: {
+        kind: "workspace",
+        workspace: {
+          workspaceId: "dev-workspace-openbitfun",
+          workspacePath: "/workspace/demo",
+        },
+        launch: { agentType: "DeepResearch", modelId: null },
+      },
+      createdAtMs: now - 14 * DAY_MS,
+      configUpdatedAtMs: now - 3 * DAY_MS,
+      updatedAtMs: now - 3 * DAY_MS,
+      state: {
+        nextRunAtMs: now + 4 * DAY_MS,
+        lastTriggerAtMs: null,
+        lastRunStatus: null,
+        lastError: null,
+        activeTurnId: null,
+        consecutiveFailures: 0,
+        coalescedRunCount: 0,
+      },
+    },
+  ];
+}
+
+const devCronJobs = buildDefaultCronJobs();
+let cronSeq = 1;
+
+// Git Workbench state
+let devGitTrusted = true;
+const devGitStatus = {
+  staged: [{ path: "src/nsh-ui/src/theme.ts", status: "M", index_status: "M", workdir_status: " " }],
+  unstaged: [
+    { path: "src/nsh-ui/App.tsx", status: "M", index_status: " ", workdir_status: "M" },
+    { path: "README.md", status: "M", index_status: " ", workdir_status: "M" },
+  ],
+  untracked: ["docs/notes.md"],
+  conflicts: [],
+  current_branch: "feat/personal-agent-studio",
+  ahead: 1,
+  behind: 0,
+};
+
+const devGitBranches = [
+  {
+    name: "feat/personal-agent-studio",
+    current: true,
+    remote: false,
+    upstream: "origin/feat/personal-agent-studio",
+    ahead: 1,
+    behind: 0,
+    last_commit: "a1b2c3d",
+    last_commit_date: "2026-11-18T11:30:00Z",
+  },
+  {
+    name: "main",
+    current: false,
+    remote: false,
+    upstream: "origin/main",
+    ahead: 0,
+    behind: 0,
+    last_commit: "9f8e7d6",
+    last_commit_date: "2026-11-17T19:15:00Z",
+  },
+  {
+    name: "origin/main",
+    current: false,
+    remote: true,
+    ahead: 0,
+    behind: 0,
+    last_commit: "9f8e7d6",
+    last_commit_date: "2026-11-17T19:15:00Z",
+  },
+];
+
+const devGitCommits = [
+  {
+    hash: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    short_hash: "a1b2c3d",
+    message: "feat(nsh): add Personal Agent Studio shell and design tokens",
+    author: "Studio User",
+    author_email: "studio@example.com",
+    date: "2026-11-18T11:30:00Z",
+    parents: ["9f8e7d6c5b4a3928172635445566778899aabbcc"],
+    additions: 142,
+    deletions: 18,
+    files_changed: 5,
+  },
+  {
+    hash: "9f8e7d6c5b4a3928172635445566778899aabbcc",
+    short_hash: "9f8e7d6",
+    message: "docs(nsh): align peer device capability table",
+    author: "Studio User",
+    author_email: "studio@example.com",
+    date: "2026-11-17T19:15:00Z",
+    parents: ["11223344556677889900aabbccddeeff00112233"],
+    additions: 36,
+    deletions: 12,
+    files_changed: 2,
+  },
+  {
+    hash: "11223344556677889900aabbccddeeff00112233",
+    short_hash: "1122334",
+    message: "chore: initialize workspace session state fixtures",
+    author: "Studio User",
+    author_email: "studio@example.com",
+    date: "2026-11-16T15:00:00Z",
+    parents: [],
+    additions: 84,
+    deletions: 0,
+    files_changed: 3,
+  },
+];
+
+function buildGitDiff(filePath, staged) {
+  const path = filePath || "src/nsh-ui/App.tsx";
+  const label = staged ? "index" : "working tree";
+  return [
+    `diff --git a/${path} b/${path}`,
+    `index 1122334..a1b2c3d 100644`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    `@@ -12,4 +12,5 @@`,
+    ` // Context (${label})`,
+    ` export function studioHeader() {`,
+    `-  return "Workspace";`,
+    `+  return "Personal Agent Studio";`,
+    ` }`,
+    `+// Verified reactive palette binding`,
+  ].join("\n");
+}
+
+function isRemoteWorkspaceRequested(req) {
+  const wsId = req && (req.workspaceId || req.workspace_id);
+  if (typeof wsId === "string" && wsId.startsWith("dev-workspace-remote")) return true;
+  const repoPath = req && req.repositoryPath;
+  if (typeof repoPath === "string" && repoPath.startsWith("/srv")) return true;
+  return devWorkspaces.some(
+    w => w.workspaceKind === "remote" && (w.id === wsId || w.rootPath === repoPath),
+  );
+}
+
+// Git Worktrees state
+const devGitWorktrees = [
+  {
+    path: "/workspace/demo",
+    branch: "feat/personal-agent-studio",
+    head: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f80910",
+    isMain: true,
+    isLocked: false,
+    isPrunable: false,
+  },
+  {
+    path: "/workspace/demo-worktrees/perf-audit",
+    branch: "chore/perf-audit",
+    head: "9f8e7d6c5b4a3928172635445566778899aabbcc",
+    isMain: false,
+    isLocked: false,
+    isPrunable: false,
+  },
+];
+
+// SSH & Remote Workspaces state
+const devSshConnections = [
+  {
+    id: "dev-ssh-1",
+    name: "build-host",
+    host: "10.24.8.14",
+    port: 22,
+    username: "builder",
+    authType: { type: "PrivateKey", keyPath: "~/.ssh/id_ed25519" },
+    defaultWorkspace: "/srv/app",
+    lastConnected: Date.now() - 2 * HOUR_MS,
+  },
+  {
+    id: "dev-ssh-2",
+    name: "gpu-box",
+    host: "10.24.8.42",
+    port: 2222,
+    username: "research",
+    authType: { type: "Agent" },
+    defaultWorkspace: "/srv/models",
+    lastConnected: Date.now() - DAY_MS,
+  },
+];
+
+const devSshConnectedIds = new Set(["dev-ssh-1"]);
+let devActiveRemoteWorkspace = null;
+
+const devSshConfigHosts = [
+  {
+    host: "prod-bastion",
+    hostname: "203.0.113.10",
+    port: 22,
+    user: "deploy",
+    identityFile: "~/.ssh/prod_ed25519",
+    agent: true,
+  },
+  {
+    host: "staging-api",
+    hostname: "203.0.113.25",
+    port: 22,
+    user: "ops",
+    proxyJump: "prod-bastion",
+  },
+];
+
+const devDockerContainers = [
+  {
+    id: "cnt-openbitfun-dev",
+    name: "openbitfun-dev",
+    image: "ghcr.io/openbitfun/dev:latest",
+    status: "Up 3 hours",
+    state: "running",
+  },
+  {
+    id: "cnt-postgres-vec",
+    name: "pg-vector",
+    image: "pgvector/pgvector:pg16",
+    status: "Up 2 days",
+    state: "running",
+  },
+];
+
+const devRemoteDirs = {
+  "/": [
+    { name: "srv", path: "/srv", isDir: true, isFile: false, isSymlink: false, permissions: "drwxr-xr-x" },
+    { name: "workspace", path: "/workspace", isDir: true, isFile: false, isSymlink: false, permissions: "drwxr-xr-x" },
+  ],
+  "/srv": [
+    { name: "app", path: "/srv/app", isDir: true, isFile: false, isSymlink: false, permissions: "drwxr-xr-x" },
+    { name: "models", path: "/srv/models", isDir: true, isFile: false, isSymlink: false, permissions: "drwxr-xr-x" },
+  ],
+  "/srv/app": [
+    { name: "src", path: "/srv/app/src", isDir: true, isFile: false, isSymlink: false, permissions: "drwxr-xr-x" },
+    { name: "docs", path: "/srv/app/docs", isDir: true, isFile: false, isSymlink: false, permissions: "drwxr-xr-x" },
+    { name: "package.json", path: "/srv/app/package.json", isDir: false, isFile: true, isSymlink: false, size: 1420, permissions: "-rw-r--r--" },
+  ],
+  "/srv/app/src": [
+    { name: "server.ts", path: "/srv/app/src/server.ts", isDir: false, isFile: true, isSymlink: false, size: 3240, permissions: "-rw-r--r--" },
+  ],
+  "/srv/app/docs": [],
+  "/srv/models": [
+    { name: "weights.json", path: "/srv/models/weights.json", isDir: false, isFile: true, isSymlink: false, size: 512, permissions: "-rw-r--r--" },
+  ],
+};
+
+const devPortForwards = [
+  {
+    id: "pf-1",
+    connectionId: "dev-ssh-1",
+    direction: "local",
+    label: "API Dev Server",
+    description: "API Dev Server",
+    localHost: "127.0.0.1",
+    localPort: 8080,
+    remoteHost: "127.0.0.1",
+    remotePort: 8080,
+    activeConnections: 1,
+    totalConnections: 4,
+  },
+];
+let portForwardSeq = 2;
+let remoteWorkspaceSeq = 1;
+
+function normalizeRemoteDirPath(rawPath) {
+  const clean = String(rawPath || "/srv").replace(/\\/g, "/").replace(/\/+/g, "/");
+  if (clean.length > 1 && clean.endsWith("/")) return clean.slice(0, -1);
+  return clean || "/";
+}
+
+function parentRemoteDir(path) {
+  const norm = normalizeRemoteDirPath(path);
+  const idx = norm.lastIndexOf("/");
+  if (idx <= 0) return "/";
+  return norm.slice(0, idx);
+}
+
+function toSavedAuthType(auth) {
+  if (!auth || typeof auth !== "object") return { type: "Password" };
+  if (auth.type === "PrivateKey") {
+    return {
+      type: "PrivateKey",
+      keyPath: String(auth.keyPath || "~/.ssh/id_ed25519"),
+      ...(auth.certificatePath ? { certificatePath: String(auth.certificatePath) } : {}),
+    };
+  }
+  if (auth.type === "Agent") {
+    return {
+      type: "Agent",
+      ...(auth.keyFingerprint ? { keyFingerprint: String(auth.keyFingerprint) } : {}),
+      ...(auth.fallbackKeyPath ? { fallbackKeyPath: String(auth.fallbackKeyPath) } : {}),
+    };
+  }
+  if (auth.type === "KeyboardInteractive") return { type: "KeyboardInteractive" };
+  if (auth.type === "None") return { type: "None" };
+  return { type: "Password" };
+}
+
+function buildCustomUsageTrend(nowMs) {
+  const points = [];
+  for (let offset = 175; offset >= 0; offset -= 1) {
+    // Realistic weekday/weekend rhythm with varied activity intensity levels.
+    const dayDate = new Date(nowMs - offset * DAY_MS);
+    const weekday = dayDate.getUTCDay();
+    if (weekday === 0 && offset % 3 !== 0) continue;
+    const wave = ((offset * 17 + weekday * 13) % 9) + 1;
+    if (wave <= 2 && offset > 7) continue;
+    const inputTokens = wave * 14500;
+    const outputTokens = wave * 4200;
+    const cacheReadTokens = wave * 5800;
+    points.push({
+      bucket: dayDate.toISOString(),
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+    });
+  }
+  return points;
+}
+
+// Spaces / MiniApps state
+const devMiniApps = [
+  {
+    id: "space-focus-timer",
+    name: "Focus Studio",
+    description: "Deep-work pomodoro timer with ambient session log summaries.",
+    icon: "timer",
+    category: "Productivity",
+    tags: ["focus", "routine"],
+    version: 3,
+    created_at: 1762400000000,
+    updated_at: 1763000000000,
+    permissions: { fs: { read: ["notes/*"] }, ai: { enabled: true } },
+    source: {
+      html: "<main id=\"app\"><h1>Focus Studio</h1></main>",
+      css: "main { font-family: system-ui; padding: 16px; }",
+      ui_js: "export function mount(root) { root.dataset.ready = 'true'; }",
+      esm_dependencies: [],
+      worker_js: "export async function tick() { return { remainingSec: 1500 }; }",
+      npm_dependencies: [],
+    },
+    compiled_html: "<!doctype html><html><body>Focus Studio</body></html>",
+    ai_context: {
+      original_prompt: "Create a calm focus timer space that logs completed blocks.",
+      iteration_history: ["Initial timer UI", "Added session summary hook"],
+    },
+  },
+  {
+    id: "space-release-board",
+    name: "Release Readiness",
+    description: "Interactive gate tracker for cross-surface verification and compatibility.",
+    icon: "check",
+    category: "Engineering",
+    tags: ["qa", "release"],
+    version: 2,
+    created_at: 1762500000000,
+    updated_at: 1762950000000,
+    permissions: { fs: { read: ["docs/*"] }, host: { clipboard_write: true } },
+    source: {
+      html: "<main id=\"board\"><h2>Release Gates</h2></main>",
+      css: "main { padding: 16px; }",
+      ui_js: "export function renderGates() { return ['nsh check', 'capabilities:check']; }",
+      esm_dependencies: [],
+      worker_js: "",
+      npm_dependencies: [],
+    },
+    compiled_html: "<!doctype html><html><body>Release Readiness</body></html>",
+    ai_context: {
+      original_prompt: "Build a release readiness checklist space.",
+      iteration_history: ["Added capability check item"],
+    },
+  },
+  {
+    id: "space-research-canvas",
+    name: "Research Canvas",
+    description: "Side-by-side literature comparison board powered by workspace notes.",
+    icon: "book",
+    category: "Knowledge",
+    tags: ["research", "markdown"],
+    version: 1,
+    created_at: 1762600000000,
+    updated_at: 1762850000000,
+    permissions: { fs: { read: ["docs/*"] }, ai: { enabled: true } },
+    source: {
+      html: "<main id=\"canvas\"><h2>Research Canvas</h2></main>",
+      css: "main { padding: 16px; }",
+      ui_js: "export function loadCards() { return []; }",
+      esm_dependencies: [],
+      worker_js: "",
+      npm_dependencies: [],
+    },
+    compiled_html: "<!doctype html><html><body>Research Canvas</body></html>",
+    ai_context: {
+      original_prompt: "Organize research notes into comparison columns.",
+      iteration_history: [],
+    },
+  },
+];
+let runningMiniAppWorkers = ["space-focus-timer"];
+
+// Remote Connect & Messaging Bots state
+let remoteFormState = {
+  telegram_bot_token: "",
+  feishu_app_id: "",
+  feishu_app_secret: "",
+  weixin_ilink_token: "",
+  weixin_base_url: "",
+  weixin_bot_account_id: "",
+};
+let remoteRelayConnected = false;
+let remoteActiveMethod = null;
+let remoteRelayUrl = null;
+let remoteBotConnected = "Telegram(@openbitfun_bot)";
+let remoteBotVerboseMode = false;
+const remoteMethods = [
+  { id: "lan", name: "LAN", available: true, description: "Same local network" },
+  { id: "openbitfun_server", name: "OpenBitFun Server", available: true, description: "Official OpenBitFun relay" },
+  { id: "bot_feishu", name: "Feishu Bot", available: true, description: "Via Feishu messenger" },
+  { id: "bot_telegram", name: "Telegram Bot", available: true, description: "Via Telegram" },
+  { id: "bot_weixin", name: "WeChat (Weixin)", available: true, description: "Via WeChat iLink bot" },
+];
+
+// Account & Insights state
+let devGithubAccount = {
+  email: "studio@example.com",
+  user: {
+    githubId: 424201,
+    accountId: "acc-studio-demo",
+    login: "studio-user",
+    avatarUrl: "",
+  },
+  isAdmin: false,
+};
+let devAccountLoggedIn = true;
+
+const devInsightsReports = [
+  {
+    meta: {
+      generated_at: 1763000000000,
+      total_sessions: 28,
+      analyzed_sessions: 24,
+      date_range: { start: "2026-10-19", end: "2026-11-18" },
+      path: "/workspace/demo/.openbitfun/insights/2026-11-18.json",
+      total_messages: 342,
+      days_covered: 30,
+      total_hours: 19.5,
+      top_goals: ["NSH UI migration", "Remote surface parity", "Automated verification"],
+      languages: ["TypeScript", "Rust", "Markdown"],
+      session_usage: {
+        input_tokens: 420000,
+        output_tokens: 95000,
+        total_tokens: 515000,
+        turns_with_usage: 140,
+        output_reported_turns: 140,
+        total_turns: 152,
+      },
+      generation_usage: {
+        input_tokens: 18000,
+        output_tokens: 4200,
+        total_tokens: 22200,
+        reasoning_tokens: 1200,
+        cached_input_tokens: 6000,
+        cache_creation_input_tokens: 0,
+        model_calls: 3,
+        reported_model_calls: 3,
+      },
+      generation_models: ["gpt-4.1-mini"],
+    },
+    report: {
+      generated_at: 1763000000000,
+      date_range: { start: "2026-10-19", end: "2026-11-18" },
+      total_sessions: 28,
+      analyzed_sessions: 24,
+      total_messages: 342,
+      days_covered: 30,
+      session_usage: {
+        input_tokens: 420000,
+        output_tokens: 95000,
+        total_tokens: 515000,
+        turns_with_usage: 140,
+        output_reported_turns: 140,
+        total_turns: 152,
+      },
+      generation_usage: {
+        input_tokens: 18000,
+        output_tokens: 4200,
+        total_tokens: 22200,
+        reasoning_tokens: 1200,
+        cached_input_tokens: 6000,
+        cache_creation_input_tokens: 0,
+        model_calls: 3,
+        reported_model_calls: 3,
+      },
+      generation_models: ["gpt-4.1-mini"],
+      stats: {
+        total_hours: 19.5,
+        msgs_per_day: 11.4,
+        top_tools: [["Read", 184], ["Edit", 96], ["Bash", 64]],
+        top_goals: [["NSH UI migration", 14], ["Git workbench", 6], ["Cron routines", 4]],
+        outcomes: { completed: 21, partial: 3 },
+        satisfaction: { high: 20, medium: 4 },
+        session_types: { implementation: 16, review: 8 },
+        languages: { TypeScript: 19, Rust: 5 },
+        hour_counts: { 9: 6, 10: 8, 14: 10 },
+        agent_types: { Standard: 18, Ultimate: 6 },
+        response_time_buckets: { "0-5s": 90, "5-15s": 50 },
+        median_response_time_secs: 4.2,
+        avg_response_time_secs: 6.1,
+        friction: { "Missing fixture": 2 },
+        success: { "First-pass tests": 19 },
+        tool_errors: { timeout: 1 },
+        total_lines_added: 1840,
+        total_lines_removed: 410,
+        total_files_modified: 42,
+      },
+      at_a_glance: {
+        whats_working: "Focused scene-level stores and headless NSH tests catch wire-shape drift immediately.",
+        whats_hindering: "Occasional positional vs request-struct mismatches across desktop commands.",
+        quick_wins: "Schedule a morning diff audit routine to flag uncommitted theme drift early.",
+        looking_ahead: "Unify personal assistant persona files with scheduled workspace summaries.",
+      },
+      interaction_style: {
+        narrative: "Short, iterative specifications paired with targeted automated verification after each edit.",
+        key_patterns: ["Reactive signal bindings", "Contract-first host wrappers", "Explicit remote degradation"],
+      },
+      project_areas: [
+        { name: "Personal Agent Studio UI", session_count: 14, description: "Unified 12-scene NSH shell with Obsidian Carbon & Daylight Alabaster tokens." },
+        { name: "Remote & Peer Transport", session_count: 6, description: "Controller-local guards and HostInvoke envelope routing." },
+      ],
+      wins_intro: "Strong momentum across UI primitives and multi-scene parity.",
+      big_wins: [
+        { title: "Zero-import page host bridge", description: "Self-contained dev fixtures simulate all 12 desktop scenes in plain browsers.", impact: "Instant browser preview" },
+      ],
+      friction_intro: "Minor friction around remote capability boundaries.",
+      friction_categories: [
+        { category: "Command shape checks", count: 2, description: "Positional vs wrapped request parameters.", examples: ["git_get_graph"], suggestion: "Verify Rust signatures before wiring stores." },
+      ],
+      suggestions: {
+        openbitfun_md_additions: [],
+        features_to_try: [
+          { feature: "Routines Calendar", description: "Automate morning workspace digests.", example_usage: "Every day at 09:00", benefit: "Saves 15m/day" },
+        ],
+        usage_patterns: [],
+      },
+      horizon_intro: "Next opportunities for autonomous collaboration.",
+      on_the_horizon: [
+        { title: "Proactive PR & Diff Briefings", whats_possible: "Pair Git Workbench diffs with morning Cron summaries.", how_to_try: "Create a routine targeting Standard mode.", copyable_prompt: "Summarize uncommitted changes and open branches." },
+      ],
+      fun_ending: {
+        headline: "24 sessions shipped with zero raw pixel font sizes.",
+        detail: "Every control scales uniformly with the host font preference.",
+      },
+      html_report_path: null,
+    },
+  },
+];
+
+let insightsSeq = 2;
+let devSessionSeq = 10;
+let devTerminalSeq = 1;
+const devTerminalBuffers = {};
+
+const DEV_FIXTURES = {
+  // Workspaces & Sessions
+  get_opened_workspaces: () => devWorkspaces,
+  get_recent_workspaces: () => [
+    ...devWorkspaces,
+    {
+      id: "dev-workspace-remote",
+      name: "build-host",
+      rootPath: "/srv/app",
+      workspaceKind: "remote",
+      connectionId: "dev-ssh-1",
+      sshHost: "build-host",
+      lastAccessed: 1762000000000,
+    },
+  ],
+  open_workspace: args => {
+    const req = payloadOf(args);
+    const rootPath = String(req.path || "").trim();
+    if (!rootPath) throw new Error("Workspace path is required");
+    const existing = devWorkspaces.find(w => w.rootPath === rootPath);
+    if (existing) {
+      activeWorkspaceId = existing.id;
+      return existing;
+    }
+    const parts = rootPath.split("/").filter(Boolean);
+    const created = {
+      id: `dev-workspace-${devWorkspaces.length + 1}`,
+      name: parts[parts.length - 1] || rootPath,
+      rootPath,
+      workspaceKind: "local",
+      lastAccessed: Date.now(),
+    };
+    devWorkspaces.push(created);
+    activeWorkspaceId = created.id;
+    return created;
+  },
+  set_active_workspace: args => {
+    const req = payloadOf(args);
+    if (req.workspaceId) activeWorkspaceId = String(req.workspaceId);
+    return null;
+  },
+  close_workspace: args => {
+    const req = payloadOf(args);
+    const wsId = String(req.workspaceId || "");
+    const idx = devWorkspaces.findIndex(w => w.id === wsId);
+    if (idx >= 0) {
+      devWorkspaces.splice(idx, 1);
+      if (devActiveRemoteWorkspace && devActiveRemoteWorkspace.workspaceId === wsId) {
+        devActiveRemoteWorkspace = null;
+      }
+      if (activeWorkspaceId === wsId) {
+        activeWorkspaceId = devWorkspaces[0] ? devWorkspaces[0].id : "";
+      }
+    }
+    return null;
+  },
+  list_persisted_sessions_page: args => {
+    const req = payloadOf(args);
+    const wsId = req.workspace_id || activeWorkspaceId;
+    const rows = devSessions.filter(s => !wsId || s.workspaceId === wsId);
+    return {
+      sessions: rows,
+      totalTopLevelCount: rows.length,
+      loadedTopLevelCount: rows.length,
+      hasMore: false,
+    };
+  },
+  load_session_turns: args => {
+    const req = payloadOf(args);
+    return DEV_SESSION_TURNS[req.session_id] || [];
+  },
+  create_session: args => {
+    const req = payloadOf(args);
+    const sessionId = `dev-session-${devSessionSeq++}`;
+    const created = {
+      sessionId,
+      sessionName: req.sessionName || "New thread",
+      lastUpdated: Date.now(),
+      createdAt: Date.now(),
+      messageCount: 0,
+      workspaceId: req.workspace_id || activeWorkspaceId,
+      agentType: req.agentType || "Standard",
+      modelName: "gpt-4.1-mini",
+      status: "active",
+    };
+    devSessions.unshift(created);
+    DEV_SESSION_TURNS[sessionId] = [];
+    return created;
+  },
+  save_session_metadata: args => {
+    const req = payloadOf(args);
+    const id = req.session_id || req.sessionId;
+    const found = devSessions.find(s => s.sessionId === id);
+    if (found && typeof req.session_name === "string") found.sessionName = req.session_name;
+    return null;
+  },
+  archive_session: args => {
+    const req = payloadOf(args);
+    const id = req.session_id || req.sessionId;
+    const found = devSessions.find(s => s.sessionId === id);
+    if (found) found.persistedStatus = "archived";
+    return null;
+  },
+  unarchive_session: args => {
+    const req = payloadOf(args);
+    const id = req.session_id || req.sessionId;
+    const found = devSessions.find(s => s.sessionId === id);
+    if (found) found.persistedStatus = "active";
+    return null;
+  },
+  delete_persisted_session: args => {
+    const req = payloadOf(args);
+    const id = req.session_id || req.sessionId;
+    devSessions = devSessions.filter(s => s.sessionId !== id);
+    return null;
+  },
+  fork_session: args => {
+    const req = payloadOf(args);
+    const sessionId = `dev-session-${devSessionSeq++}`;
+    const src = devSessions.find(s => s.sessionId === (req.session_id || req.sessionId));
+    const forked = {
+      sessionId,
+      sessionName: `${src ? src.sessionName : "Thread"} (fork)`,
+      lastUpdated: Date.now(),
+      createdAt: Date.now(),
+      messageCount: src ? src.messageCount : 0,
+      workspaceId: req.workspace_id || activeWorkspaceId,
+      agentType: src ? src.agentType : "Standard",
+      modelName: "gpt-4.1-mini",
+      status: "active",
+    };
+    devSessions.unshift(forked);
+    DEV_SESSION_TURNS[sessionId] = [...(DEV_SESSION_TURNS[src?.sessionId] || [])];
+    return forked;
+  },
+  copy_session: args => {
+    const req = payloadOf(args);
+    const sessionId = `dev-session-${devSessionSeq++}`;
+    const src = devSessions.find(s => s.sessionId === (req.session_id || req.sessionId));
+    const copied = {
+      sessionId,
+      sessionName: `${src ? src.sessionName : "Thread"} (copy)`,
+      lastUpdated: Date.now(),
+      createdAt: Date.now(),
+      messageCount: src ? src.messageCount : 0,
+      workspaceId: req.workspace_id || activeWorkspaceId,
+      agentType: src ? src.agentType : "Standard",
+      modelName: "gpt-4.1-mini",
+      status: "active",
+    };
+    devSessions.unshift(copied);
+    DEV_SESSION_TURNS[sessionId] = [...(DEV_SESSION_TURNS[src?.sessionId] || [])];
+    return copied;
+  },
+  get_ai_model_catalog: () => ({
+    models: devConfigs["ai.models"] || [],
+    defaultModels: devConfigs["ai.default_models"] || {},
+  }),
+  get_session_model_target: () => ({ modelId: "model-1", reasoningPreset: null }),
+  project_ai_model_reasoning_catalog: () => ({ status: "known", default_preset: null, presets: [] }),
+  subscribe_permission_requests: () => null,
+  list_pending_permission_requests: () => [],
+  get_session_interaction_mailbox: args => {
+    const req = payloadOf(args);
+    return {
+      sessionId: String(req.sessionId || ""),
+      userQuestions: { revision: 1, questions: [] },
+      permissions: { requests: [] },
+    };
+  },
+
+  // Config
+  get_configs: () => ({
+    ...devConfigs,
+    app: { ...devConfigs.app },
+  }),
+  get_config: args => {
+    const req = payloadOf(args);
+    const path = req.path;
+    if (path === "app") {
+      return { ...devConfigs.app };
+    }
+    if (path === "app.language") {
+      return devConfigs.app.language;
+    }
+    if (!(path in devConfigs)) throw new Error(`Config path '${path}' not found`);
+    return devConfigs[path];
+  },
+  set_config: args => {
+    const req = payloadOf(args);
+    if (!req.path) return null;
+    if (req.path === "app" && req.value && typeof req.value === "object") {
+      const nextApp = { ...devConfigs.app, ...req.value };
+      if (typeof nextApp.language === "string") {
+        const canonical = normalizeDevLocale(nextApp.language) || nextApp.language;
+        nextApp.language = canonical;
+        devConfigs["app.language"] = canonical;
+        devConfigs["appearance.language"] = canonical;
+      }
+      devConfigs.app = nextApp;
+      return null;
+    }
+    if (req.path === "app.language" || req.path === "appearance.language") {
+      const canonical = normalizeDevLocale(req.value) || String(req.value || "en-US");
+      devConfigs.app = { ...devConfigs.app, language: canonical };
+      devConfigs["app.language"] = canonical;
+      devConfigs["appearance.language"] = canonical;
+      return null;
+    }
+    devConfigs[req.path] = req.value;
+    return null;
+  },
+
+  // Agents & Modes
+  get_available_modes: () => [
+    ...devBuiltinModes,
+    ...devCustomModes.map(m => ({
+      id: m.agentId,
+      name: m.name,
+      description: m.description,
+      source: m.level,
+      isReadonly: m.readonly,
+      toolCount: m.tools.length,
+      defaultTools: m.tools,
+    })),
+  ],
+  update_session_mode: args => {
+    const req = payloadOf(args);
+    const session = devSessions.find(s => s.sessionId === req.sessionId);
+    if (session && req.modeId) session.agentType = req.modeId;
+    return null;
+  },
+  list_subagents: args => {
+    const req = payloadOf(args);
+    if (req.source) return devSubagents.filter(s => s.subagentSource === req.source || s.source === req.source);
+    return devSubagents;
+  },
+  list_agent_tool_names: () => [...ALL_AGENT_TOOLS],
+  get_agent_profile_configs: () => ({ ...devAgentProfiles }),
+  set_agent_profile_config: args => {
+    const req = payloadOf(args);
+    const id = String(req.agentId || "");
+    if (!id) throw new Error("agentId is required");
+    const cfg = req.config || {};
+    const existing = devAgentProfiles[id] || {
+      profile_id: id,
+      enabled_tools: [],
+      default_tools: [],
+      disabled_user_skills: [],
+      enabled_user_skills: [],
+    };
+    devAgentProfiles[id] = {
+      ...existing,
+      enabled_tools: Array.isArray(cfg.enabled_tools) ? cfg.enabled_tools : existing.enabled_tools,
+      disabled_user_skills: Array.isArray(cfg.disabled_user_skills)
+        ? cfg.disabled_user_skills
+        : existing.disabled_user_skills,
+      enabled_user_skills: Array.isArray(cfg.enabled_user_skills)
+        ? cfg.enabled_user_skills
+        : existing.enabled_user_skills,
+    };
+    return `Agent profile for '${id}' set successfully`;
+  },
+  reset_agent_profile_config: args => {
+    const req = payloadOf(args);
+    const id = String(req.agentId || "");
+    if (devAgentProfiles[id]) {
+      devAgentProfiles[id] = {
+        ...devAgentProfiles[id],
+        enabled_tools: [...devAgentProfiles[id].default_tools],
+        disabled_user_skills: [],
+        enabled_user_skills: [],
+      };
+    }
+    return `Agent profile for '${id}' reset successfully`;
+  },
+  get_custom_agent_detail: args => {
+    const req = payloadOf(args);
+    const id = String(req.agentId || "");
+    const found = devCustomModes.find(m => m.agentId === id);
+    if (found) return found;
+    const sub = devSubagents.find(s => s.id === id);
+    if (sub) {
+      return {
+        agentId: sub.id,
+        kind: "subagent",
+        name: sub.name,
+        description: sub.description,
+        prompt: sub.prompt || "",
+        tools: [...(sub.defaultTools || [])],
+        readonly: Boolean(sub.isReadonly),
+        review: Boolean(sub.isReview),
+        model: sub.model || "primary",
+        path: sub.path || `/workspace/subagents/${sub.id}.md`,
+        userContextPolicy: [],
+        level: sub.subagentSource === "project" ? "project" : "user",
+      };
+    }
+    throw new Error(`Custom agent '${id}' not found`);
+  },
+  create_custom_agent: args => {
+    const req = payloadOf(args);
+    const kind = req.kind === "subagent" ? "subagent" : "mode";
+    const id = String(req.id || "").trim();
+    const level = req.level === "project" ? "project" : "user";
+    if (!id) throw new Error("Id cannot be empty");
+    if (kind === "subagent") {
+      const tools = Array.isArray(req.tools) ? req.tools : ["Read", "Grep", "Glob"];
+      devSubagents.push({
+        key: `${level}:${id}`,
+        id,
+        name: req.name || id,
+        description: req.description || "",
+        prompt: req.prompt || "",
+        isReadonly: Boolean(req.readonly),
+        isReview: Boolean(req.review),
+        toolCount: tools.length,
+        defaultTools: tools,
+        defaultEnabled: true,
+        effectiveEnabled: true,
+        source: level,
+        subagentSource: level,
+        level,
+        path: `/workspace/${level}/subagents/${id}.md`,
+        model: req.model || "primary",
+        modelIsExplicit: Boolean(req.model),
+        supportsFollowUp: true,
+      });
+      return null;
+    }
+    devCustomModes.push({
+      agentId: id,
+      kind: "mode",
+      name: req.name || id,
+      description: req.description || "",
+      prompt: req.prompt || "",
+      tools: Array.isArray(req.tools) ? req.tools : ["Read", "Grep", "Glob"],
+      readonly: Boolean(req.readonly),
+      review: Boolean(req.review),
+      model: req.model || "primary",
+      path: `/workspace/${level}/agents/${id}.md`,
+      userContextPolicy: [],
+      level,
+      source: level,
+    });
+    return null;
+  },
+  update_custom_agent: args => {
+    const req = payloadOf(args);
+    const id = String(req.agentId || "");
+    const idx = devCustomModes.findIndex(m => m.agentId === id);
+    if (idx >= 0) {
+      devCustomModes[idx] = {
+        ...devCustomModes[idx],
+        name: req.name ?? devCustomModes[idx].name,
+        description: req.description ?? devCustomModes[idx].description,
+        prompt: req.prompt ?? devCustomModes[idx].prompt,
+        tools: Array.isArray(req.tools) ? req.tools : devCustomModes[idx].tools,
+        readonly: req.readonly !== undefined ? Boolean(req.readonly) : devCustomModes[idx].readonly,
+        model: req.model ?? devCustomModes[idx].model,
+      };
+    }
+    return null;
+  },
+  delete_custom_agent: args => {
+    const req = payloadOf(args);
+    const id = String(req.agentId || "");
+    const idx = devCustomModes.findIndex(m => m.agentId === id);
+    if (idx >= 0) devCustomModes.splice(idx, 1);
+    return null;
+  },
+  reload_custom_agents: () => null,
+  get_subagent_detail: args => {
+    const req = payloadOf(args);
+    const id = String(req.subagentId || "");
+    const sub = devSubagents.find(s => s.id === id);
+    if (!sub) throw new Error(`Subagent '${id}' not found`);
+    return {
+      subagentId: sub.id,
+      name: sub.name,
+      description: sub.description,
+      prompt: sub.prompt || "Carry out assigned tasks concisely.",
+      tools: [...(sub.defaultTools || [])],
+      readonly: Boolean(sub.isReadonly),
+      review: Boolean(sub.isReview),
+      enabled: sub.effectiveEnabled !== false,
+      model: sub.model || "primary",
+      path: sub.path || `/workspace/subagents/${sub.id}.md`,
+      level: sub.subagentSource === "project" ? "project" : "user",
+    };
+  },
+  create_subagent: args => {
+    const req = payloadOf(args);
+    const name = String(req.name || req.id || "").trim();
+    const id = String(req.id || name.replace(/\s+/g, "-")).trim();
+    const level = req.level === "project" ? "project" : "user";
+    const tools = Array.isArray(req.tools) ? req.tools : ["Read", "Grep", "Glob"];
+    devSubagents.push({
+      key: `${level}:${id}`,
+      id,
+      name: name || id,
+      description: req.description || "",
+      prompt: req.prompt || "",
+      isReadonly: Boolean(req.readonly),
+      isReview: Boolean(req.review),
+      toolCount: tools.length,
+      defaultTools: tools,
+      defaultEnabled: true,
+      effectiveEnabled: true,
+      source: level,
+      subagentSource: level,
+      level,
+      path: `/workspace/${level}/subagents/${id}.md`,
+      model: req.model || "primary",
+      modelIsExplicit: Boolean(req.model),
+      supportsFollowUp: true,
+    });
+    return null;
+  },
+  update_subagent: args => {
+    const req = payloadOf(args);
+    const id = String(req.subagentId || "");
+    const sub = devSubagents.find(s => s.id === id);
+    if (sub) {
+      if (req.name) sub.name = req.name;
+      if (req.description !== undefined) sub.description = req.description;
+      if (req.prompt !== undefined) sub.prompt = req.prompt;
+      if (Array.isArray(req.tools)) {
+        sub.defaultTools = req.tools;
+        sub.toolCount = req.tools.length;
+      }
+      if (req.readonly !== undefined) sub.isReadonly = Boolean(req.readonly);
+      if (req.review !== undefined) sub.isReview = Boolean(req.review);
+      if (req.model !== undefined) sub.model = req.model;
+    }
+    return null;
+  },
+  delete_subagent: args => {
+    const req = payloadOf(args);
+    const id = String(req.subagentId || "");
+    const idx = devSubagents.findIndex(s => s.id === id);
+    if (idx >= 0) devSubagents.splice(idx, 1);
+    return null;
+  },
+  reload_subagents: () => null,
+  update_subagent_config: args => {
+    const req = payloadOf(args);
+    const id = String(req.subagentId || "");
+    const sub = devSubagents.find(s => s.id === id);
+    let availabilityUpdated = false;
+    let modelUpdated = false;
+    if (sub) {
+      if (typeof req.enabled === "boolean") {
+        sub.effectiveEnabled = req.enabled;
+        availabilityUpdated = true;
+      }
+      if (req.clearModelOverride) {
+        sub.model = "primary";
+        sub.modelIsExplicit = false;
+        modelUpdated = true;
+      } else if (typeof req.model === "string") {
+        sub.model = req.model;
+        sub.modelIsExplicit = true;
+        modelUpdated = true;
+      }
+    }
+    return { availabilityUpdated, modelUpdated };
+  },
+
+  // Assistants & Persona Studio
+  get_assistant_workspaces: () => [...devAssistants],
+  get_primary_assistant_workspace: () => devAssistants.find(a => a.id === primaryAssistantId) || null,
+  create_assistant_workspace: () => {
+    const num = assistantSeq++;
+    const slug = `assistant-${num}`;
+    const rootPath = `/workspace/assistants/${slug}`;
+    const created = {
+      id: `dev-assistant-${num}`,
+      name: `Assistant ${num}`,
+      rootPath,
+      workspaceType: "normal",
+      workspaceKind: "assistant",
+      assistantId: slug,
+      languages: ["markdown"],
+      openedAt: new Date().toISOString(),
+      lastAccessed: new Date().toISOString(),
+      description: "Fresh personal assistant workspace ready for persona customization.",
+      tags: ["assistant"],
+      relatedPaths: [],
+    };
+    devAssistants.push(created);
+    devWorkspaces.push(created);
+    activeWorkspaceId = created.id;
+    devFileContents[`${rootPath}/IDENTITY.md`] = defaultPersonaContent("IDENTITY.md", created.name);
+    devFileContents[`${rootPath}/SOUL.md`] = defaultPersonaContent("SOUL.md", created.name);
+    devFileContents[`${rootPath}/USER.md`] = defaultPersonaContent("USER.md", created.name);
+    return created;
+  },
+  set_primary_assistant_workspace: args => {
+    const req = payloadOf(args);
+    const target = devAssistants.find(a => a.id === req.workspaceId);
+    if (!target) throw new Error(`Assistant workspace not found: ${req.workspaceId}`);
+    primaryAssistantId = target.id;
+    return target;
+  },
+  delete_assistant_workspace: args => {
+    const req = payloadOf(args);
+    if (req.workspaceId === primaryAssistantId) {
+      throw new Error("Cannot delete the primary assistant workspace");
+    }
+    devAssistants = devAssistants.filter(a => a.id !== req.workspaceId);
+    return null;
+  },
+  reset_assistant_workspace: args => {
+    const req = payloadOf(args);
+    const target = devAssistants.find(a => a.id === req.workspaceId);
+    if (!target) throw new Error(`Assistant workspace not found: ${req.workspaceId}`);
+    devFileContents[`${target.rootPath}/IDENTITY.md`] = defaultPersonaContent("IDENTITY.md", target.name);
+    devFileContents[`${target.rootPath}/SOUL.md`] = defaultPersonaContent("SOUL.md", target.name);
+    devFileContents[`${target.rootPath}/USER.md`] = defaultPersonaContent("USER.md", target.name);
+    return target;
+  },
+  write_file_content: args => {
+    const req = payloadOf(args);
+    const filePath = String(req.filePath || "");
+    if (!filePath) throw new Error("filePath is required");
+    devFileContents[filePath] = String(req.content ?? "");
+    return null;
+  },
+  reset_workspace_persona_files: args => {
+    const req = payloadOf(args);
+    const rootPath = String(req.workspacePath || "");
+    const target = devAssistants.find(a => a.id === req.workspaceId || a.rootPath === rootPath);
+    const label = target ? target.name : "Assistant";
+    if (rootPath) {
+      devFileContents[`${rootPath}/IDENTITY.md`] = defaultPersonaContent("IDENTITY.md", label);
+      devFileContents[`${rootPath}/SOUL.md`] = defaultPersonaContent("SOUL.md", label);
+      devFileContents[`${rootPath}/USER.md`] = defaultPersonaContent("USER.md", label);
+    }
+    return null;
+  },
+
+  // Files
+  get_file_tree: () => [
+    {
+      name: "src",
+      path: "/workspace/demo/src",
+      isDirectory: true,
+      children: [
+        { name: "web-ui", path: "/workspace/demo/src/web-ui", isDirectory: true, children: [] },
+        { name: "nsh-ui", path: "/workspace/demo/src/nsh-ui", isDirectory: true, children: [] },
+      ],
+    },
+    {
+      name: "docs",
+      path: "/workspace/demo/docs",
+      isDirectory: true,
+      children: [{ name: "notes.md", path: "/workspace/demo/docs/notes.md", isDirectory: false, size: 640 }],
+    },
+    { name: "README.md", path: "/workspace/demo/README.md", isDirectory: false, size: 1280 },
+  ],
+  explorer_get_children: args => {
+    const req = payloadOf(args);
+    return devFiles[req.path] || [];
+  },
+  create_directory: args => {
+    const req = payloadOf(args);
+    const dirPath = normalizeRemoteDirPath(req.path || "");
+    if (!dirPath) throw new Error("Directory path is required");
+    const parent = parentRemoteDir(dirPath);
+    const name = dirPath.split("/").filter(Boolean).pop() || dirPath;
+    if (!devFiles[dirPath]) devFiles[dirPath] = [];
+    if (!devFiles[parent]) devFiles[parent] = [];
+    if (!devFiles[parent].some(entry => entry.path === dirPath)) {
+      devFiles[parent].unshift({ name, path: dirPath, isDirectory: true });
+    }
+    return null;
+  },
+  delete_file: args => {
+    const req = payloadOf(args);
+    const filePath = String(req.filePath || req.path || "");
+    if (!filePath) return null;
+    delete devFileContents[filePath];
+    const parent = parentRemoteDir(filePath);
+    if (Array.isArray(devFiles[parent])) {
+      devFiles[parent] = devFiles[parent].filter(entry => entry.path !== filePath);
+    }
+    const uIdx = devGitStatus.untracked.indexOf(filePath);
+    if (uIdx >= 0) devGitStatus.untracked.splice(uIdx, 1);
+    return null;
+  },
+  get_system_info: () => ({
+    osType: "macos",
+    platform: "darwin",
+    arch: "aarch64",
+    homeDir: "/workspace",
+    username: "studio-user",
+  }),
+  search_files: args => {
+    const req = payloadOf(args);
+    const q = String(req.pattern || "").toLowerCase();
+    const allPaths = [
+      { name: "README.md", path: "/workspace/demo/README.md", isDirectory: false },
+      { name: "notes.md", path: "/workspace/demo/docs/notes.md", isDirectory: false },
+      { name: "App.tsx", path: "/workspace/demo/src/nsh-ui/App.tsx", isDirectory: false },
+    ];
+    return allPaths.filter(item => !q || item.name.toLowerCase().includes(q) || item.path.toLowerCase().includes(q));
+  },
+  search_session_content: args => {
+    const req = payloadOf(args);
+    const q = String(req.query || "").toLowerCase();
+    return {
+      hits: devSessions
+        .filter(s => !q || s.sessionName.toLowerCase().includes(q))
+        .map(s => ({
+          kind: "message",
+          matchedField: "content",
+          sessionId: s.sessionId,
+          sessionTitle: s.sessionName,
+          turnId: "turn-1",
+          snippet: `Matched "${req.query || ""}" in ${s.sessionName}`,
+          archived: false,
+          updatedAtMs: s.lastUpdated,
+          score: 1,
+        })),
+    };
+  },
+  read_file_content: args => {
+    const req = payloadOf(args);
+    const filePath = String(req.filePath || "");
+    if (filePath && Object.prototype.hasOwnProperty.call(devFileContents, filePath)) {
+      return devFileContents[filePath];
+    }
+    const base = filePath.split("/").pop() || "README.md";
+    if (base === "IDENTITY.md" || base === "SOUL.md" || base === "USER.md" || base === "SKILL.md") {
+      return defaultPersonaContent(base, "Personal Agent Studio");
+    }
+    return defaultPersonaContent("README.md");
+  },
+
+  // Skills & Marketplace
+  get_skill_configs: args => {
+    const req = payloadOf(args);
+    const skills = devSkills.map(s => ({ ...s }));
+    if (req.includeDiagnostics) {
+      return { skills, diagnostics: [], importOperationsVersion: 3 };
+    }
+    return skills;
+  },
+  get_global_skill_settings: () => ({
+    globallyDisabledUserSkillKeys: [...disabledUserSkillKeys],
+    globallyDisabledProjectSkillKeys: [...disabledProjectSkillKeys],
+    directSkillManagementVersion: 1,
+  }),
+  set_global_skill_disabled: args => {
+    const req = payloadOf(args);
+    const skillKey = String(req.skillKey || "");
+    const disabled = Boolean(req.disabled);
+    const targetSkill = devSkills.find(s => s.key === skillKey);
+    const isProject = targetSkill ? targetSkill.level === "project" : skillKey.startsWith("project:");
+    const list = isProject ? disabledProjectSkillKeys : disabledUserSkillKeys;
+    const idx = list.indexOf(skillKey);
+    if (disabled && idx < 0) list.push(skillKey);
+    if (!disabled && idx >= 0) list.splice(idx, 1);
+    return null;
+  },
+  validate_skill_path: args => {
+    const req = payloadOf(args);
+    const rawPath = String(req.path || "").trim();
+    if (!rawPath) {
+      return { valid: false, error: "Skill folder path cannot be empty." };
+    }
+    const name = rawPath.split("/").filter(Boolean).pop() || "custom-skill";
+    return {
+      valid: true,
+      name,
+      description: `Validated skill package from ${rawPath}`,
+    };
+  },
+  add_skill: args => {
+    const req = payloadOf(args);
+    const sourcePath = String(req.sourcePath || "").trim();
+    const level = req.level === "project" ? "project" : "user";
+    const name = String(req.targetName || sourcePath.split("/").filter(Boolean).pop() || "custom-skill");
+    const key = `${level}:${name}`;
+    if (!devSkills.some(s => s.key === key)) {
+      const destPath =
+        level === "project" ? `/workspace/demo/.openbitfun/skills/${name}` : `/workspace/skills/${name}`;
+      devSkills.push({
+        key,
+        name,
+        description: `Local skill imported from ${sourcePath || destPath}.`,
+        path: destPath,
+        entryFile: "SKILL.md",
+        level,
+        sourceSlot: level === "project" ? "openbitfun-project" : "openbitfun-user",
+        sourceId: "openbitfun",
+        sourceLabel: "OpenBitFun",
+        dirName: name,
+        isBuiltin: false,
+        isShadowed: false,
+        allowUserInvocation: true,
+      });
+      devFileContents[`${destPath}/SKILL.md`] = defaultPersonaContent("SKILL.md", name);
+    }
+    return `Installed skill '${name}'`;
+  },
+  delete_skill: args => {
+    const req = payloadOf(args);
+    const key = String(req.skillKey || "");
+    const idx = devSkills.findIndex(s => s.key === key);
+    if (idx >= 0) devSkills.splice(idx, 1);
+    disabledUserSkillKeys = disabledUserSkillKeys.filter(k => k !== key);
+    disabledProjectSkillKeys = disabledProjectSkillKeys.filter(k => k !== key);
+    return `Deleted skill '${key}'`;
+  },
+  list_skill_market: args => {
+    const req = payloadOf(args);
+    const q = String(req.query || "").trim().toLowerCase();
+    const limit = typeof req.limit === "number" ? req.limit : 30;
+    const filtered = devMarketSkills
+      .filter(item => !q || item.name.toLowerCase().includes(q) || item.description.toLowerCase().includes(q))
+      .slice(0, limit);
+    return req.includeDiagnostics ? { skills: filtered, sourceErrors: [] } : filtered;
+  },
+  search_skill_market: args => {
+    const req = payloadOf(args);
+    const q = String(req.query || "").trim().toLowerCase();
+    const limit = typeof req.limit === "number" ? req.limit : 30;
+    const filtered = devMarketSkills
+      .filter(
+        item =>
+          !q ||
+          item.name.toLowerCase().includes(q) ||
+          item.description.toLowerCase().includes(q) ||
+          item.id.toLowerCase().includes(q),
+      )
+      .slice(0, limit);
+    return req.includeDiagnostics ? { skills: filtered, sourceErrors: [] } : filtered;
+  },
+  download_skill_market: args => {
+    const req = payloadOf(args);
+    const pkg = String(req.package || "");
+    const level = req.level === "project" ? "project" : "user";
+    const match = devMarketSkills.find(m => m.installId === pkg || m.id === pkg || m.name === pkg);
+    const name = match ? match.id : pkg.split("@").pop() || "market-skill";
+    const key = `${level}:${name}`;
+    if (!devSkills.some(s => s.key === key)) {
+      const destPath =
+        level === "project" ? `/workspace/demo/.openbitfun/skills/${name}` : `/workspace/skills/${name}`;
+      devSkills.push({
+        key,
+        name,
+        description: match ? match.description : `Marketplace skill ${pkg}`,
+        path: destPath,
+        entryFile: "SKILL.md",
+        level,
+        sourceSlot: level === "project" ? "openbitfun-project" : "openbitfun-user",
+        sourceId: "openbitfun",
+        sourceLabel: "Market",
+        installationSource: pkg,
+        dirName: name,
+        isBuiltin: false,
+        isShadowed: false,
+        allowUserInvocation: true,
+      });
+      devFileContents[`${destPath}/SKILL.md`] =
+        `---\nname: ${name}\ndescription: ${match ? match.description : "Downloaded skill"}\n---\n\n# ${match ? match.name : name}\n\nInstalled from ${pkg}.\n`;
+    }
+    return {
+      package: pkg,
+      level,
+      installedSkills: [name],
+      output: `Installed ${name} into ${level}`,
+    };
+  },
+
+  // Routines / Scheduled Cron Jobs
+  notify_cron_host_ready: () => null,
+  list_cron_jobs: () => devCronJobs.map(j => ({ ...j, state: { ...j.state } })),
+  create_cron_job: args => {
+    const req = payloadOf(args);
+    const now = Date.now();
+    const job = {
+      id: `cron-dev-${cronSeq++}`,
+      name: String(req.name || "New Routine"),
+      schedule: req.schedule || { kind: "every", everyMs: 6 * HOUR_MS },
+      payload: req.payload || { text: "" },
+      enabled: req.enabled !== false,
+      reportPolicy: req.reportPolicy || "inherit",
+      target: req.target || {
+        kind: "workspace",
+        workspace: { workspaceId: activeWorkspaceId, workspacePath: "/workspace/demo" },
+        launch: { agentType: "Standard", modelId: null },
+      },
+      createdAtMs: now,
+      configUpdatedAtMs: now,
+      updatedAtMs: now,
+      state: {
+        nextRunAtMs: now + 3 * HOUR_MS,
+        lastRunStatus: null,
+        lastError: null,
+        activeTurnId: null,
+        consecutiveFailures: 0,
+        coalescedRunCount: 0,
+      },
+    };
+    devCronJobs.unshift(job);
+    return job;
+  },
+  update_cron_job: args => {
+    const req = payloadOf(args);
+    const idx = devCronJobs.findIndex(j => j.id === req.jobId);
+    if (idx < 0) throw new Error(`Cron job not found: ${req.jobId}`);
+    const prev = devCronJobs[idx];
+    const updated = {
+      ...prev,
+      ...(req.name !== undefined ? { name: req.name } : {}),
+      ...(req.schedule !== undefined ? { schedule: req.schedule } : {}),
+      ...(req.payload !== undefined ? { payload: req.payload } : {}),
+      ...(req.enabled !== undefined ? { enabled: Boolean(req.enabled) } : {}),
+      ...(req.reportPolicy !== undefined ? { reportPolicy: req.reportPolicy } : {}),
+      ...(req.target !== undefined ? { target: req.target } : {}),
+      configUpdatedAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+    };
+    devCronJobs[idx] = updated;
+    return updated;
+  },
+  delete_cron_job: args => {
+    const req = payloadOf(args);
+    const idx = devCronJobs.findIndex(j => j.id === req.jobId);
+    if (idx >= 0) {
+      devCronJobs.splice(idx, 1);
+      return true;
+    }
+    return false;
+  },
+
+  // Git Workbench
+  git_is_repository: () => true,
+  git_get_repository_trust: args => {
+    const req = payloadOf(args);
+    return {
+      state: devGitTrusted ? "trusted" : "trust_required",
+      repositoryPath: req.repositoryPath || "/workspace/demo",
+      detail: devGitTrusted ? null : "Repository requires safe.directory confirmation",
+      manualCommand: devGitTrusted ? null : "git config --global --add safe.directory /workspace/demo",
+    };
+  },
+  git_trust_repository: args => {
+    const req = payloadOf(args);
+    devGitTrusted = true;
+    return {
+      state: "trusted",
+      repositoryPath: req.repositoryPath || "/workspace/demo",
+      alreadyTrusted: false,
+      addedEntries: [req.repositoryPath || "/workspace/demo"],
+      detail: null,
+      manualCommand: null,
+    };
+  },
+  git_get_status: () => ({
+    staged: [...devGitStatus.staged],
+    unstaged: [...devGitStatus.unstaged],
+    untracked: [...devGitStatus.untracked],
+    conflicts: [...devGitStatus.conflicts],
+    current_branch: devGitStatus.current_branch,
+    ahead: devGitStatus.ahead,
+    behind: devGitStatus.behind,
+  }),
+  git_get_diff: args => {
+    const req = payloadOf(args);
+    const params = req.params || {};
+    const file = (Array.isArray(params.files) && params.files[0]) || params.filePath || "src/nsh-ui/App.tsx";
+    return buildGitDiff(file, Boolean(params.staged));
+  },
+  git_add_files: args => {
+    const req = payloadOf(args);
+    const params = req.params || {};
+    const targets = params.all
+      ? [...devGitStatus.unstaged.map(f => f.path), ...devGitStatus.untracked]
+      : Array.isArray(params.files)
+        ? params.files
+        : [];
+    for (const filePath of targets) {
+      const uIdx = devGitStatus.unstaged.findIndex(f => f.path === filePath);
+      if (uIdx >= 0) {
+        const entry = devGitStatus.unstaged.splice(uIdx, 1)[0];
+        if (!devGitStatus.staged.some(f => f.path === filePath)) {
+          devGitStatus.staged.push({ path: entry.path, status: entry.status, index_status: "M", workdir_status: " " });
+        }
+      }
+      const tIdx = devGitStatus.untracked.indexOf(filePath);
+      if (tIdx >= 0) {
+        devGitStatus.untracked.splice(tIdx, 1);
+        if (!devGitStatus.staged.some(f => f.path === filePath)) {
+          devGitStatus.staged.push({ path: filePath, status: "A", index_status: "A", workdir_status: " " });
+        }
+      }
+    }
+    return { success: true, message: `Staged ${targets.length} file(s)` };
+  },
+  git_reset_files: args => {
+    const req = payloadOf(args);
+    const params = req.params || req;
+    const files = Array.isArray(params.files) ? params.files : [];
+    const staged = params.staged !== false;
+    for (const filePath of files) {
+      if (staged) {
+        const sIdx = devGitStatus.staged.findIndex(f => f.path === filePath);
+        if (sIdx >= 0) {
+          const entry = devGitStatus.staged.splice(sIdx, 1)[0];
+          if (entry.status === "A") {
+            if (!devGitStatus.untracked.includes(filePath)) devGitStatus.untracked.push(filePath);
+          } else if (!devGitStatus.unstaged.some(f => f.path === filePath)) {
+            devGitStatus.unstaged.push({ path: filePath, status: entry.status, index_status: " ", workdir_status: "M" });
+          }
+        }
+      } else {
+        const uIdx = devGitStatus.unstaged.findIndex(f => f.path === filePath);
+        if (uIdx >= 0) devGitStatus.unstaged.splice(uIdx, 1);
+        const cIdx = devGitStatus.conflicts.findIndex(f => f.path === filePath);
+        if (cIdx >= 0) devGitStatus.conflicts.splice(cIdx, 1);
+      }
+    }
+    return {
+      success: true,
+      message: staged ? `Unstaged ${files.length} file(s)` : `Discarded changes in ${files.length} file(s)`,
+    };
+  },
+  git_commit: args => {
+    const req = payloadOf(args);
+    const params = req.params || {};
+    const message = String(params.message || "").trim();
+    if (!message) return { success: false, error: "Commit message is empty" };
+    const hash = Math.random().toString(16).slice(2).padEnd(40, "0").slice(0, 40);
+    const commit = {
+      hash,
+      short_hash: hash.slice(0, 7),
+      message,
+      author: "Studio User",
+      author_email: "studio@example.com",
+      date: new Date().toISOString(),
+      parents: devGitCommits[0] ? [devGitCommits[0].hash] : [],
+      additions: 18,
+      deletions: 4,
+      files_changed: Math.max(1, devGitStatus.staged.length),
+    };
+    if (params.amend && devGitCommits.length > 0) {
+      devGitCommits[0] = { ...devGitCommits[0], message };
+    } else {
+      devGitCommits.unshift(commit);
+      devGitStatus.ahead += 1;
+    }
+    devGitStatus.staged = [];
+    return { success: true, message: `Committed ${commit.short_hash}` };
+  },
+  git_push: () => {
+    devGitStatus.ahead = 0;
+    return { success: true, message: `Pushed to origin/${devGitStatus.current_branch}` };
+  },
+  git_pull: () => {
+    devGitStatus.behind = 0;
+    return { success: true, message: "Already up to date." };
+  },
+  quick_commit_message: () => ({
+    title: "feat(nsh): update studio workspace components",
+    body: null,
+    footer: null,
+    full_message: "feat(nsh): update studio workspace components",
+    fullMessage: "feat(nsh): update studio workspace components",
+    commit_type: "Feat",
+    scope: "nsh",
+    confidence: 0.92,
+    changes_summary: { files_changed: 2, total_additions: 24, total_deletions: 6 },
+  }),
+  generate_commit_message: () => ({
+    title: "feat(nsh): update studio workspace components",
+    body: "Refine theme tokens and interactive workbench views.",
+    footer: null,
+    full_message:
+      "feat(nsh): update studio workspace components\n\nRefine theme tokens and interactive workbench views.",
+    fullMessage:
+      "feat(nsh): update studio workspace components\n\nRefine theme tokens and interactive workbench views.",
+    commit_type: "Feat",
+    scope: "nsh",
+    confidence: 0.94,
+    changes_summary: { files_changed: 2, total_additions: 24, total_deletions: 6 },
+  }),
+  git_get_enhanced_branches: args => {
+    const req = payloadOf(args);
+    return req.includeRemote === false ? devGitBranches.filter(b => !b.remote) : [...devGitBranches];
+  },
+  git_get_branches: args => {
+    const req = payloadOf(args);
+    return req.includeRemote === false ? devGitBranches.filter(b => !b.remote) : [...devGitBranches];
+  },
+  git_checkout_branch: args => {
+    const req = payloadOf(args);
+    const branchName = String(req.branchName || "");
+    const target = devGitBranches.find(b => b.name === branchName);
+    if (!target) return { success: false, error: `Branch '${branchName}' not found` };
+    for (const branch of devGitBranches) {
+      branch.current = branch.name === branchName;
+    }
+    devGitStatus.current_branch = branchName;
+    return { success: true, message: `Switched to branch '${branchName}'` };
+  },
+  git_create_branch: args => {
+    const req = payloadOf(args);
+    const branchName = String(req.branchName || "").trim();
+    if (!branchName) return { success: false, error: "Branch name is required" };
+    if (devGitBranches.some(b => b.name === branchName)) {
+      return { success: false, error: `Branch '${branchName}' already exists` };
+    }
+    const checkout = req.checkout !== false;
+    if (checkout) {
+      for (const b of devGitBranches) b.current = false;
+      devGitStatus.current_branch = branchName;
+    }
+    devGitBranches.unshift({
+      name: branchName,
+      current: checkout,
+      remote: false,
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      last_commit: devGitCommits[0] ? devGitCommits[0].short_hash : "0000000",
+      last_commit_date: new Date().toISOString(),
+    });
+    return { success: true, message: `Created branch '${branchName}'` };
+  },
+  git_delete_branch: args => {
+    const req = payloadOf(args);
+    const branchName = String(req.branchName || "");
+    const idx = devGitBranches.findIndex(b => b.name === branchName && !b.remote);
+    if (idx < 0) return { success: false, error: `Branch '${branchName}' not found` };
+    if (devGitBranches[idx].current) return { success: false, error: "Cannot delete the checked-out branch" };
+    devGitBranches.splice(idx, 1);
+    return { success: true, message: `Deleted branch '${branchName}'` };
+  },
+  git_get_commits: args => {
+    const req = payloadOf(args);
+    const params = req.params || {};
+    const limit = Number(params.maxCount || params.max_count || 40);
+    return devGitCommits.slice(0, limit);
+  },
+  git_get_graph: args => {
+    const req = payloadOf(args);
+    if (isRemoteWorkspaceRequested(req)) {
+      throw new Error("Git graph is not supported for remote SSH workspaces yet");
+    }
+    const maxCount = Number(req.maxCount || 40);
+    const nodes = devGitCommits.slice(0, maxCount).map((c, idx) => ({
+      hash: c.hash,
+      message: c.message,
+      fullMessage: c.message,
+      authorName: c.author,
+      authorEmail: c.author_email,
+      timestamp: Date.parse(c.date) || Date.now(),
+      parents: c.parents,
+      children: idx > 0 ? [devGitCommits[idx - 1].hash] : [],
+      refs:
+        idx === 0
+          ? [{ name: devGitStatus.current_branch, refType: "branch", isCurrent: true, isHead: true }]
+          : idx === 1
+            ? [{ name: "main", refType: "branch", isCurrent: false, isHead: false }]
+            : [],
+      lane: 0,
+      forkingLanes: [],
+      mergingLanes: [],
+      passingLanes: [],
+    }));
+    return {
+      nodes,
+      maxLane: 0,
+      currentBranch: devGitStatus.current_branch,
+    };
+  },
+  git_list_worktrees: args => {
+    const req = payloadOf(args);
+    if (isRemoteWorkspaceRequested(req)) {
+      throw new Error("Git worktrees are not supported for remote SSH workspaces");
+    }
+    return devGitWorktrees.map(wt => ({ ...wt }));
+  },
+  git_add_worktree: args => {
+    const req = payloadOf(args);
+    if (isRemoteWorkspaceRequested(req)) {
+      throw new Error("Git worktrees are not supported for remote SSH workspaces");
+    }
+    const branch = String(req.branch || "").trim();
+    if (!branch) throw new Error("Branch name is required");
+    const slug = branch.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "worktree";
+    const wtPath = `/workspace/demo-worktrees/${slug}`;
+    const created = {
+      path: wtPath,
+      branch,
+      head: devGitCommits[0] ? devGitCommits[0].short_hash : "a1b2c3d",
+      isMain: false,
+      isLocked: false,
+      isPrunable: false,
+    };
+    devGitWorktrees.push(created);
+    if (req.createBranch !== false && !devGitBranches.some(b => b.name === branch)) {
+      devGitBranches.push({
+        name: branch,
+        current: false,
+        remote: false,
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        last_commit: created.head,
+        last_commit_date: new Date().toISOString(),
+      });
+    }
+    return created;
+  },
+  git_remove_worktree: args => {
+    const req = payloadOf(args);
+    const worktreePath = String(req.worktreePath || "");
+    const idx = devGitWorktrees.findIndex(w => w.path === worktreePath);
+    if (idx < 0) return { success: false, error: `Worktree not found: ${worktreePath}` };
+    if (devGitWorktrees[idx].isMain) {
+      return { success: false, error: "Cannot remove the main worktree" };
+    }
+    devGitWorktrees.splice(idx, 1);
+    return { success: true, message: `Removed worktree ${worktreePath}` };
+  },
+
+  // Spaces / MiniApps
+  list_miniapps: () =>
+    devMiniApps.map(({ source: _source, compiled_html: _compiled, ai_context: _ai, ...meta }) => meta),
+  miniapp_worker_list_running: () => [...runningMiniAppWorkers],
+  miniapp_worker_stop: args => {
+    const req = payloadOf(args);
+    runningMiniAppWorkers = runningMiniAppWorkers.filter(id => id !== req.appId);
+    return null;
+  },
+  get_miniapp: args => {
+    const req = payloadOf(args);
+    const found = devMiniApps.find(app => app.id === req.appId);
+    if (!found) throw new Error(`MiniApp '${req.appId}' not found`);
+    return found;
+  },
+  get_miniapp_versions: args => {
+    const req = payloadOf(args);
+    const found = devMiniApps.find(app => app.id === req.appId);
+    if (!found) return [];
+    return Array.from({ length: found.version }, (_, idx) => idx + 1);
+  },
+  delete_miniapp: args => {
+    const req = payloadOf(args);
+    const idx = devMiniApps.findIndex(app => app.id === req.appId);
+    if (idx >= 0) devMiniApps.splice(idx, 1);
+    runningMiniAppWorkers = runningMiniAppWorkers.filter(id => id !== req.appId);
+    return null;
+  },
+
+  // Terminal
+  terminal_get_shells: () => [
+    { id: "zsh", name: "Zsh", shellType: "Zsh", path: "/bin/zsh", version: "5.9", available: true },
+    { id: "bash", name: "Bash", shellType: "Bash", path: "/bin/bash", version: "5.2", available: true },
+  ],
+  terminal_create: args => {
+    const req = payloadOf(args);
+    const id = `dev-terminal-${devTerminalSeq++}`;
+    devTerminalBuffers[id] = "OpenBitFun Studio dev shell (fixture)\r\n$ ";
+    return { id, name: req.shellType || "zsh", workspaceId: req.workspaceId || activeWorkspaceId };
+  },
+  terminal_get_history: args => {
+    const req = payloadOf(args);
+    const data = devTerminalBuffers[req.sessionId] || "";
+    return { data, cursor: data.length, nextOffset: data.length, truncated: false, cols: 80, rows: 24 };
+  },
+  terminal_write: args => {
+    const req = payloadOf(args);
+    if (req.sessionId && req.data) {
+      devTerminalBuffers[req.sessionId] = (devTerminalBuffers[req.sessionId] || "") + String(req.data);
+    }
+    return null;
+  },
+  terminal_resize: () => null,
+  terminal_close: () => null,
+
+  // Devices, Remote Connect & Messaging Bots
+  account_list_devices: () => {
+    if (!devAccountLoggedIn) {
+      throw new Error("not logged in");
+    }
+    return [
+      { deviceId: "dev-device-mac", deviceName: "studio-mac", platform: "macos", alias: "Studio" },
+      { deviceId: "dev-device-remote", deviceName: "build-host", platform: "linux" },
+    ];
+  },
+  account_online_devices: () => {
+    if (!devAccountLoggedIn) {
+      throw new Error("not logged in");
+    }
+    return [{ deviceId: "dev-device-mac" }];
+  },
+  remote_connect_get_device_info: () => ({
+    device_id: "dev-device-mac",
+    device_name: "studio-mac",
+    device_alias: "Studio",
+    device_os: "macos",
+    mac_address: "00:00:00:00:00:00",
+  }),
+  remote_connect_status: () => ({
+    connections: [
+      {
+        method: "lan",
+        relay_connected: remoteRelayConnected && remoteActiveMethod === "lan",
+        relay_url: remoteActiveMethod === "lan" ? remoteRelayUrl : null,
+        clients: [],
+      },
+      {
+        method: "openbitfun_server",
+        relay_connected: remoteRelayConnected && remoteActiveMethod === "openbitfun_server",
+        relay_url: remoteActiveMethod === "openbitfun_server" ? remoteRelayUrl : null,
+        clients: [],
+      },
+    ],
+    relay_connected: remoteRelayConnected,
+    relay_url: remoteRelayUrl,
+    active_method: remoteActiveMethod,
+    clients: remoteRelayConnected ? [{ id: "mobile-preview", name: "Mobile Web" }] : [],
+    bot_connected: remoteBotConnected,
+    bot_verbose_mode: remoteBotVerboseMode,
+  }),
+  remote_connect_get_methods: () => remoteMethods,
+  remote_connect_get_form_state: () => ({ ...remoteFormState }),
+  remote_connect_set_form_state: args => {
+    const req = payloadOf(args);
+    remoteFormState = { ...remoteFormState, ...req };
+    return null;
+  },
+  remote_connect_start: args => {
+    const req = payloadOf(args);
+    const method = String(req.method || "openbitfun_server");
+    if (method === "bot_telegram" || method === "bot_feishu" || method === "bot_weixin") {
+      remoteBotConnected = method.replace("bot_", "");
+      return {
+        method,
+        qr_data: null,
+        qr_svg: null,
+        qr_url: null,
+        bot_pairing_code: "OBF-7492",
+        bot_link: "https://example.invalid/bot-pair",
+        pairing_state: "connected",
+      };
+    }
+    remoteRelayConnected = true;
+    remoteActiveMethod = method === "lan" ? { lan: { ip: req.lan_ip || "192.168.1.42" } } : method;
+    remoteRelayUrl = method === "lan" ? "http://192.168.1.42:8788/remote" : "https://relay.example.invalid/pair/studio";
+    return {
+      method: remoteActiveMethod,
+      qr_data: remoteRelayUrl,
+      qr_svg: null,
+      qr_url: remoteRelayUrl,
+      bot_pairing_code: null,
+      bot_link: null,
+      pairing_state: "waiting_for_scan",
+    };
+  },
+  remote_connect_stop: args => {
+    const req = payloadOf(args);
+    if (!req.method || req.method === "openbitfun_server" || req.method === "lan") {
+      remoteRelayConnected = false;
+      remoteActiveMethod = null;
+      remoteRelayUrl = null;
+    }
+    return null;
+  },
+  remote_connect_configure_bot: args => {
+    const req = payloadOf(args);
+    const botType = String(req.bot_type || "");
+    if (botType === "telegram") {
+      remoteFormState.telegram_bot_token = String(req.bot_token || "");
+      remoteBotConnected = "telegram";
+    } else if (botType === "feishu") {
+      remoteFormState.feishu_app_id = String(req.app_id || "");
+      remoteFormState.feishu_app_secret = String(req.app_secret || "");
+      remoteBotConnected = "feishu";
+    } else if (botType === "weixin") {
+      remoteFormState.weixin_ilink_token = String(req.weixin_ilink_token || "");
+      remoteFormState.weixin_base_url = String(req.weixin_base_url || "");
+      remoteFormState.weixin_bot_account_id = String(req.weixin_bot_account_id || "");
+      remoteBotConnected = "weixin";
+    }
+    return null;
+  },
+  remote_connect_stop_bot: () => {
+    remoteBotConnected = null;
+    return null;
+  },
+  remote_connect_weixin_qr_start: () => ({
+    session_key: "weixin-qr-dev-1",
+    qr_image_url: "https://example.invalid/weixin/qr-dev.png",
+    message: "Scan this QR code with WeChat to link the bot.",
+  }),
+  remote_connect_weixin_qr_poll: () => ({
+    status: "confirmed",
+    message: "WeChat bot paired in development fixture.",
+    qr_image_url: null,
+    ilink_token: "demo-weixin-ilink-token",
+    bot_account_id: "wx-bot-demo-1",
+    base_url: "https://ilinkai.weixin.qq.com",
+  }),
+  remote_connect_get_bot_verbose_mode: () => remoteBotVerboseMode,
+  remote_connect_set_bot_verbose_mode: args => {
+    const req = payloadOf(args);
+    remoteBotVerboseMode = Boolean(req.verbose);
+    return null;
+  },
+
+  // Account & Insights
+  account_github_info: () => (devAccountLoggedIn ? devGithubAccount : null),
+  account_github_start: () => ({
+    transactionId: "github-tx-dev-1",
+    userCode: "OBF7-429A",
+    verificationUri: "https://github.com/login/device",
+    authorizationUrl: "https://github.com/login/device",
+    expiresAt: Math.floor(Date.now() / 1000) + 600,
+    pollIntervalSeconds: 2,
+  }),
+  account_github_poll: () => {
+    devAccountLoggedIn = true;
+    devGithubAccount = {
+      email: "studio@example.com",
+      user: {
+        githubId: 424201,
+        accountId: "acc-studio-demo",
+        login: "studio-user",
+        avatarUrl: "",
+      },
+      isAdmin: false,
+    };
+    return { status: "authorized" };
+  },
+  account_status: () => ({
+    logged_in: devAccountLoggedIn,
+    loggedIn: devAccountLoggedIn,
+    user_id: devAccountLoggedIn ? "acc-studio-demo" : null,
+    userId: devAccountLoggedIn ? "acc-studio-demo" : null,
+  }),
+  account_logout: () => {
+    devAccountLoggedIn = false;
+    return null;
+  },
+  get_latest_insights: () => devInsightsReports.map(entry => entry.meta),
+  load_insights_report: args => {
+    const req = payloadOf(args);
+    const match = devInsightsReports.find(entry => entry.meta.path === req.path);
+    if (!match) throw new Error(`Insights report not found: ${req.path}`);
+    return match.report;
+  },
+  generate_insights: args => {
+    const req = payloadOf(args);
+    const days = Number(req.days || 30);
+    const now = Date.now();
+    const base = devInsightsReports[0];
+    const generatedPath = `/workspace/demo/.openbitfun/insights/generated-${insightsSeq++}.json`;
+    const meta = {
+      ...base.meta,
+      generated_at: now,
+      days_covered: days,
+      path: generatedPath,
+    };
+    const report = {
+      ...base.report,
+      generated_at: now,
+      days_covered: days,
+    };
+    devInsightsReports.unshift({ meta, report });
+    return report;
+  },
+  cancel_insights_generation: () => null,
+
+  // Usage, AI Discovery, Subscriptions, SSH/Remote Workspaces & Settings fixtures
+  get_token_usage_statistics: args => {
+    const req = payloadOf(args);
+    const nowMs = Date.now();
+    const isCustom = req.timeRange === "custom";
+    const trend = isCustom
+      ? buildCustomUsageTrend(nowMs)
+      : [
+          { bucket: new Date(nowMs - 4 * DAY_MS).toISOString(), inputTokens: 16200, outputTokens: 5400, cacheReadTokens: 7000 },
+          { bucket: new Date(nowMs - 3 * DAY_MS).toISOString(), inputTokens: 21800, outputTokens: 7600, cacheReadTokens: 9200 },
+          { bucket: new Date(nowMs - 2 * DAY_MS).toISOString(), inputTokens: 38000, outputTokens: 14200, cacheReadTokens: 16000 },
+          { bucket: new Date(nowMs - DAY_MS).toISOString(), inputTokens: 51200, outputTokens: 21100, cacheReadTokens: 25000 },
+        ];
+    return {
+      totalRequests: 42,
+      unknownUsageRequests: 0,
+      failedRequests: 1,
+      totalTokens: 124500,
+      totalInputTokens: 89200,
+      totalOutputTokens: 35300,
+      totalCachedTokens: 41000,
+      totalCacheWriteTokens: 4500,
+      totalCacheReportedInputTokens: 82000,
+      byModel: [
+        { key: "model-1", name: "Studio Primary", providerName: "openai", requests: 42, tokens: 124500, cacheHitRate: 0.5 },
+      ],
+      byGroup: [{ key: "Standard", name: "Standard", requests: 30, tokens: 88000 }],
+      byEndpoint: [{ key: "chat", name: "/v1/chat/completions", requests: 42, tokens: 124500 }],
+      trend,
+      granularity: req.granularity || "day",
+    };
+  },
+  get_local_models_dev_catalogs: () => ({
+    provider_catalog: {
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          endpoints: [
+            { base_url: "https://api.openai.com/v1", api_format: "openai", label: "Global API" },
+          ],
+          models: [
+            { id: "gpt-4.1", display_name: "GPT-4.1", limits: { context: 1047576, output: 32768 } },
+            { id: "gpt-4.1-mini", display_name: "GPT-4.1 mini", limits: { context: 1047576, output: 32768 } },
+            { id: "o3-mini", display_name: "o3-mini", limits: { context: 200000, output: 100000 } },
+          ],
+        },
+        {
+          id: "anthropic",
+          name: "Anthropic",
+          endpoints: [
+            { base_url: "https://api.anthropic.com", api_format: "anthropic", label: "Anthropic API" },
+          ],
+          models: [
+            { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5", limits: { context: 200000, output: 16384 } },
+          ],
+        },
+        {
+          id: "gemini",
+          name: "Google Gemini",
+          endpoints: [
+            { base_url: "https://generativelanguage.googleapis.com", api_format: "gemini", label: "Gemini API" },
+          ],
+          models: [
+            { id: "gemini-2.5-pro", display_name: "Gemini 2.5 Pro", limits: { context: 1048576, output: 65536 } },
+          ],
+        },
+      ],
+    },
+  }),
+  list_ai_models_by_config: args => {
+    const req = payloadOf(args);
+    const cfg = req.config || {};
+    const fmt = String(cfg.format || cfg.provider || "openai").toLowerCase();
+    if (fmt.includes("anthropic")) {
+      return [
+        {
+          id: "claude-sonnet-4-5",
+          display_name: "Claude Sonnet 4.5",
+          owned_by: "anthropic",
+          context_window: 200000,
+          max_tokens: 16384,
+          capabilities: ["text", "image", "function_calling"],
+        },
+        {
+          id: "claude-opus-4-1",
+          display_name: "Claude Opus 4.1",
+          owned_by: "anthropic",
+          context_window: 200000,
+          max_tokens: 32000,
+          capabilities: ["text", "image", "reasoning", "function_calling"],
+        },
+      ];
+    }
+    if (fmt.includes("gemini")) {
+      return [
+        {
+          id: "gemini-2.5-pro",
+          display_name: "Gemini 2.5 Pro",
+          owned_by: "google",
+          context_window: 1048576,
+          max_tokens: 65536,
+          capabilities: ["text", "image", "reasoning", "function_calling"],
+        },
+        {
+          id: "gemini-2.5-flash",
+          display_name: "Gemini 2.5 Flash",
+          owned_by: "google",
+          context_window: 1048576,
+          max_tokens: 65536,
+          capabilities: ["text", "image", "function_calling"],
+        },
+      ];
+    }
+    return [
+      {
+        id: "gpt-4.1",
+        display_name: "GPT-4.1",
+        owned_by: "openai",
+        context_window: 1047576,
+        max_tokens: 32768,
+        capabilities: ["text", "image", "function_calling"],
+      },
+      {
+        id: "gpt-4.1-mini",
+        display_name: "GPT-4.1 mini",
+        owned_by: "openai",
+        context_window: 1047576,
+        max_tokens: 32768,
+        capabilities: ["text", "image", "function_calling"],
+      },
+      {
+        id: "o3-mini",
+        display_name: "o3-mini",
+        owned_by: "openai",
+        context_window: 200000,
+        max_tokens: 100000,
+        capabilities: ["text", "reasoning", "function_calling"],
+      },
+    ];
+  },
+  test_ai_config_connection: args => {
+    const req = payloadOf(args);
+    const cfg = req.config || {};
+    const name = cfg.model_name || cfg.name || "model";
+    return {
+      success: true,
+      response_time_ms: 142,
+      responseTimeMs: 142,
+      model_response: "OK",
+      message: `Connected to ${name} · 142 ms`,
+    };
+  },
+  list_subscription_accounts: () => [
+    {
+      provider: "openai",
+      display_label: "Codex / ChatGPT Plus",
+      account: "studio-user@example.com",
+      connected: true,
+      suggested_format: "responses",
+    },
+    {
+      provider: "anthropic",
+      display_label: "Claude Pro",
+      account: null,
+      connected: false,
+      suggested_format: "anthropic",
+    },
+  ],
+  get_subscription_account_quota: args => {
+    const req = payloadOf(args);
+    const provider = String(req.provider || "openai");
+    return {
+      account_id: String(req.accountId || provider),
+      provider,
+      state: "active",
+      plan: "Plus",
+      allowed: true,
+      has_credits: true,
+      primary_window: {
+        label: "5-hour window",
+        used_percent: 24,
+        remaining_percent: 76,
+        reset_at: new Date(Date.now() + 2 * HOUR_MS).toISOString(),
+      },
+      secondary_window: {
+        label: "Weekly",
+        used_percent: 18,
+        remaining_percent: 82,
+        reset_at: new Date(Date.now() + 4 * DAY_MS).toISOString(),
+      },
+    };
+  },
+  ssh_list_saved_connections: () => devSshConnections.map(c => ({ ...c })),
+  ssh_save_connection: args => {
+    const req = payloadOf(args);
+    const cfg = req.config || req;
+    const saved = {
+      id: String(cfg.id || `dev-ssh-${devSshConnections.length + 1}`),
+      name: String(cfg.name || cfg.host || "remote-host"),
+      host: String(cfg.host || "127.0.0.1"),
+      port: Number(cfg.port) || 22,
+      username: String(cfg.username || "builder"),
+      authType: toSavedAuthType(cfg.auth),
+      ...(cfg.defaultWorkspace ? { defaultWorkspace: String(cfg.defaultWorkspace) } : {}),
+      ...(cfg.proxyJump ? { proxyJump: String(cfg.proxyJump) } : {}),
+      ...(cfg.proxyCommand ? { proxyCommand: String(cfg.proxyCommand) } : {}),
+      ...(cfg.container ? { container: cfg.container } : {}),
+      ...(cfg.wsl ? { wsl: cfg.wsl } : {}),
+      ...(cfg.options ? { options: cfg.options } : {}),
+      lastConnected: Date.now(),
+    };
+    const idx = devSshConnections.findIndex(c => c.id === saved.id);
+    if (idx >= 0) devSshConnections[idx] = { ...devSshConnections[idx], ...saved };
+    else devSshConnections.push(saved);
+    return null;
+  },
+  ssh_delete_connection: args => {
+    const req = payloadOf(args);
+    const id = String(req.connectionId || "");
+    const idx = devSshConnections.findIndex(c => c.id === id);
+    if (idx >= 0) devSshConnections.splice(idx, 1);
+    devSshConnectedIds.delete(id);
+    return null;
+  },
+  ssh_has_stored_password: args => {
+    const req = payloadOf(args);
+    return String(req.connectionId || "") === "dev-ssh-1";
+  },
+  ssh_test_connection: args => {
+    const req = payloadOf(args);
+    const cfg = req.config || req;
+    const hostLabel = String(cfg.name || cfg.host || "remote-host");
+    const steps = [
+      { id: "dns", label: `Resolve ${cfg.host || hostLabel}`, success: true },
+      { id: "tcp", label: `TCP handshake (port ${cfg.port || 22})`, success: true },
+      { id: "auth", label: "Authenticate SSH session", success: true },
+      { id: "shell", label: "Probe remote home directory", success: true },
+    ];
+    return {
+      success: true,
+      latencyMs: 38,
+      stages: steps,
+      steps,
+      serverInfo: {
+        osType: "linux",
+        hostname: hostLabel,
+        homeDir: cfg.defaultWorkspace || "/srv",
+        os: "Linux 6.8",
+        arch: "x86_64",
+      },
+    };
+  },
+  ssh_connect: args => {
+    const req = payloadOf(args);
+    const cfg = req.config || req;
+    const id = String(cfg.id || `dev-ssh-${Date.now()}`);
+    devSshConnectedIds.add(id);
+    return {
+      success: true,
+      connectionId: id,
+      serverInfo: {
+        osType: "linux",
+        hostname: String(cfg.name || cfg.host || "build-host"),
+        homeDir: cfg.defaultWorkspace || "/srv",
+        os: "Linux 6.8",
+        arch: "x86_64",
+      },
+    };
+  },
+  ssh_disconnect: args => {
+    const req = payloadOf(args);
+    devSshConnectedIds.delete(String(req.connectionId || ""));
+    return null;
+  },
+  ssh_is_connected: args => {
+    const req = payloadOf(args);
+    return devSshConnectedIds.has(String(req.connectionId || ""));
+  },
+  ssh_get_server_info: args => {
+    const req = payloadOf(args);
+    const saved = devSshConnections.find(c => c.id === req.connectionId);
+    return {
+      osType: "linux",
+      hostname: saved ? saved.name : "build-host",
+      homeDir: saved && saved.defaultWorkspace ? saved.defaultWorkspace : "/srv",
+      os: "Linux 6.8",
+      arch: "x86_64",
+    };
+  },
+  ssh_list_config_hosts: () => devSshConfigHosts.map(h => ({ ...h })),
+  ssh_get_config: args => {
+    const req = payloadOf(args);
+    const host = String(req.host || "");
+    const found = devSshConfigHosts.find(h => h.host === host);
+    return found ? { found: true, config: { ...found } } : { found: false };
+  },
+  ssh_list_docker_containers: () => devDockerContainers.map(c => ({ ...c })),
+  ssh_list_wsl_distributions: () => ({ supported: false, distributions: [] }),
+  remote_read_dir: args => {
+    const req = payloadOf(args);
+    const dirPath = normalizeRemoteDirPath(req.path || "/srv");
+    return (devRemoteDirs[dirPath] || []).map(entry => ({ ...entry }));
+  },
+  remote_exists: args => {
+    const req = payloadOf(args);
+    const target = normalizeRemoteDirPath(req.path || "");
+    if (devRemoteDirs[target]) return true;
+    const parent = parentRemoteDir(target);
+    return (devRemoteDirs[parent] || []).some(entry => entry.path === target);
+  },
+  remote_create_dir: args => {
+    const req = payloadOf(args);
+    const target = normalizeRemoteDirPath(req.path || "");
+    if (!target) throw new Error("Remote path is required");
+    const parent = parentRemoteDir(target);
+    const name = target.split("/").filter(Boolean).pop() || target;
+    if (!devRemoteDirs[target]) devRemoteDirs[target] = [];
+    if (!devRemoteDirs[parent]) devRemoteDirs[parent] = [];
+    if (!devRemoteDirs[parent].some(entry => entry.path === target)) {
+      devRemoteDirs[parent].unshift({
+        name,
+        path: target,
+        isDir: true,
+        isFile: false,
+        isSymlink: false,
+        permissions: "drwxr-xr-x",
+      });
+    }
+    return null;
+  },
+  remote_rename: args => {
+    const req = payloadOf(args);
+    const oldPath = normalizeRemoteDirPath(req.oldPath || "");
+    const newPath = normalizeRemoteDirPath(req.newPath || "");
+    const parent = parentRemoteDir(oldPath);
+    const entries = devRemoteDirs[parent] || [];
+    const target = entries.find(e => e.path === oldPath);
+    if (target && newPath) {
+      target.path = newPath;
+      target.name = newPath.split("/").filter(Boolean).pop() || newPath;
+    }
+    if (devRemoteDirs[oldPath]) {
+      devRemoteDirs[newPath] = devRemoteDirs[oldPath];
+      delete devRemoteDirs[oldPath];
+    }
+    return null;
+  },
+  remote_remove: args => {
+    const req = payloadOf(args);
+    const target = normalizeRemoteDirPath(req.path || "");
+    const parent = parentRemoteDir(target);
+    if (Array.isArray(devRemoteDirs[parent])) {
+      devRemoteDirs[parent] = devRemoteDirs[parent].filter(e => e.path !== target);
+    }
+    delete devRemoteDirs[target];
+    return null;
+  },
+  open_remote_workspace: args => {
+    const req = payloadOf(args);
+    const remotePath = normalizeRemoteDirPath(req.remotePath || "/srv/app");
+    const connectionId = String(req.connectionId || "dev-ssh-1");
+    const connectionName = String(req.connectionName || "build-host");
+    const sshHost = req.sshHost ? String(req.sshHost) : connectionName;
+    const existing = devWorkspaces.find(
+      w => w.workspaceKind === "remote" && w.rootPath === remotePath,
+    );
+    if (existing) {
+      existing.connectionId = connectionId;
+      existing.connectionName = connectionName;
+      existing.sshHost = sshHost;
+      existing.lastAccessed = Date.now();
+      activeWorkspaceId = existing.id;
+      devActiveRemoteWorkspace = {
+        workspaceId: existing.id,
+        connectionId,
+        connectionName,
+        remotePath,
+        sshHost,
+      };
+      return existing;
+    }
+    const dirName = remotePath.split("/").filter(Boolean).pop() || remotePath;
+    const created = {
+      id: `dev-workspace-remote-${remoteWorkspaceSeq++}`,
+      name: `${dirName} [${connectionName}]`,
+      rootPath: remotePath,
+      workspaceKind: "remote",
+      connectionId,
+      connectionName,
+      sshHost,
+      lastAccessed: Date.now(),
+    };
+    devWorkspaces.push(created);
+    if (!devFiles[remotePath]) {
+      devFiles[remotePath] = (devRemoteDirs[remotePath] || []).map(e => ({
+        name: e.name,
+        path: e.path,
+        isDirectory: e.isDir,
+        size: e.size,
+      }));
+    }
+    activeWorkspaceId = created.id;
+    devActiveRemoteWorkspace = {
+      workspaceId: created.id,
+      connectionId,
+      connectionName,
+      remotePath,
+      sshHost,
+    };
+    return created;
+  },
+  remote_open_workspace: args => {
+    const req = payloadOf(args);
+    const remotePath = normalizeRemoteDirPath(req.remotePath || "/srv/app");
+    const connectionId = String(req.connectionId || "dev-ssh-1");
+    const saved = devSshConnections.find(c => c.id === connectionId);
+    const connectionName = saved ? saved.name : "build-host";
+    if (!devWorkspaces.some(w => w.workspaceKind === "remote" && w.rootPath === remotePath)) {
+      const dirName = remotePath.split("/").filter(Boolean).pop() || remotePath;
+      devWorkspaces.push({
+        id: `dev-workspace-remote-${remoteWorkspaceSeq++}`,
+        name: `${dirName} [${connectionName}]`,
+        rootPath: remotePath,
+        workspaceKind: "remote",
+        connectionId,
+        connectionName,
+        sshHost: saved ? saved.host : connectionName,
+        lastAccessed: Date.now(),
+      });
+    }
+    devActiveRemoteWorkspace = {
+      connectionId,
+      connectionName,
+      remotePath,
+      sshHost: saved ? saved.host : undefined,
+    };
+    return null;
+  },
+  remote_close_workspace: () => {
+    devActiveRemoteWorkspace = null;
+    return null;
+  },
+  remote_remove_workspace: args => {
+    const req = payloadOf(args);
+    const targetPath = normalizeRemoteDirPath(req.remotePath || "");
+    const idx = devWorkspaces.findIndex(
+      w => w.workspaceKind === "remote" && w.connectionId === req.connectionId && w.rootPath === targetPath,
+    );
+    if (idx >= 0) devWorkspaces.splice(idx, 1);
+    return null;
+  },
+  remote_get_workspace_info: () => devActiveRemoteWorkspace,
+  ssh_list_port_forwards: args => {
+    const req = payloadOf(args);
+    if (req.connectionId) {
+      return devPortForwards.filter(p => p.connectionId === req.connectionId).map(p => ({ ...p }));
+    }
+    return devPortForwards.map(p => ({ ...p }));
+  },
+  ssh_list_remote_listening_ports: () => [
+    { port: 8080, bindAddress: "127.0.0.1", process: "node", pid: 4120 },
+    { port: 5432, bindAddress: "127.0.0.1", process: "postgres", pid: 1842 },
+    { port: 3000, bindAddress: "0.0.0.0", process: "vite", pid: 5033 },
+  ],
+  ssh_start_port_forward: args => {
+    const req = payloadOf(args);
+    const remotePort = Number(req.remotePort);
+    const localPort = Number(req.localPort) || remotePort;
+    const forward = {
+      id: `pf-${portForwardSeq++}`,
+      connectionId: String(req.connectionId || "dev-ssh-1"),
+      direction: "local",
+      ...(req.label ? { label: String(req.label) } : {}),
+      ...(req.description ? { description: String(req.description) } : {}),
+      localHost: req.exposeOnLan ? "0.0.0.0" : "127.0.0.1",
+      localPort,
+      remoteHost: String(req.remoteHost || "127.0.0.1"),
+      remotePort,
+      activeConnections: 0,
+      totalConnections: 0,
+    };
+    devPortForwards.push(forward);
+    return forward;
+  },
+  ssh_stop_port_forward: args => {
+    const req = payloadOf(args);
+    const idx = devPortForwards.findIndex(p => p.id === req.forwardId);
+    if (idx >= 0) devPortForwards.splice(idx, 1);
+    return null;
+  },
+  dispatch_list_targets: () => [{ id: "local", displayName: "Studio Mac", kind: "local" }],
+  dispatch_list_jobs: () => [],
+  get_mcp_servers: () => devMcpServers.map(row => ({ ...row })),
+  load_mcp_json_config: () => ({
+    jsonConfig: devMcpJsonConfig,
+    fingerprint: `dev-mcp-fp-${devMcpFingerprint}`,
+  }),
+  save_mcp_json_config: args => {
+    const req = payloadOf(args);
+    const expected = String(req.expectedFingerprint || "");
+    if (expected && expected !== `dev-mcp-fp-${devMcpFingerprint}`) {
+      throw new Error("MCP configuration changed; reload before saving");
+    }
+    devMcpJsonConfig = String(req.jsonConfig || "{\n  \"mcpServers\": {}\n}");
+    devMcpFingerprint += 1;
+    return null;
+  },
+  start_mcp_server: args => {
+    const req = payloadOf(args);
+    const row = devMcpServers.find(s => s.id === req.serverId);
+    if (row) row.status = "Connected";
+    return null;
+  },
+  stop_mcp_server: args => {
+    const req = payloadOf(args);
+    const row = devMcpServers.find(s => s.id === req.serverId);
+    if (row) row.status = "Stopped";
+    return null;
+  },
+  restart_mcp_server: args => {
+    const req = payloadOf(args);
+    const row = devMcpServers.find(s => s.id === req.serverId);
+    if (row) row.status = "Connected";
+    return null;
+  },
+  delete_mcp_server: args => {
+    const req = payloadOf(args);
+    const id = String(req.serverId || "");
+    const idx = devMcpServers.findIndex(s => s.id === id);
+    if (idx >= 0) devMcpServers.splice(idx, 1);
+    try {
+      const parsed = JSON.parse(devMcpJsonConfig);
+      if (parsed && parsed.mcpServers && id in parsed.mcpServers) {
+        delete parsed.mcpServers[id];
+        devMcpJsonConfig = JSON.stringify(parsed, null, 2);
+        devMcpFingerprint += 1;
+      }
+    } catch {
+      // Keep raw JSON if user edited invalid syntax.
+    }
+    return null;
+  },
+  list_mcp_resources: () => [],
+  read_mcp_resource: () => ({ contents: [] }),
+  get_acp_clients: () => [],
+  probe_acp_client_requirements: () => [],
+  load_acp_json_config: () => devAcpJsonConfig,
+  save_acp_json_config: args => {
+    const req = payloadOf(args);
+    devAcpJsonConfig = String(req.jsonConfig ?? "{\n  \"acpClients\": {}\n}\n");
+    return { ok: true };
+  },
+  stop_acp_client: () => ({ ok: true }),
+  install_acp_client_cli: () => ({ ok: true }),
+  i18n_get_current_language: () => devConfigs.app.language,
+  i18n_set_language: args => {
+    const req = payloadOf(args);
+    const raw = typeof req.language === "string" ? req.language : typeof req.locale === "string" ? req.locale : "";
+    const canonical = normalizeDevLocale(raw) || raw || "en-US";
+    devConfigs.app = { ...devConfigs.app, language: canonical };
+    devConfigs["app.language"] = canonical;
+    devConfigs["appearance.language"] = canonical;
+    return null;
+  },
+  update_session_model: args => {
+    const req = payloadOf(args);
+    const sessionId = String(req.sessionId || req.session_id || "");
+    const modelName = String(req.modelName || req.model_name || "");
+    const session = devSessions.find(s => s.sessionId === sessionId);
+    if (session && modelName) session.modelName = modelName;
+    return null;
+  },
+  get_model_pools: () => ({ version: 1, pools: [] }),
+  get_runtime_logging_info: () => ({
+    effectiveLevel: "info",
+    sessionLogDir: "/workspace/demo/.openbitfun/logs",
+    appLogPath: "/workspace/demo/.openbitfun/logs/app.log",
+    previousUnexpectedExit: null,
+  }),
+  get_web_search_credential_status: () => ({ configured: false }),
+  get_decision_model_credential_status: () => ({ configured: false }),
+};
+
+export async function createHost(player) {
+  const tauri = globalThis.__TAURI__;
+  const core = tauri && tauri.core;
+  const eventApi = tauri && tauri.event;
+  const windowApi = tauri && tauri.window;
+  const native = Boolean(core && typeof core.invoke === "function");
+  const transport = native ? "tauri" : "dev";
+
+  if (!native) {
+    const urlLocale = readDevUrlLocale();
+    if (urlLocale) {
+      devConfigs.app = { ...devConfigs.app, language: urlLocale };
+      devConfigs["app.language"] = urlLocale;
+      devConfigs["appearance.language"] = urlLocale;
+    }
+    if (readDevUrlAuthLoggedOut()) {
+      devAccountLoggedIn = false;
+    }
+  }
+
+  const navPlatform =
+    typeof navigator !== "undefined"
+      ? String(
+          (navigator.userAgentData && navigator.userAgentData.platform) ||
+            navigator.platform ||
+            navigator.userAgent ||
+            "",
+        )
+      : "";
+  const isMac = /mac/i.test(navPlatform);
+  const isWindows = /win/i.test(navPlatform);
+  const platform = isMac ? "macos" : isWindows ? "windows" : "linux";
+
+  const unlisteners = new Map();
+  /** In-flight `eventApi.listen()` registrations, preventing duplicate listeners & leaks. */
+  const pendingListeners = new Map();
+
+  // Per-frame coalescing queue for `agentic://text-chunk` (strictly flushed
+  // before any non-text-chunk event to guarantee ordering while keeping WASM
+  // event crossings at <= 1 batch per animation frame / <= 24ms).
+  const TEXT_CHUNK_EVENT = "agentic://text-chunk";
+  const TEXT_CHUNK_MAX_LATENCY_MS = 24;
+  let pendingTextChunks = [];
+  let flushRafId = null;
+  let flushTimerId = null;
+
+  function fail(error) {
+    const message =
+      typeof error === "string" ? error : error && error.message ? error.message : String(error);
+    return { ok: false, error: message, transport };
+  }
+
+  function currentTauriWindow() {
+    if (!native || !windowApi || typeof windowApi.getCurrentWindow !== "function") return null;
+    try {
+      return windowApi.getCurrentWindow();
+    } catch {
+      return null;
+    }
+  }
+
+  function cancelScheduledTextFlush() {
+    if (flushRafId !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(flushRafId);
+    }
+    flushRafId = null;
+    if (flushTimerId !== null) {
+      clearTimeout(flushTimerId);
+    }
+    flushTimerId = null;
+  }
+
+  function flushPendingTextChunks() {
+    cancelScheduledTextFlush();
+    if (pendingTextChunks.length === 0) return;
+    const batch = pendingTextChunks;
+    pendingTextChunks = [];
+    for (let index = 0; index < batch.length; index += 1) {
+      player.hostEvent("openbitfun.event", {
+        event: TEXT_CHUNK_EVENT,
+        payload: batch[index].payload,
+      });
+    }
+  }
+
+  function scheduleTextFlush() {
+    if (flushRafId !== null || flushTimerId !== null) return;
+    if (typeof requestAnimationFrame === "function") {
+      flushRafId = requestAnimationFrame(() => {
+        flushRafId = null;
+        flushPendingTextChunks();
+      });
+    }
+    flushTimerId = setTimeout(() => {
+      flushTimerId = null;
+      flushPendingTextChunks();
+    }, TEXT_CHUNK_MAX_LATENCY_MS);
+  }
+
+  function textChunkFieldOf(payload) {
+    if (typeof payload.text === "string") return "text";
+    if (typeof payload.delta === "string") return "delta";
+    if (typeof payload.content === "string") return "content";
+    if (typeof payload.chunk === "string") return "chunk";
+    return null;
+  }
+
+  function textChunkKeyOf(payload) {
+    return [
+      payload.__openbitfunSourceDeviceId ?? "",
+      payload.sessionId ?? payload.session_id ?? "",
+      payload.turnId ?? payload.turn_id ?? "",
+      payload.roundId ?? payload.round_id ?? "",
+      payload.attemptId ?? payload.attempt_id ?? "",
+      payload.contentType ?? "",
+      payload.reasoningKind ?? "",
+    ].join("\u0000");
+  }
+
+  function forwardNativeEvent(event, payload) {
+    if (event === TEXT_CHUNK_EVENT && payload && typeof payload === "object") {
+      const field = textChunkFieldOf(payload);
+      if (field) {
+        const key = textChunkKeyOf(payload);
+        const last = pendingTextChunks[pendingTextChunks.length - 1];
+        if (last && last.key === key && last.field === field && last.payload.isThinkingEnd !== true) {
+          last.payload[field] += payload[field];
+          if (payload.isThinkingEnd === true) {
+            last.payload.isThinkingEnd = true;
+            flushPendingTextChunks();
+            return;
+          }
+        } else {
+          pendingTextChunks.push({ key, field, payload: { ...payload } });
+          if (payload.isThinkingEnd === true) {
+            flushPendingTextChunks();
+            return;
+          }
+        }
+        scheduleTextFlush();
+        return;
+      }
+    }
+    // Guarantee strict causal ordering: any tool/round/completion/history event
+    // must see every text/thinking chunk that preceded it.
+    if (pendingTextChunks.length > 0) {
+      flushPendingTextChunks();
+    }
+    player.hostEvent("openbitfun.event", { event, payload });
+  }
+
+  async function invokeNative(action, request) {
+    try {
+      const value =
+        request === null || request === undefined
+          ? await core.invoke(action)
+          : await core.invoke(action, { request });
+      return { ok: true, value, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  // Account and device commands take positional arguments instead of the single
+  // `request` object, so their arguments are forwarded unwrapped.
+  async function invokeNativeRaw(action, raw) {
+    try {
+      const value =
+        raw === null || raw === undefined ? await core.invoke(action) : await core.invoke(action, raw);
+      return { ok: true, value, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  function invokeFixture(action, args) {
+    if (action === "start_dialog_turn") {
+      return startDevDialogTurn(payloadOf(args));
+    }
+    if (action === "interrupt_dialog_turn" || action === "cancel_dialog_turn") {
+      return stopDevDialogTurn(payloadOf(args));
+    }
+    const fixture = DEV_FIXTURES[action];
+    if (!fixture) {
+      return { ok: false, error: `The development host has no fixture for ${action}`, transport };
+    }
+    try {
+      return { ok: true, value: fixture(args || {}), transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  let devTurnSeq = 10;
+  /** Active dev-fixture turn timers keyed by `${sessionId}:${turnId}` for clean cancellation. */
+  const devTurnTimers = new Map();
+
+  function cancelDevTurnTimers(key, sessionId) {
+    const timers = devTurnTimers.get(key);
+    if (timers) {
+      for (let i = 0; i < timers.length; i += 1) clearTimeout(timers[i]);
+      devTurnTimers.delete(key);
+      return;
+    }
+    if (!sessionId) return;
+    const prefix = `${sessionId}:`;
+    for (const [activeKey, activeTimers] of [...devTurnTimers.entries()]) {
+      if (!activeKey.startsWith(prefix)) continue;
+      for (let i = 0; i < activeTimers.length; i += 1) clearTimeout(activeTimers[i]);
+      devTurnTimers.delete(activeKey);
+    }
+  }
+
+  function startDevDialogTurn(req) {
+    const sessionId = String(req.sessionId || req.session_id || "");
+    const userInput = String(req.userInput || req.user_input || "").trim();
+    if (!sessionId || !userInput) {
+      return fail("start_dialog_turn requires sessionId and userInput");
+    }
+    const turnId = String(req.turnId || `dev-turn-${++devTurnSeq}`);
+    const roundId = `dev-round-${devTurnSeq}`;
+    const attemptId = `${roundId}:attempt:1`;
+    const toolId = `dev-tool-${devTurnSeq}`;
+    const timerKey = `${sessionId}:${turnId}`;
+    cancelDevTurnTimers(timerKey, sessionId);
+
+    const startedAt = Date.now();
+    const isBrowserDom = typeof window !== "undefined" && typeof document !== "undefined";
+    const pace = isBrowserDom ? 1 : 0.12;
+    const at = ms => (isBrowserDom ? ms : Math.max(4, Math.round(ms * pace)));
+
+    const thinkingChunks = [
+      "Inspecting workspace layout and active session context. ",
+      "Mapping relevant modules and checking streaming frame-pacing invariants. ",
+      "Structuring a concise Markdown summary with verification details and a typed code snippet.",
+    ];
+    const fullThinking = thinkingChunks.join("");
+
+    // Realistic bursty multi-chunk Markdown answer (mix of small deltas & bursty
+    // paragraphs, headings, bullets, inline code, and a fenced TypeScript block).
+    const replyChunks = [
+      "### Response Overview\n\n",
+      `Acknowledged in **dev fixture mode**: `,
+      `"${userInput}".\n\n`,
+      "Here is how the ",
+      "streaming pipeline ",
+      "keeps frames ",
+      "smooth at 60fps:\n\n",
+      "- **Decoupled per-round signals**: ",
+      "`agentEvents.ts` isolates live text ",
+      "and thinking channels ",
+      "so structural `liveTurn` ",
+      "state never clones per token.\n",
+      "- **Adaptive rAF drain**: ",
+      "bursty chunks from `host.js` ",
+      "drain smoothly on display ",
+      "VSync with grapheme-safe ",
+      "boundaries and zero data loss.\n",
+      "- **Cached Markdown styles**: ",
+      "`createMarkdownStyles()` reuses ",
+      "frozen theme style objects ",
+      "across every streamed frame.\n\n",
+      "```ts\n",
+      "export function paceFrame(",
+      "backlog: number",
+      "): number {\n",
+      "  return Math.min(2200, 120 + backlog * 3.5);\n",
+      "}\n",
+      "```\n\n",
+      "Persisted into `DEV_SESSION_TURNS` ",
+      "as real Rust `ModelRoundData` (`textItems`), ",
+      "followed by `agentic://session-history-changed`.",
+    ];
+    const fullReply = replyChunks.join("");
+    const chunkCadenceMs = [
+      22, 18, 44, 16, 20, 26, 48, 18, 22, 16, 52, 20, 18, 24, 42, 16, 22, 18, 46, 20, 18, 34,
+      16, 22, 40, 18, 20, 28, 18, 24, 22,
+    ];
+
+    const timers = [];
+    const schedule = (delayMs, fn) => {
+      timers.push(setTimeout(fn, delayMs));
+    };
+
+    schedule(at(16), () => {
+      forwardNativeEvent("agentic://dialog-turn-started", {
+        sessionId,
+        turnId,
+        userInput,
+        originalUserInput: userInput,
+      });
+      forwardNativeEvent("agentic://model-round-started", {
+        sessionId,
+        turnId,
+        roundId,
+        roundIndex: 0,
+        effectiveModelName: "Studio Primary",
+      });
+    });
+
+    thinkingChunks.forEach((chunk, idx) => {
+      const isLast = idx === thinkingChunks.length - 1;
+      schedule(at(36 + idx * 38), () => {
+        forwardNativeEvent("agentic://text-chunk", {
+          sessionId,
+          turnId,
+          roundId,
+          attemptId,
+          contentType: "thinking",
+          reasoningKind: "reasoning",
+          text: chunk,
+          ...(isLast ? { isThinkingEnd: true } : {}),
+        });
+      });
+    });
+
+    schedule(at(175), () => {
+      forwardNativeEvent("agentic://tool-event", {
+        sessionId,
+        turnId,
+        roundId,
+        attemptId,
+        toolEvent: {
+          event_type: "Started",
+          tool_id: toolId,
+          tool_name: "Read",
+          params: { file_path: "/workspace/demo/README.md" },
+        },
+      });
+    });
+
+    schedule(at(245), () => {
+      forwardNativeEvent("agentic://tool-event", {
+        sessionId,
+        turnId,
+        roundId,
+        attemptId,
+        toolEvent: {
+          event_type: "Progress",
+          tool_id: toolId,
+          tool_name: "Read",
+          message: "Inspecting workspace context…",
+        },
+      });
+    });
+
+    schedule(at(325), () => {
+      forwardNativeEvent("agentic://tool-event", {
+        sessionId,
+        turnId,
+        roundId,
+        attemptId,
+        toolEvent: {
+          event_type: "Completed",
+          tool_id: toolId,
+          tool_name: "Read",
+          duration_ms: 150,
+        },
+      });
+    });
+
+    let cursorMs = 360;
+    replyChunks.forEach((chunk, idx) => {
+      const targetMs = cursorMs;
+      cursorMs += chunkCadenceMs[idx % chunkCadenceMs.length];
+      schedule(at(targetMs), () => {
+        forwardNativeEvent("agentic://text-chunk", {
+          sessionId,
+          turnId,
+          roundId,
+          attemptId,
+          text: chunk,
+        });
+      });
+    });
+
+    const completeMs = cursorMs + 40;
+    schedule(at(completeMs), () => {
+      const durationMs = Math.max(120, Date.now() - startedAt);
+      forwardNativeEvent("agentic://model-round-completed", {
+        sessionId,
+        turnId,
+        roundId,
+        hasToolCalls: true,
+        durationMs,
+        effectiveModelName: "Studio Primary",
+      });
+      forwardNativeEvent("agentic://dialog-turn-completed", {
+        sessionId,
+        turnId,
+        durationMs,
+        success: true,
+        hasFinalResponse: true,
+      });
+    });
+
+    schedule(at(completeMs + 65), () => {
+      devTurnTimers.delete(timerKey);
+      const list = DEV_SESSION_TURNS[sessionId] || (DEV_SESSION_TURNS[sessionId] = []);
+      const durationMs = Math.max(120, Date.now() - startedAt);
+      list.push({
+        id: turnId,
+        turnId,
+        turnIndex: list.length,
+        sessionId,
+        timestamp: startedAt,
+        userMessage: { id: `user-${turnId}`, content: userInput, timestamp: startedAt },
+        modelRounds: [
+          {
+            id: roundId,
+            turnId,
+            roundIndex: 0,
+            timestamp: startedAt + 30,
+            effectiveModelName: "Studio Primary",
+            durationMs,
+            thinkingItems: [
+              {
+                id: `think-${turnId}`,
+                content: fullThinking,
+                reasoningKind: "reasoning",
+                isStreaming: false,
+                isCollapsed: true,
+                orderIndex: 0,
+                timestamp: startedAt + 60,
+              },
+            ],
+            toolItems: [
+              {
+                id: toolId,
+                toolName: "Read",
+                toolCall: { id: toolId, input: { file_path: "/workspace/demo/README.md" } },
+                toolResult: { result: { ok: true }, success: true, durationMs: 150 },
+                status: "completed",
+                orderIndex: 1,
+                timestamp: startedAt + 180,
+              },
+            ],
+            textItems: [
+              {
+                id: `text-${turnId}`,
+                content: fullReply,
+                isStreaming: false,
+                isMarkdown: true,
+                orderIndex: 2,
+                timestamp: Date.now(),
+              },
+            ],
+          },
+        ],
+        status: "completed",
+      });
+      const session = devSessions.find(s => s.sessionId === sessionId);
+      if (session) {
+        session.messageCount = (session.messageCount || 0) + 1;
+        session.lastActiveAt = Date.now();
+        session.lastUpdated = session.lastActiveAt;
+        if (!session.sessionName || /^New (session|thread)$/i.test(session.sessionName)) {
+          const derived = userInput.length > 36 ? `${userInput.slice(0, 36)}…` : userInput;
+          session.sessionName = derived;
+          forwardNativeEvent("session_title_generated", {
+            sessionId,
+            title: derived,
+            method: "dev",
+            timestamp: Date.now(),
+          });
+        }
+      }
+      forwardNativeEvent("agentic://session-history-changed", {
+        sessionId,
+        settledTurnId: turnId,
+      });
+    });
+
+    devTurnTimers.set(timerKey, timers);
+    return { ok: true, value: { success: true, message: "Dialog turn started" }, transport };
+  }
+
+  function stopDevDialogTurn(req) {
+    const sessionId = String(req.sessionId || req.session_id || "");
+    const turnId = String(req.dialogTurnId || req.turnId || req.turn_id || "");
+    const timerKey = `${sessionId}:${turnId}`;
+    cancelDevTurnTimers(timerKey, sessionId);
+    if (sessionId) {
+      forwardNativeEvent("agentic://dialog-turn-cancelled", { sessionId, turnId });
+    }
+    return { ok: true, value: null, transport };
+  }
+
+  async function listenTo(event) {
+    if (unlisteners.has(event)) return { ok: true, transport };
+    const inflight = pendingListeners.get(event);
+    if (inflight) {
+      inflight.cancelled = false;
+      return inflight.promise;
+    }
+    if (!native || !eventApi || typeof eventApi.listen !== "function") {
+      // The development host has no backend events; keep the subscription so
+      // the app's listeners stay on one code path.
+      unlisteners.set(event, () => {});
+      return { ok: true, transport };
+    }
+    const entry = { cancelled: false, promise: null };
+    entry.promise = (async () => {
+      try {
+        const unlisten = await eventApi.listen(event, message => {
+          forwardNativeEvent(event, message.payload);
+        });
+        pendingListeners.delete(event);
+        if (entry.cancelled) {
+          try {
+            unlisten();
+          } catch {
+            // Best-effort cleanup of a listener cancelled while registering.
+          }
+          return { ok: true, transport };
+        }
+        unlisteners.set(event, unlisten);
+        return { ok: true, transport };
+      } catch (error) {
+        pendingListeners.delete(event);
+        return fail(error);
+      }
+    })();
+    pendingListeners.set(event, entry);
+    return entry.promise;
+  }
+
+  function unlistenFrom(event) {
+    const inflight = pendingListeners.get(event);
+    if (inflight) {
+      inflight.cancelled = true;
+    }
+    const unlisten = unlisteners.get(event);
+    if (!unlisten) return { ok: true, transport };
+    unlisteners.delete(event);
+    if (event === TEXT_CHUNK_EVENT) {
+      cancelScheduledTextFlush();
+      pendingTextChunks = [];
+    }
+    try {
+      unlisten();
+    } catch (error) {
+      return fail(error);
+    }
+    return { ok: true, transport };
+  }
+
+  async function readWindowChrome() {
+    const overlayTrafficLights = native && isMac;
+    let isFullscreen = false;
+    const win = currentTauriWindow();
+    if (win && typeof win.isFullscreen === "function") {
+      try {
+        isFullscreen = Boolean(await win.isFullscreen());
+      } catch {
+        isFullscreen = false;
+      }
+    }
+    if (overlayTrafficLights) {
+      await listenTo("window://fullscreen-chrome");
+    }
+    return {
+      ok: true,
+      value: { native, platform, overlayTrafficLights, isFullscreen },
+      transport,
+    };
+  }
+
+  async function dragNativeWindow() {
+    const win = currentTauriWindow();
+    if (!win || typeof win.startDragging !== "function") {
+      return { ok: true, value: false, transport };
+    }
+    try {
+      const [maximized, fullscreen] = await Promise.all([
+        typeof win.isMaximized === "function" ? win.isMaximized().catch(() => false) : false,
+        typeof win.isFullscreen === "function" ? win.isFullscreen().catch(() => false) : false,
+      ]);
+      if (maximized || fullscreen) return { ok: true, value: false, transport };
+      await win.startDragging();
+      return { ok: true, value: true, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  async function toggleMaximizeNativeWindow() {
+    const win = currentTauriWindow();
+    if (!win) {
+      return { ok: true, value: false, transport };
+    }
+    try {
+      // `src/apps/desktop/capabilities/default.json` grants `allow-is-maximized`,
+      // `allow-maximize`, and `allow-unmaximize` (NOT `allow-toggle-maximize`),
+      // matching `src/web-ui/src/app/hooks/useWindowControls.ts`.
+      if (
+        typeof win.isMaximized === "function" &&
+        typeof win.unmaximize === "function" &&
+        typeof win.maximize === "function"
+      ) {
+        const maximized = await win.isMaximized();
+        if (maximized) await win.unmaximize();
+        else await win.maximize();
+        return { ok: true, value: true, transport };
+      }
+      if (typeof win.toggleMaximize === "function") {
+        await win.toggleMaximize();
+        return { ok: true, value: true, transport };
+      }
+      return { ok: true, value: false, transport };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  return {
+    async call(name, args) {
+      switch (name) {
+        case "openbitfun.transport":
+          return { ok: true, value: { transport }, transport };
+        case "openbitfun.windowChrome":
+          return readWindowChrome();
+        case "openbitfun.windowDrag":
+          return dragNativeWindow();
+        case "openbitfun.windowToggleMaximize":
+          return toggleMaximizeNativeWindow();
+        case "openbitfun.invoke": {
+          if (!args || typeof args.action !== "string") {
+            return fail("openbitfun.invoke needs an action");
+          }
+          if (Object.prototype.hasOwnProperty.call(args, "raw")) {
+            return native ? invokeNativeRaw(args.action, args.raw) : invokeFixture(args.action, args);
+          }
+          return native
+            ? invokeNative(args.action, args.request)
+            : invokeFixture(args.action, args);
+        }
+        case "openbitfun.listen":
+          return args && typeof args.event === "string"
+            ? listenTo(args.event)
+            : fail("openbitfun.listen needs an event");
+        case "openbitfun.unlisten":
+          return args && typeof args.event === "string"
+            ? unlistenFrom(args.event)
+            : fail("openbitfun.unlisten needs an event");
+        default:
+          throw new Error(`no host function ${name}`);
+      }
+    },
+  };
+}
