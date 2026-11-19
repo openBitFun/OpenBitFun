@@ -138,6 +138,7 @@ import {
 import { settingsNavAppearanceDescriptor } from '@/app/scenes/settings/SettingsNav.appearance';
 import { backgroundCommandOutputPanelAppearanceDescriptor } from '@/flow_chat/components/background-command/BackgroundCommandOutputPanel.appearance';
 import { agentCompanionPetAppearanceDescriptor } from '@/flow_chat/components/AgentCompanionPet.appearance';
+import { livingLinePreviewAppearanceDescriptor } from '@/flow_chat/components/living-line/appearance';
 import {
   chatContextPickerAppearanceDescriptor,
   legacyFileMentionPickerAppearanceDescriptor,
@@ -415,6 +416,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(automationSettingsPageAppearanceDescriptor)
     .registerComponent(backgroundCommandOutputPanelAppearanceDescriptor)
     .registerComponent(agentCompanionPetAppearanceDescriptor)
+.registerComponent(livingLinePreviewAppearanceDescriptor)
     .registerComponent(chatContextPickerAppearanceDescriptor)
     .registerComponent(legacyFileMentionPickerAppearanceDescriptor)
     .registerComponent(sessionFileModificationsBarAppearanceDescriptor)
