@@ -1000,4 +1000,124 @@ mod tests {
         assert!(started.elapsed() >= std::time::Duration::from_millis(150));
         assert!(!spawned.controller.is_running());
     }
+
+    /// Absolute Windows system shell for tests that replace PATH completely.
+    ///
+    /// `CreateProcess` resolves a bare `cmd.exe` through the child environment, so a
+    /// test overlay without any system directory must pass the absolute path.
+    #[cfg(windows)]
+    fn absolute_windows_cmd() -> String {
+        std::env::var_os("SystemRoot")
+            .map(|root| std::path::PathBuf::from(root).join("System32").join("cmd.exe"))
+            .filter(|path| path.is_file())
+            .or_else(|| {
+                std::env::var_os("COMSPEC")
+                    .map(std::path::PathBuf::from)
+                    .filter(|path| path.is_file())
+            })
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "cmd.exe".to_string())
+    }
+
+    /// The overlay PATH must be the child's complete PATH: no inherited tail, no
+    /// duplicates. This is the second layer of the live-PATH design, so a stale
+    /// parent value can never leak past a freshly composed overlay.
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_path_replaces_the_inherited_path_completely() {
+        const BEGIN: &str = "OBFPATHBEGIN";
+        const END: &str = "OBFPATHEND";
+
+        let unique = std::process::id();
+        let first = format!("/synthetic/overlay/first-{unique}");
+        let second = format!("/synthetic/overlay/second-{unique}");
+        let overlay = std::env::join_paths([first, second])
+            .expect("join overlay PATH")
+            .to_string_lossy()
+            .into_owned();
+
+        #[cfg(windows)]
+        let (executable, args, shell_type) = (
+            absolute_windows_cmd(),
+            vec![
+                "/d".to_string(),
+                "/c".to_string(),
+                format!("echo {BEGIN}%PATH%{END}"),
+            ],
+            ShellType::Cmd,
+        );
+        #[cfg(not(windows))]
+        let (executable, args, shell_type) = (
+            "/bin/sh".to_string(),
+            vec![
+                "-c".to_string(),
+                format!("printf '{BEGIN}%s{END}' \"$PATH\""),
+            ],
+            ShellType::Sh,
+        );
+
+        let mut env = std::collections::HashMap::new();
+        let path_key = if cfg!(windows) { "Path" } else { "PATH" };
+        env.insert(path_key.to_string(), overlay.clone());
+
+        let mut spawned = spawn_pty(
+            5,
+            &ShellConfig {
+                executable,
+                args,
+                env,
+                ..ShellConfig::default()
+            },
+            shell_type,
+            200,
+            24,
+        )
+        .expect("spawn PATH overlay PTY");
+
+        let mut output = Vec::new();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(event) = spawned.events.recv().await {
+                match event {
+                    PtyEvent::Data(data) => output.extend(data),
+                    PtyEvent::Exit { exit_code } => return exit_code,
+                    _ => {}
+                }
+            }
+            panic!("PTY event stream ended without an exit status");
+        })
+        .await;
+
+        if result.is_err() {
+            spawned
+                .controller
+                .shutdown(true)
+                .await
+                .expect("clean up failed PATH overlay fixture");
+        }
+
+        let rendered = String::from_utf8_lossy(&output).into_owned();
+        assert_eq!(
+            result.expect("PATH overlay child exit"),
+            Some(0),
+            "unexpected PATH child output: {rendered}"
+        );
+
+        let start = rendered
+            .find(BEGIN)
+            .unwrap_or_else(|| panic!("missing PATH begin marker in {rendered:?}"))
+            + BEGIN.len();
+        let end = rendered
+            .find(END)
+            .unwrap_or_else(|| panic!("missing PATH end marker in {rendered:?}"));
+        assert_eq!(
+            &rendered[start..end],
+            overlay,
+            "child PATH must equal the overlay value exactly: {rendered:?}"
+        );
+
+        spawned
+            .controller
+            .shutdown(true)
+            .await
+            .expect("close exited PATH overlay PTY");
+    }
 }

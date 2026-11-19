@@ -65,16 +65,23 @@ impl TerminalState {
                 }
             }
 
-            // Prepend OpenBitFun-managed runtime dirs to PATH so Bash/Skill commands can
-            // run on machines without preinstalled dev tools.
+            // Windows refreshes the OS baseline per session; only directory anchors are
+            // snapshotted here (new managed installations require host restart).
+            // Other platforms retain their original process-PATH merge.
             if let Ok(runtime_manager) = RuntimeManager::new() {
-                let current_path = std::env::var("PATH").ok();
-                if let Some(merged_path) = runtime_manager.merged_path_env(current_path.as_deref())
+                #[cfg(windows)]
                 {
-                    config.env.insert("PATH".to_string(), merged_path.clone());
-                    #[cfg(windows)]
-                    {
-                        config.env.insert("Path".to_string(), merged_path);
+                    let path_entries = runtime_manager.terminal_path_entries();
+                    config.set_session_path_entries(
+                        path_entries.managed_prefix,
+                        path_entries.platform_suffix,
+                    );
+                }
+                #[cfg(not(windows))]
+                {
+                    let process_path = std::env::var("PATH").ok();
+                    if let Some(path) = runtime_manager.merged_path_env(process_path.as_deref()) {
+                        config.env.insert("PATH".to_string(), path);
                     }
                 }
             }

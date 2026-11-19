@@ -38,6 +38,22 @@ pub struct RuntimeCommandCapability {
     pub resolved_path: Option<String>,
 }
 
+/// Initialization-time directory anchors for implicit local Windows terminal PATH.
+///
+/// `managed_prefix` precedes the inherited custom increment and live OS baseline;
+/// `platform_suffix` follows it. Explicit config/request PATH overrides this policy.
+/// Unlike [`ManagedRuntimeResolver::merged_path_env`], this does not capture the
+/// caller's full PATH. Hosts snapshot these directory sets at initialization:
+/// managed runtime installations still require host restart; only the Windows OS
+/// baseline is refreshed for each new session. Other platforms keep the legacy merge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TerminalPathEntries {
+    /// OpenBitFun-managed runtime directories, highest priority.
+    pub managed_prefix: Vec<PathBuf>,
+    /// Platform GUI extras the OS PATH does not carry, lowest priority.
+    pub platform_suffix: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedRuntimeResolver {
     runtime_root: PathBuf,
@@ -185,6 +201,17 @@ impl ManagedRuntimeResolver {
         std::env::join_paths(merged)
             .ok()
             .map(|v| v.to_string_lossy().to_string())
+    }
+
+    /// Directory anchors captured by Windows hosts at terminal initialization.
+    ///
+    /// This does not capture OS PATH. Only that baseline is refreshed per session;
+    /// new managed installations require restarting the host to refresh these sets.
+    pub fn terminal_path_entries(&self) -> TerminalPathEntries {
+        TerminalPathEntries {
+            managed_prefix: self.managed_path_entries(),
+            platform_suffix: system::platform_path_entries(),
+        }
     }
 
     fn resolve_system_command(&self, command: &str) -> Option<ResolvedCommand> {
@@ -406,6 +433,36 @@ mod tests {
 
         assert!(parsed.iter().any(|p| p == &node_bin || p == &node_root));
         assert!(parsed.iter().any(|p| p == &PathBuf::from(existing)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_path_entries_carry_owner_policy_without_process_path() {
+        let root = temp_runtime_root();
+        let node_bin = root.join("node").join("current").join("bin");
+        let node_root = root.join("node").join("current");
+        fs::create_dir_all(&node_bin).unwrap();
+        fs::create_dir_all(&node_root).unwrap();
+
+        let manager = ManagedRuntimeResolver::new(root.clone());
+        let entries = manager.terminal_path_entries();
+        let platform_entries = system::platform_path_entries();
+
+        assert_eq!(entries.managed_prefix, manager.managed_path_entries());
+        assert_eq!(entries.platform_suffix, platform_entries);
+        assert!(entries.managed_prefix.contains(&node_bin));
+        assert!(entries.managed_prefix.contains(&node_root));
+
+        // Not a process PATH snapshot: entries are temp-root managed dirs or platform extras.
+        assert!(
+            entries.managed_prefix.iter().all(|path| path.starts_with(&root))
+                && entries
+                    .platform_suffix
+                    .iter()
+                    .all(|path| platform_entries.contains(path)),
+            "session path policy must not carry caller PATH entries"
+        );
 
         let _ = fs::remove_dir_all(root);
     }

@@ -1,6 +1,7 @@
 //! Session Manager - Manages terminal sessions lifecycle
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +13,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch, RwLock};
 
 use crate::config::{ShellConfig, TerminalConfig};
+#[cfg(windows)]
+use crate::config::{
+    compose_session_path, inherited_path_increment, session_path_baseline, session_path_key,
+    take_session_path_entries,
+};
 use crate::events::{TerminalEvent, TerminalEventEmitter};
 use crate::pty::{ProcessProperty, PtyService, PtyServiceEvent};
 use crate::shell::{
@@ -189,6 +195,16 @@ pub struct SessionManager {
 
     /// Persistent plain-text transcripts for manually created terminal sessions.
     transcript_recorder: Option<TranscriptRecorder>,
+
+    /// Host PATH entries that are not part of the live OS baseline.
+    ///
+    /// Captured once when the terminal service is initialized (hosts do this during
+    /// startup, but a lazily initialized host captures it at first terminal use) as
+    /// an increment, never as a full PATH: the live baseline is re-read for every
+    /// session so directories added to or removed from the machine or user PATH
+    /// after that point are honored.
+    #[cfg(windows)]
+    inherited_path_entries: Vec<String>,
 }
 
 impl SessionManager {
@@ -207,6 +223,15 @@ impl SessionManager {
         let output_taps = Arc::new(DashMap::new());
         let transcript_recorder = TranscriptRecorder::from_config(&config.transcript);
 
+        // Only parent-only entries at initialization are custom. Already-stale
+        // parent entries cannot be distinguished and persist until host restart.
+        // Subsequent baseline additions/removals/reordering are read per session.
+        #[cfg(windows)]
+        let inherited_path_entries = inherited_path_increment(
+            std::env::var_os(session_path_key()).as_deref(),
+            session_path_baseline().as_deref(),
+        );
+
         let manager = Self {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -220,6 +245,8 @@ impl SessionManager {
             output_taps,
             replay_watchers: Arc::new(DashMap::new()),
             transcript_recorder,
+            #[cfg(windows)]
+            inherited_path_entries,
         };
 
         // Start event forwarding
@@ -714,18 +741,20 @@ impl SessionManager {
                 login: false,
             });
 
+        // The OS PATH is read here, at session creation time, so a directory added
+        // to the machine or user PATH after the terminal service was initialized
+        // still reaches this child.
+        #[cfg(windows)]
+        let baseline = session_path_baseline();
+        #[cfg(not(windows))]
+        let baseline: Option<std::ffi::OsString> = None;
         let mut shell_config = ShellConfig {
             executable: shell_config_base.executable,
             args: shell_config_base.args,
-            env: self.config.env.clone(),
+            env: self.build_session_env(env, baseline.as_deref()),
             cwd: Some(cwd.clone()),
             login: shell_config_base.login,
         };
-
-        // Add custom environment
-        if let Some(custom_env) = env {
-            shell_config.env.extend(custom_env);
-        }
 
         // Inject shell integration if enabled and supported
         if enable_integration && shell_type.supports_integration() {
@@ -814,6 +843,42 @@ impl SessionManager {
             .get(&session_id)
             .cloned()
             .ok_or_else(|| TerminalError::Session("Session was removed".to_string()))
+    }
+
+    /// Explicit config PATH retains its legacy whole-value override semantics;
+    /// request PATH wins. Only Windows composes implicit PATH from a fresh
+    /// baseline. Unix retains exact overlays and bare native inheritance.
+    fn build_session_env(
+        &self,
+        request_env: Option<HashMap<String, String>>,
+        _baseline: Option<&OsStr>,
+    ) -> HashMap<String, String> {
+        let mut session_env = self.config.env.clone();
+        #[cfg(windows)]
+        {
+            let mut request_env = request_env.unwrap_or_default();
+            let config_path = take_session_path_entries(&mut session_env);
+            let request_path = take_session_path_entries(&mut request_env);
+            let path = request_path.or(config_path).or_else(|| {
+                compose_session_path(
+                    &self.config.managed_path_prefix,
+                    &self.inherited_path_entries,
+                    _baseline,
+                    &self.config.platform_path_suffix,
+                ).map(|path| path.to_string_lossy().into_owned())
+            });
+            if let Some(path) = path {
+                session_env.insert(session_path_key().to_string(), path);
+            } else {
+                debug!("No terminal PATH baseline or policy available; preserving parent environment");
+            }
+            session_env.extend(request_env);
+        }
+        #[cfg(not(windows))]
+        if let Some(request_env) = request_env {
+            session_env.extend(request_env);
+        }
+        session_env
     }
 
     /// Inject shell integration scripts and environment variables
@@ -1693,7 +1758,21 @@ impl Drop for SessionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_stream_output_delta, CommandCompletionReason};
+    use super::{compute_stream_output_delta, CommandCompletionReason, SessionManager};
+    use crate::config::TerminalConfig;
+    use std::collections::HashMap;
+    use std::ffi::OsStr;
+
+    /// Build a manager whose shell-integration scripts stay inside a temp directory.
+    ///
+    /// The temp directory is returned so it outlives the manager in the calling test.
+    fn test_manager(config: TerminalConfig) -> (tempfile::TempDir, SessionManager) {
+        let scripts_dir = tempfile::tempdir().expect("create temporary scripts dir");
+        let mut config = config;
+        config.shell_integration.scripts_dir = Some(scripts_dir.path().to_path_buf());
+        let manager = SessionManager::new(config);
+        (scripts_dir, manager)
+    }
 
     #[test]
     fn stream_output_delta_returns_utf8_suffix_without_cutting_chars() {
@@ -1737,5 +1816,112 @@ mod tests {
             serde_json::to_string(&CommandCompletionReason::TimedOut).unwrap(),
             "\"timedOut\""
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_session_env_refreshes_baseline_add_remove_reorder_with_custom_prefix() {
+        let mut config = TerminalConfig::default();
+        config.managed_path_prefix = vec!["C:/managed".into()];
+        config.platform_path_suffix = vec!["C:/gui".into()];
+        let (_scripts, mut manager) = test_manager(config);
+        manager.inherited_path_entries = crate::config::inherited_path_increment(
+            Some(OsStr::new("C:/custom;C:/one;C:/removed;C:/two")),
+            Some(OsStr::new("C:/one;C:/removed;C:/two")),
+        );
+        let first = manager.build_session_env(None, Some(OsStr::new("C:/one;C:/removed;C:/two")));
+        let second = manager.build_session_env(None, Some(OsStr::new("C:/two;C:/added;C:/one")));
+        assert_eq!(first["Path"], "C:/managed;C:/custom;C:/one;C:/removed;C:/two;C:/gui");
+        assert_eq!(second["Path"], "C:/managed;C:/custom;C:/two;C:/added;C:/one;C:/gui");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_session_env_config_path_overrides_policy_verbatim_including_empty() {
+        for value in ["", "   ", "  C:/explicit;C:/only  "] {
+            let mut config = TerminalConfig::default();
+            config.managed_path_prefix = vec!["C:/managed".into()];
+            config.env.insert("PATH".into(), "C:/other".into());
+            config.env.insert("pAtH".into(), "C:/mixed".into());
+            config.env.insert("Path".into(), value.into());
+            config.env.insert("CONFIG_ONLY".into(), "kept".into());
+            let (_scripts, manager) = test_manager(config);
+            let result = manager.build_session_env(None, Some(OsStr::new("C:/os")));
+            assert_eq!(result["Path"], value);
+            assert_eq!(result["CONFIG_ONLY"], "kept");
+            assert_eq!(result.keys().filter(|key| key.eq_ignore_ascii_case("path")).count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_session_env_request_path_is_final_and_normalizes_all_variants() {
+        for value in ["", "  ", "C:/request"] {
+            let mut config = TerminalConfig::default();
+            config.env.insert("Path".into(), "C:/config".into());
+            config.env.insert("SHARED".into(), "config".into());
+            let (_scripts, manager) = test_manager(config);
+            let request = HashMap::from([
+                ("PATH".into(), "C:/upper".into()),
+                ("pAtH".into(), "C:/mixed".into()),
+                ("Path".into(), value.into()),
+                ("SHARED".into(), "request".into()),
+            ]);
+            let result = manager.build_session_env(Some(request), Some(OsStr::new("C:/os")));
+            assert_eq!(result["Path"], value);
+            assert_eq!(result["SHARED"], "request");
+            assert_eq!(result.keys().filter(|key| key.eq_ignore_ascii_case("path")).count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_session_env_request_without_path_keeps_implicit_policy() {
+        let mut config = TerminalConfig::default();
+        config.managed_path_prefix = vec!["C:/managed".into()];
+        let (_scripts, mut manager) = test_manager(config);
+        manager.inherited_path_entries = vec!["C:/custom".into()];
+        let request = HashMap::from([("EXTRA".into(), "kept".into())]);
+        let result = manager.build_session_env(Some(request), Some(OsStr::new("C:/os")));
+        assert_eq!(result["Path"], "C:/managed;C:/custom;C:/os");
+        assert_eq!(result["EXTRA"], "kept");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_session_env_empty_baseline_overrides_stale_parent_but_missing_does_not() {
+        let (_scripts, mut manager) = test_manager(TerminalConfig::default());
+        manager.inherited_path_entries.clear();
+        let result = manager.build_session_env(None, Some(OsStr::new("")));
+        assert_eq!(result.get("Path").map(String::as_str), Some(""));
+        assert!(!manager.build_session_env(None, None).contains_key("Path"));
+        manager.config.managed_path_prefix = vec!["C:/managed".into()];
+        manager.inherited_path_entries = vec!["C:/custom".into()];
+        manager.config.platform_path_suffix = vec!["C:/gui".into()];
+        assert!(!manager.build_session_env(None, None).contains_key("Path"));
+    }
+
+    // Unix CI test: native non-UTF-8 inheritance must not become a lossy overlay.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_session_env_unix_preserves_exact_overlay_and_bare_inheritance() {
+        use std::os::unix::ffi::OsStrExt;
+        let baseline = OsStr::from_bytes(b"/native/\xff: :/quoted/'name'");
+        let mut config = TerminalConfig::default();
+        config.managed_path_prefix = vec!["/ignored".into()];
+        config.platform_path_suffix = vec!["/also-ignored".into()];
+        let (_scripts, manager) = test_manager(config);
+        assert!(manager.build_session_env(None, Some(baseline)).is_empty());
+        for value in ["", "  ", " /legal whitespace :/literal/'quotes' "] {
+            let mut config = TerminalConfig::default();
+            config.env.insert("PATH".into(), value.into());
+            config.env.insert("Path".into(), "distinct-variable".into());
+            let (_scripts, manager) = test_manager(config.clone());
+            assert_eq!(manager.build_session_env(None, Some(baseline)), config.env);
+            let request = HashMap::from([("PATH".into(), "  /request  ".into())]);
+            let result = manager.build_session_env(Some(request), Some(baseline));
+            assert_eq!(result["PATH"], "  /request  ");
+            assert_eq!(result["Path"], "distinct-variable");
+        }
     }
 }
