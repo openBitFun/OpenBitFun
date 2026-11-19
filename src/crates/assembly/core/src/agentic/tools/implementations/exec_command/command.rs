@@ -586,6 +586,7 @@ impl ExecCommandTool {
             tty,
             yield_time_ms: Some(yield_time_ms),
             max_output_chars: None,
+            wait_interrupt: context.round_injection_preemption_token().cloned(),
             lifecycle_sink: Self::start_remote_lifecycle_bridge(context, self.name()),
             output_sink: output_capture_tx,
         };
@@ -632,7 +633,7 @@ impl ExecCommandTool {
             }
         }
 
-        let data = exec_command_result_value(ExecCommandResultData {
+        let mut data = exec_command_result_value(ExecCommandResultData {
             fields: ExecCommandResultFields {
                 chunk_id: response.chunk_id,
                 wall_time_seconds: response.wall_time_seconds,
@@ -647,6 +648,9 @@ impl ExecCommandTool {
             tty,
             shell: Self::remote_shell_metadata(&workdir, &shell, env_snapshot.is_some()),
         });
+        if response.wait_interrupted {
+            data["wait_end_reason"] = json!("steered");
+        }
         let result_for_assistant = Self::response_for_assistant(&data);
 
         Ok(vec![ToolResult::Result {
@@ -687,6 +691,7 @@ TTY modes:
 
 Waiting and continuation:
 - yield_time_ms waits for output until the process exits or the deadline is reached. It does not stop the process.
+- User steering can end the wait early and return output collected so far. The process continues running; use the returned session_id with WriteStdin instead of launching the command again.
 - If the process is still running after `yield_time_ms`, the result includes a numeric session_id.
 - Use WriteStdin to poll for more output or send input to tty=true sessions, and ExecControl to interrupt or kill it.
 
@@ -742,6 +747,7 @@ Output:
                 "output": {"type": "string"},
                 "session_id": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
                 "exit_code": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                "wait_end_reason": {"type": "string", "enum": ["steered"]},
                 "completion": {
                     "anyOf": [
                         {"type": "null"},
@@ -778,6 +784,10 @@ Output:
     }
 
     fn manages_own_execution_timeout(&self) -> bool {
+        true
+    }
+
+    fn round_injection_yieldable(&self) -> bool {
         true
     }
 
@@ -887,6 +897,7 @@ Output:
             tty,
             yield_time_ms: Some(yield_time_ms),
             max_output_chars: None,
+            wait_interrupt: context.round_injection_preemption_token().cloned(),
             lifecycle_sink: Self::start_local_lifecycle_bridge(context, self.name()),
             output_sink: output_capture_tx,
         };
@@ -933,7 +944,7 @@ Output:
             }
         }
 
-        let data = exec_command_result_value(ExecCommandResultData {
+        let mut data = exec_command_result_value(ExecCommandResultData {
             fields: ExecCommandResultFields {
                 chunk_id: response.chunk_id,
                 wall_time_seconds: response.wall_time_seconds,
@@ -948,6 +959,9 @@ Output:
             tty,
             shell: Self::shell_metadata_value(&shell),
         });
+        if response.wait_interrupted {
+            data["wait_end_reason"] = json!("steered");
+        }
         let result_for_assistant = Self::response_for_assistant(&data);
 
         Ok(vec![ToolResult::Result {
@@ -1083,7 +1097,7 @@ mod tests {
         assert!(tool.prepared_shells.lock().await.is_empty());
     }
 
-    fn local_tool_context(workspace: &Path) -> ToolUseContext {
+    pub(super) fn local_tool_context(workspace: &Path) -> ToolUseContext {
         ToolUseContext {
             tool_call_id: None,
             agent_type: Some("Standard".to_string()),
@@ -1100,7 +1114,7 @@ mod tests {
         }
     }
 
-    fn remote_tool_context(root: &str) -> ToolUseContext {
+    pub(super) fn remote_tool_context(root: &str) -> ToolUseContext {
         let session_identity =
             workspace_session_identity(root, Some("conn-1"), Some("remote-host"))
                 .expect("remote session identity should build");
@@ -1468,3 +1482,7 @@ mod tests {
 #[cfg(all(test, unix))]
 #[path = "guard_tests.rs"]
 mod guard_tests;
+
+#[cfg(test)]
+#[path = "command_steering_tests.rs"]
+mod steering_tests;

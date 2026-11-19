@@ -510,6 +510,7 @@ async fn execute_prompt_command_shell_plan(
                         tty: false,
                         yield_time_ms: Some(PROMPT_COMMAND_SHELL_TIMEOUT_MS),
                         max_output_chars: Some(MAX_PROMPT_COMMAND_SHELL_OUTPUT_CHARS),
+                        wait_interrupt: None,
                         lifecycle_tx: None,
                         output_capture_tx: None,
                     })
