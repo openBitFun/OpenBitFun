@@ -376,13 +376,24 @@ export function buildInlineTodoPrompt(params: InlineAiPromptParams): string {
   return buildInlineInsertPrompt(params, 'todo');
 }
 
+const FENCE_PATTERN = /^```(?:markdown|md)?\s*([\s\S]*?)\s*```$/i;
+const FENCE_CHAR = 0x60; // '`'
+
 export function sanitizeInlineAiMarkdownResponse(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
     return '';
   }
 
-  const fencedMatch = trimmed.match(/^```(?:markdown|md)?\s*([\s\S]*?)\s*```$/i);
+  // A fenced reply is the exception, not the rule, and entering the regex engine for every
+  // streamed response costs more than the rest of this function: String.match builds its
+  // match state even on a first-character mismatch. The pattern can only match a string that
+  // opens with a fence, so anything else returns the trimmed text directly.
+  if (trimmed.charCodeAt(0) !== FENCE_CHAR) {
+    return trimmed;
+  }
+
+  const fencedMatch = trimmed.match(FENCE_PATTERN);
   if (fencedMatch) {
     return fencedMatch[1].trim();
   }
