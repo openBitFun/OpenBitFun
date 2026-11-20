@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use crate::backend_protocol::{BackendService, EventHub, DEFAULT_EVENT_REPLAY_CAPACITY};
 use crate::host::{HostHandle, NativeHost, NativeHostInfo};
-use crate::{api, crash_diagnostics, logging, BackendCore};
+use crate::{crash_diagnostics, logging, BackendCore};
 
 fn native_platform() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -24,31 +24,6 @@ fn native_platform() -> &'static str {
     } else {
         "linux"
     }
-}
-
-/// The mobile-web bundle: `OPENBITFUN_MOBILE_WEB_DIR`, the packaged app's
-/// resources, or the repository build output in development builds.
-fn native_mobile_web_dir() -> Option<std::path::PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(dir) = std::env::var_os("OPENBITFUN_MOBILE_WEB_DIR") {
-        candidates.push(std::path::PathBuf::from(dir));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(contents) = exe.parent().and_then(|dir| dir.parent()) {
-            candidates.push(contents.join("Resources/mobile-web/dist"));
-        }
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("mobile-web/dist"));
-        }
-    }
-    if cfg!(debug_assertions) {
-        candidates.push(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mobile-web/dist"),
-        );
-    }
-    candidates
-        .into_iter()
-        .find(|dir| dir.join("index.html").is_file())
 }
 
 /// A native host with an empty state registry and a fresh event hub.
@@ -144,16 +119,6 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
             ),
         }
     }
-    match native_mobile_web_dir() {
-        Some(path) => {
-            log::info!("Found bundled mobile-web at: {}", path.display());
-            api::remote_connect_api::set_mobile_web_resource_path(path);
-        }
-        None => log::info!(
-            "Native host has no bundled mobile-web resources; remote connect serves the relay-hosted mobile web only"
-        ),
-    }
-
     let handle = HostHandle::new(Arc::clone(&host));
     crate::miniapp_desktop::start_native(&handle);
     // Agent MiniApp automation: independent windows answer through their
@@ -186,7 +151,7 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     // default, the LAN when the user enabled it in Devices).
     crate::backend_protocol::ws::start_for_native_host(service.clone(), &data_dir).await;
     // Other devices of the signed-in account reach this backend over the
-    // device mesh (EasyTier sidecar + the OBP mesh listener).
+    // device network (OpenBitFun Link in-process + the OBP mesh listener).
     crate::mesh::start_for_native_host(&data_dir);
     Ok(service)
 }

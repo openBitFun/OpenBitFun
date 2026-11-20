@@ -25,6 +25,7 @@ import { servedBackendParams } from "./servedBackend";
 import { loadSettingsValues } from "./settingsStore";
 import { navigateScene, type SceneId } from "./state";
 import { APPEARANCE_PRESETS, selectAppearancePreset, type AppearanceId } from "./theme";
+import { controllerPort } from "./controller/controllerPort";
 
 const REQUEST_EVENT = "agentic://openbitfun-control-request";
 const APPLIED_EVENT = "agentic://openbitfun-control-applied";
@@ -280,7 +281,9 @@ let installed: (() => void) | null = null;
  */
 export function installControlPresenter(actions: ControlPresenterActions): () => void {
   if (installed) return installed;
-  if (servedBackendParams() !== null) return () => {};
+  // Only the host's own window presents control requests: a browser served by
+  // the host, or a phone or browser driving a device as a controller, is not it.
+  if (servedBackendParams() !== null || controllerPort() !== null) return () => {};
   const stops = [
     listenEvent<ControlRequest>(REQUEST_EVENT, request => void handleControlRequest(request, actions)),
     listenEvent<ControlEffect>(EFFECT_EVENT, effect => void applyControlEffect(effect)),

@@ -1,0 +1,75 @@
+# OpenBitFun fork of EasyTier v2.7.1 (LGPL-3.0). See OPENBITFUN-PATCH.md.
+#
+# This is its own workspace so the upstream manifests keep inheriting their
+# dependency versions; the OpenBitFun workspace excludes this directory and
+# consumes `easytier` by path (one Cargo.lock: the repository root's).
+[workspace]
+resolver = "2"
+members = ["easytier", "easytier-core", "easytier-proto", "easytier-proto/codegen"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+
+[workspace.dependencies]
+optionize = "0.5"
+anyhow = "1.0"
+arc-swap = "1.9"
+async-trait = "0.1.92"
+atomic-shim = "0.2.0"
+auto_impl = "1.3.0"
+base64 = "0.22.1"
+bon = "3.10.1"
+bytecodec = "0.5.0"
+bytes = "1.12.1"
+chrono = "0.4.45"
+cidr = "0.3.2"
+crossbeam = "0.8.5"
+crossbeam-utils = "0.8.23"
+dashmap = "6.2.1"
+delegate = "0.13.5"
+derive_more = { version = "2.1.1", features = ["full"] }
+educe = "0.8.1"
+easytier = { version = "2.7.1", path = "easytier", default-features = false }
+easytier-core = { version = "2.7.1", path = "easytier-core", default-features = false }
+easytier-proto = { version = "2.7.1", path = "easytier-proto", default-features = false }
+futures = { version = "0.3", default-features = false }
+gethostname = "1.1"
+guarden = "0.3"
+hmac = "0.12.1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false }
+hyper-util = { version = "0.1", default-features = false }
+indoc = "2.0.7"
+log = "0.4"
+once_cell = "1.21"
+parking_lot = "0.12.5"
+percent-encoding = "2.3.2"
+pin-project-lite = "0.2.17"
+prost = "0.14.4"
+prost-types = "0.14.4"
+quanta = "0.12"
+rand = "0.8.8"
+rustls = { version = "0.23.45", default-features = false }
+serde = "1.0.229"
+serde_json = "1.0"
+sha2 = "0.10.9"
+smoltcp = { version = "0.14.0", default-features = false }
+strum = "0.28.0"
+stun_codec = "0.4.0"
+sys-locale = "0.3"
+rust-i18n = "4"
+tempfile = "3.27.0"
+thiserror = "2.0"
+tokio = { version = "1.53", default-features = false }
+tokio-rustls = { version = "0.26", default-features = false }
+tokio-util = "0.7.19"
+toml = "1.1.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false }
+url = "2.5"
+uuid = "1.26.1"
+winapi = "0.3.9"
+windows = "0.62"
+x25519-dalek = "2.0.1"
+zerocopy = "0.7.35"

@@ -31,7 +31,7 @@ export const crateLayoutRules = [
   { crateName: 'relay-service', layer: 'services', path: 'src/crates/services/relay-service' },
   { crateName: 'page-function-runtime', layer: 'services', path: 'src/crates/services/page-function-runtime' },
   { crateName: 'terminal', layer: 'services', path: 'src/crates/services/terminal' },
-  { crateName: 'mesh-service', layer: 'services', path: 'src/crates/services/mesh' },
+  { crateName: 'link', layer: 'services', path: 'src/crates/services/link' },
 
   { crateName: 'acp', layer: 'interfaces', path: 'src/crates/interfaces/acp' },
   { crateName: 'app-server', layer: 'interfaces', path: 'src/crates/interfaces/app-server' },
@@ -51,6 +51,7 @@ export const crateLayoutRules = [
   { crateName: 'opencode-plugin-host', layer: 'adapters', path: 'src/crates/adapters/opencode-plugin-host' },
   { crateName: 'static-hook-support', layer: 'adapters', path: 'src/crates/adapters/static-hook-support' },
   { crateName: 'transport', layer: 'adapters', path: 'src/crates/adapters/transport' },
+  { crateName: 'obp', layer: 'adapters', path: 'src/crates/adapters/obp' },
   { crateName: 'webdriver', layer: 'adapters', path: 'src/crates/adapters/webdriver' },
 
   { crateName: 'core', layer: 'assembly', path: 'src/crates/assembly/core' },

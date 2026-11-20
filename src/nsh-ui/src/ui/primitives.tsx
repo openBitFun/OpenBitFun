@@ -2272,6 +2272,8 @@ export interface TextFieldProps {
   readonly?: boolean;
   disabled?: boolean;
   autoFocus?: boolean;
+  /** What the field holds, for the phone keyboard and autofill: an email address or a one-time code (no autocorrect, no capitals). */
+  content?: "email" | "one-time-code";
   surface?: ControlSurface;
   accessibilityLabel?: string;
   inputRef?: InputRef | ((node: InputRef) => void);
@@ -2367,6 +2369,10 @@ export function TextField(props: TextFieldProps) {
           masked={props.masked}
           readonly={Boolean(props.readonly || props.disabled)}
           autoFocus={props.autoFocus}
+          keyboardType={props.content === "email" ? "email-address" : props.content ? "number-pad" : undefined}
+          autoCapitalize={props.content ? "none" : undefined}
+          autoCorrect={props.content ? false : undefined}
+          autoComplete={props.content}
           accessibilityLabel={props.accessibilityLabel ?? props.label ?? props.placeholder}
           onChange={e => {
             if (!props.disabled) props.onChange(e.value);

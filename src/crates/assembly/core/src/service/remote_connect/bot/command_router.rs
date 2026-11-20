@@ -1089,11 +1089,35 @@ fn device_selection_view(
 /// Execute a RemoteCommand on the active remote device via HTTP RPC.
 /// Returns the decrypted response JSON string.
 /// Caller must check `state.active_remote_device.is_some()` first.
+///
+/// A new device on the account device mesh answers over OBP
+/// (`obp_remote_command` through the `mesh_route` port, like the bot's turn
+/// lane in `RemoteBotTarget`); only an older device, or a bot host without a
+/// mesh, gets the encrypted relay RPC. A mesh device's failure is reported,
+/// never retried over the relay.
 async fn exec_remote_rpc(state: &BotChatState, command_json: &str) -> Result<String, String> {
+    use crate::service::remote_connect::mesh_route::{
+        mesh_route, CAPABILITY_REMOTE_COMMAND_V1, OBP_REMOTE_COMMAND,
+    };
     let device = state
         .active_remote_device
         .as_ref()
         .ok_or("no active remote device")?;
+    if let Some(route) = mesh_route() {
+        let command: Value = serde_json::from_str(command_json)
+            .map_err(|error| format!("invalid remote command: {error}"))?;
+        if let Some(reply) = route
+            .call(
+                &device.device_id,
+                CAPABILITY_REMOTE_COMMAND_V1,
+                OBP_REMOTE_COMMAND,
+                serde_json::json!({ "command": command }),
+            )
+            .await
+        {
+            return reply.map(|value| value.to_string());
+        }
+    }
     let relay_url = state.relay_url.as_ref().ok_or("no relay_url")?;
     let session = state
         .delegated_account
@@ -6672,6 +6696,96 @@ mod remote_device_flow_tests {
         assert_eq!(list["workspace_id"], "ws-other");
         assert!(!calls.iter().any(|call| call["cmd"] == "device_query_info"));
         assert!(!calls.iter().any(|call| call["cmd"] == "set_assistant"));
+    }
+
+    /// A mesh route that answers for `mesh-device` only (every other device
+    /// keeps its legacy relay path, so concurrent fixture tests are not
+    /// affected by the process-wide route).
+    struct MeshDevice {
+        calls: Arc<Mutex<Vec<(String, String, Value)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::service::remote_connect::mesh_route::AccountDeviceMeshRoute for MeshDevice {
+        async fn call(
+            &self,
+            device_id: &str,
+            required_capability: &str,
+            command: &str,
+            args: Value,
+        ) -> Option<Result<Value, String>> {
+            if device_id != "mesh-device" {
+                return None;
+            }
+            self.calls.lock().unwrap().push((
+                required_capability.to_string(),
+                command.to_string(),
+                args.clone(),
+            ));
+            Some(Ok(device_response(&args["command"], 0)))
+        }
+    }
+
+    /// An IM bot on this host drives a session on another account device
+    /// that is on the device mesh (a desktop or a CLI host): every menu
+    /// command goes through the `mesh_route` port as `obp_remote_command`
+    /// with `remote_command_v1`, and nothing reaches the relay (the relay
+    /// URL here is a closed port).
+    #[tokio::test]
+    async fn mesh_devices_answer_the_bot_router_over_obp_not_the_relay() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        crate::service::remote_connect::mesh_route::install_mesh_route(Arc::new(MeshDevice {
+            calls: calls.clone(),
+        }));
+        let s = strings_for(BotLanguage::EnUS);
+        let mut state = remote_state(
+            "http://127.0.0.1:9".into(),
+            vec![7u8; 32],
+            BotDisplayMode::Assistant,
+        );
+        state.active_remote_device = Some(RemoteDeviceTarget {
+            device_id: "mesh-device".into(),
+            device_name: "CLI host".into(),
+        });
+
+        let created = create_session(&mut state, "Claw").await;
+        assert_eq!(
+            state.current_session_id.as_deref(),
+            Some("s-new"),
+            "{}",
+            created.reply
+        );
+        let switch = start_switch(&mut state, s).await;
+        let text = switch.menu.render_plain_text(BotLanguage::EnUS);
+        assert!(text.contains("Xiaofu") && text.contains("Other"), "{text}");
+        let pending = state.pending_action.clone().unwrap();
+        route_pending(&mut state, pending, "2", s).await;
+        start_resume(&mut state, 0, s).await;
+        let pending = state.pending_action.clone().unwrap();
+        let resumed = route_pending(&mut state, pending, "1", s).await;
+        assert_eq!(state.current_session_id.as_deref(), Some("s-old"));
+        assert!(resumed.reply.contains("hi there"), "{}", resumed.reply);
+
+        let calls = calls.lock().unwrap();
+        let commands: Vec<&str> = calls
+            .iter()
+            .map(|(_, _, args)| args["command"]["cmd"].as_str().unwrap_or("-"))
+            .collect();
+        for expected in [
+            "create_session",
+            "list_assistants",
+            "list_sessions",
+            "get_session_messages",
+        ] {
+            assert!(
+                commands.contains(&expected),
+                "{expected} not routed: {commands:?}"
+            );
+        }
+        assert!(calls
+            .iter()
+            .all(|(capability, verb, _)| capability == "remote_command_v1"
+                && verb == "obp_remote_command"));
     }
 
     #[test]

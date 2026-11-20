@@ -128,7 +128,7 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 | 场景 | 含义 | 设计入口 |
 |---|---|---|
 | 远程工作区 | 当前工作区位于 SSH 主机、跳板机链路或 Docker 容器；文件、终端、搜索和 Agent 子进程都必须在那一侧执行 | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md)、[remote-workspaces.md](docs/features/remote-workspaces.md) |
-| 远程控制 | 手机或浏览器通过局域网或账号设备组网运行新版桌面宿主提供的同一套 NSH UI；飞书 / Telegram / 微信 Bot 通过组网上的 OBP（新版宿主）或 Remote Connect relay（旧版宿主，旧客户端仍用 `mobile-web`）驱动会话 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（设备组网）、[`src/mobile-web`](src/mobile-web/AGENTS.md)、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect`、[relay-service](src/crates/services/relay-service/AGENTS.md) |
+| 远程控制 | 手机或浏览器用账号（邮箱验证码）登录，对新版桌面宿主运行同一套 NSH UI：手机 App 经账号设备组网（新版唯一的多设备连接方式；同一网络内的设备经组网直连），浏览器经服务器网关（`https://<domain>/app/`，与设备端到端加密）；飞书 / Telegram / 微信 Bot 通过组网上的 OBP（新版宿主）或 Remote Connect relay（旧版宿主，旧客户端仍用 `mobile-web`）驱动会话 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（设备组网、浏览器网关）、[`src/mobile-web`](src/mobile-web/AGENTS.md)、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect`、[relay-service](src/crates/services/relay-service/AGENTS.md) |
 | 多端互控（Peer Device Mode） | 同账号的一台设备成为另一台的数据平面：控制端外壳仍在本地，invoke 和事件来自 peer；新版宿主之间走设备组网上的 OBP，旧版宿主走 relay HostInvoke | [peer-device-mode.md](docs/architecture/peer-device-mode.md)、[NSH peer 路由](src/nsh-ui/AGENTS.md) |
 | Dispatch 分离任务 | 控制端把持久化任务提交到另一台 OpenBitFun 宿主后即可断开；目标端拥有 job、session、worktree、事件日志和权限信箱 | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
 
@@ -193,8 +193,10 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 - crate 清单由各层指南维护；不要在这里枚举 crate。
 - `AGENTS.md` 与 `AGENTS-CN.md` 在同一次改动中同步更新。
 
-## 原生移动端仓库
+## 移动端应用
 
-Android、iOS、HarmonyOS 应用及其 Kotlin 共享模块、原生 WebView 资源和移动端设计工具
-已迁至 [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)。
+NSH 手机应用（iOS 与 Android，与桌面端相同的 `src/nsh-ui` 界面，通过 OpenBitFun Link
+控制账号下的设备）位于本仓库 [`src/apps/mobile-nsh`](src/apps/mobile-nsh/README.md)。
+旧版 Kotlin 与 HarmonyOS 应用及其 Kotlin 共享模块、原生 WebView 资源和移动端设计工具
+仍在 [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)。
 `src/mobile-web` 和主机侧移动端／Relay 协议契约仍由本仓库维护。

@@ -30,8 +30,6 @@ pub mod appearance;
 pub mod backend_protocol;
 pub mod computer_use;
 pub mod crash_diagnostics;
-mod embedded_relay_host;
-mod frontend_asset_cache;
 pub mod host;
 pub mod logging;
 pub mod mesh;
@@ -1067,8 +1065,6 @@ backend_commands![
     i18n_set_config,
     // Remote Connect
     api::remote_connect_api::remote_connect_get_device_info,
-    api::remote_connect_api::remote_connect_get_lan_ip,
-    api::remote_connect_api::remote_connect_get_lan_network_info,
     api::remote_connect_api::remote_connect_get_methods,
     api::remote_connect_api::remote_connect_start,
     api::remote_connect_api::remote_connect_stop,
@@ -1269,10 +1265,9 @@ backend_commands![
     // Relay self-deploy API
     // Backend protocol listener for browsers and phones (OBP over WebSocket)
     backend_protocol::ws::obp_get_status,
-    backend_protocol::ws::obp_set_lan_enabled,
     backend_protocol::ws::obp_create_pairing,
     backend_protocol::ws::obp_revoke_paired_client,
-    // Device mesh (EasyTier sidecar; OBP to other account devices)
+    // Device network (OpenBitFun Link in-process; OBP to other account devices)
     mesh::mesh_api::mesh_status,
     mesh::mesh_api::mesh_list_devices,
     // Peer Device Mode over OBP on the mesh (controller side)
@@ -1280,7 +1275,6 @@ backend_commands![
     mesh::peer_link::peer_link_call,
     mesh::peer_link::peer_link_events,
     mesh::peer_link::peer_link_disconnect,
-    mesh::mesh_api::mesh_phone_join_info,
 ];
 
 /// Starts the backend services every host runs once its managed state is

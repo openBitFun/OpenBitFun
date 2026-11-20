@@ -1,6 +1,5 @@
 //! Tauri commands for Remote Connect.
 
-use crate::embedded_relay_host::DesktopEmbeddedRelayHost;
 use crate::host::HostHandle;
 use openbitfun_core::agentic::tools::account_login_capability::set_account_login_available;
 use openbitfun_core::agentic::tools::page_deploy_host::set_page_deploy_handler;
@@ -11,7 +10,7 @@ use openbitfun_core::service::remote_connect::session_store::{
 };
 use openbitfun_core::service::remote_connect::{
     bot::{self, weixin, BotConfig},
-    device, lan, session_store, AccountClient, AccountSession, ConnectionMethod, ConnectionResult,
+    device, session_store, AccountClient, AccountSession, ConnectionMethod, ConnectionResult,
     DeviceIdentity, RemoteConnectConfig, RemoteConnectService,
 };
 use openbitfun_events::AI_MODEL_CATALOG_UPDATED_EVENT;
@@ -22,10 +21,8 @@ use openbitfun_services_integrations::remote_connect::{
     deploy_page_version_on_relay, join_relay_url, list_pages_from_relay,
     publish_page_content_on_relay,
 };
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
@@ -36,6 +33,7 @@ mod relay_routes;
 #[cfg(test)]
 mod relay_routes_tests;
 pub(crate) use relay_routes::RelayRoute;
+use relay_routes::{DesktopEmbeddedRelayUnavailable, LAN_RELAY_RETIRED_ERROR};
 
 /// Session and relay URL must move together. Keeping them behind one lock
 /// prevents a request from observing a token from one login and the URL from
@@ -1258,9 +1256,6 @@ pub async fn account_get_credential_hint() -> Option<AccountHint> {
     load_credential_hint()
 }
 
-/// Tauri resource directory path for mobile-web, set during app setup.
-static MOBILE_WEB_RESOURCE_PATH: OnceLock<PathBuf> = OnceLock::new();
-
 fn get_service_holder() -> &'static Arc<RwLock<Option<RemoteConnectService>>> {
     RelayRoute::Official.service()
 }
@@ -1313,15 +1308,11 @@ pub(crate) async fn execute_remote_control(
         }
         Request::Start {
             method: Method::Lan,
-            lan_ip,
-        } => {
-            let result = remote_connect_start(StartRemoteConnectRequest {
-                method: "lan".into(),
-                lan_ip,
-            })
-            .await?;
-            serde_json::to_value(result).map_err(|error| error.to_string())
+            ..
         }
+        | Request::Stop {
+            method: Method::Lan,
+        } => Err(LAN_RELAY_RETIRED_ERROR.to_string()),
         Request::Stop {
             method: Method::MobileWeb,
         } => {
@@ -1330,15 +1321,6 @@ pub(crate) async fn execute_remote_control(
             }))
             .await?;
             Ok(json!({"stopped":true,"method":"mobile_web"}))
-        }
-        Request::Stop {
-            method: Method::Lan,
-        } => {
-            remote_connect_stop(Some(StopRemoteConnectRequest {
-                method: "lan".into(),
-            }))
-            .await?;
-            Ok(json!({"stopped":true,"method":"lan"}))
         }
         other => {
             let generation = account_context_generation();
@@ -1353,13 +1335,6 @@ pub(crate) async fn execute_remote_control(
                 .map_err(|error| error.to_string())
         }
     }
-}
-
-/// Called from Tauri setup to register the resolved resource directory path
-/// for the bundled mobile-web files.
-pub fn set_mobile_web_resource_path(path: PathBuf) {
-    log::info!("Registered mobile-web resource path: {}", path.display());
-    let _ = MOBILE_WEB_RESOURCE_PATH.set(path);
 }
 
 /// Called from Tauri setup to eagerly initialize the remote connect service
@@ -1607,11 +1582,8 @@ async fn ensure_service() -> Result<(), String> {
         return Ok(());
     }
     *guard = Some(
-        new_remote_connect_service(RemoteConnectConfig {
-            mobile_web_dir: detect_mobile_web_dir(),
-            ..RemoteConnectConfig::default()
-        })
-        .map_err(|error| format!("init remote connect: {error}"))?,
+        new_remote_connect_service(RemoteConnectConfig::default())
+            .map_err(|error| format!("init remote connect: {error}"))?,
     );
     drop(guard);
     restore_saved_bots().await;
@@ -1619,7 +1591,7 @@ async fn ensure_service() -> Result<(), String> {
 }
 
 fn new_remote_connect_service(config: RemoteConnectConfig) -> anyhow::Result<RemoteConnectService> {
-    RemoteConnectService::new(config, Arc::new(DesktopEmbeddedRelayHost::default()))
+    RemoteConnectService::new(config, Arc::new(DesktopEmbeddedRelayUnavailable))
 }
 
 /// Restore any bot connections that were previously saved to disk.
@@ -1636,104 +1608,13 @@ async fn restore_saved_bots() {
     }
 }
 
-/// Auto-detect the mobile-web build output directory.
-fn detect_mobile_web_dir() -> Option<String> {
-    if let Ok(dir) = std::env::var("OPENBITFUN_MOBILE_WEB_DIR") {
-        let p = std::path::Path::new(&dir);
-        if p.join("index.html").exists() {
-            log::info!("Using OPENBITFUN_MOBILE_WEB_DIR: {dir}");
-            return Some(dir);
-        }
-        log::warn!("OPENBITFUN_MOBILE_WEB_DIR set but index.html not found: {dir}");
-    }
-
-    if let Some(resource_path) = MOBILE_WEB_RESOURCE_PATH.get() {
-        if is_valid_mobile_web_dir(resource_path) {
-            let dir = resource_path.to_string_lossy().into_owned();
-            log::info!("Using Tauri bundled mobile-web: {dir}");
-            return Some(dir);
-        }
-        log::debug!(
-            "Tauri resource path registered but not a valid mobile-web dir: {}",
-            resource_path.display()
-        );
-    }
-
-    if let Some(dir) = detect_from_exe() {
-        return Some(dir);
-    }
-
-    if let Some(dir) = detect_from_cwd() {
-        return Some(dir);
-    }
-
-    log::warn!("mobile-web dist directory not found; LAN mode will not serve static files");
-    None
-}
-
-fn detect_from_exe() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    if cfg!(target_os = "macos") {
-        // Primary: the native bundle packages mobile-web/dist in Resources
-        candidates.push(exe_dir.join("../Resources/mobile-web/dist"));
-        // Fallback: legacy layout without dist subdirectory
-        candidates.push(exe_dir.join("../Resources/mobile-web"));
-        // Fallback: array-format bundling may place files at Resources/dist directly
-        candidates.push(exe_dir.join("../Resources/dist"));
-    }
-    candidates.push(exe_dir.join("mobile-web/dist"));
-    candidates.push(exe_dir.join("mobile-web"));
-    candidates.push(exe_dir.join("resources/mobile-web/dist"));
-    candidates.push(exe_dir.join("resources/mobile-web"));
-
-    if cfg!(target_os = "linux") {
-        candidates.push(exe_dir.join("../lib/openbitfun/mobile-web/dist"));
-        candidates.push(exe_dir.join("../lib/openbitfun/mobile-web"));
-        candidates.push(exe_dir.join("../share/openbitfun/mobile-web/dist"));
-        candidates.push(exe_dir.join("../share/openbitfun/mobile-web"));
-        candidates.push(exe_dir.join("../share/com.openbitfun.desktop/mobile-web/dist"));
-        candidates.push(exe_dir.join("../share/com.openbitfun.desktop/mobile-web"));
-    }
-
-    check_candidates(&candidates, "exe-relative")
-}
-
-fn detect_from_cwd() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let candidates = [
-        cwd.join("src/mobile-web/dist"),
-        cwd.join("../../mobile-web/dist"),
-        cwd.join("../mobile-web/dist"),
-    ];
-
-    check_candidates(&candidates, "cwd-relative")
-}
-
-fn check_candidates(candidates: &[PathBuf], source: &str) -> Option<String> {
-    for candidate in candidates {
-        if is_valid_mobile_web_dir(candidate) {
-            if let Ok(abs) = candidate.canonicalize() {
-                log::info!("Detected mobile-web dir ({}): {}", source, abs.display());
-                return Some(abs.to_string_lossy().into_owned());
-            }
-        }
-    }
-    None
-}
-
-fn is_valid_mobile_web_dir(dir: &std::path::Path) -> bool {
-    dir.join("index.html").exists() && dir.join("assets").is_dir()
-}
-
 // ── Request / Response DTOs ────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct StartRemoteConnectRequest {
     pub method: String,
+    /// Sent by older UIs for the retired LAN mode; accepted and ignored.
+    #[serde(default)]
     pub lan_ip: Option<String>,
 }
 
@@ -1774,173 +1655,6 @@ pub struct DeviceInfo {
     pub mac_address: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct LanNetworkInterface {
-    pub interface_name: String,
-    pub ip: String,
-    pub gateway_ip: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LanNetworkInfo {
-    pub local_ip: String,
-    pub gateway_ip: Option<String>,
-    pub available_ips: Vec<LanNetworkInterface>,
-}
-
-fn detect_default_gateway_ip() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let output = openbitfun_core::util::process_manager::create_command("route")
-            .args(["-n", "get", "default"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let re = Regex::new(r"(?m)^\s*gateway:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s*$").ok()?;
-        return re
-            .captures(&stdout)
-            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let output = openbitfun_core::util::process_manager::create_command("ip")
-            .args(["route", "show", "default"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let re = Regex::new(r"(?m)^default\s+via\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\b").ok()?;
-        return re
-            .captures(&stdout)
-            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let output = openbitfun_core::util::process_manager::create_command("route")
-            .args(["print", "-4"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let re =
-            Regex::new(r"(?m)^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+")
-                .ok()?;
-        return re
-            .captures(&stdout)
-            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
-    }
-
-    #[allow(unreachable_code)]
-    None
-}
-
-/// Detect per-interface gateway IPs by parsing the system routing table.
-///
-/// Returns a map keyed by interface identifier (interface name on macOS/Linux,
-/// interface IP on Windows) → gateway IP.  Only interfaces that have a default
-/// route entry appear in the map.
-fn detect_interface_gateways() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(output) = openbitfun_core::util::process_manager::create_command("netstat")
-            .args(["-rn", "-f", "inet"])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // Lines look like:
-                //   default            192.168.1.1       UGScg    en0
-                for line in stdout.lines() {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 4 && parts[0] == "default" {
-                        let gateway = parts[1];
-                        let netif = parts[3];
-                        if is_ipv4(gateway) {
-                            map.insert(netif.to_string(), gateway.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(output) = openbitfun_core::util::process_manager::create_command("ip")
-            .args(["route", "show", "default"])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // Lines look like:
-                //   default via 192.168.1.1 dev eth0 proto dhcp metric 100
-                for line in stdout.lines() {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    let mut via = None;
-                    let mut dev = None;
-                    for i in 0..parts.len() {
-                        match parts[i] {
-                            "via" if i + 1 < parts.len() => via = Some(parts[i + 1]),
-                            "dev" if i + 1 < parts.len() => dev = Some(parts[i + 1]),
-                            _ => {}
-                        }
-                    }
-                    if let (Some(gw), Some(iface)) = (via, dev) {
-                        if is_ipv4(gw) {
-                            map.insert(iface.to_string(), gw.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(output) = openbitfun_core::util::process_manager::create_command("route")
-            .args(["print", "-4"])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // Lines look like:
-                //   0.0.0.0  0.0.0.0  192.168.1.1  192.168.1.2  25
-                // Column 3 = gateway, column 4 = interface IP
-                for line in stdout.lines() {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 4
-                        && parts[0] == "0.0.0.0"
-                        && parts[1] == "0.0.0.0"
-                        && is_ipv4(parts[2])
-                        && is_ipv4(parts[3])
-                    {
-                        // Key by interface IP so it can be matched later
-                        map.insert(parts[3].to_string(), parts[2].to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    map
-}
-
-/// Quick check whether a string looks like an IPv4 address.
-fn is_ipv4(s: &str) -> bool {
-    s.split('.').count() == 4 && s.split('.').all(|p| p.parse::<u8>().is_ok())
-}
-
 // @backend-command
 pub async fn remote_connect_get_device_info() -> Result<DeviceInfo, String> {
     ensure_service().await?;
@@ -1955,97 +1669,52 @@ pub async fn remote_connect_get_device_info() -> Result<DeviceInfo, String> {
 }
 
 // @backend-command
-pub async fn remote_connect_get_lan_ip() -> Result<String, String> {
-    lan::get_local_ip().map_err(|e| format!("get local ip: {e}"))
-}
-
-// @backend-command
-pub async fn remote_connect_get_lan_network_info() -> Result<LanNetworkInfo, String> {
-    let interfaces = lan::list_local_ips().map_err(|e| format!("list local ips: {e}"))?;
-    let local_ip = interfaces
-        .first()
-        .map(|e| e.ip.clone())
-        .ok_or_else(|| "no local IPv4 addresses found".to_string())?;
-    let gateway_ip = detect_default_gateway_ip();
-    // Build per-interface gateway map once from the routing table.
-    let gateway_map = detect_interface_gateways();
-    let available_ips = interfaces
-        .into_iter()
-        .map(|e| {
-            // Look up by interface name (macOS/Linux) or by IP (Windows).
-            let gw = gateway_map
-                .get(&e.interface_name)
-                .or_else(|| gateway_map.get(&e.ip))
-                .cloned();
-            LanNetworkInterface {
-                gateway_ip: gw,
-                interface_name: e.interface_name,
-                ip: e.ip,
-            }
-        })
-        .collect();
-    Ok(LanNetworkInfo {
-        local_ip,
-        gateway_ip,
-        available_ips,
-    })
-}
-
-// @backend-command
 pub async fn remote_connect_get_methods() -> Result<Vec<ConnectionMethodInfo>, String> {
     ensure_service().await?;
     let holder = get_service_holder();
     let guard = holder.read().await;
     let service = guard.as_ref().ok_or("service not initialized")?;
-    let methods = service.available_methods().await;
+    Ok(connection_method_infos(service.available_methods().await))
+}
 
-    let infos = methods
+/// The LAN method stays in the shared Remote Connect model for other hosts;
+/// the desktop no longer offers it.
+fn connection_method_infos(methods: Vec<ConnectionMethod>) -> Vec<ConnectionMethodInfo> {
+    methods
         .into_iter()
-        .map(|m| match m {
-            ConnectionMethod::Lan { .. } => ConnectionMethodInfo {
-                id: "lan".into(),
-                name: "LAN".into(),
-                available: true,
-                description: "Same local network".into(),
-            },
-            ConnectionMethod::OpenBitFunServer => ConnectionMethodInfo {
+        .filter_map(|m| match m {
+            ConnectionMethod::Lan { .. } => None,
+            ConnectionMethod::OpenBitFunServer => Some(ConnectionMethodInfo {
                 id: "openbitfun_server".into(),
                 name: "OpenBitFun Server".into(),
                 available: true,
                 description: "Official OpenBitFun relay".into(),
-            },
-            ConnectionMethod::BotFeishu => ConnectionMethodInfo {
+            }),
+            ConnectionMethod::BotFeishu => Some(ConnectionMethodInfo {
                 id: "bot_feishu".into(),
                 name: "Feishu Bot".into(),
                 available: true,
                 description: "Via Feishu messenger".into(),
-            },
-            ConnectionMethod::BotTelegram => ConnectionMethodInfo {
+            }),
+            ConnectionMethod::BotTelegram => Some(ConnectionMethodInfo {
                 id: "bot_telegram".into(),
                 name: "Telegram Bot".into(),
                 available: true,
                 description: "Via Telegram".into(),
-            },
-            ConnectionMethod::BotWeixin => ConnectionMethodInfo {
+            }),
+            ConnectionMethod::BotWeixin => Some(ConnectionMethodInfo {
                 id: "bot_weixin".into(),
                 name: "WeChat (Weixin)".into(),
                 available: true,
                 description: "Via WeChat iLink bot".into(),
-            },
+            }),
         })
-        .collect();
-
-    Ok(infos)
+        .collect()
 }
 
-fn parse_connection_method(
-    method: &str,
-    lan_ip: Option<String>,
-) -> Result<ConnectionMethod, String> {
+fn parse_connection_method(method: &str) -> Result<ConnectionMethod, String> {
     match method {
-        "lan" => Ok(ConnectionMethod::Lan {
-            ip: lan_ip.filter(|s| !s.is_empty()),
-        }),
+        "lan" => Err(LAN_RELAY_RETIRED_ERROR.to_string()),
         "openbitfun_server" => Ok(ConnectionMethod::OpenBitFunServer),
         "bot_feishu" => Ok(ConnectionMethod::BotFeishu),
         "bot_telegram" => Ok(ConnectionMethod::BotTelegram),
@@ -2091,15 +1760,13 @@ async fn official_route_is_serving(prepared_relay_url: &str) -> bool {
 /// are, and a failure to build the invitation leaves it running. The dialog
 /// relies on that and calls this whenever it needs the link.
 ///
-/// A LAN route is one endpoint per interface. It is reused when the request
-/// names no interface or the one it uses (also when that one was chosen
-/// automatically at start); a request for another interface restarts it there.
+/// The retired LAN method is refused with an explicit unsupported error.
 // @backend-command
 pub async fn remote_connect_start(
     request: StartRemoteConnectRequest,
 ) -> Result<ConnectionResult, String> {
+    let method = parse_connection_method(&request.method)?;
     ensure_service().await?;
-    let method = parse_connection_method(&request.method, request.lan_ip)?;
     let _start_stop = RELAY_START_STOP_LOCK.lock().await;
     device::require_remote_control().map_err(|e| e.to_string())?;
     if matches!(
@@ -2125,9 +1792,6 @@ pub async fn remote_connect_start(
             .start_connection(bot_type)
             .await
             .map_err(|error| error.to_string());
-    }
-    if matches!(method, ConnectionMethod::Lan { .. }) {
-        return relay_routes::start_lan(method).await;
     }
     let relay_url = {
         let holder = get_service_holder().read().await;
@@ -2181,7 +1845,7 @@ pub struct StopRemoteConnectRequest {
 pub async fn remote_connect_stop(request: Option<StopRemoteConnectRequest>) -> Result<(), String> {
     let selected = request
         .map(|request| match request.method.as_str() {
-            "lan" => Ok(RelayRoute::Lan),
+            "lan" => Err(LAN_RELAY_RETIRED_ERROR.to_string()),
             "openbitfun_server" => Ok(RelayRoute::Official),
             _ => Err("unknown Relay connection method".to_string()),
         })
@@ -2189,9 +1853,6 @@ pub async fn remote_connect_stop(request: Option<StopRemoteConnectRequest>) -> R
     let _start_stop = RELAY_START_STOP_LOCK.lock().await;
     let _boundary = ACCOUNT_TRANSITION_BOUNDARY_LOCK.lock().await;
     // Omitted request preserves the old stop-all contract for older clients.
-    if selected.is_none() || selected == Some(RelayRoute::Lan) {
-        relay_routes::stop_lan().await;
-    }
     if selected.is_none() || selected == Some(RelayRoute::Official) {
         stop_and_clear_device_routing("Relay stopped").await;
         if let Some(service) = get_service_holder().read().await.as_ref() {
@@ -2236,7 +1897,6 @@ pub async fn remote_connect_status() -> Result<RemoteConnectStatusResponse, Stri
             connections.push(RelayConnectionStatus {
                 method: match route {
                     RelayRoute::Official => "openbitfun_server",
-                    RelayRoute::Lan => "lan",
                 }
                 .into(),
                 relay_connected: connected,
@@ -2475,15 +2135,6 @@ async fn login_account_on_relay_for_generation(
         &session.token,
     );
 
-    if RelayRoute::Lan
-        .context(RelayRoute::Lan.generation())
-        .await
-        .ok()
-        .is_some_and(|(lan, _)| lan.user_id != session.user_id)
-    {
-        relay_routes::stop_lan().await;
-    }
-
     // The candidate is authenticated and the old context is now hidden. Clear
     // its device socket, presence, controllers, and account-pairing callbacks
     // before publishing the replacement context.
@@ -2606,7 +2257,6 @@ async fn clear_account_login_state(revoke_relay_token: bool) {
     sync_account_login_capability(false);
     // Disconnect device routing before clearing the session.
     stop_and_clear_device_routing("Account logged out").await;
-    relay_routes::stop_lan().await;
     if let Ok((previous, _)) = read_account_context_raw().await {
         if let Err(error) =
             openbitfun_core::service::filesystem::upload::retire_account_uploads(&previous.user_id)
@@ -2705,9 +2355,6 @@ async fn connect_route_devices_for_generation(
 ) -> Result<Vec<OnlineDeviceInfo>, String> {
     let operation_guard = route.lock_operation(account_generation).await?;
     let serves_device = device::remote_control_allowed().map_err(|e| e.to_string())?;
-    if !serves_device && route == RelayRoute::Lan {
-        return Err("Remote control is disabled on this device".into());
-    }
     if route == RelayRoute::Official && !ROUTING_INTENT.requested(account_generation) {
         return Err("device routing stopped".to_string());
     }

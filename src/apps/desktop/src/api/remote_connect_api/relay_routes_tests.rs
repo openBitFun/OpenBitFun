@@ -2,6 +2,7 @@ use super::*;
 use openbitfun_core::service::remote_connect::embedded_relay_host::EmbeddedRelayHost;
 use openbitfun_relay_service::{build_relay_router, db, MemoryAssetStore};
 use openbitfun_services_integrations::remote_connect::device_crypto;
+use relay_routes::{DesktopEmbeddedRelayUnavailable, LAN_RELAY_RETIRED_ERROR};
 
 struct FixtureHost {
     database: Arc<db::DbPool>,
@@ -137,18 +138,24 @@ async fn assert_hint(
 /// storage, so adoption of device identity and credential persistence never
 /// modifies the developer's login or races other desktop unit tests.
 #[tokio::test]
-async fn dual_relay_rpc_persistence_and_teardown_are_independent() {
+async fn official_relay_rpc_persistence_and_teardown() {
+    const TEST: &str =
+        "api::remote_connect_api::relay_routes_tests::official_relay_rpc_persistence_and_teardown";
     if std::env::var_os("OPENBITFUN_RELAY_ROUTE_TEST_CHILD").is_none() {
         let root = tempfile::tempdir().unwrap();
         let mut command = openbitfun_services_core::process_manager::create_tokio_command(
             std::env::current_exe().unwrap(),
         );
-        command.args(["api::remote_connect_api::relay_routes_tests::dual_relay_rpc_persistence_and_teardown_are_independent", "--exact", "--nocapture"])
+        command
+            .args([TEST, "--exact", "--nocapture"])
             .env("OPENBITFUN_RELAY_ROUTE_TEST_CHILD", "1")
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
             .env("OPENBITFUN_HOME", root.path())
-            .env("OPENBITFUN_DEVICE_IDENTITY_PATH", root.path().join("device_identity.json"))
+            .env(
+                "OPENBITFUN_DEVICE_IDENTITY_PATH",
+                root.path().join("device_identity.json"),
+            )
             .kill_on_drop(true);
         let output = tokio::time::timeout(std::time::Duration::from_secs(90), command.output())
             .await
@@ -168,129 +175,60 @@ async fn dual_relay_rpc_persistence_and_teardown_are_independent() {
     }
     let _test_guard = sync_state_tests::ACCOUNT_CONTEXT_TEST_LOCK.lock().await;
     let official = FixtureHost::new("/v/1.0.2").await;
-    let lan = FixtureHost::new("").await;
     let id = current_device_identity().unwrap().device_id;
     let official_session = official.credential(&id, [1; 32]).await;
-    let lan_session = lan.credential(&id, [2; 32]).await;
     let official_controller = official.credential("controller", [3; 32]).await;
-    let lan_controller = lan.credential("controller", [4; 32]).await;
     official.start(official.port, None).await.unwrap();
     let official_service = RemoteConnectService::new(
         RemoteConnectConfig {
             openbitfun_server_url: official.url(),
             ..RemoteConnectConfig::default()
         },
-        Arc::new(DesktopEmbeddedRelayHost::default()),
-    )
-    .unwrap();
-    let lan_service = RemoteConnectService::new(
-        RemoteConnectConfig {
-            lan_port: lan.port,
-            ..RemoteConnectConfig::default()
-        },
-        lan.clone(),
+        Arc::new(DesktopEmbeddedRelayUnavailable),
     )
     .unwrap();
     official_service
         .prepare_relay(&ConnectionMethod::OpenBitFunServer)
         .await
         .unwrap();
-    let lan_method = ConnectionMethod::Lan {
-        ip: Some("127.0.0.1".into()),
-    };
-    lan_service.prepare_relay(&lan_method).await.unwrap();
     *RelayRoute::Official.service().write().await = Some(official_service);
-    *RelayRoute::Lan.service().write().await = Some(lan_service);
     official.sign_in_official_session(&official_session).await;
     let generation = account_context_generation();
     account_connect_devices().await.unwrap();
-    let mut original_owner = current_device_routing_owner_snapshot().unwrap();
     let saved = session_store::load_session_detailed().unwrap().unwrap();
     assert_eq!(saved.token, official_session.token);
     assert_eq!(saved.device_id.as_deref(), Some(id.as_str()));
-    RelayRoute::replace_lan_context(Some(AccountContextState {
-        session: lan_session.clone(),
-        relay_url: lan.url(),
-    }))
-    .await;
-    connect_route_devices(RelayRoute::Lan).await.unwrap();
-    assert_eq!(account_context_generation(), generation);
-    assert_eq!(
-        current_device_routing_owner_snapshot().unwrap(),
-        original_owner
-    );
-    assert_eq!(
-        session_store::load_session_detailed()
-            .unwrap()
-            .unwrap()
-            .token,
-        saved.token
-    );
-    let invitation = RelayRoute::Lan
-        .service()
-        .read()
-        .await
-        .as_ref()
-        .unwrap()
-        .start(lan_method)
-        .await
-        .unwrap();
-    assert!(invitation
-        .qr_url
-        .unwrap()
-        .starts_with(&format!("http://127.0.0.1:{}/", lan.port)));
-    assert_eq!(host_stream_hubs().await.len(), 2);
-    let lan_owner = with_route_state(RelayRoute::Lan, |state| state.owner.clone()).unwrap();
-    relay_routes::start_lan(ConnectionMethod::Lan {
-        ip: Some("127.0.0.1".into()),
-    })
-    .await
-    .unwrap();
-    assert!(device_routing_owner_is_current(&lan_owner).await);
-    assert_eq!(
-        current_device_routing_owner_snapshot().unwrap(),
-        original_owner
-    );
+    assert_eq!(host_stream_hubs().await.len(), 1);
 
-    for (host, controller, client_id) in [
-        (&official, &official_controller, "public-phone"),
-        (&lan, &lan_controller, "lan-phone"),
-    ] {
-        assert_eq!(
-            rpc(
-                host,
-                controller,
-                &id,
-                serde_json::json!({"cmd":"ping", "client":{"id":client_id,"name":client_id}})
-            )
-            .await["resp"],
-            "pong"
-        );
-        assert_eq!(rpc(host, controller, &id, serde_json::json!({"cmd":"host_invoke","command":"peer_control_attach","args":{"controllerDeviceId":"spoofed"}})).await["ok"], true);
-    }
-    for route in RelayRoute::ALL {
-        assert_eq!(
-            crate::api::peer_host_invoke::attached_route_controllers(route),
-            vec!["controller"]
-        );
-    }
+    assert_eq!(
+        rpc(
+            &official,
+            &official_controller,
+            &id,
+            serde_json::json!({"cmd":"ping", "client":{"id":"public-phone","name":"public-phone"}})
+        )
+        .await["resp"],
+        "pong"
+    );
+    assert_eq!(rpc(&official, &official_controller, &id, serde_json::json!({"cmd":"host_invoke","command":"peer_control_attach","args":{"controllerDeviceId":"spoofed"}})).await["ok"], true);
+    assert_eq!(
+        crate::api::peer_host_invoke::attached_route_controllers(RelayRoute::Official),
+        vec!["controller"]
+    );
     let status = remote_connect_status().await.unwrap();
-    assert_eq!(status.connections.len(), 2);
-    assert!(status.connections.iter().all(|route| route.relay_connected));
+    assert_eq!(status.connections.len(), 1);
+    assert_eq!(status.connections[0].method, "openbitfun_server");
+    assert!(status.connections[0].relay_connected);
     assert_eq!(status.connections[0].clients[0].id, "public-phone");
-    assert_eq!(status.connections[1].clients[0].id, "lan-phone");
     let mut public_hints = official_controller.stream_hints();
-    let mut lan_hints = lan_controller.stream_hints();
     fanout_peer_device_event(
         openbitfun_core::service::remote_connect::host_stream::HOST_STREAM_CHANGED_EVENT.into(),
-        serde_json::json!({"stream_id":"dual", "epoch":1, "cursor":1}),
+        serde_json::json!({"stream_id":"official", "epoch":1, "cursor":1}),
     );
     assert_hint(&mut public_hints, 1).await;
-    assert_hint(&mut lan_hints, 1).await;
 
-    // An expired public credential is not a shared-identity sign-out. Its
-    // cancellation and persistence cleanup must leave the LAN route usable.
-    let lan_cancellation = RelayRoute::Lan.cancellation().subscribe();
+    // An expired credential clears the persisted session; a stale failure
+    // report for a token that was replaced since changes nothing.
     assert!(
         invalidate_local_account_session_if_current(
             generation,
@@ -299,25 +237,8 @@ async fn dual_relay_rpc_persistence_and_teardown_are_independent() {
         )
         .await
     );
-    assert!(!lan_cancellation.has_changed().unwrap());
     assert!(account_token_expired().await);
     assert!(session_store::load_session_detailed().unwrap().is_none());
-    assert!(device_routing_owner_is_current(&lan_owner).await);
-    assert_eq!(
-        rpc(
-            &lan,
-            &lan_controller,
-            &id,
-            serde_json::json!({"cmd":"ping"})
-        )
-        .await["resp"],
-        "pong"
-    );
-    fanout_peer_device_event(
-        openbitfun_core::service::remote_connect::host_stream::HOST_STREAM_CHANGED_EVENT.into(),
-        serde_json::json!({"stream_id":"dual", "epoch":1, "cursor":2}),
-    );
-    assert_hint(&mut lan_hints, 2).await;
     official.sign_in_official_session(&official_session).await;
     account_connect_devices().await.unwrap();
     assert!(
@@ -334,40 +255,11 @@ async fn dual_relay_rpc_persistence_and_teardown_are_independent() {
     }))
     .await
     .unwrap();
-    assert_eq!(host_stream_hubs().await.len(), 1);
-    assert_eq!(
-        rpc(
-            &lan,
-            &lan_controller,
-            &id,
-            serde_json::json!({"cmd":"ping"})
-        )
-        .await["resp"],
-        "pong"
-    );
-    assert_eq!(
-        crate::api::peer_host_invoke::attached_route_controllers(RelayRoute::Lan),
-        vec!["controller"]
-    );
+    assert!(host_stream_hubs().await.is_empty());
     account_connect_devices().await.unwrap();
-    original_owner = current_device_routing_owner_snapshot().unwrap();
-    rpc(&official, &official_controller, &id, serde_json::json!({"cmd":"host_invoke","command":"peer_control_attach","args":{"controllerDeviceId":"spoofed"}})).await;
-
-    remote_connect_stop(Some(StopRemoteConnectRequest {
-        method: "lan".into(),
-    }))
-    .await
-    .unwrap();
-    assert_eq!(
-        current_device_routing_owner_snapshot().unwrap(),
-        original_owner
-    );
-    assert!(device_routing_owner_is_current(&original_owner).await);
+    let original_owner = current_device_routing_owner_snapshot().unwrap();
     assert_eq!(host_stream_hubs().await.len(), 1);
-    assert!(db::AuthToken::find(&lan.database, &lan_session.token)
-        .await
-        .unwrap()
-        .is_none());
+    rpc(&official, &official_controller, &id, serde_json::json!({"cmd":"host_invoke","command":"peer_control_attach","args":{"controllerDeviceId":"spoofed"}})).await;
     assert!(
         db::AuthToken::find(&official.database, &official_session.token)
             .await
@@ -402,59 +294,20 @@ async fn dual_relay_rpc_persistence_and_teardown_are_independent() {
         crate::api::peer_host_invoke::attached_route_controllers(RelayRoute::Official),
         vec!["controller"]
     );
-    assert!(crate::api::peer_host_invoke::attached_route_controllers(RelayRoute::Lan).is_empty());
 
-    // A late exit from the retired LAN loop cannot erase the official owner.
+    // A late exit from a retired event loop cannot erase the current owner.
     finish_device_routing_event_loop(&DeviceRoutingOwner {
-        route: RelayRoute::Lan,
+        connection_id: original_owner.connection_id.wrapping_add(1_000),
         ..original_owner.clone()
     })
     .await;
     assert!(device_routing_owner_is_current(&original_owner).await);
-    assert!(relay_routes::start_lan(ConnectionMethod::Lan {
-        ip: Some("invalid-interface".into())
-    })
-    .await
-    .is_err());
-    assert!(device_routing_owner_is_current(&original_owner).await);
-    assert_eq!(
-        rpc(
-            &official,
-            &official_controller,
-            &id,
-            serde_json::json!({"cmd":"ping"})
-        )
-        .await["resp"],
-        "pong"
-    );
 
     verify_remote_control_permission(&official, &official_session, &official_controller, &id).await;
 
-    // Full sign-out is the shared identity boundary and retires both routes.
-    let replacement_lan = lan.credential(&id, [2; 32]).await;
-    RelayRoute::Lan
-        .service()
-        .read()
-        .await
-        .as_ref()
-        .unwrap()
-        .prepare_relay(&ConnectionMethod::Lan {
-            ip: Some("127.0.0.1".into()),
-        })
-        .await
-        .unwrap();
-    RelayRoute::replace_lan_context(Some(AccountContextState {
-        session: replacement_lan.clone(),
-        relay_url: lan.url(),
-    }))
-    .await;
-    connect_route_devices(RelayRoute::Lan).await.unwrap();
+    // Full sign-out is the shared identity boundary and retires the route.
     clear_account_login(true).await;
     assert!(get_account_context().read().await.is_none());
-    assert!(RelayRoute::Lan
-        .context(RelayRoute::Lan.generation())
-        .await
-        .is_err());
     assert!(host_stream_hubs().await.is_empty());
     assert!(session_store::load_session_detailed().unwrap().is_none());
     assert!(
@@ -463,10 +316,6 @@ async fn dual_relay_rpc_persistence_and_teardown_are_independent() {
             .unwrap()
             .is_none()
     );
-    assert!(db::AuthToken::find(&lan.database, &replacement_lan.token)
-        .await
-        .unwrap()
-        .is_none());
     official.stop().await;
 }
 
@@ -838,14 +687,12 @@ async fn peer_preview_fixture(benchmark: bool) {
 
 /// `remote_connect_start` on a route that is already connected only returns
 /// its invitation. The dialog asks for it whenever "Add a device" opens, so
-/// asking must not sign in again, reconnect, restart the LAN Relay, replace
-/// the routing owner or detach controllers.
+/// asking must not sign in again, reconnect, replace the routing owner or
+/// detach controllers. A request for the retired LAN mode is refused.
 ///
 /// Runs through the real Relay router and device routing in a separate
 /// process with temporary product storage. The Relay is the loopback fixture
-/// bound to 127.0.0.1: this does not exercise the production Relay or a
-/// physical LAN interface, and a LAN route whose interface was chosen
-/// automatically is covered by the Core `host_lifecycle_tests` instead.
+/// bound to 127.0.0.1: this does not exercise the production Relay.
 #[tokio::test]
 async fn starting_a_connected_route_again_only_returns_its_invitation() {
     const TEST: &str = "api::remote_connect_api::relay_routes_tests::starting_a_connected_route_again_only_returns_its_invitation";
@@ -898,7 +745,7 @@ async fn starting_a_connected_route_again_only_returns_its_invitation() {
                 openbitfun_server_url: official.url(),
                 ..RemoteConnectConfig::default()
             },
-            Arc::new(DesktopEmbeddedRelayHost::default()),
+            Arc::new(DesktopEmbeddedRelayUnavailable),
         )
         .unwrap(),
     );
@@ -973,96 +820,29 @@ async fn starting_a_connected_route_again_only_returns_its_invitation() {
         "pong"
     );
 
-    // ── A LAN route that is running is reused for the interface it uses ────
-    let lan = FixtureHost::new("").await;
-    let lan_session = lan.credential(&id, [2; 32]).await;
-    let lan_controller = lan.credential("controller", [4; 32]).await;
-    let bound = ConnectionMethod::Lan {
-        ip: Some("127.0.0.1".into()),
-    };
-    let lan_service = RemoteConnectService::new(
-        RemoteConnectConfig {
-            lan_port: lan.port,
-            ..RemoteConnectConfig::default()
-        },
-        lan.clone(),
-    )
-    .unwrap();
-    lan_service.prepare_relay(&bound).await.unwrap();
-    *RelayRoute::Lan.service().write().await = Some(lan_service);
-    RelayRoute::replace_lan_context(Some(AccountContextState {
-        session: lan_session.clone(),
-        relay_url: lan.url(),
-    }))
-    .await;
-    connect_route_devices(RelayRoute::Lan).await.unwrap();
-    let lan_owner = with_route_state(RelayRoute::Lan, |state| state.owner.clone()).unwrap();
-    let lan_generation = RelayRoute::Lan.generation();
-    assert_eq!(
-        rpc(&lan, &lan_controller, &id, attach.clone()).await["ok"],
-        true
-    );
-
-    // The interface it uses, no interface at all, and the empty value an
-    // unset form field sends: none of them restarts the embedded Relay.
+    // The retired LAN mode is refused explicitly, for every form an older UI
+    // sends, and the refusal leaves the official route alone.
     for lan_ip in [Some("127.0.0.1".to_string()), None, Some(String::new())] {
-        let invitation = remote_connect_start(StartRemoteConnectRequest {
+        let error = remote_connect_start(StartRemoteConnectRequest {
             method: "lan".into(),
             lan_ip: lan_ip.clone(),
         })
         .await
-        .unwrap_or_else(|error| panic!("{lan_ip:?}: {error}"));
-        assert_eq!(invitation.method, bound, "{lan_ip:?}");
-        assert!(invitation
-            .qr_url
-            .unwrap()
-            .starts_with(&format!("http://127.0.0.1:{}/", lan.port)));
-        assert_eq!(
-            with_route_state(RelayRoute::Lan, |state| state.owner.clone()).as_ref(),
-            Some(&lan_owner),
-            "{lan_ip:?}"
-        );
-        assert_eq!(
-            RelayRoute::Lan.generation(),
-            lan_generation,
-            "the LAN sign-in was not replaced for {lan_ip:?}"
-        );
+        .expect_err("the LAN Relay mode is retired");
+        assert_eq!(error, LAN_RELAY_RETIRED_ERROR, "{lan_ip:?}");
     }
-    assert!(db::AuthToken::find(&lan.database, &lan_session.token)
-        .await
-        .unwrap()
-        .is_some());
     assert_eq!(
-        crate::api::peer_host_invoke::attached_route_controllers(RelayRoute::Lan),
+        remote_connect_stop(Some(StopRemoteConnectRequest {
+            method: "lan".into(),
+        }))
+        .await
+        .expect_err("the LAN Relay mode is retired"),
+        LAN_RELAY_RETIRED_ERROR
+    );
+    assert_eq!(
+        crate::api::peer_host_invoke::attached_route_controllers(RelayRoute::Official),
         vec!["controller"]
     );
-    assert_eq!(
-        rpc(&lan, &lan_controller, &id, ping.clone()).await["resp"],
-        "pong"
-    );
-    assert_eq!(current_device_routing_owner_snapshot().unwrap(), owner);
-
-    // A request for another interface asks to move the route there, so the
-    // running route is stopped first, as it always was. This fixture has no
-    // such interface: the move fails and the LAN route stays stopped.
-    assert!(remote_connect_start(StartRemoteConnectRequest {
-        method: "lan".into(),
-        lan_ip: Some("invalid-interface".into()),
-    })
-    .await
-    .is_err());
-    assert!(with_route_state(RelayRoute::Lan, |state| state.owner.clone()).is_none());
-    assert!(RelayRoute::Lan
-        .context(RelayRoute::Lan.generation())
-        .await
-        .is_err());
-    assert!(db::AuthToken::find(&lan.database, &lan_session.token)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(crate::api::peer_host_invoke::attached_route_controllers(RelayRoute::Lan).is_empty());
-
-    // None of that touched the official route.
     assert_eq!(current_device_routing_owner_snapshot().unwrap(), owner);
     assert_eq!(
         start_official().await.unwrap().qr_url.as_deref(),
@@ -1071,4 +851,65 @@ async fn starting_a_connected_route_again_only_returns_its_invitation() {
     assert_eq!(current_device_routing_owner_snapshot().unwrap(), owner);
     assert_eq!(rpc(&official, &controller, &id, ping).await["resp"], "pong");
     official.stop().await;
+}
+
+#[tokio::test]
+async fn lan_start_and_stop_are_refused_as_retired() {
+    for lan_ip in [Some("192.168.1.2".to_string()), None] {
+        let error = remote_connect_start(StartRemoteConnectRequest {
+            method: "lan".into(),
+            lan_ip,
+        })
+        .await
+        .expect_err("the LAN Relay mode is retired");
+        assert_eq!(error, LAN_RELAY_RETIRED_ERROR);
+    }
+    let error = remote_connect_stop(Some(StopRemoteConnectRequest {
+        method: "lan".into(),
+    }))
+    .await
+    .expect_err("the LAN Relay mode is retired");
+    assert_eq!(error, LAN_RELAY_RETIRED_ERROR);
+    assert!(error.starts_with("unsupported: "));
+    assert!(error.contains("device mesh"));
+    // Older UIs send `lan_ip` explicitly or not at all; both still parse.
+    let request: StartRemoteConnectRequest =
+        serde_json::from_value(serde_json::json!({"method": "lan", "lan_ip": null})).unwrap();
+    assert_eq!(request.method, "lan");
+    let request: StartRemoteConnectRequest =
+        serde_json::from_value(serde_json::json!({"method": "openbitfun_server"})).unwrap();
+    assert!(request.lan_ip.is_none());
+}
+
+#[test]
+fn connection_methods_do_not_offer_lan() {
+    let ids: Vec<String> = connection_method_infos(vec![
+        ConnectionMethod::Lan { ip: None },
+        ConnectionMethod::OpenBitFunServer,
+        ConnectionMethod::BotFeishu,
+        ConnectionMethod::BotTelegram,
+        ConnectionMethod::BotWeixin,
+    ])
+    .into_iter()
+    .map(|info| info.id)
+    .collect();
+    assert_eq!(
+        ids,
+        [
+            "openbitfun_server",
+            "bot_feishu",
+            "bot_telegram",
+            "bot_weixin"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_desktop_embedded_relay_port_is_unavailable() {
+    let error = DesktopEmbeddedRelayUnavailable
+        .start(9700, None)
+        .await
+        .expect_err("the desktop no longer hosts an embedded Relay");
+    assert_eq!(error.to_string(), LAN_RELAY_RETIRED_ERROR);
+    DesktopEmbeddedRelayUnavailable.stop().await;
 }

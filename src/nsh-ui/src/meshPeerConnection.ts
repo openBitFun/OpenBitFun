@@ -33,6 +33,8 @@ export interface PeerLinkInfo {
   capabilities: string[];
   /** The registry peer-host capabilities the peer serves (newer peers). */
   hostCapabilities?: string[];
+  /** The peer's host kind (`desktop`, `cli`); older peers send none (a desktop). */
+  hostKind?: string;
   protocol?: number;
   backend?: { version?: string; platform?: string; instanceId?: string };
   registryDigest?: string;

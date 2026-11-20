@@ -1,4 +1,7 @@
-// The web target's connection choice: a page served by an OpenBitFun backend
+// The web target's connection choice: a page the OpenBitFun domain serves
+// (`#nsh-params` `{ controller: { api, gateway } }`) is a controller: it signs in
+// and connects to one of the account's devices (`src/controller/`). A page
+// served by an OpenBitFun backend
 // (its `index.html` carries `#nsh-params` `{ obp: { url, path, protocol } }`,
 // read here as `host.params.obp`) connects back to that backend over the
 // backend protocol (`webSocketConnection.ts`) and draws in a browser tab
@@ -13,6 +16,9 @@
 import { host } from "nsh";
 import { backendConnection, installBackendConnection, installWindowShell } from "./bridge";
 import { createBrowserShell } from "./browserShell";
+import { installControllerPort } from "./controller/controllerPort";
+import { createIdleConnection } from "./controller/controllerStore";
+import { createWebController, type WebControllerParams } from "./controller/webController";
 import {
   createWebSocketConnection,
   OBP_PROTOCOL_VERSION,
@@ -27,6 +33,20 @@ export interface ServedBackendParams {
   /** The endpoint path (`/obp`), resolved against the page when `url` is absent. */
   path?: string | null;
   protocol?: number | null;
+}
+
+/**
+ * The `controller` launch parameter, when the OpenBitFun domain served the page
+ * (no backend of its own: sign in, pick a device, connect through the gateway).
+ */
+export function controllerParams(params: unknown = safeHostParams()): WebControllerParams | null {
+  if (!params || typeof params !== "object") return null;
+  const controller = (params as Record<string, unknown>).controller;
+  if (!controller || typeof controller !== "object") return null;
+  const record = controller as Record<string, unknown>;
+  const api = typeof record.api === "string" && record.api ? record.api : null;
+  const gateway = typeof record.gateway === "string" && record.gateway ? record.gateway : null;
+  return api && gateway ? { api, gateway } : null;
 }
 
 /** The `obp` launch parameter, when the page was served by a backend. */
@@ -121,6 +141,15 @@ export function installWebSocketBackend(
 export function installServedBackend(): boolean {
   const kind = backendConnection().kind;
   if (kind !== "dev" && kind !== "tauri") return false;
+  const controller = controllerParams();
+  if (controller) {
+    // The controller shell connects to a device later; until then nothing
+    // reaches the page host's fixtures.
+    installControllerPort(createWebController(controller));
+    installWindowShell(createBrowserShell());
+    installBackendConnection(createIdleConnection());
+    return true;
+  }
   const params = servedBackendParams();
   if (!params) return false;
   if (params.protocol !== null && params.protocol !== undefined && params.protocol !== OBP_PROTOCOL_VERSION) {

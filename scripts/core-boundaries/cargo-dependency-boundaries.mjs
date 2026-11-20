@@ -57,10 +57,21 @@ const VENDORED_EXTERNAL_PACKAGES = new Map([
   ['third_party/screenshots/Cargo.toml', { name: 'screenshots', version: '0.8.10' }],
   ['third_party/tao/Cargo.toml', { name: 'tao', version: '0.36.0' }],
   ['third_party/wry/Cargo.toml', { name: 'wry', version: '0.56.0' }],
+  // OpenBitFun Link: the modified EasyTier v2.7.1 library crates (LGPL-3.0;
+  // see third_party/easytier/OPENBITFUN-PATCH.md) and their protobuf codegen tool.
+  ['third_party/easytier/easytier/Cargo.toml', { name: 'easytier', version: '2.7.1' }],
+  ['third_party/easytier/easytier-core/Cargo.toml', { name: 'easytier-core', version: '2.7.1' }],
+  ['third_party/easytier/easytier-proto/Cargo.toml', { name: 'easytier-proto', version: '2.7.1' }],
+  ['third_party/easytier/easytier-proto/codegen/Cargo.toml', { name: 'easytier-proto-codegen', version: '0.0.0' }],
 ]);
 
+// Vendored workspaces whose own root manifest has no package (the EasyTier
+// fork keeps upstream's workspace so its members inherit their versions).
+const VENDORED_EXTERNAL_WORKSPACES = new Set(['third_party/easytier/Cargo.toml']);
+
 function isVendoredExternalManifest(root, manifestPath) {
-  return VENDORED_EXTERNAL_PACKAGES.has(repositoryPath(root, manifestPath));
+  const repoPath = repositoryPath(root, manifestPath);
+  return VENDORED_EXTERNAL_PACKAGES.has(repoPath) || VENDORED_EXTERNAL_WORKSPACES.has(repoPath);
 }
 
 function layerForManifest(manifestPath, { root, crateLayoutRules }) {
@@ -359,6 +370,27 @@ const REQWEST_PACKAGE_PROFILES = new Map([
     dependencyFeatures: ['json', 'rustls-no-provider'],
     optional: false,
   }],
+  // Link fetches the account's network credentials and join token from the
+  // issuer: one bounded JSON POST over HTTPS.
+  ['openbitfun-link', {
+    dependencyFeatures: ['json', 'rustls-no-provider'],
+    optional: false,
+    tlsProviderDependency: 'openbitfun-services-core',
+  }],
+  // The browser gateway signs browsers in through the identity authority and
+  // reads the account device directory: bounded JSON requests over HTTPS.
+  ['openbitfun-link-gateway', {
+    dependencyFeatures: ['json', 'rustls-no-provider'],
+    optional: false,
+    tlsProviderDependency: 'openbitfun-services-core',
+  }],
+  // The phone app's native module signs in (identity service) and reads the
+  // account device directory: bounded JSON requests over HTTPS.
+  ['openbitfun-mobile-native', {
+    dependencyFeatures: ['json', 'rustls-no-provider'],
+    optional: false,
+    tlsProviderDependency: 'openbitfun-services-core',
+  }],
 ]);
 
 function findReqwestPackageProfileViolations(pkg, profile) {
@@ -525,6 +557,11 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       ['openbitfun-core', dependencyProfile(['json'], { optional: true })],
       // Desktop's backend-protocol listener (OBP over WebSocket, loopback and LAN).
       ['openbitfun-desktop', dependencyProfile(['json', 'ws'])],
+      // Browser gateway: sign-in JSON API and the WebSocket byte pipe.
+      ['openbitfun-link-gateway', dependencyProfile(['json', 'ws'])],
+      // The shared OBP crate's listeners (feature `server`): JSON routes and
+      // the WebSocket upgrade, for the desktop backend and the CLI host.
+      ['openbitfun-obp', dependencyProfile(['json', 'ws'], { optional: true })],
       ['openbitfun-miniapp-market-server', dependencyProfile(['json'])],
       ['openbitfun-miniapp-market-service', dependencyProfile(['json'])],
       ['openbitfun-relay-server', dependencyProfile([])],
@@ -613,6 +650,24 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
           useDefaultFeatures: false,
         }),
       }],
+      // Browser gateway route tests drive the pipe as a plain WebSocket client.
+      ['openbitfun-link-gateway', dependencyProfile(['connect'], {
+        kind: 'dev',
+        useDefaultFeatures: false,
+      })],
+      // The shared OBP crate: the controller client needs only the WebSocket
+      // handshake over its own Link stream + TLS (feature `client`); its
+      // listener tests drive the server as a plain and a TLS client.
+      ['openbitfun-obp', {
+        ...dependencyProfile(['handshake'], { optional: true, useDefaultFeatures: false }),
+        devProfile: dependencyProfile(['connect', 'handshake', 'rustls-tls-native-roots'], {
+          kind: 'dev',
+          useDefaultFeatures: false,
+        }),
+      }],
+      // The phone app's OBP client: the WebSocket handshake over its own Link
+      // stream + TLS (no connector of its own).
+      ['openbitfun-mobile-native', dependencyProfile(['handshake'], { useDefaultFeatures: false })],
       // Loopback WebSocket lifecycle regressions only; the relay runtime is
       // an Axum server and does not acquire a TLS/client capability.
       ['openbitfun-relay-service', dependencyProfile(['connect', 'handshake'], {
@@ -1381,6 +1436,11 @@ export function findCargoLayerViolations(
   for (const sourcePackage of packages) {
     for (const dependency of sourcePackage.dependencies ?? []) {
       if (!dependency.path || repositoryPath(root, dependency.path) === null) {
+        continue;
+      }
+      // Reviewed vendored copies used by path (the EasyTier fork) are
+      // external dependencies, not product layers.
+      if (isVendoredExternalManifest(root, join(dependency.path, 'Cargo.toml'))) {
         continue;
       }
 

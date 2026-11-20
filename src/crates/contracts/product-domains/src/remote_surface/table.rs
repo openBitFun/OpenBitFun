@@ -86,6 +86,18 @@ const SHELL_OWNS_WINDOW_RETIRED: &str =
     "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired";
 const EMBEDDED_WEBDRIVER_RETIRED: &str =
     "the embedded WebView WebDriver was retired with the Tauri desktop shell";
+// Remote Connect LAN relay retirement.
+// The OBP LAN listener (phones and browsers on the same network) was retired:
+// they join the account device mesh and pair on the mesh listener.
+const OBP_LAN_LISTENER_RETIRED: &str =
+    "the LAN listener was retired; phones and browsers join the account device mesh and pair on the mesh listener";
+const LAN_RELAY_RETIRED: &str =
+    "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh";
+// OpenBitFun Link: the device network runs in-process and joins by account
+// sign-in; network credentials are never shown, and the EasyTier app path
+// for phones is gone.
+const MESH_PHONE_JOIN_RETIRED: &str =
+    "phones no longer join the device network with the EasyTier app; network credentials are never shown";
 
 const HANDLED: HostSupport = HostSupport::Handled;
 /// Cell used by every `ControllerLocal` / `OperatorOnly` row: the verdict refuses
@@ -547,7 +559,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("mark_session_seen",                                          Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     retired("market_image_load", TAURI_WEBVIEW_RETIRED),
     op("mesh_list_devices",                                          Agnostic,    ControllerLocal,  REFUSED),
-    op("mesh_phone_join_info",                                       Agnostic,    ControllerLocal,  REFUSED),
+    retired("mesh_phone_join_info", MESH_PHONE_JOIN_RETIRED),
     op("mesh_status",                                                Agnostic,    ControllerLocal,  REFUSED),
     op("miniapp_agent_cancel",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_agent_cancel_stale_runs",                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -604,7 +616,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     // Mesh-only bot lane: legacy peer hosts refuse it; the OBP mesh listener admits it for account devices.
     host_invoke_only("obp_remote_command",                           Agnostic,    OperatorOnly,     REFUSED),
     op("obp_revoke_paired_client",                                   Agnostic,    ControllerLocal,  REFUSED),
-    op("obp_set_lan_enabled",                                        Agnostic,    ControllerLocal,  REFUSED),
+    retired("obp_set_lan_enabled", OBP_LAN_LISTENER_RETIRED),
     op("open_html_file_in_browser",                                  LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("open_remote_workspace",                                      Routed,      Proxied,          HANDLED),
     op("open_workspace",                                             Routed,      Proxied,          HANDLED),
@@ -660,8 +672,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("remote_connect_get_bot_verbose_mode",                        Agnostic,    ControllerLocal,  REFUSED),
     op("remote_connect_get_device_info",                             Agnostic,    ControllerLocal,  REFUSED),
     op("remote_connect_get_form_state",                              Agnostic,    ControllerLocal,  REFUSED),
-    op("remote_connect_get_lan_ip",                                  Agnostic,    ControllerLocal,  REFUSED),
-    op("remote_connect_get_lan_network_info",                        Agnostic,    ControllerLocal,  REFUSED),
+    retired("remote_connect_get_lan_ip", LAN_RELAY_RETIRED),
+    retired("remote_connect_get_lan_network_info", LAN_RELAY_RETIRED),
     op("remote_connect_get_methods",                                 Agnostic,    ControllerLocal,  REFUSED),
     op("remote_connect_set_allowed",                                 Agnostic,    ControllerLocal,  REFUSED),
     op("remote_connect_set_bot_verbose_mode",                        Agnostic,    ControllerLocal,  REFUSED),

@@ -74,7 +74,6 @@ export const weixinQr = signal<WeixinQrState | null>(null);
 /** The number WeChat shows on the phone when the login asks for it (`need_verify_code`). */
 export const weixinVerifyCode = signal("");
 
-export const lanIpInput = signal("");
 export const relayPairing = signal<RelayPairingInfo | null>(null);
 export const botVerboseMode = signal(false);
 
@@ -92,7 +91,6 @@ function readActiveMethod(raw: unknown): string {
   if (typeof raw === "string") return raw;
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
-    if ("lan" in obj) return "lan";
     const firstKey = Object.keys(obj)[0];
     return firstKey ?? "";
   }
@@ -173,7 +171,14 @@ function parseMethods(raw: unknown): ConnectorMethodInfo[] {
   return rows;
 }
 
-export function isRelayRouteConnected(method: "lan" | "openbitfun_server"): boolean {
+/**
+ * The relay routes this surface starts. The LAN relay was retired (devices on
+ * one network reach each other directly through the device mesh), so only the
+ * official server relay for older phones and hosts is left.
+ */
+export type RelayRouteMethod = "openbitfun_server";
+
+export function isRelayRouteConnected(method: RelayRouteMethod): boolean {
   const status = connectorStatus();
   if (!status) return false;
   const route = status.connections.find(item => item.method === method);
@@ -181,7 +186,7 @@ export function isRelayRouteConnected(method: "lan" | "openbitfun_server"): bool
   return status.relayConnected && status.activeMethod === method;
 }
 
-export function relayUrlForMethod(method: "lan" | "openbitfun_server"): string {
+export function relayUrlForMethod(method: RelayRouteMethod): string {
   const status = connectorStatus();
   const route = status?.connections.find(item => item.method === method);
   if (route?.relayUrl) return route.relayUrl;
@@ -525,20 +530,19 @@ export async function pollWeixinQr(): Promise<void> {
   }
 }
 
-export async function startRelayConnector(method: "lan" | "openbitfun_server"): Promise<void> {
+export async function startRelayConnector(method: RelayRouteMethod): Promise<void> {
   if (!(await ensureRemoteDisclaimer(() => startRelayConnector(method)))) return;
   connectorBusy.set(true);
   connectorError.set("");
   connectorNotice.set("");
   try {
-    const lanIp = method === "lan" ? lanIpInput().trim() || null : null;
     const res = await invokeCommand<Record<string, unknown>>("remote_connect_start", {
       method,
-      lan_ip: lanIp,
+      lan_ip: null,
     });
     capturePairingResult(method, res);
     await refreshConnectorStatus();
-    connectorNotice.set(method === "lan" ? tr("devices.store.lanStarted") : tr("devices.store.serverStarted"));
+    connectorNotice.set(tr("devices.store.serverStarted"));
   } catch (error) {
     connectorError.set(error instanceof Error ? error.message : String(error));
   } finally {
@@ -546,7 +550,7 @@ export async function startRelayConnector(method: "lan" | "openbitfun_server"): 
   }
 }
 
-export async function stopRelayConnector(method?: "lan" | "openbitfun_server"): Promise<void> {
+export async function stopRelayConnector(method?: RelayRouteMethod): Promise<void> {
   connectorBusy.set(true);
   connectorError.set("");
   connectorNotice.set("");
@@ -557,11 +561,7 @@ export async function stopRelayConnector(method?: "lan" | "openbitfun_server"): 
     }
     await refreshConnectorStatus();
     connectorNotice.set(
-      method === "lan"
-        ? tr("devices.store.lanStopped")
-        : method === "openbitfun_server"
-          ? tr("devices.store.serverStopped")
-          : tr("devices.store.relayStopped"),
+      method === "openbitfun_server" ? tr("devices.store.serverStopped") : tr("devices.store.relayStopped"),
     );
   } catch (error) {
     connectorError.set(error instanceof Error ? error.message : String(error));

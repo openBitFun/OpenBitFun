@@ -52,10 +52,21 @@ fn open_entry() -> Result<keyring_core::Entry, String> {
 #[cfg(target_os = "macos")]
 fn macos_credential_vault(
 ) -> Result<openbitfun_services_core::credential_vault::CredentialVault, String> {
-    let base = dirs::config_dir()
-        .ok_or_else(|| "system config directory unavailable".to_string())?
-        .join(openbitfun_services_core::product_identity::data_namespace())
-        .join("data");
+    // A profile with its own user root (`OPENBITFUN_USER_ROOT`, as the path
+    // manager resolves it) keeps its account sign-in there, so a scratch or
+    // test profile never reads, replaces or deletes the default profile's.
+    let user_root = ["OPENBITFUN_USER_ROOT", "OPENBITFUN_E2E_USER_ROOT"]
+        .iter()
+        .filter_map(|name| std::env::var_os(name))
+        .find(|value| !value.is_empty())
+        .map(std::path::PathBuf::from);
+    let base = match user_root {
+        Some(root) => root,
+        None => dirs::config_dir()
+            .ok_or_else(|| "system config directory unavailable".to_string())?
+            .join(openbitfun_services_core::product_identity::data_namespace()),
+    }
+    .join("data");
     Ok(
         openbitfun_services_core::credential_vault::CredentialVault::new(
             base.join(".market_credentials_vault.key"),

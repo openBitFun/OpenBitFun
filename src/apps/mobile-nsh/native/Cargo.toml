@@ -1,0 +1,93 @@
+# `openbitfun/mobile`: the NSH phone app's controller module.
+#
+# A workspace of its own, excluded from the repository root workspace, like
+# `src/apps/desktop-nsh/native`: NSH's crates need `unicode-width ^0.2.2`,
+# which the CLI's `ratatui 0.29` (`=0.2.0`) cannot share one resolution with,
+# and NSH builds this crate inside its generated workspace (`../.nsh/rust`).
+#
+# The phone app is a controller only: it signs in, keeps its device key in
+# the platform keystore, joins the account's OpenBitFun Link network as a
+# controller node and opens OBP connections to the account's devices. It
+# serves nothing and holds no product rules (the devices' backends do).
+
+[workspace]
+
+[package]
+name = "openbitfun-mobile-native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+description = "OpenBitFun phone app native module (`openbitfun/mobile`): sign-in, device key, Link controller, OBP client"
+publish = false
+
+[lib]
+name = "openbitfun_mobile_native"
+path = "src/lib.rs"
+
+[dependencies]
+nsh-core = { version = "=0.6.1", default-features = false }
+# OpenBitFun Link (the EasyTier fork), joined as a controller node.
+openbitfun-link = { path = "../../../crates/services/link" }
+# The OBP client (handshake, `hello`/`call`/`ack`, events), shared with the
+# desktop's Peer Device Mode: one copy of the wire.
+openbitfun-obp = { path = "../../../crates/adapters/obp", features = ["client"] }
+openbitfun-services-core = { path = "../../../crates/services/services-core", features = ["tls-provider"] }
+tokio = { version = "1.52", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+futures = { version = "0.3.31", default-features = false, features = ["std"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+hkdf = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+# Link's EasyTier core logs through `tracing`; `logging.rs` bridges it to the
+# platform log (the host owns the `log` facade).
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+# The device key and account tokens live in the Keychain.
+security-framework = "3.7"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# libc 0.2.191 limits `RTAX_MAX` to macOS, which breaks `netdev` 0.31 (the
+# EasyTier fork's interface lister) on iOS. NSH resolves this crate in its own
+# generated workspace, so the pin lives here, not only in a lockfile; the
+# root workspace's lockfile holds the same version.
+libc = "=0.2.189"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Android has no platform verifier without the app's Java side; the module's
+# own HTTPS clients use the Mozilla roots there.
+webpki-roots = "1.0"
+# The record key in the Android Keystore (`keystore_android.rs`): the app's
+# JVM through `JNI_GetCreatedJavaVMs`, the same `jni` NSH's Android platform
+# links; `libc` for `dlopen` and system properties (the device's model).
+jni = { version = "0.21", default-features = false }
+libc = "0.2"
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+tokio = { version = "1.52", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

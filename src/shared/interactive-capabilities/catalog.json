@@ -511,7 +511,6 @@
   "implementationOnlyCommands": {
     "deviceMeshTransport": [
       "mesh_list_devices",
-      "mesh_phone_join_info",
       "mesh_status",
       "peer_link_call",
       "peer_link_connect",
@@ -5993,13 +5992,13 @@
         "email sign-in"
       ],
       "highlightsZh": [
-        "手机扫码即连：官方 Relay 免部署开箱即用，桌面端还可同时开启局域网 Relay",
+        "手机扫码即连：官方 Relay 免部署开箱即用，同一网络的设备经账号设备网络直连",
         "接入微信、飞书或 Telegram 机器人，在常用聊天软件里收发进度与批复权限",
         "同账号多设备互控（Peer Mode）：左侧边栏直接展开另一台电脑的项目与会话",
         "智能体可直接帮你启停远控渠道、生成微信扫码登录并查看监听状态"
       ],
       "highlightsEn": [
-        "Scan to connect from phone: zero-setup official Relay plus optional concurrent Desktop LAN Relay",
+        "Scan to connect from phone: zero-setup official Relay, with same-network devices connecting directly through the account device mesh",
         "Pair a WeChat, Feishu, or Telegram bot to chat and approve permissions from your messenger",
         "Same-account Peer Device Mode: expand and operate another computer’s workspaces right in your sidebar",
         "Ask the agent directly to start/stop channels, launch WeChat QR login, or inspect listener health"
@@ -6021,19 +6020,19 @@
         },
         {
           "id": "connection-methods",
-          "titleZh": "使用免部署官方 Relay 或桌面端局域网 Relay（可同时开启）",
-          "titleEn": "Use the zero-setup official Relay or Desktop LAN Relay concurrently",
-          "descriptionZh": "外网出门走官方加密中继即开即用，内网高速互连可同时打开桌面端局域网 Relay；首次身份认证均需联网登录。",
-          "descriptionEn": "Use the official Relay anywhere with zero server setup, and optionally run the Desktop LAN Relay alongside it on local networks (sign-in requires internet access).",
+          "titleZh": "使用免部署的官方 Relay",
+          "titleEn": "Use the zero-setup official Relay",
+          "descriptionZh": "外网出门走官方加密中继即开即用，首次身份认证需联网登录；桌面端局域网 Relay 已下线，同一网络的设备经账号设备网络直连。",
+          "descriptionEn": "Use the official encrypted Relay anywhere with zero server setup (sign-in requires internet access). The Desktop LAN Relay was retired; devices on the same network connect directly through the account device mesh.",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「使用免部署官方 Relay 或桌面端局域网 Relay（可同时开启）」需要结合你当前的网络环境确认连接入口；官方 Relay 开箱即用，私有 Relay 仅面向配套定制客户端构建，界面不提供自定义服务器地址输入。",
-            "reasonEn": "\"Use the zero-setup official Relay or Desktop LAN Relay concurrently\" depends on your current network setup and host confirmation; the official Relay needs no deployment, while private Relays require matching custom builds rather than a custom URL field."
+            "reasonZh": "「使用免部署的官方 Relay」需要结合你当前的网络环境确认连接入口；官方 Relay 开箱即用，私有 Relay 仅面向配套定制客户端构建，界面不提供自定义服务器地址输入。",
+            "reasonEn": "\"Use the zero-setup official Relay\" depends on your current network setup and host confirmation; the official Relay needs no deployment, while private Relays require matching custom builds rather than a custom URL field."
           },
           "evidence": [
             "command:remote_connect_get_methods",
-            "source:src/apps/desktop/src/api/remote_connect_api/relay_routes_tests.rs#dual_relay_rpc_persistence_and_teardown_are_independent",
+            "source:src/apps/desktop/src/api/remote_connect_api/relay_routes_tests.rs#official_relay_rpc_persistence_and_teardown",
             "source:src/crates/services/relay-service/src/identity.rs#IDENTITY_ME_URL"
           ]
         },
@@ -6061,19 +6060,17 @@
         },
         {
           "id": "network",
-          "titleZh": "查看本机局域网地址、网络网卡状态与扫码邀请链接",
-          "titleEn": "Inspect LAN IP addresses, network interfaces, and shareable QR invitations",
-          "descriptionZh": "直观展示当前可用局域网 IP 与二维码邀请卡片；二维码仅用于引导识别目标主机，仍需账号权限校验才可访问。",
-          "descriptionEn": "View available LAN IPs and invitation QR cards; scanning identifies the host while still enforcing full account authorization.",
+          "titleZh": "查看扫码邀请链接",
+          "titleEn": "Show shareable QR invitations",
+          "descriptionZh": "直观展示二维码邀请卡片；二维码仅用于引导识别目标主机，仍需账号权限校验才可访问。",
+          "descriptionEn": "View invitation QR cards; scanning identifies the host while still enforcing full account authorization.",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「查看本机局域网地址、网络网卡状态与扫码邀请链接」涉及查看本机实时网卡地址与屏幕上展示邀请二维码供手机扫描；智能体会为你直接打开「设备与连接」中的「手机或浏览器」连接面板。",
-            "reasonEn": "\"Inspect LAN IP addresses, network interfaces, and shareable QR invitations\" involves inspecting live network interfaces and displaying a visual QR invitation for your phone; the Agent opens the Phone or browser panel in Devices & Connections directly for you."
+            "reasonZh": "「查看扫码邀请链接」涉及在屏幕上展示邀请二维码供手机扫描；智能体会为你直接打开「设备与连接」中的「手机或浏览器」连接面板。",
+            "reasonEn": "\"Show shareable QR invitations\" involves displaying a visual QR invitation for your phone; the Agent opens the Phone or browser panel in Devices & Connections directly for you."
           },
           "evidence": [
-            "command:remote_connect_get_lan_ip",
-            "command:remote_connect_get_lan_network_info",
             "command:remote_connect_get_form_state",
             "command:remote_connect_set_form_state"
           ]
@@ -6082,8 +6079,8 @@
           "id": "phone-browser-access",
           "titleZh": "在手机或浏览器中打开同一界面，扫码配对并随时撤销",
           "titleEn": "Open the same UI on a phone or browser, pair by QR, and revoke at any time",
-          "descriptionZh": "原生桌面应用在本机提供网页界面与 OBP 协议：本机浏览器凭一次性启动链接以所有者身份连接；开启局域网后，手机扫描一次性二维码（携带自签名证书指纹）完成配对，配对设备只能执行可远程代理的命令，可在设备页随时撤销。",
-          "descriptionEn": "The native desktop serves its web UI and the OBP protocol: a browser on this computer connects as the owner through a one-time launch link; with the LAN listener on, a phone pairs by scanning a one-time QR code that carries the self-signed certificate fingerprint, runs only proxied commands, and can be revoked in Devices at any time.",
+          "descriptionZh": "原生桌面应用在本机提供网页界面与 OBP 协议：本机浏览器凭一次性启动链接以所有者身份连接；手机加入账号设备网络后，扫描一次性二维码（携带自签名证书指纹）完成配对，配对设备只能执行可远程代理的命令，可在设备页随时撤销。局域网监听已下线，同一网络内的设备经设备网络直连。",
+          "descriptionEn": "The native desktop serves its web UI and the OBP protocol: a browser on this computer connects as the owner through a one-time launch link; a phone that joined the account device mesh pairs by scanning a one-time QR code that carries the self-signed certificate fingerprint, runs only proxied commands, and can be revoked in Devices at any time. The LAN listener was retired: devices on the same network connect directly through the mesh.",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
@@ -6092,7 +6089,6 @@
           },
           "evidence": [
             "command:obp_get_status",
-            "command:obp_set_lan_enabled",
             "command:obp_create_pairing",
             "command:obp_revoke_paired_client"
           ]

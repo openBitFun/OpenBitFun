@@ -1,0 +1,48 @@
+# OpenBitFun Link relay node (openbitfun-link-node from
+# src/apps/relay-server/link-node: the EasyTier fork in third_party/easytier).
+# Shared node of every account network (`obf-*`), admitting only devices with
+# an issuer-signed join token. Loopback listener only: devices reach it as
+# wss://<domain>/mesh/et/ (domain-only over HTTPS: the provider's front end
+# and nginx forward it here).
+# Install as /etc/systemd/system/openbitfun-link-node.service; see README.md.
+[Unit]
+Description=OpenBitFun Link relay node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openbitfun-link
+Group=openbitfun-link
+WorkingDirectory=/opt/openbitfun-link-node
+Environment=LINK_NODE_LISTENERS=ws://127.0.0.1:11011/
+Environment=LINK_NODE_HOSTNAME=openbitfun-link-relay-lwb
+Environment=LINK_NODE_JOIN_PUBLIC_KEY_FILE=/opt/openbitfun-link-node/etc/join.pub
+Environment=LINK_NODE_BPS_LIMIT=2097152
+Environment=RUST_LOG=info,easytier=warn,easytier_core=warn
+ExecStart=/opt/openbitfun-link-node/bin/openbitfun-link-node
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+# No TUN device and no privileged ports: the node only relays and coordinates.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

@@ -128,7 +128,7 @@ The workspace, the runtime that executes a turn, and the person driving it can e
 | Scenario | What it means | Design entry point |
 |---|---|---|
 | Remote workspace | The active workspace lives on an SSH host, a jump-host chain, or a Docker container; files, terminal, search, and Agent subprocesses must execute there | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md), [remote-workspaces.md](docs/features/remote-workspaces.md) |
-| Remote control | A phone or browser runs the same NSH UI served by a new desktop host over the LAN or the account device mesh; a Feishu / Telegram / WeChat bot drives a session over OBP on the mesh (new hosts) or the Remote Connect relay (older hosts, and `mobile-web` for older clients) | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md) (device mesh), [`src/mobile-web`](src/mobile-web/AGENTS.md), `remote_connect` in [services-integrations](src/crates/services/services-integrations/AGENTS.md), [relay-service](src/crates/services/relay-service/AGENTS.md) |
+| Remote control | A phone or browser signs in with the account (email code) and runs the same NSH UI against a new desktop host: the phone app over the account device mesh (the only multi-device transport of the new version; same-network devices connect directly through it), a browser through the server gateway (`https://<domain>/app/`, end-to-end encrypted to the device); a Feishu / Telegram / WeChat bot drives a session over OBP on the mesh (new hosts) or the Remote Connect relay (older hosts, and `mobile-web` for older clients) | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md) (device mesh, browser gateway), [`src/mobile-web`](src/mobile-web/AGENTS.md), `remote_connect` in [services-integrations](src/crates/services/services-integrations/AGENTS.md), [relay-service](src/crates/services/relay-service/AGENTS.md) |
 | Peer Device Mode | One same-account device becomes the data plane of another: the controller shell stays local, invokes and events come from the peer, over OBP on the device mesh (new hosts) or relay HostInvoke (older hosts) | [peer-device-mode.md](docs/architecture/peer-device-mode.md), [NSH peer routing](src/nsh-ui/AGENTS.md) |
 | Detached Dispatch | A controller submits a durable job to another OpenBitFun host and may then disconnect; the target owns the job, session, worktree, event log, and permission mailbox | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
 
@@ -193,8 +193,11 @@ Read the listed documents before editing in these areas. The sub-bullets are har
 - Layer guides own the crate tables; do not enumerate crates here.
 - Update `AGENTS.md` and `AGENTS-CN.md` in the same change.
 
-## Native mobile repository
+## Mobile apps
 
-Android, iOS and HarmonyOS apps, their Kotlin shared core, native WebView assets
-and mobile design tooling are maintained in [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile).
+The NSH phone app (iOS and Android, the same `src/nsh-ui` UI as the desktop, a
+controller of the account's devices over OpenBitFun Link) lives here in
+[`src/apps/mobile-nsh`](src/apps/mobile-nsh/README.md). The legacy Kotlin and
+HarmonyOS apps, their Kotlin shared core, native WebView assets and mobile design
+tooling stay in [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile).
 `src/mobile-web` and host-side mobile/Relay protocol contracts remain here.

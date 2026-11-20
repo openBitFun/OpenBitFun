@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:e995eb40ea5e2c1c",
+  "digest": "fnv1a64:07ef1414647df5d6",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -4954,14 +4954,15 @@
     },
     {
       "id": "mesh_phone_join_info",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "phones no longer join the device network with the EasyTier app; network credentials are never shown"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "phones no longer join the device network with the EasyTier app; network credentials are never shown"
       }
     },
     {
@@ -5629,14 +5630,15 @@
     },
     {
       "id": "obp_set_lan_enabled",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the LAN listener was retired; phones and browsers join the account device mesh and pair on the mesh listener"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the LAN listener was retired; phones and browsers join the account device mesh and pair on the mesh listener"
       }
     },
     {
@@ -6287,26 +6289,28 @@
     },
     {
       "id": "remote_connect_get_lan_ip",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
       }
     },
     {
       "id": "remote_connect_get_lan_network_info",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the LAN relay mode was retired; devices on the same network connect directly through the account device mesh"
       }
     },
     {

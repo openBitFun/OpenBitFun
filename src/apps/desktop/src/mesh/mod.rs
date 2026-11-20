@@ -1,54 +1,50 @@
-//! The device mesh of the native desktop host.
+//! The device network (OpenBitFun Link) of the native desktop host.
 //!
-//! While an account is signed in, this host joins the account's EasyTier
-//! network (credentials from the account mesh issuer, cached so a restart
-//! works while the issuer is unreachable), supervises the `easytier-core`
-//! sidecar, serves OBP to other devices of the account on the mesh listener
+//! While an account is signed in, this host runs Link in-process
+//! (`openbitfun-link`: the EasyTier fork, joined with the account's
+//! credentials and a short-lived join token from the account issuer), serves
+//! OBP to other devices of the account on Link's inbound streams
 //! (`backend_protocol::ws::mesh`), and exposes `mesh_status`,
 //! `mesh_list_devices` and [`connect_device`] for controllers. The old relay
 //! server is never a transport here: it is only read as the account's device
-//! directory (names and public keys).
+//! directory (names and public keys). No sidecar process, no proxy port, and
+//! no network credential ever reaches a UI.
 //!
-//! Remote scenarios: the mesh is a transport between same-account devices.
-//! It does not change remote workspaces (they keep running where they are),
-//! and its commands are `ControllerLocal`: a remote client sees the backend's
-//! mesh only through its own host.
+//! Remote scenarios: Link is a transport between same-account devices. It
+//! does not change remote workspaces (they keep running where they are), and
+//! its commands are `ControllerLocal`: a remote client sees the backend's
+//! network only through its own host.
 
 pub mod mesh_api;
 pub mod peer_link;
 pub mod route;
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
-use std::path::{Path, PathBuf};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use openbitfun_mesh_service::credentials::{DEFAULT_MESH_API_URL, MESH_CREDENTIALS_PATH};
-use openbitfun_mesh_service::sidecar::{free_listener_port, free_loopback_port};
-use openbitfun_mesh_service::{
-    EasyTierBinaries, MeshCredentials, MeshNodeConfig, MeshPath, MeshSidecar, MeshState,
-    MeshStatus, SidecarOptions, EASYTIER_VERSION,
-};
-use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Notify};
+use openbitfun_link::session::{AccountIdentity, AccountSession, BoxFuture, Link, LinkOptions};
+use openbitfun_link::{MeshPath, MeshRoute, MeshState, MeshStatus, NodeRole};
+use serde::Serialize;
+use tokio::sync::watch;
 
 use crate::backend_protocol::ws::mesh_client::{
-    MeshConnectOptions, MeshDialer, MeshObpConnection, MeshTarget,
+    MeshConnectOptions, MeshConnector, MeshDialer, MeshObpConnection, MeshOpenFuture, MeshTarget,
 };
-use crate::backend_protocol::ws::{MeshAuthority, MeshInfo, ObpServer, PairKeyFuture};
+use crate::backend_protocol::ws::{
+    MeshAcceptFuture, MeshAuthority, MeshIncoming, MeshInfo, MeshIo, ObpServer, PairKeyFuture,
+};
 
-/// Event emitted (owner scope only) when the mesh status changes materially.
+/// Event emitted (owner scope only) when the network status changes materially.
 pub const MESH_STATUS_CHANGED_EVENT: &str = "mesh://status-changed";
 
-const ACCOUNT_POLL: Duration = Duration::from_secs(15);
-const STATUS_INTERVAL: Duration = Duration::from_secs(10);
-const PREFERRED_LISTENER_PORT: u16 = 11010;
 const PROBE_CACHE_TTL: Duration = Duration::from_secs(30);
 const DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(60);
-const CREDENTIALS_FILE: &str = "credentials.json";
+const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The account behind the running mesh.
+/// The account behind the running network.
 #[derive(Clone, PartialEq, Eq)]
 struct AccountKey {
     user_id: String,
@@ -67,7 +63,7 @@ impl MeshAuthority for AccountMeshAuthority {
 
     fn pair_key<'a>(&'a self, device_id: &'a str) -> PairKeyFuture<'a> {
         Box::pin(async move {
-            if !openbitfun_mesh_service::handshake::valid_device_id(device_id) {
+            if !openbitfun_link::handshake::valid_device_id(device_id) {
                 return Err("invalid device id".to_string());
             }
             let (session, relay_url) =
@@ -83,13 +79,65 @@ impl MeshAuthority for AccountMeshAuthority {
     }
 }
 
-struct Running {
-    account: AccountKey,
-    /// The account network this node joined (also what a phone joins).
-    credentials: MeshCredentials,
-    sidecar: MeshSidecar,
-    dialer: MeshDialer,
-    forwarder: tokio::task::JoinHandle<()>,
+/// The desktop's account session as Link needs it.
+struct DesktopAccountSession;
+
+impl AccountSession for DesktopAccountSession {
+    fn identity(&self) -> BoxFuture<'_, Option<AccountIdentity>> {
+        Box::pin(async {
+            MeshRuntime::account().await.map(|account| AccountIdentity {
+                user_id: account.user_id,
+                device_id: account.device_id,
+            })
+        })
+    }
+
+    fn access_token(&self) -> BoxFuture<'_, Result<Option<String>, String>> {
+        Box::pin(async {
+            let mut identity = openbitfun_services_integrations::account_identity::AccountIdentityClient::from_environment()
+                .await
+                .map_err(|error| error.to_string())?;
+            identity
+                .access_token()
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+/// Link's inbound OBP streams as the mesh listener's source.
+struct LinkIncoming(Arc<Link>);
+
+impl MeshIncoming for LinkIncoming {
+    fn accept(&self) -> MeshAcceptFuture<'_> {
+        Box::pin(async move {
+            let stream = self.0.accept().await?;
+            let peer = stream.peer_addr();
+            Some((Box::new(stream) as Box<dyn MeshIo>, peer))
+        })
+    }
+
+    fn port(&self) -> Option<u16> {
+        self.0.status().obp_port
+    }
+}
+
+/// Outbound streams through this process's Link node.
+struct LinkConnector(Arc<Link>);
+
+impl MeshConnector for LinkConnector {
+    fn open(&self, ip: Ipv4Addr, port: u16) -> MeshOpenFuture<'_> {
+        Box::pin(async move {
+            let node = self
+                .0
+                .node()
+                .ok_or_else(|| "mesh_unavailable: the device network is not running".to_string())?;
+            let stream = node
+                .connect_addr(SocketAddr::from((ip, port)), OPEN_TIMEOUT)
+                .await?;
+            Ok(Box::new(stream) as Box<dyn MeshIo>)
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -104,15 +152,29 @@ struct ProbeEntry {
 #[serde(rename_all = "camelCase")]
 pub struct MeshDeviceEntry {
     pub device_id: String,
-    /// Directory name (alias first); `None` when the directory is unavailable.
+    /// Directory name (alias first), else the name the member advertises
+    /// in Link (a phone app); `None` when neither is known.
     pub name: Option<String>,
     pub virtual_ip: String,
-    /// The device answered on its OBP mesh listener.
+    /// `controller` for a phone app or browser session in the account
+    /// network: it drives devices and serves no backend, so it is never
+    /// probed and is not an unreachable device.
+    pub role: NodeRole,
+    /// The device answered on its OBP listener (always `false` for a
+    /// controller).
     pub reachable: bool,
     pub path: MeshPath,
+    /// Direct (LAN / IPv4 / IPv6) or relayed (server / another device).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<MeshRoute>,
+    /// The device relaying the traffic, for `relayed_peer`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_via: Option<String>,
     pub hops: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub obp_protocol: Option<u32>,
     pub capabilities: Vec<String>,
@@ -124,55 +186,20 @@ pub struct MeshDeviceEntry {
     pub error: Option<String>,
 }
 
-/// `mesh_phone_join_info`: the EasyTier network a phone joins and where it
-/// reaches this device. `network_secret` is a credential (owner only).
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MeshPhoneJoinInfo {
-    pub network_name: String,
-    pub network_secret: String,
-    /// EasyTier peer URLs (the account's relay/discovery node).
-    pub peers: Vec<String>,
-    pub easytier_version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
-    /// This device's mesh address (`None` until DHCP assigned one).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub virtual_ip: Option<String>,
-    /// The OBP mesh listener port on that address.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub obp_port: Option<u16>,
-    /// The listener serves the web UI bundle (a phone browser gets the UI).
-    pub web_ui: bool,
-}
-
-impl std::fmt::Debug for MeshPhoneJoinInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MeshPhoneJoinInfo")
-            .field("network_name", &self.network_name)
-            .field("network_secret", &"<redacted>")
-            .field("peers", &self.peers)
-            .field("virtual_ip", &self.virtual_ip)
-            .field("obp_port", &self.obp_port)
-            .finish()
-    }
-}
-
-/// The mesh of this process.
+/// The device network of this process.
 pub struct MeshRuntime {
-    work_dir: PathBuf,
     obp: Option<Arc<ObpServer>>,
+    link: Arc<Link>,
     status: watch::Sender<MeshStatus>,
-    running: tokio::sync::Mutex<Option<Running>>,
-    wake: Notify,
-    stopping: watch::Sender<bool>,
+    /// The account whose OBP mesh listener runs.
+    serving: tokio::sync::Mutex<Option<AccountKey>>,
     probes: Mutex<HashMap<String, ProbeEntry>>,
     directory: Mutex<Option<(Instant, HashMap<String, String>)>>,
 }
 
 static RUNTIME: OnceLock<Arc<MeshRuntime>> = OnceLock::new();
 
-/// The running mesh runtime, when the native host started one.
+/// The running network runtime, when the native host started one.
 pub fn global() -> Option<Arc<MeshRuntime>> {
     RUNTIME.get().cloned()
 }
@@ -191,122 +218,13 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Repository build output of `scripts/fetch-easytier.mjs` (development).
-fn development_binary_dirs() -> Vec<PathBuf> {
-    let Some(platform) = EasyTierBinaries::platform_dir_name() else {
-        return Vec::new();
-    };
-    if !cfg!(debug_assertions) {
-        return Vec::new();
-    }
-    vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../target/easytier")
-        .join(platform)]
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CachedCredentials {
-    user_id: String,
-    credentials: MeshCredentials,
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    use std::io::Write;
-    let mut file = options.open(path)?;
-    file.write_all(bytes)
-}
-
-/// Fetches the account's mesh credentials from the issuer.
-async fn fetch_credentials(device_id: &str) -> Result<MeshCredentials, FetchError> {
-    let base = std::env::var("OPENBITFUN_MESH_API_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_MESH_API_URL.to_string());
-    let mut identity =
-        openbitfun_services_integrations::account_identity::AccountIdentityClient::from_environment()
-            .await
-            .map_err(|error| FetchError::Transient(error.to_string()))?;
-    let token = identity
-        .access_token()
-        .await
-        .map_err(|error| FetchError::Transient(error.to_string()))?
-        .ok_or_else(|| {
-            FetchError::Refused("sign in to OpenBitFun to join your device mesh".into())
-        })?;
-    crate::ensure_rustls_crypto_provider();
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| FetchError::Transient(error.to_string()))?;
-    let response = client
-        .post(format!("{base}{MESH_CREDENTIALS_PATH}"))
-        .bearer_auth(token)
-        .json(&serde_json::json!({
-            "deviceId": device_id,
-            "clientVersion": crate::VERSION,
-            "easytierVersion": EASYTIER_VERSION,
-        }))
-        .send()
-        .await
-        .map_err(|error| {
-            FetchError::Transient(format!("the mesh issuer is unreachable: {error}"))
-        })?;
-    let status = response.status();
-    if matches!(status.as_u16(), 404 | 405 | 410) {
-        return Err(FetchError::Unsupported(format!(
-            "mesh_unsupported: the account server does not issue mesh credentials (HTTP {status}); update the server"
-        )));
-    }
-    if matches!(status.as_u16(), 401 | 403) {
-        return Err(FetchError::Refused(format!(
-            "the account server refused mesh credentials (HTTP {status}); sign in again"
-        )));
-    }
-    if !status.is_success() {
-        return Err(FetchError::Transient(format!(
-            "the mesh issuer answered HTTP {status}"
-        )));
-    }
-    let credentials: MeshCredentials = response
-        .json()
-        .await
-        .map_err(|error| FetchError::Transient(format!("unreadable mesh credentials: {error}")))?;
-    credentials.validate().map_err(FetchError::Refused)?;
-    Ok(credentials)
-}
-
-enum FetchError {
-    /// Network or service trouble: a cached document may be used.
-    Transient(String),
-    /// The account may not have credentials now.
-    Refused(String),
-    /// The issuer does not exist at this server.
-    Unsupported(String),
-}
-
 impl MeshRuntime {
-    fn new(data_dir: &Path, obp: Option<Arc<ObpServer>>) -> Arc<Self> {
+    fn new(link: Arc<Link>, obp: Option<Arc<ObpServer>>) -> Arc<Self> {
         Arc::new(Self {
-            work_dir: data_dir.join("mesh"),
             obp,
-            status: watch::channel(MeshStatus::new(MeshState::SignedOut, None)).0,
-            running: tokio::sync::Mutex::new(None),
-            wake: Notify::new(),
-            stopping: watch::channel(false).0,
+            status: watch::channel(link.status()).0,
+            link,
+            serving: tokio::sync::Mutex::new(None),
             probes: Mutex::new(HashMap::new()),
             directory: Mutex::new(None),
         })
@@ -328,15 +246,9 @@ impl MeshRuntime {
         }
     }
 
-    fn set_state(&self, state: MeshState, reason: Option<String>) {
-        let mut status = MeshStatus::new(state, reason);
-        status.device_id = self.status.borrow().device_id.clone();
-        self.publish(status);
-    }
-
     /// Re-checks the account now (sign-in or sign-out just happened).
     pub fn wake(&self) {
-        self.wake.notify_one();
+        self.link.wake();
     }
 
     async fn account() -> Option<AccountKey> {
@@ -350,224 +262,95 @@ impl MeshRuntime {
         })
     }
 
-    async fn credentials(
-        &self,
-        account: &AccountKey,
-    ) -> Result<MeshCredentials, (MeshState, String)> {
-        let cache = self.work_dir.join(CREDENTIALS_FILE);
-        match fetch_credentials(&account.device_id).await {
-            Ok(credentials) => {
-                let cached = CachedCredentials {
-                    user_id: account.user_id.clone(),
-                    credentials: credentials.clone(),
-                };
-                if let Ok(json) = serde_json::to_vec(&cached) {
-                    if let Err(error) = write_private(&cache, &json) {
-                        log::warn!("Failed to cache mesh credentials: {}", error);
-                    }
-                }
-                Ok(credentials)
-            }
-            Err(FetchError::Transient(error)) => {
-                let cached = std::fs::read(&cache)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<CachedCredentials>(&bytes).ok())
-                    .filter(|cached| cached.user_id == account.user_id)
-                    .filter(|cached| cached.credentials.validate().is_ok());
-                match cached {
-                    Some(cached) => {
-                        log::warn!(
-                            "Mesh issuer unavailable; using cached credentials: {}",
-                            error
-                        );
-                        Ok(cached.credentials)
-                    }
-                    None => Err((MeshState::Failed, error)),
-                }
-            }
-            Err(FetchError::Refused(error)) => Err((MeshState::Failed, error)),
-            Err(FetchError::Unsupported(error)) => Err((MeshState::Unsupported, error)),
+    /// Keeps the OBP mesh listener in step with Link: serving while Link
+    /// runs for an account, stopped (with every mesh connection and Peer
+    /// Device Mode link) when it stops or the account changes.
+    async fn reconcile_listener(self: &Arc<Self>, status: &MeshStatus) {
+        let account = if status.state == MeshState::Running {
+            self.link.account().await.map(|account| AccountKey {
+                user_id: account.user_id,
+                device_id: account.device_id,
+            })
+        } else {
+            None
+        };
+        let mut serving = self.serving.lock().await;
+        if *serving == account {
+            return;
         }
-    }
-
-    async fn start_account(
-        self: &Arc<Self>,
-        account: AccountKey,
-    ) -> Result<Running, (MeshState, String)> {
-        let binaries = EasyTierBinaries::locate(&development_binary_dirs()).ok_or_else(|| {
-            (
-                MeshState::Unsupported,
-                format!(
-                    "mesh_unavailable: easytier-core {EASYTIER_VERSION} is not bundled with this build (run `node scripts/fetch-easytier.mjs` in development)"
-                ),
-            )
-        })?;
-        let credentials = self.credentials(&account).await?;
-        let authority: Arc<dyn MeshAuthority> = Arc::new(AccountMeshAuthority {
-            account: account.clone(),
-        });
-        let obp_port = match &self.obp {
-            Some(server) => Some(
-                server
-                    .start_mesh(Arc::clone(&authority))
-                    .await
-                    .map_err(|error| (MeshState::Failed, error))?
-                    .port(),
-            ),
-            None => None,
-        };
-        let ports = (|| -> std::io::Result<(u16, u16, u16)> {
-            Ok((
-                free_loopback_port()?,
-                free_loopback_port()?,
-                free_listener_port(PREFERRED_LISTENER_PORT)?,
-            ))
-        })()
-        .map_err(|error| (MeshState::Failed, format!("no free mesh ports: {error}")))?;
-        let (socks5_port, rpc_port, listener_port) = ports;
-        let config = MeshNodeConfig {
-            instance_name: format!(
-                "openbitfun-{}",
-                &account.device_id[..account.device_id.len().min(12)]
-            ),
-            hostname: account.device_id.clone(),
-            credentials: credentials.clone(),
-            listener_port: Some(listener_port),
-            socks5_port,
-            inbound_tcp_ports: (
-                openbitfun_mesh_service::MESH_OBP_PORT_FIRST,
-                openbitfun_mesh_service::MESH_OBP_PORT_LAST,
-            ),
-            disable_p2p: std::env::var("OPENBITFUN_MESH_DISABLE_P2P")
-                .is_ok_and(|value| value == "1"),
-        };
-        let sidecar = MeshSidecar::start(SidecarOptions {
-            binaries,
-            work_dir: self.work_dir.clone(),
-            config,
-            rpc_port,
-            status_interval: STATUS_INTERVAL,
-            obp_port,
-        });
-        let dialer = MeshDialer {
-            socks5: sidecar.socks5_addr(),
-            authority,
-        };
-        let mut updates = sidecar.subscribe();
-        let runtime = Arc::clone(self);
-        let forwarder = tokio::spawn(async move {
-            loop {
-                let status = updates.borrow_and_update().clone();
-                runtime.publish(status);
-                if updates.changed().await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(Running {
-            account,
-            credentials,
-            sidecar,
-            dialer,
-            forwarder,
-        })
-    }
-
-    async fn stop_running(&self, reason: MeshState) {
-        let running = self.running.lock().await.take();
-        if let Some(running) = running {
-            // Peer Device Mode links ride this mesh; they end with it.
+        if serving.take().is_some() {
+            // Peer Device Mode links ride the network; they end with it.
             peer_link::shutdown_global().await;
             if let Some(server) = &self.obp {
                 server.stop_mesh();
             }
-            running.forwarder.abort();
-            running.sidecar.stop().await;
             lock(&self.probes).clear();
             *lock(&self.directory) = None;
-            log::info!("Mesh stopped: reason={:?}", reason);
         }
-        self.set_state(reason, None);
-    }
-
-    async fn reconcile(self: &Arc<Self>) {
-        let account = Self::account().await;
-        let current = self
-            .running
-            .lock()
-            .await
-            .as_ref()
-            .map(|running| running.account.clone());
-        match (account, current) {
-            (None, None) => self.set_state(MeshState::SignedOut, None),
-            (None, Some(_)) => self.stop_running(MeshState::SignedOut).await,
-            (Some(account), Some(current)) if account == current => {}
-            (Some(account), current) => {
-                if current.is_some() {
-                    self.stop_running(MeshState::Starting).await;
-                }
-                self.set_state(MeshState::Starting, None);
-                match self.start_account(account).await {
-                    Ok(running) => {
-                        log::info!("Mesh started for the signed-in account");
-                        *self.running.lock().await = Some(running);
-                    }
-                    Err((state, reason)) => {
-                        log::warn!("Mesh not started: {}", reason);
-                        if let Some(server) = &self.obp {
-                            server.stop_mesh();
-                        }
-                        self.set_state(state, Some(reason));
-                    }
-                }
+        let Some(account) = account else {
+            return;
+        };
+        if let Some(server) = &self.obp {
+            let authority: Arc<dyn MeshAuthority> = Arc::new(AccountMeshAuthority {
+                account: account.clone(),
+            });
+            let local = SocketAddr::from((
+                Ipv4Addr::UNSPECIFIED,
+                status
+                    .obp_port
+                    .unwrap_or(openbitfun_link::MESH_OBP_PORT_FIRST),
+            ));
+            if let Err(error) = server
+                .start_mesh_with(
+                    authority,
+                    Arc::new(LinkIncoming(Arc::clone(&self.link))),
+                    local,
+                )
+                .await
+            {
+                log::warn!("OBP mesh listener not started: {}", error);
+                return;
             }
         }
+        *serving = Some(account);
     }
 
     async fn run(self: Arc<Self>) {
-        let mut stopping = self.stopping.subscribe();
+        let mut updates = self.link.subscribe();
         loop {
-            if *stopping.borrow() {
+            let status = updates.borrow_and_update().clone();
+            self.reconcile_listener(&status).await;
+            self.publish(status);
+            if updates.changed().await.is_err() {
                 break;
             }
-            self.reconcile().await;
-            // Failed starts retry on the next tick; sign-in/out wakes early.
-            tokio::select! {
-                _ = tokio::time::sleep(ACCOUNT_POLL) => {}
-                _ = self.wake.notified() => {}
-                _ = stopping.changed() => {}
-            }
         }
-        self.stop_running(MeshState::Stopped).await;
     }
 
-    /// A fresh status (probes the sidecar now).
+    /// A fresh status.
     pub async fn refresh(&self) -> MeshStatus {
-        let fresh = match self.running.lock().await.as_ref() {
-            Some(running) => Some(running.sidecar.refresh().await),
-            None => None,
-        };
-        if let Some(status) = fresh {
-            self.publish(status);
-        }
+        let status = self.link.refresh().await;
+        self.publish(status);
         self.status()
     }
 
     async fn dialer(&self) -> Result<MeshDialer, String> {
-        self.running
-            .lock()
-            .await
-            .as_ref()
-            .map(|running| running.dialer.clone())
-            .ok_or_else(|| match self.status().state {
+        let account = self.serving.lock().await.clone();
+        match (self.link.node(), account) {
+            (Some(_), Some(account)) => Ok(MeshDialer {
+                connector: Arc::new(LinkConnector(Arc::clone(&self.link))),
+                authority: Arc::new(AccountMeshAuthority { account }),
+            }),
+            _ => Err(match self.status().state {
                 MeshState::SignedOut => {
                     "mesh_signed_out: sign in to reach your other devices".to_string()
                 }
                 state => format!(
-                    "mesh_unavailable: the device mesh is not running ({state:?}); {}",
+                    "mesh_unavailable: the device network is not running ({state:?}); {}",
                     self.status().reason.unwrap_or_default()
                 ),
-            })
+            }),
+        }
     }
 
     async fn probe(
@@ -656,13 +439,16 @@ impl MeshRuntime {
         let probes = status
             .peers
             .iter()
-            .filter(|peer| openbitfun_mesh_service::handshake::valid_device_id(&peer.hostname))
+            .filter(|peer| openbitfun_link::handshake::valid_device_id(&peer.hostname))
             .map(|peer| {
                 let dialer = &dialer;
                 let own_ip = own_ip.clone();
                 async move {
                     // An address shared with this device (a transient DHCP
                     // conflict) would reach this device itself.
+                    if peer.role.is_controller() {
+                        return (peer, Ok(None));
+                    }
                     if own_ip.as_deref() == Some(peer.virtual_ip.as_str()) {
                         return (
                             peer,
@@ -675,7 +461,13 @@ impl MeshRuntime {
                     let Ok(ip) = peer.virtual_ip.parse::<Ipv4Addr>() else {
                         return (peer, Err("no mesh address yet".to_string()));
                     };
-                    (peer, self.probe(dialer, &peer.hostname, ip).await.result)
+                    (
+                        peer,
+                        self.probe(dialer, &peer.hostname, ip)
+                            .await
+                            .result
+                            .map(Some),
+                    )
                 }
             });
         let results = futures::future::join_all(probes).await;
@@ -683,17 +475,27 @@ impl MeshRuntime {
             .into_iter()
             .map(|(peer, probe)| {
                 let (reachable, port, info, error) = match probe {
-                    Ok((port, info)) => (true, Some(port), Some(info), None),
+                    Ok(Some((port, info))) => (true, Some(port), Some(info), None),
+                    Ok(None) => (false, None, None, None),
                     Err(error) => (false, None, None, Some(error)),
                 };
                 MeshDeviceEntry {
                     device_id: peer.hostname.clone(),
-                    name: names.get(&peer.hostname).cloned(),
+                    // The account directory's name first; a phone or
+                    // browser session it does not list names itself in Link.
+                    name: names
+                        .get(&peer.hostname)
+                        .cloned()
+                        .or_else(|| peer.display_name.clone()),
                     virtual_ip: peer.virtual_ip.clone(),
+                    role: peer.role,
                     reachable,
                     path: peer.path,
+                    route: peer.route,
+                    relay_via: peer.relay_via.clone(),
                     hops: peer.hops,
                     latency_ms: peer.latency_ms,
+                    last_seen_ms: peer.last_seen_ms,
                     obp_protocol: info.as_ref().map(|info| info.protocol),
                     capabilities: info
                         .as_ref()
@@ -707,42 +509,6 @@ impl MeshRuntime {
             .collect())
     }
 
-    /// What a phone needs to join this account's mesh with the EasyTier app
-    /// and reach this device's OBP listener there. Carries the network
-    /// secret: only the owner scope may read it, and it is never logged.
-    pub async fn phone_join_info(&self) -> Result<MeshPhoneJoinInfo, String> {
-        let credentials = self
-            .running
-            .lock()
-            .await
-            .as_ref()
-            .map(|running| running.credentials.clone());
-        let Some(credentials) = credentials else {
-            return Err(self.dialer().await.err().unwrap_or_else(|| {
-                "mesh_unavailable: the device mesh is not running".to_string()
-            }));
-        };
-        let status = self.refresh().await;
-        Ok(MeshPhoneJoinInfo {
-            network_name: credentials.network_name,
-            network_secret: credentials.network_secret,
-            peers: credentials.peers,
-            easytier_version: EASYTIER_VERSION.to_string(),
-            device_id: status.device_id.clone(),
-            virtual_ip: status.virtual_ip.clone(),
-            obp_port: self
-                .obp
-                .as_ref()
-                .and_then(|server| server.mesh_addr())
-                .map(|addr| addr.port())
-                .or(status.obp_port),
-            web_ui: self
-                .obp
-                .as_ref()
-                .is_some_and(|server| server.web_root().is_some()),
-        })
-    }
-
     /// Opens an authenticated OBP connection to `device_id` over the mesh.
     pub async fn connect_device(
         &self,
@@ -754,6 +520,9 @@ impl MeshRuntime {
         let peer = status.peer(device_id).ok_or_else(|| {
             format!("mesh_unreachable: device {device_id} is not in the account mesh right now")
         })?;
+        if peer.role.is_controller() {
+            return Err(controller_refusal(device_id));
+        }
         let virtual_ip: Ipv4Addr = peer
             .virtual_ip
             .parse()
@@ -790,6 +559,9 @@ impl MeshRuntime {
             status = self.refresh().await;
         }
         let peer = status.peer(device_id)?;
+        if peer.role.is_controller() {
+            return Some(Err(controller_refusal(device_id)));
+        }
         if status.virtual_ip.as_deref() == Some(peer.virtual_ip.as_str()) {
             return Some(Err(format!(
                 "mesh_unreachable: device {device_id} shares this device's mesh address while the mesh resolves the conflict; retry in a few seconds"
@@ -809,39 +581,46 @@ impl MeshRuntime {
     }
 }
 
-/// Starts the mesh runtime of the native host (unless `OPENBITFUN_MESH=off`).
+/// Why a controller (phone app, browser session) cannot be driven.
+fn controller_refusal(device_id: &str) -> String {
+    format!(
+        "mesh_controller: {device_id} is a controller (phone app or browser) and serves no backend"
+    )
+}
+
+/// Starts Link for the native host (unless `OPENBITFUN_MESH=off`): it joins
+/// the account's network on sign-in and leaves it on sign-out.
 pub fn start_for_native_host(data_dir: &Path) {
-    if std::env::var("OPENBITFUN_MESH")
-        .map(|value| value.eq_ignore_ascii_case("off") || value == "0")
-        .unwrap_or(false)
-    {
-        log::info!("Device mesh disabled by OPENBITFUN_MESH");
+    if openbitfun_link::session::disabled_by_environment() {
+        log::info!("Device network disabled by OPENBITFUN_MESH");
         return;
     }
-    let runtime = MeshRuntime::new(data_dir, crate::backend_protocol::ws::global_server());
+    let link = Link::start(
+        LinkOptions::from_environment(data_dir.join("mesh"), crate::VERSION),
+        Arc::new(DesktopAccountSession),
+    );
+    let runtime = MeshRuntime::new(link, crate::backend_protocol::ws::global_server());
     if RUNTIME.set(Arc::clone(&runtime)).is_err() {
-        log::warn!("Device mesh runtime was already started in this process");
+        log::warn!("Device network runtime was already started in this process");
         return;
     }
-    // Detached dispatch and IM bots reach new account devices over the mesh.
+    // Detached dispatch and IM bots reach new account devices over Link.
     openbitfun_services_integrations::remote_connect::mesh_route::install_mesh_route(Arc::new(
         route::DesktopMeshRoute::default(),
     ));
     tokio::spawn(runtime.run());
 }
 
-/// Stops the sidecar (backend shutdown); waits up to a few seconds.
+/// Leaves the network (backend shutdown); waits up to a few seconds.
 pub async fn shutdown_global() {
     let Some(runtime) = RUNTIME.get() else {
         return;
     };
-    runtime.stopping.send_replace(true);
-    let _ = tokio::time::timeout(Duration::from_secs(6), async {
-        while runtime.running.lock().await.is_some() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    peer_link::shutdown_global().await;
+    if let Some(server) = &runtime.obp {
+        server.stop_mesh();
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(8), runtime.link.shutdown()).await;
 }
 
 /// Opens an authenticated OBP connection to another device of the signed-in

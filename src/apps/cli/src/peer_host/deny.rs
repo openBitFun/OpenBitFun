@@ -109,12 +109,28 @@ mod tests {
         ));
     }
 
+    /// WebView frontend hot updates were retired with the Tauri shell: a
+    /// controller asking a CLI host for them gets the retirement, never a
+    /// dispatch.
     #[test]
-    fn frontend_update_decisions_stay_on_the_controller_device() {
-        assert!(is_local_only_command("frontend_update_candidate_ready"));
-        assert!(is_local_only_command("get_frontend_update_status"));
-        assert!(is_local_only_command("confirm_frontend_update"));
-        assert!(is_local_only_command("rollback_frontend_update"));
+    fn retired_frontend_update_decisions_are_refused_as_retired() {
+        use openbitfun_product_domains::remote_surface::{
+            peer_host_verdict, PeerHostKind, PeerHostVerdict, PeerRefusal,
+        };
+        for command in [
+            "frontend_update_candidate_ready",
+            "get_frontend_update_status",
+            "confirm_frontend_update",
+            "rollback_frontend_update",
+        ] {
+            assert!(
+                matches!(
+                    peer_host_verdict(command, PeerHostKind::Cli),
+                    PeerHostVerdict::Refuse(PeerRefusal::Retired { .. })
+                ),
+                "{command}"
+            );
+        }
     }
 
     #[test]

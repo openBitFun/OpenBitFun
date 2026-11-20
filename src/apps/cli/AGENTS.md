@@ -217,6 +217,19 @@ and daemon lifecycle regressions:
 cargo test --locked -p openbitfun-cli --bin openbitfun daemon::
 ```
 
+Remote control over OpenBitFun Link (`obp_host.rs`): the process that serves
+this machine's device identity joins Link and serves OBP through the shared
+`openbitfun-obp` crate; calls go to `peer_host::handle_obp_call` (the same
+registry-derived handlers as relay `HostInvoke`) and events come from the Peer
+host fan-out. Keep protocol code in the crate and product behavior in the
+existing owners; `remote-control status` only presents the host's status
+document. Focused checks:
+
+```bash
+cargo test -p openbitfun-cli --bin openbitfun obp_host::
+cargo test -p openbitfun-obp --features server
+```
+
 Bot listeners belong to the daemon. Chat/Shared/dispatch processes call its
 private, versioned endpoint and never replay a mutation after an unknown outcome.
 The executing account is checked before control requests reach the shared owner.

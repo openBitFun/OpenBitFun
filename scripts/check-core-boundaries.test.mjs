@@ -3970,8 +3970,8 @@ test('public event projection stays limited to current host needs', async () => 
   );
 });
 
-test('embedded relay concrete lifecycle stays desktop-owned', async () => {
-  const [coreManifest, corePort, desktopManifest, desktopHost] = await Promise.all([
+test('embedded LAN relay stays retired on the desktop', async () => {
+  const [coreManifest, corePort, desktopManifest, desktopRoutes] = await Promise.all([
     readFile(new URL('../src/crates/assembly/core/Cargo.toml', import.meta.url), 'utf8'),
     readFile(
       new URL(
@@ -3982,17 +3982,21 @@ test('embedded relay concrete lifecycle stays desktop-owned', async () => {
     ),
     readFile(new URL('../src/apps/desktop/Cargo.toml', import.meta.url), 'utf8'),
     readFile(
-      new URL('../src/apps/desktop/src/embedded_relay_host.rs', import.meta.url),
+      new URL('../src/apps/desktop/src/api/remote_connect_api/relay_routes.rs', import.meta.url),
       'utf8',
     ),
   ]);
 
   assert.doesNotMatch(coreManifest, /openbitfun-relay-service/);
   assert.doesNotMatch(corePort, /\b(?:axum|TcpListener|ServeDir|build_relay_router)\b/);
-  assert.match(desktopManifest, /openbitfun-relay-service/);
-  assert.match(desktopHost, /impl EmbeddedRelayHost for DesktopEmbeddedRelayHost/);
-  assert.match(desktopHost, /TcpListener::bind/);
-  assert.match(desktopHost, /ServeDir::new/);
+  // The desktop runs the Relay router only as a test fixture.
+  const desktopRuntimeDependencies = desktopManifest.split(/^\[dev-dependencies\]/m)[0];
+  assert.doesNotMatch(desktopRuntimeDependencies, /openbitfun-relay-service/);
+  await assert.rejects(
+    access(new URL('../src/apps/desktop/src/embedded_relay_host.rs', import.meta.url)),
+  );
+  assert.match(desktopRoutes, /EmbeddedRelayHost\s+for DesktopEmbeddedRelayUnavailable/);
+  assert.doesNotMatch(desktopRoutes, /\b(?:TcpListener|ServeDir|build_relay_router)\b/);
 });
 
 test('split core boundary check keeps self-test execution behavior', () => {

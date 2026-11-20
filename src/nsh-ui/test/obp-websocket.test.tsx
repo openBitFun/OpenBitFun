@@ -219,36 +219,22 @@ test("the served page's parameters name the endpoint", () => {
 function obpHost(backend: ReturnType<typeof createBackend>) {
   const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
   const pageHostCalls: unknown[] = [];
-  let pairings = 0;
-  const status = (lan: boolean) => ({
+  // A current backend: no LAN block in the status, the LAN switch retired.
+  const status = () => ({
     available: true,
     protocol: 1,
     webUi: true,
     loopbackUrl: "http://127.0.0.1:47610/",
     ownerUrl: "http://127.0.0.1:47610/?token=t",
-    lan: { enabled: lan, running: lan, port: lan ? 47611 : null, urls: lan ? ["https://192.168.1.5:47611"] : [], fingerprint: lan ? "sha256:abcd" : null },
     pairedClients: [{ id: "c1", name: "iPhone browser", createdAtMs: 1, lastSeenAtMs: null, connected: true }],
     ownerConnections: 1,
     pairedConnections: 1,
+    accountDeviceConnections: 0,
+    meshPort: 47612,
   });
-  let lanOn = false;
-  const answerObp = (command: string, args: Record<string, unknown>): unknown => {
-    const request = (args.request ?? {}) as Record<string, unknown>;
-    if (command === "obp_get_status") return status(lanOn);
-    if (command === "obp_set_lan_enabled") {
-      lanOn = request.enabled === true;
-      return status(lanOn);
-    }
-    if (command === "obp_revoke_paired_client") return { ...status(lanOn), pairedClients: [] };
-    if (command === "obp_create_pairing") {
-      pairings += 1;
-      return {
-        qrPayload: `https://192.168.1.5:47611/pair?code=code${pairings}#fp=sha256:abcd`,
-        url: `https://192.168.1.5:47611/pair?code=code${pairings}`,
-        fingerprint: "sha256:abcd",
-        expiresAtMs: Date.now() + 300000,
-      };
-    }
+  const answerObp = (command: string, _args: Record<string, unknown>): unknown => {
+    if (command === "obp_get_status") return status();
+    if (command === "obp_revoke_paired_client") return { ...status(), pairedClients: [] };
     return undefined;
   };
   const handlers: Record<string, (data: unknown) => unknown> = {
@@ -318,7 +304,7 @@ test("a backend-served page drives the backend over OBP and never the page host'
   expect(host.pageHostCalls).toEqual([]);
 });
 
-test("Devices pairs a phone: LAN switch, one-time QR, revoke", async () => {
+test("Devices lists paired devices and revokes one; no LAN switch", async () => {
   const backend = createDeviceBackend();
   const host = obpHost(backend);
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
@@ -327,18 +313,13 @@ test("Devices pairs a phone: LAN switch, one-time QR, revoke", async () => {
   await app.press("Devices");
   await app.waitFor("label:obp-pairing-card");
   await app.waitFor("Browser on this computer");
+  await app.waitFor("text:http://127.0.0.1:47610/");
+  await app.waitFor("iPhone browser");
+  expect(app.shows("label:obp-lan-toggle")).toBe(false);
   expect(app.shows("label:obp-pair-device")).toBe(false);
-
-  await app.press("label:obp-lan-toggle");
-  await app.waitFor("label:obp-pair-device");
-  expect(host.calls.find(call => call.command === "obp_set_lan_enabled")?.args).toEqual({ request: { enabled: true } });
-  await app.waitFor("text:https://192.168.1.5:47611");
-
-  await app.press("label:obp-pair-device");
-  await app.waitFor("label:obp-pairing-qr");
-  await app.waitFor("text:sha256:abcd");
 
   await app.press("label:obp-revoke-c1");
   await app.waitUntil(() => host.calls.some(call => call.command === "obp_revoke_paired_client"));
   expect(host.calls.find(call => call.command === "obp_revoke_paired_client")?.args).toEqual({ request: { clientId: "c1" } });
+  expect(host.calls.some(call => call.command === "obp_set_lan_enabled")).toBe(false);
 });

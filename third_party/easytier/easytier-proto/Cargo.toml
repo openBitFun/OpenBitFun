@@ -1,0 +1,106 @@
+[package]
+name = "easytier-proto"
+description = "EasyTier protobuf and generated RPC types."
+homepage = "https://github.com/EasyTier/EasyTier"
+repository = "https://github.com/EasyTier/EasyTier"
+version = "2.7.1"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["kkrainbow"]
+keywords = ["vpn", "p2p", "network", "easytier"]
+categories = ["network-programming"]
+license = "LGPL-3.0-only"
+publish = false
+# OpenBitFun fork: no build script. The protobuf code is generated ahead of
+# time into generated/ by ./codegen (no protoc needed to build).
+
+[dependencies]
+optionize = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+auto_impl = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+chrono = { workspace = true, features = ["serde"], optional = true }
+cidr = { workspace = true, features = ["serde"], optional = true }
+delegate = { workspace = true, optional = true }
+derive_more = { workspace = true, optional = true }
+educe = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+pbjson = { version = "0.9.0", optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+strum = { workspace = true, features = ["derive"], optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time"], optional = true }
+url = { workspace = true, features = ["serde"], optional = true }
+uuid = { workspace = true, features = ["serde"], optional = true }
+x25519-dalek = { workspace = true, features = ["static_secrets"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+] }
+uuid = { workspace = true, features = [
+    "v4",
+    "fast-rng",
+] }
+
+[features]
+default = ["full"]
+full = [
+    "api",
+    "core",
+    "faketcp",
+    "magic-dns",
+    "quic",
+    "utils",
+    "websocket",
+    "wireguard",
+    "zstd",
+    "lzo",
+
+]
+api = ["core"]
+core = [
+    "dep:optionize",
+    "dep:anyhow",
+    "dep:async-trait",
+    "dep:auto_impl",
+    "dep:base64",
+    "dep:bytes",
+    "dep:chrono",
+    "dep:cidr",
+    "dep:delegate",
+    "dep:derive_more",
+    "dep:educe",
+    "dep:hmac",
+    "dep:pbjson",
+    "dep:prost",
+    "dep:prost-types",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:strum",
+    "dep:thiserror",
+    "dep:tokio",
+    "dep:url",
+    "dep:uuid",
+    "dep:x25519-dalek",
+]
+faketcp = []
+magic-dns = []
+quic = []
+utils = []
+websocket = []
+wireguard = []
+zstd = []
+lzo = []
+
+[lints.rust]
+# `json-rpc` (management API JSON types) is removed from this fork.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("json-rpc"))'] }

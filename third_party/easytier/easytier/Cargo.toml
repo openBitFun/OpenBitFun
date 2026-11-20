@@ -1,0 +1,211 @@
+# OpenBitFun fork: library only (no CLI/daemon binaries, no TUN, no web
+# console or management RPC, no Windows service manager). Every removed
+# feature and dependency is listed in ../OPENBITFUN-PATCH.md.
+[package]
+name = "easytier"
+description = "EasyTier native host runtime (OpenBitFun Link fork)"
+homepage = "https://github.com/EasyTier/EasyTier"
+repository = "https://github.com/EasyTier/EasyTier"
+version = "2.7.1"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["kkrainbow"]
+license = "LGPL-3.0-only"
+build = "build/main.rs"
+publish = false
+
+[lib]
+name = "easytier"
+path = "src/lib.rs"
+
+[dependencies]
+easytier-core.workspace = true
+easytier-proto = { workspace = true, features = ["api", "core"] }
+
+tracing.workspace = true
+log = { workspace = true, features = ["std"] }
+derive_more = { version = "2.1.1", features = ["full"] }
+indoc.workspace = true
+paste = "1.0"
+thiserror.workspace = true
+crossbeam.workspace = true
+arc-swap.workspace = true
+toml.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+guarden.workspace = true
+quanta.workspace = true
+strum = { workspace = true, features = ["derive"] }
+gethostname.workspace = true
+futures = { workspace = true, features = ["default", "bilock", "unstable"] }
+tokio = { workspace = true, features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+tokio-util = { workspace = true, features = ["codec", "net", "io", "rt"] }
+async-trait.workspace = true
+dashmap.workspace = true
+moka = { version = "0.12", features = ["future"] }
+zerocopy = { workspace = true, features = ["derive", "simd"] }
+bytes.workspace = true
+pin-project-lite.workspace = true
+atomic_refcell = "0.1.14"
+
+rustls = { workspace = true, features = ["ring", "tls12"], optional = true }
+
+# WebSocket tunnels (the wss:// relay path, domain-only over HTTPS). EasyTier's fork of
+# tokio-websockets, pinned to the commit upstream v2.7.1 locks.
+tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/tokio-websockets", rev = "dc9771c7c215882349c3cb328877550a3593df21", optional = true, features = [
+    "rustls-webpki-roots",
+    "client",
+    "server",
+    "fastrand",
+    "ring",
+] }
+forwarded-header-value = { version = "0.1.1", optional = true }
+http = { version = "1", default-features = false, features = ["std"], optional = true }
+rcgen = { version = "0.14.10", optional = true }
+tokio-rustls = { workspace = true, optional = true }
+
+uuid = { workspace = true, features = ["v4", "v5", "fast-rng", "macro-diagnostics", "serde"] }
+once_cell.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+anyhow.workspace = true
+url = { workspace = true, features = ["serde"] }
+percent-encoding.workspace = true
+byteorder = "1.5.0"
+cidr = { workspace = true, features = ["serde"] }
+socket2 = { version = "0.6.5", features = ["all"] }
+rand.workspace = true
+serde = { workspace = true, features = ["derive"] }
+smoltcp = { workspace = true, optional = true, features = [
+    "std",
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-ipv6",
+    "socket-raw",
+] }
+serde_json.workspace = true
+async-recursion = "1.1.1"
+network-interface = "2.0.5"
+base64.workspace = true
+atomic-shim.workspace = true
+parking_lot.workspace = true
+rust-i18n.workspace = true
+sys-locale.workspace = true
+bon.workspace = true
+shellexpand = "3.1.2"
+
+# DNS connector (txt:// / srv:// peers).
+hickory-resolver = { version = "0.25.2", optional = true }
+hickory-proto = { version = "0.25.2", optional = true }
+
+# UPnP / NAT-PMP port mapping for direct connections.
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, features = ["tokio"], optional = true }
+natpmp = { version = "0.5.0", optional = true }
+xmltree = { version = "0.12", optional = true }
+
+# macOS: `networksetup -listallhardwareports` tells physical interfaces apart
+# for direct-connection candidates (no console window concern on macOS).
+[target.'cfg(target_os = "macos")'.dependencies]
+tokio = { workspace = true, features = ["process"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["sched", "socket", "ioctl", "net", "fs"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
+machine-uid = "0.6.0"
+
+[target.'cfg(any(target_os = "linux"))'.dependencies]
+netlink-sys = { version = "0.9.0", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_Networking",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Devices_DeviceAndDriverInstallation",
+] }
+encoding = "0.2"
+winreg = "0.56"
+winapi = { workspace = true, features = ["impl-default"] }
+
+[build-dependencies]
+cfg_aliases = "0.2.2"
+globwalk = "0.9.1"
+
+[dev-dependencies]
+easytier-core = { workspace = true, features = ["test-utils"] }
+serial_test = "4.0.1"
+rstest = "0.27.0"
+maplit = "1.0.2"
+tempfile.workspace = true
+stun_codec.workspace = true
+bytecodec = "0.5.0"
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+
+[features]
+default = []
+websocket = [
+    "dep:tokio-websockets",
+    "dep:forwarded-header-value",
+    "dep:http",
+    "dep:rcgen",
+    "dep:tokio-rustls",
+    "dep:rustls",
+    "easytier-proto/websocket",
+]
+smoltcp = ["dep:smoltcp", "easytier-core/proxy-smoltcp-stack"]
+icmp-proxy = ["easytier-core/proxy-packet"]
+socks5 = ["smoltcp"]
+# The in-process data plane (virtual TCP/UDP through the userspace stack).
+ffi-dataplane = ["socks5"]
+aes-gcm = ["easytier-core/aes-gcm"]
+ring-crypto = ["easytier-core/ring-crypto"]
+logging = []
+dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver"]
+zstd = ["easytier-core/zstd", "easytier-proto/zstd"]
+lzo = ["easytier-core/lzo", "easytier-proto/lzo"]
+upnp = [
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:natpmp",
+    "dep:xmltree",
+]
+linux-netlink = ["dep:netlink-sys"]
+endpoint-discovery = ["dns-resolver", "dep:rustls", "easytier-core/endpoint-discovery"]
+dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
+dhcp-ipv6 = ["easytier-core/dhcp-ipv6"]
+public-ipv6-provider = ["linux-netlink", "easytier-core/public-ipv6-provider"]
+proxy-cidr-monitor = ["easytier-core/proxy-cidr-monitor"]
+wrapped-transport = ["easytier-core/wrapped-transport"]
+tcp-hole-punch = ["easytier-core/tcp-hole-punch"]
+
+[lints.rust]
+# Upstream features removed from this fork (see OPENBITFUN-PATCH.md); their
+# gated code stays compiled out.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("tun", "kcp", "quic", "wireguard", "faketcp", "magic-dns", "management", "management-rpc", "web-client", "cli", "vpn-portal", "jemalloc", "jemalloc-prof", "mimalloc", "tracing", "tracing-log", "macos-ne", "openssl-crypto", "system-certificates", "extended-services", "hotpath"))',
+    'cfg(mobile)',
+] }

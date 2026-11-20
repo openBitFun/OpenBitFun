@@ -820,21 +820,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detaching_one_route_preserves_the_other_controller_and_permissions() {
-        let mut state = control_state(&["same-device"], &["pending-approval"]);
-        state
-            .controllers
-            .insert((RelayRoute::Lan, "same-device".into()));
-        assert!(detach_route_from_state(&mut state, RelayRoute::Lan, "same-device").is_empty());
-        assert_eq!(state.permission_request_ids.len(), 1);
-        assert_eq!(state.controllers.len(), 1);
-        assert_eq!(
-            detach_from_state(&mut state, "same-device"),
-            vec!["pending-approval"]
-        );
-    }
-
     #[tokio::test]
     async fn peer_ping_advertises_mutation_capabilities() {
         let value = peer_mode_ping().await.expect("peer ping");
@@ -1092,7 +1077,7 @@ mod tests {
 
     #[test]
     fn ping_reports_bridge_readiness_and_the_callers_attachment() {
-        let route = RelayRoute::Lan;
+        let route = RelayRoute::Official;
         let caller = "ping-attachment-caller";
         let detached = peer_mode_ping_for_caller(route, caller);
         assert_eq!(detached.get("caller_attached"), Some(&Value::Bool(false)));
@@ -1107,11 +1092,6 @@ mod tests {
         attach_route_controller(route, caller.to_string());
         let attached = peer_mode_ping_for_caller(route, caller);
         assert_eq!(attached.get("caller_attached"), Some(&Value::Bool(true)));
-        // The same device on the other route is a different attachment.
-        assert_eq!(
-            peer_mode_ping_for_caller(RelayRoute::Official, caller).get("caller_attached"),
-            Some(&Value::Bool(false))
-        );
         detach_route_controller(route, caller);
         assert!(peer_mode_ping_value(None).get("caller_attached").is_none());
     }
@@ -1164,14 +1144,9 @@ mod tests {
 
     #[test]
     fn route_loss_clears_delivery_targets_but_keeps_pending_permissions() {
-        let mut state = control_state(&["controller-a"], &["request-1"]);
-        state
-            .controllers
-            .insert((RelayRoute::Lan, "controller-lan".into()));
+        let mut state = control_state(&["controller-a", "controller-b"], &["request-1"]);
 
         disconnect_route_in_state(&mut state, RelayRoute::Official);
-        assert_eq!(state.controllers.len(), 1);
-        disconnect_route_in_state(&mut state, RelayRoute::Lan);
         assert!(state.controllers.is_empty());
         assert!(state.permission_request_ids.contains("request-1"));
 
@@ -1208,37 +1183,5 @@ mod tests {
         // controller-a was already removed by presence loss.
         assert!(detach_from_state(&mut state, "controller-a").is_empty());
         assert!(state.permission_request_ids.contains("request-1"));
-    }
-
-    #[test]
-    fn presence_updates_only_remove_subscribers_from_the_reporting_route() {
-        for route in [RelayRoute::Official, RelayRoute::Lan] {
-            let other = if route == RelayRoute::Official {
-                RelayRoute::Lan
-            } else {
-                RelayRoute::Official
-            };
-            let mut state = PeerControlState::default();
-            state.controllers.extend([
-                (route, "shared-device".to_string()),
-                (other, "shared-device".to_string()),
-                (route, "online-device".to_string()),
-            ]);
-            state.permission_request_ids.insert("request-1".to_string());
-
-            retain_online_in_state(
-                &mut state,
-                route,
-                &HashSet::from(["online-device".to_string()]),
-            );
-            assert_eq!(state.controllers.len(), 2);
-            assert!(state
-                .controllers
-                .contains(&(other, "shared-device".to_string())));
-            assert!(state
-                .controllers
-                .contains(&(route, "online-device".to_string())));
-            assert!(state.permission_request_ids.contains("request-1"));
-        }
     }
 }

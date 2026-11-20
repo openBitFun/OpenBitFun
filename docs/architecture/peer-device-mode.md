@@ -489,9 +489,19 @@ FS) and must not be mixed with Peer Device Mode.
 
 Owner: `src/apps/desktop/src/mesh/peer_link.rs` (controller link),
 `src/nsh-ui/src/{peerStore,meshPeerConnection,peerRouting,bridge}.ts` (NSH
-surface). The mesh itself (EasyTier sidecar, issuer, `account-device`
-listener, handshake) is described in
-[unified-client-architecture.md](unified-client-architecture.md#device-mesh-obp-between-account-devices-over-easytier-wave-4-implemented).
+surface). The mesh itself (OpenBitFun Link in-process, issuer and join tokens,
+`account-device` listener, handshake) is described in
+[unified-client-architecture.md](unified-client-architecture.md#device-mesh-obp-between-account-devices-over-openbitfun-link-wave-4-link-core-wave-7).
+
+Since wave 6 the mesh is the only path between new-version devices: there is no
+LAN mode (devices on one network connect directly through the mesh) and the
+desktop's legacy relay routing keeps only the official cloud relay route for
+older peers (the embedded LAN relay route is gone; `lan` is refused as
+retired). Devices shows how each mesh device is reached (direct on the same
+network, direct over IPv4 or IPv6, relayed through another account device, or
+relayed through the server) from the generic `route` field of
+`mesh_list_devices`
+([unified-client-architecture.md](unified-client-architecture.md#mesh-only-lan-sunset-and-a-domain-only-server)).
 
 **Negotiation.** When the user picks a device, the controller reads its own
 `mesh_list_devices` (owner command, `ControllerLocal`). Only versions that join
@@ -561,7 +571,21 @@ advertised as `dispatch_target_v1` / `remote_command_v1` on the mesh hello and
 (services-integrations) with the desktop implementation in
 `src/apps/desktop/src/mesh/route.rs`: a device on the mesh with the capability
 goes over OBP (a failure is reported, never retried over the relay); any other
-device keeps the relay RPC. CLI hosts run no mesh and stay on the relay.
+device keeps the relay RPC. Since wave 9 the bot command router's menu
+commands (`exec_remote_rpc`) use the port too, not only bot turns.
+
+**CLI hosts on the mesh (wave 9).** The CLI process that serves this
+machine's device identity (the daemon, or an interactive CLI without a daemon;
+a desktop on the same machine is the primary host and wins) joins Link and
+serves OBP like a desktop (`src/apps/cli/src/obp_host.rs` over the shared
+`openbitfun-obp` crate). Its calls run the same registry-derived handlers as a
+relay `HostInvoke` (`peer_host::handle_obp_call`, canonical agent identity);
+unhandled commands answer with the registry's refusal typed `unsupported`;
+the `hello` advertises `hostKind: "cli"` and the registry's CLI capability set
+in `hostCapabilities`; events are the Peer host's fan-out, published to its
+OBP ring. So a desktop controller opens a CLI host through `peer_link_*`
+exactly like a desktop host. CLI builds before wave 9 run no mesh and stay on
+the relay; the CLI keeps serving the relay for older controllers.
 
 **Scenarios.** Remote workspaces are unchanged: the peer runs the command
 where its workspace lives. Peer Device Mode through the mesh needs the native
@@ -742,7 +766,9 @@ comes from the account WebSocket, without a second periodic directory RPC.
   `remote_connect_api.rs`
 - CLI host invoke / fan-out: `src/apps/cli/src/peer_host/` (Core registry; no
   webview bridge). Device routing in `src/apps/cli/src/account.rs` special-cases
-  `HostInvoke` / `DeviceEvent`. Same machine Desktop+CLI share one `device_id`;
+  `HostInvoke` / `DeviceEvent`. OBP over Link: `src/apps/cli/src/obp_host.rs`
+  (same handlers through `handle_obp_call`; the event fan-out also publishes
+  to its OBP ring). Same machine Desktop+CLI share one `device_id`;
   the authenticated connection epoch retires the previous connection.
 - Frontend mode + transport (native desktop UI): `src/nsh-ui/src/peerRouting.ts`,
   `peerStore.ts`, `peerState.ts`, `meshPeerConnection.ts`, and the generated

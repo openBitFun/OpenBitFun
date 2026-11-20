@@ -5,7 +5,7 @@ import { expect, open, test } from "nsh/test";
 import type { BackendConnection, BackendEvent } from "../src/backendConnection";
 import { createMeshPeerConnection, type PeerLinkInfo } from "../src/meshPeerConnection";
 import { LEGACY_RELAY_TRANSPORT_COMMANDS, isOwnerOnlyEvent, staysOnController } from "../src/peerRouting";
-import { choosePeerTransport, type MeshDeviceEntry } from "../src/peerStore";
+import { choosePeerTransport, meshPathLabel, type MeshDeviceEntry } from "../src/peerStore";
 import { createDeviceBackend, withMeshPeerFixtures } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -241,4 +241,55 @@ test("a mesh device the mesh cannot reach is reported, never relayed", async () 
   await app.press("device-use-device-linux");
   await app.waitFor("builder is on the device mesh but its backend did not answer. Try again in a moment.");
   expect(backend.calls.some(call => LEGACY_RELAY_TRANSPORT_COMMANDS.has(call.action))).toBe(false);
+});
+
+// device mesh path label (wave 4, LAN sunset)
+test("path label: one short line per mesh route, and an older backend's path", () => {
+  const names: Record<string, string> = { "device-mac": "Studio" };
+  const label = (entry: Partial<MeshDeviceEntry>) =>
+    meshPathLabel({ reachable: true, ...entry }, id => names[id] ?? null);
+  expect(label({ route: "direct_lan" })).toBe("Direct · same network");
+  expect(label({ route: "direct_ipv6" })).toBe("Direct · IPv6");
+  expect(label({ route: "direct_ipv4" })).toBe("Direct");
+  expect(label({ route: "relayed_peer", relayVia: "device-mac" })).toBe("Relayed via Studio");
+  expect(label({ route: "relayed_peer", relayVia: "device-unknown" })).toBe("Relayed via another device");
+  expect(label({ route: "relayed_peer" })).toBe("Relayed via another device");
+  expect(label({ route: "relayed_server", path: "relayed" })).toBe("Relayed via OpenBitFun server");
+  // The route wins over the coarse path.
+  expect(label({ route: "direct_lan", path: "p2p" })).toBe("Direct · same network");
+  // An older backend sends only `path`.
+  expect(label({ path: "p2p" })).toBe("Direct");
+  expect(label({ path: "relayed" })).toBe("Relayed");
+  // A route this build does not know yet falls back to the path.
+  expect(label({ route: "satellite", path: "relayed" })).toBe("Relayed");
+  // Latency is a short suffix on the same line.
+  expect(label({ route: "direct_lan", latencyMs: 0.3 })).toBe("Direct · same network · 1 ms");
+  expect(label({ path: "p2p", latencyMs: 12.4 })).toBe("Direct · 12 ms");
+  // Nothing to say: no route and no path, or a device the mesh cannot reach.
+  expect(label({})).toBe("");
+  expect(meshPathLabel({ reachable: false, route: "direct_lan" })).toBe("");
+});
+
+test("Devices shows how the mesh reaches each device, with the relaying device's name", async () => {
+  const backend = createDeviceBackend({ onlineDevices: [{ deviceId: "device-mac" }] });
+  withMeshPeerFixtures(backend, {
+    meshDevices: [{ ...MESH_LINUX, route: "relayed_peer", relayVia: "device-mac", latencyMs: 31 }],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Devices");
+  await app.waitFor("builder");
+  await app.waitFor("text:Relayed via Studio · 31 ms");
+  expect(app.shows("label:device-path-device-linux")).toBe(true);
+});
+
+test("Devices shows the coarse path an older backend reports (no route field)", async () => {
+  const backend = createDeviceBackend({ onlineDevices: [{ deviceId: "device-mac" }] });
+  withMeshPeerFixtures(backend, { meshDevices: [MESH_LINUX] });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Devices");
+  await app.waitFor("builder");
+  await app.waitFor("text:Direct · 2 ms");
+  expect(app.shows("label:device-path-device-linux")).toBe(true);
+  // This machine gets no path line.
+  expect(app.shows("label:device-path-device-mac")).toBe(false);
 });

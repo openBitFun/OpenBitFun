@@ -78,7 +78,6 @@ function createWorkbenchBackend(
     feishu_app_id: "",
     feishu_app_secret: "",
   };
-  let lanConnected = false;
   let serverConnected = false;
 
   const handlers: Record<string, (data: unknown) => unknown> = {
@@ -212,25 +211,15 @@ function createWorkbenchBackend(
             value: {
               connections: [
                 {
-                  method: "lan",
-                  relay_connected: lanConnected,
-                  relay_url: lanConnected ? "http://192.168.1.42:8787/pair" : null,
-                  clients: [],
-                },
-                {
                   method: "openbitfun_server",
                   relay_connected: serverConnected,
                   relay_url: serverConnected ? "https://relay.example/pair/dev-1" : null,
                   clients: [],
                 },
               ],
-              relay_connected: lanConnected || serverConnected,
-              relay_url: serverConnected
-                ? "https://relay.example/pair/dev-1"
-                : lanConnected
-                  ? "http://192.168.1.42:8787/pair"
-                  : null,
-              active_method: serverConnected ? "openbitfun_server" : lanConnected ? { lan: { ip: null } } : null,
+              relay_connected: serverConnected,
+              relay_url: serverConnected ? "https://relay.example/pair/dev-1" : null,
+              active_method: serverConnected ? "openbitfun_server" : null,
               clients: [],
               bot_connected: botConnected,
               bot_verbose_mode: botVerbose,
@@ -244,7 +233,6 @@ function createWorkbenchBackend(
           return {
             ok: true,
             value: [
-              { id: "lan", name: "LAN", available: true, description: "Same local network" },
               {
                 id: "openbitfun_server",
                 name: "OpenBitFun Server",
@@ -278,12 +266,13 @@ function createWorkbenchBackend(
           const method = String(payload.method ?? "");
           const lanIp = typeof payload.lan_ip === "string" ? payload.lan_ip : null;
           startedConnections.push({ method, lan_ip: lanIp });
+          if (method === "lan") {
+            return { ok: false, error: "unsupported: the LAN relay was retired; devices on one network connect through the device mesh" };
+          }
           if (method === "bot_telegram") {
             botConnected = "Telegram(@openbitfun_bot)";
           } else if (method === "bot_feishu") {
             botConnected = "Feishu(cli_feishu_1)";
-          } else if (method === "lan") {
-            lanConnected = true;
           } else if (method === "openbitfun_server") {
             serverConnected = true;
           }
@@ -291,12 +280,7 @@ function createWorkbenchBackend(
             ok: true,
             value: {
               method,
-              qr_url:
-                method === "lan"
-                  ? "http://192.168.1.42:8787/pair"
-                  : method === "openbitfun_server"
-                    ? "https://relay.example/pair/dev-1"
-                    : null,
+              qr_url: method === "openbitfun_server" ? "https://relay.example/pair/dev-1" : null,
               qr_data: null,
               bot_pairing_code: method.startsWith("bot_") ? "PAIR-1234" : null,
               bot_link: method === "bot_telegram" ? "https://t.me/openbitfun_bot" : null,
@@ -309,7 +293,6 @@ function createWorkbenchBackend(
           if (hasRaw) throw new Error("remote_connect_stop must use request wrapper");
           const method = typeof payload.method === "string" ? payload.method : null;
           stoppedConnections.push(method);
-          if (!method || method === "lan") lanConnected = false;
           if (!method || method === "openbitfun_server") serverConnected = false;
           return { ok: true, value: null, transport: "dev" };
         }
@@ -648,28 +631,22 @@ test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and start
   await app.press("connector-bot-verbose");
   expect(backend.verboseWrites).toEqual([true]);
 
-  // Open LAN / Server Relay modal & start/stop relays
+  // The legacy mobile web relay: only the official server route is left (the
+  // LAN relay was retired; devices on one network connect through the mesh).
   await app.press("channel-toggle-relay");
-  await app.type("connector-lan-ip", "192.168.1.42");
-  await app.press("connector-lan-start");
-  await app.waitFor("LAN active · Server idle");
-  await app.waitFor("text:http://192.168.1.42:8787/pair");
-  expect(backend.startedConnections).toContainEqual({ method: "lan", lan_ip: "192.168.1.42" });
+  expect(app.shows("connector-lan-ip")).toBe(false);
+  expect(app.shows("connector-lan-start")).toBe(false);
+  expect(app.shows("text:Local Network (LAN)")).toBe(false);
+  await app.press("connector-server-start");
+  await app.waitFor("Server active");
+  await app.waitFor("text:https://relay.example/pair/dev-1");
+  expect(backend.startedConnections).toContainEqual({ method: "openbitfun_server", lan_ip: null });
+  expect(backend.startedConnections.some(item => item.method === "lan")).toBe(false);
   // The pairing link is also a scannable QR code (180 px, level M), as on the desktop.
   expect(app.shows("connector-pairing-qr")).toBe(true);
 
   await app.press("connector-copy-url");
-  expect(app.clipboard()).toBe("http://192.168.1.42:8787/pair");
-
-  await app.press("connector-lan-stop");
-  await app.waitFor("LAN relay stopped");
-  await app.waitFor("Start LAN Relay");
-  expect(backend.stoppedConnections).toContain("lan");
-
-  // Server Relay start & stop
-  await app.press("connector-server-start");
-  await app.waitFor("LAN idle · Server active");
-  expect(backend.startedConnections).toContainEqual({ method: "openbitfun_server", lan_ip: null });
+  expect(app.clipboard()).toBe("https://relay.example/pair/dev-1");
 
   await app.press("connector-server-stop");
   await app.waitFor("OpenBitFun Server relay stopped");

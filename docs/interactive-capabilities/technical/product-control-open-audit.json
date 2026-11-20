@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "17a124b388ec4662d540fd802d1c6d90cd54bc65c1b1616ccbe806aab60289ff",
+  "catalogDigest": "8c7c7efeebc00dc169740b5321b981c9bd229525167eaf6d1388436ee4fcfb2d",
   "count": 220,
   "reasonCounts": {
     "externalAuth": 4,
@@ -2089,36 +2089,34 @@
     {
       "capabilityId": "feature.remote-connect",
       "itemId": "connection-methods",
-      "titleZh": "使用免部署官方 Relay 或桌面端局域网 Relay（可同时开启）",
-      "titleEn": "Use the zero-setup official Relay or Desktop LAN Relay concurrently",
+      "titleZh": "使用免部署的官方 Relay",
+      "titleEn": "Use the zero-setup official Relay",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「使用免部署官方 Relay 或桌面端局域网 Relay（可同时开启）」需要结合你当前的网络环境确认连接入口；官方 Relay 开箱即用，私有 Relay 仅面向配套定制客户端构建，界面不提供自定义服务器地址输入。",
-      "reasonEn": "\"Use the zero-setup official Relay or Desktop LAN Relay concurrently\" depends on your current network setup and host confirmation; the official Relay needs no deployment, while private Relays require matching custom builds rather than a custom URL field.",
+      "reasonZh": "「使用免部署的官方 Relay」需要结合你当前的网络环境确认连接入口；官方 Relay 开箱即用，私有 Relay 仅面向配套定制客户端构建，界面不提供自定义服务器地址输入。",
+      "reasonEn": "\"Use the zero-setup official Relay\" depends on your current network setup and host confirmation; the official Relay needs no deployment, while private Relays require matching custom builds rather than a custom URL field.",
       "presentationTarget": {
         "kind": "event",
         "eventName": "openbitfun:open-remote-connect"
       },
       "evidence": [
         "command:remote_connect_get_methods",
-        "source:src/apps/desktop/src/api/remote_connect_api/relay_routes_tests.rs#dual_relay_rpc_persistence_and_teardown_are_independent",
+        "source:src/apps/desktop/src/api/remote_connect_api/relay_routes_tests.rs#official_relay_rpc_persistence_and_teardown",
         "source:src/crates/services/relay-service/src/identity.rs#IDENTITY_ME_URL"
       ]
     },
     {
       "capabilityId": "feature.remote-connect",
       "itemId": "network",
-      "titleZh": "查看本机局域网地址、网络网卡状态与扫码邀请链接",
-      "titleEn": "Inspect LAN IP addresses, network interfaces, and shareable QR invitations",
+      "titleZh": "查看扫码邀请链接",
+      "titleEn": "Show shareable QR invitations",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「查看本机局域网地址、网络网卡状态与扫码邀请链接」涉及查看本机实时网卡地址与屏幕上展示邀请二维码供手机扫描；智能体会为你直接打开「设备与连接」中的「手机或浏览器」连接面板。",
-      "reasonEn": "\"Inspect LAN IP addresses, network interfaces, and shareable QR invitations\" involves inspecting live network interfaces and displaying a visual QR invitation for your phone; the Agent opens the Phone or browser panel in Devices & Connections directly for you.",
+      "reasonZh": "「查看扫码邀请链接」涉及在屏幕上展示邀请二维码供手机扫描；智能体会为你直接打开「设备与连接」中的「手机或浏览器」连接面板。",
+      "reasonEn": "\"Show shareable QR invitations\" involves displaying a visual QR invitation for your phone; the Agent opens the Phone or browser panel in Devices & Connections directly for you.",
       "presentationTarget": {
         "kind": "event",
         "eventName": "openbitfun:open-remote-connect"
       },
       "evidence": [
-        "command:remote_connect_get_lan_ip",
-        "command:remote_connect_get_lan_network_info",
         "command:remote_connect_get_form_state",
         "command:remote_connect_set_form_state"
       ]
@@ -2137,7 +2135,6 @@
       },
       "evidence": [
         "command:obp_get_status",
-        "command:obp_set_lan_enabled",
         "command:obp_create_pairing",
         "command:obp_revoke_paired_client"
       ]

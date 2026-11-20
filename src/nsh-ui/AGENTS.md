@@ -55,6 +55,14 @@ Two rules follow:
   `src/textChunkCoalescer.ts` is `host.js`'s per-frame text-chunk merge for every
   other wire (`test/native-host.test.tsx` holds the two to the same output).
 - `src/api.ts`: typed command wrappers. Keep the wire names and their casing.
+- `src/controller/`: the controller shell of clients without a backend of their own (a
+  browser on the OpenBitFun domain, the NSH phone app): `controllerPort.ts` is the
+  `ControllerPort` interface (sign in with the email code, the account's devices,
+  `connect` to a `BackendConnection`) with the web implementation in `webController.ts`
+  (gateway API, and the page realm's end-to-end channel `openbitfun.controller.*` in
+  `host.js` via `controllerSocket.ts`); the phone app installs its native one.
+  `ControllerShell.tsx` draws the port's answers only. A page whose `#nsh-params`
+  carries `{controller}` installs it from `servedBackend.ts`.
 - `src/browserStore.ts` + `src/scenes/BrowserScene.tsx`: the embedded browser of the
   native desktop. The backend owns targets and agent semantics (`native_browser.rs`); the
   store is the shell's actuator for `browser.*` shell requests over NSH `WebView` refs and

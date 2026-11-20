@@ -98,10 +98,14 @@ pub struct PeerLinkInfo {
     /// The registry peer-host capabilities the peer serves (its hello's
     /// `hostCapabilities`; empty for a peer that does not send them).
     pub host_capabilities: Vec<String>,
+    /// What kind of host the peer is (its hello's `hostKind`: `desktop`, `cli`);
+    /// absent for a peer that does not say, which is a desktop host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_kind: Option<String>,
     pub protocol: Value,
     pub backend: Value,
     pub registry_digest: Value,
-    /// `p2p` or `relayed` (EasyTier route), when known.
+    /// `p2p` or `relayed` (Link route), when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mesh_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -430,6 +434,7 @@ impl PeerLinks {
             scope: hello["scope"].clone(),
             capabilities: strings(&hello["capabilities"]),
             host_capabilities: strings(&hello["hostCapabilities"]),
+            host_kind: hello["hostKind"].as_str().map(str::to_string),
             protocol: hello["protocol"].clone(),
             backend: hello["backend"].clone(),
             registry_digest: hello["registryDigest"].clone(),
@@ -440,7 +445,7 @@ impl PeerLinks {
 
     /// Opens (or reuses) the link to `device_id`.
     pub async fn connect(&self, device_id: &str) -> Result<PeerLinkInfo, String> {
-        if !openbitfun_mesh_service::handshake::valid_device_id(device_id) {
+        if !openbitfun_link::handshake::valid_device_id(device_id) {
             return Err(format!("peer_link: invalid device id {device_id:?}"));
         }
         {

@@ -25,6 +25,7 @@ mod management;
 mod mcp_import;
 mod model_selection;
 mod modes;
+mod obp_host;
 mod peer_host;
 mod plugin_diagnostics;
 mod plugin_host_activation;
@@ -379,6 +380,18 @@ enum Commands {
         /// Only report whether a newer version exists
         #[arg(long)]
         check: bool,
+    },
+
+    /// Show or switch remote control of this device (on by default when signed in)
+    ///
+    /// With remote control on, the CLI host that serves this device (the
+    /// daemon, or an interactive CLI when no daemon runs) joins your account's
+    /// OpenBitFun Link network, so your desktop, phone and browser can drive
+    /// it after signing in with the same account. The switch is shared with
+    /// the desktop app on this machine.
+    RemoteControl {
+        #[command(subcommand)]
+        action: Option<RemoteControlAction>,
     },
 
     /// Manage the always-on account device host daemon
@@ -766,6 +779,16 @@ enum DaemonAction {
     },
 }
 
+#[derive(Subcommand, Clone, Copy)]
+enum RemoteControlAction {
+    /// Show whether remote control is on and what this device's host is doing
+    Status,
+    /// Allow your other devices to control this one
+    On,
+    /// Stop serving remote control on this device
+    Off,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum RemoteControlSetting {
     On,
@@ -1043,6 +1066,9 @@ async fn initialize_core_services_for_deployment(
             tracing::warn!("Failed to initialize CLI peer host services: {e}");
         } else {
             tracing::info!("CLI peer host services initialized");
+            // Remote control over OpenBitFun Link (joins only while this
+            // process serves the device; see `obp_host`).
+            obp_host::install(&runtime);
         }
     }
 
@@ -1063,6 +1089,9 @@ async fn initialize_core_services_for_deployment(
 
 /// Shutdown MCP servers gracefully
 async fn shutdown_mcp_servers() {
+    // Process exit: leave the account's Link network as well (no-op when this
+    // process never joined it).
+    obp_host::shutdown().await;
     if let Some(mcp_service) = get_mcp_service() {
         if let Err(e) = mcp_service.server_manager().shutdown().await {
             tracing::warn!("Failed to shutdown MCP servers: {}", e);
@@ -1601,6 +1630,10 @@ async fn run_cli() -> Result<()> {
 
         Some(Commands::Update { check }) => {
             self_update::run_manual(check).await?;
+        }
+
+        Some(Commands::RemoteControl { action }) => {
+            root_handlers::handle_remote_control(action.unwrap_or(RemoteControlAction::Status))?;
         }
 
         Some(Commands::Daemon { action }) => match action {

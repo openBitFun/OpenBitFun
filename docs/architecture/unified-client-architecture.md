@@ -21,7 +21,14 @@ status lives in the phase tables.
 
 ## The backend protocol (OBP)
 
-The backend exposes one service, `BackendService` (`src/apps/desktop/src/backend_protocol`), to every client:
+The backend exposes one service, `BackendService` (`src/apps/desktop/src/backend_protocol`), to every client.
+The wire itself (event ring, JSON-RPC framing, scopes, listeners, the Link handshake, the `obp-e2e-v1` channel
+and the controller client) is one crate, `openbitfun-obp` (`src/crates/adapters/obp`, adapters layer: protocol
+and transport projection with no product rules): feature `server` for hosts (the desktop backend, the CLI host),
+feature `client` for controllers (the desktop's Peer Device Mode, Detached Dispatch and IM bots, the phone app).
+A host plugs in its dispatcher and event source through `server::ObpBackend` (plus its kind, its same-account
+host verbs and their capabilities); the desktop's `backend_protocol::ws` and the CLI's `obp_host` are thin
+adapters over it.
 
 - `dispatch(command, args) -> Result<json, error>`: `command` is the product command name (the command
   names, kept as the stable vocabulary), `args` exactly what `invoke` sends.
@@ -38,9 +45,9 @@ Transports carry this unchanged:
 |---|---|---|
 | In-process | Native desktop host (`src/apps/desktop-nsh`) | NSH native module `openbitfun/native`: `Backend.invoke`, `Backend.nextEvents`, `Backend.ready` |
 | WebSocket, loopback | Browser on the same machine | JSON-RPC 2.0; `hello` carries protocol version, capabilities, registry digest, `last_seq` |
-| WebSocket, LAN | Phone/browser on the same network | Direct; pairing QR pins the backend certificate and key; no internet needed |
 | Relay tunnel | Any client, anywhere | The relay forwards opaque frames between same-account devices; end-to-end encryption uses the existing device X25519 keys |
-| Device mesh (EasyTier) | Another desktop of the same account, anywhere; a phone that joined the account mesh with the EasyTier app | TLS WebSocket to the device's mesh virtual IP; P2P with relay fallback; `account-device` handshake with the device X25519 keys, or a `paired-client` QR credential for a phone browser (wave 4, below) |
+| Browser gateway (`wss://<domain>/obp/<deviceId>`) | A browser anywhere (the web controller) | A byte pipe into the account's Link network; the browser and the device run the `obp-e2e-v1` end-to-end channel inside it (X25519 device keys, AES-256-GCM), so the gateway sees ciphertext |
+| Device mesh (OpenBitFun Link, an EasyTier fork in-process) | Another desktop of the same account, anywhere (same network included) | TLS WebSocket to the device's mesh virtual IP; P2P (LAN, IPv4, IPv6) with relay fallback through another account device or the server; `account-device` handshake with the device X25519 keys, or a `paired-client` QR credential for a phone browser (wave 4, below). The only multi-device transport of the new version (wave 6) |
 
 The backend serves the UI bundle (NSH web target) on its listener, so a browser or phone opening the backend
 URL gets the same UI that then connects to `/obp`.
@@ -65,12 +72,13 @@ first available `seq` and the client re-hydrates. The runtime is never blocked b
 
 ### WebSocket transport (phase 3, implemented)
 
-Owner: `src/apps/desktop/src/backend_protocol/ws` (server), `src/nsh-ui/src/webSocketConnection.ts` (client).
-The native host starts it in `start_native_backend`. `OPENBITFUN_OBP_LISTENER=off` disables it; `OPENBITFUN_OBP_PORT` /
-`OPENBITFUN_OBP_LAN_PORT` override the preferred ports (47610 / 47611, ephemeral when taken).
+Owner: `openbitfun-obp` (`src/crates/adapters/obp`, server), the desktop's adapter
+`src/apps/desktop/src/backend_protocol/ws`, `src/nsh-ui/src/webSocketConnection.ts` (client).
+The native host starts it in `start_native_backend`. `OPENBITFUN_OBP_LISTENER=off` disables it; `OPENBITFUN_OBP_PORT`
+overrides the preferred loopback port (47610, ephemeral when taken).
 
-- **Listeners.** Loopback `http://127.0.0.1:<port>` always; LAN `https://0.0.0.0:<port>` only while the user
-  enables it in Devices (persisted). Both serve the NSH web bundle at `/` (`pnpm run desktop-nsh:web`, found via
+- **Listeners.** Loopback `http://127.0.0.1:<port>` always; the mesh listener (TLS, next sections) while the device
+  mesh runs. There is no LAN listener (retired in wave 6, see "Mesh only"). Both serve the NSH web bundle at `/` (`pnpm run desktop-nsh:web`, found via
   `OPENBITFUN_WEB_UI_DIR`, `Contents/Resources/nsh-web`, `nsh-web/` next to the executable, or the dev output) with
   `index.html` carrying `#nsh-params` `{obp: {url, path, protocol}}`, precompressed files, immutable caching for
   content-hashed names, and the CSP `script-src 'self' 'wasm-unsafe-eval'` plus `frame-ancestors 'none'`.
@@ -84,11 +92,11 @@ The native host starts it in `start_native_backend`. `OPENBITFUN_OBP_LISTENER=of
   future gets `backend://events-dropped {reason: "backend_restarted"}`.
 - **Scopes.** `owner`: loopback, `Host` must be a loopback name (DNS rebinding), `Origin` must be the listener's
   own, and the per-launch token (`<data>/obp/owner-token`, 0600, removed at shutdown) presented as
-  `Authorization: Bearer` or as the HttpOnly cookie the `/?token=` launch link sets. `paired-client`: LAN only;
-  `/pair?code=` (browsers, cookie) or `POST /obp/pair` (native clients, bearer) redeems a one-time code (5 min)
-  for a revocable credential stored as SHA-256 in `<data>/obp/paired-clients.json`; the QR carries
-  `https://<lan>/pair?code=…#fp=sha256:…`, the fingerprint of the self-signed certificate kept in
-  `<data>/obp/lan-identity.json`. Revocation closes live connections (close code 4003). `/obp/session` tells a
+  `Authorization: Bearer` or as the HttpOnly cookie the `/?token=` launch link sets. `paired-client`: mesh
+  listener only; `/pair?code=` (browsers, cookie) or `POST /obp/pair` (native clients, bearer) redeems a one-time
+  code (5 min) for a revocable credential stored as SHA-256 in `<data>/obp/paired-clients.json`; the QR carries
+  `https://<virtual-ip>:<port>/pair?code=…#fp=sha256:…`, the fingerprint of the self-signed certificate kept in
+  `<data>/obp/lan-identity.json` (name kept from the LAN listener so the certificate survives upgrades). Revocation closes live connections (close code 4003). `/obp/session` tells a
   page whether it holds a session (browsers cannot read a refused upgrade).
 - **Allowlist.** Non-owner scopes run only registry rows with `PeerStance::Proxied`; owner-only events are the
   registry's `event_stance` prefixes (`account://`, `window://`, `tray://`, updater, `peer-host-invoke://`, ...).
@@ -102,30 +110,37 @@ The native host starts it in `start_native_backend`. `OPENBITFUN_OBP_LISTENER=of
   `backendResync.ts` re-reads sessions, the open transcript, permission prompts and the question mailbox on
   `events-dropped`.
 
-Remaining after phase 3 (wave 4 delivered the relay tunnel as the device mesh and Peer Device Mode on OBP, below): retiring `mobile-web` and
-the embedded LAN relay (both still served), a native NSH mobile client that pins the QR fingerprint (browsers
-show the self-signed warning; the user compares the fingerprint).
+Remaining after phase 3 (wave 4 delivered the relay tunnel as the device mesh and Peer Device Mode on OBP, below;
+wave 6 retired the LAN listener and the embedded LAN relay): retiring `mobile-web` (still served by the cloud relay
+for older hosts and clients), a native NSH mobile client that pins the QR fingerprint (browsers show the
+self-signed warning; the user compares the fingerprint).
 
-### Device mesh: OBP between account devices over EasyTier (wave 4, implemented)
+### Device mesh: OBP between account devices over OpenBitFun Link (wave 4, Link core wave 7)
 
-New clients connect the devices of one account through an [EasyTier](https://github.com/EasyTier/EasyTier)
-network instead of the old relay transport. The relay server stays the account's device directory (names,
-X25519 public keys); it carries no mesh traffic.
+The devices of one account connect through **OpenBitFun Link**, an EasyTier v2.7.1 fork
+(`third_party/easytier`, LGPL-3.0, changes in its `OPENBITFUN-PATCH.md`) that every end embeds, instead of
+the old relay transport. The relay server stays the account's device directory (names, X25519 public keys);
+it carries no Link traffic. Wave 4 ran the official EasyTier binaries as a sidecar; wave 7 replaced them.
 
-- **Sidecar.** The official `easytier-core`/`easytier-cli` v2.6.4 binaries (LGPL-3.0, separate executables,
-  `scripts/fetch-easytier.mjs` pins the archive SHA-256; packaged in `Contents/Resources/bin` or `bin/`)
-  run as a hidden child process (`openbitfun-mesh-service::sidecar`): no TUN, no root, DHCP virtual IP,
-  hostname = account device id, loopback-only SOCKS5 and RPC portal, inbound virtual TCP admitted only to
-  the OBP mesh ports 47612-47619, restart with backoff, stopped on sign-out and quit, a stale sidecar of a
-  crashed run is reaped. Config (with the network secret) is written 0600 under `<data>/mesh`.
-- **Credentials.** `POST https://remote.openbitfun.com/mesh/v1/credentials` (`relay-service::mesh_issuer`,
-  deployed as `openbitfun-mesh-issuer`, `deploy/easytier`) verifies the OpenBitFun identity access token and
-  returns `{networkName: "obf-" + HMAC(key, accountId), networkSecret, peers, easytierVersion}`: every
-  device of the account gets the same network, nobody else can derive it, the issuer stores nothing.
-  Clients cache the document per account (0600) and use it while the issuer is unreachable; a 404 answers
-  an explicit `mesh_unsupported` state. The shared node (`openbitfun-relay`) relays only `obf-*` networks.
-- **Listener.** `ObpServer::start_mesh` binds the first free port of 47612-47619 on loopback (no-TUN
-  EasyTier delivers inbound mesh TCP there), TLS with the backend's self-signed identity, routes `/obp`
+- **In-process node** (`openbitfun-link`, services layer). The desktop backend and the CLI host (wave 9) run
+  the fork on its own Tokio runtime: no TUN, no root, no child process, no SOCKS5 or other proxy port. DHCP
+  virtual IP, hostname = account device id, direct listeners on `0.0.0.0` and `[::]` (TCP+UDP, IPv6 on), UDP
+  and TCP hole punching, UPnP, LAN direct, relaying through another account device, and the relay node as the
+  fallback. `Link` (`session.rs`) follows the account: joins on sign-in, leaves on sign-out and quit, restarts
+  a stopped node with backoff. Hosts get tokio `AsyncRead + AsyncWrite` streams: `Link::accept()` (inbound
+  streams on the OBP port) and `connect(device_id, port)` (outbound, through the fork's userspace stack).
+- **Credentials and join tokens.** `POST https://remote.openbitfun.com/mesh/v1/credentials`
+  (`relay-service::mesh_issuer`, deployed as `openbitfun-mesh-issuer`, `deploy/easytier`) verifies the
+  OpenBitFun identity access token and returns `{networkName: "obf-" + HMAC(key, accountId), networkSecret,
+  peers, easytierVersion, joinToken, joinTokenExpiresAt}`: every device of the account gets the same network,
+  nobody else can derive it, the issuer stores nothing. The join token (`relay-service::link_token`, Ed25519,
+  30 minutes, bound to network, account and device id) is what the relay node checks: a handshake without a
+  valid token for its network is refused before any relay traffic, so nobody without a sign-in can join an
+  account network or use relay bandwidth. Clients refresh it 10 minutes before expiry and cache the document
+  per account (0600) for issuer outages; a 404 answers an explicit `mesh_unsupported` state. Network secrets
+  and tokens are never logged or shown in a UI (`mesh_phone_join_info` is retired).
+- **Listener.** `ObpServer::start_mesh_with` serves Link's inbound streams for the first free port of
+  47612-47619 on the device's virtual IP (no host socket), TLS with the backend's self-signed identity, routes `/obp`
   and `/obp/mesh/info` only. The upgrade carries `Authorization: ObpMesh <proof>` plus device, target,
   time and nonce headers; the proof is HMAC over both device ids, the TLS certificate fingerprint the
   client saw, the time and the nonce, keyed from the device pair key (`device_crypto::derive_message_key`
@@ -133,15 +148,35 @@ X25519 public keys); it carries no mesh traffic.
   by 120 s, browser `Origin`s are refused. The connection scope is `account-device`: registry `Proxied`
   commands only, owner-only events (now including `mesh://`) withheld, the same credit/ack, coalescing
   and resume as every OBP connection; `hello` adds the `mesh_v1` capability.
-- **Discovery and API.** EasyTier's route table is the presence list (hostname = device id, virtual IP,
-  p2p or relayed, latency); `/obp/mesh/info` (unauthenticated, no secrets) advertises device id, OBP
+- **Discovery and API.** Link's route table is the presence list (hostname = device id, virtual IP, route
+  `direct_lan`/`direct_ipv4`/`direct_ipv6`/`relayed_peer` (+ `relayVia`)/`relayed_server`, latency, last
+  seen, devices seen in the last day); `/obp/mesh/info` (unauthenticated, no secrets) advertises device id, OBP
   protocol, capabilities (`obp_v1`, `mesh_v1`) and the certificate fingerprint. Owner commands
   `mesh_status` and `mesh_list_devices` (`ControllerLocal`) and the `mesh://status-changed` event
   expose them; `crate::mesh::connect_device(device_id, options)` returns an authenticated
   `MeshObpConnection` (`call`, `next_event` with ack-on-take backpressure, resume via `lastSeq`), which
   Peer Device Mode, Detached Dispatch and IM bots use (next section).
 - **Controls.** `OPENBITFUN_MESH=off` disables it; `OPENBITFUN_MESH_API_URL` points at another issuer;
-  `OPENBITFUN_EASYTIER_DIR` at other binaries; `OPENBITFUN_MESH_DISABLE_P2P=1` forces relaying.
+  `OPENBITFUN_MESH_DISABLE_P2P=1` forces relaying.
+- **Browsers: the web controller and the gateway (wave 8).** Browsers do not run Link (no WASM, no
+  `easytier-js`). `https://<domain>/app/` serves the NSH web bundle with `#nsh-params` `{controller: {api,
+  gateway}}` (`pnpm run web-controller:build`); the page installs the web `ControllerPort`
+  (`src/nsh-ui/src/controller/`) and shows the controller shell: email, code, the account's devices, connect.
+  The browser gateway (`openbitfun-link-gateway`, `src/apps/relay-server/link-gateway`, on loopback behind
+  nginx `/obp/`, deployed as in `deploy/easytier/README.md`) signs the browser in through the identity
+  authority, registers the browser's own X25519 device key in the account directory (a controller row,
+  never a host), keeps the session in a sealed HttpOnly cookie, lists the devices with whether and why each
+  can be connected, and pipes `wss://<domain>/obp/<deviceId>` to the device's OBP port through
+  `openbitfun_link::gateway::LinkGateway` (one member per account network, the account from the session
+  only, the target checked against that account's directory). It lives in its own process because it
+  needs the issuer key (to mint its membership) and the relay node must not hold it. Inside the pipe the
+  browser's page realm (`host.js`: WebCrypto key, non-extractable, in IndexedDB) and the device run OBP's
+  **end-to-end channel** `obp-e2e-v1` (`backend_protocol/ws/e2e.rs`): a stream that opens with its magic
+  instead of a TLS `ClientHello` gets the account-device proof over the directory pair key bound to fresh
+  X25519 ephemeral keys, then AES-256-GCM records carrying the OBP messages; the connection then runs as
+  `account-device` like any other. The gateway sees and logs only byte counts. A device on a build
+  without the channel hangs up on the hello and the page asks to update it; a device off Link answers
+  `4404` from the gateway.
 
 ### Peer Device Mode, dispatch, bots and phones over the mesh (wave 4, implemented)
 
@@ -156,31 +191,124 @@ serving it for older peers and clients.
   `ControllerLocal`), and the NSH bridge makes it the surface's data backend: registry `ControllerLocal`
   commands and owner-only events stay local, everything else is the peer's, unchanged and live. Chosen over a
   UI-side socket because the device handshake key stays in the backend; the extra hop is in-process. The hello
-  adds `hostCapabilities` (the registry's peer-host list) for feature gates. A device on the mesh is never sent
-  to the relay, also while the mesh cannot reach it (reported instead); devices never seen on the mesh, and
-  hosts that run no mesh (older Tauri desktops, CLI), keep the relay path. The banner and Devices say which path is in use.
+  adds `hostCapabilities` (the registry's peer-host list) for feature gates and `hostKind` (`desktop`, `cli`;
+  additive, display only). A device on the mesh is never sent to the relay, also while the mesh cannot reach
+  it (reported instead); devices never seen on the mesh, and hosts that run no mesh (older Tauri desktops,
+  CLI builds before wave 9), keep the relay path. The banner and Devices say which path is in use.
 - **Detached Dispatch and IM bots.** The `account-device` scope also runs `dispatch_target_*` and
   `obp_remote_command` (a bot `RemoteCommand`), advertised as `dispatch_target_v1` / `remote_command_v1`.
   Controllers go through the `remote_connect::mesh_route` port (desktop implementation `mesh/route.rs`): a mesh
   device with the capability gets OBP (errors are reported, never retried over the relay); older targets keep
-  the relay RPC with the same agent-identity translation.
-- **Phones and browsers anywhere** (Devices > Use on phone). Same network: the LAN listener and its pairing QR.
-  Anywhere: the phone joins the account mesh with the official EasyTier app (Android: the EasyTier GUI APK from
-  GitHub releases; iOS/iPadOS 16+: the EasyTier app on the App Store, not offered in mainland China), using the
-  network name, secret and peer `mesh_phone_join_info` shows (secret revealed on demand, never logged), then
-  scans a mesh pairing QR (`obp_create_pairing {via: "mesh"}`). The mesh listener serves the UI bundle and the
-  `paired-client` routes to requests without the device handshake (own cookie, same pairing store and
-  revocation as the LAN). Browsers show the self-signed certificate warning once; the user compares the
-  fingerprint. Neither path uses `mobile-web` or the relay: `mobile-web` and the relay pairing stay only for
-  older hosts and the OpenBitFun-Mobile native clients (compat), and Devices labels that section so.
+  the relay RPC with the same agent-identity translation. Both bot lanes use it: turns (`RemoteBotTarget`) and,
+  since wave 9, the command router's menu commands (sessions, assistants, models; `exec_remote_rpc`).
+- **Phones and browsers.** Phones join Link in the OpenBitFun app (native data plane through FFI, signed in
+  with the account, `src/apps/mobile-nsh`); browsers reach devices through the gateway (above). Both run the
+  same controller shell over the `ControllerPort` interface (`src/nsh-ui/src/controller/controllerPort.ts`:
+  `requestCode`, `verifyCode`, `signOut`, `listDevices`, `connect`), web and native implementations. The
+  wave-4 path through the official EasyTier app is retired with `mesh_phone_join_info` (network credentials are
+  never shown); Devices › "Use on phone or in a browser" shows the web controller's address and its QR only. The mesh listener keeps serving the UI bundle and the `paired-client` routes to requests
+  without the device handshake (own cookie, the one pairing store and revocation) for clients on Link.
+  `mobile-web` and the relay pairing stay only for older hosts and the OpenBitFun-Mobile native clients.
 
-| Client | Same network | Anywhere |
-|---|---|---|
-| Android phone | Any browser + LAN QR | EasyTier app, then browser + mesh QR |
-| iPhone / iPad (16+) | Safari + LAN QR | EasyTier App Store app (not in mainland China), then Safari + mesh QR |
-| Another computer's browser | LAN URL / QR link | Only if that computer runs EasyTier in the account mesh |
-| Another OpenBitFun desktop (native) | Peer Device Mode over the mesh | Peer Device Mode over the mesh |
-| Older OpenBitFun host or client | Legacy relay / `mobile-web` | Legacy relay / `mobile-web` |
+| Client | Same network or anywhere |
+|---|---|
+| Phone (Android, iOS) | The NSH phone app (`src/apps/mobile-nsh`) joins Link as a controller with the email-code sign-in (wave 8, below); the OpenBitFun-Mobile apps keep the legacy relay |
+| A browser anywhere (phone or computer) | `https://<domain>/app/`: email sign-in, the account's devices, OBP through the gateway with the end-to-end channel (wave 8); on this computer, the loopback owner link |
+| Another OpenBitFun desktop (native) | Peer Device Mode over the mesh |
+| A CLI host (`openbitfun`, the daemon) as the driven device | Wave 9: joins Link as a device while it serves this machine's device identity, OBP on its port like a desktop (below) |
+| Older OpenBitFun host or client | Legacy cloud relay / `mobile-web` (the LAN relay of older hosts still works against those hosts) |
+
+### CLI host as a remotely controlled device (wave 9)
+
+The CLI process that serves this machine's device identity (the daemon, or an interactive `openbitfun` when no
+daemon runs; a desktop app on the same machine is the primary host and wins) joins the account's Link network as
+a device and serves OBP on its port (`src/apps/cli/src/obp_host.rs` over `openbitfun-obp`), so the desktop's Peer
+Device Mode, the phone app and the browser controller drive it like a desktop host, with the same protocol.
+
+- **When.** Signed in, remote control on (the machine-wide switch shared with the desktop app, `openbitfun
+  remote-control [status|on|off]`; on by default), and this process owns device routing (its relay routing is
+  not standing by for a desktop). Link re-checks on routing changes and every 15 s; `OPENBITFUN_MESH=off`
+  turns it off. State lives in `<user data>/cli-host/` (`mesh/` credential cache, `obp/` TLS identity and
+  pairings, `remote-control.json` status without secrets). No loopback listener (the terminal is the CLI's UI).
+- **Calls.** `account-device` connections run the Peer Device host's registry-derived handlers
+  (`peer_host::handle_obp_call`: the registry verdict for `PeerHostKind::Cli`, arguments and results in the
+  canonical agent-identity dialect like every OBP host). A command the CLI does not run answers with the
+  registry's refusal (`command 'x' is not supported on CLI peer host: …`, typed `data.kind = "unsupported"`);
+  the relay control plane (`peer_mode_ping`, attach, detach) is not an OBP command. Host verbs:
+  `dispatch_target_*` (the durable CLI runner) and `obp_remote_command` (bots), advertised as
+  `dispatch_target_v1` / `remote_command_v1`.
+- **Capabilities and events.** The `hello` carries `hostKind: "cli"` and the registry's CLI capability set in
+  `hostCapabilities`, so the UI hides what the CLI does not serve. Events are the Peer Device host's fan-out
+  (agentic events with their session cursors, permission requests, catalog, file watch, settings), published to
+  the host's own ring in the canonical dialect; relay controllers keep their legacy DeviceEvents.
+- **Compatibility.** Older controllers keep the relay path to the CLI (it still serves relay routing); older
+  CLI builds are never on Link, so controllers keep their relay path to them. Remaining: an IM bot hosted by
+  the CLI daemon reaches other devices through the relay only (the CLI installs no `mesh_route`).
+
+### Phone app: the NSH UI as a Link controller (wave 8)
+
+The phone app (`src/apps/mobile-nsh`, iOS and Android) is the same NSH UI built with a native module of its own,
+`openbitfun/mobile` (crate `openbitfun-mobile-native`). It has no backend: the UI's controller port
+(`src/nsh-ui/src/controller/controllerPort.ts`, shared with the browser controller) is implemented natively
+(`src/apps/mobile-nsh/src/nativeController.ts`), and the chosen device's backend becomes the UI's connection.
+
+- **Sign-in.** The email code goes through the account APIs every device uses: a device sign-in transaction of
+  the identity service (`/auth/desktop/start?methods=all`) whose ticket takes the code (`/auth/email/send`,
+  `/auth/email/verify`), then `/auth/desktop/poll` returns this phone's token pair. The phone registers its own
+  X25519 public key in the account directory (`/relay/api/auth/login`, kind `mobile`); desktops derive the pair
+  key from it exactly as for another desktop. The key, the token pair and the directory token are one record in
+  the platform keystore (iOS Keychain `AfterFirstUnlockThisDeviceOnly`; Android an app-private 0600 file until
+  NSH exposes the JVM for a Keystore wrap).
+- **Link as a controller.** The module runs `openbitfun-link` with `NodeRole::Controller`: no OBP listener, no
+  inbound virtual TCP, no forwarding of other devices' data; desktops list it as a controller, never as an
+  unreachable device. P2P (LAN, IPv4, IPv6 hole punching) first, relayed by another account device or the server
+  otherwise.
+- **Devices.** Directory rows joined with the Link route (`direct_lan`, `direct_ipv4`, `direct_ipv6`,
+  `relayed_peer` with the relaying device's name, `relayed_server`); controllers are left out; a device that is
+  online but not on Link says `update_required`, one that is offline says `offline` (no relay fallback).
+- **Connections.** OBP over a Link stream with the account-device handshake (the shared client,
+  `openbitfun_obp::client`, the code the desktop's `ws/mesh_client.rs` re-exports): `account-device` scope, `Proxied` commands only, owner-only
+  events withheld, credit/ack backpressure. A dropped connection redials on the next call and resumes after the
+  last event the UI took (`lastSeq` + `instanceId`); a restarted backend answers `events-dropped` and the UI
+  re-reads. The connection is the same JSON wire as the in-process desktop backend (`jsonWireConnection.ts`).
+- **Packaging.** `pnpm run mobile-nsh:package:{ios-sim,ios,android}` (`scripts/package-mobile-nsh.mjs`, NSH
+  `nsh package`); the module and Link build for `aarch64-apple-ios(-sim)` in NSH's generated workspace (libc is
+  pinned to 0.2.189 there: 0.2.191 limits `RTAX_MAX` to macOS, which breaks EasyTier's `netdev` on iOS).
+
+### Mesh only: LAN sunset and a domain-only server
+
+The new version's multi-device connectivity is the account device mesh only. Devices on one network already
+connect directly through it (every device runs a direct-connect listener and the mesh picks the LAN path), so the
+separate LAN options are gone:
+
+- **Removed.** The OBP LAN listener (TLS, 47611, `OPENBITFUN_OBP_LAN_PORT`), LAN pairing QR codes, the Devices
+  "same network" options, the desktop's embedded LAN relay (`remote_connect` LAN mode, `RelayRoute::Lan`) and the
+  LAN-only commands. Registry rows: `obp_set_lan_enabled`, `remote_connect_get_lan_ip` and
+  `remote_connect_get_lan_network_info` are `retired(...)`. Kept: the loopback owner listener (a browser on the
+  same computer), the mesh listener, and the `paired-client` scope on it (phones that joined the mesh).
+- **Answers to older callers.** A retired command answers
+  `unsupported_in_native_host: <command> (retired: <reason>)` and a non-owner scope gets `-32003` with the
+  reason; `obp_create_pairing {via: "lan"}` answers `obp_lan_retired: …` (the default route is now `mesh`);
+  `remote_connect_start`/`_stop` with `lan` answer `unsupported: the LAN relay was retired; …` before touching
+  any service, and `remote_connect_get_methods` no longer lists it. No silent fallback to the cloud relay.
+- **Compatibility.** Older mobile-web clients that paired through a LAN relay invitation
+  (`http://<lan-ip>:9700`) cannot reach new hosts that way; they use the cloud relay invitation, which new and
+  older hosts both still serve (older hosts also keep their own LAN relay). Phones paired on the LAN listener
+  keep their credential record in `<data>/obp/paired-clients.json` and the same certificate
+  (`lan-identity.json`), but must join the mesh and pair again (the browser cookie was per listener). The
+  retired `<data>/obp/settings.json` (`lanEnabled`, `lanPort`) is no longer read and is left on disk untouched.
+- **Domain-only server.** The OpenBitFun server opens no port of its own: it is reached only through its domain
+  over HTTPS, and the hosting provider's front end forwards that traffic to nginx. The relay node listens on
+  `ws://127.0.0.1:11011/` only and is reached as `wss://remote.openbitfun.com/mesh/et/` (the issuer hands out
+  only that URL); no `0.0.0.0` or `[::]` TCP/UDP listener exists. This does not limit direct connections: hole
+  punching runs between the devices themselves (addresses from public STUN servers, exchanged over the existing
+  connection), and the server carries only coordination and the relayed fallback for devices that cannot connect
+  directly (`deploy/easytier/README.md`). The front end closes a WebSocket after 180 s without traffic
+  (measured); Link pings each WebSocket connection at least every 15 s and redials a lost relay connection
+  every second; nginx keeps tunnels for 3600 s, unbuffered, and counts per-client limits by the forwarded client address.
+- **Path label.** Devices shows one line per mesh device from `mesh_list_devices` / `mesh_status`
+  (`route`: `direct_lan`, `direct_ipv4`, `direct_ipv6`, `relayed_peer` with the relaying device's name when the
+  backend names it in `relayVia`, `relayed_server`; older backends send only `path` = `p2p` / `relayed`).
 
 ### Native desktop host: host adapters and the shell channel (phase 1, wave 4)
 
@@ -298,7 +426,7 @@ The desktop product builds, runs, packages and ships only as the native NSH app.
 | `DeviceEvent` fan-out allowlist and source-device tagging | Per-connection event stream with scope filtering |
 | Remote session records via "nudge then pull" (`host-stream-changed` + `read_stream`), no token streaming | Live seq-numbered events; durable records stay the history read through commands |
 | `mobile-web` and its `RemoteCommand` DTOs | The same NSH UI served by the backend |
-| Embedded LAN relay | Direct LAN WebSocket with pinned pairing |
+| Embedded LAN relay, LAN OBP listener | The device mesh (it picks the direct LAN path for devices on one network) |
 | Duplicated CLI peer handlers | One generated dispatch shared by Desktop and CLI hosts |
 
 ## Upgrade compatibility
@@ -366,6 +494,6 @@ Running turn and live channel (wave 5). `get_session_transcript_view` also answe
 |---|---|---|
 | 1 | Native NSH desktop host with in-process `BackendService`; host shim makes every command callable without Tauri; shell channel, native updater, MiniApp windows and Windows/Linux runners (wave 4); the Tauri shell and React UI retired (wave 4 sunset); wave 5 ports the MiniApp market into Spaces (browse, listing detail, install/update with the host's permission and overwrite confirmations, rating, favorites, submissions with withdraw, `.bfminiapp` import, installed marks from `miniapp_market_installed_origins`) on the existing `miniapp_market_*` commands; submitting a new release stays retired with its Tauri window capture | WebView at runtime, Tauri desktop shell, `src/web-ui` |
 | 2 | OBP for Peer Device Mode: live token streaming desktop-to-desktop, calls go straight to dispatch. Wave 4: done over the device mesh (`peer_link_*`, NSH bridge routing, per-device negotiation, legacy relay kept for older devices) | Webview bounce for peer calls, fan-out allowlist, nudge-then-pull for live content (new-to-new) |
-| 3 | WebSocket listener, UI bundle serving, LAN pairing; logic batches 1-3 | Embedded LAN relay, `mobile-web` on LAN, `apps/server` dispatcher |
-| 4 | Relay tunnel with end-to-end encryption; logic batch 4. Wave 4 delivers the transport as the EasyTier device mesh (sidecar, issuer, `account-device` listener, client helper), Peer Device Mode, Detached Dispatch and IM bots on it, and phones over the LAN or the mesh (paired-client on the mesh listener) | `mobile-web` and the relay for new clients (kept for older hosts and clients); typed `RemoteCommand` still carries bot calls (`obp_remote_command`) |
-| 5 | Bots, dispatch observers and the CLI host on `BackendService`; logic batch 5 | Poll paths, duplicate CLI handlers (the desktop's Tauri crate dependency is gone since the wave 4 sunset) |
+| 3 | WebSocket listener, UI bundle serving, QR pairing; logic batches 1-3. Wave 6: the LAN listener and LAN pairing retired (mesh only) | Embedded LAN relay (retired wave 6), `mobile-web` on LAN (retired wave 6), `apps/server` dispatcher |
+| 4 | Relay tunnel with end-to-end encryption; logic batch 4. Wave 4 delivers the transport as the EasyTier device mesh (sidecar, issuer, `account-device` listener, client helper; wave 7 replaces the sidecar with the in-process Link fork and join tokens), Peer Device Mode, Detached Dispatch and IM bots on it, and phones over the mesh (paired-client on the mesh listener). Then: mesh only, domain-only server node | `mobile-web` and the relay for new clients (kept for older hosts and clients); typed `RemoteCommand` still carries bot calls (`obp_remote_command`) |
+| 5 | Bots, dispatch observers and the CLI host on `BackendService`; logic batch 5. Wave 9: one OBP crate (`openbitfun-obp`) for the desktop, the CLI host and the phone; the CLI host serves OBP over Link with registry-derived handlers and capabilities; bot menu commands use the `mesh_route` port like bot turns | Poll paths, duplicate CLI handlers (the desktop's Tauri crate dependency is gone since the wave 4 sunset), the phone's copy of the OBP client |

@@ -30,22 +30,22 @@ Follow sessions, approve permissions, and keep working from Mobile Web or a WeCh
   - Allow control of this device
   - 说明：在设备与连接的概览中切换。关闭后，本机显示为离线，仍可控制其他在线设备。
   - Why & how: Switch this in the Devices & Connections overview. When off, this device appears offline and can still control other online devices.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 使用免部署官方 Relay 或桌面端局域网 Relay（可同时开启）
-  - Use the zero-setup official Relay or Desktop LAN Relay concurrently
-  - 说明：外网出门走官方加密中继即开即用，内网高速互连可同时打开桌面端局域网 Relay；首次身份认证均需联网登录。
-  - Why & how: Use the official Relay anywhere with zero server setup, and optionally run the Desktop LAN Relay alongside it on local networks (sign-in requires internet access).
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 使用免部署的官方 Relay
+  - Use the zero-setup official Relay
+  - 说明：外网出门走官方加密中继即开即用，首次身份认证需联网登录；桌面端局域网 Relay 已下线，同一网络的设备经账号设备网络直连。
+  - Why & how: Use the official encrypted Relay anywhere with zero server setup (sign-in requires internet access). The Desktop LAN Relay was retired; devices on the same network connect directly through the account device mesh.
 - **智能体可直接控制 / Direct Agent control** · 一键启动、停用远控渠道并查看实时连接与设备信息
   - Start or stop Remote Connect channels and inspect live connection status
   - 说明：无论是手机网页远控还是各平台机器人，都能随时独立启停并查看监听状态、配对情况与异常提示，停用不会清空历史会话。
   - Why & how: Start or stop Mobile Web and individual bots independently while inspecting live listener state, pairing status, and recovery hints without losing sessions.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看本机局域网地址、网络网卡状态与扫码邀请链接
-  - Inspect LAN IP addresses, network interfaces, and shareable QR invitations
-  - 说明：直观展示当前可用局域网 IP 与二维码邀请卡片；二维码仅用于引导识别目标主机，仍需账号权限校验才可访问。
-  - Why & how: View available LAN IPs and invitation QR cards; scanning identifies the host while still enforcing full account authorization.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看扫码邀请链接
+  - Show shareable QR invitations
+  - 说明：直观展示二维码邀请卡片；二维码仅用于引导识别目标主机，仍需账号权限校验才可访问。
+  - Why & how: View invitation QR cards; scanning identifies the host while still enforcing full account authorization.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在手机或浏览器中打开同一界面，扫码配对并随时撤销
   - Open the same UI on a phone or browser, pair by QR, and revoke at any time
-  - 说明：原生桌面应用在本机提供网页界面与 OBP 协议：本机浏览器凭一次性启动链接以所有者身份连接；开启局域网后，手机扫描一次性二维码（携带自签名证书指纹）完成配对，配对设备只能执行可远程代理的命令，可在设备页随时撤销。
-  - Why & how: The native desktop serves its web UI and the OBP protocol: a browser on this computer connects as the owner through a one-time launch link; with the LAN listener on, a phone pairs by scanning a one-time QR code that carries the self-signed certificate fingerprint, runs only proxied commands, and can be revoked in Devices at any time.
+  - 说明：原生桌面应用在本机提供网页界面与 OBP 协议：本机浏览器凭一次性启动链接以所有者身份连接；手机加入账号设备网络后，扫描一次性二维码（携带自签名证书指纹）完成配对，配对设备只能执行可远程代理的命令，可在设备页随时撤销。局域网监听已下线，同一网络内的设备经设备网络直连。
+  - Why & how: The native desktop serves its web UI and the OBP protocol: a browser on this computer connects as the owner through a one-time launch link; a phone that joined the account device mesh pairs by scanning a one-time QR code that carries the self-signed certificate fingerprint, runs only proxied commands, and can be revoked in Devices at any time. The LAN listener was retired: devices on the same network connect directly through the mesh.
 - **智能体可直接控制 / Direct Agent control** · 接入微信扫码、飞书或 Telegram 聊天机器人（每次连接一个聊天应用，与手机远控并行不悖）
   - Connect a WeChat (QR login), Feishu, or Telegram bot alongside Mobile Web
   - 说明：支持微信扫码登录或从本机私有凭据文件加载飞书 / Telegram 配置；同一主机一次连接一个聊天应用（切换前先断开当前机器人，与「手机或浏览器」远控互不影响），凭据安全保存在执行主机。

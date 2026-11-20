@@ -181,12 +181,15 @@ For MiniApp Agent session and context changes, run
 `cargo test --locked -p openbitfun-desktop --lib api::miniapp_agent_api::tests`.
 This covers legacy payloads, exact context paths, trust instructions, and snapshot cleanup.
 
-For independent official/LAN Relay routing and scoped teardown, run
+For official Relay routing, scoped teardown and the retired LAN Relay refusal, run
 `cargo test --locked -p openbitfun-desktop --lib api::remote_connect_api`
 and `cargo test --locked -p openbitfun-desktop --lib api::peer_host_invoke::tests`.
-The dual-Relay test runs actual sockets and encrypted RPC in a child process with
-temporary product storage; it does not exercise physical LAN interfaces, SSH
-workspaces, or the production Relay. UI coverage lives in `src/nsh-ui` (`DevicesScene`, `phoneStore`).
+The Relay route tests run actual sockets and encrypted RPC against a loopback
+Relay fixture in a child process with temporary product storage; they do not
+exercise SSH workspaces or the production Relay. The desktop no longer hosts an
+embedded LAN Relay: `lan` start/stop requests answer
+`unsupported: the LAN relay was retired; ...`, and same-network devices connect
+through the account device mesh. UI coverage lives in `src/nsh-ui` (`DevicesScene`, `phoneStore`).
 
 For shared GitHub sign-in and token redaction, use
 `cargo test -p openbitfun-desktop --lib api::account_identity_api::tests`.

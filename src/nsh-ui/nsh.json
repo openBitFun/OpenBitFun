@@ -7,6 +7,11 @@
     "host": [
       "openbitfun.*"
     ],
+    "network": {
+      "hosts": [
+        "remote.openbitfun.com"
+      ]
+    },
     "application": true,
     "clipboard": true,
     "picker": true,

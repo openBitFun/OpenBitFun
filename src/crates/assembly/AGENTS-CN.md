@@ -26,8 +26,8 @@
 ## 依赖边界
 
 - `assembly/core` 可以依赖下层 owner 来组装当前产品 runtime。
-- 组装 crate 不得依赖 `src/apps/*`。embedded relay 的 Cargo 反向依赖已经删除；其 TCP 绑定、静态资源 fallback
-  和任务生命周期仍是 assembly 内的兼容路径，不得复制，也不能据此宣称宿主归属已经迁移完成。
+- 组装 crate 不得依赖 `src/apps/*`。embedded relay 编排只依赖窄口 `EmbeddedRelayHost`；Desktop 与 CLI
+  都以“不可用”实现该端口（桌面端局域网 Relay 已下线），不要把具体的 TCP 绑定、静态资源 fallback 或任务生命周期移入 assembly。
 - 组装层可以依赖 adapter 与 service crate，但不实现它们的协议序列化、认证、transport 或平台细节。
 - 避免在组装层直接使用宿主 API；Tauri 支持必须保持 feature-gated，并尽可能由 app 或 adapter 拥有。
 - interface crate 可以调用组装 API；adapter 和 service 不得依赖组装层。

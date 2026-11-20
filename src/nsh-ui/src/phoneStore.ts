@@ -1,118 +1,60 @@
-// Devices › Use on phone: a phone or browser opens this backend's UI.
+// Devices › Use on phone or in a browser.
 //
-// Two routes, both the same NSH UI over OBP with the `paired-client` scope:
-// - same network: the LAN listener and its one-time QR (`obp_create_pairing`);
-// - anywhere: the phone joins the account's device mesh with the EasyTier app
-//   (`mesh_phone_join_info`: network name, secret, peer) and pairs with the
-//   mesh listener's QR (`obp_create_pairing {via: "mesh"}`).
-// The old relay and `mobile-web` are not used by either route. Every command
-// here is `ControllerLocal`, so a paired phone or a peer-driven backend refuses
-// them and this store reports which state the surface is in, never a fake QR.
+// A phone or another computer uses this desktop by opening the OpenBitFun web
+// controller (or the phone app) and signing in with the same account: it lists
+// the account's devices and connects through the server gateway, end-to-end
+// encrypted to this backend (`src/controller/`). Nothing is paired and no
+// network value is shown, so the panel only points at the address. The old
+// EasyTier-app route (`mesh_phone_join_info`) and the mesh pairing QR are
+// retired.
 
 import { signal } from "nsh";
-import { errorMessageOf } from "./backendConnection";
 import { invokeCommand } from "./bridge";
-import type { ObpPairingOffer } from "./obpStore";
 
-export type PhoneRoute = "lan" | "mesh";
+/** The web controller's address on the OpenBitFun domain. */
+export const WEB_CONTROLLER_URL = "https://remote.openbitfun.com/app/";
 
-export interface MeshPhoneJoinInfo {
-  networkName: string;
-  networkSecret: string;
-  peers: string[];
-  easytierVersion: string;
-  deviceId?: string;
-  virtualIp?: string;
-  obpPort?: number;
-  webUi: boolean;
+/** The address as the panel prints it (no scheme, no trailing slash). */
+export function webControllerLabel(url: string = WEB_CONTROLLER_URL): string {
+  return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
 }
 
-/** Which tab the panel shows. */
-export const phoneRoute = signal<PhoneRoute>("lan");
-/** The EasyTier join values; `null` until read or when unavailable. */
-export const phoneJoinInfo = signal<MeshPhoneJoinInfo | null>(null);
-/** Why the join values are unavailable (a code from `describePhoneError`). */
-export const phoneJoinError = signal("");
-/** The network secret is shown (and its QR drawn) only after the user asks. */
-export const phoneSecretRevealed = signal(false);
-/** The current one-time QR per route. */
-export const phonePairing = signal<{ route: PhoneRoute; offer: ObpPairingOffer } | null>(null);
-export const phonePairingError = signal("");
-export const phoneBusy = signal(false);
 
 /**
- * Error text to a stable code the panel translates. Unknown text passes
- * through so a real backend failure is shown as it is.
+ * A phone app or browser signed in to this account right now: a controller
+ * node of the account's device network (it drives devices and serves no
+ * backend, so it is never an unreachable device). The backend names the role
+ * (`mesh_list_devices` `role: "controller"`); older backends name none.
  */
-export function describePhoneError(error: unknown): string {
-  const message = errorMessageOf(error);
-  if (/^unsupported_in_native_host: (mesh_|obp_)/.test(message) || /unknown command|not found|not allowed/i.test(message)) {
-    return "phone_update_host";
-  }
-  if (message.startsWith("forbidden_for_scope:") || message.includes("is local-only")) return "phone_owner_only";
-  if (message.startsWith("mesh_signed_out")) return "phone_mesh_signed_out";
-  if (message.startsWith("obp_lan_disabled")) return "phone_lan_off";
-  if (message.startsWith("obp_no_lan_address")) return "phone_no_lan_address";
-  if (message.startsWith("obp_unavailable")) return "phone_obp_unavailable";
-  if (message.startsWith("mesh_unavailable") || message.startsWith("mesh_unsupported")) {
-    return `phone_mesh_unavailable:${message}`;
-  }
-  return message;
+export interface SignedInController {
+  deviceId: string;
+  name: string | null;
+  route: string | null;
+  relayVia: string | null;
+  path: string | null;
+  latencyMs: number | null;
 }
 
-/** Reads what the EasyTier app needs. Never logs the secret. */
-export async function loadPhoneJoinInfo(): Promise<void> {
+/** The controllers signed in now; `null` when this backend cannot say (no mesh, not the owner). */
+export const signedInControllers = signal<SignedInController[] | null>(null);
+
+export async function loadSignedInControllers(): Promise<void> {
   try {
-    phoneJoinInfo.set(await invokeCommand<MeshPhoneJoinInfo>("mesh_phone_join_info"));
-    phoneJoinError.set("");
-  } catch (error) {
-    phoneJoinInfo.set(null);
-    phoneJoinError.set(describePhoneError(error));
+    const rows = await invokeCommand<Array<Record<string, unknown>>>("mesh_list_devices");
+    const text = (value: unknown) => (typeof value === "string" && value ? value : null);
+    signedInControllers.set(
+      (Array.isArray(rows) ? rows : [])
+        .filter(row => row && row.role === "controller")
+        .map(row => ({
+          deviceId: text(row.deviceId) ?? "",
+          name: text(row.name),
+          route: text(row.route),
+          relayVia: text(row.relayVia),
+          path: text(row.path),
+          latencyMs: typeof row.latencyMs === "number" ? row.latencyMs : null,
+        })),
+    );
+  } catch {
+    signedInControllers.set(null);
   }
-}
-
-/** Mints a one-time pairing QR for `route` (five minutes, single use). */
-export async function createPhonePairing(route: PhoneRoute): Promise<void> {
-  if (phoneBusy()) return;
-  phoneBusy.set(true);
-  phonePairingError.set("");
-  try {
-    const offer = await invokeCommand<ObpPairingOffer>("obp_create_pairing", { via: route });
-    phonePairing.set({ route, offer });
-  } catch (error) {
-    phonePairing.set(null);
-    phonePairingError.set(describePhoneError(error));
-  } finally {
-    phoneBusy.set(false);
-  }
-}
-
-/** Switches the tab; a QR minted for the other route is dropped. */
-export function selectPhoneRoute(route: PhoneRoute): void {
-  phoneRoute.set(route);
-  phonePairingError.set("");
-  if (phonePairing()?.route !== route) phonePairing.set(null);
-  if (route === "mesh") void loadPhoneJoinInfo();
-}
-
-/**
- * The join values as an EasyTier config fragment (TOML keys of
- * `easytier-core --config-file`), for a QR scanner or a paste.
- */
-export function joinConfigText(info: MeshPhoneJoinInfo): string {
-  const quote = (value: string) => JSON.stringify(value);
-  const lines = [
-    "[network_identity]",
-    `network_name = ${quote(info.networkName)}`,
-    `network_secret = ${quote(info.networkSecret)}`,
-  ];
-  for (const peer of info.peers) lines.push("", "[[peer]]", `uri = ${quote(peer)}`);
-  return lines.join("\n");
-}
-
-/** Forgets the secret, the QR and the reveal (the scene was left). */
-export function resetPhonePanel(): void {
-  phoneSecretRevealed.set(false);
-  phonePairing.set(null);
-  phonePairingError.set("");
 }

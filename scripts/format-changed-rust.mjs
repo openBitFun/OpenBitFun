@@ -93,8 +93,16 @@ function collectChangedRustFiles() {
 
   return [...candidates]
     .filter((file) => file.endsWith('.rs'))
+    .filter((file) => !isVendored(file))
     .filter((file) => existsSync(resolve(repoRoot, file)))
     .sort();
+}
+
+// Vendored third-party sources keep their upstream formatting (and edition:
+// the EasyTier fork is edition 2024); each one documents its changes in its
+// OPENBITFUN-PATCH.md instead.
+function isVendored(file) {
+  return file.startsWith('third_party/');
 }
 
 function collectDirtyRustFiles() {
@@ -122,6 +130,7 @@ function collectDirtyRustFiles() {
 
   return [...candidates]
     .filter((file) => file.endsWith('.rs'))
+    .filter((file) => !isVendored(file))
     .filter((file) => existsSync(resolve(repoRoot, file)))
     .sort();
 }

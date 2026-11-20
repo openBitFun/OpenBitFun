@@ -17,9 +17,12 @@ openbitfun-miniapp-ipc = { path = "../../crates/adapters/miniapp-ipc" }
 openbitfun-services-core = { path = "../../crates/services/services-core", features = ["pet-packages", "local-storage", "installed-apps"] }
 # Internal crates
 openbitfun-core = { path = "../../crates/assembly/core", features = ["product-full"] }
-openbitfun-relay-service = { path = "../../crates/services/relay-service" }
-# Device mesh (EasyTier sidecar, status, account-device handshake proofs).
-openbitfun-mesh-service = { path = "../../crates/services/mesh" }
+# OpenBitFun Link: the device network, in-process (EasyTier fork), its
+# status and the account-device handshake proofs.
+openbitfun-link = { path = "../../crates/services/link" }
+# The backend protocol (OBP): listeners, scopes, the Link handshake and the
+# controller client, shared with the CLI host and the phone app.
+openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server"] }
 openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
 openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = ["agent-api", "permission", "workspace-ports"] }
 openbitfun-product-domains = { path = "../../crates/contracts/product-domains" }
@@ -63,14 +66,6 @@ thiserror = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["ws"] }
-tower-http = { workspace = true, features = ["fs"] }
-# Backend protocol (OBP) LAN listener: TLS with a self-signed, QR-pinned certificate.
-rustls = { workspace = true, features = ["std", "tls12"] }
-tokio-rustls = { workspace = true, features = ["tls12"] }
-rcgen = { workspace = true, features = ["crypto", "ring"] }
-# OBP over the account mesh: the controller-side client speaks the WebSocket
-# handshake over its own SOCKS5 + TLS stream (no second TCP/TLS connector).
-tokio-tungstenite = { workspace = true, features = ["handshake"] }
 rand = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
@@ -82,8 +77,10 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-# OBP listener integration tests: a real WebSocket client (plain and TLS).
-tokio-tungstenite = { workspace = true, features = ["connect", "rustls-tls-native-roots"] }
+# Remote Connect route tests run the real Relay router as a loopback fixture.
+openbitfun-relay-service = { path = "../../crates/services/relay-service" }
+# OBP over the mesh: loopback stand-ins for Link in the desktop's mesh tests.
+openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "test-support"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }

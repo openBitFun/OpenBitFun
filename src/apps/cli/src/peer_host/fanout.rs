@@ -475,6 +475,9 @@ async fn handle_agentic_event(
     if let Some(cursor) = cursor {
         attach_session_event_cursor(&mut projected.payload, cursor);
     }
+    // OBP controllers (over OpenBitFun Link) read this host's ordered event
+    // stream with the payloads every OBP host publishes (canonical identity).
+    crate::obp_host::publish_event(&projected.event_name, &projected.payload);
     if durable {
         let name = projected.event_name.as_str();
         let policy =
@@ -681,6 +684,7 @@ impl openbitfun_events::EventEmitter for PeerControllerEventEmitter {
 
 /// Queue an explicit Peer command event with its current delivery targets.
 pub(crate) async fn fanout_peer_device_event(event: String, payload: serde_json::Value) {
+    crate::obp_host::publish_event(&event, &payload);
     let targets = attached_controllers();
     if targets.is_empty() {
         return;

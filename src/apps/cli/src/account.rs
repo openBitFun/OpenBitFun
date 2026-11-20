@@ -256,6 +256,7 @@ impl CliAccountRoutingHost {
             device::require_remote_control()?;
             *self.relay_client.write().await = Some(client.clone());
         }
+        crate::obp_host::wake();
         if !runtime.device_routing_requested(request.account_generation) {
             self.retire_routing_client_if_same(&client).await;
             client.disconnect().await;
@@ -321,6 +322,18 @@ impl CliAccountRoutingHost {
         }
     }
 
+    /// Whether this process serves the shared device identity now: its
+    /// device routing runs and no primary host on this machine (a Desktop)
+    /// holds it (`Standby`). OpenBitFun Link follows the same owner, so one
+    /// machine never joins the account network twice as one device.
+    pub(crate) async fn serves_device(&self) -> bool {
+        let client = self.relay_client.read().await.clone();
+        match client {
+            Some(client) => client.connection_state().await != ConnectionState::Standby,
+            None => false,
+        }
+    }
+
     pub(crate) async fn stop_device_routing(&self) {
         if let Ok(runtime) = self.runtime() {
             runtime.cancel_device_routing();
@@ -335,6 +348,7 @@ impl CliAccountRoutingHost {
         if let Some(client) = self.relay_client.write().await.take() {
             client.disconnect().await;
         }
+        crate::obp_host::wake();
         crate::peer_host::update_controller_presence(Vec::new()).await;
     }
 

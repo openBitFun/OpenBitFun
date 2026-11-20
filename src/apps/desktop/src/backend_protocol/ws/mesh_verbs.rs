@@ -14,10 +14,16 @@
 //! A controller negotiates them through the mesh capabilities, so an older
 //! target keeps its relay path and a new-to-new pair never uses the relay.
 
-use openbitfun_services_integrations::remote_connect::mesh_route::OBP_REMOTE_COMMAND;
+use openbitfun_services_integrations::remote_connect::mesh_route::{
+    CAPABILITY_DISPATCH_TARGET_V1, CAPABILITY_REMOTE_COMMAND_V1, OBP_REMOTE_COMMAND,
+};
 use serde_json::Value;
 
 use super::ObpDispatchFuture;
+
+/// The capabilities these verbs add to an `account-device` connection.
+pub(crate) const CAPABILITIES: &[&str] =
+    &[CAPABILITY_DISPATCH_TARGET_V1, CAPABILITY_REMOTE_COMMAND_V1];
 
 /// Whether `command` is a same-account host verb served on the mesh.
 pub(crate) fn is_account_device_host_verb(command: &str) -> bool {

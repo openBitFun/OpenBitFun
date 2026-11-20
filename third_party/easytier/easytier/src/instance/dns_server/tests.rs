@@ -1,0 +1,624 @@
+use easytier_proto::core_config::{DnsRecordRaw, DnsRecordType};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::str::FromStr as _;
+use std::sync::Arc;
+use std::time::Duration;
+
+use cidr::Ipv4Inet;
+use easytier_core::{
+    config::toml::{DnsConfig, DnsZoneConfig},
+    host::packet::{HostPacket, HostPacketChannelSink, HostPacketReceiver},
+    process_runtime::CoreProcessRuntime,
+};
+use hickory_client::client::{Client, ClientHandle as _};
+use hickory_proto::rr;
+use hickory_proto::runtime::TokioRuntimeProvider;
+use hickory_proto::udp::UdpClientStream;
+use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
+
+use crate::common::global_ctx::{ArcGlobalCtx, tests::get_mock_global_ctx};
+use crate::instance::{
+    composition::{NativeCoreInstance, runtime_core_host_adapters},
+    config::test_core_instance_config,
+};
+
+use crate::instance::dns_server::runner::DnsRunner;
+use crate::instance::dns_server::server_instance::MagicDnsServerInstance;
+use crate::instance::dns_server::{DEFAULT_ET_DNS_ZONE, MAGIC_DNS_FAKE_IP};
+use crate::instance::virtual_nic::NicCtx;
+use crate::proto::api::instance::Route;
+use crate::proto::magic_dns::{MagicDnsServerRpc as _, UpdateDnsRecordRequest};
+use crate::proto::rpc_types::controller::{BaseController, Controller as _};
+
+pub async fn prepare_env(
+    dns_name: &str,
+    tun_ip: Ipv4Inet,
+) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
+    prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
+}
+
+pub(super) async fn build_test_core(
+    ctx: ArcGlobalCtx,
+) -> (Arc<NativeCoreInstance>, HostPacketReceiver) {
+    let (packet_sink, packet_receiver) = tokio::sync::mpsc::channel::<HostPacket>(128);
+    let adapters = runtime_core_host_adapters(
+        ctx.clone(),
+        CoreProcessRuntime::new(),
+        Arc::new(HostPacketChannelSink::new(packet_sink)),
+    );
+    let core_instance = NativeCoreInstance::new(test_core_instance_config(&ctx), adapters).unwrap();
+    core_instance.start().await.unwrap();
+    (core_instance, HostPacketReceiver::new(packet_receiver))
+}
+
+pub async fn prepare_env_with_tld_dns_zone(
+    dns_name: &str,
+    tun_ip: Ipv4Inet,
+    tld_dns_zone: Option<&str>,
+) -> (ArcGlobalCtx, Arc<NativeCoreInstance>, NicCtx) {
+    let ctx = get_mock_global_ctx();
+    ctx.set_hostname(dns_name.to_owned());
+    ctx.set_ipv4(Some(tun_ip));
+
+    if let Some(zone) = tld_dns_zone {
+        let mut flags = ctx.config.get_flags();
+        flags.accept_dns = true; // Enable DNS
+        ctx.set_flags(flags);
+        let mut dns = ctx.config.get_dns().unwrap_or_default();
+        dns.domain = Some(zone.to_string());
+        ctx.config.set_dns(Some(dns));
+    }
+
+    let (core_instance, host_packet_rx) = build_test_core(ctx.clone()).await;
+    let host_packet_rx = Arc::new(tokio::sync::Mutex::new(host_packet_rx));
+    let mut virtual_nic = NicCtx::new(
+        ctx.clone(),
+        core_instance.packet_plane(),
+        host_packet_rx,
+        Arc::new(Notify::new()),
+        Arc::new(tokio::sync::Mutex::new(
+            crate::instance::shared_virtual_nic::SharedVirtualNicRegistry::new(),
+        )),
+    )
+    .await;
+    virtual_nic.run(Some(tun_ip), None).await.unwrap();
+
+    (ctx, core_instance, virtual_nic)
+}
+
+pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &str) {
+    let stream = UdpClientStream::builder(
+        SocketAddr::new((*fake_ip).into(), 53),
+        TokioRuntimeProvider::default(),
+    )
+    .build();
+    let (mut client, background) = Client::connect(stream).await.unwrap();
+    let background_task = tokio::spawn(background);
+    let response = client
+        .query(
+            rr::Name::from_str(domain).unwrap(),
+            rr::DNSClass::IN,
+            rr::RecordType::A,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("DNS query failed unexpectedly for domain '{domain}': {e}"));
+    background_task.abort();
+    let _ = background_task.await;
+
+    println!("Response: {:?}", response);
+
+    assert_eq!(response.answers().len(), 1, "{:?}", response.answers());
+    let resp = response.answers().first().unwrap();
+    assert_eq!(
+        resp.clone().into_parts().rdata.into_a().unwrap().0,
+        expected_ip.parse::<Ipv4Addr>().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn test_magic_dns_server_instance() {
+    let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
+    let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
+    let tun_name = virtual_nic.ifname().await.unwrap();
+    let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
+
+    let mut dns = global_ctx.config.get_dns().unwrap_or_default();
+    dns.zone = Some(
+        vec![DnsZoneConfig {
+            origin: "example.test.".to_owned(),
+            ttl: Some(60),
+            records: Some(
+                vec![DnsRecordRaw {
+                    name: "svc".into(),
+                    r#type: DnsRecordType::A as i32,
+                    ttl: None,
+                    value: Some("10.0.0.9".into()),
+                }]
+                .into(),
+            ),
+        }]
+        .into(),
+    );
+    global_ctx.config.set_dns(Some(dns));
+
+    let dns_server_inst = MagicDnsServerInstance::new(
+        core_instance.packet_plane(),
+        global_ctx,
+        Some(tun_name),
+        tun_ip,
+        fake_ip,
+    )
+    .await
+    .unwrap();
+
+    check_dns_record(&fake_ip, "svc.example.test", "10.0.0.9").await;
+
+    let mut ctrl = BaseController::default();
+    ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
+        remote_addr: Some(url::Url::parse("tcp://127.0.0.1:54321").unwrap().into()),
+        ..Default::default()
+    }));
+    dns_server_inst
+        .data
+        .update_dns_record(
+            ctrl,
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                instance_id: uuid::Uuid::from_u128(2).to_string(),
+                dns: None,
+                routes: ["test1", "中文", ".invalid"]
+                    .into_iter()
+                    .map(|hostname| Route {
+                        hostname: hostname.to_owned(),
+                        ipv4_addr: Some("8.8.8.8/32".parse::<Ipv4Inet>().unwrap().into()),
+                        ..Default::default()
+                    })
+                    .collect(),
+            },
+        )
+        .await
+        .unwrap();
+
+    check_dns_record(&fake_ip, "test1.et.net", "8.8.8.8").await;
+    check_dns_record(&fake_ip, "中文.et.net", "8.8.8.8").await;
+}
+
+#[tokio::test]
+async fn test_magic_dns_runner() {
+    // Test first runner with default DNS settings
+    {
+        let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
+        let (global_ctx, core_instance, virtual_nic) = prepare_env("test1", tun_ip).await;
+        let tun_name = virtual_nic.ifname().await.unwrap();
+        let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
+        let mut dns_runner = DnsRunner::new(
+            core_instance.packet_plane(),
+            global_ctx,
+            Some(tun_name),
+            tun_ip,
+            fake_ip,
+        );
+
+        let cancel_token = CancellationToken::new();
+        let cancel_token_clone = cancel_token.clone();
+        let t = tokio::spawn(async move {
+            dns_runner.run(cancel_token_clone).await;
+        });
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Test default settings: query should resolve test1.et.net to tunnel IP via default fake IP
+        check_dns_record(&fake_ip, "test1.et.net", "10.144.144.10").await;
+
+        cancel_token.cancel();
+        t.await.unwrap();
+
+        // Wait a bit for cleanup
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    // Test second runner with different TLD zone
+    {
+        let tun_ip = Ipv4Inet::from_str("10.144.144.20/24").unwrap();
+        // NOTE: Using same fake IP to avoid system DNS configuration conflicts
+        let custom_tld_zone = "custom.local."; // Different TLD zone is safer
+        let (global_ctx, core_instance, virtual_nic) =
+            prepare_env_with_tld_dns_zone("test2", tun_ip, Some(custom_tld_zone)).await;
+        let tun_name = virtual_nic.ifname().await.unwrap();
+        let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
+        let mut dns_runner = DnsRunner::new(
+            core_instance.packet_plane(),
+            global_ctx,
+            Some(tun_name),
+            tun_ip,
+            fake_ip,
+        );
+
+        let cancel_token = CancellationToken::new();
+        let cancel_token_clone = cancel_token.clone();
+        let t = tokio::spawn(async move {
+            dns_runner.run(cancel_token_clone).await;
+        });
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Test with same fake IP but different TLD zone
+        check_dns_record(&fake_ip, "test2.custom.local", "10.144.144.20").await;
+
+        cancel_token.cancel();
+        t.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_magic_dns_update_replaces_records_for_same_client() {
+    let tun_ip = Ipv4Inet::from_str("100.100.100.0/24").unwrap();
+    let ctx = get_mock_global_ctx();
+    ctx.set_hostname("test1".to_string());
+    ctx.set_ipv4(Some(tun_ip));
+    ctx.config.set_dns(Some(DnsConfig {
+        domain: None,
+        zone: Some(
+            vec![DnsZoneConfig {
+                origin: "example.test.".to_owned(),
+                ttl: Some(60),
+                records: Some(
+                    vec![DnsRecordRaw {
+                        name: "svc".into(),
+                        r#type: DnsRecordType::A as i32,
+                        ttl: None,
+                        value: Some("10.0.0.9".into()),
+                    }]
+                    .into(),
+                ),
+            }]
+            .into(),
+        ),
+    }));
+
+    let (core_instance, _packet_receiver) = build_test_core(ctx.clone()).await;
+
+    let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
+    let dns_server_inst =
+        MagicDnsServerInstance::new(core_instance.packet_plane(), ctx, None, tun_ip, fake_ip)
+            .await
+            .unwrap();
+    assert!(
+        dns_server_inst
+            .data
+            .dns_server
+            .read_catalog()
+            .await
+            .contains(&"example.test.".parse().unwrap())
+    );
+
+    let mut ctrl = BaseController::default();
+    ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
+        tunnel_type: "tcp".to_string(),
+        local_addr: None,
+        remote_addr: Some(crate::proto::common::Url {
+            url: "tcp://127.0.0.1:54321".to_string(),
+        }),
+        resolved_remote_addr: None,
+    }));
+
+    dns_server_inst
+        .data
+        .update_dns_record(
+            ctrl.clone(),
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                instance_id: uuid::Uuid::from_u128(2).to_string(),
+                dns: None,
+                routes: vec![Route {
+                    hostname: "test1".to_string(),
+                    ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/32").unwrap().into()),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    dns_server_inst
+        .data
+        .update_dns_record(
+            ctrl,
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                instance_id: uuid::Uuid::from_u128(2).to_string(),
+                dns: None,
+                routes: vec![Route {
+                    hostname: "test1".to_string(),
+                    ipv4_addr: Some(Ipv4Inet::from_str("1.1.1.1/32").unwrap().into()),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    let dns_records = dns_server_inst
+        .data
+        .get_dns_record(
+            BaseController::default(),
+            crate::proto::common::Void::default(),
+        )
+        .await
+        .unwrap();
+    let zone_records = dns_records.records.get(DEFAULT_ET_DNS_ZONE).unwrap();
+    let a_records = zone_records
+        .records
+        .iter()
+        .filter_map(|record| match record.record.as_ref() {
+            Some(crate::proto::magic_dns::dns_record::Record::A(a))
+                if a.name == "test1.et.net." =>
+            {
+                Some(a)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(a_records.len(), 1, "{a_records:?}");
+    let resolved_ip = Ipv4Addr::from(a_records[0].value.unwrap_or_default());
+    assert_eq!(resolved_ip, Ipv4Addr::new(1, 1, 1, 1));
+
+    let mut ctrl = BaseController::default();
+    ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
+        tunnel_type: "tcp".to_string(),
+        local_addr: None,
+        remote_addr: Some(crate::proto::common::Url {
+            url: "tcp://127.0.0.1:54321".to_string(),
+        }),
+        resolved_remote_addr: None,
+    }));
+
+    dns_server_inst
+        .data
+        .update_dns_record(
+            ctrl,
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                instance_id: uuid::Uuid::from_u128(2).to_string(),
+                dns: None,
+                routes: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    let dns_records = dns_server_inst
+        .data
+        .get_dns_record(
+            BaseController::default(),
+            crate::proto::common::Void::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!dns_records.records.contains_key(DEFAULT_ET_DNS_ZONE));
+}
+
+#[cfg(target_os = "linux")]
+async fn dns_address(server: &MagicDnsServerInstance, name: &str) -> Option<Ipv4Addr> {
+    use easytier_core::gateway::magic_dns::{MagicDnsQuery, MagicDnsQueryResolver};
+    use hickory_proto::op::{Message, Query};
+
+    let mut message = Message::new();
+    message.add_query(Query::query(name.parse().unwrap(), rr::RecordType::A));
+    let bytes = server
+        .data
+        .resolve(MagicDnsQuery {
+            source: "127.0.0.1:5353".parse().unwrap(),
+            payload: message.to_vec().unwrap(),
+        })
+        .await
+        .unwrap();
+    Message::from_vec(&bytes)
+        .unwrap()
+        .answers()
+        .iter()
+        .find_map(|record| record.data().as_a().map(|address| address.0))
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_magic_dns_live_configuration_and_publisher_lifecycle() {
+    let ctx = get_mock_global_ctx();
+    ctx.set_hostname("live-node".to_owned());
+    let tun_ip = "100.100.100.0/24".parse::<Ipv4Inet>().unwrap();
+    ctx.set_ipv4(Some(tun_ip));
+    let (core, _packets) = build_test_core(ctx.clone()).await;
+    let server = MagicDnsServerInstance::new(
+        core.packet_plane(),
+        ctx.clone(),
+        None,
+        tun_ip,
+        MAGIC_DNS_FAKE_IP.parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut client =
+        super::client_instance::MagicDnsClientInstance::new(core.packet_plane(), ctx.clone())
+            .await
+            .unwrap();
+    let publisher = tokio::spawn(async move { client.run_and_wait().await });
+
+    let mut dns = DnsConfig {
+        domain: Some("live.test".to_owned()),
+        zone: Some(
+            vec![DnsZoneConfig {
+                origin: "first.test".to_owned(),
+                ttl: Some(60),
+                records: Some(
+                    vec![DnsRecordRaw {
+                        name: "svc".to_owned(),
+                        r#type: DnsRecordType::A as i32,
+                        value: Some("10.0.0.8".to_owned()),
+                        ..Default::default()
+                    }]
+                    .into(),
+                ),
+            }]
+            .into(),
+        ),
+    };
+    ctx.config.set_dns(Some(dns.clone()));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if server
+                .data
+                .dns_server
+                .local_origins()
+                .await
+                .contains(&"first.test.".parse().unwrap())
+                && dns_address(&server, "svc.first.test.").await
+                    == Some("10.0.0.8".parse().unwrap())
+                && dns_address(&server, "live-node.live.test.").await == Some(tun_ip.address())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    dns.zone.as_mut().unwrap().items[0]
+        .records
+        .as_mut()
+        .unwrap()
+        .items[0]
+        .value = Some("10.0.0.9".to_owned());
+    ctx.config.set_dns(Some(dns.clone()));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while dns_address(&server, "svc.first.test.").await != Some("10.0.0.9".parse().unwrap()) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    dns.zone = Some(vec![].into());
+    ctx.config.set_dns(Some(dns));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while server
+            .data
+            .dns_server
+            .local_origins()
+            .await
+            .contains(&"first.test.".parse().unwrap())
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        dns_address(&server, "live-node.live.test.").await,
+        Some(tun_ip.address())
+    );
+    publisher.abort();
+    assert!(publisher.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while dns_address(&server, "live-node.live.test.").await.is_some() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    server.clean_env().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires root/TUN and EASYTIER_TEST_LEGACY_CORE pointing to v2.6.4"]
+async fn test_magic_dns_released_client_connection_lifecycle() {
+    let legacy_core = std::env::var_os("EASYTIER_TEST_LEGACY_CORE")
+        .expect("set EASYTIER_TEST_LEGACY_CORE to the released v2.6.4 core");
+    let ctx = get_mock_global_ctx();
+    ctx.set_hostname("modern-node".to_owned());
+    let tun_ip = "100.100.100.0/24".parse::<Ipv4Inet>().unwrap();
+    ctx.set_ipv4(Some(tun_ip));
+    let (core, _packets) = build_test_core(ctx.clone()).await;
+    let server = MagicDnsServerInstance::new(
+        core.packet_plane(),
+        ctx.clone(),
+        None,
+        tun_ip,
+        MAGIC_DNS_FAKE_IP.parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut client = super::client_instance::MagicDnsClientInstance::new(core.packet_plane(), ctx)
+        .await
+        .unwrap();
+    let publisher = tokio::spawn(async move { client.run_and_wait().await });
+    let configs = tempfile::tempdir().unwrap();
+    let config = configs.path().join("legacy.toml");
+
+    for address in ["100.100.100.8", "100.100.100.9"] {
+        std::fs::write(
+            &config,
+            format!(
+                r#"
+instance_id = "00000000-0000-0000-0000-000000000064"
+hostname = "legacy-node"
+ipv4 = "{address}/24"
+listeners = []
+[flags]
+accept_dns = true
+tld_dns_zone = "legacy.test."
+dev_name = "etlegacydns"
+"#
+            ),
+        )
+        .unwrap();
+        let mut legacy = tokio::process::Command::new(&legacy_core)
+            .arg("--config-file")
+            .arg(&config)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                assert!(legacy.try_wait().unwrap().is_none(), "released core exited");
+                if server
+                    .data
+                    .dns_server
+                    .local_origins()
+                    .await
+                    .contains(&"legacy.test.".parse().unwrap())
+                    && dns_address(&server, "legacy-node.legacy.test.").await
+                        == Some(address.parse().unwrap())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            dns_address(&server, "modern-node.et.net.").await,
+            Some(tun_ip.address())
+        );
+        legacy.kill().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while dns_address(&server, "legacy-node.legacy.test.")
+                .await
+                .is_some()
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            dns_address(&server, "modern-node.et.net.").await,
+            Some(tun_ip.address())
+        );
+    }
+    publisher.abort();
+    assert!(publisher.await.unwrap_err().is_cancelled());
+    server.clean_env().await;
+}

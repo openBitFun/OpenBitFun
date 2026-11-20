@@ -4,7 +4,7 @@
 // runs the headless UI suite (`cd src/nsh-ui && nsh test .`).
 //
 // The NSH crates of the runner are pinned to the same version
-// (`src/apps/desktop-nsh/native/Cargo.toml`, `nsh-* = "=0.6.0"`): bump both together.
+// (`src/apps/desktop-nsh/native/Cargo.toml`, `nsh-* = "=0.6.1"`): bump both together.
 // Archives are verified against the SHA-256 digests pinned below, not against a
 // checksum downloaded from the same place.
 //
@@ -17,14 +17,14 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const NSH_VERSION = 'v0.6.0';
+export const NSH_VERSION = 'v0.6.1';
 
 export const NSH_ASSETS = {
-  'darwin-arm64': { asset: 'nsh-macos-arm64.tar.gz', sha256: 'b2a8370c8b44ca6059d2d8665b48b08472a4fee3956813b99223f4e3ce5491d9' },
-  'darwin-x64': { asset: 'nsh-macos-x86_64.tar.gz', sha256: 'fc764318cdbd70f488676afe007186e0748bbe54fa7c866b6d9bce6be16a3eb5' },
-  'linux-x64': { asset: 'nsh-linux-x86_64.tar.gz', sha256: '19d360eb8dd1ba8847a3b3ad06082f6f3705eb04ae8178357a8cdad31880f0d9' },
-  'linux-arm64': { asset: 'nsh-linux-arm64.tar.gz', sha256: 'dc6426c152ea600337451afc1e8e81531823309951be35cde3d91928eeaa7379' },
-  'win32-x64': { asset: 'nsh-windows-x86_64.zip', sha256: '6ae2e430d84cfe5fcb1d2ab25e56c2685eaaa4abc963c93b52263f435791ebb1' },
+  'darwin-arm64': { asset: 'nsh-macos-arm64.tar.gz', sha256: 'ee1aed2a4d111fe90e6cceca4b9d5f834c9e11cfda525f8be984261a329c06de' },
+  'darwin-x64': { asset: 'nsh-macos-x86_64.tar.gz', sha256: '23ccbfa71f50eb312e57862b7b843a15b23c1b9a9464cfc30735b1c07a18e324' },
+  'linux-x64': { asset: 'nsh-linux-x86_64.tar.gz', sha256: '9a7ac692f1c229df476be8ff83a3c5912d271453b644e313f02cb19d18696070' },
+  'linux-arm64': { asset: 'nsh-linux-arm64.tar.gz', sha256: 'd7d54b8a62aa8bd4a9fb73fcc0abce8cc565185926f226aa90f48622f3e410a3' },
+  'win32-x64': { asset: 'nsh-windows-x86_64.zip', sha256: '7952c84b165e13515bd2ad2787ef22622e49ce88cb8d877825e40b40f3aff4be' },
 };
 
 export function nshAsset(platform = process.platform, arch = process.arch) {

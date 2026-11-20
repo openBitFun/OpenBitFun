@@ -49,12 +49,67 @@ export interface MeshDeviceEntry {
   name?: string | null;
   virtualIp?: string;
   reachable: boolean;
+  /** `"p2p" | "relayed"`; every backend sends it. */
   path?: string;
+  /** How the mesh reaches the device; newer backends only (see `MeshRoute`). */
+  route?: string;
+  /** The account device id relaying the traffic when `route` is `relayed_peer` (when the backend names it). */
+  relayVia?: string | null;
   latencyMs?: number;
   obpProtocol?: number;
   capabilities?: string[];
   backendVersion?: string;
   error?: string;
+  /** `"controller"` for a phone or browser signed in to the account (never a host); newer backends only. */
+  role?: string | null;
+}
+
+/** The routes a newer backend names for a mesh device (`MeshDeviceEntry.route`). */
+export type MeshRoute = "direct_lan" | "direct_ipv4" | "direct_ipv6" | "relayed_peer" | "relayed_server";
+
+/**
+ * One short line saying how the mesh reaches a device, from the generic
+ * `route` / `path` fields (never from the mesh implementation). `nameOf`
+ * resolves the relaying device's directory name. An older backend sends only
+ * `path`; a device the mesh cannot reach, or one without either field, gets
+ * no line (`""`).
+ */
+export function meshPathLabel(
+  entry: Pick<MeshDeviceEntry, "reachable" | "path" | "route" | "relayVia" | "latencyMs">,
+  nameOf: (deviceId: string) => string | null | undefined = () => null,
+): string {
+  if (!entry.reachable) return "";
+  let label = "";
+  switch (entry.route) {
+    case "direct_lan":
+      label = tr("devices.path.sameNetwork");
+      break;
+    case "direct_ipv6":
+      label = tr("devices.path.directIpv6");
+      break;
+    case "direct_ipv4":
+      label = tr("devices.path.direct");
+      break;
+    case "relayed_peer": {
+      const name = entry.relayVia ? nameOf(entry.relayVia)?.trim() : "";
+      label = tr("devices.path.viaPeer", { name: name || tr("devices.path.anotherDevice") });
+      break;
+    }
+    case "relayed_server":
+      label = tr("devices.path.viaServer");
+      break;
+    default:
+      label =
+        entry.path === "p2p"
+          ? tr("devices.path.direct")
+          : entry.path === "relayed"
+            ? tr("devices.path.relayed")
+            : "";
+  }
+  if (!label) return "";
+  return typeof entry.latencyMs === "number" && Number.isFinite(entry.latencyMs)
+    ? tr("devices.path.withLatency", { path: label, ms: String(Math.max(1, Math.round(entry.latencyMs))) })
+    : label;
 }
 
 /** The capabilities a device must advertise for the OBP-on-mesh path. */
@@ -185,7 +240,8 @@ async function rememberedOnMesh(deviceId: string): Promise<boolean> {
 export async function readMeshDevices(): Promise<{ devices: MeshDeviceEntry[] | null; error: string }> {
   try {
     const devices = await invokeCommand<MeshDeviceEntry[]>("mesh_list_devices");
-    const list = Array.isArray(devices) ? devices : [];
+    // Controllers (phones, browsers) are clients, not devices to drive; the phone panel lists them.
+    const list = (Array.isArray(devices) ? devices : []).filter(entry => entry?.role !== "controller");
     void rememberMeshDevices(list);
     return { devices: list, error: "" };
   } catch (error) {
@@ -234,7 +290,7 @@ function meshScope(deviceId: string, label: string, info: PeerLinkInfo, entry: M
   return {
     deviceId,
     label,
-    hostKind: "desktop",
+    hostKind: info.hostKind || "desktop",
     capabilityCount: Object.keys(capabilities).length,
     hostUiReady: true,
     capabilities,

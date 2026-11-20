@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "17a124b388ec4662d540fd802d1c6d90cd54bc65c1b1616ccbe806aab60289ff",
-  "commandCount": 720,
+  "catalogDigest": "8c7c7efeebc00dc169740b5321b981c9bd229525167eaf6d1388436ee4fcfb2d",
+  "commandCount": 716,
   "coverage": {
-    "commandCount": 720,
-    "documentedCommandCount": 639,
-    "implementationCommandCount": 81,
-    "implementationDigest": "2c4853750bb9cda28b728cad24c947c51fac2a3909b9866f25a7ff4c8be3a653"
+    "commandCount": 716,
+    "documentedCommandCount": 636,
+    "implementationCommandCount": 80,
+    "implementationDigest": "53da5415ee5c1025374ea529af4a1f2a25eba0063a001290204c49d819f558f3"
   },
   "commands": [
     {
@@ -5916,20 +5916,6 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "mesh_phone_join_info",
-      "moduleId": "mesh",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "mesh::mesh_api::mesh_phone_join_info",
-      "sourceFile": "src/apps/desktop/src/mesh/mesh_api.rs",
-      "signature": "fn mesh_phone_join_info() -> Result<MeshPhoneJoinInfo, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "mesh_status",
       "moduleId": "mesh",
       "capabilityId": "feature.remote-connect",
@@ -6741,22 +6727,6 @@
       "rustPath": "backend_protocol::ws::obp_revoke_paired_client",
       "sourceFile": "src/apps/desktop/src/backend_protocol/ws/obp_api.rs",
       "signature": "fn obp_revoke_paired_client( request: ObpRevokePairedClientRequest, ) -> Result<ObpStatus, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "obp_set_lan_enabled",
-      "moduleId": "obp",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:phone-browser-access"
-      ],
-      "visibility": "documented",
-      "rustPath": "backend_protocol::ws::obp_set_lan_enabled",
-      "sourceFile": "src/apps/desktop/src/backend_protocol/ws/obp_api.rs",
-      "signature": "fn obp_set_lan_enabled(request: ObpSetLanEnabledRequest) -> Result<ObpStatus, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -7622,38 +7592,6 @@
       "rustPath": "api::remote_connect_api::remote_connect_get_form_state",
       "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
       "signature": "fn remote_connect_get_form_state() -> Result<bot::RemoteConnectFormState, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "remote_connect_get_lan_ip",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:network"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::remote_connect_api::remote_connect_get_lan_ip",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn remote_connect_get_lan_ip() -> Result<String, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "remote_connect_get_lan_network_info",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:network"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::remote_connect_api::remote_connect_get_lan_network_info",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn remote_connect_get_lan_network_info() -> Result<LanNetworkInfo, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {

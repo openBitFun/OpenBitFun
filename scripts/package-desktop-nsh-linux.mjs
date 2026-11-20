@@ -13,7 +13,6 @@
 //   resources/{worker_host.js,ext-host/extension-host.js,dsh-profile/}
 //   flashgrep/flashgrep-<triple>-musl    workspace search daemon
 //   mobile-web/dist                      legacy relay mobile UI, when built
-//   bin/{easytier-core,easytier-cli}     device mesh sidecar
 //   <productId>.desktop, <productId>.png desktop entry and icon for an installer
 //
 // Usage: node scripts/package-desktop-nsh-linux.mjs [--profile release|release-fast]
@@ -86,12 +85,6 @@ copyResources(
   }),
   app,
 );
-// Device mesh sidecar: the official EasyTier binaries (LGPL-3.0, separate
-// executables, SHA-256 pinned by scripts/fetch-easytier.mjs) in bin/.
-{
-  const { hostPlatform, stageEasyTier } = await import("./fetch-easytier.mjs");
-  await stageEasyTier(hostPlatform(), join(app, "bin"));
-}
 const icon = productIcon(identity, "linux");
 if (existsSync(icon)) cpSync(icon, join(app, `${identity.productId}.png`));
 writeFileSync(

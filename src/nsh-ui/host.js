@@ -4040,6 +4040,467 @@ const DEV_FIXTURES = {
   get_decision_model_credential_status: () => ({ configured: false }),
 };
 
+
+// ── Browser controller (page realm): device key and the end-to-end channel ──
+//
+// A page the OpenBitFun domain serves drives the account's devices through the
+// server gateway (`wss://<domain>/obp/<deviceId>`), a byte pipe into the
+// account's Link network. The device key lives here, in the page's WebCrypto
+// (X25519, non-extractable) and IndexedDB, never in the app realm. Inside the
+// pipe this module runs OBP's end-to-end channel (`obp-e2e-v1`, see
+// `src/apps/desktop/src/backend_protocol/ws/e2e.rs`): the account-device proof
+// over the pair key both devices derive from their directory keys, bound to
+// fresh X25519 ephemeral keys, then AES-256-GCM records. The gateway sees only
+// ciphertext. The app realm gets plain OBP JSON-RPC text messages:
+//
+//   host.call("openbitfun.controller.key")                  -> { deviceId, publicKey }
+//   host.call("openbitfun.controller.forgetKey")
+//   host.call("openbitfun.controller.open", { id, url, target, targetPublicKey })
+//   host.call("openbitfun.controller.send", { id, text })
+//   host.call("openbitfun.controller.close", { id, code, reason })
+//   player event "openbitfun.controller.socket"             -> { id, type: open|message|close, ... }
+
+const CONTROLLER_DB = "openbitfun-controller";
+const CONTROLLER_STORE = "keys";
+const CONTROLLER_KEY_ID = "device";
+const E2E_MAGIC = "OBPE2E1\n";
+const E2E_FINGERPRINT_PREFIX = "obp-e2e-v1:";
+const E2E_KEYS_INFO = "obp-e2e-v1 keys";
+const DEVICE_KDF_SALT = "OpenBitFun Relay v1.0.0 device key";
+const HANDSHAKE_KEY_DOMAIN = "OpenBitFun OBP mesh v1 handshake key";
+const E2E_RECORD_MAX = 34 * 1024 * 1024;
+const E2E_WS_CHUNK = 256 * 1024;
+const E2E_HANDSHAKE_TIMEOUT_MS = 30000;
+
+// Made on first use: the headless test runtime that loads this module has no
+// TextEncoder, and only a controller page needs one.
+const utf8 = {
+  encode(text) {
+    return new TextEncoder().encode(text);
+  },
+};
+const fromUtf8 = {
+  decode(bytes) {
+    return new TextDecoder().decode(bytes);
+  },
+};
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+  return btoa(binary);
+}
+
+function base64ToBytes(text) {
+  const normalized = String(text).trim().replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function bytesToBase64Url(bytes) {
+  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function concatBytes(...parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function compareBytes(a, b) {
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  }
+  return a.length - b.length;
+}
+
+function controllerSubtle() {
+  const subtle = globalThis.crypto && globalThis.crypto.subtle;
+  if (!subtle || typeof indexedDB === "undefined") {
+    throw new Error(
+      "controller_unsupported: this browser cannot keep a device key (a secure page with WebCrypto and IndexedDB is required)",
+    );
+  }
+  return subtle;
+}
+
+function openControllerDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(CONTROLLER_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(CONTROLLER_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB is unavailable"));
+  });
+}
+
+async function controllerDbRun(mode, run) {
+  const db = await openControllerDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction(CONTROLLER_STORE, mode);
+      const request = run(transaction.objectStore(CONTROLLER_STORE));
+      transaction.oncomplete = () => resolve(request ? request.result : undefined);
+      transaction.onerror = () => reject(transaction.error || new Error("IndexedDB transaction failed"));
+      transaction.onabort = () => reject(transaction.error || new Error("IndexedDB transaction aborted"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+let controllerKeyPromise = null;
+
+/** This browser's device key: created once, kept non-extractable in IndexedDB. */
+function controllerDeviceKey() {
+  if (!controllerKeyPromise) {
+    controllerKeyPromise = (async () => {
+      const subtle = controllerSubtle();
+      const stored = await controllerDbRun("readonly", store => store.get(CONTROLLER_KEY_ID));
+      if (stored && stored.privateKey && stored.publicKey && stored.deviceId) return stored;
+      let pair;
+      try {
+        pair = await subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+      } catch {
+        throw new Error("controller_unsupported: this browser has no X25519 key support; update it");
+      }
+      const id = new Uint8Array(16);
+      crypto.getRandomValues(id);
+      const record = {
+        deviceId: `web-${Array.from(id, byte => byte.toString(16).padStart(2, "0")).join("")}`,
+        privateKey: pair.privateKey,
+        publicKey: bytesToBase64(new Uint8Array(await subtle.exportKey("raw", pair.publicKey))),
+        createdAt: Date.now(),
+      };
+      try {
+        // `add` refuses when another tab stored its key first; that one wins.
+        await controllerDbRun("readwrite", store => store.add(record, CONTROLLER_KEY_ID));
+        return record;
+      } catch {
+        const winner = await controllerDbRun("readonly", store => store.get(CONTROLLER_KEY_ID));
+        if (winner && winner.privateKey) return winner;
+        throw new Error("controller_unsupported: this browser could not store its device key");
+      }
+    })();
+    controllerKeyPromise.catch(() => {
+      controllerKeyPromise = null;
+    });
+  }
+  return controllerKeyPromise;
+}
+
+async function forgetControllerKey() {
+  controllerKeyPromise = null;
+  await controllerDbRun("readwrite", store => store.delete(CONTROLLER_KEY_ID));
+}
+
+async function hmacSha256(subtle, key, message) {
+  const imported = await subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await subtle.sign("HMAC", imported, message));
+}
+
+async function hkdfSha256(subtle, ikm, salt, info, bits) {
+  const imported = await subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, imported, bits));
+}
+
+async function x25519Shared(subtle, privateKey, publicRaw) {
+  const peer = await subtle.importKey("raw", publicRaw, { name: "X25519" }, true, []);
+  const shared = new Uint8Array(await subtle.deriveBits({ name: "X25519", public: peer }, privateKey, 256));
+  if (shared.every(byte => byte === 0)) throw new Error("the device key is invalid");
+  return shared;
+}
+
+/** The device pair key (`device_crypto::derive_message_key`). */
+async function devicePairKey(subtle, key, targetPublicKey) {
+  const peer = base64ToBytes(targetPublicKey);
+  if (peer.length !== 32) throw new Error("the device key is invalid");
+  const local = base64ToBytes(key.publicKey);
+  const shared = await x25519Shared(subtle, key.privateKey, peer);
+  const ordered = compareBytes(local, peer) < 0 ? concatBytes(local, peer) : concatBytes(peer, local);
+  return hkdfSha256(subtle, shared, utf8.encode(DEVICE_KDF_SALT), ordered, 256);
+}
+
+/** `openbitfun_link::handshake` proof over the mesh claims. */
+async function meshProof(subtle, handshakeKey, role, claims) {
+  const message = [
+    "obp-mesh-v1",
+    role,
+    claims.client,
+    claims.server,
+    claims.fingerprint,
+    String(claims.time),
+    claims.nonce,
+  ].join("\n");
+  return bytesToBase64Url(await hmacSha256(subtle, handshakeKey, utf8.encode(message)));
+}
+
+function e2eNonce(counter) {
+  const nonce = new Uint8Array(12);
+  new DataView(nonce.buffer).setBigUint64(4, BigInt(counter));
+  return nonce;
+}
+
+function lengthPrefixed(body) {
+  const framed = new Uint8Array(4 + body.length);
+  new DataView(framed.buffer).setUint32(0, body.length);
+  framed.set(body, 4);
+  return framed;
+}
+
+function createController(player) {
+  const sockets = new Map();
+
+  function emit(id, payload) {
+    player.hostEvent("openbitfun.controller.socket", { id, ...payload });
+  }
+
+  function finish(socket, code, reason) {
+    if (socket.finished) return;
+    socket.finished = true;
+    if (socket.timer) clearTimeout(socket.timer);
+    sockets.delete(socket.id);
+    try {
+      if (socket.ws && socket.ws.readyState <= 1) socket.ws.close(1000, "closed");
+    } catch {
+      // Already closing.
+    }
+    emit(socket.id, { type: "close", code, reason });
+  }
+
+  function sendBytes(socket, bytes) {
+    for (let offset = 0; offset < bytes.length; offset += E2E_WS_CHUNK) {
+      socket.ws.send(bytes.subarray(offset, Math.min(bytes.length, offset + E2E_WS_CHUNK)));
+    }
+  }
+
+  async function sealRecord(socket, type, payload) {
+    const subtle = controllerSubtle();
+    const plaintext = concatBytes(new Uint8Array([type]), payload);
+    const nonce = e2eNonce(socket.sendCounter);
+    socket.sendCounter += 1;
+    const sealed = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: nonce }, socket.sendKey, plaintext));
+    return lengthPrefixed(sealed);
+  }
+
+  /** Queues one encrypted record; records leave in order. */
+  function queueRecord(socket, type, payload) {
+    socket.outbound = socket.outbound
+      .then(async () => {
+        if (socket.finished || !socket.sendKey) return;
+        const framed = await sealRecord(socket, type, payload);
+        if (!socket.finished) sendBytes(socket, framed);
+      })
+      .catch(error => finish(socket, 4500, `channel_failed: ${error && error.message ? error.message : error}`));
+  }
+
+  async function handleServerHello(socket, body) {
+    const subtle = controllerSubtle();
+    let answer;
+    try {
+      answer = JSON.parse(fromUtf8.decode(body));
+    } catch {
+      throw new Error("unsupported: the device answered something other than the browser channel; update OpenBitFun there");
+    }
+    if (answer && typeof answer.error === "string") {
+      const code = answer.error === "not_account_device" ? 4403 : answer.error === "mesh_signed_out" ? 4404 : 4401;
+      finish(socket, code, `${answer.error}: ${answer.message || "the device refused the connection"}`);
+      return;
+    }
+    const serverClaims = {
+      ...socket.claims,
+      fingerprint: `${E2E_FINGERPRINT_PREFIX}${socket.eph}:${answer.eph}`,
+    };
+    const expected = await meshProof(subtle, socket.handshakeKey, "server", serverClaims);
+    if (typeof answer.proof !== "string" || answer.proof !== expected) {
+      finish(socket, 4403, "impostor: the device could not prove it is your device");
+      return;
+    }
+    const shared = await x25519Shared(subtle, socket.ephemeral.privateKey, base64ToBytes(answer.eph));
+    const okm = await hkdfSha256(
+      subtle,
+      shared,
+      socket.handshakeKey,
+      utf8.encode(`${E2E_KEYS_INFO}\n${socket.proof}\n${answer.proof}`),
+      512,
+    );
+    socket.sendKey = await subtle.importKey("raw", okm.slice(0, 32), "AES-GCM", false, ["encrypt"]);
+    socket.receiveKey = await subtle.importKey("raw", okm.slice(32, 64), "AES-GCM", false, ["decrypt"]);
+    okm.fill(0);
+    shared.fill(0);
+    socket.ready = true;
+    if (socket.timer) clearTimeout(socket.timer);
+    socket.timer = null;
+    emit(socket.id, {
+      type: "open",
+      protocol: typeof answer.protocol === "number" ? answer.protocol : null,
+      capabilities: Array.isArray(answer.capabilities) ? answer.capabilities : [],
+    });
+  }
+
+  async function handleRecord(socket, body) {
+    if (!socket.ready) {
+      await handleServerHello(socket, body);
+      return;
+    }
+    const subtle = controllerSubtle();
+    const nonce = e2eNonce(socket.receiveCounter);
+    socket.receiveCounter += 1;
+    const plaintext = new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv: nonce }, socket.receiveKey, body));
+    const type = plaintext[0];
+    const payload = plaintext.subarray(1);
+    if (type === 1) {
+      emit(socket.id, { type: "message", data: fromUtf8.decode(payload) });
+    } else if (type === 3) {
+      queueRecord(socket, 4, payload.slice());
+    } else if (type === 5) {
+      const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      const code = payload.length >= 2 ? view.getUint16(0) : 1000;
+      finish(socket, code, payload.length > 2 ? fromUtf8.decode(payload.subarray(2)) : "closed by the device");
+    }
+  }
+
+  /** Splits the byte stream into records and handles them in order. */
+  function receiveBytes(socket, chunk) {
+    socket.buffer = socket.buffer.length ? concatBytes(socket.buffer, chunk) : chunk;
+    for (;;) {
+      if (socket.buffer.length < 4) return;
+      const length = new DataView(socket.buffer.buffer, socket.buffer.byteOffset, 4).getUint32(0);
+      if (length > E2E_RECORD_MAX) {
+        finish(socket, 4500, "channel_failed: an oversized record");
+        return;
+      }
+      if (socket.buffer.length < 4 + length) return;
+      const body = socket.buffer.slice(4, 4 + length);
+      socket.buffer = socket.buffer.subarray(4 + length);
+      socket.inbound = socket.inbound
+        .then(() => (socket.finished ? undefined : handleRecord(socket, body)))
+        .catch(error =>
+          finish(socket, 4500, `channel_failed: ${error && error.message ? error.message : error}`),
+        );
+    }
+  }
+
+  async function open(args) {
+    const { id, url, target, targetPublicKey } = args || {};
+    if (typeof id !== "string" || typeof url !== "string" || typeof target !== "string") {
+      throw new Error("openbitfun.controller.open needs id, url and target");
+    }
+    const subtle = controllerSubtle();
+    const key = await controllerDeviceKey();
+    const pair = await devicePairKey(subtle, key, targetPublicKey);
+    const handshakeKey = await hmacSha256(subtle, pair, utf8.encode(HANDSHAKE_KEY_DOMAIN));
+    pair.fill(0);
+    const ephemeral = await subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+    const eph = bytesToBase64Url(new Uint8Array(await subtle.exportKey("raw", ephemeral.publicKey)));
+    const nonceBytes = new Uint8Array(16);
+    crypto.getRandomValues(nonceBytes);
+    const claims = {
+      client: key.deviceId,
+      server: target,
+      fingerprint: `${E2E_FINGERPRINT_PREFIX}${eph}`,
+      time: Date.now(),
+      nonce: bytesToBase64Url(nonceBytes),
+    };
+    const proof = await meshProof(subtle, handshakeKey, "client", claims);
+    const socket = {
+      id,
+      ws: null,
+      finished: false,
+      ready: false,
+      buffer: new Uint8Array(0),
+      inbound: Promise.resolve(),
+      outbound: Promise.resolve(),
+      sendCounter: 0,
+      receiveCounter: 0,
+      sendKey: null,
+      receiveKey: null,
+      handshakeKey,
+      ephemeral,
+      eph,
+      claims,
+      proof,
+      timer: null,
+    };
+    sockets.set(id, socket);
+    const ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    socket.ws = ws;
+    socket.timer = setTimeout(
+      () => finish(socket, 4408, "timeout: the device did not answer in time"),
+      E2E_HANDSHAKE_TIMEOUT_MS,
+    );
+    ws.onopen = () => {
+      const hello = utf8.encode(
+        JSON.stringify({
+          v: 1,
+          device: claims.client,
+          target: claims.server,
+          time: claims.time,
+          nonce: claims.nonce,
+          eph,
+          proof,
+        }),
+      );
+      sendBytes(socket, concatBytes(utf8.encode(E2E_MAGIC), lengthPrefixed(hello)));
+    };
+    ws.onmessage = event => {
+      if (socket.finished) return;
+      if (event.data instanceof ArrayBuffer) receiveBytes(socket, new Uint8Array(event.data));
+    };
+    ws.onerror = () => undefined;
+    ws.onclose = event => {
+      if (socket.finished) return;
+      if (!socket.ready && event.code === 1000) {
+        // The pipe opened and the device hung up without the browser
+        // channel's answer: a device on a build before it.
+        finish(socket, 4426, "unsupported: OpenBitFun on that device is too old for browser control; update it");
+        return;
+      }
+      finish(socket, event.code || 1006, event.reason || "the connection to the gateway closed");
+    };
+    return { deviceId: key.deviceId };
+  }
+
+  return {
+    async key() {
+      const key = await controllerDeviceKey();
+      return { deviceId: key.deviceId, publicKey: key.publicKey };
+    },
+    forgetKey: forgetControllerKey,
+    open,
+    send(args) {
+      const socket = args && sockets.get(args.id);
+      if (!socket || !socket.ready) return false;
+      queueRecord(socket, 1, utf8.encode(String(args.text)));
+      return true;
+    },
+    close(args) {
+      const socket = args && sockets.get(args.id);
+      if (!socket) return false;
+      const code = typeof args.code === "number" ? args.code : 1000;
+      if (socket.ready) {
+        const reason = utf8.encode(typeof args.reason === "string" ? args.reason : "");
+        const payload = new Uint8Array(2 + reason.length);
+        new DataView(payload.buffer).setUint16(0, code);
+        payload.set(reason, 2);
+        queueRecord(socket, 5, payload);
+        socket.outbound.then(() => finish(socket, code, args.reason || "closed"));
+      } else {
+        finish(socket, code, args.reason || "closed");
+      }
+      return true;
+    },
+  };
+}
+
 export async function createHost(player) {
   const tauri = globalThis.__TAURI__;
   const core = tauri && tauri.core;
@@ -4074,6 +4535,7 @@ export async function createHost(player) {
   const platform = isMac ? "macos" : isWindows ? "windows" : "linux";
 
   const unlisteners = new Map();
+  const controller = createController(player);
   /** In-flight `eventApi.listen()` registrations, preventing duplicate listeners & leaks. */
   const pendingListeners = new Map();
 
@@ -4834,6 +5296,18 @@ export async function createHost(player) {
           return native
             ? invokeNative(args.action, args.request)
             : invokeFixture(args.action, args);
+        }
+        case "openbitfun.controller.key":
+        case "openbitfun.controller.forgetKey":
+        case "openbitfun.controller.open":
+        case "openbitfun.controller.send":
+        case "openbitfun.controller.close": {
+          const operation = name.slice("openbitfun.controller.".length);
+          try {
+            return { ok: true, value: await controller[operation](args), transport };
+          } catch (error) {
+            return fail(error);
+          }
         }
         case "openbitfun.listen":
           return args && typeof args.event === "string"

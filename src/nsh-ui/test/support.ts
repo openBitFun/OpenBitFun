@@ -3342,21 +3342,19 @@ export function createDeviceBackend(options: BackendOptions = {}): Backend {
 export interface PhoneFixtureOptions {
   /** `mesh_phone_join_info` fails with this text (signed out, older host, ...). */
   meshError?: string;
-  /** The LAN listener starts enabled. */
-  lanRunning?: boolean;
 }
 
 /**
  * Answers the Devices › Use on phone commands (`obp_get_status`,
- * `obp_set_lan_enabled`, `obp_create_pairing` with `via`, `mesh_phone_join_info`)
- * in front of `backend`, and records them.
+ * `obp_create_pairing` with `via`, `mesh_phone_join_info`) in front of
+ * `backend`, and records them. The LAN listener is retired, as on a current
+ * backend: `obp_set_lan_enabled` and `via: "lan"` are refused.
  */
 export function withPhoneFixtures(
   backend: Backend,
   options: PhoneFixtureOptions = {},
 ): { backend: Backend; phoneCalls: Array<{ command: string; request: Record<string, unknown> }> } {
   const phoneCalls: Array<{ command: string; request: Record<string, unknown> }> = [];
-  let lan = options.lanRunning === true;
   let codes = 0;
   const status = () => ({
     available: true,
@@ -3364,13 +3362,6 @@ export function withPhoneFixtures(
     webUi: true,
     loopbackUrl: "http://127.0.0.1:47610/",
     ownerUrl: "http://127.0.0.1:47610/?token=t",
-    lan: {
-      enabled: lan,
-      running: lan,
-      port: lan ? 47611 : null,
-      urls: lan ? ["https://192.168.1.5:47611"] : [],
-      fingerprint: lan ? "sha256:lanfp" : null,
-    },
     pairedClients: [],
     ownerConnections: 1,
     pairedConnections: 0,
@@ -3387,15 +3378,13 @@ export function withPhoneFixtures(
         return answer(status());
       case "obp_set_lan_enabled":
         phoneCalls.push({ command: args.action, request });
-        lan = request.enabled === true;
-        return answer(status());
+        return { ok: false, error: "unsupported_in_native_host: obp_set_lan_enabled (retired: the device mesh connects devices on one network directly)" };
       case "obp_create_pairing": {
         phoneCalls.push({ command: args.action, request });
+        if (request.via === "lan") return { ok: false, error: "obp_lan_retired: pair over the device mesh" };
         codes += 1;
-        const mesh = request.via === "mesh";
-        const base = mesh ? "https://10.126.126.3:47612" : "https://192.168.1.5:47611";
-        const fingerprint = mesh ? "sha256:meshfp" : "sha256:lanfp";
-        const url = `${base}/pair?code=code${codes}`;
+        const fingerprint = "sha256:meshfp";
+        const url = `https://10.126.126.3:47612/pair?code=code${codes}`;
         return answer({ qrPayload: `${url}#fp=${fingerprint}`, url, fingerprint, expiresAtMs: Date.now() + 300000 });
       }
       case "mesh_phone_join_info":

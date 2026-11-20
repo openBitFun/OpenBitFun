@@ -398,7 +398,6 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("mark_openbitfun_control_surface_unready", NativeCommandSupport::Native),
     ("mark_session_seen", NativeCommandSupport::Native),
     ("mesh_list_devices", NativeCommandSupport::Native),
-    ("mesh_phone_join_info", NativeCommandSupport::Native),
     ("mesh_status", NativeCommandSupport::Native),
     ("miniapp_agent_cancel", NativeCommandSupport::Native),
     ("miniapp_agent_cancel_stale_runs", NativeCommandSupport::Native),
@@ -450,7 +449,6 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("obp_create_pairing", NativeCommandSupport::Native),
     ("obp_get_status", NativeCommandSupport::Native),
     ("obp_revoke_paired_client", NativeCommandSupport::Native),
-    ("obp_set_lan_enabled", NativeCommandSupport::Native),
     ("open_html_file_in_browser", NativeCommandSupport::Adapter),
     ("open_remote_workspace", NativeCommandSupport::Native),
     ("open_workspace", NativeCommandSupport::Native),
@@ -506,8 +504,6 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("remote_connect_get_bot_verbose_mode", NativeCommandSupport::Native),
     ("remote_connect_get_device_info", NativeCommandSupport::Native),
     ("remote_connect_get_form_state", NativeCommandSupport::Native),
-    ("remote_connect_get_lan_ip", NativeCommandSupport::Native),
-    ("remote_connect_get_lan_network_info", NativeCommandSupport::Native),
     ("remote_connect_get_methods", NativeCommandSupport::Native),
     ("remote_connect_set_allowed", NativeCommandSupport::Native),
     ("remote_connect_set_bot_verbose_mode", NativeCommandSupport::Native),
@@ -1130,7 +1126,6 @@ pub(super) fn dispatch<'a>(
         "mark_openbitfun_control_surface_unready" => command_mark_openbitfun_control_surface_unready(host, args),
         "mark_session_seen" => command_mark_session_seen(host, args),
         "mesh_list_devices" => command_mesh_list_devices(host, args),
-        "mesh_phone_join_info" => command_mesh_phone_join_info(host, args),
         "mesh_status" => command_mesh_status(host, args),
         "miniapp_agent_cancel" => command_miniapp_agent_cancel(host, args),
         "miniapp_agent_cancel_stale_runs" => command_miniapp_agent_cancel_stale_runs(host, args),
@@ -1182,7 +1177,6 @@ pub(super) fn dispatch<'a>(
         "obp_create_pairing" => command_obp_create_pairing(host, args),
         "obp_get_status" => command_obp_get_status(host, args),
         "obp_revoke_paired_client" => command_obp_revoke_paired_client(host, args),
-        "obp_set_lan_enabled" => command_obp_set_lan_enabled(host, args),
         "open_html_file_in_browser" => super::native_commands::open_html_file_in_browser(host, args),
         "open_remote_workspace" => command_open_remote_workspace(host, args),
         "open_workspace" => command_open_workspace(host, args),
@@ -1238,8 +1232,6 @@ pub(super) fn dispatch<'a>(
         "remote_connect_get_bot_verbose_mode" => command_remote_connect_get_bot_verbose_mode(host, args),
         "remote_connect_get_device_info" => command_remote_connect_get_device_info(host, args),
         "remote_connect_get_form_state" => command_remote_connect_get_form_state(host, args),
-        "remote_connect_get_lan_ip" => command_remote_connect_get_lan_ip(host, args),
-        "remote_connect_get_lan_network_info" => command_remote_connect_get_lan_network_info(host, args),
         "remote_connect_get_methods" => command_remote_connect_get_methods(host, args),
         "remote_connect_set_allowed" => command_remote_connect_set_allowed(host, args),
         "remote_connect_set_bot_verbose_mode" => command_remote_connect_set_bot_verbose_mode(host, args),
@@ -5280,14 +5272,6 @@ fn command_mesh_list_devices(host: &Arc<NativeHost>, args: Value) -> DispatchFut
 }
 
 #[inline(never)]
-fn command_mesh_phone_join_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::mesh::mesh_api::mesh_phone_join_info().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
 fn command_mesh_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::mesh::mesh_api::mesh_status().await;
@@ -5805,16 +5789,6 @@ fn command_obp_revoke_paired_client(host: &Arc<NativeHost>, args: Value) -> Disp
     Box::pin(async move {
         let result = crate::backend_protocol::ws::obp_revoke_paired_client(
             arg(&args, "request", "obp_revoke_paired_client")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_obp_set_lan_enabled(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::backend_protocol::ws::obp_set_lan_enabled(
-            arg(&args, "request", "obp_set_lan_enabled")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })
@@ -6362,22 +6336,6 @@ fn command_remote_connect_get_device_info(host: &Arc<NativeHost>, args: Value) -
 fn command_remote_connect_get_form_state(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::remote_connect_get_form_state().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_remote_connect_get_lan_ip(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::remote_connect_get_lan_ip().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_remote_connect_get_lan_network_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::remote_connect_get_lan_network_info().await;
         (&result).dispatch_kind().finish(result)
     })
 }

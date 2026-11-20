@@ -877,6 +877,73 @@ async fn handle_external_config_action(action: ExternalConfigAction) -> Result<(
     Ok(())
 }
 
+/// `openbitfun remote-control [status|on|off]`: the machine-wide switch
+/// (shared with the desktop app) and what the CLI host serving this device
+/// reports about OpenBitFun Link. Presentation only; the host owns the state
+/// (`obp_host`).
+pub(crate) fn handle_remote_control(action: crate::RemoteControlAction) -> Result<()> {
+    use openbitfun_core::service::remote_connect::device;
+    match action {
+        crate::RemoteControlAction::On => device::set_remote_control_allowed(true)?,
+        crate::RemoteControlAction::Off => device::set_remote_control_allowed(false)?,
+        crate::RemoteControlAction::Status => {}
+    }
+    let allowed = device::remote_control_allowed()?;
+    println!("Remote control: {}", if allowed { "on" } else { "off" });
+    if !allowed {
+        println!("Your other devices cannot control this one. Turn it on with `openbitfun remote-control on`.");
+        return Ok(());
+    }
+    let Some(status) = crate::obp_host::read_status() else {
+        println!(
+            "No OpenBitFun CLI host is serving this device right now. Start `openbitfun` or `openbitfun daemon run` while signed in (a desktop app on this machine serves it instead when it runs)."
+        );
+        return Ok(());
+    };
+    println!("Host process: pid {}", status.pid);
+    match status.gate.as_str() {
+        "serving" => {}
+        "signed_out" => {
+            println!("Not signed in: sign in with `/login` in `openbitfun` to use remote control.");
+            return Ok(());
+        }
+        "another_host_serves_this_device" => {
+            println!("Another OpenBitFun host on this machine (the desktop app or the daemon) serves this device.");
+            return Ok(());
+        }
+        "remote_control_off" => {
+            println!(
+                "The host has not picked up the new setting yet; it re-checks within 15 seconds."
+            );
+            return Ok(());
+        }
+        other => println!("Host state: {other}"),
+    }
+    println!("OpenBitFun Link: {}", status.state);
+    if let Some(reason) = status.reason.as_deref().filter(|reason| !reason.is_empty()) {
+        println!("  {reason}");
+    }
+    if let Some(device_id) = &status.device_id {
+        println!("Device: {device_id}");
+    }
+    if let Some(ip) = &status.virtual_ip {
+        println!("Link address: {ip}");
+    }
+    match status.obp_port {
+        Some(port) => println!("Serving OBP on port {port} (account devices, the phone app and the browser controller)"),
+        None => println!("Not serving OBP yet"),
+    }
+    println!(
+        "Account devices in the network: {}; relay nodes: {}",
+        status.peers, status.relay_nodes
+    );
+    println!(
+        "Connected controllers: {} device(s), {} paired client(s)",
+        status.account_device_connections, status.paired_connections
+    );
+    Ok(())
+}
+
 pub(crate) fn handle_health_command() -> Result<()> {
     use openbitfun_core::runtime_ports::PluginRuntimeAvailability;
 

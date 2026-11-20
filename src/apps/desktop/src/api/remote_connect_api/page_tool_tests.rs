@@ -6,6 +6,7 @@ use openbitfun_core::agentic::tools::{
     implementations::PageManageTool,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 
 #[tokio::test]

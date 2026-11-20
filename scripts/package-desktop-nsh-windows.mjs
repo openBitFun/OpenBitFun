@@ -17,7 +17,6 @@
 //   resources\{worker_host.js,ext-host\extension-host.js,dsh-profile\}
 //   flashgrep\flashgrep-<triple>.exe     workspace search daemon
 //   mobile-web\dist                      legacy relay mobile UI, when built
-//   bin\{easytier-core,easytier-cli}.exe device mesh sidecar
 // `<Name>.package.json` next to the directory records the profile, target and
 // product it was built for (read by `OpenBitFun-Installer/scripts/build-installer.cjs`).
 //
@@ -89,12 +88,6 @@ copyResources(
   }),
   app,
 );
-// Device mesh sidecar: the official EasyTier binaries (LGPL-3.0, separate
-// executables, SHA-256 pinned by scripts/fetch-easytier.mjs) in bin/.
-{
-  const { hostPlatform, stageEasyTier } = await import("./fetch-easytier.mjs");
-  await stageEasyTier(hostPlatform(), join(app, "bin"));
-}
 
 const arch = (options.target ?? process.arch).includes("aarch64") || process.arch === "arm64" ? "arm64" : "x64";
 writePackageInfo(app, { ...options, identity, version: pkg.version, executable });

@@ -1,0 +1,25 @@
+{
+  "name": "OpenBitFun",
+  "id": "com.openbitfun.mobile",
+  "version": "1.0.11",
+  "build": 1,
+  "rust": "./native",
+  "icon": "../../../assets/brand/exports/openbitfun-app-icon-1024.png",
+  "capabilities": {
+    "host": [
+      "openbitfun.*"
+    ],
+    "clipboard": true,
+    "picker": true,
+    "statusBar": true,
+    "openUrl": {
+      "schemes": [
+        "https",
+        "http"
+      ]
+    }
+  },
+  "statusBar": {
+    "foreground": "auto"
+  }
+}

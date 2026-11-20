@@ -180,7 +180,6 @@ test('maps representative changes to the smallest predictive validation', () => 
       'scripts/package-desktop-nsh-linux.mjs',
       'scripts/desktop-nsh-package-common.mjs',
       'scripts/prepare-miniapp-shell.mjs',
-      'scripts/fetch-easytier.mjs',
       'scripts/ci/install-nsh.mjs',
       'src/apps/desktop-nsh/nsh.json',
       'src/apps/desktop/icons/openbitfun-app-icon.icns',

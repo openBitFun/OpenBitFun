@@ -1,0 +1,25 @@
+[package]
+name = "openbitfun-link-node"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "OpenBitFun Link relay node: the EasyTier fork's shared node, gated by account join tokens"
+
+[[bin]]
+name = "openbitfun-link-node"
+path = "src/main.rs"
+
+[dependencies]
+openbitfun-link = { path = "../../../crates/services/link" }
+# Join-token verification (and gateway minting) shared with the issuer.
+openbitfun-relay-service = { path = "../../../crates/services/relay-service" }
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+log = { workspace = true }
+rand = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

@@ -11,7 +11,10 @@
 //! - `MESH_ISSUER_KEY_FILE`: file holding the 32-byte derivation key as 64
 //!   hex characters (mode 0600). Never commit or log it.
 //! - `MESH_ISSUER_PEERS`: comma-separated EasyTier peer URLs, in preference order
-//! - `MESH_ISSUER_EASYTIER_VERSION` (default `2.6.4`)
+//! - `MESH_ISSUER_EASYTIER_VERSION` (default `2.7.1`, the OpenBitFun Link fork base)
+//!
+//! The Link join-token public key (for the relay node) is logged at start and
+//! served as `joinTokenPublicKey` by `/mesh/v1/info`.
 
 use anyhow::Context;
 use tracing::info;
@@ -66,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
         .filter(|peer| !peer.is_empty())
         .collect();
     let easytier_version =
-        std::env::var("MESH_ISSUER_EASYTIER_VERSION").unwrap_or_else(|_| "2.6.4".to_string());
+        std::env::var("MESH_ISSUER_EASYTIER_VERSION").unwrap_or_else(|_| "2.7.1".to_string());
 
     let config = openbitfun_relay_service::mesh_issuer::MeshIssuerConfig {
         key: read_key(&key_file)?,
@@ -74,10 +77,12 @@ async fn main() -> anyhow::Result<()> {
         easytier_version,
     };
     info!(
-        "OpenBitFun mesh issuer v{}: peers={:?}, easytier={}",
+        "OpenBitFun mesh issuer v{}: peers={:?}, easytier={}, join_public_key={}",
         env!("CARGO_PKG_VERSION"),
         config.peers,
-        config.easytier_version
+        config.easytier_version,
+        openbitfun_relay_service::link_token::JoinTokenSigner::from_issuer_key(&config.key)
+            .public_key_hex()
     );
     let app = openbitfun_relay_service::mesh_issuer::mesh_issuer_router(config)?.layer(
         axum::middleware::from_fn(openbitfun_relay_service::relay_security_headers),

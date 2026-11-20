@@ -56,6 +56,17 @@ pub mod rpc_execution {
     pub use openbitfun_services_integrations::remote_connect::rpc_execution::*;
 }
 
+/// The account-device transport port (OBP over Link first, the relay RPC for
+/// older devices) for hosts that serve or dial same-account devices.
+pub mod mesh_route {
+    pub use openbitfun_services_integrations::remote_connect::mesh_route::*;
+}
+
+/// The OpenBitFun identity session (access tokens for the Link issuer).
+pub mod account_identity {
+    pub use openbitfun_services_integrations::account_identity::*;
+}
+
 pub mod session_records {
     pub use openbitfun_services_integrations::remote_connect::session_records::*;
 }

@@ -14,7 +14,6 @@ import {
   feishuAppId,
   feishuAppSecret,
   isRelayRouteConnected,
-  lanIpInput,
   loadConnectors,
   pollWeixinQr,
   relayPairing,
@@ -114,6 +113,7 @@ import {
   enterPeer,
   leavePeer,
   meshLinkState,
+  meshPathLabel,
   peerTransportLabel,
   readMeshDevices,
   reconnectPeer,
@@ -385,7 +385,6 @@ function isBotActive(keyword: string): boolean {
 
 function pairingUrl(): string {
   return (
-    relayUrlForMethod("lan") ||
     relayUrlForMethod("openbitfun_server") ||
     relayPairing()?.qrUrl ||
     relayPairing()?.botLink ||
@@ -1194,9 +1193,19 @@ function devicesFootnote(): string | undefined {
   return parts.join(" · ");
 }
 
+/** The directory name of `deviceId`, for "Relayed via <name>". */
+function directoryName(deviceId: string): string | null {
+  const row = devices().find(device => device.id === deviceId);
+  return row ? row.alias || row.name || null : null;
+}
+
 function DeviceListRow(props: { device: () => DeviceRow; first: boolean }) {
   const isPeer = () => peerScope()?.deviceId === props.device().id;
   const isLocal = () => props.device().id === localDeviceId();
+  const meshPath = () => {
+    const entry = meshDevicesById()[props.device().id];
+    return entry && !isLocal() ? meshPathLabel(entry, directoryName) : "";
+  };
   return (
     <InsetRow
       first={props.first}
@@ -1211,7 +1220,23 @@ function DeviceListRow(props: { device: () => DeviceRow; first: boolean }) {
         </View>
       }
       label={props.device().alias || props.device().name}
-      detail={`${props.device().platform || tr("devices.unknownPlatform")} · ${deviceReachable(props.device()) ? tr("devices.online") : tr("devices.offline")}${meshDevicesById()[props.device().id] ? ` · ${tr("peer.onMesh")}` : ""} · ${props.device().id}`}
+      detail={`${props.device().platform || tr("devices.unknownPlatform")} · ${deviceReachable(props.device()) ? tr("devices.online") : tr("devices.offline")} · ${props.device().id}`}
+      below={
+        meshPath() ? (
+          <Text
+            accessibilityLabel={`device-path-${props.device().id}`}
+            style={{
+              color: palette().textMuted,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.4),
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {meshPath()}
+          </Text>
+        ) : undefined
+      }
       value={isPeer() ? tr("devices.activePeer") : isLocal() ? tr("devices.thisDevice") : undefined}
       trailing={
         <>
@@ -1699,15 +1724,11 @@ function ChannelsSection() {
             />
             <ChannelRow
               icon="wifi"
-              label={tr("devices.lanServerRelay")}
+              label={tr("devices.mobileWebRelay")}
               description={
-                isRelayRouteConnected("lan") || isRelayRouteConnected("openbitfun_server")
-                  ? `${isRelayRouteConnected("lan") ? tr("devices.lanActive") : tr("devices.lanIdle")} · ${
-                      isRelayRouteConnected("openbitfun_server") ? tr("devices.serverActive") : tr("devices.serverIdle")
-                    }`
-                  : tr("devices.relayDesc")
+                isRelayRouteConnected("openbitfun_server") ? tr("devices.serverActive") : tr("devices.relayDesc")
               }
-              active={isRelayRouteConnected("lan") || isRelayRouteConnected("openbitfun_server")}
+              active={isRelayRouteConnected("openbitfun_server")}
               accessibilityLabel="channel-toggle-relay"
               onPress={() => activeChannelModal.set("relay")}
             />
@@ -1989,48 +2010,6 @@ function ChannelsSection() {
         }
       >
         <View style={{ gap: 12 }}>
-          <View style={{ gap: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <Text style={textStyle("cardTitle")}>{tr("devices.localNetworkLan")}</Text>
-              <InlineStatus
-                kind={isRelayRouteConnected("lan") ? "success" : "muted"}
-                label={isRelayRouteConnected("lan") ? tr("common.active") : tr("devices.idle")}
-              />
-            </View>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-              <InputBox
-                size="sm"
-                value={lanIpInput()}
-                placeholder={tr("devices.lanIpOptional")}
-                leadingIcon="wifi"
-                monospace
-                accessibilityLabel="connector-lan-ip"
-                style={{ flex: 1, minWidth: 168 }}
-                onChange={val => lanIpInput.set(val)}
-              />
-              <If when={!isRelayRouteConnected("lan")}>
-                <Button
-                  label={tr("devices.startLanRelay")}
-                  variant="primary"
-                  size="sm"
-                  accessibilityLabel="connector-lan-start"
-                  disabled={connectorBusy()}
-                  onPress={() => void startRelayConnector("lan")}
-                />
-              </If>
-              <If when={isRelayRouteConnected("lan")}>
-                <Button
-                  label={tr("devices.stopLanRelay")}
-                  variant="danger"
-                  size="sm"
-                  accessibilityLabel="connector-lan-stop"
-                  disabled={connectorBusy()}
-                  onPress={() => void stopRelayConnector("lan")}
-                />
-              </If>
-            </View>
-          </View>
-
           <View
             style={{
               flexDirection: "row",
@@ -2038,9 +2017,6 @@ function ChannelsSection() {
               alignItems: "center",
               justifyContent: "space-between",
               gap: 12,
-              paddingTop: 14,
-              borderTopWidth: 1,
-              borderColor: palette().borderSubtle,
             }}
           >
             <View style={{ flex: 1, minWidth: 180, gap: 3 }}>

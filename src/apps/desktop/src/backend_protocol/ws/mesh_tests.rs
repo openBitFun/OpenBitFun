@@ -1,16 +1,20 @@
-//! OBP over the account mesh.
+//! OBP over the account device network (OpenBitFun Link), desktop side.
 //!
-//! The unit tests drive the real mesh listener and the real client helper
-//! through a minimal local SOCKS5 forwarder (standing in for the EasyTier
-//! sidecar), with device pair keys derived from real X25519 device keys.
+//! The listener, the handshake, the end-to-end channel and the client are
+//! tested in the shared crate (`openbitfun-obp`). These tests drive the
+//! desktop's adapter over the same loopback stand-ins: its own host verbs
+//! (`mesh_verbs`: dispatch targets and the bot lane) and Peer Device Mode
+//! links (`mesh::peer_link`), with device pair keys derived from real X25519
+//! device keys.
 //!
-//! `mesh_e2e_*` (ignored) runs the whole path for real: two EasyTier
-//! sidecars join a throwaway `obf-` network through the relay node, and one
-//! backend calls the other and streams its events over the mesh:
+//! `mesh_e2e_*` and `peer_link_e2e_*` (ignored) run the whole path for real:
+//! two in-process Link nodes join a throwaway account network through the
+//! relay node (`wss://remote.openbitfun.com/mesh/et/`), and one backend
+//! calls the other and streams its events. The credentials come from the
+//! server (`openbitfun-link-node issue`, two devices of one scratch account):
 //!
 //! ```text
-//! OPENBITFUN_EASYTIER_DIR=target/easytier/macos-aarch64 \
-//! OPENBITFUN_MESH_E2E_PEER=wss://remote.openbitfun.com:443/mesh/et/ \
+//! OPENBITFUN_LINK_E2E_A=/path/a.json OPENBITFUN_LINK_E2E_B=/path/b.json \
 //!   cargo test -p openbitfun-desktop --lib mesh_e2e -- --ignored --nocapture --test-threads 1
 //! ```
 
@@ -21,10 +25,9 @@ use std::time::{Duration, Instant};
 
 use openbitfun_services_integrations::remote_connect::device_crypto;
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 
-use super::mesh_client::{MeshConnectOptions, MeshDialer, MeshTarget};
+use super::mesh_client::{LoopbackConnector, MeshConnectOptions, MeshDialer, MeshTarget};
+
 use super::*;
 use crate::backend_protocol::EventHub;
 
@@ -61,6 +64,14 @@ impl ObpBackend for EchoBackend {
                 other => Err(crate::host::unsupported_in_native_host(other)),
             }
         })
+    }
+
+    fn is_account_device_host_verb(&self, command: &str) -> bool {
+        super::mesh_verbs::is_account_device_host_verb(command)
+    }
+
+    fn mesh_capabilities(&self) -> Vec<&'static str> {
+        super::mesh_verbs::CAPABILITIES.to_vec()
     }
 
     fn events(&self) -> Arc<EventHub> {
@@ -124,127 +135,12 @@ async fn server(
     (server, hub, dir)
 }
 
-/// SOCKS5 CONNECT forwarder that sends every connection to 127.0.0.1 at the
-/// requested port, the way a no-TUN EasyTier node delivers inbound mesh TCP.
-async fn fake_sidecar_socks5() -> SocketAddr {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut client, _)) = listener.accept().await else {
-                return;
-            };
-            tokio::spawn(async move {
-                let mut greeting = [0u8; 3];
-                client.read_exact(&mut greeting).await.ok()?;
-                client.write_all(&[5, 0]).await.ok()?;
-                let mut request = [0u8; 10];
-                client.read_exact(&mut request).await.ok()?;
-                let port = u16::from_be_bytes([request[8], request[9]]);
-                let Ok(mut upstream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await else {
-                    client
-                        .write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0])
-                        .await
-                        .ok()?;
-                    return None;
-                };
-                client
-                    .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-                    .await
-                    .ok()?;
-                tokio::io::copy_bidirectional(&mut client, &mut upstream)
-                    .await
-                    .ok()
-            });
-        }
-    });
-    addr
-}
-
 /// Tests whose servers share a device id scan the same mesh port range;
 /// they hold this so a range scan cannot find the other test's listener.
 static SHARED_DEVICE_ID_RANGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const ALICE: [u8; 32] = [11; 32];
 const BOB: [u8; 32] = [23; 32];
-const MALLORY: [u8; 32] = [31; 32];
-
-#[tokio::test]
-async fn account_devices_call_and_stream_with_the_device_handshake() {
-    let _range = SHARED_DEVICE_ID_RANGE.lock().await;
-    let bob = device("bob-device", BOB, &[("alice-device", ALICE)]);
-    let (server, _hub, _dir) = server(Arc::clone(&bob)).await;
-    let port = server.mesh_addr().unwrap().port();
-    assert!((openbitfun_mesh_service::MESH_OBP_PORT_FIRST
-        ..=openbitfun_mesh_service::MESH_OBP_PORT_LAST)
-        .contains(&port));
-    assert_eq!(server.status().mesh_port, Some(port));
-
-    let dialer = MeshDialer {
-        socks5: fake_sidecar_socks5().await,
-        authority: device("alice-device", ALICE, &[("bob-device", BOB)]),
-    };
-    let target = MeshTarget {
-        device_id: "bob-device".into(),
-        virtual_ip: Ipv4Addr::new(10, 126, 126, 2),
-        port: None,
-    };
-    let (found, info) = dialer.locate(&target).await.unwrap();
-    assert_eq!(found, port);
-    assert_eq!(info.device_id, "bob-device");
-    assert!(info.capabilities.contains(&"mesh_v1".to_string()));
-
-    let mut connection = dialer
-        .connect(&target, MeshConnectOptions::default())
-        .await
-        .unwrap();
-    let hello = connection.hello().clone();
-    assert_eq!(hello["scope"], "account-device");
-    assert!(hello["capabilities"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("mesh_v1")));
-    assert!(hello["backend"].get("dataDir").is_none());
-    assert_eq!(server.status().account_device_connections, 1);
-
-    let echoed = connection
-        .call("open_workspace", json!({ "request": { "path": "/w" } }))
-        .await
-        .unwrap();
-    assert_eq!(echoed["args"]["request"]["path"], "/w");
-    // Registry allowlist: controller-local commands stay with the owner.
-    let refused = connection
-        .call(
-            "obp_set_lan_enabled",
-            json!({ "request": { "enabled": true } }),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(refused.code, -32003);
-    let refused = connection.call("mesh_status", json!({})).await.unwrap_err();
-    assert_eq!(refused.code, -32003);
-
-    connection
-        .call("page_list", json!({ "count": 5 }))
-        .await
-        .unwrap();
-    let mut names = Vec::new();
-    while names.len() < 6 {
-        let event = tokio::time::timeout(Duration::from_secs(5), connection.next_event())
-            .await
-            .unwrap()
-            .unwrap();
-        names.push(event.event);
-    }
-    // Owner-only events (account, mesh) never cross to another device.
-    assert!(names.iter().all(|name| !name.starts_with("account://")));
-    assert!(names.iter().all(|name| !name.starts_with("mesh://")));
-    assert_eq!(names.last().unwrap(), "agentic://tool-event");
-    connection.close().await;
-
-    server.stop_mesh();
-    assert!(server.mesh_addr().is_none());
-}
 
 /// Detached Dispatch and IM bots between two new devices: the target verbs
 /// and the `RemoteCommand` lane run over the account-device connection, and
@@ -255,7 +151,7 @@ async fn account_devices_run_dispatch_and_bot_host_verbs_over_the_mesh() {
     // Distinct device ids: tests run in parallel and share the mesh port range.
     let (_server, _hub, _dir) = server(Arc::clone(&bob)).await;
     let dialer = MeshDialer {
-        socks5: fake_sidecar_socks5().await,
+        connector: Arc::new(LoopbackConnector),
         authority: device("dispatch-controller", ALICE, &[("dispatch-target", BOB)]),
     };
     let target = MeshTarget {
@@ -312,115 +208,92 @@ async fn account_devices_run_dispatch_and_bot_host_verbs_over_the_mesh() {
     connection.close().await;
 }
 
-#[tokio::test]
-async fn strangers_impostors_and_browsers_are_refused() {
-    let _range = SHARED_DEVICE_ID_RANGE.lock().await;
-    let bob = device("bob-device", BOB, &[("alice-device", ALICE)]);
-    let (server, _hub, _dir) = server(bob).await;
-    let socks5 = fake_sidecar_socks5().await;
-    let target = MeshTarget {
-        device_id: "bob-device".into(),
-        virtual_ip: Ipv4Addr::new(10, 126, 126, 2),
-        port: server.mesh_addr().map(|addr| addr.port()),
-    };
+// ---------------------------------------------------------------------------
+// Live end-to-end over Link and the relay node.
 
-    // A device outside the account directory.
-    let stranger = MeshDialer {
-        socks5,
-        authority: device("mallory-device", MALLORY, &[("bob-device", BOB)]),
+/// Two credential documents of one scratch account network, as
+/// `openbitfun-link-node issue` writes them on the server.
+fn live_credentials() -> (
+    openbitfun_link::MeshCredentials,
+    openbitfun_link::MeshCredentials,
+) {
+    let read = |var: &str| -> openbitfun_link::MeshCredentials {
+        let path = std::env::var(var).unwrap_or_else(|_| panic!("set {var} (see the module docs)"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     };
-    let error = stranger
-        .connect(&target, MeshConnectOptions::default())
-        .await
-        .err()
-        .unwrap();
-    assert!(
-        error.contains("mesh_refused") && error.contains("403"),
-        "{error}"
-    );
-
-    // Claiming Alice's id without Alice's key.
-    let impostor = MeshDialer {
-        socks5,
-        authority: Arc::new(TestAuthority {
-            device_id: "alice-device".into(),
-            secret: MALLORY,
-            directory: [("bob-device".to_string(), device_crypto::public_key(&BOB))].into(),
-        }),
-    };
-    let error = impostor
-        .connect(&target, MeshConnectOptions::default())
-        .await
-        .err()
-        .unwrap();
-    assert!(error.contains("401"), "{error}");
-
-    // A server that cannot prove it is Bob (Alice's directory has another key
-    // for Bob): the client refuses before the first OBP frame.
-    let fooled = MeshDialer {
-        socks5,
-        authority: Arc::new(TestAuthority {
-            device_id: "alice-device".into(),
-            secret: ALICE,
-            directory: [(
-                "bob-device".to_string(),
-                device_crypto::public_key(&MALLORY),
-            )]
-            .into(),
-        }),
-    };
-    let error = fooled
-        .connect(&target, MeshConnectOptions::default())
-        .await
-        .err()
-        .unwrap();
-    // Bob rejects the proof made with the wrong pair key first.
-    assert!(
-        error.contains("401") || error.contains("mesh_impostor"),
-        "{error}"
-    );
-
-    // Wrong target id on that address.
-    let alice = MeshDialer {
-        socks5,
-        authority: device("alice-device", ALICE, &[("carol-device", BOB)]),
-    };
-    let error = alice
-        .connect(
-            &MeshTarget {
-                device_id: "carol-device".into(),
-                ..target.clone()
-            },
-            MeshConnectOptions::default(),
-        )
-        .await
-        .err()
-        .unwrap();
-    assert!(error.contains("belongs to device bob-device"), "{error}");
-    assert_eq!(server.status().account_device_connections, 0);
+    (read("OPENBITFUN_LINK_E2E_A"), read("OPENBITFUN_LINK_E2E_B"))
 }
 
-/// A phone that joined the account mesh with the EasyTier app reaches the
-/// mesh listener with a browser: it gets the web UI, pairs with a one-time
-/// QR code and runs as `paired-client`; the device handshake still works on
-/// the same port, and the LAN switch does not close mesh-served phones.
-#[tokio::test]
-async fn phones_on_the_mesh_pair_like_the_lan_and_devices_still_handshake() {
-    use futures::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::Message;
+/// A Link node's inbound OBP streams as the mesh listener's source.
+struct NodeIncoming {
+    node: Arc<openbitfun_link::LinkNode>,
+    listener: tokio::sync::Mutex<Option<openbitfun_link::LinkListener>>,
+}
 
-    let web = tempfile::tempdir().unwrap();
-    std::fs::write(
-        web.path().join("index.html"),
-        "<!doctype html><html><head><title>t</title></head><body></body></html>",
-    )
-    .unwrap();
+impl MeshIncoming for NodeIncoming {
+    fn accept(&self) -> MeshAcceptFuture<'_> {
+        Box::pin(async move {
+            loop {
+                let mut listener = self.listener.lock().await;
+                if listener.is_none() {
+                    *listener = self
+                        .node
+                        .bind(
+                            openbitfun_link::MESH_OBP_PORT_FIRST,
+                            Duration::from_secs(30),
+                        )
+                        .await
+                        .ok();
+                }
+                match listener.as_mut()?.accept().await {
+                    Ok(stream) => {
+                        let peer = stream.peer_addr();
+                        return Some((Box::new(stream) as Box<dyn MeshIo>, peer));
+                    }
+                    Err(_) if self.node.has_stopped() => return None,
+                    Err(_) => *listener = None,
+                }
+            }
+        })
+    }
+
+    fn port(&self) -> Option<u16> {
+        Some(openbitfun_link::MESH_OBP_PORT_FIRST)
+    }
+}
+
+/// Outbound streams through a Link node.
+struct NodeConnector(Arc<openbitfun_link::LinkNode>);
+
+impl super::mesh_client::MeshConnector for NodeConnector {
+    fn open(&self, ip: Ipv4Addr, port: u16) -> super::mesh_client::MeshOpenFuture<'_> {
+        Box::pin(async move {
+            let stream = self
+                .0
+                .connect_addr(SocketAddr::from((ip, port)), Duration::from_secs(15))
+                .await?;
+            Ok(Box::new(stream) as Box<dyn MeshIo>)
+        })
+    }
+}
+
+/// A backend on a live Link node: its OBP mesh listener serves the node's
+/// inbound streams (no loopback socket).
+async fn live_backend(
+    id: &str,
+    authority: Arc<TestAuthority>,
+    credentials: &openbitfun_link::MeshCredentials,
+    disable_p2p: bool,
+) -> (
+    Arc<ObpServer>,
+    Arc<EventHub>,
+    tempfile::TempDir,
+    Arc<openbitfun_link::LinkNode>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let hub = EventHub::new(256);
     let mut options = ObpServerOptions::new(dir.path().join("obp"));
     options.loopback_port = 0;
-    options.web_root = Some(web.path().canonicalize().unwrap());
     let server = ObpServer::new(
         Arc::new(EchoBackend {
             hub: Arc::clone(&hub),
@@ -428,203 +301,41 @@ async fn phones_on_the_mesh_pair_like_the_lan_and_devices_still_handshake() {
         options,
     )
     .unwrap();
-    // Its own device id: tests run in parallel and the range scan of
-    // another test must not find this server.
-    let dana = device("dana-device", BOB, &[("alice-device", ALICE)]);
-    server.start_mesh(dana).await.unwrap();
-    let port = server.mesh_addr().unwrap().port();
-    let base = format!("https://127.0.0.1:{port}");
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-
-    // Unpaired: the UI loads, the session says why the socket will be refused.
-    let index = client.get(format!("{base}/")).send().await.unwrap();
-    assert_eq!(index.status().as_u16(), 200);
-    assert!(index.headers()["content-security-policy"]
-        .to_str()
-        .unwrap()
-        .contains("frame-ancestors 'none'"));
-    let body = index.text().await.unwrap();
-    assert!(
-        body.contains(&format!("wss://127.0.0.1:{port}/obp")),
-        "{body}"
-    );
-    let session: Value = client
-        .get(format!("{base}/obp/session"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(session["authorized"], false);
-    assert_eq!(session["listener"], "mesh");
-    // Device discovery stays on the same port.
-    let info: Value = client
-        .get(format!("{base}/obp/mesh/info"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(info["deviceId"], "dana-device");
-
-    // The mesh pairing QR names the virtual IP and pins the listener's cert.
-    assert!(server.create_mesh_pairing(None, "not-an-ip").is_err());
-    let offer = server
-        .create_mesh_pairing(Some("Pixel".into()), "10.126.126.7")
-        .unwrap();
-    let fingerprint = server.mesh_fingerprint().unwrap();
-    assert!(offer
-        .url
-        .starts_with(&format!("https://10.126.126.7:{port}/pair?code=")));
-    assert_eq!(offer.qr_payload, format!("{}#fp={fingerprint}", offer.url));
-    assert_eq!(offer.fingerprint, fingerprint);
-    let code = offer.url.split("code=").nth(1).unwrap().to_string();
-
-    let connect = |cookie: Option<String>| {
-        let mut request = format!("wss://127.0.0.1:{port}/obp")
-            .into_client_request()
-            .unwrap();
-        request.headers_mut().insert(
-            "origin",
-            format!("https://127.0.0.1:{port}").parse().unwrap(),
-        );
-        if let Some(cookie) = cookie {
-            request
-                .headers_mut()
-                .insert("cookie", cookie.parse().unwrap());
-        }
-        tokio_tungstenite::connect_async_tls_with_config(
-            request,
-            None,
-            false,
-            Some(super::tests::tls_connector()),
-        )
+    let config = openbitfun_link::DeviceNodeConfig {
+        instance_name: format!("e2e-{id}"),
+        hostname: id.to_string(),
+        credentials: credentials.clone(),
+        listener_port: Some(openbitfun_link::session::free_listener_port(0).unwrap()),
+        inbound_tcp_ports: (
+            openbitfun_link::MESH_OBP_PORT_FIRST,
+            openbitfun_link::MESH_OBP_PORT_LAST,
+        ),
+        disable_p2p,
     };
-    // No credential, no socket.
-    assert!(connect(None).await.is_err());
-
-    let paired = client
-        .get(format!("{base}/pair?code={code}"))
-        .header("user-agent", "Mozilla/5.0 (Linux; Android 15)")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(paired.status().as_u16(), 303);
-    let cookie = paired.headers()["set-cookie"].to_str().unwrap().to_string();
-    assert!(
-        cookie.starts_with(&format!("obf_mesh_client_{port}=")),
-        "{cookie}"
-    );
-    assert!(cookie.contains("Secure") && cookie.contains("HttpOnly"));
-    let cookie = cookie.split(';').next().unwrap().to_string();
-    let session: Value = client
-        .get(format!("{base}/obp/session"))
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(session["authorized"], true);
-    assert_eq!(session["scope"], "paired-client");
-    let listed = server.status().paired_clients;
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, "Android device browser");
-
-    let (mut socket, _) = connect(Some(cookie.clone())).await.unwrap();
-    socket
-        .send(Message::Text(
-            json!({"jsonrpc": "2.0", "id": 1, "method": "hello", "params": {"protocol": 1}})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
-    let hello = loop {
-        let Some(Ok(Message::Text(text))) = socket.next().await else {
-            panic!("hello reply missing");
-        };
-        let frame: Value = serde_json::from_str(text.as_str()).unwrap();
-        if frame["id"] == json!(1) {
-            break frame;
-        }
-    };
-    assert_eq!(hello["result"]["scope"], "paired-client");
-    assert!(server.status().paired_clients[0].connected);
-
-    // Another account device still authenticates on the same port.
-    let dialer = MeshDialer {
-        socks5: fake_sidecar_socks5().await,
-        authority: device("alice-device", ALICE, &[("dana-device", BOB)]),
-    };
-    let target = MeshTarget {
-        device_id: "dana-device".into(),
-        virtual_ip: Ipv4Addr::new(10, 126, 126, 2),
-        port: Some(port),
-    };
-    let connection = dialer
-        .connect(&target, MeshConnectOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(connection.hello()["scope"], "account-device");
-    connection.close().await;
-
-    // Turning the LAN off leaves mesh-served phones connected...
-    server.stop_lan();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(server.status().paired_clients[0].connected);
-    // ...stopping the mesh closes them.
-    server.stop_mesh();
-    let closed = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match socket.next().await {
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return true,
-                Some(Ok(_)) => continue,
-            }
-        }
+    let node = openbitfun_link::LinkNode::start(openbitfun_link::NodeOptions {
+        config_toml: config.render().unwrap(),
+        network_name: credentials.network_name.clone(),
+        hostname: id.to_string(),
+        join_token: credentials.join_token.clone(),
+        status_interval: Duration::from_secs(2),
     })
     .await
-    .unwrap();
-    assert!(closed);
-    assert!(server.create_mesh_pairing(None, "10.126.126.7").is_err());
+    .expect("Link node");
+    server
+        .start_mesh_with(
+            authority,
+            Arc::new(NodeIncoming {
+                node: Arc::clone(&node),
+                listener: tokio::sync::Mutex::new(None),
+            }),
+            SocketAddr::from((Ipv4Addr::UNSPECIFIED, openbitfun_link::MESH_OBP_PORT_FIRST)),
+        )
+        .await
+        .unwrap();
+    (server, hub, dir, node)
 }
 
-#[test]
-fn handshake_nonces_are_single_use() {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let bob = device("bob-device", BOB, &[]);
-        let (server, _hub, _dir) = server(bob).await;
-        let now = super::store::now_ms();
-        assert!(server.consume_mesh_nonce("nonce-AAAAAAAAAAAAAAAA", now));
-        assert!(!server.consume_mesh_nonce("nonce-AAAAAAAAAAAAAAAA", now + 1_000));
-        // Expired entries are pruned after the clock window.
-        assert!(server.consume_mesh_nonce(
-            "nonce-AAAAAAAAAAAAAAAA",
-            now + 3 * openbitfun_mesh_service::handshake::MAX_CLOCK_SKEW_MS
-        ));
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Live end-to-end over EasyTier and the relay node.
-
-fn easytier_binaries() -> Option<openbitfun_mesh_service::EasyTierBinaries> {
-    let platform = openbitfun_mesh_service::EasyTierBinaries::platform_dir_name()?;
-    openbitfun_mesh_service::EasyTierBinaries::locate(&[std::path::PathBuf::from(env!(
-        "CARGO_MANIFEST_DIR"
-    ))
-    .join("../../../target/easytier")
-    .join(platform)])
-}
-
+/// Resident memory (KiB) and CPU time of a process (live tests, unix).
 fn ps_sample(pid: u32) -> Option<(u64, String)> {
     let output = std::process::Command::new("ps")
         .args(["-o", "rss=,time=", "-p", &pid.to_string()])
@@ -635,69 +346,42 @@ fn ps_sample(pid: u32) -> Option<(u64, String)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.to_string()))
 }
 
-async fn live_round(disable_p2p: bool) {
-    use openbitfun_mesh_service::sidecar::{free_listener_port, free_loopback_port};
-    use openbitfun_mesh_service::{
-        MeshCredentials, MeshNodeConfig, MeshPath, MeshSidecar, MeshState, SidecarOptions,
-    };
-
-    let binaries = easytier_binaries().expect("set OPENBITFUN_EASYTIER_DIR or run fetch-easytier");
-    let peer = std::env::var("OPENBITFUN_MESH_E2E_PEER")
-        .unwrap_or_else(|_| "wss://remote.openbitfun.com:443/mesh/et/".to_string());
-    let suffix = openbitfun_mesh_service::handshake::new_nonce()
+fn live_suffix() -> String {
+    openbitfun_link::handshake::new_nonce()
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .take(10)
         .collect::<String>()
-        .to_ascii_lowercase();
-    let credentials = MeshCredentials {
-        version: 1,
-        network_name: format!("obf-e2e-{suffix}"),
-        network_secret: openbitfun_mesh_service::handshake::new_nonce(),
-        peers: vec![peer.clone()],
-        easytier_version: None,
-        issued_at: None,
-    };
+        .to_ascii_lowercase()
+}
+
+async fn live_round(disable_p2p: bool) {
+    use openbitfun_link::{MeshPath, MeshState};
+
+    let (alice_credentials, bob_credentials) = live_credentials();
+    let suffix = live_suffix();
     let alice_id = format!("e2ealice{suffix}");
     let bob_id = format!("e2ebob{suffix}");
     let alice = device(&alice_id, ALICE, &[(&bob_id, BOB)]);
     let bob = device(&bob_id, BOB, &[(&alice_id, ALICE)]);
-    let (alice_server, _alice_hub, _a) = server(Arc::clone(&alice)).await;
-    let (bob_server, bob_hub, _b) = server(Arc::clone(&bob)).await;
-    let work = tempfile::tempdir().unwrap();
-    let sidecar = |id: &str, obp_port: u16| {
-        let socks5_port = free_loopback_port().unwrap();
-        MeshSidecar::start(SidecarOptions {
-            binaries: binaries.clone(),
-            work_dir: work.path().join(id),
-            config: MeshNodeConfig {
-                instance_name: format!("e2e-{id}"),
-                hostname: id.to_string(),
-                credentials: credentials.clone(),
-                listener_port: Some(free_listener_port(0).unwrap()),
-                socks5_port,
-                inbound_tcp_ports: (
-                    openbitfun_mesh_service::MESH_OBP_PORT_FIRST,
-                    openbitfun_mesh_service::MESH_OBP_PORT_LAST,
-                ),
-                disable_p2p,
-            },
-            rpc_port: free_loopback_port().unwrap(),
-            status_interval: Duration::from_secs(2),
-            obp_port: Some(obp_port),
-        })
-    };
     let started = Instant::now();
-    let alice_node = sidecar(&alice_id, alice_server.mesh_addr().unwrap().port());
-    let bob_node = sidecar(&bob_id, bob_server.mesh_addr().unwrap().port());
+    let (_alice_server, _alice_hub, _a, alice_node) = live_backend(
+        &alice_id,
+        Arc::clone(&alice),
+        &alice_credentials,
+        disable_p2p,
+    )
+    .await;
+    let (bob_server, bob_hub, _b, bob_node) =
+        live_backend(&bob_id, Arc::clone(&bob), &bob_credentials, disable_p2p).await;
 
     let mut seen = None;
     for _ in 0..90 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let status = alice_node.refresh().await;
+        let status = alice_node.refresh_status().await;
         if let Some(peer) = status.peer(&bob_id) {
             // Nodes that join at the same moment can pick the same DHCP
-            // address; EasyTier resolves it within seconds.
+            // address; Link resolves it within seconds.
             if status.virtual_ip.as_deref() == Some(peer.virtual_ip.as_str()) {
                 continue;
             }
@@ -731,8 +415,8 @@ async fn live_round(disable_p2p: bool) {
             .collect::<Vec<_>>()
     );
     println!(
-        "[mesh-e2e] bob as seen by alice: ip={} path={:?} hops={} latency_ms={:?} tunnel={:?}",
-        peer.virtual_ip, peer.path, peer.hops, peer.latency_ms, peer.tunnel
+        "[mesh-e2e] bob as seen by alice: ip={} route={:?} hops={} latency_ms={:?} tunnel={:?}",
+        peer.virtual_ip, peer.route, peer.hops, peer.latency_ms, peer.tunnel
     );
     assert_eq!(status.state, MeshState::Running);
     assert_ne!(status.virtual_ip.as_deref(), Some(peer.virtual_ip.as_str()));
@@ -741,7 +425,7 @@ async fn live_round(disable_p2p: bool) {
     }
 
     let dialer = MeshDialer {
-        socks5: alice_node.socks5_addr(),
+        connector: Arc::new(NodeConnector(Arc::clone(&alice_node))),
         authority: alice,
     };
     let target = MeshTarget {
@@ -750,7 +434,7 @@ async fn live_round(disable_p2p: bool) {
         port: None,
     };
     let connect_started = Instant::now();
-    let mut connection = dialer
+    let connection = dialer
         .connect(&target, MeshConnectOptions::default())
         .await
         .expect("OBP over the mesh");
@@ -811,32 +495,34 @@ async fn live_round(disable_p2p: bool) {
     );
     connection.close().await;
 
-    let pid = alice_node.status().sidecar_pid.unwrap();
+    // Idle cost of Link in this process (two nodes, two backends, status
+    // rebuilt every 2 s): no sidecar process any more.
+    let pid = std::process::id();
     let before = ps_sample(pid);
     tokio::time::sleep(Duration::from_secs(30)).await;
     let after = ps_sample(pid);
     println!(
-        "[mesh-e2e] idle sidecar over 30 s (status probes every 2 s): rss/cpu-time before={before:?} after={after:?}"
+        "[mesh-e2e] idle test process (2 Link nodes + 2 backends) over 30 s: rss_kb/cpu-time before={before:?} after={after:?}"
     );
     alice_node.stop().await;
     bob_node.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "live: needs EasyTier binaries and the relay node"]
+#[ignore = "live: needs Link credentials from the relay server"]
 async fn mesh_e2e_default_path() {
     live_round(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "live: needs EasyTier binaries and the relay node"]
+#[ignore = "live: needs Link credentials from the relay server"]
 async fn mesh_e2e_relay_forced() {
     live_round(true).await;
 }
 
 // ── Peer Device Mode over the mesh (controller-side link) ────────────────────
 
-/// Reaches devices through a test dialer (fake sidecar, real handshake).
+/// Reaches devices through a test dialer (loopback streams, real handshake).
 struct DialerConnector {
     dialer: MeshDialer,
 }
@@ -897,11 +583,12 @@ async fn wait_for_events(
 /// seq, and closes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_device_mode_links_call_stream_and_resume_over_the_mesh() {
+    let _range = SHARED_DEVICE_ID_RANGE.lock().await;
     let dana = device("dana-device", BOB, &[("erin-device", ALICE)]);
     let (server, hub, _dir) = server(Arc::clone(&dana)).await;
     let links = crate::mesh::peer_link::PeerLinks::new(Arc::new(DialerConnector {
         dialer: MeshDialer {
-            socks5: fake_sidecar_socks5().await,
+            connector: Arc::new(LoopbackConnector),
             authority: device("erin-device", ALICE, &[("dana-device", BOB)]),
         },
     }));
@@ -1021,76 +708,44 @@ async fn peer_device_mode_links_call_stream_and_resume_over_the_mesh() {
     assert!(closed.starts_with("peer_link_closed"), "{closed}");
 }
 
-/// Peer Device Mode for real: two EasyTier sidecars join a throwaway `obf-`
-/// network through the relay node, and the controller's peer link drives the
+/// Peer Device Mode for real: two in-process Link nodes join a scratch
+/// account network through the relay node, and the controller's peer link drives the
 /// other backend over it while that backend streams paced text chunks (a
 /// model's tokens). Prints when each chunk reached the controller's long poll.
 ///
 /// ```text
-/// OPENBITFUN_EASYTIER_DIR=target/easytier/macos-aarch64 \
+/// OPENBITFUN_LINK_E2E_A=/path/a.json OPENBITFUN_LINK_E2E_B=/path/b.json \
 ///   cargo test -p openbitfun-desktop --lib peer_link_e2e -- --ignored --nocapture --test-threads 1
 /// ```
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "live: needs EasyTier binaries and the relay node"]
+#[ignore = "live: needs Link credentials from the relay server"]
 async fn peer_link_e2e_streams_live_tokens_over_the_relay_node() {
-    use openbitfun_mesh_service::sidecar::{free_listener_port, free_loopback_port};
-    use openbitfun_mesh_service::{MeshCredentials, MeshNodeConfig, MeshSidecar, SidecarOptions};
-
-    let binaries = easytier_binaries().expect("set OPENBITFUN_EASYTIER_DIR or run fetch-easytier");
-    let peer_url = std::env::var("OPENBITFUN_MESH_E2E_PEER")
-        .unwrap_or_else(|_| "wss://remote.openbitfun.com:443/mesh/et/".to_string());
-    let suffix: String = openbitfun_mesh_service::handshake::new_nonce()
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .take(10)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let credentials = MeshCredentials {
-        version: 1,
-        network_name: format!("obf-e2e-{suffix}"),
-        network_secret: openbitfun_mesh_service::handshake::new_nonce(),
-        peers: vec![peer_url],
-        easytier_version: None,
-        issued_at: None,
-    };
+    let (controller_credentials, target_credentials) = live_credentials();
+    let suffix = live_suffix();
     let controller_id = format!("e2ectl{suffix}");
     let target_id = format!("e2etgt{suffix}");
     let controller = device(&controller_id, ALICE, &[(&target_id, BOB)]);
     let target = device(&target_id, BOB, &[(&controller_id, ALICE)]);
-    let (controller_server, _controller_hub, _c) = server(Arc::clone(&controller)).await;
-    let (target_server, target_hub, _t) = server(Arc::clone(&target)).await;
-    let work = tempfile::tempdir().unwrap();
-    let sidecar = |id: &str, obp_port: u16| {
-        MeshSidecar::start(SidecarOptions {
-            binaries: binaries.clone(),
-            work_dir: work.path().join(id),
-            config: MeshNodeConfig {
-                instance_name: format!("e2e-{id}"),
-                hostname: id.to_string(),
-                credentials: credentials.clone(),
-                listener_port: Some(free_listener_port(0).unwrap()),
-                socks5_port: free_loopback_port().unwrap(),
-                inbound_tcp_ports: (
-                    openbitfun_mesh_service::MESH_OBP_PORT_FIRST,
-                    openbitfun_mesh_service::MESH_OBP_PORT_LAST,
-                ),
-                disable_p2p: std::env::var("OPENBITFUN_MESH_DISABLE_P2P").is_ok_and(|v| v == "1"),
-            },
-            rpc_port: free_loopback_port().unwrap(),
-            status_interval: Duration::from_secs(2),
-            obp_port: Some(obp_port),
-        })
-    };
+    let disable_p2p = std::env::var("OPENBITFUN_MESH_DISABLE_P2P").is_ok_and(|v| v == "1");
     let started = Instant::now();
-    let controller_node = sidecar(
+    let (_controller_server, _controller_hub, _c, controller_node) = live_backend(
         &controller_id,
-        controller_server.mesh_addr().unwrap().port(),
-    );
-    let target_node = sidecar(&target_id, target_server.mesh_addr().unwrap().port());
+        Arc::clone(&controller),
+        &controller_credentials,
+        disable_p2p,
+    )
+    .await;
+    let (_target_server, target_hub, _t, target_node) = live_backend(
+        &target_id,
+        Arc::clone(&target),
+        &target_credentials,
+        disable_p2p,
+    )
+    .await;
     let mut found = None;
     for _ in 0..90 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let status = controller_node.refresh().await;
+        let status = controller_node.refresh_status().await;
         if let Some(peer) = status.peer(&target_id) {
             if status.virtual_ip.as_deref() != Some(peer.virtual_ip.as_str()) {
                 found = Some(peer.clone());
@@ -1100,10 +755,10 @@ async fn peer_link_e2e_streams_live_tokens_over_the_relay_node() {
     }
     let peer = found.expect("the target never joined the controller's mesh");
     println!(
-        "[peer-e2e] joined after {} ms: target ip={} path={:?} latency_ms={:?}",
+        "[peer-e2e] joined after {} ms: target ip={} route={:?} latency_ms={:?}",
         started.elapsed().as_millis(),
         peer.virtual_ip,
-        peer.path,
+        peer.route,
         peer.latency_ms
     );
 
@@ -1140,7 +795,7 @@ async fn peer_link_e2e_streams_live_tokens_over_the_relay_node() {
     }
     let links = crate::mesh::peer_link::PeerLinks::new(Arc::new(LiveConnector {
         dialer: MeshDialer {
-            socks5: controller_node.socks5_addr(),
+            connector: Arc::new(NodeConnector(Arc::clone(&controller_node))),
             authority: controller,
         },
         ip: peer.virtual_ip.parse().unwrap(),

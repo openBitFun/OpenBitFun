@@ -14,7 +14,6 @@
 //   Contents/Resources/resources/dsh-profile/        DeepSeek Harness bridge
 //   Contents/Resources/flashgrep/flashgrep-<triple>  workspace search daemon
 //   Contents/Resources/mobile-web/dist               legacy relay mobile UI, when built
-//   Contents/Resources/bin/{easytier-core,easytier-cli}  device mesh sidecar (scripts/fetch-easytier.mjs)
 //
 // Usage: node scripts/package-desktop-nsh-macos.mjs [--profile release|release-fast] [--skip-build]
 //          [--updater-archive] [--product-config <product.jsonc>]
@@ -104,12 +103,6 @@ copyResources(
 // replaces it with the Developer ID signature, `scripts/ci/package-native-macos-release.sh`).
 run("codesign", ["--force", "--sign", "-", join(contents, "Resources", flashgrep[1])]);
 
-// Device mesh sidecar: the official EasyTier binaries (LGPL-3.0, separate
-// executables, SHA-256 pinned by scripts/fetch-easytier.mjs) in Contents/Resources/bin.
-{
-  const { hostPlatform, stageEasyTier } = await import("./fetch-easytier.mjs");
-  await stageEasyTier(hostPlatform(), join(contents, "Resources/bin"));
-}
 
 const xml = value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const plist = `<?xml version="1.0" encoding="UTF-8"?>

@@ -94,6 +94,38 @@ async fn handle_host_invoke_inner(command: &str, args: Value) -> HostInvokeBridg
     }
 }
 
+/// One OBP call on this host (an `account-device` connection over
+/// OpenBitFun Link, `crate::obp_host`): the same registry verdict and the
+/// same handlers as a relay `HostInvoke`, with OBP's conventions: arguments
+/// and results in the canonical agent-identity dialect (what every OBP host
+/// answers), and the registry's refusal text for a command this host does
+/// not run. There is no attach/detach/ping over OBP (the connection is the
+/// attachment); the detached-dispatch target verbs run here too.
+pub(crate) async fn handle_obp_call(command: &str, args: Value) -> Result<Value, String> {
+    match peer_host_verdict(command, PeerHostKind::Cli) {
+        PeerHostVerdict::Refuse(refusal) => return Err(refusal.message(command)),
+        PeerHostVerdict::HostControlPlane => {
+            return match dispatch_target_verb(command) {
+                Some(verb) => crate::dispatch::run_dispatch_verb(verb, args)
+                    .await
+                    .map_err(|error| format!("{error:#}")),
+                None => Err(format!(
+                    "command '{command}' belongs to the relay peer control plane; an OBP connection needs no attach or ping"
+                )),
+            };
+        }
+        PeerHostVerdict::Execute => {}
+    }
+    let state = peer_host_state()?;
+    let args = translate_agent_identity_command(command, args, AgentIdentityDialect::Canonical)?;
+    commands::dispatch(command, &args, state).await
+}
+
+/// Whether `command` is a detached-dispatch target verb this host runs.
+pub(crate) fn is_dispatch_target_command(command: &str) -> bool {
+    dispatch_target_verb(command).is_some()
+}
+
 /// Control-plane commands are answered before any product dispatch and never
 /// acquire a Peer controller lease for a product command.
 async fn handle_control_plane(command: &str, args: Value) -> HostInvokeBridgeResult {

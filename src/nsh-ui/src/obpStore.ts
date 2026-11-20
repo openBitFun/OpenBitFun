@@ -1,7 +1,10 @@
 // The browser/phone listener of this backend (OBP over WebSocket): status,
-// the LAN switch, one-time pairing QR codes and paired-client revocation.
-// Every command here is `ControllerLocal`: a paired phone or browser is
-// refused by the backend, so this surface shows the refusal instead of a card.
+// the owner's loopback link and paired-client revocation. Phones pair over the
+// account's device mesh (`phoneStore.ts`, `obp_create_pairing {via: "mesh"}`);
+// the LAN listener was retired, since devices on one network already reach
+// each other directly through the mesh. Every command here is
+// `ControllerLocal`: a paired phone or browser is refused by the backend, so
+// this surface shows the refusal instead of a card.
 
 import { openUrl, signal } from "nsh";
 import { invokeCommand } from "./bridge";
@@ -22,17 +25,12 @@ export interface ObpStatus {
   webUi: boolean;
   loopbackUrl: string | null;
   ownerUrl: string | null;
-  lan: {
-    enabled: boolean;
-    running: boolean;
-    port: number | null;
-    urls: string[];
-    fingerprint: string | null;
-    error?: string;
-  };
   pairedClients: ObpPairedClient[];
   ownerConnections: number;
   pairedConnections: number;
+  accountDeviceConnections?: number;
+  /** The mesh listener's port; absent on an older backend. */
+  meshPort?: number | null;
 }
 
 export interface ObpPairingOffer {
@@ -46,7 +44,6 @@ export const obpStatus = signal<ObpStatus | null>(null);
 /** Why the status could not be read (an older host, a paired client's scope). */
 export const obpError = signal("");
 export const obpBusy = signal(false);
-export const obpPairing = signal<ObpPairingOffer | null>(null);
 
 /** An older backend has no listener commands at all. */
 function describe(error: unknown): string {
@@ -79,19 +76,6 @@ async function run(action: () => Promise<void>): Promise<void> {
   } finally {
     obpBusy.set(false);
   }
-}
-
-export function setObpLanEnabled(enabled: boolean): Promise<void> {
-  return run(async () => {
-    if (!enabled) obpPairing.set(null);
-    obpStatus.set(await invokeCommand<ObpStatus>("obp_set_lan_enabled", { enabled }));
-  });
-}
-
-export function createObpPairing(): Promise<void> {
-  return run(async () => {
-    obpPairing.set(await invokeCommand<ObpPairingOffer>("obp_create_pairing", {}));
-  });
 }
 
 export function revokeObpClient(clientId: string): Promise<void> {

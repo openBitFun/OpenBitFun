@@ -43,10 +43,10 @@ integration, or stable product-domain contracts.
 - `assembly/core` may depend on lower owner layers to assemble the current product
   runtime.
 - Assembly crates must not depend on `src/apps/*`. Embedded-relay product
-  orchestration depends on the narrow `EmbeddedRelayHost` capability; Desktop
-  owns its TCP binding, static fallback, and task lifecycle. Do not move those
-  concrete details back into assembly or treat the Desktop implementation as a
-  reusable product surface.
+  orchestration depends on the narrow `EmbeddedRelayHost` capability. Desktop
+  and CLI both answer it as unavailable (the desktop LAN Relay was retired); do
+  not move a concrete TCP binding, static fallback, or task lifecycle into
+  assembly.
 - Assembly may depend on adapter and service crates for selected delivery forms,
   but should not implement their protocol serialization, authentication,
   transport, or platform details.

@@ -53,6 +53,8 @@ import { subscribeAgentEvents } from "./src/agentEvents";
 import { installBackendResync } from "./src/backendResync";
 import { installControlPresenter } from "./src/controlPresenter";
 import { installServedBackend } from "./src/servedBackend";
+import { controllerPort } from "./src/controller/controllerPort";
+import { ControllerShell } from "./src/controller/ControllerShell";
 import { loadLocalDeviceId, localDeviceId } from "./src/devicePrefsStore";
 import { formatPlural } from "./src/format";
 import {
@@ -1546,7 +1548,8 @@ function WorkspaceRowBlock(props: {
     });
   const connStatus = () =>
     props.connectionId ? connectionStatuses()[props.connectionId] ?? "disconnected" : null;
-  const showActions = () => hovered() || workspaceActionMenuId() === props.id;
+  // Touch screens have no hover: the compact (phone) layout always shows the actions.
+  const showActions = () => hovered() || workspaceActionMenuId() === props.id || compactLayout();
 
   const openActionsMenu = () => {
     workspaceContextPoint.set(null);
@@ -5472,7 +5475,7 @@ function CompactDrawer() {
   );
 }
 
-function App() {
+function StudioApp() {
   syncGlobalNativeTheme();
   void initAppLocale();
   void initWindowChrome();
@@ -5720,6 +5723,15 @@ function App() {
       <ToastHost />
     </View>
   );
+}
+
+/**
+ * A controller without a backend of its own (a browser on the OpenBitFun
+ * domain, the phone app) signs in and picks a device first; the studio mounts
+ * once a device is connected.
+ */
+function App() {
+  return controllerPort() ? <ControllerShell>{() => <StudioApp />}</ControllerShell> : <StudioApp />;
 }
 
 mount(App);

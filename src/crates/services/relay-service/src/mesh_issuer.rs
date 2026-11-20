@@ -6,6 +6,11 @@
 //! stable across devices and restarts without a database, and a caller can
 //! only ever obtain the network of the account its token proves.
 //!
+//! Since OpenBitFun Link, the response also carries a short-lived join token
+//! for the requesting device (`link_token`): the Link relay node admits a
+//! peer of an account network only with one, so nobody without a sign-in
+//! can join or burn relay bandwidth.
+//!
 //! Mesh membership is only the outer gate: OBP over the mesh still
 //! authenticates every connection with the account-device key handshake.
 //!
@@ -28,6 +33,7 @@ use serde::Serialize;
 use sha2::Sha256;
 
 use crate::identity::IdentityVerifier;
+use crate::link_token::JoinTokenSigner;
 
 /// Network names the issuer hands out start with this prefix; the relay
 /// node only forwards traffic of networks matching `obf-*`.
@@ -40,6 +46,8 @@ pub const MESH_CREDENTIALS_PATH: &str = "/mesh/v1/credentials";
 pub const MESH_INFO_PATH: &str = "/mesh/v1/info";
 /// Capability the issuer advertises in its info document.
 pub const MESH_CAPABILITY: &str = "mesh_credentials_v1";
+/// Capability: credentials carry a Link join token for the device.
+pub const LINK_JOIN_TOKEN_CAPABILITY: &str = "link_join_token_v1";
 
 const NAME_DOMAIN: &[u8] = b"OpenBitFun mesh network name v1\n";
 const SECRET_DOMAIN: &[u8] = b"OpenBitFun mesh network secret v1\n";
@@ -125,12 +133,35 @@ struct CredentialsResponse<'a> {
     peers: &'a [String],
     easytier_version: &'a str,
     issued_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_token_expires_at: Option<i64>,
+}
+
+/// `POST /mesh/v1/credentials` request body (optional; older clients send
+/// none or other fields).
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CredentialsRequest {
+    #[serde(default)]
+    device_id: Option<String>,
+}
+
+/// Device ids a join token may name (they become Link hostnames).
+pub fn valid_link_device_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[derive(Clone)]
 struct IssuerState {
     config: Arc<MeshIssuerConfig>,
     verifier: IdentityVerifier,
+    signer: JoinTokenSigner,
 }
 
 /// The issuer router (`/mesh/v1/info`, `/mesh/v1/credentials`).
@@ -150,6 +181,7 @@ fn router_with_verifier(config: MeshIssuerConfig, verifier: IdentityVerifier) ->
         .route(MESH_INFO_PATH, get(info))
         .route(MESH_CREDENTIALS_PATH, post(credentials))
         .with_state(IssuerState {
+            signer: JoinTokenSigner::from_issuer_key(&config.key),
             config: Arc::new(config),
             verifier,
         })
@@ -159,9 +191,10 @@ async fn info(State(state): State<IssuerState>) -> Response {
     no_store(
         Json(serde_json::json!({
             "version": MESH_CREDENTIALS_VERSION,
-            "capabilities": [MESH_CAPABILITY],
+            "capabilities": [MESH_CAPABILITY, LINK_JOIN_TOKEN_CAPABILITY],
             "easytierVersion": state.config.easytier_version,
             "networkPrefix": MESH_NETWORK_PREFIX,
+            "joinTokenPublicKey": state.signer.public_key_hex(),
         }))
         .into_response(),
     )
@@ -184,7 +217,11 @@ fn refusal(status: StatusCode, code: &str, message: &str) -> Response {
     )
 }
 
-async fn credentials(State(state): State<IssuerState>, headers: HeaderMap) -> Response {
+async fn credentials(
+    State(state): State<IssuerState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -222,12 +259,34 @@ async fn credentials(State(state): State<IssuerState>, headers: HeaderMap) -> Re
             "this account identity cannot join a device mesh",
         );
     };
+    let request: CredentialsRequest = if body.is_empty() {
+        CredentialsRequest::default()
+    } else {
+        serde_json::from_slice(&body).unwrap_or_default()
+    };
     let network = derive_account_network(&state.config.key, &account_id);
     let issued_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
         .unwrap_or_default();
-    tracing::info!("Mesh credentials issued: network={}", network.network_name);
+    // A device that names itself gets a join token bound to it; without one
+    // the Link relay refuses the device (credentials alone do not join).
+    let join = request
+        .device_id
+        .as_deref()
+        .filter(|device| valid_link_device_id(device))
+        .map(|device| {
+            state
+                .signer
+                .mint(&network.network_name, &account_id, device, issued_at)
+        });
+    tracing::info!(
+        "Mesh credentials issued: network={}, join_token={}",
+        network.network_name,
+        join.as_ref()
+            .map(|(_, claims)| claims.jti.as_str())
+            .unwrap_or("none")
+    );
     no_store(
         Json(CredentialsResponse {
             version: MESH_CREDENTIALS_VERSION,
@@ -236,6 +295,8 @@ async fn credentials(State(state): State<IssuerState>, headers: HeaderMap) -> Re
             peers: &state.config.peers,
             easytier_version: &state.config.easytier_version,
             issued_at,
+            join_token_expires_at: join.as_ref().map(|(_, claims)| claims.exp),
+            join_token: join.map(|(token, _)| token),
         })
         .into_response(),
     )
@@ -312,12 +373,20 @@ mod tests {
     }
 
     async fn post(router: Router, token: Option<&str>) -> (StatusCode, serde_json::Value) {
+        post_body(router, token, "").await
+    }
+
+    async fn post_body(
+        router: Router,
+        token: Option<&str>,
+        body: &'static str,
+    ) -> (StatusCode, serde_json::Value) {
         let mut request = Request::post(MESH_CREDENTIALS_PATH);
         if let Some(token) = token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
         let response = router
-            .oneshot(request.body(Body::empty()).unwrap())
+            .oneshot(request.body(Body::from(body)).unwrap())
             .await
             .unwrap();
         let status = response.status();
@@ -350,6 +419,31 @@ mod tests {
             serde_json::json!(["wss://remote.openbitfun.com:443/mesh/et/"])
         );
 
+        // No device named: credentials without a join token (older clients).
+        assert!(body.get("joinToken").is_none());
+
+        let (status, body) = post_body(
+            issuer(&me),
+            Some("good-token"),
+            r#"{"deviceId":"ea4c87d093d8d571b48bba45cdf37f5f","clientVersion":"1.0.11"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let token = body["joinToken"].as_str().unwrap();
+        let claims = JoinTokenSigner::from_issuer_key(&KEY)
+            .verifier()
+            .verify(
+                token,
+                &expected.network_name,
+                body["issuedAt"].as_i64().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(claims.acct, "12345");
+        assert_eq!(claims.dev, "ea4c87d093d8d571b48bba45cdf37f5f");
+        assert_eq!(body["joinTokenExpiresAt"].as_i64(), Some(claims.exp));
+        let (_, body) = post_body(issuer(&me), Some("good-token"), r#"{"deviceId":"a b"}"#).await;
+        assert!(body.get("joinToken").is_none());
+
         let (status, body) = post(issuer(&me), Some("forged-token")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(body.get("networkSecret").is_none());
@@ -376,7 +470,14 @@ mod tests {
             .await
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["capabilities"], serde_json::json!([MESH_CAPABILITY]));
+        assert_eq!(
+            body["capabilities"],
+            serde_json::json!([MESH_CAPABILITY, LINK_JOIN_TOKEN_CAPABILITY])
+        );
+        assert_eq!(
+            body["joinTokenPublicKey"],
+            JoinTokenSigner::from_issuer_key(&KEY).public_key_hex()
+        );
         assert_eq!(body["networkPrefix"], MESH_NETWORK_PREFIX);
     }
 }
