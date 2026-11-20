@@ -9,7 +9,8 @@ use crate::agentic::core::{ToolCall, ToolExecutionState, ToolResult as ModelTool
 use crate::agentic::events::types::ToolEventData;
 use crate::agentic::tools::computer_use_host::ComputerUseHostRef;
 use crate::agentic::tools::framework::ToolResult as FrameworkToolResult;
-use crate::agentic::tools::registry::ToolRegistry;
+use crate::agentic::tools::implementations::agent_collaboration::with_collaboration_model_policy;
+use crate::agentic::tools::registry::{ToolRef, ToolRegistry};
 use crate::agentic::tools::tool_context_runtime;
 use crate::agentic::tools::tool_context_runtime::ToolUseContext;
 use crate::agentic::tools::tool_result_storage;
@@ -882,84 +883,22 @@ impl PtcToolCallHandler for PtcPipelineToolCallHandler {
         request: PtcToolSpecRequest,
     ) -> Result<serde_json::Value, PortError> {
         let mut execution_context = self.context.clone();
-        execution_context.loaded_deferred_tool_specs =
-            self.loaded_deferred_tool_specs.lock().await.clone();
         if let Some(allowed_tools) = ToolPipeline::ptc_nested_allowed_tools(&execution_context) {
             execution_context.allowed_tools = allowed_tools;
         }
-        let mut context = tool_context_runtime::build_tool_use_context_for_execution_context(
+        let context = tool_context_runtime::build_tool_use_context_for_execution_context(
             &execution_context,
             None,
             self.pipeline.computer_use_host.clone(),
             CancellationToken::new(),
             None,
         );
-        context.loaded_deferred_tool_specs = execution_context.loaded_deferred_tool_specs.clone();
-
-        let input = serde_json::json!({ "tool_name": request.tool_name });
-        let results =
-            crate::agentic::tools::product_runtime::resolve_product_get_tool_spec_results(
-                &input,
-                &context,
-                GET_TOOL_SPEC_TOOL_NAME,
-            )
-            .await
-            .map_err(|error| PortError::new(PortErrorKind::InvalidRequest, error.to_string()))?;
-        let value = results
-            .into_iter()
-            .find_map(|result| match result {
-                FrameworkToolResult::Result { data, .. } => Some(data),
-                FrameworkToolResult::StreamChunk { .. } | FrameworkToolResult::Progress { .. } => {
-                    None
-                }
-            })
-            .ok_or_else(|| {
-                PortError::new(PortErrorKind::Backend, "GetToolSpec returned no definition")
-            })?;
-
-        let catalog_generation = value
-            .get("catalog_generation")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| {
-                PortError::new(
-                    PortErrorKind::Backend,
-                    "GetToolSpec result has no catalog generation",
-                )
-            })?;
-        let tool_name = value
-            .get("tool_name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-
-        let tool = self
-            .pipeline
-            .tool_registry
-            .read()
-            .await
-            .get_tool(&tool_name)
-            .ok_or_else(|| {
-                PortError::new(
-                    PortErrorKind::Backend,
-                    format!("GetToolSpec returned no registered tool: {tool_name}"),
-                )
-            })?;
-        let object = value.as_object().ok_or_else(|| {
-            PortError::new(
-                PortErrorKind::Backend,
-                "GetToolSpec result is not an object",
-            )
-        })?;
-        let description = object
-            .get("description")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let input_schema = object
-            .get("input_schema")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        let output_schema = tool.output_schema();
+        let detail = crate::agentic::tools::product_runtime::resolve_product_deferred_tool_detail(
+            &request.tool_name,
+            &context,
+        )
+        .await
+        .map_err(|error| PortError::new(PortErrorKind::InvalidRequest, error))?;
         let language = if self
             .context
             .context_vars
@@ -971,18 +910,28 @@ impl PtcToolCallHandler for PtcPipelineToolCallHandler {
             PtcLanguage::TypeScript
         };
         let sdk_source = render_ptc_loaded_tool_sdk(
-            &PtcToolContract::new(tool_name.clone(), description, input_schema, output_schema),
+            &PtcToolContract::new(
+                detail.tool_name.clone(),
+                detail.description,
+                detail.input_schema,
+                detail.output_schema,
+            ),
             language,
         );
 
         let mut loaded = self.loaded_deferred_tool_specs.lock().await;
-        if let Some(existing) = loaded.iter_mut().find(|spec| spec.tool_name == tool_name) {
-            existing.catalog_generation = catalog_generation;
+        let receipt = LoadedDeferredToolSpec {
+            tool_name: detail.tool_name,
+            catalog_generation: detail.catalog_generation,
+            spec_fingerprint: Some(detail.spec_fingerprint),
+        };
+        if let Some(existing) = loaded
+            .iter_mut()
+            .find(|spec| spec.tool_name == receipt.tool_name)
+        {
+            *existing = receipt;
         } else {
-            loaded.push(LoadedDeferredToolSpec {
-                tool_name,
-                catalog_generation,
-            });
+            loaded.push(receipt);
         }
         Ok(build_ptc_tool_spec_response(language, sdk_source))
     }
@@ -1735,6 +1684,48 @@ impl ToolPipeline {
         });
     }
 
+    async fn admitted_tool(
+        &self,
+        task: &ToolTask,
+        context: &ToolUseContext,
+    ) -> Result<Option<ToolRef>, ToolExecutionAdmissionRejection> {
+        let name = &task.invocation.effective_tool_name;
+        let (tool, generation) = {
+            let registry = self.tool_registry.read().await;
+            (
+                registry.get_tool(name),
+                registry.current_snapshot_generation(),
+            )
+        };
+        let request = ToolExecutionAdmissionRequest {
+            tool_name: name,
+            allowed_tools: &task.context.allowed_tools,
+            runtime_tool_restrictions: &task.context.runtime_tool_restrictions,
+            deferred_tools: &task.context.deferred_tools,
+            loaded_deferred_tool_specs: &task.context.loaded_deferred_tool_specs,
+            current_catalog_generation: generation,
+            get_tool_spec_tool_name: GET_TOOL_SPEC_TOOL_NAME,
+        };
+        let fingerprint = async {
+            let selected = resolve_contextual_tool(tool.clone()?, context)?;
+            if !openbitfun_agent_tools::ContextualToolManifestItem::is_available_in_context(
+                selected.as_ref(),
+                context,
+            )
+            .await
+            {
+                return None;
+            }
+            let detail = with_collaboration_model_policy(
+                openbitfun_agent_tools::contextual_tool_spec(selected.as_ref(), context),
+            )
+            .await;
+            Some(detail.spec_fingerprint)
+        };
+        validate_tool_execution_admission(request, fingerprint).await?;
+        Ok(tool)
+    }
+
     async fn prepare_permission_plans(&self, task_ids: &[String]) -> OpenBitFunResult<()> {
         let mut drafts = Vec::with_capacity(task_ids.len());
         let mut ordered_requests = Vec::new();
@@ -1764,27 +1755,10 @@ impl ToolPipeline {
             {
                 continue;
             }
-            let tool = {
-                let registry = self.tool_registry.read().await;
-                if validate_tool_execution_admission(ToolExecutionAdmissionRequest {
-                    tool_name: &tool_name,
-                    allowed_tools: &task.context.allowed_tools,
-                    runtime_tool_restrictions: &task.context.runtime_tool_restrictions,
-                    deferred_tools: &task.context.deferred_tools,
-                    loaded_deferred_tool_specs: &task.context.loaded_deferred_tool_specs,
-                    current_catalog_generation: registry.current_snapshot_generation(),
-                    get_tool_spec_tool_name: GET_TOOL_SPEC_TOOL_NAME,
-                })
-                .is_err()
-                {
-                    continue;
-                }
-                registry.get_tool(&tool_name)
-            };
-            let Some(tool) = tool else {
+            let tool_context = self.build_tool_use_context(&task, CancellationToken::new());
+            let Ok(Some(tool)) = self.admitted_tool(&task, &tool_context).await else {
                 continue;
             };
-            let tool_context = self.build_tool_use_context(&task, CancellationToken::new());
             let validation = tool
                 .validate_input(&task.invocation.effective_arguments, Some(&tool_context))
                 .await;
@@ -2652,74 +2626,55 @@ impl ToolPipeline {
         // Repetition alone is not execution failure: polling and status checks
         // may legitimately reuse identical arguments. The execution engine
         // evaluates repeated patterns only after observing actual tool results.
-        let (admission, tool) = {
-            let registry = self.tool_registry.read().await;
-            let admission = validate_tool_execution_admission(ToolExecutionAdmissionRequest {
-                tool_name: &tool_name,
-                allowed_tools: &task.context.allowed_tools,
-                runtime_tool_restrictions: &task.context.runtime_tool_restrictions,
-                deferred_tools: &task.context.deferred_tools,
-                loaded_deferred_tool_specs: &task.context.loaded_deferred_tool_specs,
-                current_catalog_generation: registry.current_snapshot_generation(),
-                get_tool_spec_tool_name: GET_TOOL_SPEC_TOOL_NAME,
-            });
-            (
-                admission,
-                registry.get_tool(&tool_name).or_else(|| {
-                    #[cfg(feature = "ptc-runtime")]
-                    {
-                        (tool_name == openbitfun_agent_tools::PTC_RUN_CODE_TOOL_NAME).then(|| {
-                            Arc::new(crate::agentic::tools::implementations::PtcRunCodeTool::new())
-                                as Arc<dyn crate::agentic::tools::framework::Tool>
-                        })
-                    }
-                    #[cfg(not(feature = "ptc-runtime"))]
-                    {
-                        None
-                    }
-                }),
-            )
-        };
-
-        if let Err(err) = admission {
-            let error_msg = err.to_string();
-            if task.invocation.is_deferred() {
-                warn!("Deferred tool gateway admission rejected: {}", error_msg);
-            } else {
-                warn!("Tool execution admission rejected: {}", error_msg);
-            }
-
-            self.state_manager
-                .update_state(
-                    &tool_id,
-                    ToolExecutionState::Failed {
-                        error_detail: None,
-                        error: error_msg,
-                        is_retryable: false,
-                        duration_ms: None,
-                        queue_wait_ms: None,
-                        preflight_ms: None,
-                        confirmation_wait_ms: None,
-                        execution_ms: None,
-                    },
-                )
-                .await;
-
-            return Err(map_tool_execution_admission_rejection(err));
-        }
-
-        let registered_tool = tool.ok_or_else(|| {
-            let error_msg = format!("Tool '{}' is not registered or enabled.", tool_name);
-            error!("{}", error_msg);
-            OpenBitFunError::tool(error_msg)
-        })?;
-
         let cancellation_token = task
             .options
             .parent_cancellation_token
             .as_ref()
             .map(CancellationToken::child_token)
             .unwrap_or_default();
+        let tool_context = self.build_tool_use_context(&task, cancellation_token.clone());
+        let tool = match self.admitted_tool(&task, &tool_context).await {
+            Ok(tool) => tool,
+            Err(err) => {
+                let error_msg = err.to_string();
+                if task.invocation.is_deferred() {
+                    warn!("Deferred tool gateway admission rejected: {}", error_msg);
+                } else {
+                    warn!("Tool execution admission rejected: {}", error_msg);
+                }
+
+                self.state_manager
+                    .update_state(
+                        &tool_id,
+                        ToolExecutionState::Failed {
+                            error_detail: None,
+                            error: error_msg,
+                            is_retryable: false,
+                            duration_ms: None,
+                            queue_wait_ms: None,
+                            preflight_ms: None,
+                            confirmation_wait_ms: None,
+                            execution_ms: None,
+                        },
+                    )
+                    .await;
+
+                return Err(map_tool_execution_admission_rejection(err));
+            }
+        };
+
+        #[cfg(feature = "ptc-runtime")]
+        let tool = tool.or_else(|| {
+            (tool_name == openbitfun_agent_tools::PTC_RUN_CODE_TOOL_NAME).then(|| {
+                Arc::new(crate::agentic::tools::implementations::PtcRunCodeTool::new()) as ToolRef
+            })
+        });
+        let registered_tool = tool.ok_or_else(|| {
+            let error_msg = format!("Tool '{}' is not registered or enabled.", tool_name);
+            error!("{}", error_msg);
+            OpenBitFunError::tool(error_msg)
+        })?;
+
         if cancellation_token.is_cancelled() {
             self.state_manager
                 .update_state(
@@ -2738,7 +2693,6 @@ impl ToolPipeline {
                 "Tool was cancelled before validation".to_string(),
             ));
         }
-        let tool_context = self.build_tool_use_context(&task, cancellation_token.clone());
         // Keep the registered mux in the execution path. It rechecks the
         // persisted conflict choice immediately before dispatch and applies
         // remote fail-closed routing from the full ToolUseContext.
@@ -3779,6 +3733,7 @@ mod tests {
         LoadedDeferredToolSpec {
             tool_name: tool_name.to_string(),
             catalog_generation,
+            spec_fingerprint: None,
         }
     }
 
@@ -4768,6 +4723,36 @@ mod tests {
             assert!(response.get("typescript_sdk").is_none());
             assert!(response.get("python_sdk").is_none());
         }
+    }
+
+    #[cfg(feature = "ptc-runtime")]
+    #[tokio::test]
+    async fn ptc_get_tool_spec_reloads_the_sdk_and_retains_one_receipt() {
+        let mut context = test_tool_execution_context();
+        context.agent_type = "Claw".into();
+        let handler = PtcPipelineToolCallHandler {
+            pipeline: Arc::new(test_tool_pipeline()),
+            context,
+            options: ToolExecutionOptions::default(),
+            parent_tool_id: "run-code".into(),
+            loaded_deferred_tool_specs: Default::default(),
+        };
+        for operation in ["first", "repeat"] {
+            let response = handler
+                .get_tool_spec(PtcToolSpecRequest {
+                    operation_id: operation.into(),
+                    tool_name: "SessionHistory".into(),
+                })
+                .await
+                .unwrap();
+            assert!(response["sdk_source"]
+                .as_str()
+                .unwrap()
+                .contains("SessionHistory"));
+        }
+        let loaded = handler.loaded_deferred_tool_specs.lock().await;
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].spec_fingerprint.is_some());
     }
 
     #[cfg(feature = "ptc-runtime")]
@@ -6362,7 +6347,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deferred_gateway_rejects_registry_refresh_before_execution() {
+    async fn deferred_gateway_keeps_loaded_spec_across_unrelated_refresh() {
+        let pipeline = test_tool_pipeline();
+        let name = "get_weather";
+        register_capturing_test_tool(&pipeline, name, Arc::new(Mutex::new(None))).await;
+        let mut context = test_tool_execution_context();
+        context.allowed_tools = vec![CALL_DEFERRED_TOOL_NAME.into(), name.into()];
+        context.deferred_tools = vec![name.into()];
+        let use_context = tool_context_runtime::build_tool_use_context_for_execution_context(
+            &context,
+            None,
+            None,
+            CancellationToken::new(),
+            None,
+        );
+        let tools = pipeline.tool_registry.read().await.get_all_tools();
+        let mut detail = openbitfun_agent_tools::resolve_get_tool_spec_detail(
+            &tools,
+            name,
+            &use_context,
+            GET_TOOL_SPEC_TOOL_NAME,
+        )
+        .await
+        .unwrap();
+        detail.catalog_generation = current_registry_generation(&pipeline).await;
+        context.loaded_deferred_tool_specs =
+            vec![serde_json::from_value(detail.to_value()).unwrap()];
+
+        register_static_test_tool(&pipeline, "unrelated", json!(null), 0).await;
+        assert!(current_registry_generation(&pipeline).await > detail.catalog_generation);
+        let mut call = test_tool_call("before_replace", CALL_DEFERRED_TOOL_NAME);
+        call.arguments = json!({"tool_name": name, "args": {"city":"Shanghai"}});
+        let results = pipeline
+            .execute_tools(
+                vec![call.clone()],
+                context.clone(),
+                ToolExecutionOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(results[0].result.result["received"]["city"], "Shanghai");
+
+        register_static_test_tool(&pipeline, name, json!({"replacement": true}), 0).await;
+        call.tool_id = "after_replace".into();
+        let results = pipeline
+            .execute_tools(vec![call], context, ToolExecutionOptions::default())
+            .await
+            .unwrap();
+        assert!(results[0].result.is_error);
+        assert!(results[0]
+            .result
+            .result_for_assistant
+            .as_deref()
+            .unwrap()
+            .contains("is stale"));
+    }
+
+    #[tokio::test]
+    async fn deferred_gateway_rejects_legacy_receipt_after_registry_refresh() {
         let pipeline = test_tool_pipeline();
         let old_received_arguments = Arc::new(Mutex::new(None));
         register_capturing_test_tool(
@@ -7269,38 +7311,46 @@ mod tests {
         assert!(value.get("workspaceServices").is_none());
     }
 
-    #[test]
-    fn deferred_tool_admission_allows_missing_catalog_spec() {
+    #[tokio::test]
+    async fn deferred_tool_admission_allows_missing_catalog_spec() {
         let mut task = test_tool_task("tool_1", "WebFetch");
         task.context.deferred_tools = vec!["WebFetch".to_string()];
 
-        validate_tool_execution_admission(ToolExecutionAdmissionRequest {
-            tool_name: &task.tool_call.tool_name,
-            allowed_tools: &task.context.allowed_tools,
-            runtime_tool_restrictions: &task.context.runtime_tool_restrictions,
-            deferred_tools: &task.context.deferred_tools,
-            loaded_deferred_tool_specs: &task.context.loaded_deferred_tool_specs,
-            current_catalog_generation: 0,
-            get_tool_spec_tool_name: GET_TOOL_SPEC_TOOL_NAME,
-        })
+        validate_tool_execution_admission(
+            ToolExecutionAdmissionRequest {
+                tool_name: &task.tool_call.tool_name,
+                allowed_tools: &task.context.allowed_tools,
+                runtime_tool_restrictions: &task.context.runtime_tool_restrictions,
+                deferred_tools: &task.context.deferred_tools,
+                loaded_deferred_tool_specs: &task.context.loaded_deferred_tool_specs,
+                current_catalog_generation: 0,
+                get_tool_spec_tool_name: GET_TOOL_SPEC_TOOL_NAME,
+            },
+            async { None },
+        )
+        .await
         .expect("deferred exposure must not block execution when no spec is loaded");
     }
 
-    #[test]
-    fn tool_catalog_rejects_reloading_already_loaded_tool() {
+    #[tokio::test]
+    async fn tool_catalog_rejects_reloading_already_loaded_tool() {
         let mut task = test_tool_task("tool_1", "GetToolSpec");
         task.tool_call.arguments = json!({ "tool_name": "WebFetch" });
         task.context.loaded_deferred_tool_specs = vec![loaded_spec("WebFetch", 0)];
 
-        let result = validate_tool_execution_admission(ToolExecutionAdmissionRequest {
-            tool_name: &task.tool_call.tool_name,
-            allowed_tools: &task.context.allowed_tools,
-            runtime_tool_restrictions: &task.context.runtime_tool_restrictions,
-            deferred_tools: &task.context.deferred_tools,
-            loaded_deferred_tool_specs: &task.context.loaded_deferred_tool_specs,
-            current_catalog_generation: 0,
-            get_tool_spec_tool_name: GET_TOOL_SPEC_TOOL_NAME,
-        });
+        let result = validate_tool_execution_admission(
+            ToolExecutionAdmissionRequest {
+                tool_name: &task.tool_call.tool_name,
+                allowed_tools: &task.context.allowed_tools,
+                runtime_tool_restrictions: &task.context.runtime_tool_restrictions,
+                deferred_tools: &task.context.deferred_tools,
+                loaded_deferred_tool_specs: &task.context.loaded_deferred_tool_specs,
+                current_catalog_generation: 0,
+                get_tool_spec_tool_name: GET_TOOL_SPEC_TOOL_NAME,
+            },
+            async { None },
+        )
+        .await;
 
         assert!(
             result.is_ok(),

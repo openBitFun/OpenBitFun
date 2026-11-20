@@ -944,6 +944,7 @@ mod context_facts_tests {
         LoadedDeferredToolSpec {
             tool_name: tool_name.to_string(),
             catalog_generation: 0,
+            spec_fingerprint: None,
         }
     }
 
@@ -1786,6 +1787,7 @@ mod task_context_tests {
         LoadedDeferredToolSpec {
             tool_name: tool_name.to_string(),
             catalog_generation: 0,
+            spec_fingerprint: None,
         }
     }
 

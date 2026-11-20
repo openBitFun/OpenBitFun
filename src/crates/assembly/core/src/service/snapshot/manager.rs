@@ -919,6 +919,10 @@ impl Tool for WrappedTool {
         self.original_tool.dynamic_provider_id()
     }
 
+    fn deferred_spec_route_id(&self, context: &ToolUseContext) -> Option<String> {
+        self.original_tool.deferred_spec_route_id(context)
+    }
+
     fn dynamic_tool_info(&self) -> Option<DynamicToolInfo> {
         self.original_tool.dynamic_tool_info()
     }

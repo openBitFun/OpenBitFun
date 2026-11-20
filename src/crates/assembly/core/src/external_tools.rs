@@ -196,6 +196,10 @@ impl Tool for LoadedExternalTool {
         self.descriptor.input_schema.clone()
     }
 
+    fn deferred_spec_route_id(&self, _context: &ToolUseContext) -> Option<String> {
+        Some(self.runtime_target_id.clone())
+    }
+
     fn dynamic_provider_id(&self) -> Option<&str> {
         Some(&self.provider_id)
     }

@@ -92,6 +92,11 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Stable contextual dispatch target for providers that multiplex same-name tools.
+    fn deferred_spec_route_id(&self, _context: &ToolUseContext) -> Option<String> {
+        None
+    }
+
     /// Rich metadata for dynamic tools. Prefer this over encoding dynamic ownership in tool names.
     fn dynamic_tool_info(&self) -> Option<DynamicToolInfo> {
         self.dynamic_provider_id()

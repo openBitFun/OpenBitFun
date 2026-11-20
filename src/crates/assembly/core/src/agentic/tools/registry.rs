@@ -1050,8 +1050,10 @@ mod tests {
             &[openbitfun_agent_tools::LoadedDeferredToolSpec {
                 tool_name: "mcp__github__search_repos".to_string(),
                 catalog_generation: loaded_generation,
+                spec_fingerprint: None,
             }],
             refreshed_generation,
+            None,
             openbitfun_agent_tools::GET_TOOL_SPEC_TOOL_NAME,
         )
         .expect_err("refresh must invalidate the previously loaded MCP spec");
