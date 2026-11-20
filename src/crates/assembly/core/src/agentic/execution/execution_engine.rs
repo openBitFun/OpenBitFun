@@ -533,6 +533,32 @@ struct TokenPressureSnapshot {
 }
 
 impl TokenPressureSnapshot {
+    fn fixed_tokens(&self) -> [usize; 3] {
+        [
+            self.system_tokens,
+            self.tool_tokens,
+            self.prepended_reminder_tokens,
+        ]
+    }
+
+    fn check_fixed_input_fits(&self) -> OpenBitFunResult<()> {
+        let available = self
+            .context_window
+            .saturating_sub(self.output_reserve_tokens);
+        if self
+            .system_tokens
+            .saturating_add(self.tool_tokens)
+            .saturating_add(self.prepended_reminder_tokens)
+            > available
+        {
+            return Err(OpenBitFunError::AIClient(format!(
+                "Fixed context exceeds the available input budget: system_tokens={}, tool_tokens={}, prepended_reminder_tokens={}, available_input_tokens={}, output_reserve={}",
+                self.system_tokens, self.tool_tokens, self.prepended_reminder_tokens, available, self.output_reserve_tokens
+            )));
+        }
+        Ok(())
+    }
+
     fn trigger_budget(&self) -> CompressionTriggerBudget {
         CompressionTriggerBudget {
             context_window: self.context_window,
@@ -540,6 +566,41 @@ impl TokenPressureSnapshot {
             output_reserve_tokens: self.output_reserve_tokens,
             safety_reserve_tokens: self.safety_reserve_tokens,
         }
+    }
+}
+
+/// A rejected summary is only evidence about the history and budget it saw.
+struct NoGainHistory {
+    conversation_ids: Vec<String>,
+    model_id: String,
+    budget: CompressionTriggerBudget,
+    fixed_tokens: [usize; 3],
+}
+
+impl NoGainHistory {
+    fn new(messages: &[Message], model_id: &str, pressure: TokenPressureSnapshot) -> Self {
+        Self {
+            conversation_ids: ContextCompressor::canonical_conversation(messages)
+                .map(|m| m.id.clone())
+                .collect(),
+            model_id: model_id.to_owned(),
+            budget: pressure.trigger_budget(),
+            fixed_tokens: pressure.fixed_tokens(),
+        }
+    }
+
+    fn matches(
+        &self,
+        messages: &[Message],
+        model_id: &str,
+        pressure: TokenPressureSnapshot,
+    ) -> bool {
+        self.model_id == model_id
+            && self.budget == pressure.trigger_budget()
+            && self.fixed_tokens == pressure.fixed_tokens()
+            && ContextCompressor::canonical_conversation(messages)
+                .map(|m| &m.id)
+                .eq(self.conversation_ids.iter())
     }
 }
 
@@ -583,6 +644,7 @@ mod compression_job;
 mod compression_lifecycle;
 
 use compression_job::{CompressionJob, PrefetchedCompression};
+use compression_lifecycle::AutoCompressionOutcome;
 
 struct CompressionModelSummaryInput<'a> {
     trace_config: Option<ModelExchangeTraceConfig>,
@@ -3840,6 +3902,7 @@ impl ExecutionEngine {
         // Execution-local ownership deliberately prevents cross-turn reuse. Drop
         // cancels both pending IO and backoff on every exit path.
         let mut compression_prefetch: Option<PrefetchedCompression> = None;
+        let mut no_gain_history: Option<NoGainHistory> = None;
         // Preserve the turn-admission model as the stable primary candidate. A routed
         // round may shadow the names below, but auxiliary/finalization requests still
         // use this baseline model and do not recursively invoke the router.
@@ -4370,12 +4433,19 @@ impl ExecutionEngine {
                 token_pressure.safety_reserve_tokens
             );
 
-            let should_compress = enable_context_compression
-                && token_pressure.total_tokens >= token_pressure.input_limit;
+            if enable_context_compression {
+                token_pressure.check_fixed_input_fits()?;
+            }
+            let compression_eligible = enable_context_compression
+                && !no_gain_history
+                    .as_ref()
+                    .is_some_and(|history| history.matches(&messages, &model_id, token_pressure));
+            let should_compress =
+                compression_eligible && token_pressure.total_tokens >= token_pressure.input_limit;
             let mut send_pressure_reusable = true;
 
             if !should_compress {
-                if enable_context_compression
+                if compression_eligible
                     && prefetch_enabled
                     && compression_prefetch.is_none()
                     && openbitfun_agent_runtime::compression_prefetch::in_prefetch_window(
@@ -4432,6 +4502,10 @@ impl ExecutionEngine {
                             &self
                                 .round_executor
                                 .ensure_cancel_token(&context.dialog_turn_id),
+                            self.session_manager.compression_contract_for_session(
+                                &context.session_id,
+                                DEFAULT_COMPRESSION_CONTRACT_LIMIT,
+                            ),
                         ),
                     );
                 }
@@ -4476,7 +4550,8 @@ impl ExecutionEngine {
                     )
                     .await
                 {
-                    Ok(Some((compressed_tokens, compressed_messages))) => {
+                    Ok(AutoCompressionOutcome::Applied(compressed_tokens, compressed_messages)) => {
+                        no_gain_history = None;
                         info!(
                             "Round {} compression completed: messages {} -> {}, tokens {} -> {}",
                             round_index,
@@ -4511,10 +4586,12 @@ impl ExecutionEngine {
                         full_compression_count += 1;
                         send_pressure_reusable = false;
                     }
-                    Ok(None) => {
-                        return Err(OpenBitFunError::AIClient(
-                            "Context compression has no eligible plan".to_string(),
-                        ));
+                    Ok(AutoCompressionOutcome::NoGain(latest)) => {
+                        no_gain_history =
+                            Some(NoGainHistory::new(&latest, &model_id, token_pressure));
+                        // Preserve any canonical suffix appended while the summary ran.
+                        send_pressure_reusable = latest.len() == messages.len();
+                        messages = latest;
                     }
                     Err(err @ OpenBitFunError::Cancelled(_)) => return Err(err),
                     Err(e) => return Err(e),
@@ -4756,6 +4833,9 @@ impl ExecutionEngine {
                 Err(err)
                     if enable_context_compression
                         && err.is_recoverable_context_overflow()
+                        && !no_gain_history.as_ref().is_some_and(|history| {
+                            history.matches(&messages, &model_id, send_pressure)
+                        })
                         && main_context_overflow_recoveries
                             < Self::MAX_MAIN_CONTEXT_OVERFLOW_RECOVERIES =>
                 {
@@ -4788,7 +4868,11 @@ impl ExecutionEngine {
                         )
                         .await
                     {
-                        Ok(Some((compressed_tokens, compressed_messages))) => {
+                        Ok(AutoCompressionOutcome::Applied(
+                            compressed_tokens,
+                            compressed_messages,
+                        )) => {
+                            no_gain_history = None;
                             info!(
                                 "Context-overflow recovery compression completed: session_id={}, turn_id={}, round_index={}, recovery={}, messages {} -> {}, tokens {} -> {}",
                                 context.session_id,
@@ -4836,7 +4920,7 @@ impl ExecutionEngine {
                             full_compression_count += 1;
                             continue;
                         }
-                        Ok(None) => {
+                        Ok(AutoCompressionOutcome::NoGain(_)) => {
                             warn!(
                                 "Context-overflow recovery found no compressible context: session_id={}, turn_id={}, round_index={}",
                                 context.session_id, context.dialog_turn_id, round_index
