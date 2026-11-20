@@ -18,7 +18,22 @@ export interface PeerScope {
    * that did not advertise it, which is not the same as one that said no.
    */
   capabilities: Record<string, boolean>;
+  /**
+   * How this surface reaches the device: `mesh` (OBP over the account mesh,
+   * live events) or `relay` (the legacy HostInvoke path older devices need).
+   * A scope persisted or built without it is the legacy path.
+   */
+  transport?: PeerTransport;
+  /** Mesh route to the device (`p2p` or `relayed`), when known. */
+  meshPath?: string;
+  /** Mesh round trip in ms, when known. */
+  latencyMs?: number;
+  /** The peer backend's version, as its OBP hello reported it. */
+  backendVersion?: string;
 }
+
+/** The transport Peer Device Mode uses for one device. */
+export type PeerTransport = "mesh" | "relay";
 
 /** What a host advertised in its handshake; `undefined` when it said nothing. */
 export function peerSupports(capability: string): boolean | undefined {

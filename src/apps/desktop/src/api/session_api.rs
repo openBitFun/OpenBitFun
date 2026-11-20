@@ -323,7 +323,7 @@ pub struct DeleteAllArchivedSessionsRequest {
     pub remote_ssh_host: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_persisted_sessions(
     request: ListPersistedSessionsRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -345,7 +345,7 @@ pub async fn list_persisted_sessions(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_session_content(
     request: SessionContentSearchRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -376,7 +376,7 @@ pub async fn search_session_content(
 /// Browse or search lightweight persisted metadata across open local and SSH
 /// workspaces. This deliberately never loads dialog turns or generates a
 /// transcript; that work happens only when the selected message is dispatched.
-#[tauri::command]
+// @backend-command
 pub async fn search_referenceable_sessions(
     request: SearchReferenceableSessionsRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -453,7 +453,7 @@ pub async fn search_referenceable_sessions(
     Ok(candidates)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_persisted_sessions_page(
     request: ListPersistedSessionsPageRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -482,11 +482,11 @@ pub async fn list_persisted_sessions_page(
                 desktop_session_error(error)
             )
         });
-    startup_trace.record_tauri_command_elapsed("list_persisted_sessions_page", None, trace_started);
+    startup_trace.record_command_elapsed("list_persisted_sessions_page", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_lineage(
     request: GetSessionLineageRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -511,7 +511,7 @@ pub async fn get_session_lineage(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_session_turns(
     request: LoadSessionTurnsRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -542,15 +542,11 @@ pub async fn load_session_turns(
                 desktop_session_error(error)
             )
         });
-    startup_trace.record_tauri_command_elapsed(
-        "load_session_turns",
-        Some(trace_target),
-        trace_started,
-    );
+    startup_trace.record_command_elapsed("load_session_turns", Some(trace_target), trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_usage_report(
     request: GetSessionUsageReportRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -579,7 +575,7 @@ pub async fn get_session_usage_report(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_session_turn(
     request: SaveSessionTurnRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -603,7 +599,7 @@ pub async fn save_session_turn(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_session_metadata(
     request: SaveSessionMetadataRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -630,7 +626,7 @@ pub async fn save_session_metadata(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn export_session_transcript(
     request: ExportSessionTranscriptRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -661,7 +657,7 @@ pub async fn export_session_transcript(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_persisted_session(
     request: DeletePersistedSessionRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -686,7 +682,7 @@ pub async fn delete_persisted_session(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn touch_session_activity(
     request: TouchSessionActivityRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -711,11 +707,11 @@ pub async fn touch_session_activity(
                 desktop_session_error(error)
             )
         });
-    startup_trace.record_tauri_command_elapsed("touch_session_activity", None, trace_started);
+    startup_trace.record_command_elapsed("touch_session_activity", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_persisted_session_metadata(
     request: LoadPersistedSessionMetadataRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -742,16 +738,12 @@ pub async fn load_persisted_session_metadata(
                 desktop_session_error(error)
             )
         });
-    startup_trace.record_tauri_command_elapsed(
-        "load_persisted_session_metadata",
-        None,
-        trace_started,
-    );
+    startup_trace.record_command_elapsed("load_persisted_session_metadata", None, trace_started);
     result
 }
 
 /// Forks a session through the caller's selected persisted turn.
-#[tauri::command]
+// @backend-command
 pub async fn fork_session(
     request: ForkSessionRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -773,7 +765,7 @@ pub async fn fork_session(
 }
 
 /// Copies the whole session through its latest persisted turn.
-#[tauri::command]
+// @backend-command
 pub async fn copy_session(
     request: CopySessionRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -788,7 +780,7 @@ pub async fn copy_session(
         .map_err(|error| format!("Failed to copy session: {}", desktop_session_error(error)))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn archive_session(
     request: ArchiveSessionRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -814,7 +806,7 @@ pub async fn archive_session(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn unarchive_session(
     request: UnarchiveSessionRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -840,7 +832,7 @@ pub async fn unarchive_session(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn archive_all_sessions(
     request: ArchiveAllSessionsRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -880,7 +872,7 @@ pub async fn archive_all_sessions(
     Ok(archived_count)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_archived_sessions(
     request: ListPersistedSessionsRequest,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -897,7 +889,7 @@ pub async fn list_archived_sessions(
         .map_err(|error| format!("Failed to list sessions: {}", desktop_session_error(error)))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_all_archived_sessions(
     request: DeleteAllArchivedSessionsRequest,
     runtime: State<'_, DesktopRuntimeContext>,

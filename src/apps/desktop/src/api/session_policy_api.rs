@@ -118,7 +118,7 @@ fn trimmed(value: Option<String>) -> Option<String> {
 /// and reports whether the message started a turn, steered the running one or
 /// waits in the host queue. Remote `send_message` and IM bots run the same
 /// core function.
-#[tauri::command]
+// @backend-command
 pub async fn submit_user_message(
     runtime: State<'_, DesktopRuntimeContext>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -238,7 +238,7 @@ fn session_mode_facts(
 /// The modes a composer offers for a workspace (and optionally a session), in
 /// display order, with which entries the session can switch to and the default
 /// a new session starts as.
-#[tauri::command]
+// @backend-command
 pub async fn get_session_mode_catalog(
     state: State<'_, AppState>,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -337,7 +337,7 @@ pub struct ListSessionCommandsRequest {
 }
 
 /// The slash commands a session offers right now, shared with the bot router.
-#[tauri::command]
+// @backend-command
 pub async fn list_session_commands(
     scheduler: State<'_, Arc<DialogScheduler>>,
     request: ListSessionCommandsRequest,
@@ -374,7 +374,7 @@ pub struct ExecuteSessionCommandResponse {
     pub turn_id: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn execute_session_command(
     runtime: State<'_, DesktopRuntimeContext>,
     scheduler: State<'_, Arc<DialogScheduler>>,
@@ -443,7 +443,7 @@ pub struct StopDialogTurnResponse {
 /// Stops a running turn: a recoverable interruption first, hard cancellation
 /// when the runtime cannot interrupt this session. Every client gets the same
 /// stop, whatever it knows about interruption support.
-#[tauri::command]
+// @backend-command
 pub async fn stop_dialog_turn(
     runtime: State<'_, DesktopRuntimeContext>,
     app_state: State<'_, AppState>,
@@ -545,7 +545,7 @@ pub struct MarkSessionSeenResponse {
 
 /// Acknowledges a session's unread result on the host, so every client stops
 /// marking it unread.
-#[tauri::command]
+// @backend-command
 pub async fn mark_session_seen(
     runtime: State<'_, DesktopRuntimeContext>,
     request: MarkSessionSeenRequest,

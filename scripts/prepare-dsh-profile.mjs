@@ -21,8 +21,10 @@
  * DeepSeek session, and that is the wrong place to find out. Set
  * `OPENBITFUN_SKIP_DSH_PROFILE=1` to opt out deliberately.
  *
- * Official `desktop:build` compiles this via `frontend:build-all`. desktop:dev
- * and cargo check do not: the profile is not a compile-time Tauri resource.
+ * The native desktop packaging scripts run it and copy the profile to
+ * `resources/dsh-profile` (`scripts/desktop-nsh-package-common.mjs`).
+ * desktop:dev and cargo check do not compile it: the profile is not a
+ * compile-time resource.
  * Local DeepSeek sessions run this script explicitly. A stamped profile whose
  * inputs have not changed is left alone — the same mtime short-circuit
  * mobile-web uses. Escape hatches: `--force` /

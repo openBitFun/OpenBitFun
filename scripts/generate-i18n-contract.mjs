@@ -8,14 +8,6 @@ const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'local
 
 const outputs = [
   {
-    path: path.join(root, 'src', 'web-ui', 'src', 'infrastructure', 'i18n', 'presets', 'generatedLocaleContract.ts'),
-    generate: generateWebLocaleContract,
-  },
-  {
-    path: path.join(root, 'src', 'web-ui', 'index.html'),
-    generate: generateWebStartupI18n,
-  },
-  {
     path: path.join(root, 'src', 'mobile-web', 'src', 'i18n', 'generatedLocaleContract.ts'),
     generate: generateMobileLocaleContract,
   },
@@ -38,14 +30,6 @@ const outputs = [
 ];
 
 const RELAY_HOMEPAGE_SHARED_TERM_KEYS = ['features.remoteControl'];
-const WEB_STARTUP_MESSAGE_KEYS = {
-  loadingApp: 'loading.app',
-  minimize: 'window.minimize',
-  maximize: 'window.maximize',
-  restore: 'window.restore',
-  close: 'window.close',
-  petLoading: 'loading.companion',
-};
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -197,159 +181,6 @@ function generatedHeader(language) {
     `${comment} Do not edit it by hand; edit the shared i18n contract or shared terms instead.`,
     '',
   ].join('\n');
-}
-
-function generateWebLocaleContract(contract, sharedTermsByLocale) {
-  const locales = orderedLocales(contract, 'web-ui');
-  const localeMap = getLocaleMap(contract);
-  const defaultLocale = contract.surfaceDefaults['web-ui'];
-  const fallbackLocale = contract.fallbackLocale;
-  const unknownFallbacks = contract.unknownLocaleFallbackChain;
-  const sharedTerms = sharedTermsForLocales(sharedTermsByLocale, locales);
-
-  return `${generatedHeader('ts')}export const LOCALE_IDS = ${tsArray(locales.map((locale) => locale.id))} as const;
-export type LocaleId = (typeof LOCALE_IDS)[number];
-
-export const DEFAULT_LOCALE = ${jsonString(defaultLocale)} satisfies LocaleId;
-export const DEFAULT_FALLBACK_LOCALE = ${jsonString(fallbackLocale)} satisfies LocaleId;
-const UNKNOWN_LOCALE_FALLBACK_CHAIN = ${tsArray(unknownFallbacks)} as const satisfies readonly LocaleId[];
-
-export interface LocaleMetadata {
-  id: LocaleId;
-  name: string;
-  englishName: string;
-  nativeName: string;
-  shortName: string;
-  rtl: boolean;
-  dateFormat: string;
-  numberFormat: {
-    decimal: string;
-    thousands: string;
-  };
-  aliases: readonly string[];
-  contentFallbacks: readonly LocaleId[];
-  builtin: boolean;
-}
-
-export type SharedI18nTerms = {
-  readonly [key: string]: string | SharedI18nTerms;
-};
-
-export const SHARED_TERMS_BY_LOCALE = ${tsObject(sharedTerms)} as const satisfies Record<LocaleId, SharedI18nTerms>;
-
-export const builtinLocales = [
-${locales.map((locale) => `  {
-    id: ${jsonString(locale.id)},
-    name: ${jsonString(locale.name)},
-    englishName: ${jsonString(locale.englishName)},
-    nativeName: ${jsonString(locale.nativeName)},
-    shortName: ${jsonString(locale.shortName)},
-    rtl: ${locale.rtl},
-    dateFormat: ${jsonString(locale.dateFormat)},
-    numberFormat: {
-      decimal: ${jsonString(locale.numberFormat.decimal)},
-      thousands: ${jsonString(locale.numberFormat.thousands)},
-    },
-    aliases: ${tsArray(locale.aliases)},
-    contentFallbacks: ${tsArray(locale.contentFallbacks)},
-    builtin: true,
-  }`).join(',\n')}
-] satisfies LocaleMetadata[];
-
-const localeAliasesByPriority = builtinLocales
-  .flatMap(locale => locale.aliases.map(alias => ({ locale, alias: alias.toLowerCase() })))
-  .sort((a, b) => b.alias.length - a.alias.length);
-
-export function getLocaleMetadata(localeId: LocaleId): LocaleMetadata | undefined {
-  return builtinLocales.find(locale => locale.id === localeId);
-}
-
-export function resolveLocaleId(value: string | null | undefined): LocaleId | null {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized) return null;
-
-  const exact = builtinLocales.find(locale => locale.id.toLowerCase() === normalized);
-  if (exact) return exact.id;
-
-  return localeAliasesByPriority
-    .find(({ alias }) => normalized === alias || normalized.startsWith(\`\${alias}-\`))
-    ?.locale.id ?? null;
-}
-
-export function isLocaleSupported(localeId: string): localeId is LocaleId {
-  return resolveLocaleId(localeId) === localeId;
-}
-
-export function getSupportedLocaleIds(): LocaleId[] {
-  return builtinLocales.map(locale => locale.id);
-}
-
-export function getLocaleFallbackChain(localeId: string, includeSelf = false): LocaleId[] {
-  const resolved = resolveLocaleId(localeId);
-  const chain: LocaleId[] = resolved
-    ? [
-      ...(includeSelf ? [resolved] : []),
-      ...(getLocaleMetadata(resolved)?.contentFallbacks ?? []),
-    ]
-    : [...UNKNOWN_LOCALE_FALLBACK_CHAIN];
-
-  return Array.from(new Set(chain));
-}
-
-export const CONTRACT_LOCALE_METADATA_BY_ID = {
-${contract.locales.map((locale) => {
-  const webLocale = localeMap.get(locale.id);
-  return `  ${jsonString(locale.id)}: ${jsonString(webLocale.englishName)}`;
-}).join(',\n')}
-} as const satisfies Record<LocaleId, string>;
-`;
-}
-
-function generateWebStartupI18n(contract) {
-  const locales = orderedLocales(contract, 'web-ui');
-  const manifest = {
-    schemaVersion: 1,
-    defaultLocale: contract.surfaceDefaults['web-ui'],
-    locales: locales.map((locale) => {
-      const resourcePath = path.join(root, 'src', 'web-ui', 'src', 'locales', locale.id, 'common.json');
-      const resource = readJson(resourcePath);
-      const messages = Object.fromEntries(
-        Object.entries(WEB_STARTUP_MESSAGE_KEYS).map(([messageKey, resourceKey]) => {
-          const value = getNestedSharedTerm(resource, resourceKey);
-          assert(
-            typeof value === 'string' && value.trim().length > 0,
-            `web startup i18n ${locale.id}:${resourceKey} must be a non-empty string`,
-          );
-          return [messageKey, value];
-        }),
-      );
-
-      return {
-        id: locale.id,
-        aliases: locale.aliases,
-        messages,
-      };
-    }),
-  };
-
-  const html = fs.readFileSync(path.join(root, 'src', 'web-ui', 'index.html'), 'utf8');
-  const startMarker = '<!-- OPENBITFUN_STARTUP_I18N_START -->';
-  const endMarker = '<!-- OPENBITFUN_STARTUP_I18N_END -->';
-  const start = html.indexOf(startMarker);
-  const end = html.indexOf(endMarker, start);
-  assert(start >= 0 && end > start, 'Web UI startup i18n markers must exist in index.html');
-
-  // Keep first-paint copy synchronous and safe inside an HTML script element.
-  const json = JSON.stringify(manifest, null, 2).replace(/</g, '\\u003c');
-  const projection = [
-    startMarker,
-    '    <!-- This block is generated by scripts/generate-i18n-contract.mjs from Web UI common locale resources. -->',
-    '    <script id="openbitfun-startup-i18n" type="application/json">',
-    ...json.split('\n').map((line) => `      ${line}`),
-    '    </script>',
-    `    ${endMarker}`,
-  ].join('\n');
-  return html.slice(0, start) + projection + html.slice(end + endMarker.length);
 }
 
 function generateMobileLocaleContract(contract, sharedTermsByLocale) {

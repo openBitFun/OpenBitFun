@@ -9,15 +9,19 @@ test -n "${OPENBITFUN_SIGNING_KEY:-}"
 test -n "${OPENBITFUN_SIGNING_PUBKEY:-}"
 bundle="target/$target/release/bundle"
 app="$bundle/macos/OpenBitFun.app"
-updater="$app.tar.gz"
 shopt -s nullglob
+# The native updater archive (scripts/ci/package-native-macos-release.sh).
+updaters=("$bundle/macos/"OpenBitFun-nsh_*.app.tar.gz)
+test "${#updaters[@]}" -eq 1
+updater="${updaters[0]}"
+updater_name="$(basename "$updater")"
 dmgs=("$bundle/dmg/"*.dmg)
 test "${#dmgs[@]}" -eq 1
 dmg="${dmgs[0]}"
 codesign --verify --deep --strict --verbose=2 "$app"
 codesign -dv --verbose=4 "$app" 2>&1 | grep -Fq 'Authority=Developer ID Application:'
 
-# An accepted app can lack its ticket when the bundler's stapling silently fails.
+# An accepted app can lack its ticket when stapling silently fails.
 # Only repair that precise state. Other verification errors remain failures.
 if ticket_output="$(stapler_with_network_retry validate "$app" 2>&1)"; then
   printf '%s\n' "$ticket_output"
@@ -65,12 +69,12 @@ mounted=false
 hdiutil convert -format UDZO -o "$work/repaired.dmg" "$work/writable.dmg"
 codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$work/repaired.dmg"
 codesign --verify --strict --verbose=2 "$work/repaired.dmg"
-tar -czf "$work/OpenBitFun.app.tar.gz" -C "$bundle/macos" OpenBitFun.app
-bash scripts/sign-release-assets.sh "$work/OpenBitFun.app.tar.gz"
-base64 -d < "$work/OpenBitFun.app.tar.gz.sig" > "$work/repaired.minisig"
-minisign -Vm "$work/OpenBitFun.app.tar.gz" -p "$work/minisign.pub" -x "$work/repaired.minisig"
+COPYFILE_DISABLE=1 tar -czf "$work/$updater_name" -C "$bundle/macos" OpenBitFun.app
+bash scripts/sign-release-assets.sh "$work/$updater_name"
+base64 -d < "$work/$updater_name.sig" > "$work/repaired.minisig"
+minisign -Vm "$work/$updater_name" -p "$work/minisign.pub" -x "$work/repaired.minisig"
 mv "$work/repaired.dmg" "$dmg"
 rm -f "$dmg.sig"
-mv "$work/OpenBitFun.app.tar.gz" "$updater"
-mv "$work/OpenBitFun.app.tar.gz.sig" "$updater.sig"
+mv "$work/$updater_name" "$updater"
+mv "$work/$updater_name.sig" "$updater.sig"
 echo "Rebuilt signed installer and updater around the stapled application; full Apple verification is still required."

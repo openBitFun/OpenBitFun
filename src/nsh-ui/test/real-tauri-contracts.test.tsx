@@ -8,11 +8,11 @@ import {
   turnParts,
 } from "../src/format";
 import { getAppearancePreset } from "../src/theme";
-import { createBackend } from "./support";
+import { createBackend, fakeTranscriptTurns } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
-test("format helpers decode real Rust ModelRoundData (textItems, thinkingItems, toolItems, effectiveModelName)", () => {
+test("format helpers read the host transcript view of real Rust ModelRoundData (textItems, thinkingItems, toolItems, effectiveModelName)", () => {
   const realRustTurn = {
     turnId: "turn-rust-1",
     turnIndex: 0,
@@ -68,13 +68,16 @@ test("format helpers decode real Rust ModelRoundData (textItems, thinkingItems, 
     status: "completed",
   };
 
-  const parts = turnParts(realRustTurn);
+  // The host projects the persisted record; the scene readers only read the view.
+  const [view] = fakeTranscriptTurns([realRustTurn]);
+  expect(turnParts(realRustTurn)).toEqual([]);
+  const parts = turnParts(view);
   expect(parts.map(p => p.role)).toEqual(["user", "thinking", "assistant"]);
   expect(parts[0].text).toBe("这是什么项目");
   expect(parts[1].text).toBe("Inspecting repository layout.");
   expect(parts[2].text).toBe("OpenBitFun 是一个跨平台 AI 编程与自主代理工作台。");
 
-  const tools = toolCallsOf(realRustTurn);
+  const tools = toolCallsOf(view);
   expect(tools).toHaveLength(1);
   expect(tools[0]).toMatchObject({
     id: "tool-1",
@@ -84,8 +87,8 @@ test("format helpers decode real Rust ModelRoundData (textItems, thinkingItems, 
     durationMs: 38,
     input: { file_path: "README.md" },
   });
-  expect(turnEffectiveModel(realRustTurn)).toBe("claude-sonnet-4-5");
-  expect(turnDurationMs(realRustTurn)).toBe(1420);
+  expect(turnEffectiveModel(view)).toBe("claude-sonnet-4-5");
+  expect(turnDurationMs(view)).toBe(1420);
 });
 
 test("sending a message never flashes back to Welcome Studio and survives the completion->history persistence race", async () => {
@@ -639,7 +642,7 @@ test("host.js dev-mode start_dialog_turn streams chunks and persists real Rust t
     const turns = loaded.value as Array<{ modelRounds?: Array<{ textItems?: unknown[] }> }>;
     expect(turns).toHaveLength(1);
     expect((turns[0].modelRounds?.[0]?.textItems ?? []).length).toBeGreaterThan(0);
-    expect(turnParts(turns[0]).some(part => part.role === "assistant" && part.text.includes("Hello dev mode"))).toBe(
+    expect(turnParts(fakeTranscriptTurns(turns)[0]).some(part => part.role === "assistant" && part.text.includes("Hello dev mode"))).toBe(
       true,
     );
   } finally {

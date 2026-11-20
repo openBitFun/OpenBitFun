@@ -35,7 +35,7 @@ async fn prepare_storage_directory(
     Ok(sessions_root.to_path_buf())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reveal_session_storage_directory(
     state: State<'_, AppState>,
     request: RevealSessionStorageDirectoryRequest,

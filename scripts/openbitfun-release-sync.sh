@@ -12,8 +12,9 @@
 # Desktop / CLI auto-update reads latest-v1.json and linux-binaries-v1.json.
 # Those files always name the current version, so the updater never needs a
 # retained older directory. downloads.json is website-only and substitutes
-# each manual_installers entry (Windows installer, macOS .dmg) for the
-# corresponding updater package.
+# each manual_installers entry (macOS .dmg, native Windows zip and Linux
+# tarball) for the corresponding updater package, and describes each download
+# (`fileName`, `format`, `kind`, and for the zip/tarball the `entry` to start).
 #
 # Cron (every 10 minutes). Run the in-repo script from the OpenBitFun checkout so a
 # new host only needs this repository, not a detached AutoUpdate copy:
@@ -128,7 +129,8 @@ publish_file_atomically() {
   mv "$tmp" "$dest"
 }
 
-# Mirror the custom Windows installer used for interactive website installs.
+# Mirror the Windows website download: the declared manual installer (the native
+# Windows package; older releases: the custom Tauri installer).
 # RELEASE_ASSET_BASE_URL is derived from latest-v1.json rather than from
 # /releases/latest/download so the installer and setup package cannot come from
 # different releases while GitHub is advancing the latest-release pointer.
@@ -171,8 +173,9 @@ if entry:
 }
 
 # Build a website-only manifest from the already rewritten updater manifest.
-# Every declared manual_installers entry replaces that platform's updater
-# package; the rest keep the updater URL. The updater manifest is untouched.
+# Every declared manual_installers entry replaces (or, for Windows and Linux
+# native packages without an updater entry, adds) that platform's download;
+# the rest keep the updater URL. The updater manifest is untouched.
 write_website_download_manifest() {
   local output="${VERSION_DIR}/${WEBSITE_DOWNLOADS_MANIFEST}"
   local output_tmp="${output}.part"
@@ -193,22 +196,54 @@ version_base = f"{base}/{version}"
 platforms = {}
 for target, entry in updater.get("platforms", {}).items():
     url = entry.get("url")
-    if url:
+    # `<os>-<arch>-nsh` keys are the native in-app update packages, already
+    # offered through their `<os>-<arch>` twin; they are not website downloads.
+    if url and not target.endswith("-nsh"):
         platforms[target] = {"url": url}
 
-windows = platforms.get("windows-x86_64")
-if windows is None:
-    raise SystemExit("latest-v1.json is missing windows-x86_64")
-
+# Native desktop releases declare every website download, including Windows
+# and Linux packages that have no updater entry, as a manual installer.
 for target, manual in updater.get("manual_installers", {}).items():
-    if target not in platforms:
-        continue
-    platforms[target]["url"] = manual["url"]
-    platforms[target]["signatureUrl"] = manual.get("signature_url", manual["url"] + ".sig")
+    platforms[target] = {
+        "url": manual["url"],
+        "signatureUrl": manual.get("signature_url", manual["url"] + ".sig"),
+    }
 
-if "signatureUrl" not in windows:
+# Older Tauri manifests listed the Windows updater package without a declared
+# manual installer; the website then offers the mirrored custom installer.
+windows = platforms.get("windows-x86_64")
+if windows is not None and "signatureUrl" not in windows:
     windows["url"] = f"{version_base}/{windows_installer}"
     windows["signatureUrl"] = f"{version_base}/{windows_installer}.sig"
+if "windows-x86_64" not in platforms:
+    raise SystemExit("latest-v1.json declares no Windows download")
+
+# What the website tells the person downloading (additive fields of schema 1):
+# `format` and `kind` ("installer" runs a setup; "archive" is extracted and its
+# `entry` started in place: the native Windows zip and Linux tarball, which have
+# no installer yet; "update-package" is an in-app update archive).
+def describe(url):
+    name = url.rsplit("/", 1)[-1]
+    lower = name.lower()
+    if lower.endswith(".dmg"):
+        return {"fileName": name, "format": "dmg", "kind": "installer"}
+    if lower.endswith(".exe"):
+        return {"fileName": name, "format": "exe", "kind": "installer"}
+    if lower.endswith("-windows.zip"):
+        root = name.split("-nsh_", 1)[0]
+        return {"fileName": name, "format": "zip", "kind": "archive", "entry": f"{root}/openbitfun-desktop.exe"}
+    if lower.endswith("-linux.tar.gz"):
+        root = name.split("-nsh_", 1)[0]
+        return {"fileName": name, "format": "tar.gz", "kind": "archive", "entry": f"{root}/openbitfun-nsh"}
+    if lower.endswith(".app.tar.gz"):
+        return {"fileName": name, "format": "app.tar.gz", "kind": "update-package"}
+    for suffix in (".appimage", ".deb", ".rpm", ".zip", ".tar.gz"):
+        if lower.endswith(suffix):
+            return {"fileName": name, "format": suffix[1:], "kind": "installer" if suffix in (".appimage", ".deb", ".rpm") else "archive"}
+    return {"fileName": name}
+
+for entry in platforms.values():
+    entry.update(describe(entry["url"]))
 
 website = {
     "schemaVersion": 1,

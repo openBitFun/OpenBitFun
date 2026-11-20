@@ -120,7 +120,7 @@ function getMobileWebBuildMarkerPath(mobileWebDir) {
 }
 
 /**
- * mtime-based short-circuit (same idea as dev.cjs getDesktopPreviewRebuildPlan):
+ * mtime-based short-circuit:
  * when dist/ exists and the build marker is newer than every input, the whole
  * clean/install/build cycle can be skipped. Escape hatches:
  *   --force flag / OPENBITFUN_MOBILE_WEB_FORCE_BUILD=1 env.

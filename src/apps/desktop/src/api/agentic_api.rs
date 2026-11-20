@@ -679,6 +679,43 @@ fn frontend_event_projection_snapshot(
     }
 }
 
+/// The journal's current-turn projection as replayable frontend events, or
+/// `None` when it holds no turn or the turn already reached a terminal event.
+pub(crate) fn running_turn_event_snapshot(
+    snapshot: SessionEventProjectionSnapshot,
+    acp: bool,
+) -> Option<FrontendSessionEventProjectionSnapshot> {
+    snapshot.active_turn_id.as_ref()?;
+    use openbitfun_events::AgenticEvent;
+    // The last lifecycle event decides: an interrupted turn the host recovered
+    // runs again, one that completed, failed or was cancelled does not.
+    let terminal = snapshot
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            AgenticEvent::DialogTurnStarted { .. } | AgenticEvent::DialogTurnRecovered { .. } => {
+                Some(false)
+            }
+            AgenticEvent::DialogTurnCompleted { .. }
+            | AgenticEvent::DialogTurnCancelled { .. }
+            | AgenticEvent::DialogTurnFailed { .. }
+            | AgenticEvent::DialogTurnInterrupted { .. } => Some(true),
+            _ => None,
+        })
+        .unwrap_or(false);
+    if terminal {
+        return None;
+    }
+    let mut projected = frontend_event_projection_snapshot(snapshot);
+    if acp {
+        for event in &mut projected.events {
+            enrich_acp_replay_event(&event.event_name, &mut event.payload);
+        }
+    }
+    (!projected.events.is_empty()).then_some(projected)
+}
+
 fn enrich_acp_replay_event(name: &str, payload: &mut serde_json::Value) {
     // ACP does not provide an absolute persisted Turn ordinal. Preserve the
     // established live-wire absence rather than inventing ordinal zero.
@@ -1376,7 +1413,7 @@ fn validate_project_permission_rules(rules: &[PermissionRule]) -> Result<(), Str
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_project_permission_rules(
     state: State<'_, AppState>,
     request: PermissionProjectRequest,
@@ -1397,7 +1434,7 @@ pub async fn get_project_permission_rules(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_project_permission_rules(
     state: State<'_, AppState>,
     request: SaveProjectPermissionRulesRequest,
@@ -1429,7 +1466,7 @@ pub async fn save_project_permission_rules(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_project_permission_grants(
     state: State<'_, AppState>,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -1443,7 +1480,7 @@ pub async fn list_project_permission_grants(
         .map_err(|error| error.into_message())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remove_project_permission_grant(
     state: State<'_, AppState>,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -1461,7 +1498,7 @@ pub async fn remove_project_permission_grant(
         .map_err(|error| error.into_message())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn clear_project_permission_grants(
     state: State<'_, AppState>,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -1475,7 +1512,7 @@ pub async fn clear_project_permission_grants(
         .map_err(|error| error.into_message())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_project_permission_audit(
     state: State<'_, AppState>,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -1536,7 +1573,7 @@ pub struct SessionInteractionMailboxRequest {
     pub session_id: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub fn get_session_interaction_mailbox(
     runtime: State<'_, DesktopRuntimeContext>,
     request: SessionInteractionMailboxRequest,
@@ -1546,7 +1583,7 @@ pub fn get_session_interaction_mailbox(
         .session_interaction_snapshot(&request.session_id))
 }
 
-#[tauri::command]
+// @backend-command
 pub fn list_pending_permission_requests(
     runtime: State<'_, DesktopRuntimeContext>,
 ) -> Result<Vec<PermissionRequest>, String> {
@@ -1556,7 +1593,7 @@ pub fn list_pending_permission_requests(
         .map_err(|error| error.into_message())
 }
 
-#[tauri::command]
+// @backend-command
 pub fn subscribe_permission_requests(
     app: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -1566,7 +1603,7 @@ pub fn subscribe_permission_requests(
         .map_err(|error| error.into_message())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn respond_permission(
     runtime: State<'_, DesktopRuntimeContext>,
     request: PermissionResponseRequest,
@@ -1580,7 +1617,7 @@ pub async fn respond_permission(
         .map_err(|error| error.into_message())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn respond_permission_batch(
     runtime: State<'_, DesktopRuntimeContext>,
     request: PermissionResponseRequest,
@@ -1602,7 +1639,7 @@ pub struct GenerateSessionTitleRequest {
     pub max_length: Option<usize>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_session(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     app_state: State<'_, AppState>,
@@ -2107,7 +2144,7 @@ pub(crate) async fn create_desktop_session(
     Ok(session.into())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_session_mode(
     app: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -2155,7 +2192,7 @@ pub async fn update_session_mode(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_session_model(
     runtime: State<'_, DesktopRuntimeContext>,
     request: UpdateSessionModelRequest,
@@ -2239,7 +2276,7 @@ pub struct ModelRoutingStatusRequest {
     pub probe: bool,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_model_routing_status(
     runtime: State<'_, DesktopRuntimeContext>,
     request: ModelRoutingStatusRequest,
@@ -2276,7 +2313,7 @@ pub async fn get_model_routing_status(
 /// The mode is a per-session selector, so switching it in one conversation
 /// leaves every other open session on its own selection. Passing no mode clears
 /// the override and returns the session to the user-level default.
-#[tauri::command]
+// @backend-command
 pub async fn update_session_permission_mode(
     runtime: State<'_, DesktopRuntimeContext>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -2344,7 +2381,7 @@ pub async fn update_session_permission_mode(
 /// This is intentionally a distinct command from the session setter: a new
 /// frontend talking to an older backend must fail loudly instead of having an
 /// unknown scope field ignored and accidentally persisting a one-off choice.
-#[tauri::command]
+// @backend-command
 pub async fn update_active_turn_permission_mode(
     runtime: State<'_, DesktopRuntimeContext>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -2414,7 +2451,7 @@ pub async fn update_active_turn_permission_mode(
 /// Reads the session's own permission mode selection.
 ///
 /// `null` means the session never chose one and follows the user-level default.
-#[tauri::command]
+// @backend-command
 pub async fn get_session_permission_mode(
     runtime: State<'_, DesktopRuntimeContext>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -2545,7 +2582,7 @@ fn selector_update_restore_error(error: DesktopSessionApplicationError) -> Strin
     format!("Failed to restore session before selector update: {message}")
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reload_session_context(
     runtime: State<'_, DesktopRuntimeContext>,
     request: openbitfun_runtime_ports::AgentContextReloadRequest,
@@ -2557,7 +2594,7 @@ pub async fn reload_session_context(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_session_title(
     runtime: State<'_, DesktopRuntimeContext>,
     request: UpdateSessionTitleRequest,
@@ -2605,7 +2642,7 @@ fn desktop_update_session_title_error(error: DesktopSessionApplicationError) -> 
 
 /// Load the session into the coordinator process when it exists on disk but is not in memory.
 /// Uses the same remote→local session path mapping as `restore_session`.
-#[tauri::command]
+// @backend-command
 pub async fn ensure_coordinator_session(
     runtime: State<'_, DesktopRuntimeContext>,
     request: EnsureCoordinatorSessionRequest,
@@ -2630,7 +2667,7 @@ pub async fn ensure_coordinator_session(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn manage_dialog_queue(
     runtime: State<'_, DesktopRuntimeContext>,
     request: openbitfun_runtime_ports::DialogQueueRequest,
@@ -2642,7 +2679,7 @@ pub async fn manage_dialog_queue(
         .map_err(|e| e.into_message())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_dialog_turn(
     _app: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -2749,7 +2786,7 @@ pub(crate) fn desktop_image_attachment(image: ImageContextData) -> AgentInputAtt
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn compact_session(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: CompactSessionRequest,
@@ -2790,7 +2827,7 @@ pub async fn compact_session(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn activate_session_goal(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: ActivateSessionGoalRequest,
@@ -2907,7 +2944,7 @@ async fn resolve_thread_goal_storage_path(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_thread_goal(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -2935,11 +2972,11 @@ pub async fn get_session_thread_goal(
         Ok(GetSessionThreadGoalResponse { goal })
     }
     .await;
-    startup_trace.record_tauri_command_elapsed("get_session_thread_goal", None, trace_started);
+    startup_trace.record_command_elapsed("get_session_thread_goal", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reset_memory(state: State<'_, AppState>) -> Result<ResetMemoryResponse, String> {
     let path_manager = state.workspace_service.path_manager().clone();
     let db = MemoryDatabase::new(path_manager.clone());
@@ -2954,7 +2991,7 @@ pub async fn reset_memory(state: State<'_, AppState>) -> Result<ResetMemoryRespo
     Ok(ResetMemoryResponse { success: true })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_memory_paths(state: State<'_, AppState>) -> Result<MemoryPathsResponse, String> {
     let path_manager = state.workspace_service.path_manager().clone();
     let memories_root_dir = path_manager.memories_root_dir();
@@ -2966,7 +3003,7 @@ pub async fn get_memory_paths(state: State<'_, AppState>) -> Result<MemoryPathsR
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_session_memory_mode(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: SetSessionMemoryModeRequest,
@@ -3016,7 +3053,7 @@ pub async fn set_session_memory_mode(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn clear_session_thread_goal(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: ClearSessionThreadGoalRequest,
@@ -3040,7 +3077,7 @@ pub async fn clear_session_thread_goal(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_session_thread_goal_status(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: SetSessionThreadGoalStatusRequest,
@@ -3073,7 +3110,7 @@ pub async fn set_session_thread_goal_status(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_session_thread_goal_objective(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: UpdateSessionThreadGoalObjectiveRequest,
@@ -3101,7 +3138,7 @@ pub async fn update_session_thread_goal_objective(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ensure_assistant_bootstrap(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     app_state: State<'_, AppState>,
@@ -3145,7 +3182,7 @@ pub async fn ensure_assistant_bootstrap(
     Ok(assistant_bootstrap_outcome_to_response(outcome))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn run_init_agents_md(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     scheduler: State<'_, Arc<DialogScheduler>>,
@@ -3290,7 +3327,7 @@ pub(crate) fn resolve_missing_image_payloads(
     Ok(resolved)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_dialog_turn(
     runtime: State<'_, DesktopRuntimeContext>,
     app_state: State<'_, AppState>,
@@ -3342,7 +3379,7 @@ pub async fn cancel_dialog_turn(
 /// Request a recoverable interruption for a native local dialog turn. The
 /// command returns only after the old execution has settled and the
 /// `dialog-turn-interrupted` event is safe to act on.
-#[tauri::command]
+// @backend-command
 pub async fn interrupt_dialog_turn(
     runtime: State<'_, DesktopRuntimeContext>,
     request: CancelDialogTurnRequest,
@@ -3400,7 +3437,7 @@ pub async fn interrupt_dialog_turn(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn recover_interrupted_dialog_turn(
     runtime: State<'_, DesktopRuntimeContext>,
     request: RecoverInterruptedDialogTurnRequest,
@@ -3431,7 +3468,7 @@ pub async fn recover_interrupted_dialog_turn(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn steer_dialog_turn(
     runtime: State<'_, DesktopRuntimeContext>,
     request: SteerDialogTurnRequest,
@@ -3482,7 +3519,7 @@ pub async fn steer_dialog_turn(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn control_deep_review_queue(
     request: ControlDeepReviewQueueRequest,
 ) -> Result<(), String> {
@@ -3504,7 +3541,7 @@ pub async fn control_deep_review_queue(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_session(
     runtime: State<'_, DesktopRuntimeContext>,
     request: CancelSessionRequest,
@@ -3563,7 +3600,7 @@ impl From<SetSubagentTimeoutActionDTO> for SubagentTimeoutAction {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_subagent_timeout(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: SetSubagentTimeoutRequest,
@@ -3606,7 +3643,7 @@ impl From<BackgroundCommandControlActionDTO> for ExecCommandControlAction {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn control_background_command(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: ControlBackgroundCommandRequest,
@@ -3652,7 +3689,7 @@ pub async fn control_background_command(
                 _ => openbitfun_core::agentic::tools::implementations::exec_command::BackgroundCommandOutputStatus::Exited,
             };
             let capture = background_command_output_capture();
-            tauri::async_runtime::spawn(async move {
+            tokio::spawn(async move {
                 capture
                     .finish_by_session(remote, session_id, status, response.exit_code)
                     .await;
@@ -3679,7 +3716,7 @@ pub struct SendBackgroundCommandInputRequest {
     pub append_enter: bool,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn send_background_command_input(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: SendBackgroundCommandInputRequest,
@@ -3732,7 +3769,7 @@ pub struct ReadBackgroundCommandOutputRequest {
     pub cursor: Option<u64>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn read_background_command_output(
     request: ReadBackgroundCommandOutputRequest,
 ) -> Result<ReadBackgroundCommandOutputResponse, String> {
@@ -3757,7 +3794,7 @@ pub struct ListBackgroundCommandActivitiesRequest {
     pub agent_session_id: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_background_command_activities(
     request: ListBackgroundCommandActivitiesRequest,
 ) -> Result<ListBackgroundCommandOutputResponse, String> {
@@ -3771,7 +3808,7 @@ pub async fn list_background_command_activities(
         .await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_tool(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: CancelToolRequest,
@@ -3793,7 +3830,7 @@ pub async fn cancel_tool(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_session(
     runtime: State<'_, DesktopRuntimeContext>,
     request: DeleteSessionRequest,
@@ -3813,7 +3850,7 @@ pub async fn delete_session(
         .map_err(|error| format!("Failed to delete session: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn restore_session(
     runtime: State<'_, DesktopRuntimeContext>,
     request: RestoreSessionRequest,
@@ -3831,7 +3868,7 @@ pub async fn restore_session(
     Ok(session_to_response(session))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn restore_session_view(
     runtime: State<'_, DesktopRuntimeContext>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -3946,7 +3983,7 @@ pub async fn restore_session_view(
         })
     }
     .await;
-    startup_trace.record_tauri_command_elapsed("restore_session_view", None, started_at);
+    startup_trace.record_command_elapsed("restore_session_view", None, started_at);
     result
 }
 
@@ -3964,7 +4001,7 @@ pub struct LoadSessionEventBackfillRequest {
 /// The journal answers either with a contiguous delta or with
 /// `snapshotRequired`; a Host with no journal cannot prove contiguity and
 /// answers the same way an aged-out cursor does.
-#[tauri::command]
+// @backend-command
 pub async fn load_session_event_backfill(
     runtime: State<'_, DesktopRuntimeContext>,
     request: LoadSessionEventBackfillRequest,
@@ -4006,7 +4043,7 @@ pub struct LoadSessionTrajectoryRequest {
     pub node_offset: usize,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_session_trajectory(
     runtime: State<'_, DesktopRuntimeContext>,
     request: LoadSessionTrajectoryRequest,
@@ -4059,7 +4096,7 @@ pub async fn load_session_trajectory(
     )
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_session_turn_window(
     runtime: State<'_, DesktopRuntimeContext>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -4135,11 +4172,11 @@ pub async fn load_session_turn_window(
         Ok(response)
     }
     .await;
-    startup_trace.record_tauri_command_elapsed("load_session_turn_window", None, started_at);
+    startup_trace.record_command_elapsed("load_session_turn_window", None, started_at);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn restore_session_with_turns(
     runtime: State<'_, DesktopRuntimeContext>,
     request: RestoreSessionRequest,
@@ -4204,7 +4241,7 @@ pub async fn restore_session_with_turns(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_sessions(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     app_state: State<'_, AppState>,
@@ -4250,7 +4287,7 @@ pub async fn list_sessions(
     Ok(responses)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn generate_session_title(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: GenerateSessionTitleRequest,
@@ -4265,7 +4302,7 @@ pub async fn generate_session_title(
         .map_err(|e| format!("Failed to generate session title: {}", e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_available_modes(
     state: State<'_, AppState>,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -4338,6 +4375,9 @@ pub async fn get_available_modes(
     } else {
         None
     };
+    let local_workspace = workspace.as_ref().is_none_or(|record| {
+        record.workspace_kind != openbitfun_core::service::workspace::WorkspaceKind::Remote
+    });
     let dtos: Vec<ModeInfoDTO> = mode_infos
         .into_iter()
         .map(|info| {
@@ -4360,6 +4400,7 @@ pub async fn get_available_modes(
                 config_profile_id,
                 config_profile_label: info.config_profile_label,
                 config_profile_member_mode_ids: info.config_profile_member_mode_ids,
+                mutability: info.source.mutability(local_workspace),
                 source: info.source,
                 path: info.path,
                 model: info.model,
@@ -4367,7 +4408,7 @@ pub async fn get_available_modes(
         })
         .collect();
 
-    startup_trace.record_tauri_command_elapsed("get_available_modes", None, trace_started);
+    startup_trace.record_command_elapsed("get_available_modes", None, trace_started);
     Ok(dtos)
 }
 
@@ -4395,7 +4436,7 @@ fn local_mode_catalog_scope(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_default_review_team_definition() -> Result<ReviewTeamDefinition, String> {
     Ok(default_review_team_definition())
 }
@@ -4422,6 +4463,10 @@ pub struct ModeInfoDTO {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// `canEdit` / `canDelete` (logic batch 4): the backend decides from the
+    /// source and whether the workspace's files live on this host.
+    #[serde(flatten)]
+    pub mutability: openbitfun_core::agentic::agents::AgentMutability,
 }
 
 fn assistant_bootstrap_outcome_to_response(
@@ -4514,6 +4559,105 @@ mod tests {
     use openbitfun_events::AgenticEvent;
     use openbitfun_product_domains::tool_permissions::{PermissionEffect, PermissionRule};
     use serde_json::json;
+
+    fn running_turn_fixture(events: Vec<AgenticEvent>) -> SessionEventProjectionSnapshot {
+        SessionEventProjectionSnapshot {
+            session_id: "s1".into(),
+            stream_id: "stream".into(),
+            cursor: 42,
+            active_turn_id: Some("t1".into()),
+            events,
+        }
+    }
+
+    fn turn_started() -> AgenticEvent {
+        AgenticEvent::DialogTurnStarted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            turn_index: 3,
+            user_input: "hello".into(),
+            original_user_input: None,
+            user_message_metadata: None,
+            session_binding: None,
+        }
+    }
+
+    fn text_chunk() -> AgenticEvent {
+        AgenticEvent::TextChunk {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            round_id: "r1".into(),
+            attempt_id: None,
+            attempt_index: None,
+            text: "partial answer".into(),
+        }
+    }
+
+    #[test]
+    fn running_turn_snapshot_replays_a_live_turn_as_frontend_events() {
+        let snapshot = running_turn_event_snapshot(
+            running_turn_fixture(vec![turn_started(), text_chunk()]),
+            false,
+        )
+        .expect("a running turn is hydrated");
+        assert_eq!(snapshot.active_turn_id.as_deref(), Some("t1"));
+        assert_eq!(snapshot.cursor, 42);
+        let names: Vec<&str> = snapshot
+            .events
+            .iter()
+            .map(|event| event.event_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"agentic://dialog-turn-started"),
+            "{names:?}"
+        );
+        assert!(names.contains(&"agentic://text-chunk"), "{names:?}");
+    }
+
+    #[test]
+    fn running_turn_snapshot_skips_finished_and_empty_projections() {
+        let completed = AgenticEvent::DialogTurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            total_rounds: 1,
+            total_tools: 0,
+            duration_ms: 5,
+            partial_recovery_reason: None,
+            success: Some(true),
+            finish_reason: None,
+            has_final_response: Some(true),
+            background_delivery: None,
+        };
+        assert!(running_turn_event_snapshot(
+            running_turn_fixture(vec![turn_started(), text_chunk(), completed]),
+            false
+        )
+        .is_none());
+        let interrupted = AgenticEvent::DialogTurnInterrupted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            execution_generation: 1,
+            model_id: None,
+        };
+        let recovered = AgenticEvent::DialogTurnRecovered {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            execution_generation: 2,
+        };
+        assert!(running_turn_event_snapshot(
+            running_turn_fixture(vec![turn_started(), interrupted.clone()]),
+            false
+        )
+        .is_none());
+        assert!(running_turn_event_snapshot(
+            running_turn_fixture(vec![turn_started(), interrupted, recovered]),
+            false
+        )
+        .is_some());
+        let mut idle = running_turn_fixture(vec![]);
+        idle.active_turn_id = None;
+        assert!(running_turn_event_snapshot(idle, false).is_none());
+    }
 
     #[test]
     fn legacy_mode_catalog_requests_do_not_require_summary_fields() {
@@ -5362,7 +5506,7 @@ mod tests {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ensure_control_conversation(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
 ) -> Result<openbitfun_core::agentic::coordination::ControlConversation, String> {
@@ -5372,7 +5516,7 @@ pub async fn ensure_control_conversation(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_control_conversation(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: openbitfun_core::agentic::coordination::CreateControlConversationRequest,
@@ -5383,7 +5527,7 @@ pub async fn create_control_conversation(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn record_voice_exchange(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: openbitfun_core::agentic::coordination::VoiceExchangeRequest,

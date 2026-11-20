@@ -34,6 +34,59 @@ pub fn project_remote_chat_user(
     }
 }
 
+/// The user's message as they wrote it: the recorded original text, else the
+/// prompt-visible content without the upload preamble a host adds.
+pub fn remote_chat_user_display_text(
+    metadata: Option<&serde_json::Value>,
+    prompt_visible_content: &str,
+) -> String {
+    let original_text = metadata
+        .and_then(|metadata| metadata.get("original_text"))
+        .and_then(|value| value.as_str());
+    remote_chat_user_display_content(original_text, prompt_visible_content)
+}
+
+/// The attachments a user message recorded, as recorded: inline pixels are
+/// passed through untouched (no re-encode) and a path-only attachment keeps its
+/// host path. Nothing is read from disk.
+pub fn transcript_user_images(
+    metadata: Option<&serde_json::Value>,
+) -> Vec<super::transcript_view::TranscriptImage> {
+    let text = |image: &serde_json::Value, keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| image.get(*key).and_then(|value| value.as_str()))
+            .map(str::to_string)
+            .filter(|value| !value.is_empty())
+    };
+    metadata
+        .and_then(|metadata| metadata.get("images"))
+        .and_then(|value| value.as_array())
+        .map(|images| {
+            images
+                .iter()
+                .filter_map(|image| {
+                    let name =
+                        text(image, &["name", "image_name", "imageName"]).unwrap_or_default();
+                    let data_url = text(image, &["data_url", "dataUrl"]);
+                    let image_path = text(image, &["image_path", "imagePath"]);
+                    if name.trim().is_empty() && data_url.is_none() && image_path.is_none() {
+                        return None;
+                    }
+                    Some(super::transcript_view::TranscriptImage {
+                        name: if name.trim().is_empty() {
+                            "image".to_string()
+                        } else {
+                            name
+                        },
+                        data_url,
+                        image_path,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Projection for callers with no filesystem of their own to offer: a path-only
 /// attachment stays path-only and clients name it instead of drawing it.
 pub fn no_host_image_pixels(_image_path: &str) -> Option<Vec<u8>> {

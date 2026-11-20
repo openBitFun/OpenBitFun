@@ -87,7 +87,7 @@ async fn resolve_local_project(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn worktree_list(
     mut request: WorktreeListRequest,
 ) -> Result<Vec<WorktreeSummary>, WorktreeError> {
@@ -99,14 +99,14 @@ pub async fn worktree_list(
     WorktreeService::list(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn worktree_list_projects(
     request: WorktreeProjectListRequest,
 ) -> Result<Vec<WorktreeProjectSummary>, WorktreeError> {
     WorktreeService::list_projects(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn worktree_create(
     mut request: WorktreeCreateRequest,
 ) -> Result<WorktreeCreateResult, WorktreeError> {
@@ -118,7 +118,7 @@ pub async fn worktree_create(
     WorktreeService::create(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn worktree_create_branch(
     mut request: WorktreeCreateBranchRequest,
 ) -> Result<WorktreeMutationResult, WorktreeError> {
@@ -130,7 +130,7 @@ pub async fn worktree_create_branch(
     WorktreeService::create_branch(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn worktree_promote(
     mut request: WorktreePromoteRequest,
 ) -> Result<WorktreeMutationResult, WorktreeError> {
@@ -142,7 +142,7 @@ pub async fn worktree_promote(
     WorktreeService::promote(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn worktree_remove(
     mut request: WorktreeRemoveRequest,
 ) -> Result<WorktreeRemoveResult, WorktreeError> {
@@ -157,14 +157,14 @@ pub async fn worktree_remove(
 /// Toggle worktree isolation for a single session. The optional project
 /// workspace ID lets the product layer locate view-only persisted sessions;
 /// remote checks and repository resolution remain in that shared layer.
-#[tauri::command]
+// @backend-command
 pub async fn worktree_bind_session(
     request: WorktreeSessionBindingRequest,
 ) -> Result<WorktreeSessionBindingResult, WorktreeError> {
     WorktreeService::bind_session(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn worktree_recreate(
     mut request: WorktreeRecreateRequest,
 ) -> Result<WorktreeMutationResult, WorktreeError> {

@@ -51,6 +51,7 @@ import {
 } from "./src/bridge";
 import { subscribeAgentEvents } from "./src/agentEvents";
 import { installBackendResync } from "./src/backendResync";
+import { installControlPresenter } from "./src/controlPresenter";
 import { installServedBackend } from "./src/servedBackend";
 import { loadLocalDeviceId, localDeviceId } from "./src/devicePrefsStore";
 import { formatPlural } from "./src/format";
@@ -159,7 +160,7 @@ import { ensureSendPolicy } from "./src/sendPolicyStore";
 import { ensureQuickActions } from "./src/quickActionStore";
 import { loadSeenSessions, statusOfSession } from "./src/sessionStatusStore";
 import { peerBusy, peerError, peerReconnecting, peerScope } from "./src/peerState";
-import { enterPeer, reconnectPeer } from "./src/peerStore";
+import { enterPeer, meshLinkError, meshLinkState, peerTransportLabel, reconnectPeer } from "./src/peerStore";
 import { forgetTerminals, openTerminal } from "./src/terminalStore";
 import { openFileAt } from "./src/fileStore";
 import {
@@ -244,6 +245,7 @@ import { RoutinesScene } from "./src/scenes/RoutinesScene";
 import { FilesScene } from "./src/scenes/FilesScene";
 import { GitScene } from "./src/scenes/GitScene";
 import { TerminalScene } from "./src/scenes/TerminalScene";
+import { BrowserPageLayer, BrowserScene } from "./src/scenes/BrowserScene";
 import { SpacesScene } from "./src/scenes/SpacesScene";
 import { DevicesScene, returnToThisMachine } from "./src/scenes/DevicesScene";
 import {
@@ -253,6 +255,7 @@ import {
   SettingsScene,
   type SettingsPageEntry,
 } from "./src/scenes/SettingsScene";
+import type { SettingsPageId } from "./src/settingsStore";
 
 // A page served by a backend connects back to it over OBP (before any command runs).
 installServedBackend();
@@ -284,6 +287,7 @@ const SCENE_META: Record<SceneId, SceneMeta> = {
   files: { labelKey: "nav.files", icon: "folder" },
   git: { labelKey: "nav.git", icon: "git-branch" },
   terminal: { labelKey: "nav.terminal", icon: "terminal-square" },
+  browser: { labelKey: "nav.browser", icon: "globe" },
   devices: { labelKey: "nav.devices", icon: "link" },
   settings: { labelKey: "nav.settings", icon: "settings" },
 };
@@ -302,7 +306,7 @@ const PRESET_LABEL_KEYS: Record<AppearanceId, MessageKey> = {
 
 const PRIMARY_NAV_SCENES: ReadonlyArray<SceneId> = ["home", "sessions", "assistants"];
 const STUDIO_ONLY_SCENES: ReadonlyArray<SceneId> = ["agents", "skills", "routines", "spaces"];
-const WORKBENCH_NAV_SCENES: ReadonlyArray<SceneId> = ["files", "git", "terminal"];
+const WORKBENCH_NAV_SCENES: ReadonlyArray<SceneId> = ["files", "git", "terminal", "browser"];
 
 const AUX_TABS: ReadonlyArray<{ id: AuxPaneTab; labelKey: MessageKey; icon: IconName }> = [
   { id: "files", labelKey: "nav.files", icon: "folder" },
@@ -388,6 +392,13 @@ const SEARCH_COMMANDS: ReadonlyArray<SearchCommandDef> = [
     aliases: ["terminal", "go to terminal", "shell"],
     labelKey: "search.cmdTerminal",
     detailKey: "search.cmdTerminalDetail",
+  },
+  {
+    id: "command:browser",
+    target: "browser",
+    aliases: ["browser", "go to browser", "web", "open browser"],
+    labelKey: "search.cmdBrowser",
+    detailKey: "search.cmdBrowserDetail",
   },
   {
     id: "command:spaces",
@@ -495,18 +506,9 @@ function readRecordString(record: Record<string, unknown>, keys: string[]): stri
 async function refreshSidebarDevices(): Promise<void> {
   try {
     await Promise.all([loadLocalDeviceId(), loadAccountState()]);
-    const [list, online] = await Promise.all([
-      invokeRawCommand<Array<Record<string, unknown>>>("account_list_devices").catch(
-        () => [] as Array<Record<string, unknown>>,
-      ),
-      invokeRawCommand<Array<Record<string, unknown>>>("account_online_devices").catch(
-        () => [] as Array<Record<string, unknown>>,
-      ),
-    ]);
-    const onlineIds = new Set(
-      (Array.isArray(online) ? online : [])
-        .map(rec => readRecordString(rec ?? {}, ["deviceId", "device_id", "id"]))
-        .filter(Boolean),
+    // The host merges live relay presence into its directory rows (view models, wave 4).
+    const list = await invokeRawCommand<Array<Record<string, unknown>>>("account_list_devices").catch(
+      () => [] as Array<Record<string, unknown>>,
     );
     const parsed: SidebarPeerDevice[] = (Array.isArray(list) ? list : [])
       .map((rec): SidebarPeerDevice | null => {
@@ -532,11 +534,7 @@ async function refreshSidebarDevices(): Promise<void> {
             "deviceKind",
             "device_kind",
           ]),
-          online:
-            record.online === true ||
-            record.is_online === true ||
-            record.isOnline === true ||
-            onlineIds.has(id),
+          online: record.online === true || record.is_online === true || record.isOnline === true,
         };
       })
       .filter((item): item is SidebarPeerDevice => item !== null);
@@ -828,6 +826,8 @@ function sceneElement() {
       return <DevicesScene />;
     case "settings":
       return <SettingsScene />;
+    case "browser":
+      return <BrowserScene />;
     default:
       return <SessionsScene />;
   }
@@ -4553,7 +4553,7 @@ function PeerBanner() {
               gap: 8,
             }}
           >
-            <StatusDot kind="accent" size={6} pulse={peerReconnecting()} />
+            <StatusDot kind="accent" size={6} pulse={peerReconnecting() || meshLinkState() === "reconnecting"} />
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
               <Text
                 style={{
@@ -4568,6 +4568,38 @@ function PeerBanner() {
                   hostKind: scope().hostKind,
                 })}
               </Text>
+              <Text
+                accessibilityLabel="peer-transport"
+                style={{
+                  color: palette().textSecondary,
+                  fontSize: textSize(11),
+                  lineHeight: textLineHeight(11, 1.38),
+                }}
+              >
+                {peerTransportLabel(scope())}
+              </Text>
+              <If
+                when={
+                  meshLinkState() === "reconnecting"
+                    ? tr("peer.linkReconnecting")
+                    : meshLinkState() === "failed"
+                      ? tr("peer.linkFailed", { label: scope().label, reason: meshLinkError() })
+                      : ""
+                }
+              >
+                {message => (
+                  <Text
+                    accessibilityLabel="peer-link-state"
+                    style={{
+                      color: palette().warning,
+                      fontSize: textSize(11),
+                      lineHeight: textLineHeight(11, 1.38),
+                    }}
+                  >
+                    {message()}
+                  </Text>
+                )}
+              </If>
               <If when={peerError()}>
                 {message => (
                   <Text
@@ -5494,6 +5526,15 @@ function App() {
   });
   cleanup(() => stopShellIntegration());
 
+  // Agent requests to open a product surface ("open the MCP settings") land here.
+  const stopControlPresenter = installControlPresenter({
+    openSettingsPage: (pageId, anchor) => requestSettingsPage(pageId as SettingsPageId, anchor),
+    openFolder: () => void pickAndOpenWorkspaceFolder(),
+    newWorkspace: () => void openNewWorkspaceModal({ step: "project" }),
+    newSession: () => runShellShortcut("chat.newSession"),
+  });
+  cleanup(() => stopControlPresenter());
+
   void initWindowChrome().then(() => {
     if (nativeWindow()) void readPendingUpdate();
   });
@@ -5661,6 +5702,8 @@ function App() {
             <AuxPane />
           </If>
         </View>
+        {/* Embedded browser pages outlive the Browser scene (agents drive them hidden). */}
+        <BrowserPageLayer />
       </View>
 
       <If when={compactShell() && drawerOpen()}>

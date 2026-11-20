@@ -167,7 +167,7 @@ fn sessions() -> &'static std::sync::Mutex<std::collections::HashMap<String, wat
     SESSIONS.get_or_init(Default::default)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn html_preview_create(
     app_state: crate::host::State<'_, AppState>,
     request: HtmlPreviewCreateRequest,
@@ -234,7 +234,7 @@ pub async fn html_preview_create(
 }
 
 /// Runs on the workspace owner. Desktop and CLI use the same assembly/service path.
-#[tauri::command]
+// @backend-command
 pub async fn html_preview_read_resource(
     request: HtmlPreviewResourceRequest,
 ) -> HtmlPreviewResourceReply {
@@ -291,7 +291,7 @@ async fn start_preview(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn html_preview_release(request: HtmlPreviewReleaseRequest) -> Result<(), String> {
     if let Some(shutdown) = sessions()
         .lock()

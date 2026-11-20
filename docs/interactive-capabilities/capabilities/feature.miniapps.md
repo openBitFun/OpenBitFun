@@ -74,8 +74,8 @@ Install ready-made tools from the Mini App Market, or ask an agent in plain lang
   - Let an agent understand a Mini App’s source and operate its live UI for you
   - 说明：AI 能先看懂小应用的业务接口与数据结构，再直接在你眼前打开的实例里读取状态、填写或触发动作，且不会弄丢你的未保存草稿。
   - Why & how: The agent inspects the app’s semantic bridge and source, then operates the live open instance right in front of you without clobbering drafts.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看我的市场投稿审核进度、撤回发布申请与预览展示页
-  - Track your Market submissions, withdraw pending releases, and render showcase slides
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看我的市场投稿审核进度、撤回发布申请
+  - Track your Market submissions and withdraw pending releases
   - 说明：提交市场后可随时查看审核队列状态，发现疏漏支持主动撤回重提，并可渲染应用展示幻灯片。
   - Why & how: Check where your submitted releases stand in review, withdraw a pending submission if you spot a bug, and render presentation slides.
 

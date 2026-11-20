@@ -1,5 +1,7 @@
 # 持续工作负载：驻留、资源归因与并发操作
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 日期：2026-11-05；后续验证持续到11月6日。本文承接[工作台基线](05-workbench-page-baseline-2026-11-05.md)，记录后续实测及未完成项。已完成正确Apple Desktop配置下的28.74分钟长驻留基线：功能检查通过，速度预算未全部通过。当前P0仍是首页／会话切换的尾延迟与恢复后的资源占用；未建立整体收益的候选已撤回，各项增量工作和未完成验收分别记录。
 
 **11月6日收尾：** 按用户要求结束本轮性能优化，不再扩展试验。整体成果、保留修改与未验收项见[收尾报告](08-performance-wrap-up-2026-11-06.md)。下文按时间保留的“下一步”均为历史计划，不代表仍有后台任务在执行。

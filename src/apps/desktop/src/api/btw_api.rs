@@ -59,7 +59,7 @@ pub struct BtwCancelRequest {
     pub request_id: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn btw_cancel(
     state: State<'_, AppState>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -90,7 +90,7 @@ pub async fn btw_cancel(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn btw_ask_stream(
     state: State<'_, AppState>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,

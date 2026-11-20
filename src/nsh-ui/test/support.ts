@@ -12,6 +12,12 @@ export interface BackendCall {
 }
 
 export interface BackendOptions {
+  /** transcript view (wave 4): a host that predates `get_session_transcript_view`. */
+  transcriptViewUnsupported?: boolean;
+  /** remote link + terminal profiles (wave 4): a host that predates the profile commands. */
+  terminalProfilesUnsupported?: boolean;
+  /** Profiles the host config already keeps, by workspace id. */
+  terminalProfiles?: Record<string, Array<{ id: string; name: string; shellId: string; shellType: string; startupCommand: string }>>;
   sessions?: Array<{
     sessionId: string;
     sessionName: string;
@@ -108,6 +114,433 @@ export interface BackendOptions {
   openedWorkspaces?: Array<{ id: string; name: string; rootPath: string; workspaceKind?: string }>;
   /** The workspace `get_current_workspace` reports; the default is the first opened one. */
   currentWorkspaceId?: string | null;
+  // view models (wave 4)
+  /** `false` makes the host older than `get_workspace_navigator`. */
+  workspaceNavigator?: false;
+  /** `false` makes the host older than `get_token_usage_activity`. */
+  usageActivityCommand?: false;
+  /** `false` makes the host older than `get_personal_overview`. */
+  personalOverview?: false;
+  /** `false` makes `account_list_devices` answer directory presence only, as an older host does. */
+  devicePresenceMerged?: false;
+}
+
+// transcript view (wave 4)
+/**
+ * A fake host's `get_session_transcript_view`: the backend projection
+ * (`remote_connect::transcript_view`) over the fixture's persisted turns. It also
+ * reads the legacy `assistantMessage` / `toolCalls` fixture shapes the tests
+ * were written with, which a real host never stores.
+ */
+type FixtureRecord = Record<string, unknown>;
+const asRecord = (value: unknown): FixtureRecord | null =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as FixtureRecord) : null;
+const pick = (record: FixtureRecord | null, ...keys: string[]): unknown => {
+  if (!record) return undefined;
+  for (const key of keys) if (record[key] !== undefined) return record[key];
+  return undefined;
+};
+const text = (value: unknown): string => (typeof value === "string" ? value : "");
+const num = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+function fakeToolView(raw: unknown, fallbackId: string): FixtureRecord | null {
+  const record = asRecord(raw);
+  const call = asRecord(pick(record, "toolCall", "tool_call"));
+  const result = asRecord(pick(record, "toolResult", "tool_result"));
+  const name = pick(record, "toolName", "tool_name") ?? pick(call, "toolName", "tool_name") ?? pick(record, "name", "tool");
+  if (typeof name !== "string" || !name) return null;
+  const id = text(pick(record, "id")) || text(pick(call, "id")) || fallbackId;
+  const input = pick(call, "input", "arguments") ?? pick(record, "arguments", "input", "parameters", "params", "toolInput");
+  const hasResult = Boolean(result) || pick(record, "result") !== undefined;
+  const status = text(pick(record, "status")) || (hasResult ? "completed" : "completed");
+  const error = text(pick(result, "error")) || text(pick(record, "error"));
+  const out: FixtureRecord = { id, name, input: input ?? null, status, startMs: num(pick(record, "startTime", "start_time")) ?? 0 };
+  const success = pick(result, "success");
+  if (typeof success === "boolean") out.success = success;
+  if (error) out.error = error;
+  const value = pick(result, "result") ?? pick(record, "result");
+  if (value !== undefined) out.result = value;
+  const forAssistant = text(pick(result, "resultForAssistant", "result_for_assistant"));
+  if (forAssistant) out.resultForAssistant = forAssistant;
+  const duration = num(pick(record, "durationMs", "duration_ms")) ?? num(pick(result, "durationMs", "duration_ms"));
+  if (duration !== undefined) out.durationMs = duration;
+  return out;
+}
+
+function fakeStatus(raw: unknown): string {
+  const status = text(raw).toLowerCase();
+  if (status === "inprogress" || status === "in_progress" || status === "active" || status === "running") return "active";
+  if (status === "error" || status === "failed") return "failed";
+  if (status === "cancelled" || status === "interrupted") return "cancelled";
+  return "done";
+}
+
+export function fakeTranscriptTurns(rawTurns: unknown[]): FixtureRecord[] {
+  return rawTurns.flatMap((raw, position) => {
+    const turn = asRecord(raw);
+    if (!turn) return [];
+    const turnId = text(pick(turn, "turnId", "turn_id", "id")) || `turn-${position}`;
+    const user = asRecord(pick(turn, "userMessage", "user_message"));
+    const metadata = asRecord(pick(user, "metadata"));
+    const images = Array.isArray(metadata?.images)
+      ? (metadata!.images as unknown[]).flatMap(entry => {
+          const image = asRecord(entry);
+          if (!image) return [];
+          const out: FixtureRecord = { name: text(pick(image, "name", "image_name", "imageName")) || "image" };
+          const dataUrl = text(pick(image, "data_url", "dataUrl"));
+          const imagePath = text(pick(image, "image_path", "imagePath"));
+          if (dataUrl) out.dataUrl = dataUrl;
+          if (imagePath) out.imagePath = imagePath;
+          return [out];
+        })
+      : [];
+    const items: FixtureRecord[] = [];
+    const subagent: Array<{ parent: string; item: FixtureRecord }> = [];
+    let toolSeq = 0;
+    const turnTools = [
+      ...((pick(turn, "toolItems", "tool_items") as unknown[]) ?? []),
+      ...((pick(turn, "toolCalls", "tool_calls") as unknown[]) ?? []),
+    ];
+    for (const rawTool of turnTools) {
+      const tool = fakeToolView(rawTool, `${turnId}-tool-${toolSeq++}`);
+      if (tool) items.push({ kind: "tool", roundIndex: 0, tool });
+    }
+    const rounds = (pick(turn, "modelRounds", "model_rounds") as unknown[]) ?? [];
+    let modelName: string | undefined;
+    let roundDuration = 0;
+    let sawDuration = false;
+    let lastRoundTime: number | undefined;
+    rounds.forEach((rawRound, roundIndex) => {
+      const round = asRecord(rawRound);
+      if (!round) return;
+      const model = text(pick(round, "effectiveModelName", "effective_model_name", "modelName", "model_name", "model")).trim();
+      if (model) modelName = model;
+      const duration = num(pick(round, "durationMs", "duration_ms"));
+      if (duration !== undefined) {
+        roundDuration += duration;
+        sawDuration = true;
+      }
+      lastRoundTime = num(pick(round, "endTime", "end_time")) ?? num(pick(round, "startTime", "start_time")) ?? lastRoundTime;
+      const ordered: Array<{ order?: number; seq: number; item: FixtureRecord; subagentOf?: string }> = [];
+      let seq = 0;
+      const push = (entry: FixtureRecord | null, item: FixtureRecord) => {
+        const order = num(pick(entry, "orderIndex", "order_index"));
+        const isSub = pick(entry, "isSubagentItem", "is_subagent_item") === true;
+        const parent = text(pick(entry, "parentTaskToolId", "parent_task_tool_id"));
+        ordered.push({ order, seq: seq++, item, ...(isSub ? { subagentOf: parent } : {}) });
+      };
+      for (const rawItem of ((pick(round, "thinkingItems", "thinking_items") as unknown[]) ?? [])) {
+        const entry = asRecord(rawItem);
+        const content = text(pick(entry, "content"));
+        if (!content) continue;
+        const kind = text(pick(entry, "reasoningKind", "reasoning_kind"));
+        push(entry, {
+          kind: "thinking",
+          id: text(pick(entry, "id")) || `${turnId}-${roundIndex}-thinking-${seq}`,
+          roundIndex,
+          text: content,
+          ...(kind === "summary" || kind === "reasoning" ? { reasoningKind: kind } : {}),
+        });
+      }
+      let addedText = false;
+      for (const rawItem of ((pick(round, "textItems", "text_items") as unknown[]) ?? [])) {
+        const entry = asRecord(rawItem);
+        const content = text(pick(entry, "content"));
+        if (!content) continue;
+        addedText = true;
+        push(entry, { kind: "text", id: text(pick(entry, "id")) || `${turnId}-${roundIndex}-${seq}`, roundIndex, text: content });
+      }
+      const assistant = asRecord(pick(round, "assistantMessage", "assistant_message"));
+      if (!addedText && text(pick(assistant, "content"))) {
+        push(null, {
+          kind: "text",
+          id: text(pick(assistant, "id")) || `${turnId}-${roundIndex}`,
+          roundIndex,
+          text: text(pick(assistant, "content")),
+        });
+      }
+      const roundTools = [
+        ...((pick(round, "toolItems", "tool_items") as unknown[]) ?? []),
+        ...((pick(round, "toolCalls", "tool_calls") as unknown[]) ?? []),
+        ...((pick(assistant, "toolCalls", "tool_calls") as unknown[]) ?? []),
+      ];
+      for (const rawTool of roundTools) {
+        const tool = fakeToolView(rawTool, `${turnId}-${roundIndex}-tool-${toolSeq++}`);
+        if (tool) push(asRecord(rawTool), { kind: "tool", roundIndex, tool });
+      }
+      if (ordered.some(entry => entry.order !== undefined)) {
+        ordered.sort((left, right) => {
+          if (left.order !== undefined && right.order !== undefined && left.order !== right.order) return left.order - right.order;
+          if (left.order !== undefined && right.order === undefined) return -1;
+          if (left.order === undefined && right.order !== undefined) return 1;
+          return left.seq - right.seq;
+        });
+      }
+      for (const entry of ordered) {
+        if (entry.subagentOf !== undefined) {
+          if (entry.subagentOf) subagent.push({ parent: entry.subagentOf, item: entry.item });
+          continue;
+        }
+        items.push(entry.item);
+      }
+    });
+    for (const { parent, item } of subagent) {
+      const owner = items.find(entry => entry.kind === "tool" && (entry.tool as FixtureRecord).id === parent);
+      if (owner) {
+        const tool = owner.tool as FixtureRecord;
+        tool.subagentItems = [...((tool.subagentItems as unknown[]) ?? []), item];
+      }
+    }
+    const status = fakeStatus(pick(turn, "status", "state"));
+    const startTimeMs = num(pick(turn, "startTime", "start_time")) ?? num(pick(turn, "timestamp")) ?? 0;
+    const view: FixtureRecord = {
+      turnId,
+      turnIndex: num(pick(turn, "turnIndex", "turn_index")) ?? position,
+      kind: text(pick(turn, "kind")) || "user_dialog",
+      status,
+      settled: status !== "active",
+      user: {
+        id: text(pick(user, "id")) || `${turnId}-user`,
+        text: text(pick(user, "content")),
+        timestampMs: num(pick(user, "timestamp")) ?? num(pick(turn, "timestamp")) ?? 0,
+        ...(images.length ? { images } : {}),
+      },
+      items,
+      startTimeMs,
+      assistantTimestampMs: lastRoundTime ?? startTimeMs,
+    };
+    const error = text(pick(turn, "error")).trim();
+    if (error) view.error = error;
+    const detail = asRecord(pick(turn, "errorDetail", "error_detail"));
+    if (detail) view.errorDetail = detail;
+    const topModel = text(pick(turn, "effectiveModelName", "effective_model_name", "modelName", "model_name", "model")).trim();
+    if (modelName || topModel) view.effectiveModel = modelName || topModel;
+    const duration = num(pick(turn, "durationMs", "duration_ms"));
+    if (duration !== undefined) view.durationMs = duration;
+    else if (sawDuration) view.durationMs = roundDuration;
+    const usage = asRecord(pick(turn, "tokenUsage", "token_usage"));
+    if (usage) view.tokenUsage = usage;
+    const recovery = asRecord(pick(turn, "recovery"));
+    if (recovery) {
+      view.recovery = {
+        status: text(pick(recovery, "status")),
+        executionGeneration: num(pick(recovery, "executionGeneration", "execution_generation")) ?? 0,
+      };
+    }
+    return [view];
+  });
+}
+
+/** The fake host's whole answer, including the cursor rule (only what follows the last settled turn). */
+export function fakeTranscriptView(sessionId: string, rawTurns: unknown[], request: unknown): FixtureRecord {
+  const turns = fakeTranscriptTurns(rawTurns);
+  const cursorOf = (list: FixtureRecord[]) => {
+    let last: FixtureRecord | undefined;
+    for (const turn of list) {
+      if (!turn.settled) break;
+      last = turn;
+    }
+    return last ? `tv1:${String(last.turnIndex)}:fake:${String(last.turnId)}` : undefined;
+  };
+  const cursor = text(asRecord(request)?.cursor);
+  const [, rawIndex, , cursorTurn] = cursor.split(":");
+  const anchor = cursor.startsWith("tv1:")
+    ? turns.findIndex(turn => String(turn.turnIndex) === rawIndex && turn.turnId === cursorTurn && turn.settled)
+    : -1;
+  if (anchor >= 0) {
+    const after = turns.slice(anchor + 1);
+    return {
+      sessionId,
+      mode: "after",
+      keptThroughIndex: turns[anchor].turnIndex,
+      turns: after,
+      cursor: cursorOf(after) ?? cursor,
+      hasEarlier: false,
+    };
+  }
+  return { sessionId, mode: "full", turns, ...(cursorOf(turns) ? { cursor: cursorOf(turns) } : {}), hasEarlier: false };
+}
+
+// view models (wave 4)
+type FixtureWorkspace = { id?: string } & Record<string, unknown>;
+
+/**
+ * A fake host's `get_workspace_navigator`: the backend projection's rules over
+ * the fixture's own opened, recent and current answers (dedupe, recent never
+ * lists an opened workspace, selection kept / host current / first opened / none).
+ */
+export function projectWorkspaceNavigator(
+  openedRaw: unknown,
+  recentRaw: unknown,
+  currentId: string | null | undefined,
+  selectedId: string | null | undefined,
+): Record<string, unknown> {
+  const unique = (list: unknown, exclude: Set<string>): FixtureWorkspace[] => {
+    const seen = new Set<string>();
+    return (Array.isArray(list) ? (list as FixtureWorkspace[]) : []).filter(item => {
+      const id = String(item?.id ?? "");
+      if (!id || exclude.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  };
+  const opened = unique(openedRaw, new Set());
+  const openedIds = new Set(opened.map(item => String(item.id)));
+  const recent = unique(recentRaw, openedIds);
+  if (selectedId && openedIds.has(selectedId)) {
+    return { opened, recent, selectedId, selection: "kept" };
+  }
+  if (currentId && openedIds.has(currentId)) {
+    return { opened, recent, selectedId: currentId, selection: "host_current" };
+  }
+  if (opened.length > 0) {
+    return { opened, recent, selectedId: String(opened[0].id), selection: "first_opened" };
+  }
+  return {
+    opened,
+    recent,
+    selectedId: null,
+    selection: "none",
+    ...(recent[0]?.id ? { reopenCandidateId: String(recent[0].id) } : {}),
+  };
+}
+
+/**
+ * A fake host's `get_personal_overview`, composed from the fixture's own section
+ * commands the way the backend helpers compose it: counts, enabled filters, the
+ * due-soon window (last hour to next day, soonest first) and the running Spaces.
+ * `read` answers one command or throws its error, so a section fails on its own.
+ */
+export function composePersonalOverview(
+  read: (action: string, payload: Record<string, unknown>, raw: boolean) => unknown,
+): Record<string, unknown> {
+  const section = (build: () => unknown) => {
+    try {
+      return { status: "ready", value: build() };
+    } catch (error) {
+      return { status: "failed", error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const list = (value: unknown): Array<Record<string, unknown>> =>
+    (Array.isArray(value) ? value : []) as Array<Record<string, unknown>>;
+  const now = Date.now();
+  return {
+    assistants: section(() => ({
+      count: list(read("get_assistant_workspaces", {}, true)).length,
+    })),
+    skills: section(() => {
+      const raw = read(
+        "get_skill_configs",
+        { forceRefresh: false, includeDiagnostics: false, workspaceId: null, workspacePath: null },
+        true,
+      );
+      const skills = Array.isArray(raw) ? list(raw) : list((raw as { skills?: unknown })?.skills);
+      return {
+        count: skills.length,
+        enabled: skills.filter(skill => skill.enabled !== false && skill.disabled !== true).length,
+      };
+    }),
+    routines: section(() => {
+      const jobs = list(read("list_cron_jobs", {}, false));
+      const dueSoon = jobs
+        .filter(job => job.enabled !== false)
+        .map(job => {
+          const state = (job.state ?? {}) as Record<string, unknown>;
+          return {
+            id: String(job.id ?? ""),
+            name: String(job.name ?? job.id ?? ""),
+            nextRunAtMs: typeof state.nextRunAtMs === "number" ? state.nextRunAtMs : NaN,
+            ...(state.lastRunStatus ? { lastRunStatus: String(state.lastRunStatus) } : {}),
+            schedule: job.schedule ?? null,
+          };
+        })
+        .filter(job => job.nextRunAtMs >= now - 3_600_000 && job.nextRunAtMs <= now + 86_400_000)
+        .sort((left, right) => left.nextRunAtMs - right.nextRunAtMs);
+      return {
+        count: jobs.length,
+        enabled: jobs.filter(job => job.enabled !== false).length,
+        dueSoon,
+      };
+    }),
+    spaces: section(() => {
+      const running = new Set(list(read("miniapp_worker_list_running", {}, true)).map(String));
+      const items = list(read("list_miniapps", {}, true)).map(app => ({
+        id: String(app.id ?? ""),
+        name: String(app.name ?? app.id ?? ""),
+        description: String(app.description ?? ""),
+        icon: String(app.icon ?? "") || "shapes",
+        running: running.has(String(app.id ?? "")),
+      }));
+      return { count: items.length, running: items.filter(item => item.running).length, items };
+    }),
+    ssh: section(() => ({
+      connections: list(read("ssh_list_saved_connections", {}, true)),
+    })),
+    usage: section(() => {
+      const stats = (read(
+        "get_token_usage_statistics",
+        { timeRange: "custom", granularity: "day", includeSubagent: true },
+        false,
+      )) as Record<string, unknown>;
+      const models = list(stats.byModel).sort(
+        (left, right) => Number(right.tokens ?? 0) - Number(left.tokens ?? 0),
+      );
+      return {
+        days: 30,
+        totalTokens: stats.totalTokens ?? 0,
+        totalRequests: stats.totalRequests ?? 0,
+        inputTokens: stats.totalInputTokens ?? 0,
+        outputTokens: stats.totalOutputTokens ?? 0,
+        cachedTokens: stats.totalCachedTokens ?? 0,
+        failedRequests: stats.failedRequests ?? 0,
+        topModelName: String(models[0]?.name ?? ""),
+      };
+    }),
+    activity: section(() => read("get_token_usage_activity", { months: 6 }, false)),
+  };
+}
+
+/** A fake host's six-month activity grid with two busy days (4.0K tokens). */
+export function fixtureUsageActivity(now = new Date()): Record<string, unknown> {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const start = today - 182 * dayMs;
+  const offset = (new Date(start).getUTCDay() + 6) % 7;
+  const gridStart = start - offset * dayMs;
+  const weekCount = Math.ceil(((today - start) / dayMs + 1 + offset) / 7);
+  const busy = new Map<number, number>([
+    [today - 3 * dayMs, 1_500],
+    [today - 2 * dayMs, 2_500],
+  ]);
+  const days = Array.from({ length: weekCount * 7 }, (_, index) => {
+    const time = gridStart + index * dayMs;
+    const date = new Date(time);
+    const inRange = time >= start && time <= today;
+    const tokens = inRange ? busy.get(time) ?? 0 : 0;
+    return {
+      date: date.toISOString().slice(0, 10),
+      month: date.getUTCMonth() + 1,
+      dayOfMonth: date.getUTCDate(),
+      tokens,
+      level: tokens === 0 ? 0 : tokens >= 2_500 ? 4 : 3,
+      inRange,
+    };
+  });
+  return {
+    timeZone: "UTC",
+    months: 6,
+    startDate: new Date(start).toISOString().slice(0, 10),
+    endDate: new Date(today).toISOString().slice(0, 10),
+    weekCount,
+    days,
+    monthHeaders: [{ weekIndex: 2, month: new Date(start + 14 * dayMs).getUTCMonth() + 1 }],
+    totalTokens: 4_000,
+    peakTokens: 2_500,
+    activeDays: 2,
+    longestStreak: 2,
+    currentStreak: 0,
+  };
 }
 
 interface HostQueueRow {
@@ -179,6 +612,8 @@ export interface Backend {
   setRunningTurn: (sessionId: string, turnId: string | null) => void;
   /** Every `mark_session_seen` request, in order. */
   seenMarks: Array<{ sessionId: string; seenThroughMs?: number }>;
+  /** features (wave 5): every `report_openbitfun_control_result` request, in order. */
+  controlReports?: Array<Record<string, unknown>>;
   handlers: Record<string, (data: unknown) => unknown>;
 }
 
@@ -265,16 +700,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * window and one bucket far outside it, so a projection that forgets the window
  * shows the wrong total.
  */
-const DEFAULT_ACTIVITY = {
-  ...DEFAULT_USAGE,
-  totalTokens: 4_000,
-  trend: [
-    { bucket: new Date(Date.now() - 3 * DAY_MS).toISOString(), inputTokens: 1_000, outputTokens: 500 },
-    { bucket: new Date(Date.now() - 2 * DAY_MS).toISOString(), inputTokens: 2_000, outputTokens: 500 },
-    { bucket: "2020-01-01T00:00:00Z", inputTokens: 100_000, outputTokens: 0 },
-  ],
-  granularity: "day",
-};
 
 const DEFAULT_SESSIONS = [
   {
@@ -754,6 +1179,18 @@ function answerPeerHostInvoke(
           workspaceKind: "local",
         },
       ]);
+    // view models (wave 4)
+    case "get_workspace_navigator": {
+      const peerWorkspace = {
+        id: `${targetDeviceId}-workspace`,
+        name: `peer workspace on ${targetDeviceId}`,
+        rootPath: "/srv/peer",
+        workspaceKind: "local",
+      };
+      return envelope(
+        projectWorkspaceNavigator([peerWorkspace], [peerWorkspace], peerWorkspace.id, String(request.selectedId ?? "")),
+      );
+    }
     case "get_current_workspace":
       return envelope({
         id: `${targetDeviceId}-workspace`,
@@ -779,7 +1216,8 @@ function answerPeerHostInvoke(
         hasMore: false,
       });
     case "load_session_turns":
-      return envelope([
+    case "get_session_transcript_view": {
+      const persisted = [
         {
           id: `${targetDeviceId}-turn`,
           turnId: `${targetDeviceId}-turn`,
@@ -788,7 +1226,14 @@ function answerPeerHostInvoke(
             { assistantMessage: { id: "peer-assistant", content: `answer from ${targetDeviceId}` } },
           ],
         },
-      ]);
+      ];
+      // transcript view (wave 4): the peer projects its own turns.
+      return envelope(
+        action === "load_session_turns"
+          ? persisted
+          : fakeTranscriptView(String(request.session_id ?? request.sessionId ?? ""), persisted, request),
+      );
+    }
     case "explorer_get_children":
       return envelope([{ name: "peer.txt", path: "/srv/peer/peer.txt", isDirectory: false }]);
     case "get_available_modes":
@@ -886,6 +1331,14 @@ const SETTINGS_DESCRIPTOR: Record<string, Record<string, unknown>> = {
 
 export function createBackend(options: BackendOptions = {}): Backend {
   const calls: BackendCall[] = [];
+  // features (wave 5): what the presentation surface reported back.
+  const controlReports: Array<Record<string, unknown>> = [];
+  // remote link + terminal profiles (wave 4)
+  const hostTerminalProfiles: Record<
+    string,
+    Array<{ id: string; name: string; shellId: string; shellType: string; startupCommand: string }>
+  > = JSON.parse(JSON.stringify(options.terminalProfiles ?? {}));
+  let terminalProfileSeq = 0;
   // Sessions carry their agent binding, so a switch shows up in the next read the
   // way the host reports it.
   let sessions: Array<Record<string, unknown>> = options.sessions ?? DEFAULT_SESSIONS;
@@ -1499,6 +1952,33 @@ export function createBackend(options: BackendOptions = {}): Backend {
   function answerSettingsMutation(action: string, payload: Record<string, unknown>): unknown {
     if (options.legacySettingsHost) throw new Error(`Command ${action} not found`);
     switch (action) {
+      // permission page view (wave 4): the host's projection of the stored documents.
+      case "get_permission_settings": {
+        const view = permissionView(permissionDocument()) as Record<string, unknown>;
+        const models = (Array.isArray(readLive("ai.models")) ? readLive("ai.models") : []) as Array<Record<string, unknown>>;
+        const configured = models.flatMap(entry => {
+          const id = typeof entry.id === "string" ? entry.id : "";
+          if (!id) return [];
+          const name = String(entry.model_name || entry.name || id);
+          return [{ id, name }];
+        });
+        const defaults = (readLive("ai.default_models") ?? {}) as Record<string, unknown>;
+        const approvalModels: Array<Record<string, unknown>> = [];
+        for (const role of ["fast", "primary"]) {
+          const stored = typeof defaults[role] === "string" ? String(defaults[role]) : "";
+          if (!stored) continue;
+          const match = configured.find(entry => entry.id === stored);
+          approvalModels.push({ value: role, role, modelId: stored, modelName: match?.name ?? null, available: Boolean(match) });
+        }
+        for (const model of configured) {
+          approvalModels.push({ value: model.id, modelId: model.id, modelName: model.name, available: true });
+        }
+        return {
+          ...view,
+          approvalModels,
+          showPermissionModeControl: readLive("app.flow_chat.show_permission_mode_control") === true,
+        };
+      }
       case "get_settings_schema": {
         const paths = Array.isArray(payload.paths) ? payload.paths.map(String) : Object.keys(SETTINGS_DESCRIPTOR);
         const fields: Record<string, unknown> = {};
@@ -1740,7 +2220,20 @@ export function createBackend(options: BackendOptions = {}): Backend {
       case "set_web_search_provider":
       case "set_acp_client_permission_mode":
       case "get_settings_schema":
+      // permission page view (wave 4)
+      case "get_permission_settings":
         return answerSettingsMutation(action, payload);
+      // view models (wave 4)
+      case "get_workspace_navigator":
+        if (options.workspaceNavigator === false) {
+          throw new Error("Command not found: get_workspace_navigator");
+        }
+        return projectWorkspaceNavigator(
+          answer("get_opened_workspaces", {}),
+          answer("get_recent_workspaces", {}),
+          currentWorkspaceId,
+          typeof payload.selectedId === "string" ? payload.selectedId : null,
+        );
       case "get_opened_workspaces":
         return openedWorkspaces.map(record => ({ ...record }));
       case "get_recent_workspaces":
@@ -2322,6 +2815,27 @@ export function createBackend(options: BackendOptions = {}): Backend {
           row.id === String(payload.clientId ?? "") ? { ...row, status: "stopped" } : row,
         );
         return null;
+      // view models (wave 4)
+      case "get_personal_overview":
+        if (options.personalOverview === false) {
+          throw new Error("Command not found: get_personal_overview");
+        }
+        return composePersonalOverview((command, request, raw) => answer(command, request, raw));
+      case "get_token_usage_activity": {
+        usageRequests.push({ ...payload, command: "get_token_usage_activity" });
+        if (options.usage === null) {
+          throw new Error(
+            "token_usage_statistics_unsupported: The connected Peer host does not support usage statistics",
+          );
+        }
+        if (options.usageActivityCommand === false) {
+          throw new Error("Command not found: get_token_usage_activity");
+        }
+        if (options.usageActivity === null) {
+          throw new Error("the host answered the range but not the activity window");
+        }
+        return options.usageActivity ?? fixtureUsageActivity();
+      }
       case "get_token_usage_statistics": {
         usageRequests.push(payload);
         if (options.usage === null) {
@@ -2329,13 +2843,6 @@ export function createBackend(options: BackendOptions = {}): Backend {
           throw new Error(
             "token_usage_statistics_unsupported: The connected Peer host does not support usage statistics",
           );
-        }
-        // The six-month activity read is the same command over a fixed window.
-        if (payload.timeRange === "custom") {
-          if (options.usageActivity === null) {
-            throw new Error("the host answered the range but not the activity window");
-          }
-          return options.usageActivity ?? DEFAULT_ACTIVITY;
         }
         return options.usage ?? DEFAULT_USAGE;
       }
@@ -2409,6 +2916,20 @@ export function createBackend(options: BackendOptions = {}): Backend {
         return null;
       case "get_pending_update":
         return null;
+      // Native shell channel (wave 4 native): the backend records the ops and settles requests.
+      case "host_shell_attach":
+        return { ops: Array.isArray(payload.ops) ? [...(payload.ops as string[])].sort() : [] };
+      case "host_shell_respond":
+        return null;
+      // A Space opened in its own window: the desktop answers with the instance/view ticket.
+      case "miniapp_presentation":
+        if (payload.operation === "open") {
+          return {
+            instance: { instanceId: `instance-${String(payload.appId ?? "")}`, appId: payload.appId },
+            view: { viewId: "view-1", kind: payload.kind },
+          };
+        }
+        return { hostEpoch: 1, revision: 1, instances: [] };
       case "export_session_transcript":
         return {
           sessionId: String(payload.session_id ?? ""),
@@ -2537,6 +3058,18 @@ export function createBackend(options: BackendOptions = {}): Backend {
           ahead: 0,
           behind: 0,
         };
+      // git liveness (wave 4): a current host leases live status; nothing is pushed in fixtures.
+      case "git_watch_status":
+        return {
+          workspaceId: payload.workspaceId,
+          repositoryPath: payload.repositoryPath,
+          revision: 0,
+          status: null,
+          mode: "watch",
+          event: "git://status-changed",
+        };
+      case "git_unwatch_status":
+        return true;
       case "git_get_diff": {
         const files = (payload.params as { files?: string[] })?.files ?? [];
         return [
@@ -2589,9 +3122,86 @@ export function createBackend(options: BackendOptions = {}): Backend {
           { shellType: "Bash", id: "shell-bash", name: "bash", path: "/bin/bash", version: "3.2", available: true },
           { shellType: "Fish", id: "shell-fish", name: "fish", path: "/opt/fish", available: false },
         ];
+      // remote link + terminal profiles (wave 4): the host keeps the list and its rules.
+      case "get_terminal_profiles":
+      case "upsert_terminal_profile":
+      case "delete_terminal_profile":
+      case "import_terminal_profiles": {
+        if (options.terminalProfilesUnsupported) {
+          throw new Error(`the simulated backend has no answer for ${action}`);
+        }
+        const workspaceId = String(payload.workspaceId ?? "").trim();
+        if (!workspaceId) throw new Error("workspace_id is required");
+        const rows = [...(hostTerminalProfiles[workspaceId] ?? [])];
+        const reply = (extra: Record<string, unknown> = {}) => {
+          if (rows.length) hostTerminalProfiles[workspaceId] = rows;
+          else delete hostTerminalProfiles[workspaceId];
+          return { workspaceId, profiles: rows.map(row => ({ ...row })), maxProfiles: 20, ...extra };
+        };
+        type Row = { id: string; name: string; shellId: string; shellType: string; startupCommand: string };
+        const rowOf = (raw: Record<string, unknown>, id: string): Row => ({
+          id,
+          name: String(raw.name ?? "").trim(),
+          shellId: String(raw.shellId ?? ""),
+          shellType: String(raw.shellType ?? ""),
+          startupCommand: String(raw.startupCommand ?? "").trim(),
+        });
+        if (action === "get_terminal_profiles") return reply();
+        if (action === "delete_terminal_profile") {
+          const kept = rows.filter(row => row.id !== String(payload.profileId ?? ""));
+          rows.splice(0, rows.length, ...kept);
+          return reply();
+        }
+        if (action === "import_terminal_profiles") {
+          let imported = 0;
+          let skipped = 0;
+          for (const raw of (payload.profiles as Array<Record<string, unknown>>) ?? []) {
+            const name = String(raw.name ?? "").trim();
+            if (!name || rows.some(row => row.name === name) || rows.length >= 20) {
+              skipped += 1;
+              continue;
+            }
+            const wanted = String(raw.id ?? "");
+            const id = wanted && !rows.some(row => row.id === wanted) ? wanted : `tp_${++terminalProfileSeq}`;
+            rows.push(rowOf(raw, id));
+            imported += 1;
+          }
+          return reply({ imported, skipped });
+        }
+        const profile = (payload.profile ?? {}) as Record<string, unknown>;
+        const name = String(profile.name ?? "").trim();
+        if (!name) throw new Error("terminal_profile_name_required: a profile needs a name");
+        const editing = typeof profile.id === "string" && profile.id ? profile.id : null;
+        if (rows.some(row => row.name === name && row.id !== editing)) {
+          throw new Error(`terminal_profile_name_taken: a profile named ${name} already exists`);
+        }
+        if (editing) {
+          const index = rows.findIndex(row => row.id === editing);
+          if (index < 0) throw new Error(`terminal_profile_not_found: no profile ${editing} in this workspace`);
+          rows[index] = rowOf(profile, editing);
+          return reply({ id: editing });
+        }
+        if (rows.length >= 20) throw new Error("terminal_profile_limit: 20 profiles per workspace");
+        const id = `tp_${++terminalProfileSeq}`;
+        rows.push(rowOf(profile, id));
+        return reply({ id });
+      }
+      case "remote_workspace_ensure_connected": {
+        const connectionId = String(payload.connectionId ?? "");
+        return { link: { connectionId, state: "connected", revision: 1 }, activated: false };
+      }
+      case "remote_workspace_link_states":
+        return [];
       case "terminal_write":
       case "terminal_resize":
       case "terminal_close":
+        return null;
+      // features (wave 5): the OpenBitFunControl presentation surface.
+      case "mark_openbitfun_control_surface_ready":
+      case "mark_openbitfun_control_surface_unready":
+        return null;
+      case "report_openbitfun_control_result":
+        controlReports.push(payload as Record<string, unknown>);
         return null;
       default:
         throw new Error(`the simulated backend has no answer for ${action}`);
@@ -2600,10 +3210,28 @@ export function createBackend(options: BackendOptions = {}): Backend {
 
   const handlers: Record<string, (data: unknown) => unknown> = {
     "openbitfun.invoke": (data: unknown) => {
-      const args = (data ?? {}) as { action?: string; request?: unknown; raw?: unknown };
+      const args = (data ?? {}) as { action?: string; request?: unknown; raw?: unknown; internal?: boolean };
       const action = args.action ?? "";
       const raw = Object.prototype.hasOwnProperty.call(args, "raw");
-      calls.push({ action, request: raw ? args.raw : args.request, raw });
+      // A read the fake host makes of itself is not a command the client sent.
+      if (!args.internal) calls.push({ action, request: raw ? args.raw : args.request, raw });
+      if (action === "get_session_transcript_view" && !options.transcriptViewUnsupported) {
+        // The view projects the persisted turns, so a test that answers
+        // `load_session_turns` itself feeds the view the same turns.
+        const request = (args.request ?? {}) as Record<string, unknown>;
+        const persisted = handlers["openbitfun.invoke"]({ action: "load_session_turns", request, internal: true }) as {
+          ok: boolean;
+          value?: unknown;
+          error?: string;
+        };
+        if (!persisted?.ok) return persisted;
+        const sessionId = String(request.session_id ?? request.sessionId ?? "");
+        return {
+          ok: true,
+          value: fakeTranscriptView(sessionId, Array.isArray(persisted.value) ? persisted.value : [], request),
+          transport: "dev",
+        };
+      }
       try {
         const value = answer(action, raw ? args.raw : args.request, raw);
         return { ok: true, value, transport: "dev" };
@@ -2617,6 +3245,7 @@ export function createBackend(options: BackendOptions = {}): Backend {
 
   return {
     calls,
+    controlReports,
     actions: () => calls.map(call => call.action),
     settingsWrites,
     credentialWrites,
@@ -2665,14 +3294,32 @@ export function createDeviceBackend(options: BackendOptions = {}): Backend {
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
     const args = (data ?? {}) as { action?: string; raw?: unknown };
     if (args.action === "account_list_devices") {
+      const listed: Array<Record<string, unknown>> =
+        options.devices ??
+        [
+          { deviceId: "device-mac", deviceName: "studio", platform: "macos", alias: "Studio" },
+          { deviceId: "device-linux", deviceName: "builder", platform: "linux" },
+        ];
+      // view models (wave 4): the host merges its live relay presence into the
+      // directory rows; an older host returns directory presence only.
+      if (options.devicePresenceMerged === false) {
+        return { ok: true, value: listed, transport: "dev" };
+      }
+      const live = new Set(
+        (options.onlineDevices ?? [{ deviceId: "device-mac" }]).map(entry => String(entry.deviceId ?? "")),
+      );
       return {
         ok: true,
-        value:
-          options.devices ??
-          [
-            { deviceId: "device-mac", deviceName: "studio", platform: "macos", alias: "Studio" },
-            { deviceId: "device-linux", deviceName: "builder", platform: "linux" },
-          ],
+        value: listed.map(device => {
+          const id = String(device.deviceId ?? "");
+          const liveNow = live.has(id);
+          return {
+            ...device,
+            online: liveNow || device.online === true,
+            presence: liveNow ? "live" : device.online === true ? "directory" : "offline",
+            is_local: id === "device-mac",
+          };
+        }),
         transport: "dev",
       };
     }
@@ -2689,4 +3336,555 @@ export function createDeviceBackend(options: BackendOptions = {}): Backend {
     return invoke(data);
   };
   return backend;
+}
+
+// use on phone (wave 4)
+export interface PhoneFixtureOptions {
+  /** `mesh_phone_join_info` fails with this text (signed out, older host, ...). */
+  meshError?: string;
+  /** The LAN listener starts enabled. */
+  lanRunning?: boolean;
+}
+
+/**
+ * Answers the Devices › Use on phone commands (`obp_get_status`,
+ * `obp_set_lan_enabled`, `obp_create_pairing` with `via`, `mesh_phone_join_info`)
+ * in front of `backend`, and records them.
+ */
+export function withPhoneFixtures(
+  backend: Backend,
+  options: PhoneFixtureOptions = {},
+): { backend: Backend; phoneCalls: Array<{ command: string; request: Record<string, unknown> }> } {
+  const phoneCalls: Array<{ command: string; request: Record<string, unknown> }> = [];
+  let lan = options.lanRunning === true;
+  let codes = 0;
+  const status = () => ({
+    available: true,
+    protocol: 1,
+    webUi: true,
+    loopbackUrl: "http://127.0.0.1:47610/",
+    ownerUrl: "http://127.0.0.1:47610/?token=t",
+    lan: {
+      enabled: lan,
+      running: lan,
+      port: lan ? 47611 : null,
+      urls: lan ? ["https://192.168.1.5:47611"] : [],
+      fingerprint: lan ? "sha256:lanfp" : null,
+    },
+    pairedClients: [],
+    ownerConnections: 1,
+    pairedConnections: 0,
+    accountDeviceConnections: 0,
+    meshPort: 47612,
+  });
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> | null };
+    const request = args.request ?? {};
+    const answer = (value: unknown) => ({ ok: true, value, transport: "dev" });
+    switch (args.action) {
+      case "obp_get_status":
+        return answer(status());
+      case "obp_set_lan_enabled":
+        phoneCalls.push({ command: args.action, request });
+        lan = request.enabled === true;
+        return answer(status());
+      case "obp_create_pairing": {
+        phoneCalls.push({ command: args.action, request });
+        codes += 1;
+        const mesh = request.via === "mesh";
+        const base = mesh ? "https://10.126.126.3:47612" : "https://192.168.1.5:47611";
+        const fingerprint = mesh ? "sha256:meshfp" : "sha256:lanfp";
+        const url = `${base}/pair?code=code${codes}`;
+        return answer({ qrPayload: `${url}#fp=${fingerprint}`, url, fingerprint, expiresAtMs: Date.now() + 300000 });
+      }
+      case "mesh_phone_join_info":
+        phoneCalls.push({ command: args.action, request });
+        if (options.meshError) return { ok: false, error: options.meshError };
+        return answer({
+          networkName: "obf-0123456789abcdef",
+          networkSecret: "fixture-mesh-secret-0123456789",
+          peers: ["wss://remote.openbitfun.com:443/mesh/et/"],
+          easytierVersion: "2.6.4",
+          deviceId: "device-mac",
+          virtualIp: "10.126.126.3",
+          obpPort: 47612,
+          webUi: true,
+        });
+      default:
+        return invoke(data);
+    }
+  };
+  return { backend, phoneCalls };
+}
+
+// peer device mode over the mesh (wave 4)
+export interface MeshPeerFixtureOptions {
+  /** `mesh_list_devices` rows; `"unavailable"` makes the command fail (no local mesh). */
+  meshDevices?: ReadonlyArray<object> | "unavailable";
+  /** The peer backend instance `peer_link_connect` reports. */
+  instanceId?: string;
+}
+
+export interface MeshPeerFixture {
+  /** Every `peer_link_call` the controller made, as `{command, args}`. */
+  peerCalls: Array<{ command: string; args: Record<string, unknown> }>;
+  /** Every `peer_link_events` request (cursor and instance). */
+  eventPolls: Array<Record<string, unknown>>;
+  /** Queues peer events (numbered with the peer's own `seq`) for the long poll. */
+  pushPeerEvents(events: Array<{ event: string; payload: unknown }>): void;
+  /** The device ids `peer_link_disconnect` closed. */
+  disconnected: string[];
+}
+
+/**
+ * Plays this machine's backend for Peer Device Mode over OBP on the mesh:
+ * `mesh_list_devices`, and the `peer_link_*` commands, whose calls are
+ * answered by the same simulated peer host the legacy relay fixture uses (so
+ * the two transports render the same peer data) and whose event stream is a
+ * long poll over `pushPeerEvents`.
+ */
+export function withMeshPeerFixtures(backend: Backend, options: MeshPeerFixtureOptions = {}): MeshPeerFixture {
+  const invoke = backend.handlers["openbitfun.invoke"];
+  const instanceId = options.instanceId ?? "peer-instance-1";
+  const queue: Array<{ seq: number; event: string; payload: unknown }> = [];
+  let seq = 100;
+  let wake: (() => void) | null = null;
+  const fixture: MeshPeerFixture = {
+    peerCalls: [],
+    eventPolls: [],
+    disconnected: [],
+    pushPeerEvents(events) {
+      for (const item of events) {
+        seq += 1;
+        queue.push({ seq, event: item.event, payload: item.payload });
+      }
+      wake?.();
+    },
+  };
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> | null; raw?: unknown };
+    const request = (args.request ?? {}) as Record<string, unknown>;
+    const answer = (value: unknown) => ({ ok: true, value, transport: "dev" });
+    const record = () => backend.calls.push({ action: args.action ?? "", request: args.request, raw: false });
+    switch (args.action) {
+      case "mesh_list_devices":
+        record();
+        if (options.meshDevices === "unavailable") {
+          return { ok: false, error: "mesh_unavailable: this desktop host does not run the device mesh" };
+        }
+        return answer(options.meshDevices ?? []);
+      case "peer_link_connect":
+        record();
+        return answer({
+          deviceId: request.deviceId,
+          transport: "mesh",
+          state: "connected",
+          scope: "account-device",
+          capabilities: ["obp_v1", "resume", "credit_ack", "coalesce_text", "mesh_v1"],
+          hostCapabilities: ["dialog_queue_v1", "cancel_tool", "tool_catalog"],
+          protocol: 1,
+          backend: { version: "1.0.11", platform: "linux", instanceId },
+          meshPath: "p2p",
+          latencyMs: 2.4,
+        });
+      case "peer_link_call": {
+        record();
+        const command = String(request.command ?? "");
+        const callArgs = (request.args ?? {}) as Record<string, unknown>;
+        fixture.peerCalls.push({ command, args: callArgs });
+        const reply = JSON.parse(
+          answerPeerHostInvoke(String(request.deviceId ?? ""), { cmd: "host_invoke", command, args: callArgs }),
+        ) as { ok?: boolean; value?: unknown; error?: string };
+        return reply.ok ? answer(reply.value ?? null) : { ok: false, error: reply.error ?? `${command} failed` };
+      }
+      case "peer_link_events": {
+        record();
+        fixture.eventPolls.push({ ...request });
+        const after = typeof request.afterSeq === "number" ? request.afterSeq : -1;
+        const ready = () => queue.filter(item => item.seq > after);
+        const reply = () => answer({ instanceId, state: "connected", events: ready() });
+        if (ready().length > 0) return reply();
+        return new Promise(resolve => {
+          const timer = setTimeout(() => {
+            wake = null;
+            resolve(reply());
+          }, 120);
+          wake = () => {
+            clearTimeout(timer);
+            wake = null;
+            resolve(reply());
+          };
+        });
+      }
+      case "peer_link_disconnect":
+        record();
+        fixture.disconnected.push(String(request.deviceId ?? ""));
+        return answer({ closed: true });
+      default:
+        return invoke(data);
+    }
+  };
+  return fixture;
+}
+
+// miniapp market (wave 5) ────────────────────────────────────────────────────
+
+export interface MiniAppMarketFixtureOptions {
+  /** `account_github_info` answers a signed-in user (default true). */
+  signedIn?: boolean;
+  /** The host has no `miniapp_market_*` commands (an older backend). */
+  marketMissing?: boolean;
+  /** Installed origins, keyed by local app id. */
+  origins?: Record<string, { listingId: string; releaseId: string; releaseNumber: number; packageSha256: string }>;
+  /** App ids whose installed copy carries local customizations. */
+  localOverrides?: string[];
+  /** Listings beyond the first page (`nextCursor: "page-2"`). */
+  secondPage?: boolean;
+  /** `miniapp_market_set_favorite` answers the market's 401 envelope. */
+  favoriteUnauthorized?: boolean;
+}
+
+export interface MiniAppMarketBackend extends Backend {
+  /** Every `miniapp_market_install` request, in order. */
+  marketInstalls: Array<Record<string, unknown>>;
+}
+
+const MARKET_OWNER = { githubId: 7, login: "octo", avatarUrl: "" };
+
+function marketRelease(listingId: string, releaseNumber: number, yanked = false) {
+  return {
+    releaseId: `${listingId}-r${releaseNumber}`,
+    listingId,
+    releaseNumber,
+    minOpenBitFunVersion: "1.0.0",
+    changelog: "",
+    packageSha256: `sha-${listingId}-${releaseNumber}`,
+    packageSize: 2048,
+    reviewBundleHash: "",
+    permissions: {},
+    publishedAt: 1760000000000 - releaseNumber,
+    yanked,
+  };
+}
+
+export function marketListingsFixture(): Array<Record<string, unknown>> {
+  return [
+    {
+      listingId: "lst-standup",
+      slug: "standup-board",
+      name: "Standup Board",
+      description: "Drafts your daily update from yesterday's commits.",
+      icon: "layout-grid",
+      category: "productivity",
+      tags: ["team"],
+      owner: MARKET_OWNER,
+      latestRelease: 4,
+      minOpenBitFunVersion: "1.0.0",
+      permissions: { fs: { read: ["{workspace}"] }, ai: { enabled: true } },
+      screenshotUrls: [],
+      ratingAverage: 4.6,
+      ratingCount: 18,
+      favoriteCount: 42,
+      downloadCount: 1280,
+      publishedAt: 1760000000000,
+      isFavorited: false,
+      changelog: "Groups commits by author.",
+      license: { spdxExpression: "MIT" },
+      repositoryUrl: "https://github.com/octo/standup-board",
+      releases: [
+        marketRelease("lst-standup", 1),
+        marketRelease("lst-standup", 4),
+        marketRelease("lst-standup", 2, true),
+        marketRelease("lst-standup", 3),
+      ],
+    },
+    {
+      listingId: "lst-weather",
+      slug: "weather-glance",
+      name: "Weather Glance",
+      description: "Today's forecast for your cities.",
+      icon: "globe",
+      category: "utilities",
+      tags: [],
+      owner: MARKET_OWNER,
+      latestRelease: 1,
+      minOpenBitFunVersion: "1.0.0",
+      permissions: { net: { allow: ["api.open-meteo.com"] } },
+      screenshotUrls: [],
+      ratingAverage: 4.1,
+      ratingCount: 7,
+      favoriteCount: 12,
+      downloadCount: 310,
+      publishedAt: 1758000000000,
+      changelog: "First release.",
+      license: { spdxExpression: "Apache-2.0" },
+      releases: [marketRelease("lst-weather", 1)],
+    },
+  ];
+}
+
+/**
+ * `createBackend` plus the MiniApp market, answered the way
+ * `miniapp_market_api.rs` answers: every command but the two list reads takes
+ * a `request`, client errors come back as the market's JSON envelope, and the
+ * install refuses until the permission / overwrite confirmation it needs.
+ */
+export function createMiniAppMarketBackend(
+  options: BackendOptions = {},
+  market: MiniAppMarketFixtureOptions = {},
+): MiniAppMarketBackend {
+  const base = createBackend(options);
+  const invoke = base.handlers["openbitfun.invoke"];
+  const listings = marketListingsFixture();
+  const origins = { ...(market.origins ?? {}) };
+  const localOverrides = new Set(market.localOverrides ?? []);
+  const installed: Array<Record<string, unknown>> = [];
+  const marketInstalls: Array<Record<string, unknown>> = [];
+  const submissionRows: Array<Record<string, unknown>> = [
+    { submissionId: "sub-1", slug: "focus-timer", name: "Focus Timer", icon: "box", releaseNumber: 2, status: "submitted", createdAt: 1761000000000, updatedAt: 1761000000000 },
+    { submissionId: "sub-2", slug: "regex-lab", name: "Regex Lab", icon: "regex", releaseNumber: 1, status: "rejected", rejectionReason: "Asks for shell access it does not use.", createdAt: 1759000000000, updatedAt: 1759500000000 },
+  ];
+  const ok = (value: unknown) => ({ ok: true, value, transport: "dev" });
+  const fail = (error: string) => ({ ok: false, error });
+  const summary = (item: Record<string, unknown>) => {
+    const { releases: _r, changelog: _c, license: _l, repositoryUrl: _u, ...rest } = item;
+    return rest;
+  };
+  base.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: unknown; raw?: unknown };
+    const action = args.action ?? "";
+    const isRaw = Object.prototype.hasOwnProperty.call(args, "raw");
+    const payload = ((isRaw ? args.raw : args.request) ?? {}) as Record<string, unknown>;
+    if (action === "account_status") {
+      base.calls.push({ action, request: payload, raw: isRaw });
+      return ok({ logged_in: market.signedIn !== false, user_id: market.signedIn !== false ? "u-7" : null });
+    }
+    if (action === "account_github_info") {
+      base.calls.push({ action, request: payload, raw: isRaw });
+      return ok(market.signedIn !== false ? { user: MARKET_OWNER, isAdmin: false } : null);
+    }
+    if (action === "list_miniapps" && installed.length > 0) {
+      const reply = invoke(data) as { ok: boolean; value?: unknown };
+      return ok([...(Array.isArray(reply.value) ? reply.value : []), ...installed]);
+    }
+    if (!action.startsWith("miniapp_market_")) return invoke(data);
+    base.calls.push({ action, request: payload, raw: isRaw });
+    if (market.marketMissing) return fail(`command ${action} not found`);
+    const structured = !["miniapp_market_list_submissions", "miniapp_market_installed_origins"].includes(action);
+    if (structured && isRaw) return fail(`${action} takes a request struct`);
+    switch (action) {
+      case "miniapp_market_browse": {
+        const query = String(payload.query ?? "").toLowerCase();
+        const category = String(payload.category ?? "all");
+        const rows = listings
+          .filter(item => category === "all" || item.category === category)
+          .filter(item => !query || String(item.name).toLowerCase().includes(query))
+          .map(summary);
+        if (market.secondPage && !payload.cursor) return ok({ items: rows, nextCursor: "page-2" });
+        if (payload.cursor === "page-2") {
+          return ok({
+            items: [{ ...summary(listings[1]), listingId: "lst-more", slug: "more-space", name: "Later Space" }],
+          });
+        }
+        return ok({ items: rows });
+      }
+      case "miniapp_market_get_listing": {
+        const found = listings.find(item => item.slug === payload.slug);
+        if (!found) return fail(JSON.stringify({ code: "not_found", message: "Listing not found.", request_id: null }));
+        return ok(found);
+      }
+      case "miniapp_market_installed_status": {
+        const appId = Object.keys(origins).find(id => origins[id].listingId === payload.listingId);
+        if (!appId) return ok(null);
+        return ok({ appId, appVersion: 1, permissions: {}, origin: origins[appId], localOverride: localOverrides.has(appId) });
+      }
+      case "miniapp_market_installed_origins":
+        return ok({ ...origins });
+      case "miniapp_market_set_favorite": {
+        if (market.favoriteUnauthorized) {
+          return fail(JSON.stringify({ code: "unauthorized", message: "Sign in required.", request_id: null }));
+        }
+        const found = listings.find(item => item.slug === payload.slug)!;
+        found.isFavorited = Boolean(payload.enabled);
+        found.favoriteCount = Number(found.favoriteCount) + (payload.enabled ? 1 : -1);
+        return ok({ count: found.favoriteCount, isFavorited: found.isFavorited });
+      }
+      case "miniapp_market_set_rating": {
+        const found = listings.find(item => item.slug === payload.slug)!;
+        found.myRating = payload.value ?? undefined;
+        return ok({ average: 4.5, count: 19, myRating: payload.value ?? null });
+      }
+      case "miniapp_market_list_submissions":
+        return ok(submissionRows.map(row => ({ ...row })));
+      case "miniapp_market_withdraw_submission": {
+        const row = submissionRows.find(item => item.submissionId === payload.submissionId);
+        if (!row) return fail("Submission not found.");
+        row.status = "withdrawn";
+        return ok({ ...row });
+      }
+      case "miniapp_market_install": {
+        marketInstalls.push({ ...payload });
+        const found = listings.find(item => item.slug === payload.slug)!;
+        const existing = payload.existingAppId ? String(payload.existingAppId) : "";
+        if (existing && localOverrides.has(existing) && !payload.confirmOverwrite) {
+          return fail("This MiniApp has local customizations. Confirm overwrite to create a snapshot and continue.");
+        }
+        const perms = found.permissions as { net?: { allow?: string[] } };
+        if ((perms.net?.allow?.length ?? 0) > 0 && !payload.confirmPermissions) {
+          return fail(`Permission confirmation required: net.allow:${perms.net!.allow!.join(",")}`);
+        }
+        const appId = existing || `market-${found.slug}`;
+        const release = (found.releases as Array<Record<string, unknown>>).find(
+          item => item.releaseNumber === payload.releaseNumber,
+        )!;
+        origins[appId] = {
+          listingId: String(found.listingId),
+          releaseId: String(release.releaseId),
+          releaseNumber: Number(release.releaseNumber),
+          packageSha256: String(release.packageSha256),
+        };
+        localOverrides.delete(appId);
+        const app = {
+          id: appId,
+          name: found.name,
+          description: found.description,
+          icon: found.icon,
+          category: found.category,
+          tags: [],
+          version: 1,
+          created_at: 1,
+          updated_at: 1,
+          permissions: found.permissions,
+          runtime_profile: "compatibility",
+        };
+        if (!existing) installed.push(app);
+        return ok({ app, origin: origins[appId], updated: Boolean(existing), permissionDiff: { added: [], expanded: [] } });
+      }
+      case "miniapp_market_inspect_package": {
+        if (!String(payload.path ?? "").endsWith(".bfminiapp")) return fail("Select a .bfminiapp package.");
+        return ok({
+          name: "Pocket Notes",
+          description: "Notes in a pocket.",
+          packageSha256: "0123456789abcdef0123456789abcdef",
+          permissions: { notifications: { system: true } },
+          permissionDiff: { added: ["notifications.system"], expanded: [] },
+        });
+      }
+      case "miniapp_market_import_package":
+        return ok({ id: "imported-pocket", name: "Pocket Notes" });
+      default:
+        return fail(`the simulated backend has no answer for ${action}`);
+    }
+  };
+  return { ...base, marketInstalls };
+}
+
+// review launcher (wave 5): `launch_review` as the host answers it. The host
+// owns the target, the plan and the child session; the fixture only mirrors the
+// answer shapes (dry-run reading, refusals with their codes, a started child).
+export interface ReviewLaunchFixtureOptions {
+  /** The workspace changes the host reports, in its order. */
+  files?: Array<{ path: string; status: string; previousPath?: string }>;
+  /** A host older than the command. */
+  missing?: boolean;
+  /** The first launch's start is not acknowledged. */
+  uncertain?: boolean;
+}
+
+export interface ReviewLaunchBackend extends Backend {
+  reviewRequests: Array<Record<string, unknown>>;
+}
+
+export function withReviewLaunchFixtures(
+  backend: Backend,
+  options: ReviewLaunchFixtureOptions = {},
+): ReviewLaunchBackend {
+  const invoke = backend.handlers["openbitfun.invoke"];
+  const reviewRequests: Array<Record<string, unknown>> = [];
+  const files = options.files ?? [
+    { path: "src/lib.rs", status: "modified" },
+    { path: "src/review.rs", status: "added" },
+    { path: "src/new_name.rs", status: "renamed", previousPath: "src/old_name.rs" },
+  ];
+  const children: Array<Record<string, unknown>> = [];
+  const ok = (value: unknown) => ({ ok: true, value, transport: "dev" });
+  const fail = (error: string) => ({ ok: false, error });
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: unknown; raw?: unknown };
+    const action = args.action ?? "";
+    if (action === "list_persisted_sessions_page" && children.length > 0) {
+      const reply = invoke(data) as { ok: boolean; value?: Record<string, unknown> };
+      const page = (reply.value ?? {}) as Record<string, unknown>;
+      const rows = Array.isArray(page.sessions) ? page.sessions : [];
+      return ok({ ...page, sessions: [...children, ...rows] });
+    }
+    if (action !== "launch_review") return invoke(data);
+    const request = (args.request ?? {}) as Record<string, unknown>;
+    backend.calls.push({ action, request, raw: false });
+    reviewRequests.push(request);
+    if (options.missing) return fail("command launch_review not found");
+    if (Object.prototype.hasOwnProperty.call(args, "raw")) return fail("launch_review takes a request struct");
+    const command = String(request.commandText ?? "");
+    const intent =
+      /^\/review\s+strict\b|^\/deepreview\b/i.test(command) || (!command && request.intent === "strict")
+        ? "strict"
+        : "review";
+    if (request.workspaceId === "workspace-2") {
+      return ok({
+        status: "refused",
+        code: "review_remote_workspace_unsupported",
+        message: "Remote workspace Review is not supported until bounded exact diff evidence is available.",
+        intent,
+        fileCount: 0,
+        limitations: [],
+        files: [],
+      });
+    }
+    const wanted = Array.isArray(request.files) ? (request.files as string[]) : [];
+    const scoped = wanted.length ? files.filter(file => wanted.includes(file.path)) : files;
+    if (intent === "review" && scoped.length > 80) {
+      return ok({
+        status: "refused",
+        code: "review_target_too_large",
+        message: `This change touches ${scoped.length} files.`,
+        intent,
+        fileCount: scoped.length,
+        limitations: [],
+        files: scoped,
+      });
+    }
+    const summary = {
+      intent,
+      mode: intent === "strict" ? "strict" : "standard",
+      agentType: intent === "strict" ? "DeepReview" : "CodeReview",
+      fileCount: scoped.length,
+      changedLineCount: scoped.length * 7,
+      completeness: "complete",
+      limitations: ["mutable_workspace_evidence"],
+      files: scoped,
+    };
+    if (request.dryRun) return ok({ status: "prepared", ...summary });
+    const requestId = String(request.requestId ?? "r");
+    const childSessionId = `review_child_${requestId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const childSessionName = String(request.childSessionName ?? "Review");
+    if (!children.some(row => row.sessionId === childSessionId)) {
+      children.push({
+        sessionId: childSessionId,
+        sessionName: childSessionName,
+        agentType: summary.agentType,
+        lastActiveAt: 1763000005000,
+        messageCount: 1,
+      });
+    }
+    return ok({
+      status: options.uncertain ? "uncertain" : "started",
+      ...(options.uncertain ? { message: "Failed to start dialog turn: timeout" } : {}),
+      ...summary,
+      requestId,
+      childSessionId,
+      childSessionName,
+    });
+  };
+  return Object.assign(backend, { reviewRequests });
 }

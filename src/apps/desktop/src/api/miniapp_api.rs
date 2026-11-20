@@ -32,18 +32,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
 
-#[tauri::command]
-pub(crate) async fn miniapp_presentation(
-    app: AppHandle,
-    webview: tauri::Webview,
-    request: crate::miniapp_desktop::PresentationRequest,
-) -> Result<Value, String> {
-    crate::miniapp_desktop::miniapp_presentation(app, webview, request).await
-}
-
-#[tauri::command]
+// @backend-command
 pub(crate) fn miniapp_shell_call(request: Value) -> Result<Value, String> {
     crate::miniapp_desktop::miniapp_shell_call(request)
 }
@@ -360,22 +350,42 @@ async fn ensure_worker_dependencies(
 
 // ============== App management commands ==============
 
-#[tauri::command]
+// @backend-command
 pub async fn list_miniapps(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
-) -> Result<Vec<MiniAppMeta>, String> {
+) -> Result<Vec<MiniAppListItem>, String> {
     let trace_started = Instant::now();
     let result = state
         .miniapp_manager
         .list()
         .await
+        .map(|list| list.into_iter().map(MiniAppListItem::from).collect())
         .map_err(|e| e.to_string());
-    startup_trace.record_tauri_command_elapsed("list_miniapps", None, trace_started);
+    startup_trace.record_command_elapsed("list_miniapps", None, trace_started);
     result
 }
 
-#[tauri::command]
+/// A MiniApp list row with the permission badges the backend derives from its
+/// manifest (logic batch 4), so clients do not read the manifest themselves.
+#[derive(Debug, Clone, Serialize)]
+pub struct MiniAppListItem {
+    #[serde(flatten)]
+    pub meta: MiniAppMeta,
+    #[serde(rename = "permissionBadges")]
+    pub permission_badges: Vec<&'static str>,
+}
+
+impl From<MiniAppMeta> for MiniAppListItem {
+    fn from(meta: MiniAppMeta) -> Self {
+        Self {
+            permission_badges: meta.permissions.badges(),
+            meta,
+        }
+    }
+}
+
+// @backend-command
 pub async fn get_miniapp(
     state: State<'_, AppState>,
     request: GetMiniAppRequest,
@@ -401,7 +411,7 @@ pub async fn get_miniapp(
     Ok(app)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_miniapp(
     state: State<'_, AppState>,
     request: CreateMiniAppRequest,
@@ -434,7 +444,7 @@ pub async fn create_miniapp(
     Ok(app)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_miniapp(
     state: State<'_, AppState>,
     app_id: String,
@@ -469,7 +479,7 @@ pub async fn update_miniapp(
     Ok(app)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_miniapp(state: State<'_, AppState>, app_id: String) -> Result<(), String> {
     if let Some(ref pool) = state.js_worker_pool {
         pool.stop(app_id.as_str()).await;
@@ -487,7 +497,7 @@ pub async fn delete_miniapp(state: State<'_, AppState>, app_id: String) -> Resul
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_miniapp_versions(
     state: State<'_, AppState>,
     app_id: String,
@@ -499,7 +509,7 @@ pub async fn get_miniapp_versions(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn rollback_miniapp(
     state: State<'_, AppState>,
     app_id: String,
@@ -524,7 +534,7 @@ pub async fn rollback_miniapp(
     Ok(app)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_miniapp_storage(
     state: State<'_, AppState>,
     app_id: String,
@@ -537,7 +547,7 @@ pub async fn get_miniapp_storage(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_miniapp_storage(
     state: State<'_, AppState>,
     app_id: String,
@@ -551,7 +561,7 @@ pub async fn set_miniapp_storage(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn grant_miniapp_workspace(
     state: State<'_, AppState>,
     app_id: String,
@@ -560,7 +570,7 @@ pub async fn grant_miniapp_workspace(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn grant_miniapp_path(
     state: State<'_, AppState>,
     app_id: String,
@@ -575,7 +585,7 @@ pub async fn grant_miniapp_path(
 
 // ============== JS Worker & Runtime ==============
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
     let Some(ref pool) = state.js_worker_pool else {
         return Ok(RuntimeStatus {
@@ -597,7 +607,7 @@ pub async fn miniapp_runtime_status(state: State<'_, AppState>) -> Result<Runtim
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_worker_call(
     state: State<'_, AppState>,
     request: MiniAppWorkerCallRequest,
@@ -667,7 +677,7 @@ pub async fn miniapp_worker_call(
 /// required. Used for MiniApps with `permissions.node.enabled = false` (and as
 /// the future migration target for everyone, since these calls don't actually
 /// need a JS sandbox).
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_host_call(
     state: State<'_, AppState>,
     request: MiniAppHostCallRequest,
@@ -712,7 +722,7 @@ pub async fn miniapp_host_call(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_worker_stop(state: State<'_, AppState>, app_id: String) -> Result<(), String> {
     if let Some(ref pool) = state.js_worker_pool {
         pool.stop(&app_id).await;
@@ -725,7 +735,7 @@ pub async fn miniapp_worker_stop(state: State<'_, AppState>, app_id: String) -> 
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_worker_list_running(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -736,11 +746,11 @@ pub async fn miniapp_worker_list_running(
     } else {
         Ok(vec![])
     };
-    startup_trace.record_tauri_command_elapsed("miniapp_worker_list_running", None, trace_started);
+    startup_trace.record_command_elapsed("miniapp_worker_list_running", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_install_deps(
     state: State<'_, AppState>,
     app_id: String,
@@ -774,7 +784,7 @@ pub async fn miniapp_install_deps(
     Ok(install)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_recompile(
     state: State<'_, AppState>,
     request: MiniAppRecompileRequest,
@@ -802,18 +812,18 @@ pub async fn miniapp_recompile(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_dialog_message(
     _state: State<'_, AppState>,
     _app_id: String,
     _options: Value,
 ) -> Result<Value, String> {
-    // Tauri dialog is handled by frontend useMiniAppBridge via @tauri-apps/plugin-dialog.
-    // This command can be used if we want backend to show message box; for now return not implemented.
+    // MiniApp dialogs are shown by the MiniApp shell's bridge; the backend
+    // shows no message box.
     Err("Use dialog from frontend bridge".to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_import_from_path(
     state: State<'_, AppState>,
     request: MiniAppImportFromPathRequest,
@@ -834,7 +844,7 @@ pub async fn miniapp_import_from_path(
     Ok(app)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_sync_from_fs(
     state: State<'_, AppState>,
     request: MiniAppSyncFromFsRequest,
@@ -855,7 +865,7 @@ pub async fn miniapp_sync_from_fs(
     Ok(app)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_create_draft(
     state: State<'_, AppState>,
     request: MiniAppDraftCreateRequest,
@@ -880,7 +890,7 @@ pub async fn miniapp_create_draft(
     Ok(draft)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_get_draft(
     state: State<'_, AppState>,
     request: MiniAppDraftRequest,
@@ -892,7 +902,7 @@ pub async fn miniapp_get_draft(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_sync_draft_from_fs(
     state: State<'_, AppState>,
     request: MiniAppDraftRequest,
@@ -911,7 +921,7 @@ pub async fn miniapp_sync_draft_from_fs(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_set_draft_permissions(
     state: State<'_, AppState>,
     request: MiniAppDraftPermissionsRequest,
@@ -931,7 +941,7 @@ pub async fn miniapp_set_draft_permissions(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_permission_diff_for_draft(
     state: State<'_, AppState>,
     request: MiniAppDraftRequest,
@@ -943,7 +953,7 @@ pub async fn miniapp_permission_diff_for_draft(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_apply_draft(
     state: State<'_, AppState>,
     request: MiniAppDraftRequest,
@@ -978,7 +988,7 @@ pub async fn miniapp_apply_draft(
     Ok(app)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_discard_draft(
     state: State<'_, AppState>,
     request: MiniAppDraftRequest,
@@ -1000,7 +1010,7 @@ pub async fn miniapp_discard_draft(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_miniapp_draft_storage(
     state: State<'_, AppState>,
     request: MiniAppDraftStorageRequest,
@@ -1012,7 +1022,7 @@ pub async fn get_miniapp_draft_storage(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_miniapp_draft_storage(
     state: State<'_, AppState>,
     request: MiniAppDraftStorageSetRequest,
@@ -1029,7 +1039,7 @@ pub async fn set_miniapp_draft_storage(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_draft_worker_call(
     state: State<'_, AppState>,
     request: MiniAppDraftWorkerCallRequest,
@@ -1167,7 +1177,7 @@ fn validate_market_host_call(method: &str, params: &Value) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_draft_host_call(
     state: State<'_, AppState>,
     request: MiniAppDraftHostCallRequest,
@@ -1204,7 +1214,7 @@ pub async fn miniapp_draft_host_call(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_draft_worker_stop(
     state: State<'_, AppState>,
     request: MiniAppDraftRequest,
@@ -1225,7 +1235,7 @@ pub async fn miniapp_draft_worker_stop(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_get_customization_metadata(
     state: State<'_, AppState>,
     app_id: String,
@@ -1237,7 +1247,7 @@ pub async fn miniapp_get_customization_metadata(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_decline_builtin_update(
     state: State<'_, AppState>,
     request: MiniAppDeclineBuiltinUpdateRequest,
@@ -1358,7 +1368,7 @@ fn build_messages_for_ai_plan(messages: Vec<MiniAppAiMessagePlan>) -> Vec<Messag
 // ---- Commands ----
 
 /// Non-streaming AI completion — waits for the full response before returning.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_ai_complete(
     state: State<'_, AppState>,
     request: MiniAppAiCompleteRequest,
@@ -1433,9 +1443,9 @@ pub async fn miniapp_ai_complete(
 }
 
 /// Streaming AI chat — returns immediately, emits chunks via "miniapp://ai-stream" events.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_ai_chat(
-    app: AppHandle,
+    app: crate::host::HostHandle,
     state: State<'_, AppState>,
     request: MiniAppAiChatRequest,
 ) -> Result<MiniAppAiChatStartedResponse, String> {
@@ -1594,7 +1604,7 @@ pub(crate) fn cancel_miniapp_streams(app_id: &str) {
 }
 
 /// Cancel an ongoing AI stream.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_ai_cancel(
     _state: State<'_, AppState>,
     request: MiniAppAiCancelRequest,
@@ -1611,7 +1621,7 @@ pub async fn miniapp_ai_cancel(
 }
 
 /// List AI models available to a MiniApp (no sensitive fields).
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_ai_list_models(
     state: State<'_, AppState>,
     request: MiniAppAiListModelsRequest,

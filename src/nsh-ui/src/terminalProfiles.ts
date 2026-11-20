@@ -1,20 +1,26 @@
 // Saved terminal profiles: a shell plus the command it starts with, kept per
 // workspace so the next window can open the same terminal again.
 //
-// The desktop surface stores its own profiles under a key that includes the
-// device surface and the workspace; those entries name a chat session, which is
-// how its terminal panel binds a tab. This surface's tabs are host terminal
-// sessions, so writing there would hand the desktop records it cannot resolve.
-// The list is therefore this surface's own file. Entries are keyed by device and
-// workspace id (`id:<device>:<workspaceId>`), the identity the desktop keys its
-// own profiles by, so two workspaces at the same path (a local folder and an SSH
-// host's) never share a list. Lists written by older builds under the bare
-// workspace root are still read until the workspace saves under its id; they
-// are never deleted.
+// The host owns the list (`terminal.profiles` in its config, keyed by workspace
+// id) and its rules: a name is required and unique per workspace, the host
+// mints ids, and a workspace keeps at most `maxProfiles`. This surface renders
+// what `get_terminal_profiles` / `upsert_terminal_profile` /
+// `delete_terminal_profile` answer, so every client of one backend (this
+// window, a browser, a phone, a controlling desktop) sees the same list.
+//
+// Earlier builds kept the list in this surface's storage under
+// `openbitfun.nsh.terminal-profiles.v1`, keyed `id:<device>:<workspaceId>` or by
+// the bare workspace root. The first time a workspace's list is read here, the
+// entries for it are handed to the host once (`import_terminal_profiles`) and
+// then forgotten. A host without these commands gets an explicit "update the
+// host" state: the stored rows still open, but nothing new is saved locally.
 
 import { Storage, signal } from "nsh";
+import { invokeCommand } from "./bridge";
+import { isCommandUnavailable } from "./hostCommands";
+import { tr } from "./i18n";
 import { peerScope } from "./peerState";
-import { activeWorkspaceId, activeWorkspaceRoot } from "./state";
+import { activeWorkspaceId, activeWorkspaceRoot, onWorkspaceChanged } from "./state";
 
 export interface TerminalProfile {
   id: string;
@@ -28,76 +34,197 @@ export interface TerminalProfile {
   startupCommand: string;
 }
 
-const STORAGE_KEY = "openbitfun.nsh.terminal-profiles.v1";
-const MAX_PROFILES = 20;
+interface HostProfilesAnswer {
+  workspaceId?: string;
+  profiles?: TerminalProfile[];
+  maxProfiles?: number;
+  id?: string;
+}
 
-/** Profiles by workspace key (or a legacy root); a workspace without an entry has none. */
+export type ProfileNoticeTone = "success" | "neutral" | "warning";
+
+const LEGACY_STORAGE_KEY = "openbitfun.nsh.terminal-profiles.v1";
+
+/** Profiles by `<scope>|<workspaceId>`, as the host answered them. */
 export const terminalProfiles = signal<Record<string, TerminalProfile[]>>({});
 export const profileNotice = signal("");
+export const profileNoticeKind = signal<ProfileNoticeTone>("neutral");
 /** The profile being edited, or `null` while the list is closed. */
 export const profileDraft = signal<TerminalProfile | null>(null);
+/** Scopes (this backend, or a Peer) whose host has no profile commands. */
+const outdatedScopes = signal<Record<string, boolean>>({});
 
-let loaded = false;
-let nextId = 1;
+/** True when the current host has no profile commands (an older build): saving is off and says why. */
+export function profilesHostOutdated(): boolean {
+  return outdatedScopes()[scopeKey()] === true;
+}
 
-export async function loadTerminalProfiles(): Promise<void> {
-  if (loaded) return;
-  loaded = true;
+function markHostOutdated(outdated: boolean): void {
+  const scope = scopeKey();
+  outdatedScopes.update(current => (current[scope] === outdated ? current : { ...current, [scope]: outdated }));
+}
+
+let workspaceHookBound = false;
+const loadsInFlight = new Map<string, Promise<void>>();
+
+function scopeKey(): string {
+  return peerScope()?.deviceId ?? "local";
+}
+
+function listKey(workspaceId: string): string {
+  return `${scopeKey()}|${workspaceId}`;
+}
+
+function setNotice(message: string, tone: ProfileNoticeTone): void {
+  profileNotice.set(message);
+  profileNoticeKind.set(tone);
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "");
+}
+
+/** The host's rule violations carry a stable code before the colon. */
+function hostRuleMessage(error: unknown, name: string): string {
+  const raw = errorText(error);
+  if (raw.includes("terminal_profile_name_required")) return tr("terminal.profiles.nameRequired");
+  if (raw.includes("terminal_profile_name_taken")) return tr("terminal.profiles.nameTaken", { name });
+  if (raw.includes("terminal_profile_limit")) {
+    const max = /terminal_profile_limit:\s*(\d+)/.exec(raw)?.[1] ?? "20";
+    return tr("terminal.profiles.limit", { max });
+  }
+  return tr("terminal.profiles.failed", { error: raw });
+}
+
+function cleanRows(value: unknown): TerminalProfile[] {
+  if (!Array.isArray(value)) return [];
+  const rows: TerminalProfile[] = [];
+  for (const entry of value) {
+    const profile = entry as Partial<TerminalProfile>;
+    if (typeof profile?.id !== "string" || typeof profile?.name !== "string") continue;
+    if (!profile.name.trim()) continue;
+    rows.push({
+      id: profile.id,
+      name: profile.name,
+      shellId: typeof profile.shellId === "string" ? profile.shellId : "",
+      shellType: typeof profile.shellType === "string" ? profile.shellType : "",
+      startupCommand: typeof profile.startupCommand === "string" ? profile.startupCommand : "",
+    });
+  }
+  return rows;
+}
+
+function storeAnswer(workspaceId: string, answer: HostProfilesAnswer | null | undefined): void {
+  const key = listKey(answer?.workspaceId || workspaceId);
+  const rows = cleanRows(answer?.profiles);
+  terminalProfiles.update(current => ({ ...current, [key]: rows }));
+}
+
+async function readLegacyStorage(): Promise<Record<string, unknown> | null> {
   try {
-    const raw = await Storage.getItem(STORAGE_KEY);
-    if (!raw) return;
+    const raw = await Storage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return;
-    const restored: Record<string, TerminalProfile[]> = {};
-    for (const [root, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!Array.isArray(value)) continue;
-      const rows: TerminalProfile[] = [];
-      for (const entry of value) {
-        const profile = entry as Partial<TerminalProfile>;
-        if (typeof profile?.id !== "string" || typeof profile?.name !== "string") continue;
-        if (!profile.name.trim()) continue;
-        if (typeof profile.shellId !== "string" || typeof profile.shellType !== "string") continue;
-        if (typeof profile.startupCommand !== "string") continue;
-        rows.push({
-          id: profile.id,
-          name: profile.name,
-          shellId: profile.shellId,
-          shellType: profile.shellType,
-          startupCommand: profile.startupCommand,
-        });
-      }
-      if (rows.length) restored[root] = rows;
-    }
-    terminalProfiles.set(restored);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
-    // An unreadable file just means no profiles yet; opening shells still works.
+    return null;
   }
 }
 
-function persist(): void {
-  void Storage.setItem(STORAGE_KEY, JSON.stringify(terminalProfiles())).catch(() => {
-    // Without storage the list works for this run and no other.
-  });
+async function writeLegacyStorage(map: Record<string, unknown>): Promise<void> {
+  try {
+    if (Object.keys(map).length === 0) await Storage.removeItem(LEGACY_STORAGE_KEY);
+    else await Storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // The rows were imported; a leftover copy is only read again, never re-imported twice
+    // into one workspace (the host skips names it already keeps).
+  }
 }
 
-function workspaceProfileKey(): string | null {
-  const id = activeWorkspaceId();
-  return id ? `id:${peerScope()?.deviceId ?? "local"}:${id}` : null;
+/** The stored rows an earlier build kept for this workspace, and the keys they sit under. */
+function legacyRowsFor(
+  map: Record<string, unknown>,
+  workspaceId: string,
+  root: string,
+): { keys: string[]; rows: TerminalProfile[] } {
+  const keys: string[] = [];
+  const rows: TerminalProfile[] = [];
+  const idKey = `id:${scopeKey()}:${workspaceId}`;
+  for (const key of [idKey, root]) {
+    if (!key || !(key in map)) continue;
+    keys.push(key);
+    for (const row of cleanRows(map[key])) {
+      if (!rows.some(existing => existing.name === row.name)) rows.push(row);
+    }
+  }
+  return { keys, rows };
 }
 
-/** The active workspace's profiles: its id entry, else the legacy entry under its root. */
-export function profilesFor(root: string | null): TerminalProfile[] {
-  const key = workspaceProfileKey();
-  const map = terminalProfiles();
-  if (key && map[key]) return map[key];
-  if (!root) return [];
-  return map[root] ?? [];
+async function migrateLegacy(workspaceId: string, root: string): Promise<boolean> {
+  const map = await readLegacyStorage();
+  if (!map) return true;
+  const { keys, rows } = legacyRowsFor(map, workspaceId, root);
+  if (keys.length === 0) return true;
+  if (rows.length > 0) {
+    const answer = await invokeCommand<HostProfilesAnswer>("import_terminal_profiles", {
+      workspaceId,
+      profiles: rows,
+    });
+    storeAnswer(workspaceId, answer);
+  }
+  // Handed to the host: forget them here.
+  const fresh = (await readLegacyStorage()) ?? {};
+  for (const key of keys) delete fresh[key];
+  await writeLegacyStorage(fresh);
+  return true;
 }
 
-function writeProfiles(next: TerminalProfile[]): void {
-  const key = workspaceProfileKey();
-  if (!key) return;
-  terminalProfiles.update(current => ({ ...current, [key]: next }));
+async function loadFor(workspaceId: string, root: string): Promise<void> {
+  try {
+    await migrateLegacy(workspaceId, root);
+    const answer = await invokeCommand<HostProfilesAnswer>("get_terminal_profiles", { workspaceId });
+    markHostOutdated(false);
+    storeAnswer(workspaceId, answer);
+  } catch (error) {
+    if (
+      isCommandUnavailable(error, "import_terminal_profiles") ||
+      isCommandUnavailable(error, "get_terminal_profiles")
+    ) {
+      // An older host: show what an earlier build stored, read-only, and say why.
+      markHostOutdated(true);
+      const map = (await readLegacyStorage()) ?? {};
+      terminalProfiles.update(current => ({
+        ...current,
+        [listKey(workspaceId)]: legacyRowsFor(map, workspaceId, root).rows,
+      }));
+      return;
+    }
+    setNotice(tr("terminal.profiles.failed", { error: errorText(error) }), "warning");
+  }
+}
+
+/** Reads the active workspace's profiles from the host (once per workspace and scope). */
+export async function loadTerminalProfiles(): Promise<void> {
+  if (!workspaceHookBound) {
+    workspaceHookBound = true;
+    onWorkspaceChanged(() => void loadTerminalProfiles());
+  }
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId) return;
+  const key = listKey(workspaceId);
+  if (terminalProfiles()[key]) return;
+  const running = loadsInFlight.get(key);
+  if (running) return running;
+  const flight = loadFor(workspaceId, activeWorkspaceRoot()).finally(() => loadsInFlight.delete(key));
+  loadsInFlight.set(key, flight);
+  return flight;
+}
+
+/** The active workspace's profiles, as the host keeps them. */
+export function profilesFor(_root: string | null): TerminalProfile[] {
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId) return [];
+  return terminalProfiles()[listKey(workspaceId)] ?? [];
 }
 
 export function openProfileDraft(shellId: string, shellType: string): void {
@@ -109,7 +236,8 @@ export function openProfileDraft(shellId: string, shellType: string): void {
     shellType,
     startupCommand: "",
   });
-  profileNotice.set("");
+  if (profilesHostOutdated()) setNotice(tr("terminal.profiles.hostOutdated"), "warning");
+  else setNotice("", "neutral");
 }
 
 export function closeProfileDraft(): void {
@@ -122,50 +250,68 @@ export function updateProfileDraft(patch: Partial<TerminalProfile>): void {
 
 export async function saveProfileDraft(): Promise<void> {
   const draft = profileDraft();
-  const root = activeWorkspaceRoot();
-  if (!draft || !root) return;
-  if (!draft.name.trim()) {
-    profileNotice.set("A profile needs a name");
+  const workspaceId = activeWorkspaceId();
+  if (!draft || !workspaceId) return;
+  if (profilesHostOutdated()) {
+    setNotice(tr("terminal.profiles.hostOutdated"), "warning");
     return;
   }
-  const existing = profilesFor(root);
-  if (existing.some(profile => profile.name === draft.name.trim() && profile.id !== draft.id)) {
-    profileNotice.set(`A profile named ${draft.name.trim()} already exists`);
+  const name = draft.name.trim();
+  let answer: HostProfilesAnswer;
+  try {
+    answer = await invokeCommand<HostProfilesAnswer>("upsert_terminal_profile", {
+      workspaceId,
+      profile: {
+        ...(draft.id ? { id: draft.id } : {}),
+        name: draft.name,
+        shellId: draft.shellId,
+        shellType: draft.shellType,
+        startupCommand: draft.startupCommand,
+      },
+    });
+  } catch (error) {
+    if (isCommandUnavailable(error, "upsert_terminal_profile")) {
+      markHostOutdated(true);
+      setNotice(tr("terminal.profiles.hostOutdated"), "warning");
+      return;
+    }
+    setNotice(hostRuleMessage(error, name), "warning");
     return;
   }
-  if (!draft.id && existing.length >= MAX_PROFILES) {
-    profileNotice.set(`${MAX_PROFILES} profiles are enough for one workspace; delete one first`);
-    return;
-  }
-  const saved: TerminalProfile = {
-    id: draft.id || `profile-${Date.now().toString(36)}-${nextId++}`,
-    name: draft.name.trim(),
-    shellId: draft.shellId,
-    shellType: draft.shellType,
-    startupCommand: draft.startupCommand.trim(),
-  };
-  const next = draft.id
-    ? existing.map(profile => (profile.id === draft.id ? saved : profile))
-    : [...existing, saved];
-  writeProfiles(next);
+  storeAnswer(workspaceId, answer);
+  const saved = profilesFor(activeWorkspaceRoot()).find(profile => profile.id === answer?.id);
   // The panel stays open so the list and the confirmation are both readable; the
   // form is cleared for the next profile.
   profileDraft.set({
     id: "",
-    name: `Terminal ${next.length + 1}`,
-    shellId: saved.shellId,
-    shellType: saved.shellType,
+    name: `Terminal ${profilesFor(activeWorkspaceRoot()).length + 1}`,
+    shellId: draft.shellId,
+    shellType: draft.shellType,
     startupCommand: "",
   });
-  profileNotice.set(`Saved ${saved.name}`);
-  persist();
+  setNotice(tr("terminal.profiles.saved", { name: saved?.name ?? name }), "success");
 }
 
-export function deleteProfile(profileId: string): void {
-  const root = activeWorkspaceRoot();
-  if (!root) return;
-  const next = profilesFor(root).filter(profile => profile.id !== profileId);
-  writeProfiles(next);
-  profileNotice.set("Profile deleted");
-  persist();
+export async function deleteProfile(profileId: string): Promise<void> {
+  const workspaceId = activeWorkspaceId();
+  if (!workspaceId) return;
+  if (profilesHostOutdated()) {
+    setNotice(tr("terminal.profiles.hostOutdated"), "warning");
+    return;
+  }
+  try {
+    const answer = await invokeCommand<HostProfilesAnswer>("delete_terminal_profile", {
+      workspaceId,
+      profileId,
+    });
+    storeAnswer(workspaceId, answer);
+    setNotice(tr("terminal.profiles.deleted"), "neutral");
+  } catch (error) {
+    if (isCommandUnavailable(error, "delete_terminal_profile")) {
+      markHostOutdated(true);
+      setNotice(tr("terminal.profiles.hostOutdated"), "warning");
+      return;
+    }
+    setNotice(tr("terminal.profiles.failed", { error: errorText(error) }), "warning");
+  }
 }

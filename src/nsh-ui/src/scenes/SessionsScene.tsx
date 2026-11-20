@@ -35,7 +35,7 @@ import {
   type LiveModelRound,
   type LiveToolItem,
 } from "../agentEvents";
-import { recoverInterruptedDialogTurn, rollbackSessionToTurn } from "../api";
+import { recoverInterruptedDialogTurn, rollbackSessionToTurn, type TranscriptTurnView } from "../api";
 import {
   chooseSessionPermissionMode,
   contextUsage,
@@ -205,6 +205,7 @@ import {
   streamText,
   thinkingText,
   turnError,
+  transcriptNotice,
   turnsLoading,
 } from "../state";
 import {
@@ -240,6 +241,12 @@ import {
   tactileActiveStyle,
 } from "../ui/motion";
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import { ReviewLauncherDialog } from "../ui/ReviewLauncher";
+import { VoiceDictationBar, VoiceInputButtons, type VoiceComposerActions } from "../ui/VoiceInput";
+import { GenUIToolItem } from "../genui/GenUIView";
+import { isGenUICall } from "../genui/genuiSource";
+import { ensureVoiceSettings } from "../voiceInputStore";
+import { isReviewCommand, launchReviewFromCommand, openReviewLauncher } from "../reviewStore";
 import {
   Badge,
   Button,
@@ -448,9 +455,8 @@ function turnKeyOf(turn: unknown): string {
 
 function turnTimestampOf(turn: unknown): number | undefined {
   if (!turn || typeof turn !== "object") return undefined;
-  const record = turn as Record<string, unknown>;
-  const candidate = record.timestamp ?? record.createdAt ?? record.created_at ?? record.updatedAt;
-  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+  const candidate = (turn as Partial<TranscriptTurnView>).user?.timestampMs ?? (turn as Partial<TranscriptTurnView>).startTimeMs;
+  return typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0 ? candidate : undefined;
 }
 
 function turnMetadataLabel(turn: unknown): string {
@@ -1103,6 +1109,15 @@ function ThreadActionsSurface(props: { placement: Placement }) {
               }}
             />
             <ThreadMenuAction
+              icon="eye"
+              label={tr("review.open")}
+              accessibilityLabel="review-launch-open"
+              onPress={() => {
+                closeThreadMenu();
+                openReviewLauncher();
+              }}
+            />
+            <ThreadMenuAction
               icon={isArchived(session()) ? "undo" : "layers"}
               label={isArchived(session()) ? tr("sessions.restore") : tr("sessions.archive")}
               onPress={() => {
@@ -1329,27 +1344,17 @@ interface UserImage {
   imagePath?: string;
 }
 
-/** The images a persisted user message carried (`userMessage.metadata.images`). */
+/** The images the turn's user message carried, as the host's view reports them. */
 function userImagesOf(turn: unknown): UserImage[] {
   if (!turn || typeof turn !== "object") return [];
-  const record = turn as Record<string, unknown>;
-  const user = (record.userMessage ?? record.user_message) as Record<string, unknown> | undefined;
-  const metadata = user?.metadata as Record<string, unknown> | undefined;
-  const images = metadata?.images;
+  const images = (turn as Partial<TranscriptTurnView>).user?.images;
   if (!Array.isArray(images)) return [];
-  return images
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-    .map((entry, index) => {
-      const name = String(entry.name ?? entry.image_name ?? entry.imageName ?? "image");
-      const dataUrl = entry.data_url ?? entry.dataUrl;
-      const imagePath = entry.image_path ?? entry.imagePath;
-      return {
-        id: String(entry.id ?? `${name}-${index}`),
-        name,
-        ...(typeof dataUrl === "string" && dataUrl ? { dataUrl } : {}),
-        ...(typeof imagePath === "string" && imagePath ? { imagePath } : {}),
-      };
-    });
+  return images.map((image, index) => ({
+    id: `${image.name}-${index}`,
+    name: image.name,
+    ...(image.dataUrl ? { dataUrl: image.dataUrl } : {}),
+    ...(image.imagePath ? { imagePath: image.imagePath } : {}),
+  }));
 }
 
 function UserImageStrip(props: { images: UserImage[] }) {
@@ -1781,6 +1786,23 @@ function TranscriptItemView(props: { item: TranscriptItem; live?: boolean }) {
         />
       );
     case "tool":
+      if (isGenUICall((props.item as ItemOf<"tool">).call)) {
+        // A GenerativeUI answer is drawn as the interface it describes.
+        return (
+          <GenUIToolItem
+            call={(props.item as ItemOf<"tool">).call}
+            cardId={props.item.key}
+            status={persistedToolState((props.item as ItemOf<"tool">).call)}
+            fallback={
+              <ToolCard
+                call={(props.item as ItemOf<"tool">).call}
+                cardId={props.item.key}
+                status={persistedToolState((props.item as ItemOf<"tool">).call)}
+              />
+            }
+          />
+        );
+      }
       return (
         <ToolCard
           call={(props.item as ItemOf<"tool">).call}
@@ -1821,6 +1843,15 @@ function liveToolToCallView(tool: LiveToolItem): ToolCallView {
     ...(tool.result !== undefined ? { result: tool.result } : {}),
     ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
     ...(tool.durationMs !== undefined ? { durationMs: tool.durationMs } : {}),
+    ...(tool.genuiStream
+      ? {
+          genuiStream: {
+            source: tool.genuiStream.source,
+            format: tool.genuiStream.format,
+            ...(tool.genuiStream.title ? { title: tool.genuiStream.title } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -2396,6 +2427,7 @@ const isTranscriptEmpty = computed(
   () =>
     sessionTurns().length === 0 &&
     !turnsLoading() &&
+    !transcriptNotice() &&
     !pendingTurn() &&
     !pendingTurnState() &&
     !runningTurnId() &&
@@ -2670,6 +2702,29 @@ function Transcript() {
             <TranscriptSkeleton />
           </If>
 
+          <If when={transcriptNotice()}>
+            {notice => (
+              <View
+                accessibilityLabel="transcript-host-update"
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: 12,
+                  borderRadius: radii.md,
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  backgroundColor: palette().surfaceTertiary,
+                }}
+              >
+                <Icon name="info" size={14} color={palette().textSecondary} />
+                <Text style={{ flex: 1, color: palette().textSecondary, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.4) }}>
+                  {notice()}
+                </Text>
+              </View>
+            )}
+          </If>
+
           <If when={hasEarlierTurns() && sessionTurns().length > 0}>
             <View style={{ alignSelf: "center" }}>
               <Button
@@ -2938,6 +2993,13 @@ function SlashCommandSurface() {
 
 async function submitComposer(sendDuringTurn?: "immediate" | "queue"): Promise<void> {
   if (insertSelectedMention()) return;
+  // review launcher (wave 5): `/review …` asks the host to start a Review.
+  if (activeSessionId() && isReviewCommand(composerText())) {
+    const line = composerText();
+    composerText.set("");
+    await launchReviewFromCommand(line);
+    return;
+  }
   const slash = parseSlashCommand(composerText());
   if (slash && activeSessionId()) {
     await executeSlashCommand(slash.command, slash.arg);
@@ -3396,9 +3458,24 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
   return items;
 }
 
+/** Where dictated text goes: appended to the draft, or appended and sent. */
+const composerVoiceActions: VoiceComposerActions = {
+  insert(text) {
+    const current = composerText();
+    const separator = current && !/\s$/.test(current) ? " " : "";
+    composerText.set(`${current}${separator}${text}`);
+  },
+  send(text) {
+    composerVoiceActions.insert(text);
+    void submitComposer();
+  },
+  disabled: () => composerDisabled(),
+};
+
 function ComposerDock() {
   ensureModelsLoaded();
   ensureQuickActions();
+  void ensureVoiceSettings();
   subscribeContextUsage();
   effect(() => {
     const id = activeSessionId();
@@ -3645,6 +3722,8 @@ function ComposerDock() {
             </View>
           </If>
 
+          <VoiceDictationBar actions={composerVoiceActions} />
+
           {/* Multiline Editor */}
           <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}>
             <Input
@@ -3768,6 +3847,7 @@ function ComposerDock() {
                 gap: compactComposer() ? 2 : 4,
               }}
             >
+              <VoiceInputButtons actions={composerVoiceActions} />
               <If when={!compactComposer()}>
                 <ContextUsageRing />
               </If>
@@ -5617,6 +5697,7 @@ export function SessionsScene() {
       <RunningAmbientStrip />
       <PermissionPrompts />
       <QuestionPrompts />
+      <ReviewLauncherDialog />
       <ComposerDock />
     </View>
   );

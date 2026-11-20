@@ -98,7 +98,7 @@ fn optional_review_repository(
     repository_path.map(|path| ReviewRepositoryLocator::new(workspace_id.clone(), path))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_workspace_snapshot(
     _state: State<'_, AppState>,
     request: ReviewPlatformWorkspaceSnapshotRequest,
@@ -120,7 +120,7 @@ pub async fn review_platform_get_workspace_snapshot(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_workspace_context(
     _state: State<'_, AppState>,
     request: ReviewPlatformWorkspaceContextRequest,
@@ -139,7 +139,7 @@ pub async fn review_platform_get_workspace_context(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_pull_request_detail(
     _state: State<'_, AppState>,
     request: ReviewPlatformPullRequestDetailRequest,
@@ -162,7 +162,7 @@ pub async fn review_platform_get_pull_request_detail(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_pull_request_review_target(
     _state: State<'_, AppState>,
     request: ReviewPlatformPullRequestDetailRequest,
@@ -185,7 +185,7 @@ pub async fn review_platform_get_pull_request_review_target(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_issue(
     _state: State<'_, AppState>,
     request: ReviewPlatformIssueRequest,
@@ -215,7 +215,7 @@ pub async fn review_platform_get_issue(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_pull_request_review_target_by_identity(
     _state: State<'_, AppState>,
     request: ReviewPlatformPullRequestIdentityRequest,
@@ -296,7 +296,7 @@ fn safe_review_platform_error(error: &ReviewPlatformError) -> String {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_pull_request_detail_page(
     _state: State<'_, AppState>,
     request: ReviewPlatformPullRequestDetailPageRequest,
@@ -325,7 +325,7 @@ pub async fn review_platform_get_pull_request_detail_page(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_get_pull_request_ci_log(
     _state: State<'_, AppState>,
     request: ReviewPlatformPullRequestCiLogRequest,
@@ -351,7 +351,7 @@ pub async fn review_platform_get_pull_request_ci_log(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_update_auth_token(
     _state: State<'_, AppState>,
     request: ReviewPlatformUpdateAuthTokenRequest,
@@ -367,7 +367,7 @@ pub async fn review_platform_update_auth_token(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn review_platform_clear_auth_token(
     _state: State<'_, AppState>,
     request: ReviewPlatformClearAuthTokenRequest,

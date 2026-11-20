@@ -19,6 +19,7 @@ mod account_transport_tests;
 pub mod admin;
 mod admission;
 pub mod db;
+pub mod mesh_issuer;
 pub mod page_data;
 pub mod page_execution;
 pub mod relay;

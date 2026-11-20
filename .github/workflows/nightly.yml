@@ -261,21 +261,10 @@ jobs:
             --repo "${{ github.repository }}" \
             --out linux-release-assets/linux-binaries-v1.json
 
-      - name: Prepare versioned Windows installer
-        env:
-          NIGHTLY_VERSION: ${{ needs.check-changes.outputs.nightly_version }}
-        run: |
-          node scripts/prepare-windows-installer-asset.mjs \
-            --assets-dir release-assets \
-            --version "${NIGHTLY_VERSION%%+*}" \
-            --out-dir release-manual-assets
-
-      # The Tauri bundler signs the five updater artifacts during `tauri build`,
-      # but the installers people download by hand from the release page — dmg,
-      # deb, rpm, the Windows installer and the direct AppImages — shipped with
-      # no signature at all. Sign them with the same key so every published
-      # artifact is verifiable. (This is not OS-level code signing: Gatekeeper
-      # and SmartScreen still need Apple/Authenticode certificates.)
+      # Sign every desktop package people download by hand (and the macOS
+      # updater archive, which no Nightly feed lists yet) with the release key.
+      # (This is not OS-level code signing: Gatekeeper and SmartScreen still
+      # need Apple/Authenticode certificates.)
       - name: Sign installer packages
         shell: bash
         env:
@@ -284,12 +273,12 @@ jobs:
           OPENBITFUN_SIGNING_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
         run: |
           set -euo pipefail
-          mapfile -t assets < <({
-            find release-assets -type f \
-              \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
-                 -o -name '*.dmg' \)
-            find release-manual-assets -type f -name '*.exe'
-          } | sort)
+          mapfile -t assets < <(
+            find release-assets -type f -not -path '*.app/*' \
+              \( -name '*.dmg' -o -name 'OpenBitFun-nsh_*.app.tar.gz' \
+                 -o -name 'OpenBitFun-nsh_*-windows.zip' \
+                 -o -name 'OpenBitFun-nsh_*-linux.tar.gz' \) | sort
+          )
           if [[ "${#assets[@]}" -eq 0 ]]; then
             echo "No installer packages found to sign."
             exit 0
@@ -316,16 +305,14 @@ jobs:
             > **Warning**: Nightly builds are untested and may be unstable.
           prerelease: true
           files: |
-            release-assets/**/*.AppImage
-            release-assets/**/*.deb
             release-assets/**/*.dmg
-            release-assets/**/*.rpm
-            release-assets/**/*.sig
-            release-manual-assets/*.exe
-            release-manual-assets/*.exe.sig
+            release-assets/**/*.dmg.sig
+            release-assets/**/OpenBitFun-nsh_*
             release-assets/minisign.pub
             release-assets/**/openbitfun-cli-*-apple-darwin.tar.gz
             release-assets/**/openbitfun-cli-*-apple-darwin.tar.gz.sha256
+            release-assets/**/openbitfun-cli-*-apple-darwin.tar.gz.sig
+            release-assets/**/openbitfun-cli-*-apple-darwin.tar.gz.sha256.sig
             linux-release-assets/openbitfun-cli-*.tar.gz
             linux-release-assets/openbitfun-cli-*.tar.gz.sha256
             linux-release-assets/openbitfun-relay-server-*.tar.gz

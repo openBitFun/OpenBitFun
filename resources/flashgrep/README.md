@@ -5,17 +5,19 @@ https://github.com/wgqqqqq/flashgrep-binaries/releases. No binaries belong in Gi
 `VERSION.json` pins the repository, tag, filename, size, and SHA-256 for every target.
 
 Run `node scripts/prepare-flashgrep-resource.mjs` for the current host, or pass
-`--target x86_64-pc-windows-msvc` (including `--target=...` syntax). Desktop builds
-use the explicit Tauri target, falling back to the Rust host triple. Linux GNU
+`--target x86_64-pc-windows-msvc` (including `--target=...` syntax). The native
+desktop packaging scripts (`scripts/desktop-nsh-package-common.mjs`) prepare the
+package's `--target`, falling back to the Rust host triple. Linux GNU
 application targets use the matching musl Flashgrep binary. Unsupported targets
 fail explicitly. The preparation step requires curl (curl.exe on Windows).
 
 Downloads go to ignored files in this directory. Cached files are verified before
 reuse; failed or corrupted downloads never become package inputs. Only the
-selected binary is added to Tauri resources, even if the cache holds other targets.
-macOS release builds sign a copy with APPLE_SIGNING_IDENTITY, preserving the
-original download and its checksum. The Windows custom installer currently targets
-x86_64 and requires its matching Flashgrep payload.
+selected binary is copied into the package: `Contents/Resources/flashgrep/` on
+macOS (ad hoc signed there; release signing re-signs it with the Developer ID in
+`scripts/ci/package-native-macos-release.sh`) and `flashgrep/` next to the
+executable on Windows and Linux, where the backend resolves it. The Windows
+custom installer currently targets x86_64 and requires its matching Flashgrep payload.
 
 Remote workspaces do not support Flashgrep. Index controls are hidden and remote
 index/content/glob service calls return an explicit unsupported error before SSH
@@ -33,5 +35,5 @@ OpenBitFun builds only need public download access, with no private-repository t
 ## Focused verification
 
 ```sh
-node --test scripts/prepare-flashgrep-resource.test.mjs scripts/desktop-tauri-build.test.mjs OpenBitFun-Installer/scripts/build-installer.test.cjs
+node --test scripts/prepare-flashgrep-resource.test.mjs OpenBitFun-Installer/scripts/build-installer.test.cjs
 ```

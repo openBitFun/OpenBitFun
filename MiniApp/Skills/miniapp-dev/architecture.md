@@ -26,7 +26,7 @@ UI 使用 ESM 和 `window.app`。Node Worker 通过 `app.call` 提供应用自�
 | [Integration services / MiniApp](../../../src/crates/services/services-integrations/src/miniapp/) | 具体存储、宿主调用、Worker 进程和运行时 IO |
 | [Core / MiniApp](../../../src/crates/assembly/core/src/miniapp/) | 产品装配、Manager、宿主服务接入和兼容导出 |
 | [Agent tools](../../../src/crates/assembly/core/src/agentic/tools/implementations/) | 应用初始化、修订发布和市场发布等工具入口 |
-| [Web UI / MiniApps](../../../src/web-ui/src/app/scenes/miniapps/) | 场景、目录同步、Bridge 和 iframe 运行器 |
+| [MiniApp Shell](../../../src/apps/miniapp-shell/) | 原生桌面端为每个 MiniApp 窗口启动的宿主外壳、Bridge 与对话样式 |
 | [Desktop adapters](../../../src/apps/desktop/src/api/) | Desktop 命令与宿主适配；共享 UI 经基础设施层调用 |
 
 UI、执行宿主与工作区可能位于不同机器。文件、进程和权限操作必须由负责该能力的宿主处理；

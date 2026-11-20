@@ -1,23 +1,20 @@
 //! In-process native host bootstrap.
 //!
-//! Starts the same backend the Tauri host runs (configuration, agentic
-//! system, managed state, event delivery, remote connect, terminal, MCP/ACP,
-//! product control) without a Tauri application, and exposes it through the
-//! transport-neutral [`crate::backend_protocol::BackendService`].
+//! Starts the backend (configuration, agentic system, managed state, event
+//! delivery, remote connect, terminal, MCP/ACP, product control) and exposes
+//! it through the transport-neutral [`crate::backend_protocol::BackendService`].
 //!
-//! Startup steps that only make sense with a Tauri webview or window (menus,
-//! tray, window geometry and recovery, the frontend asset protocol, embedded
-//! WebDriver, the builtin browser, MiniApp windows and desktop cards) are not
-//! started: the native UI process owns its window, menus and tray.
+//! The native UI process owns its window, menus and tray (shell channel,
+//! `host::shell`). The built-in browser's pages are the UI's web views,
+//! driven over the shell channel (`native_browser`). MiniApp windows run in
+//! the lightweight shell sidecar (`miniapp_desktop::start_native`).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::backend_protocol::{BackendService, EventHub, DEFAULT_EVENT_REPLAY_CAPACITY};
 use crate::host::{HostHandle, NativeHost, NativeHostInfo};
 use crate::{api, crash_diagnostics, logging, BackendCore};
-
-static NATIVE_ASYNC_RUNTIME: OnceLock<()> = OnceLock::new();
 
 fn native_platform() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -70,16 +67,9 @@ pub fn create_native_host() -> Arc<NativeHost> {
 /// multi-thread Tokio runtime; returns the protocol endpoint once every
 /// startup step has run, or the fatal startup error.
 pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendService, String> {
-    // Desktop code still spawns through `tauri::async_runtime`; point it at
-    // this runtime so the native host never starts a second Tokio runtime.
-    NATIVE_ASYNC_RUNTIME.get_or_init(|| {
-        tauri::async_runtime::set(tokio::runtime::Handle::current());
-    });
-
     crate::apply_e2e_storage_guard()?;
     let BackendCore {
         startup_started,
-        startup_trace_id: _,
         startup_timings,
         log_config,
         session_log_dir,
@@ -98,7 +88,6 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
         scheduler_state,
         terminal_state,
         path_manager,
-        frontend_workbench,
     } = crate::bootstrap_backend_core()
         .await
         .map_err(|failure| failure.message)?;
@@ -107,8 +96,7 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     startup_trace.record_phase("native_host_setup_start", "native_setup");
     let data_dir = path_manager.user_data_dir();
 
-    // The same managed state the Tauri builder registers, minus window-only
-    // state (main-window geometry, MiniApp window hosts, desktop cards).
+    // Managed state every command handler can borrow (`host::State`).
     host.manage(app_state);
     host.manage(crate::sleep_prevention::SleepPreventionState::default());
     host.manage(desktop_runtime);
@@ -118,7 +106,6 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     host.manage(coordinator);
     host.manage(scheduler);
     host.manage(terminal_state);
-    host.manage(frontend_workbench);
     host.manage(startup_trace.clone());
 
     let step_started = Instant::now();
@@ -167,8 +154,14 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
         ),
     }
 
-    let handle = HostHandle::Native(Arc::clone(&host));
+    let handle = HostHandle::new(Arc::clone(&host));
+    crate::miniapp_desktop::start_native(&handle);
+    // Agent MiniApp automation: independent windows answer through their
+    // agent bridge; the in-product tab surface needs a UI that attaches it.
+    crate::miniapp_web_host::install(handle.clone());
     crate::openbitfun_control_host::install(handle.clone());
+    // Agent browser tools drive the UI's web views through the shell channel.
+    crate::native_browser::install(Arc::clone(&host));
     crate::start_backend_services(
         handle,
         event_queue,
@@ -192,12 +185,16 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     // Browsers and phones reach the same service over WebSocket (loopback by
     // default, the LAN when the user enabled it in Devices).
     crate::backend_protocol::ws::start_for_native_host(service.clone(), &data_dir).await;
+    // Other devices of the signed-in account reach this backend over the
+    // device mesh (EasyTier sidecar + the OBP mesh listener).
+    crate::mesh::start_for_native_host(&data_dir);
     Ok(service)
 }
 
 /// Graceful shutdown: stops plugin host, search daemons and child processes,
 /// marks a clean exit and closes the event stream.
 pub async fn shutdown_native_backend(service: &BackendService, reason: &'static str) {
+    crate::mesh::shutdown_global().await;
     crate::backend_protocol::ws::shutdown_global();
     crate::perform_process_exit_cleanup().await;
     crash_diagnostics::mark_clean_shutdown(reason);

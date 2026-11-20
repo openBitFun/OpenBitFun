@@ -7,29 +7,197 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 
-test('Windows updater uses the signed transactional installer and rejects old protocol payloads', t => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-transactional-updater-'));
+const ARCHES = [['aarch64', 'aarch64', 'x64'], ['x86_64', 'x64', 'x64']];
+
+function writeSigned(file, body) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body);
+  fs.writeFileSync(`${file}.sig`, `signature of ${path.basename(file)}`);
+}
+
+// A native updater archive as `scripts/ci/package-native-macos-release.sh` makes
+// it: one OpenBitFun.app with the native runner and UI bundle, plus the
+// `openbitfun-desktop` link an installed Tauri build's installer looks for.
+function writeUpdaterArchive(file, { legacyLink = true, extraTop = false } = {}) {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-native-app-'));
+  try {
+    const contents = path.join(work, 'OpenBitFun.app', 'Contents');
+    fs.mkdirSync(path.join(contents, 'MacOS'), { recursive: true });
+    fs.mkdirSync(path.join(contents, 'Resources', 'nsh'), { recursive: true });
+    fs.writeFileSync(path.join(contents, 'Info.plist'), '<plist/>');
+    fs.writeFileSync(path.join(contents, 'MacOS', 'OpenBitFun'), 'runner', { mode: 0o755 });
+    fs.writeFileSync(path.join(contents, 'Resources', 'nsh', 'bundle.nshc'), 'bundle');
+    if (legacyLink) fs.symlinkSync('OpenBitFun', path.join(contents, 'MacOS', 'openbitfun-desktop'));
+    const tops = ['OpenBitFun.app'];
+    if (extraTop) {
+      fs.writeFileSync(path.join(work, 'README.txt'), 'stray');
+      tops.push('README.txt');
+    }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const result = spawnSync('tar', ['-czf', file, '-C', work, ...tops], { encoding: 'utf8', windowsHide: true });
+    assert.equal(result.status, 0, result.stderr);
+    fs.writeFileSync(`${file}.sig`, `signature of ${path.basename(file)}`);
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+function nativeRelease(t, version = '1.2.3') {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-native-release-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-  const assets = path.join(temp, 'assets');
-  const manual = path.join(temp, 'manual');
-  const out = path.join(temp, 'updater');
-  fs.mkdirSync(assets); fs.mkdirSync(manual);
-  fs.writeFileSync(path.join(assets, 'OpenBitFun_1.2.3_x64-setup.exe'), 'legacy');
-  fs.writeFileSync(path.join(assets, 'OpenBitFun_1.2.3_x64-setup.exe.sig'), 'legacy signature');
-  const source = path.join(manual, 'OpenBitFun_1.2.3_windows-x86_64-installer.exe');
-  const args = ['--assets-dir', assets, '--version', '1.2.3', '--out-dir', out,
-    '--required-platforms', 'windows-x86_64', '--windows-installer-dir', manual];
-  fs.writeFileSync(source, 'old payload');
-  fs.writeFileSync(`${source}.sig`, 'signed custom bytes');
-  assert.match(run('scripts/collect-tauri-updater-assets.mjs', args).stderr, /maintenance protocol/);
-  const payload = Buffer.from('MZ signed payload OPENBITFUN_MAINTENANCE_V1');
-  fs.writeFileSync(source, payload);
-  const result = run('scripts/collect-tauri-updater-assets.mjs', args);
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(fs.readFileSync(path.join(out, 'OpenBitFun_1.2.3_windows-x86_64-setup.exe')), payload);
-  assert.equal(fs.readFileSync(path.join(out, 'OpenBitFun_1.2.3_windows-x86_64-setup.exe.sig'), 'utf8'), 'signed custom bytes');
-  fs.unlinkSync(`${source}.sig`);
-  assert.match(run('scripts/collect-tauri-updater-assets.mjs', args).stderr, /signature is missing/);
+  // Laid out as the release job downloads the per-platform bundle artifacts.
+  const assets = path.join(temp, 'release-assets');
+  for (const [arch, dmgArch] of ARCHES) {
+    const bundle = path.join(assets, `macos-${dmgArch === 'x64' ? 'x64' : 'arm64'}`, 'bundle');
+    writeUpdaterArchive(path.join(bundle, 'macos', `OpenBitFun-nsh_${version}_${arch}.app.tar.gz`));
+    writeSigned(path.join(bundle, 'dmg', `OpenBitFun_${version}_${dmgArch}.dmg`), `dmg ${arch}`);
+  }
+  writeSigned(path.join(assets, 'windows-x64', `OpenBitFun-nsh_${version}_x64-windows.zip`), 'windows zip');
+  writeSigned(path.join(assets, 'linux-x64', `OpenBitFun-nsh_${version}_x86_64-linux.tar.gz`), 'linux x64');
+  writeSigned(path.join(assets, 'linux-arm64', `OpenBitFun-nsh_${version}_aarch64-linux.tar.gz`), 'linux arm64');
+  return { temp, assets, updater: path.join(temp, 'release-updater-assets'), out: path.join(temp, 'latest-v1.json') };
+}
+
+const NATIVE_UPDATER_PLATFORMS = 'darwin-aarch64-nsh,darwin-x86_64-nsh,darwin-aarch64,darwin-x86_64';
+const NATIVE_MANUAL_PLATFORMS = 'darwin-aarch64,darwin-x86_64,windows-x86_64,linux-x86_64,linux-aarch64';
+
+function collect(release, version = '1.2.3') {
+  return run('scripts/collect-tauri-updater-assets.mjs', [
+    '--assets-dir', release.assets, '--version', version, '--out-dir', release.updater,
+    '--required-platforms', 'darwin-aarch64-nsh,darwin-x86_64-nsh',
+  ]);
+}
+
+function generate(release, version = '1.2.3', extra = []) {
+  return run('scripts/generate-tauri-latest-json.mjs', [
+    '--assets-dir', release.updater,
+    '--installer-assets-dir', release.assets,
+    '--version', version, '--tag', `v${version}`, '--repo', 'GCWing/OpenBitFun',
+    '--out', release.out,
+    '--required-platforms', NATIVE_UPDATER_PLATFORMS,
+    '--required-manual-platforms', NATIVE_MANUAL_PLATFORMS,
+    ...extra,
+  ]);
+}
+
+function verify(manifest, version = '1.2.3') {
+  return run('scripts/verify-tauri-latest-json.mjs', [
+    '--manifest', manifest, '--version', version,
+    '--required-platforms', NATIVE_UPDATER_PLATFORMS,
+    '--required-manual-platforms', NATIVE_MANUAL_PLATFORMS,
+    '--bridge-platforms', 'darwin-aarch64,darwin-x86_64',
+    '--forbidden-platform-prefixes', 'windows-,linux-',
+  ]);
+}
+
+test('native release manifest bridges installed Tauri builds to the native macOS archive', (t) => {
+  const release = nativeRelease(t);
+  const collected = collect(release);
+  assert.equal(collected.status, 0, collected.stderr);
+  assert.deepEqual(fs.readdirSync(release.updater).sort(), [
+    'OpenBitFun-nsh_1.2.3_aarch64.app.tar.gz',
+    'OpenBitFun-nsh_1.2.3_aarch64.app.tar.gz.sig',
+    'OpenBitFun-nsh_1.2.3_x86_64.app.tar.gz',
+    'OpenBitFun-nsh_1.2.3_x86_64.app.tar.gz.sig',
+  ]);
+  const generated = generate(release);
+  assert.equal(generated.status, 0, generated.stderr);
+
+  const manifest = JSON.parse(fs.readFileSync(release.out, 'utf8'));
+  assert.deepEqual(Object.keys(manifest.platforms), [
+    'darwin-aarch64', 'darwin-aarch64-nsh', 'darwin-x86_64', 'darwin-x86_64-nsh',
+  ]);
+  for (const arch of ['aarch64', 'x86_64']) {
+    const native = manifest.platforms[`darwin-${arch}-nsh`];
+    assert.equal(native.url,
+      `https://github.com/GCWing/OpenBitFun/releases/download/v1.2.3/OpenBitFun-nsh_1.2.3_${arch}.app.tar.gz`);
+    // Signatures are copied byte for byte: they cover the archive bytes.
+    assert.equal(native.signature, `signature of OpenBitFun-nsh_1.2.3_${arch}.app.tar.gz`);
+    assert.deepEqual(manifest.platforms[`darwin-${arch}`], native, 'the Tauri key carries the same archive');
+  }
+  assert.deepEqual(Object.keys(manifest.manual_installers), [
+    'darwin-aarch64', 'darwin-x86_64', 'linux-aarch64', 'linux-x86_64', 'windows-x86_64',
+  ]);
+  const base = 'https://github.com/GCWing/OpenBitFun/releases/download/v1.2.3';
+  assert.deepEqual(manifest.manual_installers['darwin-aarch64'], {
+    url: `${base}/OpenBitFun_1.2.3_aarch64.dmg`, signature_url: `${base}/OpenBitFun_1.2.3_aarch64.dmg.sig`,
+  });
+  assert.equal(manifest.manual_installers['darwin-x86_64'].url, `${base}/OpenBitFun_1.2.3_x64.dmg`);
+  assert.equal(manifest.manual_installers['windows-x86_64'].url, `${base}/OpenBitFun-nsh_1.2.3_x64-windows.zip`);
+  assert.equal(manifest.manual_installers['linux-x86_64'].url, `${base}/OpenBitFun-nsh_1.2.3_x86_64-linux.tar.gz`);
+  assert.equal(manifest.manual_installers['linux-aarch64'].url, `${base}/OpenBitFun-nsh_1.2.3_aarch64-linux.tar.gz`);
+
+  const verified = verify(release.out);
+  assert.equal(verified.status, 0, verified.stderr);
+});
+
+test('Windows and Linux never get updater keys, and a diverging bridge is rejected', (t) => {
+  const release = nativeRelease(t);
+  assert.equal(collect(release).status, 0);
+  assert.equal(generate(release).status, 0);
+  const manifest = JSON.parse(fs.readFileSync(release.out, 'utf8'));
+  const write = (next) => fs.writeFileSync(release.out, JSON.stringify(next));
+
+  // An older Tauri package under the newer manifest version would make the
+  // installed Tauri app reinstall it in a loop.
+  for (const key of ['windows-x86_64', 'linux-x86_64', 'linux-x86_64-deb']) {
+    write({ ...manifest, platforms: { ...manifest.platforms, [key]: { url: 'https://x/old', signature: 's' } } });
+    const rejected = verify(release.out);
+    assert.notEqual(rejected.status, 0, key);
+    assert.match(rejected.stderr, /forbidden prefix/);
+  }
+  write({ ...manifest, platforms: { ...manifest.platforms, 'darwin-aarch64': { url: 'https://x/tauri.app.tar.gz', signature: 's' } } });
+  assert.match(verify(release.out).stderr, /Bridge darwin-aarch64 must carry the same archive/);
+  const { 'darwin-x86_64': _bridge, ...withoutBridge } = manifest.platforms;
+  write({ ...manifest, platforms: withoutBridge });
+  assert.notEqual(verify(release.out).status, 0);
+});
+
+test('native updater collection rejects archives either updater would refuse', (t) => {
+  const release = nativeRelease(t);
+  const archive = path.join(release.assets, 'macos-x64', 'bundle', 'macos', 'OpenBitFun-nsh_1.2.3_x86_64.app.tar.gz');
+  writeUpdaterArchive(archive, { legacyLink: false });
+  let result = collect(release);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /missing OpenBitFun\.app\/Contents\/MacOS\/openbitfun-desktop/);
+
+  writeUpdaterArchive(archive, { extraTop: true });
+  result = collect(release);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /expected one top-level \.app/);
+
+  writeUpdaterArchive(archive);
+  fs.unlinkSync(`${archive}.sig`);
+  assert.match(collect(release).stderr, /not signed/);
+
+  writeUpdaterArchive(archive);
+  assert.notEqual(collect(release, '1.2.4').status, 0, 'an archive of another version is never published');
+
+  // Tauri bundler outputs must not reach a native release.
+  for (const name of ['OpenBitFun_1.2.3_amd64.AppImage', 'OpenBitFun_1.2.3_amd64.deb',
+    'OpenBitFun_1.2.3_x64-setup.exe', 'OpenBitFun.app.tar.gz']) {
+    const stray = path.join(release.assets, 'stray', name);
+    writeSigned(stray, 'tauri');
+    const rejected = collect(release);
+    assert.notEqual(rejected.status, 0, name);
+    assert.match(rejected.stderr, /Tauri updater artifact/);
+    fs.rmSync(path.dirname(stray), { recursive: true, force: true });
+  }
+  assert.equal(collect(release).status, 0);
+});
+
+test('every manual download must be present and signed', (t) => {
+  const release = nativeRelease(t);
+  assert.equal(collect(release).status, 0);
+  const zip = path.join(release.assets, 'windows-x64', 'OpenBitFun-nsh_1.2.3_x64-windows.zip');
+  fs.unlinkSync(`${zip}.sig`);
+  let result = generate(release);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Missing signed manual installer pair/);
+  fs.unlinkSync(zip);
+  result = generate(release);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Missing required manual installers: windows-x86_64/);
 });
 
 test('desktop release metadata stays synchronized after native extraction', () => {
@@ -40,250 +208,17 @@ test('desktop release metadata stays synchronized after native extraction', () =
   assert.equal(result.status, 0, result.stderr);
 });
 
-
-test('prepares a versioned custom Windows installer asset', () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-manual-installer-'));
-  const assets = path.join(temp, 'assets', 'nested');
-  const out = path.join(temp, 'manual');
-  fs.mkdirSync(assets, { recursive: true });
-  fs.writeFileSync(path.join(assets, 'openbitfun-installer.exe'), 'installer');
-
-  const result = run('scripts/prepare-windows-installer-asset.mjs', [
-    '--assets-dir', path.join(temp, 'assets'),
-    '--version', '1.2.3',
-    '--out-dir', out,
-  ]);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(
-    fs.readFileSync(path.join(out, 'OpenBitFun_1.2.3_windows-x86_64-installer.exe'), 'utf8'),
-    'installer'
-  );
-});
-
-test('1.0.0-beta manifest keeps the updater URL separate from the manual installer URL', () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-latest-manual-'));
-  const updater = path.join(temp, 'updater');
-  const manual = path.join(temp, 'manual');
-  const out = path.join(temp, 'latest-v1.json');
-  fs.mkdirSync(updater, { recursive: true });
-  fs.mkdirSync(manual, { recursive: true });
-
-  const updaterName = 'OpenBitFun_1.0.0-beta_windows-x86_64-setup.exe';
-  fs.writeFileSync(path.join(updater, updaterName), 'setup');
-  fs.writeFileSync(path.join(updater, `${updaterName}.sig`), 'inline-updater-signature');
-  const installerName = 'OpenBitFun_1.0.0-beta_windows-x86_64-installer.exe';
-  fs.writeFileSync(path.join(manual, installerName), 'installer');
-  fs.writeFileSync(path.join(manual, `${installerName}.sig`), 'detached-signature');
-
-  const generated = run('scripts/generate-tauri-latest-json.mjs', [
-    '--assets-dir', updater,
-    '--manual-assets-dir', manual,
-    '--version', '1.0.0-beta',
-    '--tag', 'v1.0.0-beta',
-    '--repo', 'GCWing/OpenBitFun',
-    '--out', out,
-    '--required-platforms', 'windows-x86_64',
-  ]);
-  assert.equal(generated.status, 0, generated.stderr);
-
-  const manifest = JSON.parse(fs.readFileSync(out, 'utf8'));
-  assert.match(manifest.platforms['windows-x86_64'].url, /-setup\.exe$/);
-  assert.match(manifest.manual_installers['windows-x86_64'].url, /-installer\.exe$/);
-  assert.equal(
-    manifest.manual_installers['windows-x86_64'].signature_url,
-    `${manifest.manual_installers['windows-x86_64'].url}.sig`
-  );
-
-  const verified = run('scripts/verify-tauri-latest-json.mjs', [
-    '--manifest', out,
-    '--version', '1.0.0-beta',
-    '--required-platforms', 'windows-x86_64',
-    '--required-manual-platforms', 'windows-x86_64',
-  ]);
-  assert.equal(verified.status, 0, verified.stderr);
-});
-
-test('updater manifest carries the version release notes for the update prompt', () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-release-notes-'));
-  const updater = path.join(temp, 'updater');
-  const out = path.join(temp, 'latest-v1.json');
-  const notes = path.join(temp, '1.0.3.md');
-  fs.mkdirSync(updater, { recursive: true });
-  fs.writeFileSync(path.join(updater, 'OpenBitFun_1.0.3_windows-x86_64-setup.exe'), 'setup');
-  fs.writeFileSync(path.join(updater, 'OpenBitFun_1.0.3_windows-x86_64-setup.exe.sig'), 'signature');
+test('updater manifest carries the version release notes for the update prompt', (t) => {
+  const release = nativeRelease(t, '1.0.3');
+  const notes = path.join(release.temp, '1.0.3.md');
   fs.writeFileSync(notes, '系统优化 AI 对话界面与整体性能，让对话更清晰、交互更流畅。\n');
-
-  const generated = run('scripts/generate-tauri-latest-json.mjs', [
-    '--assets-dir', updater,
-    '--version', '1.0.3',
-    '--tag', 'v1.0.3',
-    '--repo', 'GCWing/OpenBitFun',
-    '--notes-file', notes,
-    '--out', out,
-    '--required-platforms', 'windows-x86_64',
-  ]);
+  assert.equal(collect(release, '1.0.3').status, 0);
+  const generated = generate(release, '1.0.3', ['--notes-file', notes]);
   assert.equal(generated.status, 0, generated.stderr);
   assert.equal(
-    JSON.parse(fs.readFileSync(out, 'utf8')).notes,
+    JSON.parse(fs.readFileSync(release.out, 'utf8')).notes,
     '系统优化 AI 对话界面与整体性能，让对话更清晰、交互更流畅。',
   );
-});
-
-test('manifest declares the signed macOS .dmg installers next to the .app.tar.gz updater packages', (t) => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-latest-dmg-'));
-  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-  const updater = path.join(temp, 'updater');
-  const manual = path.join(temp, 'manual');
-  // The signing step leaves the .dmg files in the per-runner subdirectories the
-  // build artifacts were downloaded into, so the generator has to find them by
-  // name rather than at a fixed path.
-  const installers = path.join(temp, 'release-assets', 'macos-arm64');
-  const out = path.join(temp, 'latest-v1.json');
-  fs.mkdirSync(updater, { recursive: true });
-  fs.mkdirSync(manual, { recursive: true });
-  fs.mkdirSync(installers, { recursive: true });
-
-  for (const arch of ['aarch64', 'x86_64']) {
-    const updaterName = `OpenBitFun_1.2.3_darwin-${arch}.app.tar.gz`;
-    fs.writeFileSync(path.join(updater, updaterName), 'updater payload');
-    fs.writeFileSync(path.join(updater, `${updaterName}.sig`), 'inline-updater-signature');
-  }
-  const windowsUpdaterName = 'OpenBitFun_1.2.3_windows-x86_64-setup.exe';
-  fs.writeFileSync(path.join(updater, windowsUpdaterName), 'setup');
-  fs.writeFileSync(path.join(updater, `${windowsUpdaterName}.sig`), 'inline-updater-signature');
-  const windowsInstallerName = 'OpenBitFun_1.2.3_windows-x86_64-installer.exe';
-  fs.writeFileSync(path.join(manual, windowsInstallerName), 'installer');
-  fs.writeFileSync(path.join(manual, `${windowsInstallerName}.sig`), 'detached-signature');
-  for (const arch of ['aarch64', 'x64']) {
-    fs.writeFileSync(path.join(installers, `OpenBitFun_1.2.3_${arch}.dmg`), 'disk image');
-    fs.writeFileSync(path.join(installers, `OpenBitFun_1.2.3_${arch}.dmg.sig`), 'detached-signature');
-  }
-
-  const generatorArgs = [
-    '--assets-dir', updater,
-    '--manual-assets-dir', manual,
-    '--installer-assets-dir', path.join(temp, 'release-assets'),
-    '--version', '1.2.3',
-    '--tag', 'v1.2.3',
-    '--repo', 'GCWing/OpenBitFun',
-    '--out', out,
-    '--required-platforms', 'darwin-aarch64,darwin-x86_64,windows-x86_64',
-  ];
-  const generated = run('scripts/generate-tauri-latest-json.mjs', generatorArgs);
-  assert.equal(generated.status, 0, generated.stderr);
-
-  const manifest = JSON.parse(fs.readFileSync(out, 'utf8'));
-  // The updater must keep consuming the .app.tar.gz; manual_installers is an
-  // addition for humans, not a replacement.
-  assert.match(manifest.platforms['darwin-aarch64'].url, /_darwin-aarch64\.app\.tar\.gz$/);
-  assert.match(manifest.platforms['darwin-x86_64'].url, /_darwin-x86_64\.app\.tar\.gz$/);
-  assert.equal(
-    manifest.manual_installers['darwin-aarch64'].url,
-    'https://github.com/GCWing/OpenBitFun/releases/download/v1.2.3/OpenBitFun_1.2.3_aarch64.dmg'
-  );
-  assert.equal(
-    manifest.manual_installers['darwin-x86_64'].url,
-    'https://github.com/GCWing/OpenBitFun/releases/download/v1.2.3/OpenBitFun_1.2.3_x64.dmg'
-  );
-  assert.match(manifest.manual_installers['windows-x86_64'].url, /-installer\.exe$/);
-
-  const verified = run('scripts/verify-tauri-latest-json.mjs', [
-    '--manifest', out,
-    '--version', '1.2.3',
-    '--required-platforms', 'darwin-aarch64,darwin-x86_64,windows-x86_64',
-    '--required-manual-platforms', 'windows-x86_64,darwin-aarch64,darwin-x86_64',
-  ]);
-  assert.equal(verified.status, 0, verified.stderr);
-
-  // An unsigned .dmg must fail the release rather than publish a manifest whose
-  // signature URL 404s.
-  fs.unlinkSync(path.join(installers, 'OpenBitFun_1.2.3_x64.dmg.sig'));
-  const unsigned = run('scripts/generate-tauri-latest-json.mjs', generatorArgs);
-  assert.notEqual(unsigned.status, 0);
-  assert.match(unsigned.stderr, /Missing signed manual installer pair/);
-
-  fs.unlinkSync(path.join(installers, 'OpenBitFun_1.2.3_x64.dmg'));
-  const absent = run('scripts/generate-tauri-latest-json.mjs', generatorArgs);
-  assert.notEqual(absent.status, 0);
-  assert.match(absent.stderr, /Missing macOS installer OpenBitFun_1\.2\.3_x64\.dmg/);
-});
-
-// deb/rpm installs reject every payload that is not their own package format
-// (tauri-plugin-updater: install_deb/install_rpm -> InvalidUpdaterFormat), so the
-// feed must carry bundle-type keys. Regression: the 1.0.1 feed served the
-// AppImage under the bare linux-x86_64 key and every deb install failed in-app
-// updates with "invalid updater binary format".
-test('deb and rpm installs get bundle-type Linux updater keys through collect + generate', () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-deb-updater-'));
-  const collected = path.join(temp, 'collected');
-  const out = path.join(temp, 'latest-v1.json');
-  const assets = [
-    ['OpenBitFun_1.2.3_amd64.AppImage', 'appimage'],
-    ['OpenBitFun_1.2.3_amd64.deb', 'deb'],
-    ['OpenBitFun-1.2.3-1.x86_64.rpm', 'rpm'],
-    ['OpenBitFun_1.2.3_arm64.deb', 'deb-arm64'],
-    ['OpenBitFun-1.2.3-1.aarch64.rpm', 'rpm-arm64'],
-  ];
-  for (const [name, body] of assets) {
-    fs.writeFileSync(path.join(temp, name), body);
-    fs.writeFileSync(path.join(temp, `${name}.sig`), `sig ${name}`);
-  }
-
-  const staging = run('scripts/collect-tauri-updater-assets.mjs', [
-    '--assets-dir', temp,
-    '--version', '1.2.3',
-    '--out-dir', collected,
-    '--required-platforms', 'linux-x86_64,linux-x86_64-deb,linux-x86_64-rpm,linux-aarch64-deb,linux-aarch64-rpm',
-  ]);
-  assert.equal(staging.status, 0, staging.stderr);
-  assert.deepEqual(fs.readdirSync(collected).sort(), [
-    'OpenBitFun_1.2.3_linux-aarch64-deb.deb',
-    'OpenBitFun_1.2.3_linux-aarch64-deb.deb.sig',
-    'OpenBitFun_1.2.3_linux-aarch64-rpm.rpm',
-    'OpenBitFun_1.2.3_linux-aarch64-rpm.rpm.sig',
-    'OpenBitFun_1.2.3_linux-x86_64-deb.deb',
-    'OpenBitFun_1.2.3_linux-x86_64-deb.deb.sig',
-    'OpenBitFun_1.2.3_linux-x86_64-rpm.rpm',
-    'OpenBitFun_1.2.3_linux-x86_64-rpm.rpm.sig',
-    'OpenBitFun_1.2.3_linux-x86_64.AppImage',
-    'OpenBitFun_1.2.3_linux-x86_64.AppImage.sig',
-  ]);
-
-  const generated = run('scripts/generate-tauri-latest-json.mjs', [
-    '--assets-dir', collected,
-    '--version', '1.2.3',
-    '--tag', 'v1.2.3',
-    '--repo', 'GCWing/OpenBitFun',
-    '--out', out,
-    '--required-platforms', 'linux-x86_64,linux-x86_64-deb,linux-x86_64-rpm,linux-aarch64-deb,linux-aarch64-rpm',
-  ]);
-  assert.equal(generated.status, 0, generated.stderr);
-
-  const manifest = JSON.parse(fs.readFileSync(out, 'utf8'));
-  assert.match(manifest.platforms['linux-x86_64'].url, /OpenBitFun_1\.2\.3_linux-x86_64\.AppImage$/);
-  assert.match(manifest.platforms['linux-x86_64-deb'].url, /OpenBitFun_1\.2\.3_linux-x86_64-deb\.deb$/);
-  assert.match(manifest.platforms['linux-x86_64-rpm'].url, /OpenBitFun_1\.2\.3_linux-x86_64-rpm\.rpm$/);
-  assert.match(manifest.platforms['linux-aarch64-deb'].url, /OpenBitFun_1\.2\.3_linux-aarch64-deb\.deb$/);
-  assert.match(manifest.platforms['linux-aarch64-rpm'].url, /OpenBitFun_1\.2\.3_linux-aarch64-rpm\.rpm$/);
-  // collect renames the files but copies signatures byte-for-byte: minisign
-  // signatures cover the package bytes, not the asset name.
-  const renamedToRawSignature = {
-    'linux-x86_64': 'sig OpenBitFun_1.2.3_amd64.AppImage',
-    'linux-x86_64-deb': 'sig OpenBitFun_1.2.3_amd64.deb',
-    'linux-x86_64-rpm': 'sig OpenBitFun-1.2.3-1.x86_64.rpm',
-    'linux-aarch64-deb': 'sig OpenBitFun_1.2.3_arm64.deb',
-    'linux-aarch64-rpm': 'sig OpenBitFun-1.2.3-1.aarch64.rpm',
-  };
-  for (const [key, signature] of Object.entries(renamedToRawSignature)) {
-    assert.equal(manifest.platforms[key].signature, signature);
-  }
-
-  const verified = run('scripts/verify-tauri-latest-json.mjs', [
-    '--manifest', out,
-    '--version', '1.2.3',
-    '--required-platforms', 'linux-x86_64,linux-x86_64-deb,linux-x86_64-rpm,linux-aarch64-deb,linux-aarch64-rpm',
-  ]);
-  assert.equal(verified.status, 0, verified.stderr);
 });
 
 test('stages GitHub release assets in a flat directory', () => {

@@ -46,9 +46,11 @@ alters the modern Composer source. Ten 1x/2x representations cover 16–1024 px.
 There is no runtime OS-version scaling and no modification of ICNS chunks by
 the shared brand generator; canonicalization only orders the native chunks.
 
-Tauri CLI is pinned to **2.11.4** in both workspace apps. The macOS config overlay
-adds `.icon` alongside ICNS; base and Windows/Linux icon selections stay intact.
-Tauri dev reads ICNS through `NSApplication.applicationIconImage`. Bundled builds
+Tauri CLI is pinned to **2.11.4** for the remaining Tauri apps (the installer;
+the native desktop bundle copies the committed ICNS as `Resources/AppIcon.icns`).
+The installer's macOS config overlay adds `.icon` alongside ICNS; base and
+Windows/Linux icon selections stay intact. Tauri dev reads ICNS through
+`NSApplication.applicationIconImage`. Bundled builds
 use `CFBundleIconName` with `Assets.car`, plus `CFBundleIconFile` for the legacy
 resource. `tauri.dev.conf.json` and the generated release config inherit the
 platform icon list instead of overwriting it. The minimum application OS version
@@ -78,7 +80,7 @@ and the exact fallback bytes before reporting success. No signed bundle is
 modified by verification.
 
 ```bash
-node --test scripts/generate-brand-assets.test.mjs scripts/macos-icon-bundle.test.mjs scripts/desktop-tauri-build.test.mjs
+node --test scripts/generate-brand-assets.test.mjs scripts/macos-icon-bundle.test.mjs
 # Full Xcode: exercise actual Tauri + actool packaging in a disposable fixture.
 OPENBITFUN_TEST_MACOS_BUNDLE=1 node --test scripts/macos-icon-bundle.test.mjs
 # Inspect an existing bundle without launching it.

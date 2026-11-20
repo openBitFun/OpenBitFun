@@ -16,22 +16,34 @@ C0a 实现一个构建期 JSONC 产品定义、严格解析器和确定性解析
 
 当前真实消费者只有：
 
-- Desktop build adapter：从解析结果覆盖 Tauri `productName`、`mainBinaryName` 与 bundle identifier；
+- Desktop build adapter（原生 NSH 打包脚本 `scripts/package-desktop-nsh-{macos,windows,linux}.mjs`，共用
+  `scripts/desktop-nsh-package-common.mjs`，`--product-config <path>`）：用解析结果的 fallback-locale 名称命名
+  `.app`/包目录、窗口标题与 macOS `CFBundleName`，用 `bundleId` 设置 `CFBundleIdentifier` 并投影到 UI 包的
+  `nsh/app.json`（`projectNshAppJson`：三个平台的 NSH runner 都按其中的 app id 隔离自己的存储、日志与窗口状态），
+  用 `binaryName` 作为已安装旧版（Tauri `mainBinaryName`）沿用的可执行名（macOS 升级桥接链接、Windows runner
+  与 Installer），并使用 `members.desktop.icons` 声明的图标；非默认产品的后端以产品编译期身份构建在按摘要隔离的
+  Cargo target 目录中，默认产品保持普通构建缓存；
 - CLI dev/build wrapper：从同一解析结果设置命令名、隔离定制构建缓存，并按成员 `binaryName` 暂存构建产物；
 - First-party Rust artifacts：Desktop/CLI build adapter 通过编译期环境注入 `productId`、
   `dataNamespace` 与由其派生的隐藏目录名，`openbitfun-core-types::product_identity` 作为最小事实 owner，供数据路径、Runtime
   ownership、Remote Connect 与 Detached Dispatch 复用；
 
 `product:check` / `product:explain` 只是构建作者的校验与解释工具，不计作产品字段的生产消费者。C0a 不生成无人读取的
-通用产品 manifest 或 locale projection；两个 build adapter 直接消费同一次内存解析结果，Rust consumer
+通用产品 manifest 或 locale projection；两个 build adapter 直接消费同一次内存解析结果（`nsh/app.json` 是 NSH runner
+真实读取的应用描述，不是通用 manifest），Rust consumer
 只读取随对应产品 artifact 编译进去的不可变事实，不在运行时重新选产品。
 
 产品定义 v1 仅包含已被这些消费者读取的字段，未知字段一律拒绝。localized 名称独立于技术 ID，并按共享 locale contract
 校验后交给各自 build adapter。
 
-C0a 不声称生成可独立发行的完整品牌产品。`dataNamespace` 已隔离 first-party Rust consumer 的产品数据路径；品牌资产、
+`members.desktop.icons`（可选，`macos` `.icns`、`windows` `.ico`、`linux` `.png` 三者必须同时声明，路径必须位于定义
+目录内）是原生桌面打包读取的品牌图标；声明后图标字节摘要进入 assembly digest（`iconDigest`）。未声明时默认产品使用
+仓库内 OpenBitFun 图标，非默认产品打包时给出明确警告。
+
+C0a 不声称生成可独立发行的完整品牌产品。`dataNamespace` 已隔离 first-party Rust consumer 的产品数据路径；其余品牌资产、
 GUI/TUI 布局、插件/内置扩展选择、Installer/Store target、更新与签名、运行时全量品牌替换仍需由各自真实 owner
-和消费者独立扩展 schema 与组装结果。
+和消费者独立扩展 schema 与组装结果（例如原生更新器目录与更新通道、`sleep_prevention` 的反向域名仍是 OpenBitFun
+固定值；Windows Installer 只安装默认产品的可执行名）。
 
 ### 0.1 当前定义与解析契约
 
@@ -229,8 +241,9 @@ GUI 主题由 Web/TS 主题模块定义，TUI 主题由 CLI/TUI 宿主定义，I
 
 ### 7.1 用户侧导航偏好与入口贡献
 
-Web UI 的左侧导航定制属于控制端运行时展示偏好，不进入产品定义或远端配置。
-`src/web-ui/src/app/navigation/sidebarRegistry.ts` 定义可信前端模块的贡献接口：稳定的 owner 限定 ID、
+桌面界面的左侧导航定制属于控制端运行时展示偏好，不进入产品定义或远端配置。
+以下描述已退役 React 桌面界面（`src/web-ui`，见 Git 历史）中的实现，是原生桌面界面 `src/nsh-ui` 恢复同类能力时应保持的契约：
+`sidebarRegistry.ts` 定义可信前端模块的贡献接口：稳定的 owner 限定 ID、
 bootstrap 文案键、设计系统图标、当前页面匹配、不可用原因和按需打开动作。
 `sidebarContributions.ts` 注册现有页面并复用页面 owner / Product Action；设置与导航共同消费同一份注册表。
 注册返回注销函数，冲突 ID 拒绝注册，新入口只进入可选列表，由用户决定是否固定。

@@ -324,3 +324,22 @@ The complete upstream Apache-2.0 license follows:
 ```
 
 The FlowChat figure guest also bundles D3, TopoJSON Client, US Atlas, Lucide and Floating UI. Their notices accompany the built frontend in `third-party/visualize-NOTICES.txt`. The release source includes Natural Earth regional map layers and records their upstream and distributed SHA-256 hashes in `scripts/visualize-regional-atlas.json`.
+
+## EasyTier
+
+- Project: EasyTier
+- Source: https://github.com/EasyTier/EasyTier (release v2.6.4, tag `v2.6.4`,
+  https://github.com/EasyTier/EasyTier/tree/v2.6.4)
+- License: GNU Lesser General Public License v3.0 (LGPL-3.0), https://www.gnu.org/licenses/lgpl-3.0.html
+- Copyright: Copyright (c) EasyTier contributors
+
+The native desktop app ships the unmodified official `easytier-core` and
+`easytier-cli` release binaries (`Contents/Resources/bin` on macOS, `bin/` next
+to the executable on Windows and Linux) for its device mesh. OpenBitFun runs
+them as a separate process and talks to them only through their command line,
+configuration file and local RPC/SOCKS5 ports; it does not link or modify
+EasyTier. You may replace these binaries with your own build of the same
+EasyTier version (or point `OPENBITFUN_EASYTIER_DIR` at it); the complete
+corresponding source is available at the URL above. The archives are fetched
+from the project's GitHub release and verified by SHA-256
+(`scripts/fetch-easytier.mjs`).

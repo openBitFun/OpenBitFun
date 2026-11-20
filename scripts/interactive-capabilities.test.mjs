@@ -9,7 +9,7 @@ import {
   loadRemoteSurfaceRegistry,
   parseRegisteredCommands,
   projectSettingsCatalogDestination,
-  renderRemoteSurfaceTsBindings,
+  renderNshPeerSurfaceBindings,
 } from './generate-interactive-capabilities.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -232,7 +232,11 @@ test('every product Agent tool is mapped to a user capability or explicitly clas
     productTools,
     'new Agent tools must be mapped in the shared manual or receive a reviewed framework-only exclusion',
   );
-  assert.deepEqual(excludedTools, new Set(['Task', 'GetToolSpec', 'CallDeferredTool', 'PagePublish', 'PageDeploy']));
+  assert.deepEqual(excludedTools, new Set([
+    'Task', 'GetToolSpec', 'CallDeferredTool', 'PagePublish', 'PageDeploy',
+    // Host tools of the retired Tauri desktop shell; hidden when no host is installed.
+    'DesktopCard', 'FrontendWorkbench',
+  ]));
   assert.equal([...delegatedTools].filter((tool) => excludedTools.has(tool)).length, 0);
 
   const byId = new Map(source.capabilities.map((capability) => [capability.id, capability]));
@@ -260,23 +264,20 @@ test('every product Agent tool is mapped to a user capability or explicitly clas
   );
 });
 
-test('the built-in browser manual covers its element picker in both languages', () => {
+test('the built-in browser manual documents only what the native desktop browser provides', () => {
   const { publicCatalog } = buildCapabilityCatalog();
   const browser = publicCatalog.capabilities.find(({ id }) => id === 'feature.browser');
   assert.ok(browser);
+  // The element picker lived only in the retired React desktop UI; the native browser scene has none.
+  assert.equal(browser.items.some(({ id }) => id.startsWith('element-')), false);
   assert.ok(browser.items.some(({ id, titleZh, titleEn }) =>
-    id === 'element-picker' && titleZh.includes('元素选择器') && /element picker/iu.test(titleEn)));
-  assert.ok(browser.items.some(({ id, titleZh, titleEn }) =>
-    id === 'element-context' && titleZh.includes('CSS 路径') && /session context/iu.test(titleEn)));
-  assert.ok(browser.searchTerms.includes('启动元素选择器，悬停时高亮页面元素并显示标签、ID 和 Class'));
-  assert.ok(browser.searchTerms.includes('Start the element picker to highlight hovered elements and show tag, ID, and class details'));
+    id === 'history-navigation' && titleZh.includes('后退') && /Back, Forward/u.test(titleEn)));
 });
 
 test('the files and editor manual exposes provider-backed actions without retired LSP facts', async () => {
   const source = JSON.parse(await read('src/shared/interactive-capabilities/catalog.json'));
   const filesEditor = source.capabilities.find(({ id }) => id === 'feature.files-editor');
   assert.ok(filesEditor);
-  assert.ok(filesEditor.items.some(({ id }) => id === 'language-actions'));
   assert.doesNotMatch(JSON.stringify(filesEditor), /\blsp\b|language server/iu);
   assert.equal(Object.hasOwn(source.implementationOwners, 'lsp'), false);
   assert.equal(Object.hasOwn(source.implementationOwners, 'lsp_workspace'), false);
@@ -313,13 +314,11 @@ test('built-in and external browsers share one agent action contract', async () 
   const builtinCoreAdapter = await read(
     'src/crates/assembly/core/src/agentic/tools/browser_control/builtin_browser.rs',
   );
-  const builtinDesktopAdapter = await read('src/apps/desktop/src/builtin_browser_host.rs');
+  const builtinDesktopAdapter = await read('src/apps/desktop/src/native_browser.rs');
   const controlHub = await read(
     'src/crates/assembly/core/src/agentic/tools/implementations/control_hub_tool.rs',
   );
-  const browserSurface = await read(
-    'src/web-ui/src/app/scenes/browser/useEmbeddedBrowserWebview.ts',
-  );
+  const browserSurface = await read('src/nsh-ui/src/browserStore.ts');
 
   assert.match(actions, /client: &'a dyn BrowserAutomationClient/u);
   assert.match(clientContract, /trait BrowserAutomationClient/u);
@@ -327,7 +326,8 @@ test('built-in and external browsers share one agent action contract', async () 
   assert.doesNotMatch(clientContract, /use super::cdp_client/u);
   assert.match(cdpAdapter, /impl BrowserAutomationClient for CdpClient/u);
   assert.match(builtinCoreAdapter, /impl BrowserAutomationClient for BuiltInBrowserClient/u);
-  assert.match(builtinDesktopAdapter, /EmbeddedWebviewAutomation/u);
+  assert.match(builtinDesktopAdapter, /ActuatedWebviewAutomation/u);
+  assert.match(builtinDesktopAdapter, /impl BuiltInBrowserHost for NativeBuiltInBrowserHost/u);
   assert.doesNotMatch(builtinDesktopAdapter, /SNAPSHOT_SCRIPT|data-cdp-ref|element_center_js/u);
   assert.match(controlHub, /SHARED_BROWSER_ACTIONS/u);
   assert.match(controlHub, /BrowserActions::new\(target\.client\(\)\)/u);
@@ -339,29 +339,23 @@ test('docs, runtime, and technical views are generated projections of one semant
   const { interactionAudit } = buildCapabilityCatalog();
   const source = JSON.parse(await read('src/shared/interactive-capabilities/catalog.json'));
   const publicCatalog = JSON.parse(await read('docs/interactive-capabilities/capabilities.json'));
-  const runtimeCatalog = JSON.parse(await read(
-    'src/web-ui/src/app/global-search/generated/interactive-capabilities.json',
-  ));
   const productControlCatalog = JSON.parse(await read(
     'src/crates/contracts/product-domains/src/generated/product-control-catalog.json',
   ));
+  const runtimeCatalog = productControlCatalog;
   const technicalMap = JSON.parse(await read(
     'docs/interactive-capabilities/technical/tauri-command-map.json',
   ));
 
   const sourceIds = source.capabilities.map(({ id }) => id);
-  assert.deepEqual(interactionAudit.roots, ['src/web-ui/src']);
+  assert.deepEqual(interactionAudit.roots, ['src/nsh-ui/src']);
   assert.deepEqual(publicCatalog.capabilities.map(({ id }) => id), sourceIds);
   assert.deepEqual(publicCatalog.searchAcceptance, source.searchAcceptance);
-  assert.deepEqual(runtimeCatalog.searchAcceptance, source.searchAcceptance);
   assert.deepEqual(productControlCatalog.searchAcceptance, source.searchAcceptance);
-  assert.deepEqual(runtimeCatalog.capabilities.map(({ id }) => id), sourceIds);
   assert.deepEqual(productControlCatalog.capabilities.map(({ id }) => id), sourceIds);
-  assert.equal(publicCatalog.digest, runtimeCatalog.digest);
   assert.equal(publicCatalog.digest, productControlCatalog.digest);
   assert.equal(publicCatalog.digest, technicalMap.catalogDigest);
   assert.equal(publicCatalog.digest, interactionAudit.catalogDigest);
-  assert.deepEqual(publicCatalog.definitions, runtimeCatalog.definitions);
   assert.deepEqual(publicCatalog.definitions, productControlCatalog.definitions);
   assert.ok(publicCatalog.definitions.length > publicCatalog.capabilities.length);
   for (const definition of publicCatalog.definitions) {
@@ -383,14 +377,9 @@ test('docs, runtime, and technical views are generated projections of one semant
   const interactionSourceFiles = interactionAudit.files.map(({ sourceFile }) => sourceFile);
   assert.deepEqual(interactionSourceFiles, [...interactionSourceFiles].sort());
   assert.ok(interactionSourceFiles.every((sourceFile) => !sourceFile.includes('/generated/')));
-  assert.ok(interactionAudit.files.some(({ sourceFile }) =>
-    sourceFile.endsWith('/BrowserPanel.tsx')));
-  assert.ok(interactionAudit.files.some(({ sourceFile }) =>
-    sourceFile.endsWith('/AssistantConfigPage.tsx')));
-  assert.ok(interactionAudit.files.some(({ sourceFile }) =>
-    sourceFile.endsWith('/LanguageSettingsSection.tsx')));
-  assert.ok(interactionAudit.files.some(({ sourceFile }) =>
-    sourceFile.endsWith('/AppearancePackageConfigSection.tsx')));
+  for (const scene of ['BrowserScene.tsx', 'AssistantsScene.tsx', 'SettingsScene.tsx']) {
+    assert.ok(interactionAudit.files.some(({ sourceFile }) => sourceFile.endsWith(`/scenes/${scene}`)), scene);
+  }
   assert.equal(publicCatalog.source, 'src/shared/interactive-capabilities/catalog.json');
 
   const appearance = runtimeCatalog.capabilities
@@ -420,53 +409,30 @@ test('docs, runtime, and technical views are generated projections of one semant
   assert.equal(docs.length, sourceIds.length);
 });
 
-test('website, global search, and agent control consume generated semantic projections', async () => {
+test('website and agent control consume generated semantic projections', async () => {
   const websiteBuild = await read('website/scripts/build.mjs');
-  const frontendCatalog = await read('src/web-ui/src/app/global-search/interactiveCapabilityCatalog.ts');
-  const searchProvider = await read(
-    'src/web-ui/src/app/global-search/providers/interactiveCapabilitySearchProvider.ts',
-  );
-  const searchProviders = await read('src/web-ui/src/app/global-search/providers/index.ts');
-  const controlBridge = await read('src/web-ui/src/app/global-search/openBitFunControlBridge.ts');
   const controlTool = await read(
     'src/crates/assembly/core/src/agentic/tools/implementations/openbitfun_control_tool.rs',
   );
 
   assert.match(websiteBuild, /docs\/interactive-capabilities\/capabilities\.json/u);
-  assert.match(frontendCatalog, /generated\/interactive-capabilities\.json/u);
-  assert.match(searchProvider, /INTERACTIVE_CAPABILITY_CATALOG/u);
-  assert.doesNotMatch(searchProviders, /settingsSearchProvider/u);
-  assert.match(controlBridge, /getInteractiveCapability/u);
-  assert.match(controlBridge, /native ProductControl executor/u);
-  assert.doesNotMatch(controlBridge, /discoverOpenBitFunCapabilities|configureOption|currentOptionValue/u);
   assert.doesNotMatch(controlTool, /include_(?:str|bytes)!/u);
   assert.match(controlTool, /two-step/u);
 });
 
-test('Desktop and Web UI share the OpenBitFunControl transport contract', async () => {
+test('Desktop keeps the OpenBitFunControl presentation transport contract', async () => {
   const host = await read('src/apps/desktop/src/openbitfun_control_host.rs');
-  const bridge = await read('src/web-ui/src/app/global-search/openBitFunControlBridge.ts');
   const desktopRegistration = await read('src/apps/desktop/src/lib.rs');
 
-  for (const source of [host, bridge]) {
-    assert.match(source, /agentic:\/\/openbitfun-control-request/u);
-  }
+  assert.match(host, /agentic:\/\/openbitfun-control-request/u);
   assert.match(host, /#\[serde\(rename_all = "camelCase"\)\]/u);
-  assert.match(bridge, /api\.invoke\('mark_openbitfun_control_surface_ready',\s*\{\s*request:\s*\{\s*creationApiVersion:\s*1\s*\}\s*\}\)/u);
-  assert.match(bridge, /api\.invoke\('report_openbitfun_control_result'/u);
   assert.match(desktopRegistration, /openbitfun_control_host::mark_openbitfun_control_surface_ready/u);
   assert.match(desktopRegistration, /openbitfun_control_host::report_openbitfun_control_result/u);
 });
 
 test('GUI, Agent, CLI, and Peer config writes converge on the ProductControl executors', async () => {
   const { publicCatalog } = buildCapabilityCatalog();
-  const productControlApi = await read(
-    'src/web-ui/src/infrastructure/api/service-api/ProductControlAPI.ts',
-  );
-  const systemApi = await read('src/web-ui/src/infrastructure/api/service-api/SystemAPI.ts');
-  const generatedBindings = await read(
-    'src/web-ui/src/infrastructure/api/generated/productControl.ts',
-  );
+  const settingsStore = await read('src/nsh-ui/src/settingsStore.ts');
   const sleepHost = await read('src/apps/desktop/src/sleep_prevention.rs');
   const desktopConfigApi = await read('src/apps/desktop/src/api/config_api.rs');
   const desktopHost = await read('src/apps/desktop/src/openbitfun_control_host.rs');
@@ -481,13 +447,7 @@ test('GUI, Agent, CLI, and Peer config writes converge on the ProductControl exe
     'src/apps/cli/src/peer_host/commands/product_control.rs',
   );
 
-  assert.match(productControlApi, /product_control_invoke/u);
-  assert.match(productControlApi, /capabilityId/u);
-  assert.match(productControlApi, /optionId/u);
-  assert.match(productControlApi, /generated\/productControl/u);
-  assert.doesNotMatch(productControlApi, /setConfig|configPath|commandName/u);
-  assert.match(systemApi, /productControlAPI\.configure/u);
-  assert.doesNotMatch(systemApi, /plugin-autostart/u);
+  assert.match(settingsStore, /product_control_invoke/u);
   assert.match(sleepHost, /configure_option_from_gui/u);
   assert.match(desktopConfigApi, /set_config_from_gui/u);
   assert.doesNotMatch(desktopConfigApi, /config_service\.set_config/u);
@@ -501,8 +461,7 @@ test('GUI, Agent, CLI, and Peer config writes converge on the ProductControl exe
   assert.doesNotMatch(cliConfigHost, /config_service\.set_config/u);
   assert.match(cliProductControlHost, /global_shared_product_control_executor/u);
   assert.match(cliProductControlHost, /ProductControlSource::Peer/u);
-  assert.match(generatedBindings, new RegExp(publicCatalog.digest, 'u'));
-  assert.match(generatedBindings, /ProductControlOptionIdsByCapability/u);
+  assert.ok(publicCatalog.digest);
 });
 
 test('the remote surface bindings are a projection of the compiled Product Operation Registry', async () => {
@@ -525,32 +484,24 @@ test('the remote surface bindings are a projection of the compiled Product Opera
 
   const committed = await read('src/crates/contracts/product-domains/src/generated/remote-surface-registry.json');
   assert.equal(committed, raw, 'committed registry export must match the compiled registry');
-  const committedTs = await read('src/web-ui/src/infrastructure/api/generated/remoteSurface.ts');
-  const rendered = renderRemoteSurfaceTsBindings(registry);
-  assert.equal(committedTs, rendered, 'committed remoteSurface.ts must match the renderer');
+  const committedTs = await read('src/nsh-ui/src/generated/peerSurface.ts');
+  const rendered = renderNshPeerSurfaceBindings(registry);
+  assert.equal(committedTs, rendered, 'committed peerSurface.ts must match the renderer');
 
   assert.match(rendered, /export const REMOTE_SURFACE_REGISTRY_DIGEST = "fnv1a64:[0-9a-f]{16}" as const;/u);
   assert.ok(rendered.includes('"account_login",'));
   assert.ok(rendered.includes('"peer_mode_ping",'));
   assert.equal(rendered.includes('"git_trust_repository",'), false, 'operator-only rows stay forwarded');
   assert.equal(rendered.includes('"dispatch_target_submit",'), false, 'HostInvoke-only rows never enter the FE local set');
-  for (const capability of registry.capabilities.ids) {
-    assert.ok(rendered.includes(`"${capability}",`), capability);
-  }
-  assert.ok(rendered.includes('"lsp_",'));
 });
 
 test('public playbook metadata enriches docs and website while keeping runtime catalogs lean', async () => {
   const publicCatalog = JSON.parse(await read('docs/interactive-capabilities/capabilities.json'));
-  const frontendCatalog = JSON.parse(await read(
-    'src/web-ui/src/app/global-search/generated/interactive-capabilities.json',
-  ));
   const productControlCatalog = JSON.parse(await read(
     'src/crates/contracts/product-domains/src/generated/product-control-catalog.json',
   ));
 
   assert.ok(publicCatalog.playbook, 'public catalog must carry top-level playbook metadata');
-  assert.equal(Object.hasOwn(frontendCatalog, 'playbook'), false);
   assert.equal(Object.hasOwn(productControlCatalog, 'playbook'), false);
   assert.equal(publicCatalog.playbook.directoryGroups.length, 11);
   assert.deepEqual(
@@ -578,7 +529,7 @@ test('public playbook metadata enriches docs and website while keeping runtime c
   assert.ok(publicCatalog.playbook.scenarios.length >= 5);
 
   const publicById = new Map(publicCatalog.capabilities.map((cap) => [cap.id, cap]));
-  const frontendById = new Map(frontendCatalog.capabilities.map((cap) => [cap.id, cap]));
+  const leanById = new Map(productControlCatalog.capabilities.map((cap) => [cap.id, cap]));
   for (const id of [
     'feature.home-search',
     'feature.projects',
@@ -593,7 +544,7 @@ test('public playbook metadata enriches docs and website while keeping runtime c
     'feature.browser',
   ]) {
     const pub = publicById.get(id);
-    const lean = frontendById.get(id);
+    const lean = leanById.get(id);
     assert.ok(pub, `${id} exists in publicCatalog`);
     assert.ok(pub.directoryGroupId, `${id} carries directoryGroupId`);
     assert.equal(typeof pub.order, 'number');

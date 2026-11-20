@@ -243,10 +243,9 @@ const homeHeatmapPlotData = computed<HomeHeatmapPlotModel>(() => {
   const weekCount = Math.max(1, grid.weekCount);
   const weeks = Array.from({ length: weekCount }, (_, idx) => `w${idx}`);
   const rows: HomeHeatmapDatum[] = [];
-  let activeDays = 0;
+  const activeDays = grid.activeDays;
   grid.days.forEach((day, idx) => {
     if (!day.inRange) return;
-    if (day.tokens > 0) activeDays += 1;
     const col = Math.floor(idx / 7);
     const row = idx % 7;
     rows.push({
@@ -635,7 +634,8 @@ function ActivityNumber(props: { label: string; value: string; muted?: boolean }
 
 function ActivitySection() {
   const usageReady = () => usageSummary() !== null;
-  const activityReady = () => usageSummary() !== null || usageActivityStatus() === "ready";
+  // Peak and streaks are the host's counts over its day-keyed grid.
+  const activityReady = () => usageActivityStatus() === "ready";
   const hoveredDay = (): HomeHeatmapDatum | null => {
     const idx = hoveredActivityIdx();
     if (idx === null) return null;

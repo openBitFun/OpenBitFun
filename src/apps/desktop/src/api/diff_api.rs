@@ -56,7 +56,7 @@ pub struct SaveMergedContentRequest {
     pub content: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn compute_diff(request: ComputeDiffRequest) -> Result<DiffResult, String> {
     let old_lines: Vec<&str> = request.old_content.lines().collect();
     let new_lines: Vec<&str> = request.new_content.lines().collect();
@@ -192,12 +192,12 @@ pub async fn compute_diff(request: ComputeDiffRequest) -> Result<DiffResult, Str
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn apply_patch(request: ApplyPatchRequest) -> Result<String, String> {
     Ok(request.content)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_merged_diff_content(request: SaveMergedContentRequest) -> Result<(), String> {
     let path = PathBuf::from(&request.file_path);
 

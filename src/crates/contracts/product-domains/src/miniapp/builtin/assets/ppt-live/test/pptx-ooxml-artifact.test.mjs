@@ -15,10 +15,9 @@ import {
 
 const requireFromPptxGen = createRequire(import.meta.resolve('pptxgenjs'));
 const JSZip = requireFromPptxGen('jszip');
-const requireFromWebUi = createRequire(
-  new URL('../../../../../../../../../web-ui/package.json', import.meta.url),
-);
-const { JSDOM, VirtualConsole } = requireFromWebUi('jsdom');
+// jsdom is a root devDependency (owner of `pnpm run test:ppt-live`).
+const requireFromRepository = createRequire(import.meta.url);
+const { JSDOM, VirtualConsole } = requireFromRepository('jsdom');
 
 const PNG_1X1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const PRODUCTION_FIXTURES = [

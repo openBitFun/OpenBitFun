@@ -1,0 +1,213 @@
+{
+  "description": "Installer-owned source strings for scripts/sync-model-i18n.cjs and scripts/sync-theme-i18n.cjs. Moved verbatim from the retired React desktop UI locale catalogs (src/web-ui/src/locales: settings/models.json, components.json, settings/application.json).",
+  "settingsModels": {
+    "subtitle": "Connect model providers and choose models for each type of task",
+    "providerSelection": {
+      "title": "Select Model Provider",
+      "orSelectProvider": "or select a preset provider",
+      "customTitle": "Custom Configuration",
+      "getApiKey": "Get API Key",
+      "fillApiKeyBeforeFetch": "Enter the API key before fetching models",
+      "fetchingModels": "Fetching model list...",
+      "fetchFailedFallback": "Failed to fetch model list, fell back to common preset models",
+      "fetchEmptyFallback": "Provider returned no models, fell back to common preset models",
+      "usingPresetModels": "Currently showing common preset models",
+      "inputModelName": "Enter model name...",
+      "selectModel": "Select model",
+      "addCustomModel": "Add Custom Model"
+    },
+    "form": {
+      "baseUrl": "API URL",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "Enter your API Key",
+      "provider": "Request Format",
+      "providerPlaceholder": "Select request format",
+      "modelSelection": "Select Models",
+      "modelName": "Model Name",
+      "resolvedUrlLabel": "Request URL: "
+    },
+    "formats": {
+      "openaiCompatible": "OpenAI Compatible",
+      "responsesApi": "OpenAI Responses API",
+      "claudeApi": "Claude API",
+      "geminiApi": "Gemini GenerateContent API"
+    },
+    "advancedSettings": {
+      "customRequestBody": {
+        "placeholder": "Example:\n{\n  \"temperature\": 0.8,\n  \"top_p\": 0.9\n}",
+        "validJson": "JSON format is valid",
+        "invalidJson": "Invalid JSON format, please check syntax"
+      },
+      "skipSslVerify": {
+        "label": "Skip SSL Certificate Verification"
+      },
+      "customHeaders": {
+        "modeMerge": "Merge",
+        "modeReplace": "Replace",
+        "addHeader": "Add Field",
+        "keyPlaceholder": "key",
+        "valuePlaceholder": "value"
+      }
+    },
+    "actions": {
+      "test": "Test Connection"
+    },
+    "messages": {
+      "testSuccess": "Test successful",
+      "testFailed": "Test failed"
+    },
+    "providers": {
+      "magpie": {
+        "name": "Magpie",
+        "description": "Models and routing groups from your Magpie gateway",
+        "urlOptions": {
+          "openai": "Magpie gateway",
+          "responses": "Magpie gateway",
+          "anthropic": "Magpie gateway"
+        }
+      },
+      "opencode-zen": {
+        "name": "OpenCode Zen",
+        "description": "OpenCode models with free access and pay-as-you-go API keys."
+      },
+      "opencode-go": {
+        "name": "OpenCode Go",
+        "description": "A model subscription plan from OpenCode."
+      },
+      "openbitfun": {
+        "name": "OpenBitFun Service",
+        "description": "OpenBitFun Model Platform",
+        "urlOptions": {
+          "default": "Official API",
+          "openai": "Official API"
+        }
+      },
+      "openai": {
+        "name": "OpenAI",
+        "description": "OpenAI GPT and reasoning models",
+        "urlOptions": {
+          "default": "Official API",
+          "chatCompletions": "Official API"
+        }
+      },
+      "gemini": {
+        "name": "Google Gemini",
+        "description": "Google Gemini series models"
+      },
+      "anthropic": {
+        "name": "Anthropic Claude",
+        "description": "Anthropic Claude series models"
+      },
+      "minimax": {
+        "name": "MiniMax",
+        "description": "MiniMax series models",
+        "urlOptions": {
+          "default": "China - Default",
+          "openai": "China",
+          "intl": "Global",
+          "intlOpenai": "Global"
+        }
+      },
+      "xiaomi": {
+        "name": "Xiaomi MiMo",
+        "description": "Xiaomi MiMo models. API and Token Plan keys are separate.",
+        "urlOptions": {
+          "default": "API - Default",
+          "responses": "API",
+          "anthropic": "API",
+          "tokenPlan": "China - Token Plan",
+          "tokenPlanAnthropic": "China - Token Plan"
+        }
+      },
+      "moonshot": {
+        "name": "Moonshot AI",
+        "description": "Moonshot Kimi series models",
+        "urlOptions": {
+          "default": "China - Default",
+          "anthropic": "China",
+          "intl": "Global",
+          "intlAnthropic": "Global",
+          "kimiForCoding": "Kimi For Coding plan (models: k3 / kimi-for-coding)",
+          "kimiForCodingAnthropic": "Kimi For Coding plan"
+        }
+      },
+      "deepseek": {
+        "name": "DeepSeek",
+        "description": "DeepSeek series models",
+        "urlOptions": {
+          "default": "Official API - Default",
+          "anthropic": "Official API"
+        }
+      },
+      "zhipu": {
+        "name": "Zhipu AI",
+        "description": "Zhipu AI GLM series models",
+        "urlOptions": {
+          "default": "China - Default",
+          "anthropic": "China",
+          "codingPlan": "China - Coding Plan",
+          "intl": "Global (Z.AI)",
+          "intlAnthropic": "Global (Z.AI)",
+          "intlCodingPlan": "Global (Z.AI) - Coding Plan"
+        }
+      },
+      "qwen": {
+        "name": "Qwen",
+        "description": "Alibaba Cloud Bailian Model Platform",
+        "urlOptions": {
+          "default": "China - Default",
+          "intl": "Global (International)",
+          "codingPlan": "China - Coding Plan",
+          "codingPlanAnthropic": "China - Coding Plan",
+          "intlCodingPlan": "Global - Coding Plan"
+        }
+      },
+      "volcengine": {
+        "name": "Volcano Engine",
+        "description": "ByteDance Volcano Engine Model Platform",
+        "urlOptions": {
+          "default": "China - Default",
+          "codingPlan": "China - Coding Plan",
+          "intl": "Global (BytePlus)"
+        }
+      },
+      "siliconflow": {
+        "name": "SiliconFlow",
+        "description": "SiliconFlow Model Platform",
+        "urlOptions": {
+          "default": "China - Default",
+          "anthropic": "China",
+          "intl": "Global"
+        }
+      },
+      "nvidia": {
+        "name": "NVIDIA",
+        "description": "NVIDIA NIM Model Platform"
+      },
+      "openrouter": {
+        "name": "OpenRouter",
+        "description": "OpenRouter Model Platform"
+      },
+      "tokendance": {
+        "name": "TokenDance",
+        "description": "Unified AI model gateway"
+      }
+    }
+  },
+  "components": {
+    "input": {
+      "show": "Show",
+      "hide": "Hide"
+    }
+  },
+  "themeNames": {
+    "openbitfun-dark": "Dark",
+    "openbitfun-light": "Light",
+    "openbitfun-midnight": "Midnight",
+    "openbitfun-china-style": "Ink Charm",
+    "openbitfun-china-night": "Ink Night",
+    "openbitfun-cyber": "Cyber",
+    "openbitfun-slate": "Slate",
+    "openbitfun-tokyo-night": "Tokyo Night"
+  }
+}

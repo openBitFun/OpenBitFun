@@ -1,9 +1,12 @@
 // Git Workbench state and Tauri command orchestration.
 
 import { computed, signal } from "nsh";
-import { deleteWorkspaceFile, type GitFileStatus, type GitStatus, type WorkspaceRecord } from "./api";
+import { type GitFileStatus, type GitStatus, type WorkspaceRecord } from "./api";
 import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
-import { createStatusPoller, subscribeWorkspaceFileChanges } from "./fileStore";
+import { subscribeWorkspaceFileChanges } from "./fileStore";
+import { gitLiveMode, holdGitStatusLive, renewGitStatusLive, type GitStatusChange } from "./gitStatusLive";
+import { isCommandUnavailable } from "./hostCommands";
+import { tr } from "./i18n";
 import { peerScope } from "./peerState";
 import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
@@ -122,6 +125,8 @@ export const confirmingForceDeleteBranch = signal<string | null>(null);
 /** The checkout git refused because local changes would be overwritten. */
 export interface BranchSwitchBlocker {
   targetBranch: string;
+  /** Set when the switch creates `targetBranch` from a remote-tracking branch. */
+  startPoint?: string;
   files: string[];
   kind: "tracked" | "untracked";
 }
@@ -263,15 +268,6 @@ export function displayRepoFilePath(path: string): string {
   return path;
 }
 
-function resolveRepoFilePath(rootPath: string, filePath: string): string {
-  if (filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath)) {
-    return filePath;
-  }
-  const cleanRoot = rootPath.replace(/[\\/]+$/, "");
-  const cleanRel = filePath.replace(/^[\\/]+/, "");
-  return cleanRoot ? `${cleanRoot}/${cleanRel}` : cleanRel;
-}
-
 function normalizeWorktree(raw: Record<string, unknown>): GitWorktreeRow {
   return {
     path: readStr(raw, "path"),
@@ -392,6 +388,8 @@ export async function probeAndLoadGit(ws: WorkspaceRecord | null = activeWorkspa
     }
 
     gitRepoState.set("trusted");
+    // A repository that just became readable (trusted, initialized) is leased now.
+    renewGitStatusLive();
     await refreshGitAll(ws, ticket);
   } catch (error) {
     if (ticket !== probeTicket) return;
@@ -536,11 +534,28 @@ async function applyGitStatus(ws: WorkspaceRecord, normalized: GitStatus | null)
 // ── Live refresh ────────────────────────────────────────────────────────────
 
 /**
- * One quiet status read: nothing on screen changes unless the repository did,
- * and a failure keeps the last answer (the poller backs off instead). A changed
- * branch or ahead/behind count also re-reads branches and history, since a
- * commit or checkout made elsewhere moved them.
+ * Applies a status read without disturbing the screen: nothing changes unless
+ * the repository did. A changed branch or ahead/behind count also re-reads
+ * branches and history, since a commit or checkout made elsewhere moved them.
  */
+async function applyQuietStatus(ws: WorkspaceRecord, next: GitStatus | null, ticket: number): Promise<void> {
+  const previous = gitStatus();
+  if (JSON.stringify(next) === JSON.stringify(previous)) return;
+  const headMoved =
+    !previous ||
+    !next ||
+    previous.current_branch !== next.current_branch ||
+    previous.ahead !== next.ahead ||
+    previous.behind !== next.behind ||
+    previous.staged.length > next.staged.length;
+  await applyGitStatus(ws, next);
+  if (headMoved && ticket === probeTicket) {
+    void loadGitBranches(ws, ticket);
+    void loadGitHistory(ws, ticket);
+  }
+}
+
+/** One quiet status read (window focus, or a host that does not push status). */
 export async function refreshGitStatusQuietly(): Promise<boolean> {
   const ws = activeWorkspace();
   if (!ws || gitRepoState() !== "trusted" || gitActionBusy() || gitBusy()) return true;
@@ -556,22 +571,19 @@ export async function refreshGitStatusQuietly(): Promise<boolean> {
     return false;
   }
   if (ticket !== probeTicket || workspaceScopeKey(activeWorkspace()) !== currentScopeKey) return true;
-  const next = normalizeStatus(raw);
-  const previous = gitStatus();
-  if (JSON.stringify(next) === JSON.stringify(previous)) return true;
-  const headMoved =
-    !previous ||
-    !next ||
-    previous.current_branch !== next.current_branch ||
-    previous.ahead !== next.ahead ||
-    previous.behind !== next.behind ||
-    previous.staged.length > next.staged.length;
-  await applyGitStatus(ws, next);
-  if (headMoved && ticket === probeTicket) {
-    void loadGitBranches(ws, ticket);
-    void loadGitHistory(ws, ticket);
-  }
+  await applyQuietStatus(ws, normalizeStatus(raw), ticket);
   return true;
+}
+
+/** A status the host pushed (`git://status-changed`) for the watched repository. */
+function applyPushedStatus(change: GitStatusChange): void {
+  const ws = activeWorkspace();
+  if (!ws || ws.id !== change.workspaceId || gitRepoState() !== "trusted") return;
+  if (workspaceScopeKey(ws) !== currentScopeKey) return;
+  // The running action re-reads when it finishes; a pushed status in between
+  // would only repaint twice.
+  if (gitActionBusy() || gitBusy()) return;
+  void applyQuietStatus(ws, normalizeStatus(change.status as unknown as Record<string, unknown> | null), probeTicket);
 }
 
 let quietRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -589,18 +601,27 @@ let liveRefreshInstalled = false;
 function installLiveRefresh(): void {
   if (liveRefreshInstalled) return;
   liveRefreshInstalled = true;
-  // A disk change under the workspace, or the window coming back to the front,
-  // re-reads status at once instead of waiting for the next poll.
-  subscribeWorkspaceFileChanges(() => scheduleQuietRefresh());
+  // The window coming back to the front re-reads once (an event can be lost
+  // while the connection was down). A host that does not push status still
+  // re-reads on a disk change the explorer watch reports; there is no timer.
+  subscribeWorkspaceFileChanges(() => {
+    if (gitLiveMode() === "unsupported") scheduleQuietRefresh();
+  });
   listenEvent<unknown>("tauri://focus", () => scheduleQuietRefresh(0));
 }
 
-const gitStatusPoller = createStatusPoller(refreshGitStatusQuietly);
-
-/** The Git scene's lease on the status poll (2 s local, 30 s remote, backing off on failure). */
-export function holdGitStatusPoll(): () => void {
+/**
+ * The Git scene's lease on live status: the host publishes every change
+ * (`git://status-changed`), so this surface never polls.
+ */
+export function holdGitStatusWatch(): () => void {
   installLiveRefresh();
-  return gitStatusPoller();
+  return holdGitStatusLive(applyPushedStatus);
+}
+
+/** Why the status on screen is not live, empty when it is. */
+export function gitLiveNotice(): string {
+  return gitLiveMode() === "unsupported" ? tr("git.live.hostOutdated") : "";
 }
 
 async function loadFileDiff(ws: WorkspaceRecord, target: SelectedGitFile): Promise<void> {
@@ -615,13 +636,9 @@ async function loadFileDiff(ws: WorkspaceRecord, target: SelectedGitFile): Promi
     if (selectedGitFile()?.path !== target.path || selectedGitFile()?.staged !== target.staged) {
       return;
     }
-    let text = typeof patch === "string" ? patch : "";
-    if (!text.trim() && target.kind === "untracked") {
-      // git has no diff for a file it does not track: show the file as all
-      // additions, the way the desktop's diff view does.
-      text = await untrackedFilePatch(ws, target.path);
-      if (selectedGitFile()?.path !== target.path) return;
-    }
+    // The host draws an untracked file as all additions; an older host
+    // answers empty and the note below says why.
+    const text = typeof patch === "string" ? patch : "";
     selectedGitDiff.set(text);
     if (!text.trim()) {
       selectedGitDiffNote.set(
@@ -637,31 +654,6 @@ async function loadFileDiff(ws: WorkspaceRecord, target: SelectedGitFile): Promi
     }
   } finally {
     diffLoading.set(false);
-  }
-}
-
-/** Above this, an untracked file is not read just to draw it as additions. */
-const UNTRACKED_PREVIEW_LIMIT = 512 * 1024;
-
-async function untrackedFilePatch(ws: WorkspaceRecord, path: string): Promise<string> {
-  try {
-    const fullPath = resolveRepoFilePath(ws.rootPath, path);
-    const text = await invokeCommand<string>("read_file_content", { workspaceId: ws.id, filePath: fullPath });
-    if (typeof text !== "string" || text.length > UNTRACKED_PREVIEW_LIMIT || text.includes("\u0000")) return "";
-    const relative = displayRepoFilePath(fullPath);
-    const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
-    if (text.length === 0) return "";
-    return [
-      `diff --git a/${relative} b/${relative}`,
-      "new file mode 100644",
-      "--- /dev/null",
-      `+++ b/${relative}`,
-      `@@ -0,0 +1,${lines.length} @@`,
-      ...lines.map(line => `+${line}`),
-      "",
-    ].join("\n");
-  } catch {
-    return "";
   }
 }
 
@@ -747,47 +739,32 @@ export async function discardGitFile(target: DiscardTarget): Promise<void> {
   gitError.set("");
   gitNotice.set("");
   try {
-    if (target.kind === "untracked") {
-      const fullPath = resolveRepoFilePath(ws.rootPath, target.path);
-      await deleteWorkspaceFile(ws.id, fullPath);
-      confirmingDiscardFile.set(null);
-      const msg = `Deleted untracked file ${displayRepoFilePath(target.path)}`;
-      gitNotice.set(msg);
-      pushToast(msg, "success");
-      await loadGitStatus(ws, probeTicket);
-      return;
-    }
-
-    if (target.kind === "staged") {
-      const unstageRes = await invokeCommand<GitOpResult>("git_reset_files", {
-        workspaceId: ws.id,
-        repositoryPath: ws.rootPath,
-        files: [target.path],
-        staged: true,
-      });
-      if (unstageRes && unstageRes.success === false) {
-        gitError.set(unstageRes.error || unstageRes.message || "Failed to unstage file before discarding");
-        return;
-      }
-    }
-
-    const res = await invokeCommand<GitOpResult>("git_reset_files", {
+    // The host decides per path: restore to HEAD, drop a staged addition, or
+    // delete an untracked file (only with the explicit consent below).
+    const res = await invokeCommand<GitOpResult>("git_discard_files", {
       workspaceId: ws.id,
       repositoryPath: ws.rootPath,
       files: [target.path],
-      staged: false,
+      includeUntracked: target.kind === "untracked",
     });
     if (res && res.success === false) {
-      gitError.set(res.error || res.message || "Failed to discard changes");
+      gitError.set(res.error || res.message || tr("git.discard.failed"));
       return;
     }
     confirmingDiscardFile.set(null);
-    const msg = `Discarded changes in ${displayRepoFilePath(target.path)}`;
+    const msg =
+      target.kind === "untracked"
+        ? tr("git.discard.deletedUntracked", { path: displayRepoFilePath(target.path) })
+        : tr("git.discard.discarded", { path: displayRepoFilePath(target.path) });
     gitNotice.set(msg);
     pushToast(msg, "success");
     await loadGitStatus(ws, probeTicket);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
+    const msg = isCommandUnavailable(error, "git_discard_files")
+      ? tr("git.discard.hostOutdated")
+      : error instanceof Error
+        ? error.message
+        : String(error);
     gitError.set(msg);
     pushToast(msg, "error");
   } finally {
@@ -896,42 +873,37 @@ export async function pushCurrentBranch(): Promise<void> {
   gitError.set("");
   gitNotice.set("");
   try {
-    const push = (setUpstream: boolean) =>
-      invokeCommand<GitOpResult>("git_push", {
+    // A branch without an upstream is published by the host (`push -u` to
+    // origin, or the only remote), the way the desktop does.
+    const res = await invokeCommand<GitOpResult & { data?: { published?: boolean; remote?: string; branch?: string } }>(
+      "git_push",
+      {
         workspaceId: ws.id,
         repositoryPath: ws.rootPath,
-        params: setUpstream
-          ? { remote: "origin", branch: gitStatus()?.current_branch ?? null, force: false, set_upstream: true }
-          : { remote: null, branch: null, force: false, set_upstream: false },
-      });
-    let res: GitOpResult | null;
-    let upstreamSet = false;
-    try {
-      res = await push(false);
-    } catch (error) {
-      if (!isNoUpstreamError(error instanceof Error ? error.message : String(error))) throw error;
-      res = { success: false, error: "no upstream branch" };
-    }
-    // A new branch has no upstream yet: publish it to origin, as the desktop does.
-    if (res && res.success === false && isNoUpstreamError(res.error || res.message || "")) {
-      res = await push(true);
-      upstreamSet = true;
-    }
+        params: { remote: null, branch: null, force: false, set_upstream: false },
+        publishIfNoUpstream: true,
+      },
+    );
     if (res && res.success === false) {
-      gitError.set(res.error || res.message || "Push failed");
+      gitError.set(pushFailure(res.error || res.message || tr("git.push.failed")));
       return;
     }
     gitNotice.set(
-      upstreamSet
-        ? `Published ${gitStatus()?.current_branch ?? "branch"} to origin`
-        : res?.message || "Pushed branch to remote",
+      res?.data?.published
+        ? tr("git.push.published", { branch: res.data.branch ?? "", remote: res.data.remote ?? "" })
+        : res?.message || tr("git.push.pushed"),
     );
     await refreshGitAll(ws, probeTicket);
   } catch (error) {
-    gitError.set(error instanceof Error ? error.message : String(error));
+    gitError.set(pushFailure(error instanceof Error ? error.message : String(error)));
   } finally {
     gitActionBusy.set(false);
   }
+}
+
+/** A host that ignored `publishIfNoUpstream` (older build) fails with git's own "no upstream" text. */
+function pushFailure(message: string): string {
+  return /no upstream branch|has no upstream/i.test(message) ? tr("git.push.publishHostOutdated") : message;
 }
 
 async function loadGitBranches(ws: WorkspaceRecord, ticket: number): Promise<void> {
@@ -999,7 +971,12 @@ export async function checkoutGitBranch(branchName: string): Promise<void> {
       const overwrite = parseCheckoutOverwriteFailure(failure);
       if (overwrite) {
         const files = overwrite.files.length > 0 ? overwrite.files : changedPathsOf(gitStatus());
-        branchSwitchBlocker.set({ targetBranch: localName, files, kind: overwrite.kind });
+        branchSwitchBlocker.set({
+          targetBranch: localName,
+          ...(remote && !hasLocal ? { startPoint: branchName } : {}),
+          files,
+          kind: overwrite.kind,
+        });
         return;
       }
       gitError.set(
@@ -1340,10 +1317,6 @@ function changedPathsOf(status: GitStatus | null): string[] {
   ];
 }
 
-function isNoUpstreamError(message: string): boolean {
-  return /no upstream branch|has no upstream|set-upstream|--set-upstream/i.test(message);
-}
-
 /** `origin/feat/x` checks out as `feat/x`. */
 export function localNameForRemoteBranch(name: string): string {
   const slash = name.indexOf("/");
@@ -1356,9 +1329,10 @@ export function dismissBranchSwitchBlocker(): void {
 }
 
 /**
- * Commit & switch: commits the files that block the checkout (staging them
- * first), then retries the switch — the desktop's way out of the overwrite
- * failure, without a stash.
+ * Commit & switch: the host stages the files that block the checkout, commits
+ * them and retries the switch as one operation (refusing first while conflicts
+ * are unresolved) — the desktop's way out of the overwrite failure, without a
+ * stash.
  */
 export async function commitAndSwitchBranch(): Promise<void> {
   const ws = activeWorkspace();
@@ -1367,34 +1341,48 @@ export async function commitAndSwitchBranch(): Promise<void> {
   if (!ws || !blocker || !message) return;
   gitActionBusy.set(true);
   gitError.set("");
+  gitNotice.set("");
   try {
-    const files = blocker.files.map(file => resolveRepoFilePath(ws.rootPath, file));
-    const added = await invokeCommand<GitOpResult>("git_add_files", {
+    const res = await invokeCommand<
+      GitOpResult & { data?: { committed?: boolean; blockingFiles?: string[]; blockingKind?: string | null } }
+    >("git_commit_and_checkout", {
       workspaceId: ws.id,
       repositoryPath: ws.rootPath,
-      params: { files, all: false },
+      message,
+      files: blocker.files,
+      targetBranch: blocker.targetBranch,
+      ...(blocker.startPoint ? { startPoint: blocker.startPoint } : {}),
     });
-    if (added && added.success === false) {
-      gitError.set(added.error || added.message || "Failed to stage the blocking files");
-      return;
+    switchCommitMessage.set("");
+    if (res && res.success === false) {
+      const files = res.data?.blockingFiles ?? [];
+      if (res.data?.committed && files.length > 0) {
+        // Committed, but something else still blocks the switch.
+        branchSwitchBlocker.set({
+          ...blocker,
+          files,
+          kind: res.data.blockingKind === "untracked" ? "untracked" : "tracked",
+        });
+      } else {
+        branchSwitchBlocker.set(null);
+      }
+      gitError.set(res.error || res.message || tr("git.switch.failed"));
+    } else {
+      branchSwitchBlocker.set(null);
+      gitNotice.set(tr("git.switch.committedAndSwitched", { branch: blocker.targetBranch }));
     }
-    const committed = await invokeCommand<GitOpResult>("git_commit", {
-      workspaceId: ws.id,
-      repositoryPath: ws.rootPath,
-      params: { message, amend: false },
-    });
-    if (committed && committed.success === false) {
-      gitError.set(committed.error || committed.message || "Commit failed");
-      return;
-    }
+    await refreshGitAll(ws, probeTicket);
   } catch (error) {
-    gitError.set(error instanceof Error ? error.message : String(error));
-    return;
+    gitError.set(
+      isCommandUnavailable(error, "git_commit_and_checkout")
+        ? tr("git.switch.hostOutdated")
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    );
   } finally {
     gitActionBusy.set(false);
   }
-  switchCommitMessage.set("");
-  await checkoutGitBranch(blocker.targetBranch);
 }
 
 export function cancelForceDeleteBranch(): void {

@@ -51,7 +51,19 @@
       "properties": {
         "displayNameKey": { "type": "string", "minLength": 1 },
         "binaryName": { "$ref": "#/$defs/binaryName" },
-        "bundleId": { "$ref": "#/$defs/bundleId" }
+        "bundleId": { "$ref": "#/$defs/bundleId" },
+        "icons": { "$ref": "#/$defs/desktopIcons" }
+      }
+    },
+    "desktopIcons": {
+      "description": "Application icons of the native desktop packages, relative to the definition directory.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["macos", "windows", "linux"],
+      "properties": {
+        "macos": { "type": "string", "pattern": "\\.icns$" },
+        "windows": { "type": "string", "pattern": "\\.ico$" },
+        "linux": { "type": "string", "pattern": "\\.png$" }
       }
     }
   }

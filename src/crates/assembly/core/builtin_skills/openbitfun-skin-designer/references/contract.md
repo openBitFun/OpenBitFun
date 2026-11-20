@@ -2,7 +2,8 @@
 
 The authority is `src/web-ui/src/infrastructure/visual-skin/{types,contract,
 validator,parser,runtime}.ts` and `src/web-ui/src/app/styles/visual-skin.scss`
-in the target checkout. Use `scripts/visual-skin.mjs contract` to inspect its
+in the target checkout (these files exist only in releases from before the
+React desktop UI was retired; see the status note in SKILL.md). Use `scripts/visual-skin.mjs contract` to inspect its
 public ids. This reference describes canonical packages, not a second schema.
 It specifies capabilities and import constraints, not a preferred visual design.
 The optional [authoring template](authoring-template.md) does not override it.

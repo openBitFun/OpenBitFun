@@ -377,18 +377,11 @@ not hide an Agent regression by performing those UI steps in fixture setup.
 Permission probes never prompt. Desktop-state witnesses record concurrent human
 activity without revoking Agent control or replaying input.
 
-The Web preview's deterministic cursor is verified against Rust-generated
-`computer-use-rust` samples retained in the repository. The reference source is
-not required to build or run tests. After preview, sharing or permission UI edits:
-
-```bash
-pnpm --dir src/web-ui run test:run src/app/components/ComputerUseControlCard.test.tsx src/app/components/computer-use src/infrastructure/api/adapters/peer-device-adapter.test.ts
-```
-
-These UI tests cover permission requests, stale device/grant responses, geometry,
-gesture cancellation and cursor math. They do not establish native delivery or
-remote end-to-end behavior. The strict macOS fixture also exercises native shared
-preview capture/input and stale preview rejection after revocation.
+The `computer-use-rust` cursor samples retained in the repository were the
+reference for the retired React desktop UI's preview card; the native desktop UI
+(`src/nsh-ui`) has no shared-preview card yet, so there is no UI-side fixture to
+run. The strict macOS fixture exercises native shared preview capture/input and
+stale preview rejection after revocation.
 
 Native pointer presentation uses `pointer_motion.h` for both AppKit and Win32.
 Keep elapsed-time spring math free of OS/input dependencies. AppKit's visibility

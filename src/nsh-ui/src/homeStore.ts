@@ -14,6 +14,12 @@ import { localizeHostError, tr } from "./i18n";
 import { peerScope } from "./peerState";
 import { pendingPermissions } from "./permissionStore";
 import { savedConnections, type SavedConnection } from "./sshRemoteStore";
+import { isCommandUnavailable } from "./hostCommands";
+import {
+  readUsageActivity,
+  type UsageActivityCell,
+  type UsageActivityView,
+} from "./usageActivity";
 import {
   activeWorkspaceId,
   navigateScene,
@@ -23,7 +29,6 @@ import {
   startQuickPromptInSession,
 } from "./state";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTH_NAMES = [
   "Jan",
   "Feb",
@@ -83,26 +88,20 @@ export interface HomeUsageSummary {
   trend: UsageTrendPointView[];
 }
 
+/** Peak and streaks of the activity window, as the host counted them. */
 export interface OverviewUsageMetrics {
   peakTokens: number;
   longestStreak: number;
   currentStreak: number;
-  partial: boolean;
 }
 
-export interface UsageActivityDayCell {
-  key: string;
-  monthIndex: number;
-  dayOfMonth: number;
-  tokens: number;
-  level: 0 | 1 | 2 | 3 | 4;
-  inRange: boolean;
-}
+export type UsageActivityDayCell = UsageActivityCell;
 
 export interface UsageActivityGridData {
   days: UsageActivityDayCell[];
   weekCount: number;
   totalTokens: number;
+  activeDays: number;
   monthHeaders: Array<{ weekIndex: number; label: string }>;
 }
 
@@ -177,7 +176,8 @@ export const homeSshNote = signal("");
 
 export const usageSummary = signal<HomeUsageSummary | null>(null);
 export const usagePulseNote = signal("");
-export const usageActivityPoints = signal<UsageTrendPointView[]>([]);
+/** The host's day-keyed heatmap (`get_token_usage_activity`); `null` until read. */
+export const homeUsageActivity = signal<UsageActivityView | null>(null);
 export const usageActivityStatus = signal<"loading" | "ready" | "unsupported" | "failed">("loading");
 export const usageActivityNote = signal("");
 export const selectedActivityCell = signal<UsageActivityDayCell | null>(null);
@@ -201,15 +201,29 @@ export const homeSshList = computed<SavedConnection[]>(() =>
 );
 
 export const overviewUsageMetrics = computed<OverviewUsageMetrics>(() => {
-  const activity = usageActivityPoints();
-  const summary = usageSummary();
-  const points = activity.length > 0 ? activity : summary?.trend ?? [];
-  return summarizeOverviewUsage(points, summary?.totalTokens ?? 0);
+  const activity = homeUsageActivity();
+  return {
+    peakTokens: activity?.peakTokens ?? 0,
+    longestStreak: activity?.longestStreak ?? 0,
+    currentStreak: activity?.currentStreak ?? 0,
+  };
 });
 
-export const usageActivityGrid = computed<UsageActivityGridData>(() =>
-  buildUsageActivityGrid(usageActivityPoints()),
-);
+/** The host's grid with month labels; no day is re-keyed or rescaled here. */
+export const usageActivityGrid = computed<UsageActivityGridData>(() => {
+  const activity = homeUsageActivity();
+  if (!activity) return { days: [], weekCount: 0, totalTokens: 0, activeDays: 0, monthHeaders: [] };
+  return {
+    days: activity.days,
+    weekCount: activity.weekCount,
+    totalTokens: activity.totalTokens,
+    activeDays: activity.activeDays,
+    monthHeaders: activity.monthHeaders.map(header => ({
+      weekIndex: header.weekIndex,
+      label: MONTH_NAMES[header.monthIndex] ?? "",
+    })),
+  };
+});
 
 let lastPulsePeerKey: string | undefined;
 let lastModesKey: string | undefined;
@@ -292,151 +306,6 @@ function resolveTimeZone(): string {
   } catch {
     return "UTC";
   }
-}
-
-function utcDateKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function calendarWindow(now: Date): { start: number; end: number; todayKey: string } {
-  const todayKey = utcDateKey(now);
-  const end = Date.parse(`${todayKey}T00:00:00Z`);
-  const endDate = new Date(end);
-  const startMonth = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 6, 1));
-  const lastDayOfStartMonth = new Date(
-    Date.UTC(startMonth.getUTCFullYear(), startMonth.getUTCMonth() + 1, 0),
-  ).getUTCDate();
-  startMonth.setUTCDate(Math.min(endDate.getUTCDate(), lastDayOfStartMonth) + 1);
-  return { start: startMonth.getTime(), end, todayKey };
-}
-
-function activityRequestRange(now: Date): { start: string; end: string } {
-  const { start } = calendarWindow(now);
-  return {
-    start: new Date(start - DAY_MS).toISOString(),
-    end: now.toISOString(),
-  };
-}
-
-function parseTrendPoints(rawList: unknown): UsageTrendPointView[] {
-  if (!Array.isArray(rawList)) return [];
-  const points: UsageTrendPointView[] = [];
-  for (const item of rawList) {
-    const rec = asRecord(item);
-    const bucket = readString(rec, ["bucket", "date"]);
-    if (!bucket) continue;
-    points.push({
-      bucket,
-      inputTokens: readNumber(rec, ["inputTokens", "input_tokens"]) ?? 0,
-      outputTokens: readNumber(rec, ["outputTokens", "output_tokens"]) ?? 0,
-      cacheReadTokens: readNumber(rec, ["cacheReadTokens", "cache_read_tokens"]) ?? 0,
-    });
-  }
-  return points;
-}
-
-function summarizeOverviewUsage(
-  points: UsageTrendPointView[],
-  totalTokens: number,
-  now = new Date(),
-): OverviewUsageMetrics {
-  const today = utcDateKey(now);
-  const daily = new Map<string, number>();
-  for (const point of points) {
-    const date = new Date(point.bucket);
-    if (!Number.isFinite(date.getTime())) continue;
-    const key = utcDateKey(date);
-    if (key > today) continue;
-    daily.set(key, (daily.get(key) ?? 0) + point.inputTokens + point.outputTokens);
-  }
-  const days = [...daily].sort(([a], [b]) => a.localeCompare(b));
-  const recordedTokens = days.reduce((sum, [, tokens]) => sum + tokens, 0);
-  let longestStreak = 0;
-  let run = 0;
-  let previousDay = Number.NEGATIVE_INFINITY;
-  let peakTokens = 0;
-  for (const [key, tokens] of days) {
-    peakTokens = Math.max(peakTokens, tokens);
-    if (tokens <= 0) continue;
-    const day = Date.parse(`${key}T00:00:00Z`);
-    run = day - previousDay === DAY_MS ? run + 1 : 1;
-    longestStreak = Math.max(longestStreak, run);
-    previousDay = day;
-  }
-  let cursor = Date.parse(`${today}T00:00:00Z`);
-  if ((daily.get(today) ?? 0) <= 0) cursor -= DAY_MS;
-  let currentStreak = 0;
-  while ((daily.get(new Date(cursor).toISOString().slice(0, 10)) ?? 0) > 0) {
-    currentStreak += 1;
-    cursor -= DAY_MS;
-  }
-  return {
-    peakTokens,
-    longestStreak,
-    currentStreak,
-    partial: totalTokens > 0 && recordedTokens !== totalTokens,
-  };
-}
-
-function buildUsageActivityGrid(
-  points: UsageTrendPointView[],
-  now = new Date(),
-): UsageActivityGridData {
-  const { start, end } = calendarWindow(now);
-  const totals = new Map<string, number>();
-  for (const point of points) {
-    const date = new Date(point.bucket);
-    if (!Number.isFinite(date.getTime())) continue;
-    const key = utcDateKey(date);
-    totals.set(key, (totals.get(key) ?? 0) + point.inputTokens + point.outputTokens);
-  }
-
-  // Monday-first weeks matching Tauri `UsageActivityGrid`.
-  const offset = (new Date(start).getUTCDay() + 6) % 7;
-  const gridStart = start - offset * DAY_MS;
-  const dayCount = Math.max(1, Math.round((end - start) / DAY_MS) + 1);
-  const weekCount = Math.ceil((dayCount + offset) / 7);
-  const rawDays: UsageActivityDayCell[] = Array.from({ length: weekCount * 7 }, (_, index) => {
-    const timestamp = gridStart + index * DAY_MS;
-    const date = new Date(timestamp);
-    const key = utcDateKey(date);
-    const inRange = timestamp >= start && timestamp <= end;
-    return {
-      key,
-      monthIndex: date.getUTCMonth(),
-      dayOfMonth: date.getUTCDate(),
-      tokens: inRange ? totals.get(key) ?? 0 : 0,
-      level: 0,
-      inRange,
-    };
-  });
-
-  const peak = rawDays.reduce((max, day) => Math.max(max, day.tokens), 0);
-  for (const day of rawDays) {
-    if (day.tokens <= 0 || peak <= 0) {
-      day.level = 0;
-    } else {
-      const scaled = Math.min(4, Math.max(1, Math.ceil((day.tokens / peak) * 4))) as 1 | 2 | 3 | 4;
-      day.level = scaled;
-    }
-  }
-
-  const firstVisible = rawDays.find(d => d.inRange);
-  const monthHeaders: Array<{ weekIndex: number; label: string }> = [];
-  rawDays.forEach((day, index) => {
-    if (!day.inRange) return;
-    if (day.dayOfMonth !== 1 && day !== firstVisible) return;
-    const column = Math.floor(index / 7);
-    if (day === firstVisible && day.dayOfMonth > 14) return;
-    if (column > weekCount - 3) return;
-    monthHeaders.push({
-      weekIndex: column,
-      label: MONTH_NAMES[day.monthIndex] ?? "",
-    });
-  });
-
-  const totalTokens = rawDays.reduce((sum, day) => sum + day.tokens, 0);
-  return { days: rawDays, weekCount, totalTokens, monthHeaders };
 }
 
 function ensureHomeEventSubscriptions(): void {
@@ -700,45 +569,38 @@ function summarizeCronSchedule(scheduleRaw: unknown): string {
   return tr("routines.scheduleGeneric");
 }
 
-function parseDueRoutines(jobs: unknown[]): DueRoutineView[] {
-  const now = Date.now();
-  const minWindow = now - 60 * 60 * 1000;
-  const maxWindow = now + 24 * 60 * 60 * 1000;
-  const due: DueRoutineView[] = [];
-
-  for (const raw of jobs) {
-    const job = asRecord(raw);
-    if (job.enabled === false) continue;
-    const state = asRecord(job.state);
-    const schedule = asRecord(job.schedule);
-    let nextRunMs = parseTimestampMs(
-      state.nextRunAtMs ?? state.next_run_at_ms ?? job.nextRunAtMs ?? job.next_run_at_ms,
-    );
-    if (nextRunMs === undefined && readString(schedule, ["kind"]).toLowerCase() === "at") {
-      nextRunMs = parseTimestampMs(schedule.at);
-    }
-    if (nextRunMs === undefined) continue;
-    if (nextRunMs < minWindow || nextRunMs > maxWindow) continue;
-    const id = readString(job, ["id"]) || `routine-${due.length + 1}`;
-    const name = readString(job, ["name"]) || id;
-    const lastRunStatus = readString(state, ["lastRunStatus", "last_run_status"]);
+/** The host's due-soon routines (enabled, due within the last hour or next day, soonest first). */
+function readDueRoutines(raw: unknown): DueRoutineView[] {
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map((entry, index) => {
+    const job = asRecord(entry);
+    const id = readString(job, ["id"]) || `routine-${index + 1}`;
+    const nextRunAtMs = readNumber(job, ["nextRunAtMs"]) ?? 0;
     const rawSchedule = job.schedule;
-    const resolvedNextRunMs = nextRunMs;
-    due.push({
+    return {
       id,
-      name,
+      name: readString(job, ["name"]) || id,
       get scheduleSummary() {
         return summarizeCronSchedule(rawSchedule);
       },
-      nextRunAtMs: resolvedNextRunMs,
+      nextRunAtMs,
       get nextRunText() {
-        return formatTimestamp(resolvedNextRunMs) || tr("common.soon");
+        return formatTimestamp(nextRunAtMs) || tr("common.soon");
       },
-      lastRunStatus,
-    });
-  }
+      lastRunStatus: readString(job, ["lastRunStatus"]),
+    };
+  });
+}
 
-  return due.sort((left, right) => left.nextRunAtMs - right.nextRunAtMs);
+/** `{status, value?, error?}` of one overview section. */
+function readSection(raw: unknown): { ready: boolean; value: Record<string, unknown>; error: string } {
+  const section = asRecord(raw);
+  const status = readString(section, ["status"]);
+  return {
+    ready: status === "ready",
+    value: asRecord(section.value),
+    error: status === "ready" ? "" : readString(section, ["error"]) || status || "unavailable",
+  };
 }
 
 export async function loadAgentModesPulse(
@@ -791,6 +653,12 @@ export async function loadAgentModesPulse(
   }
 }
 
+/**
+ * Reads Home's overview in one call. The host counts, filters and keys every
+ * section (`get_personal_overview`); each section carries its own status, so a
+ * failing owner leaves its note and the others still draw. A host older than
+ * the command gets one "update the host" note instead of eight client reads.
+ */
 export async function loadEcosystemPulse(force = false): Promise<void> {
   const peerId = peerScope()?.deviceId ?? null;
   const peerKey = peerId ?? "__local__";
@@ -811,169 +679,105 @@ export async function loadEcosystemPulse(force = false): Promise<void> {
   }
 
   const timeZone = resolveTimeZone();
-  const now = new Date();
-  const range = activityRequestRange(now);
-
-  const [
-    assistantsRes,
-    skillsRes,
-    routinesRes,
-    usageRes,
-    activityRes,
-    miniappsRes,
-    runningWorkersRes,
-    sshRes,
-  ] = await Promise.allSettled([
-    invokeRawCommand<Array<Record<string, unknown>>>("get_assistant_workspaces", {}),
-    invokeRawCommand<unknown>("get_skill_configs", {
-      forceRefresh: false,
-      includeDiagnostics: false,
-      workspaceId: null,
-      workspacePath: null,
-    }),
-    invokeCommand<unknown[]>("list_cron_jobs", {}),
-    invokeCommand<Record<string, unknown>>("get_token_usage_statistics", {
-      timeRange: "last30Days",
-      granularity: "day",
-      timeZone,
-    }),
-    invokeCommand<Record<string, unknown>>("get_token_usage_statistics", {
-      timeRange: "custom",
-      granularity: "day",
-      timeZone,
-      includeSubagent: true,
-      start: range.start,
-      end: range.end,
-    }),
-    invokeRawCommand<Array<Record<string, unknown>>>("list_miniapps", {}),
-    invokeRawCommand<string[]>("miniapp_worker_list_running", {}),
-    invokeRawCommand<SavedConnection[]>("ssh_list_saved_connections", {}),
-  ]);
+  let overview: Record<string, unknown> | null = null;
+  let failure = "";
+  let outdated = false;
+  try {
+    overview = asRecord(
+      await invokeCommand<unknown>("get_personal_overview", { timeZone, activityMonths: 6 }),
+    );
+  } catch (error) {
+    failure = errorMessage(error);
+    outdated = isCommandUnavailable(error, "get_personal_overview");
+  }
 
   if (ticket !== pulseTicket || (peerScope()?.deviceId ?? null) !== peerId) {
     return;
   }
 
-  if (assistantsRes.status === "fulfilled") {
-    const list = Array.isArray(assistantsRes.value) ? assistantsRes.value : [];
-    assistantsCount.set(list.length);
-    assistantsPulseNote.set("");
-  } else {
-    assistantsCount.set(null);
-    assistantsPulseNote.set(errorMessage(assistantsRes.reason));
-  }
+  const unreadable = outdated ? tr("home.overviewHostOutdated") : failure;
+  const section = (key: string) =>
+    overview ? readSection(overview[key]) : { ready: false, value: {}, error: unreadable };
 
-  if (skillsRes.status === "fulfilled") {
-    const raw = skillsRes.value;
-    const list = Array.isArray(raw)
-      ? raw
-      : Array.isArray(asRecord(raw).skills)
-        ? (asRecord(raw).skills as unknown[])
-        : [];
-    skillsCount.set(list.length);
-    const enabled = list.filter(item => {
-      const rec = asRecord(item);
-      return rec.enabled !== false && rec.disabled !== true;
-    }).length;
-    skillsEnabledCount.set(enabled);
-    skillsPulseNote.set("");
-  } else {
-    skillsCount.set(null);
-    skillsEnabledCount.set(null);
-    skillsPulseNote.set(errorMessage(skillsRes.reason));
-  }
+  const assistants = section("assistants");
+  assistantsCount.set(assistants.ready ? readNumber(assistants.value, ["count"]) ?? 0 : null);
+  assistantsPulseNote.set(assistants.error);
 
-  if (routinesRes.status === "fulfilled") {
-    const jobs = Array.isArray(routinesRes.value) ? routinesRes.value : [];
-    routinesCount.set(jobs.length);
-    routinesEnabledCount.set(jobs.filter(item => asRecord(item).enabled !== false).length);
-    dueSoonRoutines.set(parseDueRoutines(jobs));
-    routinesPulseNote.set("");
-  } else {
-    routinesCount.set(null);
-    routinesEnabledCount.set(null);
-    dueSoonRoutines.set([]);
-    routinesPulseNote.set(errorMessage(routinesRes.reason));
-  }
+  const skills = section("skills");
+  skillsCount.set(skills.ready ? readNumber(skills.value, ["count"]) ?? 0 : null);
+  skillsEnabledCount.set(skills.ready ? readNumber(skills.value, ["enabled"]) ?? 0 : null);
+  skillsPulseNote.set(skills.error);
 
-  if (miniappsRes.status === "fulfilled") {
-    const runningSet = new Set(
-      runningWorkersRes.status === "fulfilled" && Array.isArray(runningWorkersRes.value)
-        ? runningWorkersRes.value.map(String)
-        : [],
-    );
-    const rawApps = Array.isArray(miniappsRes.value) ? miniappsRes.value : [];
-    const mapped: HomeSpaceItemView[] = rawApps
-      .map((item, idx) => {
+  const routines = section("routines");
+  routinesCount.set(routines.ready ? readNumber(routines.value, ["count"]) ?? 0 : null);
+  routinesEnabledCount.set(routines.ready ? readNumber(routines.value, ["enabled"]) ?? 0 : null);
+  dueSoonRoutines.set(routines.ready ? readDueRoutines(routines.value.dueSoon) : []);
+  routinesPulseNote.set(routines.error);
+
+  const spaces = section("spaces");
+  const spaceItems: HomeSpaceItemView[] = spaces.ready
+    ? (Array.isArray(spaces.value.items) ? spaces.value.items : []).map((item, index) => {
         const rec = asRecord(item);
-        const id = readString(rec, ["id"]) || `space-${idx + 1}`;
-        const name = readString(rec, ["name", "title"]) || id;
-        const description = readString(rec, ["description"]);
-        const icon = readString(rec, ["icon"]) || "shapes";
-        return { id, name, description, icon, running: runningSet.has(id) };
+        const id = readString(rec, ["id"]) || `space-${index + 1}`;
+        return {
+          id,
+          name: readString(rec, ["name"]) || id,
+          description: readString(rec, ["description"]),
+          icon: readString(rec, ["icon"]) || "shapes",
+          running: rec.running === true,
+        };
       })
-      .filter(item => Boolean(item.id));
-    spacesCount.set(mapped.length);
-    spacesRunningCount.set(mapped.filter(item => item.running).length);
-    installedSpaces.set(mapped);
-    spacesPulseNote.set("");
-  } else {
-    spacesCount.set(null);
-    spacesRunningCount.set(0);
-    installedSpaces.set([]);
-    spacesPulseNote.set(errorMessage(miniappsRes.reason));
-  }
+    : [];
+  spacesCount.set(spaces.ready ? readNumber(spaces.value, ["count"]) ?? spaceItems.length : null);
+  spacesRunningCount.set(spaces.ready ? readNumber(spaces.value, ["running"]) ?? 0 : 0);
+  installedSpaces.set(spaceItems);
+  spacesPulseNote.set(spaces.error);
 
-  if (sshRes.status === "fulfilled") {
-    const list = Array.isArray(sshRes.value) ? sshRes.value : [];
-    homeSavedSshConnections.set(list);
-    homeSshNote.set("");
-  } else {
-    homeSavedSshConnections.set([]);
-    homeSshNote.set(errorMessage(sshRes.reason));
-  }
+  const ssh = section("ssh");
+  homeSavedSshConnections.set(
+    ssh.ready && Array.isArray(ssh.value.connections)
+      ? (ssh.value.connections as SavedConnection[])
+      : [],
+  );
+  homeSshNote.set(ssh.error);
 
-  if (usageRes.status === "fulfilled") {
-    const stats = asRecord(usageRes.value);
-    const byModel = Array.isArray(stats.byModel) ? stats.byModel : [];
-    const firstModel = asRecord(byModel[0]);
-    const topModelName = readString(firstModel, ["name", "key"]);
+  const usage = section("usage");
+  if (usage.ready) {
     usageSummary.set({
-      totalTokens: readNumber(stats, ["totalTokens", "total_tokens"]) ?? 0,
-      totalRequests: readNumber(stats, ["totalRequests", "total_requests"]) ?? 0,
-      inputTokens: readNumber(stats, ["totalInputTokens", "total_input_tokens"]) ?? 0,
-      outputTokens: readNumber(stats, ["totalOutputTokens", "total_output_tokens"]) ?? 0,
-      cachedTokens: readNumber(stats, ["totalCachedTokens", "total_cached_tokens"]) ?? 0,
-      failedRequests: readNumber(stats, ["failedRequests", "failed_requests"]) ?? 0,
-      topModelName,
-      trend: parseTrendPoints(stats.trend),
+      totalTokens: readNumber(usage.value, ["totalTokens"]) ?? 0,
+      totalRequests: readNumber(usage.value, ["totalRequests"]) ?? 0,
+      inputTokens: readNumber(usage.value, ["inputTokens"]) ?? 0,
+      outputTokens: readNumber(usage.value, ["outputTokens"]) ?? 0,
+      cachedTokens: readNumber(usage.value, ["cachedTokens"]) ?? 0,
+      failedRequests: readNumber(usage.value, ["failedRequests"]) ?? 0,
+      topModelName: readString(usage.value, ["topModelName"]),
+      trend: [],
     });
     usagePulseNote.set("");
   } else {
-    const message = errorMessage(usageRes.reason);
     usageSummary.set(null);
     usagePulseNote.set(
-      message.includes("token_usage_statistics_unsupported")
+      usage.error.includes("token_usage_statistics_unsupported")
         ? "This host does not support usage statistics."
-        : message,
+        : usage.error,
     );
   }
 
-  if (activityRes.status === "fulfilled") {
-    const activityStats = asRecord(activityRes.value);
-    usageActivityPoints.set(parseTrendPoints(activityStats.trend));
+  const activity = section("activity");
+  if (activity.ready) {
+    homeUsageActivity.set(readUsageActivity(activity.value));
     usageActivityStatus.set("ready");
     usageActivityNote.set("");
   } else {
-    const message = errorMessage(activityRes.reason);
-    usageActivityPoints.set([]);
-    if (message.includes("token_usage_statistics_unsupported")) {
-      usageActivityStatus.set("unsupported");
-      usageActivityNote.set("This host does not support usage statistics.");
-    } else {
-      usageActivityStatus.set("failed");
-      usageActivityNote.set(message);
-    }
+    homeUsageActivity.set(null);
+    const unsupported =
+      outdated || activity.error.includes("token_usage_statistics_unsupported");
+    usageActivityStatus.set(unsupported ? "unsupported" : "failed");
+    usageActivityNote.set(
+      activity.error.includes("token_usage_statistics_unsupported")
+        ? "This host does not support usage statistics."
+        : activity.error,
+    );
   }
 
   homePulseLoading.set(false);
@@ -1310,7 +1114,7 @@ export function syncHomeScope(
       installedSpaces.set([]);
       homeSavedSshConnections.set([]);
       usageSummary.set(null);
-      usageActivityPoints.set([]);
+      homeUsageActivity.set(null);
       usageActivityStatus.set("loading");
       selectedActivityCell.set(null);
     }

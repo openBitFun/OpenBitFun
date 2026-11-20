@@ -98,26 +98,21 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends minisign
-          node scripts/prepare-windows-installer-asset.mjs --assets-dir release-assets \
-            --version "$RELEASE_VERSION" --out-dir release-manual-assets
-          bash scripts/sign-release-assets.sh release-manual-assets/*.exe
-          mapfile -t packages < <(find release-assets -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) | sort)
-          test "${#packages[@]}" -eq 6
+          # Windows and Linux ship the native app as manual downloads only:
+          # there is no updater artifact to collect for them.
+          mapfile -t packages < <(find release-assets -type f \( \
+            -name "OpenBitFun-nsh_${RELEASE_VERSION}_*-windows.zip" -o \
+            -name "OpenBitFun-nsh_${RELEASE_VERSION}_*-linux.tar.gz" \) | sort)
+          test "${#packages[@]}" -eq 3
           bash scripts/sign-release-assets.sh "${packages[@]}"
           node scripts/write-minisign-public-key.mjs --out release-assets/minisign.pub
-          args=(--assets-dir release-assets --version "$RELEASE_VERSION" --out-dir release-updater-assets
-            --required-platforms windows-x86_64,linux-x86_64,linux-aarch64,linux-x86_64-deb,linux-aarch64-deb,linux-x86_64-rpm,linux-aarch64-rpm)
-          if git grep -q OPENBITFUN_MAINTENANCE_V1 "$RELEASE_TAG" -- OpenBitFun-Installer/src-tauri/src/installer/commands.rs; then
-            args+=(--windows-installer-dir release-manual-assets)
-          elif [[ $? != 1 ]]; then
-            exit 1
-          fi
-          node scripts/collect-tauri-updater-assets.mjs "${args[@]}"
           node scripts/generate-linux-binaries-manifest.mjs --assets-dir linux-release-assets \
             --version "$RELEASE_VERSION" --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --out linux-release-assets/linux-binaries-v1.json
+          signatures=()
+          for package in "${packages[@]}"; do signatures+=("$package.sig"); done
           node scripts/stage-github-release-assets.mjs --out-dir release-upload-assets \
-            release-updater-assets/* release-manual-assets/*.exe release-manual-assets/*.exe.sig \
+            "${packages[@]}" "${signatures[@]}" \
             release-assets/minisign.pub linux-release-assets/*.tar.gz \
             linux-release-assets/*.tar.gz.sha256 linux-release-assets/*.tar.gz.sig \
             linux-release-assets/*.tar.gz.sha256.sig linux-release-assets/linux-binaries-v1.json \
@@ -125,7 +120,7 @@ jobs:
           # Verify existing producer signatures as well as the freshly signed files.
           for asset in release-upload-assets/*; do
             case "$asset" in
-              *.exe|*.AppImage|*.deb|*.rpm|*.tar.gz|*.sha256|*/relay-image.json)
+              *.zip|*.tar.gz|*.sha256|*/relay-image.json)
                 test -s "$asset.sig"
                 base64 -d < "$asset.sig" > verify.minisig
                 minisign -Vm "$asset" -p release-upload-assets/minisign.pub -x verify.minisig
@@ -154,7 +149,7 @@ jobs:
               cp "scripts/release-notes/$RELEASE_VERSION.md" release-notes.md
               cat >> release-notes.md <<'EOF'
 
-          Windows x64 和 Linux x64 / ARM64 安装包已发布。macOS 安装包稍后补充。
+          Windows x64 和 Linux x64 / ARM64 原生安装包已发布（手动下载）。macOS 安装包稍后补充。
           自动更新将在所有平台产物验证完成后开放；目前可手动下载安装。
           EOF
               gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
@@ -247,8 +242,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends minisign
           case "$MACOS_PLATFORM" in
-            macos-arm64) updater_platform=darwin-aarch64; dmg_arch=aarch64 ;;
-            macos-x64) updater_platform=darwin-x86_64; dmg_arch=x64 ;;
+            macos-arm64) updater_platform=darwin-aarch64-nsh; dmg_arch=aarch64 ;;
+            macos-x64) updater_platform=darwin-x86_64-nsh; dmg_arch=x64 ;;
           esac
           mapfile -t dmgs < <(find release-assets -type f -name '*.dmg')
           test "${#dmgs[@]}" -eq 1

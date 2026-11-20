@@ -31,8 +31,8 @@ import {
   type Accessor,
   type Signal,
 } from "nsh";
+import type { RunningTurnSnapshot } from "./api";
 import { listenEvent } from "./bridge";
-import { turnHasAssistantContent } from "./format";
 import { loadQueueForSession } from "./queueStore";
 import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
 import {
@@ -42,6 +42,7 @@ import {
   clearPendingTurn,
   clearStreamedText,
   loadTurns,
+  onRunningTurnSnapshot,
   onSessionSwitch,
   onStreamCleared,
   patchSessionTitle,
@@ -72,6 +73,8 @@ export interface LiveToolItem {
   result?: unknown;
   /** The text the model was given back, when the host reports it apart from `result`. */
   resultForAssistant?: string;
+  /** A GenerativeUI call's OpenUI source so far, from `GenUIStream` deltas. */
+  genuiStream?: { source: string; title?: string; format: string; seq: number };
   /**
    * How much of the round's answer text had arrived when the tool first appeared.
    * The transcript cuts the round's text at this offset, so text written before a
@@ -824,13 +827,8 @@ function summarizeLiveInput(value: unknown, limit = 160): string {
 
 /** Attempt IDs superseded by provider retries; late chunks with these IDs are ignored. */
 const supersededAttempts = new Set<string>();
-/** Active settling timers per session so fallback retries can be cancelled cleanly. */
-const settleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-/** Sessions waiting for disk persistence to catch up after `dialog-turn-completed`. */
-const settlingTurns = new Map<
-  string,
-  { turnId: string | null; hadLiveContent: boolean; baselineTurnCount: number }
->();
+/** Sessions whose ended turn waits for the host's view to report it settled. */
+const settlingTurns = new Map<string, { turnId: string | null }>();
 
 /**
  * A running turn of a session that is not on screen. Its events keep landing here
@@ -1029,17 +1027,6 @@ export function resetParkedTurns(): void {
   parkedTurns.clear();
 }
 
-function clearSettleTimer(sessionId?: string): void {
-  if (sessionId) {
-    const timer = settleTimers.get(sessionId);
-    if (timer !== undefined) clearTimeout(timer);
-    settleTimers.delete(sessionId);
-    return;
-  }
-  for (const timer of settleTimers.values()) clearTimeout(timer);
-  settleTimers.clear();
-}
-
 function clearAllRoundStreams(): void {
   clearDrainSchedule();
   lastDrainFrameMs = null;
@@ -1060,7 +1047,6 @@ export function resetLiveTurn(): void {
     liveTurn.set(null);
   });
   supersededAttempts.clear();
-  clearSettleTimer();
   settlingTurns.clear();
 }
 
@@ -1131,89 +1117,62 @@ function endTurn(payload: TurnEventPayload | null): void {
   });
 }
 
-function findPersistedTurn(turns: unknown[], turnId: string | null): unknown | undefined {
-  if (!turnId) return turns[turns.length - 1];
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const entry = turns[index];
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as Record<string, unknown>;
-    const id = record.turnId ?? record.turn_id ?? record.id;
-    if (id === turnId) return entry;
-  }
-  return undefined;
-}
-
 /**
- * Re-reads persisted turns after completion/cancellation/history-change and
- * only clears the live stream buffer once disk persistence has caught up.
- * This eliminates the race between `dialog-turn-completed` (emitted before
- * `persist_completed_dialog_turn`) and `session-history-changed` (emitted after).
+ * Swaps the live stream for the persisted record once the host says the turn is
+ * final. The host's transcript view marks a turn `settled` when it persisted a
+ * terminal status; until then the streamed output stays on screen. Nothing here
+ * counts items or retries on a timer:
+ * - `dialog-turn-completed` is emitted before the host persists the turn, so its
+ *   read may find the turn still running; the durable fence
+ *   (`agentic://session-history-changed` with `settledTurnId`) reads again.
+ * - cancelled, interrupted and failed turns are persisted before their event
+ *   (`afterPersist`), so their read is final: a turn the host never recorded
+ *   (cancelled before it existed) has nothing left to wait for.
  */
-async function settleCompletedTurn(
-  sessionId: string,
-  turnId: string | null,
-  fromDurableFence: boolean,
-  retryAttempt = 0,
-): Promise<void> {
+async function settleCompletedTurn(sessionId: string, turnId: string | null, afterPersist: boolean): Promise<void> {
   if (!sessionId || activeSessionId() !== sessionId) return;
-  const settling = settlingTurns.get(sessionId);
-  const effectiveTurnId = turnId ?? settling?.turnId ?? liveTurn()?.turnId ?? null;
-  const hadLiveContent = settling?.hadLiveContent ?? hasLiveContent();
-  const baselineTurnCount = settling?.baselineTurnCount ?? 0;
+  const effectiveTurnId = turnId ?? settlingTurns.get(sessionId)?.turnId ?? liveTurn()?.turnId ?? null;
 
   const loaded = await loadTurns(sessionId, { silent: true });
   if (activeSessionId() !== sessionId) return;
-  if (loaded === null) {
-    // Load failed; keep live text visible so the user never loses what just streamed.
-    return;
-  }
+  // A failed read keeps what streamed visible; the next read settles it.
+  if (loaded === null) return;
 
-  const matched = findPersistedTurn(loaded, effectiveTurnId);
-  const turnCountGrew = loaded.length > baselineTurnCount;
-  const hasPersistedAssistant = matched ? turnHasAssistantContent(matched) : false;
+  const matched = effectiveTurnId
+    ? loaded.find(turn => turn.turnId === effectiveTurnId)
+    : loaded[loaded.length - 1];
+  const ready = matched ? matched.settled : afterPersist;
+  if (!ready) return;
 
-  // Decide whether disk state is ready to replace the live stream buffer:
-  // - If we saw streamed assistant content, wait until the matched turn actually
-  //   carries persisted assistant/thinking/tool items (unless we hit the durable
-  //   fence or exhausted fallback retries).
-  // - If no live content was streamed (e.g., silent/empty turn or mock without
-  //   chunks), settle as soon as the turn exists or load succeeded cleanly.
-  const readyToSwap =
-    !hadLiveContent ||
-    hasPersistedAssistant ||
-    (fromDurableFence && Boolean(matched)) ||
-    retryAttempt >= 2;
+  settlingTurns.delete(sessionId);
+  batch(() => {
+    clearAllRoundStreams();
+    liveTurn.set(null);
+    clearStreamedText();
+    clearPendingTurn(sessionId);
+  });
+  markSessionSeen(sessionId, Date.now());
+  void refreshSessionsSilently();
+}
 
-  if (readyToSwap) {
-    clearSettleTimer(sessionId);
-    settlingTurns.delete(sessionId);
-    // Keep live text if disk returned literally zero turns after streaming real content
-    // (defensive guard against transient empty read).
-    if (!hadLiveContent || loaded.length > 0 || fromDurableFence) {
-      batch(() => {
-        clearAllRoundStreams();
-        liveTurn.set(null);
-        clearStreamedText();
-        if (matched || turnCountGrew || fromDurableFence) {
-          clearPendingTurn(sessionId);
-        }
-      });
-    }
-    markSessionSeen(sessionId, Date.now());
-    void refreshSessionsSilently();
-    return;
-  }
-
-  // Disk write is still in progress: keep streamed output on screen and wait for
-  // `agentic://session-history-changed` (with a bounded safety retry timer).
-  clearSettleTimer(sessionId);
-  const delayMs = retryAttempt === 0 ? 250 : 750;
-  const timer = setTimeout(() => {
-    settleTimers.delete(sessionId);
-    if (activeSessionId() !== sessionId || !settlingTurns.has(sessionId)) return;
-    void settleCompletedTurn(sessionId, effectiveTurnId, false, retryAttempt + 1);
-  }, delayMs);
-  settleTimers.set(sessionId, timer);
+/**
+ * After a re-read outside the turn lifecycle (re-hydration after dropped
+ * events), gives way to the persisted record when the view reports the live
+ * turn settled: its terminal events may be among the ones that were lost.
+ */
+export function settleLiveTurnFromView(sessionId: string): void {
+  const live = liveTurn();
+  if (!live?.turnId || live.sessionId !== sessionId || activeSessionId() !== sessionId) return;
+  const matched = sessionTurns().find(turn => turn.turnId === live.turnId);
+  if (!matched?.settled) return;
+  settlingTurns.delete(sessionId);
+  batch(() => {
+    if (runningTurnId() === live.turnId) runningTurnId.set(null);
+    clearAllRoundStreams();
+    liveTurn.set(null);
+    clearStreamedText();
+    clearPendingTurn(sessionId);
+  });
 }
 
 function applyToolEvent(
@@ -1263,6 +1222,26 @@ function applyToolEvent(
           : {}),
       };
       break;
+    case "GenUIStream": {
+      // The decoded OpenUI source of a GenerativeUI call, delta by delta; `reset`
+      // starts the source over (a new message), `seq` drops a repeated delta.
+      const seq = typeof rawToolEvent.seq === "number" ? rawToolEvent.seq : -1;
+      const previous = existing.genuiStream;
+      if (previous && !rawToolEvent.reset && seq >= 0 && seq <= previous.seq) return round;
+      const text = typeof rawToolEvent.text === "string" ? rawToolEvent.text : "";
+      const title = typeof rawToolEvent.title === "string" && rawToolEvent.title ? rawToolEvent.title : previous?.title;
+      next = {
+        ...next,
+        status: existing.status === "completed" ? "completed" : "running",
+        genuiStream: {
+          source: rawToolEvent.reset || !previous ? text : previous.source + text,
+          format: typeof rawToolEvent.format === "string" ? rawToolEvent.format : "openui-lang",
+          seq,
+          ...(title ? { title } : {}),
+        },
+      };
+      break;
+    }
     case "Queued":
       next = { ...next, status: "queued" };
       break;
@@ -1359,6 +1338,102 @@ function finishOtherSessionTurn(payload: TurnEventPayload | null, drain: boolean
   return true;
 }
 
+// --- Running-turn hydration ------------------------------------------------
+//
+// A surface that opens a session while a turn runs (it connected late, reopened
+// the session, or lost events) did not see that turn start. The transcript view
+// then carries `runningTurn`: the host runtime journal's projection of the turn
+// as the same `agentic://*` events the live wire delivers, plus the delivery
+// cursor they reached. Those events are replayed through the very handlers the
+// live wire uses, and live events the snapshot already covered (cursor at or
+// below it, same stream) are dropped, so the turn continues without gaps or
+// repeats. The `agentic://*` events stay the live channel: they are what the
+// per-frame text merge and the smooth reveal are built on.
+
+const RUNTIME_CURSOR_KEY = "__openbitfunRuntimeEventCursor";
+const RUNTIME_STREAM_KEY = "__openbitfunRuntimeStreamId";
+/** Set by the text-chunk merge: `[cursor, end offset]` of each merged chunk. */
+const CHUNK_SPANS_KEY = "__openbitfunChunkSpans";
+
+type AgentEventHandler = (payload: never) => void;
+const agentEventHandlers = new Map<string, AgentEventHandler>();
+/** Per session, the delivery position a replayed snapshot already covered. */
+const replayFloors = new Map<string, { streamId: string; cursor: number }>();
+/** Turns this surface followed live from their `dialog-turn-started`. */
+const followedTurns = new Set<string>();
+let replayingSnapshot = false;
+
+/**
+ * Whether a live event is new to this surface: anything without a cursor, from
+ * another stream, or past the replay floor is; a text chunk merged across the
+ * floor keeps only the text after it.
+ */
+function admitLiveEvent(event: string, payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const record = payload as Record<string, unknown>;
+  const floor = replayFloors.get(sessionOf(record as { sessionId?: string }));
+  if (!floor) return payload;
+  const cursor = record[RUNTIME_CURSOR_KEY];
+  if (typeof cursor !== "number" || record[RUNTIME_STREAM_KEY] !== floor.streamId) return payload;
+  if (cursor <= floor.cursor) return null;
+  const spans = record[CHUNK_SPANS_KEY];
+  if (event !== "agentic://text-chunk" || !Array.isArray(spans)) return payload;
+  let cut = 0;
+  for (const span of spans) {
+    if (Array.isArray(span) && typeof span[0] === "number" && typeof span[1] === "number" && span[0] <= floor.cursor) {
+      cut = Math.max(cut, span[1]);
+    }
+  }
+  if (cut === 0) return payload;
+  const field = (["text", "delta", "content", "chunk"] as const).find(key => typeof record[key] === "string");
+  if (!field) return payload;
+  return { ...record, [field]: String(record[field]).slice(cut) };
+}
+
+function onAgentEvent<T>(event: string, handler: (payload: T) => void): void {
+  agentEventHandlers.set(event, handler as AgentEventHandler);
+  listenEvent<T>(event, payload => {
+    const admitted = admitLiveEvent(event, payload);
+    if (admitted === null) return;
+    handler(admitted as T);
+  });
+}
+
+/** Forgets which turns were followed from their start: events may have been lost. */
+export function forgetFollowedTurns(): void {
+  followedTurns.clear();
+}
+
+/**
+ * Puts the open session's running turn on screen from a transcript read's
+ * snapshot, unless this surface has been following that very turn since it
+ * started.
+ */
+export function hydrateRunningTurn(sessionId: string, snapshot: RunningTurnSnapshot): void {
+  const turnId = snapshot.activeTurnId;
+  if (!turnId || activeSessionId() !== sessionId) return;
+  const live = liveTurn();
+  if (followedTurns.has(turnId) && live?.sessionId === sessionId && live.turnId === turnId) return;
+  replayingSnapshot = true;
+  try {
+    batch(() => {
+      clearAllRoundStreams();
+      liveTurn.set(null);
+    });
+    parkedTurns.delete(sessionId);
+    for (const event of snapshot.events ?? []) {
+      const handler = agentEventHandlers.get(event.eventName);
+      if (handler) (handler as (payload: unknown) => void)(event.payload);
+    }
+    flushStreamingBuffers();
+  } finally {
+    replayingSnapshot = false;
+  }
+  replayFloors.set(sessionId, { streamId: snapshot.streamId, cursor: snapshot.cursor });
+  // The snapshot carries the turn's start, so it counts as followed from now on.
+  followedTurns.add(turnId);
+}
+
 let subscribed = false;
 
 export function subscribeAgentEvents(): void {
@@ -1375,7 +1450,9 @@ export function subscribeAgentEvents(): void {
     else resetParkedTurns();
   });
 
-  listenEvent<TextChunkPayload>("agentic://text-chunk", payload => {
+  onRunningTurnSnapshot(hydrateRunningTurn);
+
+  onAgentEvent<TextChunkPayload>("agentic://text-chunk", payload => {
     if (!payload) return;
     const attemptId = attemptOf(payload);
     if (attemptId && supersededAttempts.has(attemptId)) return;
@@ -1470,7 +1547,7 @@ export function subscribeAgentEvents(): void {
     batch(applyChunk);
   });
 
-  listenEvent<ModelRoundEventPayload>("agentic://model-round-started", payload => {
+  onAgentEvent<ModelRoundEventPayload>("agentic://model-round-started", payload => {
     if (!payload) return;
     if (isOtherSession(payload)) {
       parkEvent("roundStarted", payload as Record<string, unknown>);
@@ -1503,7 +1580,7 @@ export function subscribeAgentEvents(): void {
     });
   });
 
-  listenEvent<ModelRoundEventPayload>("agentic://model-round-completed", payload => {
+  onAgentEvent<ModelRoundEventPayload>("agentic://model-round-completed", payload => {
     if (!payload) return;
     if (isOtherSession(payload)) {
       parkEvent("roundCompleted", payload as Record<string, unknown>);
@@ -1527,7 +1604,7 @@ export function subscribeAgentEvents(): void {
     });
   });
 
-  listenEvent<ModelRoundEventPayload>("agentic://model-round-attempt-superseded", payload => {
+  onAgentEvent<ModelRoundEventPayload>("agentic://model-round-attempt-superseded", payload => {
     if (!payload) return;
     const failedAttempt = payload.diagnostic?.attemptId ?? payload.diagnostic?.attempt_id;
     if (typeof failedAttempt === "string" && failedAttempt) {
@@ -1561,7 +1638,7 @@ export function subscribeAgentEvents(): void {
     });
   });
 
-  listenEvent<ToolEventEnvelope>("agentic://tool-event", payload => {
+  onAgentEvent<ToolEventEnvelope>("agentic://tool-event", payload => {
     if (!payload) return;
     const attemptId = attemptOf(payload);
     if (attemptId && supersededAttempts.has(attemptId)) return;
@@ -1590,9 +1667,10 @@ export function subscribeAgentEvents(): void {
     });
   });
 
-  listenEvent<TurnEventPayload>("agentic://dialog-turn-started", payload => {
+  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-started", payload => {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
+    if (running && !replayingSnapshot) followedTurns.add(running);
     if (sessionId) turnStarts.set(sessionId, Date.now());
     if (sessionId) {
       runningTurns.update(current => {
@@ -1615,7 +1693,6 @@ export function subscribeAgentEvents(): void {
       return;
     }
     const targetSession = sessionId || activeSessionId() || "";
-    clearSettleTimer(targetSession);
     settlingTurns.delete(targetSession);
     batch(() => {
       clearStreamedText();
@@ -1634,7 +1711,7 @@ export function subscribeAgentEvents(): void {
     });
   });
 
-  listenEvent<TurnEventPayload>("agentic://dialog-turn-completed", payload => {
+  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-completed", payload => {
     endTurn(payload);
     if (finishOtherSessionTurn(payload, true)) return;
     // Flush ALL remaining buffered text immediately so nothing is lost before
@@ -1642,7 +1719,6 @@ export function subscribeAgentEvents(): void {
     flushStreamingBuffers();
     const sessionId = sessionOf(payload) || activeSessionId() || "";
     const completedTurnId = turnOf(payload) ?? runningTurnId();
-    const hadContent = hasLiveContent();
     batch(() => {
       runningTurnId.set(null);
       // CRITICAL: do NOT clear streamed text synchronously! Keep live content on
@@ -1654,18 +1730,14 @@ export function subscribeAgentEvents(): void {
       }
     });
     if (sessionId) {
-      settlingTurns.set(sessionId, {
-        turnId: completedTurnId,
-        hadLiveContent: hadContent,
-        baselineTurnCount: sessionTurns().length,
-      });
-      void settleCompletedTurn(sessionId, completedTurnId, false, 0);
+      settlingTurns.set(sessionId, { turnId: completedTurnId });
+      void settleCompletedTurn(sessionId, completedTurnId, false);
       // The host drains its own queue; the rows follow.
       void loadQueueForSession(sessionId, true);
     }
   });
 
-  listenEvent<SessionHistoryChangedPayload>("agentic://session-history-changed", payload => {
+  onAgentEvent<SessionHistoryChangedPayload>("agentic://session-history-changed", payload => {
     const sessionId = sessionOf(payload);
     const settledTurnId =
       typeof payload?.settledTurnId === "string"
@@ -1676,7 +1748,7 @@ export function subscribeAgentEvents(): void {
     if (!sessionId) return;
     if (sessionId === activeSessionId()) {
       if (settlingTurns.has(sessionId) || liveTurn()?.settling) {
-        void settleCompletedTurn(sessionId, settledTurnId, true, 0);
+        void settleCompletedTurn(sessionId, settledTurnId, true);
       } else if (!runningTurnId()) {
         // External or detached update landed on the active session.
         void loadTurns(sessionId, { silent: true });
@@ -1685,7 +1757,7 @@ export function subscribeAgentEvents(): void {
     void refreshSessionsSilently();
   });
 
-  listenEvent<TurnEventPayload>("agentic://dialog-turn-cancelled", payload => {
+  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-cancelled", payload => {
     endTurn(payload);
     if (finishOtherSessionTurn(payload, true)) return;
     flushStreamingBuffers();
@@ -1693,12 +1765,8 @@ export function subscribeAgentEvents(): void {
     const turnId = turnOf(payload) ?? runningTurnId();
     runningTurnId.set(null);
     if (sessionId) {
-      settlingTurns.set(sessionId, {
-        turnId,
-        hadLiveContent: hasLiveContent(),
-        baselineTurnCount: sessionTurns().length,
-      });
-      void settleCompletedTurn(sessionId, turnId, true, 0);
+      settlingTurns.set(sessionId, { turnId });
+      void settleCompletedTurn(sessionId, turnId, true);
       // The host drains its own queue; the rows follow.
       void loadQueueForSession(sessionId, true);
     } else {
@@ -1706,7 +1774,7 @@ export function subscribeAgentEvents(): void {
     }
   });
 
-  listenEvent<TurnEventPayload>("agentic://dialog-turn-interrupted", payload => {
+  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-interrupted", payload => {
     endTurn(payload);
     if (finishOtherSessionTurn(payload, false)) return;
     flushStreamingBuffers();
@@ -1714,18 +1782,14 @@ export function subscribeAgentEvents(): void {
     const turnId = turnOf(payload) ?? runningTurnId();
     runningTurnId.set(null);
     if (sessionId) {
-      settlingTurns.set(sessionId, {
-        turnId,
-        hadLiveContent: hasLiveContent(),
-        baselineTurnCount: sessionTurns().length,
-      });
-      void settleCompletedTurn(sessionId, turnId, true, 0);
+      settlingTurns.set(sessionId, { turnId });
+      void settleCompletedTurn(sessionId, turnId, true);
     } else {
       clearStreamedText();
     }
   });
 
-  listenEvent<TurnEventPayload>("agentic://dialog-turn-recovered", payload => {
+  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-recovered", payload => {
     const sessionId = sessionOf(payload);
     const turnId = turnOf(payload);
     if (sessionId && turnId) {
@@ -1736,7 +1800,7 @@ export function subscribeAgentEvents(): void {
     if (turnId) runningTurnId.set(turnId);
   });
 
-  listenEvent<TurnEventPayload>("agentic://dialog-turn-failed", payload => {
+  onAgentEvent<TurnEventPayload>("agentic://dialog-turn-failed", payload => {
     endTurn(payload);
     const failedSession = sessionOf(payload);
     if (failedSession) markSessionFailed(failedSession);
@@ -1753,12 +1817,8 @@ export function subscribeAgentEvents(): void {
       bumpScrollTick();
     });
     if (sessionId) {
-      settlingTurns.set(sessionId, {
-        turnId,
-        hadLiveContent: hasLiveContent(),
-        baselineTurnCount: sessionTurns().length,
-      });
-      void settleCompletedTurn(sessionId, turnId, true, 0);
+      settlingTurns.set(sessionId, { turnId });
+      void settleCompletedTurn(sessionId, turnId, true);
       // A failed turn must not strand the queue behind it.
       // The host drains its own queue; the rows follow.
       void loadQueueForSession(sessionId, true);
@@ -1769,14 +1829,14 @@ export function subscribeAgentEvents(): void {
   });
 
   // Real Rust emits `"session_title_generated"` (without the `agentic://` prefix).
-  listenEvent<SessionTitleGeneratedPayload>("session_title_generated", payload => {
+  onAgentEvent<SessionTitleGeneratedPayload>("session_title_generated", payload => {
     const sessionId = sessionOf(payload);
     const title = typeof payload?.title === "string" ? payload.title.trim() : "";
     if (!sessionId || !title) return;
     patchSessionTitle(sessionId, title);
   });
 
-  listenEvent<SessionCreatedPayload>("agentic://session-created", payload => {
+  onAgentEvent<SessionCreatedPayload>("agentic://session-created", payload => {
     const sessionId = sessionOf(payload);
     if (!sessionId) return;
     const wsId = payload?.workspaceId ?? payload?.workspace_id;
@@ -1802,7 +1862,7 @@ export function subscribeAgentEvents(): void {
     });
   });
 
-  listenEvent<TurnEventPayload>("agentic://session-deleted", payload => {
+  onAgentEvent<TurnEventPayload>("agentic://session-deleted", payload => {
     const sessionId = sessionOf(payload);
     if (!sessionId) return;
     removeSessionFromEvent(sessionId);

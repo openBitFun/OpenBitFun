@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { type BackendOptions, createBackend, createDeviceBackend } from "./support";
+import { type BackendOptions, createBackend, createDeviceBackend, projectWorkspaceNavigator } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -24,6 +24,8 @@ interface MockSshBackendOptions extends BackendOptions {
   failAuthOnFirstConnect?: boolean;
   failMissingRemoteOpenCommand?: boolean;
   movedPortAllocation?: Record<number, number>;
+  /** A host that predates `remote_workspace_ensure_connected` (no backend link supervision). */
+  noLinkSupervision?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -135,6 +137,9 @@ function createSshBackend(options: MockSshBackendOptions = {}) {
   const localDirs = new Set<string>(["/tmp/workspace-1", "/tmp/existing-project"]);
   const conflictOwners: Record<string, string> = { ...(options.conflictOwners ?? {}) };
   let firstConnectRejected = Boolean(options.failAuthOnFirstConnect);
+  let linkRevision = 0;
+  const linkRestores: string[] = [];
+  const linkActivations: Array<{ connectionId: string; remotePath: string }> = [];
   let activeWorkspaceIdOverride: string | null = null;
   let seq = 1;
 
@@ -383,6 +388,43 @@ function createSshBackend(options: MockSshBackendOptions = {}) {
         return ok(wsRecord);
       }
 
+      // The backend's link supervisor, reduced: probe, restore from the saved
+      // profile (vault password, key or agent), or say why it cannot.
+      case "remote_workspace_ensure_connected": {
+        if (options.noLinkSupervision) {
+          throw new Error("the simulated backend has no answer for remote_workspace_ensure_connected");
+        }
+        const cid = String(payload.connectionId || "");
+        linkRevision += 1;
+        const link = (state: string, extra: Record<string, unknown> = {}) => ({
+          connectionId: cid,
+          state,
+          revision: linkRevision,
+          ...extra,
+        });
+        if (!connectedIds.has(cid)) {
+          const saved = savedConnections.find(c => c.id === cid);
+          if (!saved) {
+            return ok({
+              link: link("failed", {
+                reason: "profile_missing",
+                detail: "The saved connection for this workspace is missing on this host.",
+              }),
+              activated: false,
+            });
+          }
+          const auth = asRecord(saved.authType);
+          if (auth.type === "KeyboardInteractive" || (auth.type === "Password" && !saved.hasStoredPassword)) {
+            return ok({ link: link("failed", { reason: "auth_required" }), activated: false });
+          }
+          connectedIds.add(cid);
+          linkRestores.push(cid);
+        }
+        const activate = payload.activate !== false && typeof payload.remotePath === "string";
+        if (activate) linkActivations.push({ connectionId: cid, remotePath: String(payload.remotePath) });
+        return ok({ link: link("connected"), activated: activate });
+      }
+
       case "remote_open_workspace": {
         if (options.failMissingRemoteOpenCommand) {
           throw new Error("Unknown command: remote_open_workspace");
@@ -447,6 +489,21 @@ function createSshBackend(options: MockSshBackendOptions = {}) {
         const baseRes = asRecord(await originalInvoke(data));
         const baseList = Array.isArray(baseRes.value) ? baseRes.value : [];
         return ok([...remoteWorkspaces, ...createdWorkspaces, ...baseList]);
+      }
+
+      // view models (wave 4): the host's navigator over this fixture's lists.
+      case "get_workspace_navigator": {
+        const read = async (command: string) =>
+          asRecord(await base.handlers["openbitfun.invoke"]({ action: command, request: {} })).value;
+        const current = asRecord(await originalInvoke({ action: "get_current_workspace", request: {} })).value;
+        return ok(
+          projectWorkspaceNavigator(
+            await read("get_opened_workspaces"),
+            await read("get_recent_workspaces"),
+            activeWorkspaceIdOverride ?? (asRecord(current).id as string | undefined) ?? null,
+            typeof payload.selectedId === "string" ? payload.selectedId : null,
+          ),
+        );
       }
 
       case "get_active_workspace": {
@@ -528,6 +585,9 @@ function createSshBackend(options: MockSshBackendOptions = {}) {
     base,
     recordedCalls,
     localOpenCalls,
+    linkRestores,
+    linkActivations,
+    connectedIds,
     callsFor(action: string) {
       return recordedCalls.filter(c => c.action === action);
     },
@@ -899,6 +959,7 @@ test("Peer Device Mode clears SSH modals on peer scope change and tolerates CLI 
       action.startsWith("remote_") ||
       action === "open_remote_workspace" ||
       action === "get_opened_workspaces" ||
+      action === "get_workspace_navigator" ||
       action === "get_active_workspace"
     ) {
       return (ssh.base.handlers["openbitfun.invoke"] as (d: unknown) => Promise<unknown>)(data);
@@ -947,7 +1008,7 @@ test("Sidebar SSH host row quick-connect and Local Docker / WSL target discovery
   );
 });
 
-test("Remote workspace activation reconnects a dropped link from the saved profile and marks an unrecoverable one offline", async () => {
+test("Remote workspace activation asks the backend to restore a dropped link and marks an unrecoverable one offline", async () => {
   const opened = [
     { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
     { id: "ws-staging", name: "staging", rootPath: "/srv/staging", workspaceKind: "remote", connectionId: "conn-staging-2", sshHost: "staging.example.com" },
@@ -960,21 +1021,19 @@ test("Remote workspace activation reconnects a dropped link from the saved profi
   await app.press("Files");
   await app.waitFor("Explorer");
 
-  // The staging link is down: activation probes it, reconnects with the vault
-  // password (empty password, the host fills it) and re-activates the workspace.
+  // The staging link is down: activation hands it to the backend, which restores
+  // it from the saved profile (vault password) and re-activates the workspace.
+  // This surface reconnects and activates nothing itself (the saved-host list
+  // still reads each host's status for its dot).
   await app.press("workspace-row-ws-staging");
-  await app.waitUntil(() => ssh.callsFor("remote_open_workspace").length === 1);
-  expect(
-    ssh.callsFor("ssh_is_connected").some(call => call.raw && call.payload.connectionId === "conn-staging-2"),
-  ).toBe(true);
-  expect(ssh.callsFor("ssh_connect")[0]).toMatchObject({
-    raw: true,
-    payload: { config: { id: "conn-staging-2", auth: { type: "Password", password: "" } } },
+  await app.waitUntil(() => ssh.linkRestores.includes("conn-staging-2"));
+  expect(ssh.callsFor("remote_workspace_ensure_connected")[0]).toMatchObject({
+    raw: false,
+    payload: { connectionId: "conn-staging-2", remotePath: "/srv/staging", activate: true },
   });
-  expect(ssh.callsFor("remote_open_workspace")[0]).toMatchObject({
-    raw: true,
-    payload: { connectionId: "conn-staging-2", remotePath: "/srv/staging" },
-  });
+  expect(ssh.linkActivations).toContainEqual({ connectionId: "conn-staging-2", remotePath: "/srv/staging" });
+  expect(ssh.callsFor("ssh_connect")).toHaveLength(0);
+  expect(ssh.callsFor("remote_open_workspace")).toHaveLength(0);
   expect(app.shows("remote-link-offline")).toBe(false);
   // The host has no watcher for a remote root: the explorer says so instead of pretending to be live.
   await app.waitFor("file-watch-unsupported");
@@ -983,6 +1042,62 @@ test("Remote workspace activation reconnects a dropped link from the saved profi
   await app.press("workspace-row-ws-gone");
   await app.waitFor("remote-link-offline");
   await app.waitFor("gone.example.com is offline");
+  await app.waitFor("The saved connection for this workspace is missing on this host.");
   await app.waitFor("remote-link-reconnect");
-  expect(ssh.callsFor("ssh_connect")).toHaveLength(1);
+  const before = ssh.callsFor("remote_workspace_ensure_connected").length;
+  await app.press("remote-link-reconnect");
+  await app.waitUntil(() => ssh.callsFor("remote_workspace_ensure_connected").length === before + 1);
+});
+
+test("Remote link state follows the backend's remote://link-state events and asks for credentials only when the host says so", async () => {
+  const opened = [
+    { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+    { id: "ws-prod", name: "prod", rootPath: "/home/deploy/apps", workspaceKind: "remote", connectionId: "conn-prod-1", sshHost: "prod.example.com" },
+  ] as unknown as BackendOptions["openedWorkspaces"];
+  const ssh = createSshBackend({ openedWorkspaces: opened });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
+
+  await app.waitFor("OpenBitFun");
+  await app.press("Files");
+  await app.waitFor("Explorer");
+  await app.press("workspace-row-ws-prod");
+  await app.waitUntil(() => ssh.callsFor("remote_workspace_ensure_connected").length === 1);
+  expect(app.shows("remote-link-reconnecting")).toBe(false);
+
+  // The backend's heartbeat lost the link and is restoring it: the banner shows its attempt.
+  const send = (payload: Record<string, unknown>) =>
+    app.host.send("openbitfun.event", { event: "remote://link-state", payload });
+  await send({ connectionId: "conn-prod-1", state: "reconnecting", attempt: 2, nextRetryMs: 10000, revision: 50 });
+  await app.waitFor("remote-link-reconnecting");
+  await app.waitFor("Reconnecting to prod.example.com (attempt 2)…");
+  // An older event that arrives late does not move the banner back.
+  await send({ connectionId: "conn-prod-1", state: "connected", revision: 10 });
+  await app.waitFor("remote-link-reconnecting");
+
+  // The host stopped: the server refused the stored key. Only now does this surface ask the user.
+  await send({ connectionId: "conn-prod-1", state: "failed", reason: "auth_required", detail: "Authentication failed (publickey)", revision: 51 });
+  await app.waitFor("remote-link-auth-required");
+  await app.waitFor("prod.example.com needs your credentials to reconnect");
+
+  // Restored: the banner goes away.
+  await send({ connectionId: "conn-prod-1", state: "connected", revision: 52 });
+  await app.waitUntil(() => !app.shows("remote-link-auth-required"));
+});
+
+test("A host without backend link supervision gets an explicit update-the-host state, not a client reconnect loop", async () => {
+  const opened = [
+    { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+    { id: "ws-staging", name: "staging", rootPath: "/srv/staging", workspaceKind: "remote", connectionId: "conn-staging-2", sshHost: "staging.example.com" },
+  ] as unknown as BackendOptions["openedWorkspaces"];
+  const ssh = createSshBackend({ openedWorkspaces: opened, noLinkSupervision: true });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
+
+  await app.waitFor("OpenBitFun");
+  await app.press("Files");
+  await app.waitFor("Explorer");
+  await app.press("workspace-row-ws-staging");
+  await app.waitFor("remote-link-host-outdated");
+  await app.waitFor("staging.example.com: this host cannot restore remote connections");
+  expect(ssh.callsFor("ssh_connect")).toHaveLength(0);
+  expect(app.shows("remote-link-reconnect")).toBe(false);
 });

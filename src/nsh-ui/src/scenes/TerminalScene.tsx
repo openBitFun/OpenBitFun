@@ -37,6 +37,7 @@ import {
   openProfileDraft,
   profileDraft,
   profileNotice,
+  profileNoticeKind,
   profilesFor,
   saveProfileDraft,
   updateProfileDraft,
@@ -141,11 +142,9 @@ function terminalBannerTone(message: string): InlineBannerTone {
   return "danger";
 }
 
-function profileNoticeTone(notice: string): InlineBannerTone {
-  const lower = notice.trim().toLowerCase();
-  if (lower.startsWith("saved")) return "success";
-  if (lower.includes("deleted")) return "neutral";
-  return "warning";
+function profileNoticeTone(): InlineBannerTone {
+  // The tone travels with the notice: translated text is never sniffed.
+  return profileNoticeKind();
 }
 
 function profileSpecLabel(profile: {
@@ -790,7 +789,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                           variant="ghost"
                           size="xs"
                           accessibilityLabel={`profile-delete-${profile().name}`}
-                          onPress={() => deleteProfile(profile().id)}
+                          onPress={() => void deleteProfile(profile().id)}
                         />
                       </View>
                       <View
@@ -904,7 +903,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               <If when={profileNotice()}>
                 {notice => (
                   <InlineBanner
-                    tone={profileNoticeTone(notice())}
+                    tone={profileNoticeTone()}
                     message={localizeHostError(notice())}
                   />
                 )}

@@ -11,6 +11,8 @@ pub mod assistant_naming;
 pub mod catalog_publication;
 #[cfg(feature = "workspace-runtime")]
 pub mod factory;
+#[cfg(feature = "workspace-runtime")]
+pub mod identity_document;
 #[cfg(feature = "workspace-watch")]
 pub mod identity_watch;
 #[cfg(feature = "workspace-runtime")]
@@ -19,6 +21,7 @@ pub(crate) mod legacy_compat;
 pub use legacy_compat::remote_io_for_legacy_or_id;
 #[cfg(feature = "workspace-runtime")]
 pub mod manager;
+pub mod navigator;
 pub(crate) mod persistence;
 #[cfg(feature = "workspace-runtime")]
 pub mod provider;

@@ -2687,7 +2687,7 @@ export function runManifestParserSelfTest({
       ],
     },
     {
-      path: 'src/crates/adapters/transport/src/adapters/tauri.rs',
+      path: 'src/crates/adapters/transport/src/adapters/sink.rs',
       contracts: ['project_agentic_frontend_event', 'projected.event_name.as_str()'],
     },
     {
@@ -4582,53 +4582,6 @@ export function runManifestParserSelfTest({
     {
       path: 'src/crates/interfaces/acp/src/client/manager.rs',
       contracts: ['CLIENT_STARTUP_TIMEOUT_SECS', 'startup_timeout_error_message', 'formats_startup_timeout_error_message'],
-    },
-    {
-      path: 'src/web-ui/src/flow_chat/tool-cards/FileOperationToolCard.tsx',
-      contracts: [
-        'InlineDiffPreview',
-        "previewVariant === 'completed-diff'",
-        'originalContent=\\{oldStringContent\\}',
-        'modifiedContent=\\{newStringContent\\}',
-        'originalContent=""',
-        'modifiedContent=\\{contentPreview\\}',
-      ],
-    },
-    {
-      path: 'src/web-ui/src/main.tsx',
-      contracts: ['startupTrace', 'backgroundTaskScheduler', 'initializeAllTools', 'after_render_start'],
-    },
-    {
-      path: 'src/web-ui/src/shared/utils/startupTrace.ts',
-      contracts: [
-        'sanitizeTraceData',
-        'isRemoteTraceRequest',
-        'recordApiCall',
-        'flushSummary',
-        'markPhaseAfterAnimationFrames',
-      ],
-    },
-    {
-      path: 'src/web-ui/src/shared/utils/backgroundTaskScheduler.ts',
-      contracts: [
-        'BackgroundTaskScheduler',
-        'inFlightKey',
-        'AbortController',
-        'BackgroundTaskCancelledError',
-        'cancelIdle',
-      ],
-    },
-    {
-      path: 'src/web-ui/src/tools/initializeTools.ts',
-      contracts: ['initializeAllTools', 'initializeGit', 'does not import every tool'],
-    },
-    {
-      path: 'src/web-ui/src/tools/editor/services/MonacoStartupWarmup.ts',
-      contracts: ['scheduleMonacoStartupWarmup', 'backgroundTaskScheduler', 'startup:monaco-warmup'],
-    },
-    {
-      path: 'src/web-ui/src/flow_chat/services/flow-chat-manager/SessionModule.ts',
-      contracts: ['historical_session_hydrate_request', 'Load history in the background', "historyState: 'ready'"],
     },
     {
       path: 'src/crates/assembly/core/src/miniapp/storage.rs',

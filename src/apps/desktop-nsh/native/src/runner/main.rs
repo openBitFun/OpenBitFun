@@ -8,10 +8,17 @@
 //!
 //! The backend bootstraps on its own runtime concurrently with the UI's
 //! first frame; `Backend.ready()` reports the outcome.
+//!
+//! One runner for the three desktops: NSH's release runner of each platform
+//! (`nsh-macos-app` / AppKit, `nsh-windows-app` / Win32 + WebView2,
+//! `nsh-linux-app` / GTK) with the same backend library and native module.
+//! The JS bundle comes from `NSH_APP_DIR`, else the package layout of the
+//! platform: `<App>.app/Contents/Resources/nsh` on macOS, `nsh\` next to
+//! the executable on Windows and `nsh/` next to it on Linux.
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod backend_library;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod bridge;
 #[cfg(target_os = "macos")]
 mod folder_picker;
@@ -19,10 +26,41 @@ mod folder_picker;
 use std::process::ExitCode;
 
 /// How long a quit waits for the backend's graceful shutdown.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 const SHUTDOWN_TIMEOUT_MS: u32 = 10_000;
 
+/// NSH's release runner of this platform.
 #[cfg(target_os = "macos")]
+mod platform {
+    pub(crate) fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
+        nsh_platform_macos::set_ui_sets(sets);
+    }
+    pub(crate) fn run() -> std::process::ExitCode {
+        nsh_macos_app::main()
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    pub(crate) fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
+        nsh_platform_windows::set_ui_sets(sets);
+    }
+    pub(crate) fn run() -> std::process::ExitCode {
+        nsh_windows_app::main()
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod platform {
+    pub(crate) fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
+        nsh_platform_linux::set_ui_sets(sets);
+    }
+    pub(crate) fn run() -> std::process::ExitCode {
+        nsh_linux_app::main()
+    }
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn main() -> ExitCode {
     let backend = match backend_library::BackendLibrary::load() {
         Ok(backend) => Some(backend),
@@ -38,11 +76,11 @@ fn main() -> ExitCode {
         register_exit_shutdown(backend);
     }
 
-    nsh_platform_macos::set_ui_sets(vec![
+    platform::set_ui_sets(vec![
         nsh_base::registry(),
         openbitfun_nsh_native::registry(),
     ]);
-    let exit = nsh_macos_app::main();
+    let exit = platform::run();
 
     // The UI quit (`Application.quit()` or the last window closed): shut the
     // backend down gracefully, bounded so a stuck service cannot keep the
@@ -54,10 +92,11 @@ fn main() -> ExitCode {
 }
 
 /// A quit the app intercepted (a JS quit handler that then approves it)
-/// ends in AppKit's `terminate:`, which exits the process without returning
-/// from the runner: shut the backend down from `atexit` too. The shutdown is
-/// idempotent, so the normal path's explicit call makes this a no-op.
-#[cfg(target_os = "macos")]
+/// ends in AppKit's `terminate:` (and the platform's exit elsewhere), which
+/// exits the process without returning from the runner: shut the backend
+/// down from `atexit` too. The shutdown is idempotent, so the normal path's
+/// explicit call makes this a no-op.
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn register_exit_shutdown(backend: &'static backend_library::BackendLibrary) {
     use std::sync::OnceLock;
 
@@ -81,12 +120,8 @@ fn register_exit_shutdown(backend: &'static backend_library::BackendLibrary) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn main() -> ExitCode {
-    // Windows and Linux keep the Tauri desktop for this release; their NSH
-    // runners (`nsh-windows-app`, `nsh-linux-app`) are wired in a later one.
-    eprintln!(
-        "openbitfun-nsh: the native NSH desktop host currently runs on macOS only; use the OpenBitFun desktop build on this platform"
-    );
+    eprintln!("openbitfun-nsh: the native desktop runs on macOS, Windows and Linux");
     ExitCode::FAILURE
 }

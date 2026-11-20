@@ -42,10 +42,6 @@ Keep a lively pixel companion on your desktop that reacts as your agent thinks, 
   - Remove an imported Petdex package and fall back cleanly to an available character
   - 说明：清理旧导入包时内置角色受保护不可误删，若删除的是当前激活角色会自动无缝切回默认伙伴。
   - Why & how: Built-in characters stay protected, and removing the active imported pack automatically falls back to a working preset.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面
-  - Show, hide, and resize the companion window, and return quickly to the main window
-  - 说明：独立无边框悬浮窗支持按屏幕分辨率调大调小，主窗口最小化时点它就能快速回到工作台。
-  - Why & how: Resize the frameless companion window to fit high-DPI or compact displays, and jump straight back to the main OpenBitFun window anytime.
 
 ## 怎么用 / How to use it
 
@@ -90,7 +86,7 @@ Keep a lively pixel companion on your desktop that reacts as your agent thinks, 
 - 直接对智能体说也能改：桌面伙伴已接入产品控制面板，你甚至不用自己翻设置，直接在聊天里说“关掉桌面宠物”或“换个宠物角色”即可生效。
   - Control it right from chat: you can simply tell the agent "turn off the desktop pet" or "switch my pet character" without opening Settings.
 
-关联条目 / Related: `setting.application.pet`, `feature.desktop-cards`, `feature.voice-input`
+关联条目 / Related: `setting.application.pet`, `feature.voice-input`
 
 智能体会先查找相关功能或设置，确认目标后再替你打开、执行或修改。完整能力目录不会预先塞进对话上下文。
 

@@ -7,6 +7,7 @@
 
 import { Clipboard, computed, signal } from "nsh";
 import { invokeCommand, listenEvent } from "./bridge";
+import { holdGitStatusLive } from "./gitStatusLive";
 import {
   createWorkspaceDirectory,
   createWorkspaceFile,
@@ -1296,7 +1297,8 @@ function installWatchListeners(): void {
 /**
  * Registers the host watcher on the active workspace root, the way the desktop
  * explorer does. A remote workspace has no watcher on the host, so the state
- * says so (the explorer shows it) and status polling keeps Git current.
+ * says so (the explorer shows it); the backend keeps its Git status live
+ * (`git://status-changed`) with one poll for all clients.
  */
 export function ensureWorkspaceWatch(): void {
   installWatchListeners();
@@ -1342,52 +1344,17 @@ export async function retryFileWatch(): Promise<void> {
 }
 
 /**
- * Polls `tick` while at least one caller holds a lease: every 2 s on a local
- * workspace, 30 s on a remote one, doubling (to 60 s) after each failure. The
- * desktop's Git panel refreshes on the same cadence.
+ * The Files scene's lease on live Git decorations. The host publishes every
+ * status change (`git://status-changed`), so the tree never polls; a host
+ * without it keeps the status read when the workspace opens.
  */
-export function createStatusPoller(tick: () => Promise<boolean>): () => () => void {
-  let leases = 0;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let failures = 0;
-  const baseDelay = () => (activeWorkspace()?.workspaceKind === "remote" ? 30_000 : 2_000);
-  const schedule = () => {
-    if (timer !== null || leases === 0) return;
-    const delay = Math.min(60_000, baseDelay() * 2 ** failures);
-    timer = setTimeout(async () => {
-      timer = null;
-      if (leases === 0) return;
-      let ok = true;
-      try {
-        ok = await tick();
-      } catch {
-        ok = false;
-      }
-      failures = ok ? 0 : Math.min(failures + 1, 5);
-      schedule();
-    }, delay);
-  };
-  return () => {
-    leases += 1;
-    schedule();
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      leases = Math.max(0, leases - 1);
-      if (leases === 0 && timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
-  };
+export function holdFilesStatusWatch(): () => void {
+  return holdGitStatusLive(change => {
+    if (change.workspaceId !== activeWorkspaceId()) return;
+    const next = change.status ?? null;
+    if (JSON.stringify(next) !== JSON.stringify(gitStatus())) gitStatus.set(next);
+  });
 }
-
-/** The Files scene's lease on the Git decoration poll. */
-export const holdFilesStatusPoll = createStatusPoller(async () => {
-  if (!activeWorkspaceId()) return true;
-  return loadGitStatus({ quiet: true });
-});
 
 onWorkspaceChanged(() => {
   // Park the leaving workspace's tabs and drafts; they come back with it.

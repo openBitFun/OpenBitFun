@@ -4,8 +4,8 @@ import { join } from 'path';
 /**
  * Peer Device Mode controller/peer command ownership boundary.
  *
- * The three peer surfaces (Web UI transport adapter, Desktop peer host, CLI
- * peer host) used to carry their own hand-written `LOCAL_ONLY_COMMANDS`
+ * The three peer surfaces (NSH UI peer routing, Desktop peer host, CLI peer
+ * host) used to carry their own hand-written `LOCAL_ONLY_COMMANDS`
  * tables, and nothing but review kept them in agreement. They now derive
  * from one Product Operation Registry
  * (`src/crates/contracts/product-domains/src/remote_surface/`), whose
@@ -21,8 +21,8 @@ import { join } from 'path';
  *    stay controller-owned; `git_trust_repository` stays operator-only.
  */
 
-const FE_ADAPTER = 'src/web-ui/src/infrastructure/api/adapters/peer-device-adapter.ts';
-const FE_GENERATED = 'src/web-ui/src/infrastructure/api/generated/remoteSurface.ts';
+const FE_ADAPTER = 'src/nsh-ui/src/peerRouting.ts';
+const FE_GENERATED = 'src/nsh-ui/src/generated/peerSurface.ts';
 const DESKTOP_HOST = 'src/apps/desktop/src/api/peer_host_invoke.rs';
 const CLI_HOST = 'src/apps/cli/src/peer_host/deny.rs';
 const REGISTRY_EXPORT =

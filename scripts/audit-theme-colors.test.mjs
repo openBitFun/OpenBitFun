@@ -24,10 +24,8 @@ const SOURCE_OWNER_ROOTS = [
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
   'src/mobile-web/src',
-  'src/web-ui',
 ];
 const NEAR_PAIR_DECISION_AUDIT_ROOTS = [
-  { root: 'src/web-ui', args: ['--json', '--no-baseline', '--top', '0'] },
   { root: 'src/mobile-web/src', args: ['--root', 'src/mobile-web/src', '--json', '--no-baseline', '--top', '0'] },
   { root: 'OpenBitFun-Installer/src', args: ['--root', 'OpenBitFun-Installer/src', '--json', '--no-baseline', '--top', '0'] },
 ];
@@ -95,7 +93,7 @@ function formatNearPairDecisionKey(row) {
 
 function createFixture(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-theme-audit-'));
-  const sourceRoot = path.join(dir, 'src', 'web-ui', 'src');
+  const sourceRoot = path.join(dir, 'surface', 'src');
   for (const [relativePath, content] of Object.entries(files)) {
     writeText(path.join(sourceRoot, relativePath), content);
   }
@@ -199,7 +197,7 @@ test('theme CSS var contract registry is explicit and non-overlapping', () => {
     assert.match(contract.key, /^--[a-z0-9-]+$/);
     assert.match(contract.canonical, /^--[a-z0-9-]+$/);
     assert.notEqual(contract.key, contract.canonical, `${contract.key} must point to a different canonical token`);
-    assert.ok(contract.owner.includes('src/web-ui/src/'), `${contract.key} must name a source owner`);
+    assert.ok(contractOwnerHasKnownSource(contract.owner), `${contract.key} must name a source owner`);
     assert.ok(contract.reason.trim().length >= 30, `${contract.key} must explain compatibility need`);
     assert.ok(contract.removal.trim().length >= 30, `${contract.key} must define retirement criteria`);
   }
@@ -214,7 +212,7 @@ test('theme CSS var contract registry is explicit and non-overlapping', () => {
     assert.match(contract.prefix, /^--[a-z0-9-]+-$/);
     assert.match(contract.canonicalPrefix, /^--[a-z0-9-]+-$/);
     assert.notEqual(contract.prefix, contract.canonicalPrefix, `${contract.prefix} must point to a different family`);
-    assert.ok(contract.owner.includes('src/web-ui/src/'), `${contract.prefix} must name a source owner`);
+    assert.ok(contractOwnerHasKnownSource(contract.owner), `${contract.prefix} must name a source owner`);
     assert.ok(contract.reason.trim().length >= 30, `${contract.prefix} must explain compatibility need`);
     assert.ok(contract.removal.trim().length >= 30, `${contract.prefix} must define retirement criteria`);
   }
@@ -223,7 +221,7 @@ test('theme CSS var contract registry is explicit and non-overlapping', () => {
   assert.equal(fallbackContractKeys.size, FALLBACK_VAR_CONTRACTS.length, 'fallback contracts must be unique');
   for (const contract of FALLBACK_VAR_CONTRACTS) {
     assert.match(contract.key, /^--[a-z0-9-]+$/);
-    assert.ok(contract.owner.includes('src/web-ui/src/'), `${contract.key} must name a source owner`);
+    assert.ok(contractOwnerHasKnownSource(contract.owner), `${contract.key} must name a source owner`);
     assert.ok(contract.reason.trim().length >= 30, `${contract.key} must explain why fallback is intentional`);
     assert.ok(contract.boundary.trim().length >= 10, `${contract.key} must classify the fallback boundary`);
   }
@@ -238,7 +236,7 @@ test('theme CSS var contract registry is explicit and non-overlapping', () => {
     assert.match(contract.key, /^--[a-z0-9-]+$/);
     assert.match(contract.canonical, /^--[a-z0-9-]+$/);
     assert.notEqual(contract.key, contract.canonical, `${contract.key} must point to a different canonical token`);
-    assert.ok(contract.owner.includes('src/web-ui/src/'), `${contract.key} must name a source owner`);
+    assert.ok(contractOwnerHasKnownSource(contract.owner), `${contract.key} must name a source owner`);
     assert.ok(contract.reason.trim().length >= 30, `${contract.key} must explain the rename boundary`);
   }
 });
@@ -271,39 +269,6 @@ test('repository dynamic CSS var families match the registered contract', () => 
     assert.equal(report.surfaceTokenRenames.activeOccurrences, 0);
     assert.equal(report.surfaceTokenRenames.missingCanonicalUnique, 0);
   }
-});
-
-test('plugin appearance projection stays compact and isolated from runtime/widget contracts', () => {
-  const projectionSource = readText(path.join(root, 'src/web-ui/src/infrastructure/appearance/adapters/PluginAppearanceProjection.ts'));
-  const publicIndexSource = readText(path.join(root, 'src/web-ui/src/infrastructure/appearance/index.ts'));
-  const keyListMatch = projectionSource.match(/PLUGIN_APPEARANCE_COLOR_KEYS\s*=\s*\[([\s\S]*?)\]\s+as const;/);
-  assert.ok(keyListMatch, 'plugin projection must declare PLUGIN_APPEARANCE_COLOR_KEYS');
-  const keyMatches = Array.from(
-    keyListMatch[1].matchAll(/'([a-z]+)'/g),
-    match => match[1],
-  );
-
-  assert.deepEqual(keyMatches, [
-    'primary',
-    'secondary',
-    'accent',
-    'success',
-    'warning',
-    'error',
-    'info',
-  ]);
-  assert.equal(keyMatches.length, 7, 'plugin projection must stay within the documented key cap');
-  assert.doesNotMatch(
-    projectionSource,
-    /ThemeService|appearancePayload|WIDGET_APPEARANCE|getComputedStyle|setProperty|--[a-z0-9-]+/i,
-    'plugin projection must not become a runtime CSS var or generated widget schema',
-  );
-  assert.match(publicIndexSource, /PluginAppearanceProjection/);
-  assert.doesNotMatch(
-    publicIndexSource,
-    /appearancePayload|WIDGET_APPEARANCE/i,
-    'Appearance public index must not expose generated widget payload as plugin API',
-  );
 });
 
 test('repository specialized near color pairs have explicit decisions', () => {
@@ -343,10 +308,6 @@ test('generated widget iframe has no compatibility alias module or contracts', (
   assert.equal(TOKEN_COMPATIBILITY_ALIAS_CONTRACTS.length, 0);
   assert.equal(TOKEN_COMPATIBILITY_ALIAS_FAMILY_CONTRACTS.length, 0);
   assert.equal(SURFACE_TOKEN_RENAME_CONTRACTS.length, 0);
-  assert.equal(
-    fs.existsSync(path.join(root, 'src/web-ui/src/tools/generative-widget/appearancePayloadCompatibility.ts')),
-    false,
-  );
 });
 
 test('theme color audit emits scoped machine-readable reports', (t) => {
@@ -358,8 +319,8 @@ test('theme color audit emits scoped machine-readable reports', (t) => {
       '}',
       '',
     ].join('\n'),
-    'infrastructure/appearance/adapters/ThemeTokenAppearanceAdapter.ts': [
-      "document.documentElement.style.setProperty('--runtime-only', '#333333');",
+    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': [
+      "document.documentElement.style.setProperty('--runtime-only', '1px');",
       '',
     ].join('\n'),
     'app/App.scss': [
@@ -570,18 +531,11 @@ test('theme color audit reports fallback tokens that lack a boundary contract', 
 test('theme color audit reports specialized color domains separately from app UI', (t) => {
   const { dir, sourceRoot } = createFixture({
     'design-system/packages/theme-openbitfun/src/test.tokens.css': ':root { --openbitfun-appearance-token-color-text-primary: #111111; }\n',
-    'infrastructure/appearance/builtins/dark.ts': "export const bg = '#222222';\n",
-    'tools/mermaid-editor/theme/mermaidTheme.ts': "export const node = '#333333';\n",
+    'OpenBitFun-Installer/src/theme/presets.ts': "export const bg = '#222222';\n",
+    'public/assets/brand.svg': '<svg><path fill="#333333"/></svg>\n',
+    // Paths that only had a specialized owner in the retired React desktop UI are ordinary app UI.
     'tools/editor/editorColor.ts': "export const editorBg = '#444444';\n",
     'shared/prism/prismTheme.ts': "export const prism = { keyword: '#555555' };\n",
-    'tools/terminal/utils/xtermTheme.ts': "export const cursor = '#c0c0c0';\n",
-    'tools/generative-widget/appearancePayload.ts': "export const fallback = { '--openbitfun-appearance-token-color-text-primary': '#666666' };\n",
-    'shared/inspector/inspectorOverlayTheme.ts': "export const overlay = { activeBorder: '#777777' };\n",
-    'infrastructure/appearance/appearanceDomainTokens.ts': "export const accents = { tool: '#dddddd' };\n",
-    'infrastructure/language-detection/core/LanguageRegistry.ts': "export const rust = '#888888';\n",
-    'app/components/SplashScreen/SplashEffect.tsx': "export const stroke = '#999999';\n",
-    'app/components/SplashScreen/SplashEffect.scss': ".stream { color: #bbbbbb; }\n",
-    'app/tools/mermaid-editorish/FakePanel.ts': "export const fake = '#cccccc';\n",
     'app/App.scss': '.app { color: #aaaaaa; }\n',
   });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -591,18 +545,12 @@ test('theme color audit reports specialized color domains separately from app UI
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const report = readJson(reportPath);
+  assert.deepEqual(Object.keys(report.colorDomainScopes).sort(), [...COLOR_DOMAIN_KEYS].sort());
   assert.equal(report.colorDomainScopes.tokenContract.uniqueColors, 1);
   assert.equal(report.colorDomainScopes.themePreset.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.mermaid.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.editor.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.syntax.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.terminal.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.generatedWidget.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.debugOverlay.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.appearanceDomain.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.languageIdentity.uniqueColors, 1);
-  assert.equal(report.colorDomainScopes.visualEffect.uniqueColors, 2);
-  assert.equal(report.colorDomainScopes.appUi.uniqueColors, 2);
+  assert.equal(report.colorDomainScopes.assetMetadata.uniqueColors, 1);
+  assert.equal(report.colorDomainScopes.appUi.uniqueColors, 3);
+  assert.equal(report.colorDomainContracts.activeUncontractedUnique, 0);
 });
 
 test('theme color audit ignores comment-only color-like text', (t) => {
@@ -769,7 +717,7 @@ test('theme color audit counts full CSS var governance debt before row truncatio
     (_, index) => `.loose-${index} { color: var(--loose-${index}); }`,
   );
   const { dir, sourceRoot } = createFixture({
-    'infrastructure/appearance/adapters/ThemeTokenAppearanceAdapter.ts': `${runtimeDefinitions.join('\n')}\n`,
+    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': `${runtimeDefinitions.join('\n')}\n`,
     'app/App.scss': `${missingRules.join('\n')}\n${fallbackRules.join('\n')}\n${runtimeRules.join('\n')}\n`,
     'app/LooseVar.tsx': [
       'export function LooseVar() {',
@@ -875,14 +823,13 @@ test('theme color audit reports near color pair sources and enforces pair budget
 
 test('theme color audit reports near color pairs inside specialized color domains', (t) => {
   const { dir, sourceRoot } = createFixture({
-    'tools/mermaid-editor/theme/mermaidTheme.ts': [
+    'OpenBitFun-Installer/src/theme/presets.ts': [
       "export const lightNode = '#111111';",
       "export const darkNode = '#111112';",
       '',
     ].join('\n'),
-    'tools/terminal/utils/xtermTheme.ts': [
-      "export const normalBlack = '#222222';",
-      "export const brightBlack = '#222225';",
+    'design-system/packages/theme-openbitfun/src/near.tokens.css': [
+      ':root { --near-a: #222222; --near-b: #222225; }',
       '',
     ].join('\n'),
     'app/App.scss': '.app { color: #333333; }\n',
@@ -895,16 +842,16 @@ test('theme color audit reports near color pairs inside specialized color domain
   assert.match(reportResult.stdout, /Specialized color-domain near pairs:/);
 
   const report = readJson(reportPath);
-  assert.equal(report.colorDomainNearPairs.mermaid.indistinguishableTotal, 1);
-  assert.equal(report.colorDomainNearPairs.terminal.nearTotal, 1);
+  assert.equal(report.colorDomainNearPairs.themePreset.indistinguishableTotal, 1);
+  assert.equal(report.colorDomainNearPairs.tokenContract.nearTotal, 1);
   assert.equal(report.colorDomainNearPairs.appUi.indistinguishableTotal, 0);
   assert.equal(report.colorDomainNearPairs.indistinguishableTotal, 1);
   assert.equal(report.colorDomainNearPairs.nearTotal, 1);
   assert.deepEqual(
-    report.colorDomainNearPairs.mermaid.indistinguishable[0].files.map(file => (
+    report.colorDomainNearPairs.themePreset.indistinguishable[0].files.map(file => (
       file.replace(/\\/g, '/').split('/').slice(-3).join('/')
     )),
-    ['mermaid-editor/theme/mermaidTheme.ts'],
+    ['src/theme/presets.ts'],
   );
 });
 
@@ -914,7 +861,6 @@ test('theme color audit excludes test files from production color budgets', (t) 
     'app/App.scss': '.app { color: #ef4444; }\n',
     'app/App.test.tsx': "expect(button).toHaveStyle({ color: '#ef4444' });\n",
     'app/__tests__/Fixture.tsx': "export const visualLock = '#ef4444';\n",
-    'generated/version.ts': "export const buildAccent = '#22c55e';\n",
   });
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -924,7 +870,6 @@ test('theme color audit excludes test files from production color budgets', (t) 
   const report = JSON.parse(result.stdout);
   assert.equal(report.filesScanned, 2);
   assert.equal(report.ignoredTestFiles, 2);
-  assert.equal(report.ignoredGeneratedFiles, 1);
   assert.equal(report.colorScopes.appUi.occurrences, 1);
   assert.equal(report.tokenAliasLiterals.occurrences, 1);
 });
@@ -984,7 +929,7 @@ test('theme color audit fails when fallback tokens lack a boundary contract', (t
 
 test('theme color audit requires dynamic CSS var families to be registered', (t) => {
   const { dir, sourceRoot } = createFixture({
-    'infrastructure/appearance/adapters/ThemeTokenAppearanceAdapter.ts': [
+    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': [
       "for (const [key, value] of Object.entries(theme.extra)) {",
       "  document.documentElement.style.setProperty(`--unregistered-${key}`, value);",
       '}',
@@ -1009,28 +954,6 @@ test('theme color audit requires dynamic CSS var families to be registered', (t)
   assert.match(`${result.stdout}\n${result.stderr}`, /--unregistered-/);
 });
 
-test('theme color audit accepts registered dynamic CSS var families', (t) => {
-  const { dir, sourceRoot } = createFixture({
-    'infrastructure/appearance/adapters/ThemeTokenAppearanceAdapter.ts': [
-      "for (const [key, value] of Object.entries(fontSizeTokens)) {",
-      "  document.documentElement.style.setProperty(`--openbitfun-font-size-${key}`, value);",
-      '}',
-      '',
-    ].join('\n'),
-  });
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const baselinePath = path.join(dir, 'theme-baseline.json');
-  writeText(baselinePath, `${JSON.stringify({
-    version: 1,
-    budgets: {
-      'cssVarDefinitions.unregisteredDynamicFamilyUnique': { max: 0 },
-    },
-  }, null, 2)}\n`);
-
-  const result = runAudit(['--root', sourceRoot, '--baseline', baselinePath]);
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-});
-
 test('theme color audit requires exact exports for dynamic-family CSS var usages', (t) => {
   const { dir, sourceRoot } = createFixture({
     'design-system/packages/theme-openbitfun/src/test.tokens.css': [
@@ -1039,7 +962,7 @@ test('theme color audit requires exact exports for dynamic-family CSS var usages
       '}',
       '',
     ].join('\n'),
-    'infrastructure/appearance/adapters/ThemeTokenAppearanceAdapter.ts': [
+    'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts': [
       "for (const [key, value] of Object.entries(theme.colors.purple)) {",
       "  document.documentElement.style.setProperty(`--openbitfun-appearance-token-color-purple-${key}`, value);",
       '}',

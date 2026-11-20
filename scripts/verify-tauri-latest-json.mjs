@@ -6,6 +6,12 @@ const manifestPath = requireArg(args, 'manifest');
 const version = args.version;
 const requiredPlatforms = parseListArg(args['required-platforms'] || '');
 const requiredManualPlatforms = parseListArg(args['required-manual-platforms'] || '');
+// `darwin-<arch>` keys that must carry exactly the native `darwin-<arch>-nsh`
+// archive and signature: the update bridge for installed Tauri builds.
+const bridgePlatforms = parseListArg(args['bridge-platforms'] || '');
+// Platform key prefixes the manifest must not carry (`windows-,linux-`: no native
+// in-place updater yet, and an older Tauri package would reinstall in a loop).
+const forbiddenPlatformPrefixes = parseListArg(args['forbidden-platform-prefixes'] || '');
 const checkUrls = ['1', 'true', 'yes'].includes(String(args['check-urls'] || '').toLowerCase());
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -31,6 +37,24 @@ for (const [platform, entry] of Object.entries(manifest.platforms)) {
   }
   if (!entry.signature || typeof entry.signature !== 'string') {
     fail(`Missing signature for ${platform}`);
+  }
+}
+
+for (const platform of bridgePlatforms) {
+  const legacy = manifest.platforms[platform];
+  const native = manifest.platforms[`${platform}-nsh`];
+  if (!legacy || !native) {
+    fail(`Bridge ${platform} needs both ${platform} and ${platform}-nsh entries`);
+  }
+  if (legacy.url !== native.url || legacy.signature !== native.signature) {
+    fail(`Bridge ${platform} must carry the same archive and signature as ${platform}-nsh`);
+  }
+}
+
+for (const platform of Object.keys(manifest.platforms)) {
+  const prefix = forbiddenPlatformPrefixes.find((candidate) => platform.startsWith(candidate));
+  if (prefix) {
+    fail(`Platform ${platform} is not allowed in this manifest (forbidden prefix ${prefix})`);
   }
 }
 

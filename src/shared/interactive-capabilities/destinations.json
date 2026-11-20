@@ -1,0 +1,308 @@
+{
+  "description": "Frozen UI destination vocabulary for interactive-capability presentation targets (settings pages/views/sections, product actions, scenes) and the historical settings destination migrations. Captured from the retired React desktop UI (src/web-ui) so catalog destinations stay validated and older presentation surfaces keep receiving the same ids; the native desktop UI (src/nsh-ui) does not consume these targets.",
+  "settingsPages": [
+    "ai.execution",
+    "ai.models",
+    "ai.permissions",
+    "ai.session-memory",
+    "application.appearance",
+    "application.general",
+    "application.input",
+    "application.pet",
+    "data.archived",
+    "data.diagnostics",
+    "data.usage",
+    "development.editor",
+    "development.terminal",
+    "development.workspace",
+    "tools.automation",
+    "tools.desktop-control",
+    "tools.external-agents",
+    "tools.external-import",
+    "tools.mcp",
+    "tools.web-search"
+  ],
+  "settingsViews": [
+    "json",
+    "local",
+    "ssh"
+  ],
+  "settingsSections": [
+    "btw-close-confirmation",
+    "desktop-cards",
+    "git",
+    "hooks",
+    "memory",
+    "message-sending",
+    "pet",
+    "quick-actions",
+    "session",
+    "shortcuts",
+    "sidebar-navigation",
+    "text-selection",
+    "voice",
+    "voice-call",
+    "workspace-search",
+    "worktrees"
+  ],
+  "productActions": [
+    "project.new",
+    "project.open",
+    "session.new",
+    "settings.open",
+    "settings.shortcuts.open",
+    "surface.agents.open",
+    "surface.browser.open",
+    "surface.ecosystemCompatibility.open",
+    "surface.files.open",
+    "surface.insights.open",
+    "surface.miniapps.open",
+    "surface.skills.open",
+    "surface.terminal.open",
+    "surface.todos.open"
+  ],
+  "scenes": [
+    "agents",
+    "assistant",
+    "browser",
+    "ecosystem-compatibility",
+    "file-viewer",
+    "git",
+    "insights",
+    "miniapps",
+    "pages",
+    "personal-overview",
+    "profile",
+    "session",
+    "settings",
+    "shell",
+    "skills",
+    "terminal",
+    "todos"
+  ],
+  "settingsDestinationMigrations": {
+    "pages": {
+      "external-sources": {
+        "pageId": "tools.external-import"
+      },
+      "tools.integrations": {
+        "pageId": "tools.external-import"
+      },
+      "basics": {
+        "pageId": "application.general"
+      },
+      "appearance": {
+        "pageId": "application.appearance"
+      },
+      "font": {
+        "pageId": "application.appearance"
+      },
+      "fonts": {
+        "pageId": "application.appearance"
+      },
+      "session-personalization": {
+        "pageId": "application.pet"
+      },
+      "application.voice": {
+        "pageId": "application.input",
+        "sectionId": "voice"
+      },
+      "application.shortcuts": {
+        "pageId": "application.input",
+        "sectionId": "shortcuts"
+      },
+      "keyboard": {
+        "pageId": "application.input",
+        "sectionId": "shortcuts"
+      },
+      "shortcuts": {
+        "pageId": "application.input",
+        "sectionId": "shortcuts"
+      },
+      "keybindings": {
+        "pageId": "application.input",
+        "sectionId": "shortcuts"
+      },
+      "hotkeys": {
+        "pageId": "application.input",
+        "sectionId": "shortcuts"
+      },
+      "voice-input": {
+        "pageId": "application.input",
+        "sectionId": "voice"
+      },
+      "application.development": {
+        "pageId": "development.terminal"
+      },
+      "application.terminal": {
+        "pageId": "development.terminal"
+      },
+      "application.editor": {
+        "pageId": "development.editor"
+      },
+      "editor": {
+        "pageId": "development.editor"
+      },
+      "terminal": {
+        "pageId": "development.terminal"
+      },
+      "models": {
+        "pageId": "ai.models"
+      },
+      "ai.memory": {
+        "pageId": "ai.session-memory",
+        "sectionId": "memory"
+      },
+      "memories": {
+        "pageId": "ai.session-memory",
+        "sectionId": "memory"
+      },
+      "workspace.session": {
+        "pageId": "ai.session-memory",
+        "sectionId": "session"
+      },
+      "session-config": {
+        "pageId": "ai.session-memory",
+        "sectionId": "session"
+      },
+      "session-permissions": {
+        "pageId": "ai.permissions"
+      },
+      "tools.execution": {
+        "pageId": "ai.execution"
+      },
+      "tools.device-control": {
+        "pageId": "tools.desktop-control"
+      },
+      "tools.browser-control": {
+        "pageId": "tools.desktop-control"
+      },
+      "review": {
+        "pageId": "ai.execution"
+      },
+      "deep-review": {
+        "pageId": "ai.execution"
+      },
+      "code-review": {
+        "pageId": "ai.execution"
+      },
+      "review-team": {
+        "pageId": "ai.execution"
+      },
+      "workspace.worktrees": {
+        "pageId": "development.workspace",
+        "sectionId": "worktrees"
+      },
+      "worktrees": {
+        "pageId": "development.workspace",
+        "sectionId": "worktrees"
+      },
+      "quick-actions": {
+        "pageId": "tools.automation",
+        "sectionId": "quick-actions"
+      },
+      "hooks": {
+        "pageId": "tools.automation",
+        "sectionId": "hooks"
+      },
+      "tools.webSearch": {
+        "pageId": "tools.web-search"
+      },
+      "mcp-tools": {
+        "pageId": "tools.mcp"
+      },
+      "tools.acp": {
+        "pageId": "tools.external-agents"
+      },
+      "acp-agents": {
+        "pageId": "tools.external-agents"
+      },
+      "usage-statistics": {
+        "pageId": "data.usage"
+      },
+      "archived-sessions": {
+        "pageId": "data.archived"
+      },
+      "data.history": {
+        "pageId": "data.usage"
+      },
+      "logging": {
+        "pageId": "data.diagnostics"
+      }
+    },
+    "views": {
+      "tools.execution": {
+        "common": {
+          "pageId": "ai.permissions"
+        },
+        "advanced": {
+          "pageId": "ai.execution"
+        }
+      },
+      "tools.automation": {
+        "quick-actions": {
+          "pageId": "tools.automation",
+          "sectionId": "quick-actions"
+        },
+        "hooks": {
+          "pageId": "tools.automation",
+          "sectionId": "hooks"
+        }
+      }
+    },
+    "capabilities": {
+      "setting.application.input": {
+        "items": {
+          "auto-show-selection-toolbar": {
+            "pageId": "application.input",
+            "sectionId": "text-selection"
+          }
+        }
+      },
+      "feature.computer-use": {
+        "destination": {
+          "pageId": "tools.desktop-control"
+        }
+      },
+      "setting.application.appearance": {
+        "items": {
+          "language": {
+            "pageId": "application.general"
+          }
+        }
+      },
+      "setting.workspace.session": {
+        "items": {
+          "accelerated-search": {
+            "pageId": "development.workspace",
+            "sectionId": "workspace-search"
+          },
+          "search-index": {
+            "pageId": "development.workspace",
+            "sectionId": "workspace-search"
+          },
+          "remote-behavior": {
+            "pageId": "development.workspace",
+            "sectionId": "workspace-search"
+          }
+        }
+      },
+      "setting.tools.execution": {
+        "items": {
+          "computer-use": {
+            "pageId": "tools.desktop-control"
+          },
+          "computer-use-permissions": {
+            "pageId": "tools.desktop-control"
+          },
+          "browser-auto-connect": {
+            "pageId": "tools.desktop-control"
+          },
+          "browser-setup": {
+            "pageId": "tools.desktop-control"
+          }
+        }
+      }
+    }
+  }
+}

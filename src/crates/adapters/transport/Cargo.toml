@@ -20,12 +20,8 @@ anyhow = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 
-# Tauri adapter dependency (optional, enable only when needed)
-tauri = { workspace = true, optional = true }
-
 [features]
 default = []
-tauri-adapter = ["tauri"]
 
 [lints]
 workspace = true

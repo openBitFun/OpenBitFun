@@ -12,6 +12,7 @@ import {
   type ViewRef,
 } from "nsh";
 import { Input } from "nsh/base";
+import { windowShellId } from "../bridge";
 import { Bar, Cell, Grid, Plot, PlotAxis } from "nsh/base/plot";
 import {
   EXTERNAL_SESSION_NAMES,
@@ -7514,6 +7515,27 @@ function LaunchAtLoginRow() {
 }
 
 /**
+ * The companion pet and desktop cards are separate always-on-top windows of the
+ * Tauri desktop. The native desktop does not draw them yet, so it says so here
+ * instead of offering switches that would do nothing.
+ */
+function DesktopCompanionRow() {
+  return (
+    <SettingsRow
+      label={tr("settings.field.desktopCompanion")}
+      description={tr("settings.field.desktopCompanionUnavailable")}
+    >
+      <Text
+        accessibilityLabel="desktop-companion-unavailable"
+        style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}
+      >
+        {tr("settings.field.notAvailableHere")}
+      </Text>
+    </SettingsRow>
+  );
+}
+
+/**
  * The memory folder and the reset the desktop's memory section offers. The
  * folder opens in the file manager of the machine that stores it, so it is not
  * offered while another device is driven; a reset asks first.
@@ -8174,7 +8196,17 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
           <LanguageRow />
           <AccountRow />
         </SettingsGroup>
-        <FieldSection sectionId="general" leading={<LaunchAtLoginRow />} />
+        <FieldSection
+          sectionId="general"
+          leading={
+            <View>
+              <LaunchAtLoginRow />
+              <If when={windowShellId() === "nsh-desktop"}>
+                <DesktopCompanionRow />
+              </If>
+            </View>
+          }
+        />
       </View>
     );
   }

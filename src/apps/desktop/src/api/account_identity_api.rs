@@ -5,14 +5,14 @@ use openbitfun_product_domains::account::{
 };
 use openbitfun_services_integrations::account_identity::{self, AccountIdentityClient, MarketMe};
 
-#[tauri::command]
+// @backend-command
 pub async fn account_github_start() -> Result<GitHubAuthStart, String> {
     account_identity::start_auth_flow()
         .await
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_github_poll(
     app: HostHandle,
     request: GitHubAuthPollRequest,
@@ -36,7 +36,7 @@ pub async fn account_github_poll(
     Ok(response)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_github_info() -> Result<Option<MarketMe>, String> {
     let mut client = AccountIdentityClient::from_environment()
         .await

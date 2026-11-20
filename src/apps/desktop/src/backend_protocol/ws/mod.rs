@@ -8,11 +8,17 @@
 //! every event comes from the same [`EventHub`] the in-process UI reads.
 //! Each connection is bound to a scope (`owner` on loopback with the
 //! per-launch token, `paired-client` on the LAN with a revocable QR
-//! credential); the Product Operation Registry decides what a non-owner scope
+//! credential, `account-device` on the mesh listener with the device key
+//! handshake); the Product Operation Registry decides what a non-owner scope
 //! may run and receive. See `docs/architecture/unified-client-architecture.md`.
 
 mod connection;
 mod http;
+mod mesh;
+pub mod mesh_client;
+#[cfg(test)]
+mod mesh_tests;
+mod mesh_verbs;
 mod obp_api;
 mod protocol;
 mod scope;
@@ -22,6 +28,7 @@ mod tests;
 mod tls;
 
 pub use connection::{ConnectionLimits, StopReason};
+pub use mesh::{MeshAuthority, MeshInfo, PairKeyFuture};
 pub use obp_api::*;
 pub use protocol::OBP_PROTOCOL_VERSION;
 pub use scope::Scope;
@@ -60,6 +67,14 @@ pub trait ObpBackend: Send + Sync + 'static {
 
 impl ObpBackend for BackendService {
     fn dispatch(&self, command: String, args: Value) -> ObpDispatchFuture {
+        // Same-account host verbs (dispatch targets, the bot lane); the
+        // scope check admits them for `account-device` (and the owner) only.
+        if mesh_verbs::is_account_device_host_verb(&command) {
+            if let Some(future) = mesh_verbs::route(&command, args) {
+                return future;
+            }
+            return Box::pin(async move { Err(format!("unknown host verb {command}")) });
+        }
         Box::pin(self.dispatch_owned(command, args))
     }
 
@@ -114,6 +129,9 @@ impl RunningListener {
 struct ConnectionEntry {
     scope: Scope,
     stop: watch::Sender<Option<StopReason>>,
+    /// Served on the mesh listener (another account device, or a phone that
+    /// joined the account mesh); closed when the mesh stops.
+    via_mesh: bool,
 }
 
 /// Status of the listeners, for the Devices scene.
@@ -133,6 +151,10 @@ pub struct ObpStatus {
     pub paired_clients: Vec<PairedClientStatus>,
     pub owner_connections: usize,
     pub paired_connections: usize,
+    /// Other devices of the account connected over the mesh listener.
+    pub account_device_connections: usize,
+    /// The mesh listener's loopback port (reached on the virtual IP).
+    pub mesh_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -181,6 +203,8 @@ impl ObpStatus {
             paired_clients: Vec::new(),
             owner_connections: 0,
             paired_connections: 0,
+            account_device_connections: 0,
+            mesh_port: None,
         }
     }
 }
@@ -198,6 +222,7 @@ pub struct ObpServer {
     lan_error: Mutex<Option<String>>,
     connections: Mutex<HashMap<u64, ConnectionEntry>>,
     next_connection: AtomicU64,
+    mesh: mesh::MeshListenerState,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -241,6 +266,7 @@ impl ObpServer {
             lan_error: Mutex::new(None),
             connections: Mutex::new(HashMap::new()),
             next_connection: AtomicU64::new(1),
+            mesh: mesh::MeshListenerState::default(),
         }))
     }
 
@@ -359,7 +385,7 @@ impl ObpServer {
             log::info!("OBP LAN listener stopped");
         }
         for entry in lock(&self.connections).values() {
-            if !entry.scope.is_owner() {
+            if matches!(entry.scope, Scope::PairedClient { .. }) && !entry.via_mesh {
                 entry.stop.send_replace(Some(StopReason::Shutdown));
             }
         }
@@ -405,12 +431,16 @@ impl ObpServer {
             .values()
             .filter_map(|entry| match &entry.scope {
                 Scope::PairedClient { client_id } => Some(client_id.as_str()),
-                Scope::Owner => None,
+                Scope::Owner | Scope::AccountDevice { .. } => None,
             })
             .collect();
         let owner_connections = connections
             .values()
             .filter(|entry| entry.scope.is_owner())
+            .count();
+        let account_device_connections = connections
+            .values()
+            .filter(|entry| matches!(entry.scope, Scope::AccountDevice { .. }))
             .count();
         let paired_clients = lock(&self.store)
             .clients()
@@ -443,6 +473,8 @@ impl ObpServer {
             paired_clients,
             owner_connections,
             paired_connections: connected.len(),
+            account_device_connections,
+            mesh_port: self.mesh_addr().map(|addr| addr.port()),
         }
     }
 
@@ -461,18 +493,44 @@ impl ObpServer {
             "obp_no_lan_address: this machine has no LAN IPv4 address; connect it to a network first"
                 .to_string()
         })?;
+        Ok(self.pairing_offer(&base, fingerprint, name))
+    }
+
+    /// A one-time pairing code for a phone or browser that joined the
+    /// account mesh with the EasyTier app; `virtual_ip` is this device's
+    /// mesh address (the mesh listener is reached at that IP and its port).
+    pub fn create_mesh_pairing(
+        &self,
+        name: Option<String>,
+        virtual_ip: &str,
+    ) -> Result<PairingOffer, String> {
+        let ip: Ipv4Addr = virtual_ip.parse().map_err(|_| {
+            "mesh_unavailable: this device has no mesh address yet; wait for the device mesh to connect"
+                .to_string()
+        })?;
+        let (Some(addr), Some(fingerprint)) = (self.mesh_addr(), self.mesh_fingerprint()) else {
+            return Err(
+                "mesh_unavailable: the device-mesh listener is not running; sign in and wait for the device mesh to connect"
+                    .to_string(),
+            );
+        };
+        let base = format!("https://{}:{}", ip, addr.port());
+        Ok(self.pairing_offer(&base, fingerprint, name))
+    }
+
+    fn pairing_offer(&self, base: &str, fingerprint: String, name: Option<String>) -> PairingOffer {
         let name = name
             .map(|name| name.trim().chars().take(80).collect::<String>())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "Phone or browser".to_string());
         let code = lock(&self.store).create_code(name);
         let url = format!("{base}/pair?code={code}");
-        Ok(PairingOffer {
+        PairingOffer {
             qr_payload: format!("{url}#fp={fingerprint}"),
             url,
             fingerprint,
             expires_at_ms: store::now_ms() + store::PAIRING_CODE_TTL.as_millis() as u64,
-        })
+        }
     }
 
     /// Revokes a paired client and closes its connections.
@@ -492,12 +550,28 @@ impl ObpServer {
     }
 
     fn register_connection(&self, scope: Scope) -> (u64, watch::Receiver<Option<StopReason>>) {
+        let via_mesh = matches!(scope, Scope::AccountDevice { .. });
+        self.register_connection_via(scope, via_mesh)
+    }
+
+    fn register_connection_via(
+        &self,
+        scope: Scope,
+        via_mesh: bool,
+    ) -> (u64, watch::Receiver<Option<StopReason>>) {
         let id = self.next_connection.fetch_add(1, Ordering::Relaxed);
         let (stop, stopped) = watch::channel(None);
         if let Scope::PairedClient { client_id } = &scope {
             lock(&self.store).touch_client(client_id);
         }
-        lock(&self.connections).insert(id, ConnectionEntry { scope, stop });
+        lock(&self.connections).insert(
+            id,
+            ConnectionEntry {
+                scope,
+                stop,
+                via_mesh,
+            },
+        );
         (id, stopped)
     }
 
@@ -513,6 +587,7 @@ impl ObpServer {
         if let Some(mut listener) = lock(&self.lan).take() {
             listener.stop();
         }
+        self.stop_mesh();
         for entry in lock(&self.connections).values() {
             entry.stop.send_replace(Some(StopReason::Shutdown));
         }

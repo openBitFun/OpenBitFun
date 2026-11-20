@@ -1,14 +1,14 @@
 //! Transport-neutral backend protocol of the desktop backend.
 //!
-//! Every client (the in-process NSH UI today; WebSocket/relay clients later)
+//! Every client (the in-process NSH UI, OBP WebSocket clients, mesh peers)
 //! talks to the backend through the same two primitives:
 //!
-//! - [`BackendService::dispatch`]: run one product command by its Tauri
-//!   command name with the exact JSON arguments the Tauri frontend passed to
-//!   `invoke`, returning the JSON of the command's `Ok` value or its error
-//!   text;
+//! - [`BackendService::dispatch`]: run one product command by its registered
+//!   name (the command vocabulary the retired Tauri host introduced) with the
+//!   JSON arguments object (`{"request": ...}` or named parameters), returning
+//!   the JSON of the command's `Ok` value or its error text;
 //! - [`BackendService::subscribe_events`]: the ordered event stream (names
-//!   and payloads identical to the Tauri host's events), each event carrying
+//!   and payloads unchanged from the Tauri era), each event carrying
 //!   a monotonically increasing `seq`, with a bounded replay ring so a
 //!   reconnecting client can resume after the last `seq` it saw.
 //!
@@ -21,6 +21,7 @@ mod dispatch;
 mod dispatch_generated;
 mod events;
 pub mod ffi;
+mod native_commands;
 pub mod ws;
 
 use std::future::Future;
@@ -58,11 +59,11 @@ impl BackendService {
 
     /// A host handle for code that runs host-side work on behalf of a client.
     pub fn host_handle(&self) -> HostHandle {
-        HostHandle::Native(Arc::clone(&self.host))
+        HostHandle::new(Arc::clone(&self.host))
     }
 
-    /// Runs one command. Unknown commands and commands that need a Tauri
-    /// webview or window fail with `unsupported_in_native_host: <command>`.
+    /// Runs one command. Unknown and retired commands fail with
+    /// `unsupported_in_native_host: <command>` (retired ones name the reason).
     pub fn dispatch<'a>(&'a self, command: &'a str, args: Value) -> DispatchFuture<'a> {
         dispatch_generated::dispatch(&self.host, command, args)
     }
@@ -93,12 +94,9 @@ impl BackendService {
         self.host.info()
     }
 
-    /// Whether the command has a native implementation (as opposed to an
-    /// explicit unsupported arm or no arm at all).
+    /// Whether the command is registered (a typed handler or a host adapter).
     pub fn supports(command: &str) -> bool {
-        NATIVE_COMMANDS
-            .iter()
-            .any(|(name, support)| *name == command && *support == NativeCommandSupport::Native)
+        NATIVE_COMMANDS.iter().any(|(name, _)| *name == command)
     }
 }
 
@@ -107,14 +105,14 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// Command names registered in the Tauri `generate_handler!` list.
+    /// Command names registered in the `backend_commands!` list.
     fn registered_commands() -> BTreeSet<String> {
         let source = include_str!("../lib.rs");
         let start = source
-            .find("tauri::generate_handler![")
-            .expect("generate_handler! in lib.rs")
-            + "tauri::generate_handler![".len();
-        let end = start + source[start..].find(']').expect("end of generate_handler!");
+            .find("backend_commands![")
+            .expect("backend_commands! in lib.rs")
+            + "backend_commands![".len();
+        let end = start + source[start..].find(']').expect("end of backend_commands!");
         source[start..end]
             .lines()
             .map(|line| line.split("//").next().unwrap_or_default().trim())
@@ -143,7 +141,7 @@ mod tests {
 
     #[test]
     fn every_command_source_has_a_matching_arm() {
-        // A `#[tauri::command]` anywhere in the crate must be registered and
+        // A `// @backend-command` anywhere in the crate must be registered and
         // therefore dispatched; an unregistered command would be dead code.
         let dispatched: BTreeSet<&str> = NATIVE_COMMANDS.iter().map(|(name, _)| *name).collect();
         let sources = [
@@ -156,7 +154,7 @@ mod tests {
         for source in sources {
             let mut lines = source.lines().peekable();
             while let Some(line) = lines.next() {
-                if line.trim() != "#[tauri::command]" {
+                if line.trim() != "// @backend-command" {
                     continue;
                 }
                 let signature = lines
@@ -175,7 +173,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_and_tauri_only_commands_fail_loudly() {
+    async fn unknown_and_retired_commands_fail_loudly() {
         let host = crate::native_host::create_native_host();
         let service = BackendService::new(host);
         let error = service
@@ -184,10 +182,13 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, "unsupported_in_native_host: no_such_command");
         let error = service
-            .dispatch("browser_webview_create", serde_json::json!({}))
+            .dispatch("debug_open_devtools", serde_json::json!({}))
             .await
             .unwrap_err();
-        assert_eq!(error, "unsupported_in_native_host: browser_webview_create");
+        assert!(
+            error.starts_with("unsupported_in_native_host: debug_open_devtools (retired: "),
+            "{error}"
+        );
         // A native command whose managed state is not registered names it.
         let error = service
             .dispatch("get_opened_workspaces", serde_json::json!({}))

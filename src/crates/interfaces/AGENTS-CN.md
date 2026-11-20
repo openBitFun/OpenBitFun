@@ -2,7 +2,7 @@
 
 # 接口层
 
-本层放置通过外部协议或宿主入口暴露已组装产品行为的 Rust crate。UI 应用和交付宿主仍位于 `src/apps`、`src/web-ui`、`src/mobile-web` 和 `OpenBitFun-Installer`，并优先阅读离代码最近的 `AGENTS.md`。
+本层放置通过外部协议或宿主入口暴露已组装产品行为的 Rust crate。UI 应用和交付宿主仍位于 `src/apps`、`src/nsh-ui`、`src/mobile-web` 和 `OpenBitFun-Installer`，并优先阅读离代码最近的 `AGENTS.md`。
 
 ## 模块
 

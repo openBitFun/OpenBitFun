@@ -22,8 +22,8 @@ use tokio::sync::{mpsc, watch, Notify, Semaphore};
 use super::protocol::{
     command_error, error_frame, event_frame, result_frame, AckParams, BackendIdentity, CallParams,
     HelloParams, HelloResult, Incoming, RpcError, FORBIDDEN, HELLO_REQUIRED, INTERNAL_ERROR,
-    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, OBP_PROTOCOL_VERSION, PARSE_ERROR,
-    PROTOCOL_MISMATCH, SERVER_CAPABILITIES,
+    INVALID_PARAMS, INVALID_REQUEST, MESH_SERVER_CAPABILITIES, METHOD_NOT_FOUND,
+    OBP_PROTOCOL_VERSION, PARSE_ERROR, PROTOCOL_MISMATCH, SERVER_CAPABILITIES,
 };
 use super::scope::{check_command, event_visible, Scope};
 use super::ObpBackend;
@@ -482,7 +482,10 @@ async fn handshake(
         let result = HelloResult {
             protocol: OBP_PROTOCOL_VERSION,
             scope: context.scope.wire_name(),
-            capabilities: SERVER_CAPABILITIES,
+            capabilities: match context.scope {
+                Scope::AccountDevice { .. } => MESH_SERVER_CAPABILITIES,
+                _ => SERVER_CAPABILITIES,
+            },
             registry_digest: context.registry_digest.clone(),
             backend: BackendIdentity {
                 version: read("version"),
@@ -492,6 +495,12 @@ async fn handshake(
             },
             last_seq: newest,
             credit_bytes: credit.as_ref().map(|credit| credit.window),
+            host_capabilities: openbitfun_product_domains::remote_surface::advertised_by(
+                openbitfun_product_domains::remote_surface::PeerHostKind::Desktop,
+            )
+            .iter()
+            .map(|capability| capability.key())
+            .collect(),
         };
         if !send_text(outbox, result_frame(&id, &result)).await {
             return None;

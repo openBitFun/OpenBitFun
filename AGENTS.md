@@ -2,7 +2,7 @@
 
 # AGENTS.md
 
-OpenBitFun is a Rust workspace plus React frontends, delivered through several hosts (Desktop/Tauri, CLI/TUI, server, mobile, mobile-web, installer).
+OpenBitFun is a Rust workspace plus TypeScript frontends, delivered through several hosts (the native NSH desktop app, CLI/TUI, server, mobile, mobile-web, installer).
 
 Repository rule: **keep product logic platform-agnostic, then expose it through platform adapters**.
 
@@ -17,7 +17,7 @@ Dependencies point downward: a crate may depend on lower layers, not on higher o
 
 | # | Layer | Path | Owns | Must not | Guide |
 |---|---|---|---|---|---|
-| 1 | Interfaces and entrypoints | `src/apps/*`, `src/web-ui`, `src/mobile-web`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | Product hosts, commands, UI entrypoints, protocol interfaces, and cross-surface tests | Keep reusable behavior; move it down | nearest local `AGENTS.md`; [interfaces](src/crates/interfaces/AGENTS.md) |
+| 1 | Interfaces and entrypoints | `src/apps/*`, `src/nsh-ui`, `src/mobile-web`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | Product hosts, commands, UI entrypoints, protocol interfaces, and cross-surface tests | Keep reusable behavior; move it down | nearest local `AGENTS.md`; [interfaces](src/crates/interfaces/AGENTS.md) |
 | 2 | Product assembly | `src/crates/assembly` | Compatibility exports, product capability selection, product-full wiring, immutable built-in Agent content, adapter/service registration, and ecosystem-neutral source coordination | Implement concrete adapter, OS, or service details | [AGENTS.md](src/crates/assembly/AGENTS.md) |
 | 3 | Adapters | `src/crates/adapters` | Protocol, transport, local IPC, WebDriver, AI-provider, and external AI work-source adapters; external-provider translation | Own product capability selection or reusable OS service behavior | [AGENTS.md](src/crates/adapters/AGENTS.md) |
 | 4 | Services | `src/crates/services` | Reusable OS, filesystem, terminal, MCP, remote, git, watch, process, network, session persistence, and MiniApp runtime IO implementations | Own protocol/transport projection or product capability selection | [AGENTS.md](src/crates/services/AGENTS.md) |
@@ -31,7 +31,7 @@ Dependencies point downward: a crate may depend on lower layers, not on higher o
 
 ```bash
 pnpm install
-pnpm run desktop:dev               # primary dev loop: Vite HMR + Rust auto-rebuild and restart
+pnpm run desktop:dev               # primary dev loop: build and run the native NSH desktop app (desktop-nsh:*)
 pnpm run fmt:rs                    # run after Rust edits; formats only changed / staged .rs files
 pnpm run check:repo-hygiene        # repository content and filename rules
 pnpm run check:github-config       # GitHub workflow / configuration rules
@@ -57,16 +57,16 @@ Before changing code for a bug, check only the relevant local code and local Git
 
 ### Platform boundaries
 
-- UI components do not call Tauri APIs directly; go through the adapter/infrastructure layer.
-- Desktop-only host adapters live in `src/apps/desktop` and flow through typed capability interfaces, plus the production transport adapter when events must be delivered.
-- Shared core avoids host-specific APIs such as `tauri::AppHandle`; use shared abstractions such as `openbitfun_events::EventEmitter`.
+- The desktop client is the native NSH app (`src/apps/desktop-nsh` + `src/nsh-ui`) with the backend library `src/apps/desktop` loaded in-process; there is no Tauri runtime or WebView-hosted UI. UI code reaches the backend only through its connection (`src/nsh-ui/src/bridge.ts`) and the host shell through `nsh/*` APIs.
+- Desktop-only host adapters live in `src/apps/desktop` and flow through typed capability interfaces; window, tray, notification, clipboard and lifecycle work goes through the shell channel (`host://shell-request`), which refuses loudly when no shell offers an operation.
+- Shared core avoids host-specific APIs; use shared abstractions such as `openbitfun_events::EventEmitter` and the `crate::host::HostHandle` shim.
 
-### Tauri commands
+### Backend commands
 
-Command names are `snake_case` and take one structured `request`. TypeScript wrappers may be `camelCase`.
+Command names are `snake_case` and take one structured `request`. Register them in `backend_commands!` (`src/apps/desktop/src/lib.rs`), mark the handler `// @backend-command`, run `pnpm run desktop-nsh:generate-dispatch`, and add a registry row. TypeScript wrappers may be `camelCase`.
 
 ```rust
-#[tauri::command]
+// @backend-command
 pub async fn your_command(
     state: State<'_, AppState>,
     request: YourRequest,
@@ -74,7 +74,7 @@ pub async fn your_command(
 ```
 
 ```ts
-await api.invoke('your_command', { request: { ... } });
+await invokeCommand('your_command', { ... }); // sends { request: { ... } }
 ```
 
 ### Non-interactive child processes
@@ -94,13 +94,13 @@ await api.invoke('your_command', { request: { ... } });
 
 ### Logging
 
-Logs are English-only, with no emojis. Frontend: [`src/web-ui/LOGGING.md`](src/web-ui/LOGGING.md). Backend: [`src/crates/LOGGING.md`](src/crates/LOGGING.md).
+Logs are English-only, with no emojis. Frontend (`src/nsh-ui`): the same rules ([guide](src/nsh-ui/AGENTS.md)). Backend: [`src/crates/LOGGING.md`](src/crates/LOGGING.md).
 
 ### Internationalization
 
 - `src/shared/i18n/contract/locales.json` owns locale ids, aliases, fallback rules, and surface defaults. Run `pnpm run i18n:generate` after editing it.
 - Shared stable labels live in `src/shared/i18n/resources/shared/<locale>/terms.json`; workflow copy stays in the owning product surface.
-- No surface imports another surface's locale catalog. Web UI locale resources must not be imported by `src/mobile-web`, `OpenBitFun-Installer`, or static pages; static self-contained pages use generated page-scoped shared-term files.
+- No surface imports another surface's locale catalog. Desktop UI (`src/nsh-ui`) locale resources must not be imported by `src/mobile-web`, `OpenBitFun-Installer`, or static pages; static self-contained pages use generated page-scoped shared-term files.
 - Format user-visible dates, times, and numbers with the shared i18n helpers, not direct `Intl.*` or `toLocale*` calls.
 - Run `pnpm run i18n:audit` after changing locale resources or user-visible copy. It enforces key/placeholder parity, static and dynamic key proofs, and no-growth baselines for literal fallbacks, direct locale formatting, and hard-coded CJK source text.
 - Details: [`docs/architecture/i18n.md`](docs/architecture/i18n.md).
@@ -128,8 +128,8 @@ The workspace, the runtime that executes a turn, and the person driving it can e
 | Scenario | What it means | Design entry point |
 |---|---|---|
 | Remote workspace | The active workspace lives on an SSH host, a jump-host chain, or a Docker container; files, terminal, search, and Agent subprocesses must execute there | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md), [remote-workspaces.md](docs/features/remote-workspaces.md) |
-| Remote control | Mobile web, or a Feishu / Telegram / WeChat bot, drives a session on a Desktop or CLI host through the Remote Connect relay | [`src/mobile-web`](src/mobile-web/AGENTS.md), `remote_connect` in [services-integrations](src/crates/services/services-integrations/AGENTS.md), [relay-service](src/crates/services/relay-service/AGENTS.md) |
-| Peer Device Mode | One same-account device becomes the data plane of another: the controller shell stays local, invokes and events come from the peer | [peer-device-mode.md](docs/architecture/peer-device-mode.md), [peer-device README](src/web-ui/src/infrastructure/peer-device/README.md) |
+| Remote control | A phone or browser runs the same NSH UI served by a new desktop host over the LAN or the account device mesh; a Feishu / Telegram / WeChat bot drives a session over OBP on the mesh (new hosts) or the Remote Connect relay (older hosts, and `mobile-web` for older clients) | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md) (device mesh), [`src/mobile-web`](src/mobile-web/AGENTS.md), `remote_connect` in [services-integrations](src/crates/services/services-integrations/AGENTS.md), [relay-service](src/crates/services/relay-service/AGENTS.md) |
+| Peer Device Mode | One same-account device becomes the data plane of another: the controller shell stays local, invokes and events come from the peer, over OBP on the device mesh (new hosts) or relay HostInvoke (older hosts) | [peer-device-mode.md](docs/architecture/peer-device-mode.md), [NSH peer routing](src/nsh-ui/AGENTS.md) |
 | Detached Dispatch | A controller submits a durable job to another OpenBitFun host and may then disconnect; the target owns the job, session, worktree, event log, and permission mailbox | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
 
 Rules for all four:
@@ -143,9 +143,9 @@ Rules for all four:
 
 Per-scenario obligations:
 
-- **Remote workspace**: every desktop Tauri command has exactly one row in the Product Operation Registry ([`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)) declaring its remote-workspace stance. The desktop closure test and the capability generator reject a command without a row, and new rows may not use `Unaudited` (that backlog only shrinks). Run `pnpm run capabilities:generate` after editing the table. See [remote-surface-contract.md](docs/architecture/remote-surface-contract.md).
-- **Remote control**: mobile web and IM bots reach sessions through the `RemoteCommand` wire protocol and the bot command router / menu, not through the Web UI. When a session-level capability is added or moved (workspace or assistant selection, session lifecycle, mode, model, approval, attachment), extend those surfaces or make them answer with an explicit unsupported reply.
-- **Peer Device Mode**: product commands are proxied to the peer by default. A command that must stay on the controller (window chrome, updater, account identity, local OS automation) is declared `ControllerLocal` in the same registry row; the desktop peer host, the CLI peer host, and the Web UI transport adapter derive their deny sets from it, and `pnpm run check:core-boundaries` rejects a hand-written table. A command the CLI host runs needs a handler plus `cli_peer: HANDLED` in its row; the closure test in `src/apps/cli/src/peer_host/commands/mod.rs` keeps both in step. Peer capabilities are typed (`PeerHostCapability`) and advertised from the registry. Read the peer-device README invariants before changing session, account, or hydrate paths.
+- **Remote workspace**: every registered backend command has exactly one row in the Product Operation Registry ([`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)) declaring its remote-workspace stance. The desktop closure test and the capability generator reject a command without a row, and new rows may not use `Unaudited` (that backlog only shrinks); a removed command keeps a `retired(...)` row so older clients get its reason. Run `pnpm run capabilities:generate` after editing the table. See [remote-surface-contract.md](docs/architecture/remote-surface-contract.md).
+- **Remote control**: mobile web and IM bots reach sessions through the `RemoteCommand` wire protocol and the bot command router / menu, not through the desktop UI. When a session-level capability is added or moved (workspace or assistant selection, session lifecycle, mode, model, approval, attachment), extend those surfaces or make them answer with an explicit unsupported reply.
+- **Peer Device Mode**: product commands are proxied to the peer by default. A command that must stay on the controller (window chrome, updater, account identity, local OS automation) is declared `ControllerLocal` in the same registry row; the desktop peer host, the CLI peer host, and the NSH UI routing (`src/nsh-ui/src/generated/peerSurface.ts`) derive their deny sets from it, and `pnpm run check:core-boundaries` rejects a hand-written table. A command the CLI host runs needs a handler plus `cli_peer: HANDLED` in its row; the closure test in `src/apps/cli/src/peer_host/commands/mod.rs` keeps both in step. Peer capabilities are typed (`PeerHostCapability`) and advertised from the registry. Read the Peer Device Mode invariants in [peer-device-mode.md](docs/architecture/peer-device-mode.md) before changing session, account, or hydrate paths.
 - **Detached Dispatch**: jobs run headless on the target under the CLI delivery profile, with no interactive host and no guaranteed controller connection. The controller is an observer, never a runtime or filesystem proxy. Do not add behavior that requires a live submitter. The dispatch protocol version and required target capabilities are a compatibility contract: a new target-side requirement needs a negotiated capability, not an assumption.
 
 State which remote scenarios a change was exercised in. Local-only tests are not evidence of remote behavior.

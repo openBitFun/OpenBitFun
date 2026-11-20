@@ -109,6 +109,24 @@ export const getOpenedWorkspaces = () => invokeCommand<WorkspaceRecord[]>("get_o
 
 export const getRecentWorkspaces = () => invokeCommand<WorkspaceRecord[]>("get_recent_workspaces");
 
+/**
+ * The host's workspace navigator (view models, wave 4): opened and recent lists
+ * already deduplicated, and the workspace a surface should show. `selection`
+ * says why: the caller's own (`kept`), the host's current (`host_current`), the
+ * first opened one that the caller should make active (`first_opened`), or
+ * nothing opened (`none`, with the recent workspace to reopen).
+ */
+export interface WorkspaceNavigatorView {
+  opened: WorkspaceRecord[];
+  recent: WorkspaceRecord[];
+  selectedId: string | null;
+  selection: "kept" | "host_current" | "first_opened" | "none";
+  reopenCandidateId?: string;
+}
+
+export const getWorkspaceNavigator = (selectedId: string | null) =>
+  invokeCommand<WorkspaceNavigatorView>("get_workspace_navigator", selectedId ? { selectedId } : {});
+
 export const openWorkspace = (rootPath: string) =>
   invokeCommand<WorkspaceRecord>("open_workspace", { path: rootPath });
 
@@ -184,11 +202,95 @@ export const listSessions = async (
 };
 
 /** `limit` keeps the newest N turns, the tail window the desktop opens a session with. */
-export const loadSessionTurns = (sessionId: string, workspaceId: string, limit?: number) =>
-  invokeCommand<unknown[]>("load_session_turns", {
+// Transcript view (logic batch 4): the host projects persisted turns once for
+// every client (`get_session_transcript_view`); mobile and bots read the same
+// projection as `ChatMessage`. Field names are the wire's.
+export interface TranscriptImage {
+  name: string;
+  dataUrl?: string;
+  /** Host path of an attachment recorded without pixels; only this host can read it. */
+  imagePath?: string;
+}
+
+export interface TranscriptToolView {
+  id: string;
+  name: string;
+  input?: unknown;
+  inputPreview?: string;
+  status: string;
+  success?: boolean;
+  error?: string;
+  result?: unknown;
+  resultForAssistant?: string;
+  durationMs?: number;
+  startMs?: number;
+  plan?: { filePath: string; name: string; overview?: string };
+  /** What a subagent this call started did; never the parent's own answer. */
+  subagentItems?: TranscriptItemView[];
+}
+
+export type TranscriptItemView =
+  | { kind: "text"; id: string; roundIndex: number; text: string }
+  | { kind: "thinking"; id: string; roundIndex: number; text: string; reasoningKind?: "reasoning" | "summary" }
+  | { kind: "tool"; roundIndex: number; tool: TranscriptToolView };
+
+export interface TranscriptTurnView {
+  turnId: string;
+  turnIndex: number;
+  /** `user_dialog` or `manual_compaction`. */
+  kind: string;
+  /** `active`, `done`, `failed` or `cancelled`. */
+  status: string;
+  /** The host persisted a terminal status; the live stream may give way to this record. */
+  settled: boolean;
+  user: { id: string; text: string; timestampMs: number; images?: TranscriptImage[] };
+  items: TranscriptItemView[];
+  error?: string;
+  errorDetail?: Record<string, unknown>;
+  effectiveModel?: string;
+  durationMs?: number;
+  startTimeMs: number;
+  assistantTimestampMs: number;
+  tokenUsage?: { inputTokens: number; outputTokens?: number; cachedTokens?: number; totalTokens: number };
+  recovery?: { status: string; executionGeneration: number };
+}
+
+export interface SessionTranscriptView {
+  sessionId: string;
+  /** `full` replaces the held turns; `after` keeps them through `keptThroughIndex` and appends. */
+  mode: "full" | "after";
+  keptThroughIndex?: number;
+  turns: TranscriptTurnView[];
+  cursor?: string;
+  hasEarlier: boolean;
+  /**
+   * The turn running right now, as the host's runtime journal projected it: the
+   * live `agentic://*` events so far and the delivery position they reached. A
+   * host older than this field omits it, and so does one with nothing running.
+   */
+  runningTurn?: RunningTurnSnapshot;
+}
+
+/** A running turn's replayable events (`get_session_transcript_view` `runningTurn`). */
+export interface RunningTurnSnapshot {
+  sessionId: string;
+  streamId: string;
+  cursor: number;
+  activeTurnId?: string | null;
+  events: Array<{ eventName: string; payload: unknown }>;
+}
+
+export const getSessionTranscriptView = (
+  sessionId: string,
+  workspaceId: string,
+  limit?: number,
+  cursor?: string,
+) =>
+  invokeCommand<SessionTranscriptView>("get_session_transcript_view", {
     session_id: sessionId,
     workspace_id: workspaceId,
     ...(limit ? { limit } : {}),
+    ...(cursor ? { cursor } : {}),
   });
 
 export const getConfigs = (paths: string[]) => invokeCommand<Record<string, unknown>>("get_configs", { paths });

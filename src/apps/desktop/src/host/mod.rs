@@ -1,17 +1,14 @@
-//! Host shim shared by the legacy Tauri host and the in-process native host.
+//! The backend host shim.
 //!
-//! Desktop commands and their helpers take [`State`] and [`HostHandle`]
-//! instead of `tauri::State` and `tauri::AppHandle`. Both types still work as
-//! `#[tauri::command]` arguments (they delegate to Tauri's extractors), and
-//! both can also be constructed without Tauri, so the native dispatcher in
-//! [`crate::backend_protocol`] can call the same handlers directly.
-//!
-//! Operations that only exist inside a Tauri host (webviews, window chrome,
-//! Tauri plugins) go through [`HostHandle::tauri`], which fails with an
-//! explicit [`UNSUPPORTED_IN_NATIVE_HOST`] error in the native host instead of
-//! silently succeeding.
+//! Desktop commands and their helpers take [`State`] (managed state borrowed
+//! for one call) and [`HostHandle`] (the running backend host). The generated
+//! dispatcher in [`crate::backend_protocol`] fills both from the in-process
+//! [`NativeHost`]; window, tray, notification, clipboard and lifecycle work
+//! goes through the shell channel ([`shell`]), which refuses loudly with
+//! [`UNSUPPORTED_IN_NATIVE_HOST`] when no UI shell offers an operation.
 
 mod native;
+pub mod shell;
 mod transport;
 
 use std::fmt;
@@ -23,19 +20,19 @@ use serde::Serialize;
 pub use native::{NativeHost, NativeHostInfo};
 pub use transport::HostTransportAdapter;
 
-/// Error prefix used whenever the native host cannot perform a Tauri-only
-/// operation. The frontend transport surfaces it verbatim.
+/// Error prefix used whenever the host cannot perform an operation (no shell
+/// offers it, or the command was retired). Clients match on the prefix.
 pub const UNSUPPORTED_IN_NATIVE_HOST: &str = "unsupported_in_native_host";
 
-/// The explicit error returned for a Tauri-only operation in the native host.
+/// The explicit error returned for an operation the host cannot perform.
 pub fn unsupported_in_native_host(operation: &str) -> String {
     format!("{UNSUPPORTED_IN_NATIVE_HOST}: {operation}")
 }
 
 /// Managed state borrowed for the duration of a command.
 ///
-/// This replaces `tauri::State` in desktop commands. Unlike `tauri::State` it
-/// can be built from any `&T`, so handlers can run outside Tauri.
+/// Built from any `&T` registered in the host, so handlers can be called
+/// directly by the dispatcher and by tests.
 pub struct State<'r, T: Send + Sync + 'static>(&'r T);
 
 impl<'r, T: Send + Sync + 'static> State<'r, T> {
@@ -72,83 +69,35 @@ impl<T: Send + Sync + 'static + fmt::Debug> fmt::Debug for State<'_, T> {
     }
 }
 
-impl<'r, T: Send + Sync + 'static> From<tauri::State<'r, T>> for State<'r, T> {
-    fn from(state: tauri::State<'r, T>) -> Self {
-        Self(state.inner())
-    }
-}
-
-impl<'r, 'de: 'r, T: Send + Sync + 'static, R: tauri::Runtime> tauri::ipc::CommandArg<'de, R>
-    for State<'r, T>
-{
-    fn from_command(
-        command: tauri::ipc::CommandItem<'de, R>,
-    ) -> Result<Self, tauri::ipc::InvokeError> {
-        <tauri::State<'r, T> as tauri::ipc::CommandArg<'de, R>>::from_command(command)
-            .map(|state| Self(state.inner()))
-    }
-}
-
-/// The application host a command runs in.
+/// The application host a command runs in: the in-process backend host that
+/// the native NSH app, OBP WebSocket clients and mesh peers all reach.
 #[derive(Clone)]
-pub enum HostHandle {
-    /// The legacy Tauri host (one transition release).
-    Tauri(tauri::AppHandle),
-    /// The in-process native host (NSH and future protocol servers).
-    Native(Arc<NativeHost>),
-}
+pub struct HostHandle(Arc<NativeHost>);
 
 impl fmt::Debug for HostHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Tauri(_) => f.write_str("HostHandle::Tauri"),
-            Self::Native(_) => f.write_str("HostHandle::Native"),
-        }
+        f.write_str("HostHandle")
     }
 }
 
-impl From<tauri::AppHandle> for HostHandle {
-    fn from(app: tauri::AppHandle) -> Self {
-        Self::Tauri(app)
-    }
-}
-
-impl From<&tauri::AppHandle> for HostHandle {
-    fn from(app: &tauri::AppHandle) -> Self {
-        Self::Tauri(app.clone())
+impl From<Arc<NativeHost>> for HostHandle {
+    fn from(host: Arc<NativeHost>) -> Self {
+        Self(host)
     }
 }
 
 impl HostHandle {
-    /// The Tauri application handle when running in the Tauri host.
-    pub fn as_tauri(&self) -> Option<&tauri::AppHandle> {
-        match self {
-            Self::Tauri(app) => Some(app),
-            Self::Native(_) => None,
-        }
+    /// A handle on `host`.
+    pub fn new(host: Arc<NativeHost>) -> Self {
+        Self(host)
     }
 
-    /// The Tauri application handle, or an explicit unsupported error naming
-    /// `operation` in the native host.
-    pub fn tauri(&self, operation: &str) -> Result<&tauri::AppHandle, String> {
-        self.as_tauri()
-            .ok_or_else(|| unsupported_in_native_host(operation))
+    /// The backend host.
+    pub fn native(&self) -> &Arc<NativeHost> {
+        &self.0
     }
 
-    /// The native host when running without Tauri.
-    pub fn as_native(&self) -> Option<&Arc<NativeHost>> {
-        match self {
-            Self::Tauri(_) => None,
-            Self::Native(host) => Some(host),
-        }
-    }
-
-    /// Whether this is the in-process native host.
-    pub fn is_native(&self) -> bool {
-        matches!(self, Self::Native(_))
-    }
-
-    /// Managed state; panics like `tauri::Manager::state` when it is missing.
+    /// Managed state; panics like a missing registration would when it is absent.
     pub fn state<T: Send + Sync + 'static>(&self) -> State<'_, T> {
         match self.try_state::<T>() {
             Some(state) => state,
@@ -161,70 +110,46 @@ impl HostHandle {
 
     /// Managed state, if registered.
     pub fn try_state<T: Send + Sync + 'static>(&self) -> Option<State<'_, T>> {
-        match self {
-            Self::Tauri(app) => {
-                use tauri::Manager;
-                app.try_state::<T>().map(State::from)
-            }
-            Self::Native(host) => host.try_state::<T>(),
-        }
+        self.0.try_state::<T>()
     }
 
     /// Emits an event to every frontend of this host.
-    pub fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> tauri::Result<()> {
-        match self {
-            Self::Tauri(app) => {
-                use tauri::Emitter;
-                app.emit(event, payload)
-            }
-            Self::Native(host) => host.emit(event, payload).map_err(tauri::Error::Anyhow),
-        }
+    pub fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> anyhow::Result<()> {
+        self.0.emit(event, payload)
     }
 
-    /// Emits an event to one frontend target. The native host has one main
-    /// frontend: events for `main` are delivered, events for Tauri-only
-    /// auxiliary windows have no receiver (as in Tauri when that window is
-    /// closed).
+    /// Emits an event to one frontend target. The host has one main
+    /// frontend stream: events for `main` are delivered, events for other
+    /// targets (auxiliary windows of the retired Tauri shell) have no receiver.
     pub fn emit_to<S: Serialize + Clone>(
         &self,
         target: &str,
         event: &str,
         payload: S,
-    ) -> tauri::Result<()> {
-        match self {
-            Self::Tauri(app) => {
-                use tauri::Emitter;
-                app.emit_to(target, event, payload)
-            }
-            Self::Native(host) => {
-                if target == "main" {
-                    host.emit(event, payload).map_err(tauri::Error::Anyhow)
-                } else {
-                    log::debug!(
-                        "Native host has no frontend target for event: target={}, event={}",
-                        target,
-                        event
-                    );
-                    Ok(())
-                }
-            }
+    ) -> anyhow::Result<()> {
+        if target == "main" {
+            self.0.emit(event, payload)
+        } else {
+            log::debug!(
+                "Host has no frontend target for event: target={}, event={}",
+                target,
+                event
+            );
+            Ok(())
         }
+    }
+
+    /// Calls `handler` with the payload JSON of every event named `event`
+    /// this host emits.
+    pub fn listen<F>(&self, event: impl Into<String>, handler: F)
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        self.0.listen(event, handler)
     }
 
     /// The application version.
     pub fn app_version(&self) -> String {
-        match self {
-            Self::Tauri(app) => app.package_info().version.to_string(),
-            Self::Native(host) => host.info().version.clone(),
-        }
-    }
-}
-
-impl<'de> tauri::ipc::CommandArg<'de, tauri::Wry> for HostHandle {
-    fn from_command(
-        command: tauri::ipc::CommandItem<'de, tauri::Wry>,
-    ) -> Result<Self, tauri::ipc::InvokeError> {
-        <tauri::AppHandle as tauri::ipc::CommandArg<'de, tauri::Wry>>::from_command(command)
-            .map(HostHandle::Tauri)
+        self.0.info().version.clone()
     }
 }

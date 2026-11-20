@@ -9,29 +9,29 @@ for the architecture, the migration status and the feature-parity matrix.
 
 ## What this surface is
 
-`src/nsh-ui` is a second frontend for the same desktop backend. It is an NSH app
-(`nsh.json`, TSX entry `App.tsx`) packaged for NSH's web target and loaded in the
-desktop window, so it reuses the existing Tauri command layer without changing a
-single command. The React surface in `src/web-ui` stays the shipping one while
-this one reaches parity.
+`src/nsh-ui` is the OpenBitFun desktop UI: the native NSH desktop app
+(`src/apps/desktop-nsh`) renders it in a native window over the in-process backend,
+and browsers and phones render its web target over OBP. The React UI (`src/web-ui`)
+and the Tauri desktop shell were retired.
 
 Two rules follow:
 
-- **The host contract is `src/web-ui`'s.** Action names and request shapes are
-  the wire format the desktop already serves (`{ request: ... }`, sessions use
-  `workspace_id`, workspace and file commands use `workspaceId`). Do not invent
-  parallel command names; a shape change here means the two surfaces disagree.
-  A command that takes positional arguments instead of a `request` struct is called
-  through `invokeRawCommand`; both shapes exist in the same backend area, so read the
-  command's own signature.
-- **A scene is ported, not approximated.** When a feature is claimed as migrated,
-  its scene calls the same commands the React surface calls, for the same state.
-  A placeholder scene never counts as parity.
+- **The host contract is the backend's command vocabulary.** Action names and
+  request shapes are the wire format every backend serves, including older hosts a
+  peer may run (`{ request: ... }`, sessions use `workspace_id`, workspace and file
+  commands use `workspaceId`). Do not invent parallel command names. A command that
+  takes positional arguments instead of a `request` struct is called through
+  `invokeRawCommand`; both shapes exist in the same backend area, so read the
+  command's own signature (`src/apps/desktop/src/api/*.rs`).
+- **A scene uses the backend's state, not an approximation.** A feature counts when
+  its scene calls the host commands for the same state; a placeholder scene never
+  counts.
 
 ## Layout
 
-- `host.js`: the page-side host module, the only code that talks to
-  `window.__TAURI__`. It forwards `openbitfun.invoke` / `openbitfun.listen` /
+- `host.js`: the page-side host module for development and headless tests (a host
+  page that still exposes `window.__TAURI__` is the legacy `tauri` wire), the only
+  code that talks to `window.__TAURI__`. It forwards `openbitfun.invoke` / `openbitfun.listen` /
   `openbitfun.unlisten` and pushes `openbitfun.event`. Without a native host it answers
   from development fixtures so the shell runs in a plain browser.
 - `src/bridge.ts`: the app-side transport (`invokeCommand`, `invokeRawCommand`,
@@ -55,11 +55,23 @@ Two rules follow:
   `src/textChunkCoalescer.ts` is `host.js`'s per-frame text-chunk merge for every
   other wire (`test/native-host.test.tsx` holds the two to the same output).
 - `src/api.ts`: typed command wrappers. Keep the wire names and their casing.
+- `src/browserStore.ts` + `src/scenes/BrowserScene.tsx`: the embedded browser of the
+  native desktop. The backend owns targets and agent semantics (`native_browser.rs`); the
+  store is the shell's actuator for `browser.*` shell requests over NSH `WebView` refs and
+  reports page loads with `browser_webview_report_page_load`. `BrowserPageLayer` is
+  mounted once around the scenes so pages outlive the scene; only the presented page is
+  placed over the scene's viewport. Other shells show an explicit unsupported state.
+  Headless tests install stand-in views (`installBrowserViewDriver`,
+  `test/fixtures/installFakeBrowser.ts`).
 - `src/format.ts`: text, date and count helpers shared by the scenes
   (`formatTokens`, `formatCount`, `formatPercent`, `formatBucket`, `formatBytes`,
   the turn and tool-call readers). Counts and tokens are grouped and scaled by hand
   rather than through `Intl`, so one surface renders the same text whatever the host
-  locale is.
+  locale is. The turn readers read the host's transcript view
+  (`get_session_transcript_view`, loaded by `loadTurns` with the previous read's
+  `cursor`); they never parse persisted turn records, re-order or filter items.
+  `agentEvents.ts` replaces a live turn with its record only when a view read
+  reports that turn `settled`; a host without the view gets `transcriptNotice`.
 - `src/usageStore.ts`: the usage dashboard, one command read twice, as the desktop
   reads it. The range read decides the bucketing (`last24Hours` / `today` bucket by
   hour, the rest by day) and the resolved IANA zone travels with both reads, because
@@ -224,6 +236,30 @@ Two rules follow:
   `get_web_search_credential_status` / `save_web_search_credential` /
   `clear_web_search_credential` move it through the device vault, and the scene
   states only what the host answered last.
+- `src/genui/`: GenerativeUI answers. `openuiLang.ts` reads OpenUI Lang
+  (statements, positional calls, `$state`, `@Each`, builtins in
+  `genuiFunctions.ts`, actions resolved only when pressed), `genuiSignatures.ts`
+  is generated by `scripts/generate-genui-contract.mjs` from the product library
+  — never edit it by hand — and `GenUIView.tsx` draws the tree with NSH
+  components. The source comes from the call's result once settled, else its
+  `createSurface` arguments, else the `GenUIStream` deltas `agentEvents.ts` keeps
+  on the live tool. State a user changes lives per card for the transcript's
+  lifetime; nothing is persisted. Images, maps and HTML are shown without
+  network or scripts and say so.
+- `src/voiceInputStore.ts` + `src/ui/VoiceInput.tsx`: composer dictation on the
+  system recognizer (`Speech`, capability `speech`). The window cannot capture
+  raw audio, so the host speech service and voice calls are explained, never
+  started.
+- `src/controlPresenter.ts`: the Agent's "open this screen" requests
+  (`agentic://openbitfun-control-request`). The host sends the resolved catalog
+  `destination`; this module only maps it onto scenes and settings pages and
+  reports back. An unmapped destination is a reported failure, not a silent
+  success. Served pages never mark themselves ready.
+- Running turns: `get_session_transcript_view` may carry `runningTurn`
+  (journaled `agentic://*` events and their cursor). `loadTurns` hands it to
+  `hydrateRunningTurn`, which replays it through the live handlers; live events
+  at or below the cursor are dropped (`admitLiveEvent`), using the chunk spans the
+  text merge records.
 - `src/quickActionStore.ts`: `app.ai_experience.quick_actions`, the list the
   composer's `Actions` menu runs. Every write re-reads `app.ai_experience` and merges,
   because other sections write `voice_input` and the neighbouring switches into the
@@ -449,30 +485,13 @@ nsh run . --target web                    # dev server on http://127.0.0.1:8790
 nsh package . --target web                # static site in .nsh/out/OpenBitFun
 ```
 
-Desktop window with this frontend instead of the React one:
+The desktop app with this frontend on a real backend:
 
 ```bash
-nsh run src/nsh-ui --target web           # from the repository root, first terminal
-cd src/apps/desktop && cargo tauri dev --config ../../nsh-ui/tauri.nsh.conf.json
+pnpm run desktop:dev                      # from the repository root: build and run the native app
+pnpm run desktop:dev -- --isolated-data   # with a checkout-local profile
+pnpm run e2e:smoke                        # launch, drive over loopback OBP, quit
 ```
-
-`tauri.nsh.conf.json` loads `devUrl` (`http://127.0.0.1:8790`) in the dev window. The
-page `nsh run` serves did not load in the webview here, so the reliable channel is
-the packaged site on that same port, with the desktop build started against it:
-
-```bash
-cd src/nsh-ui && nsh package . --target web
-cd src/nsh-ui/.nsh/out/OpenBitFun && python3 -m http.server 8790
-# from the repository root, with a scratch profile so the installed app is untouched
-OPENBITFUN_NONINTERACTIVE=1 \
-OPENBITFUN_HOME="$PWD/.openbitfun/desktop-nsh/home" \
-OPENBITFUN_USER_ROOT="$PWD/.openbitfun/desktop-nsh/user" \
-  ./target/debug/openbitfun-desktop
-```
-
-A rebuild there is `nsh package` plus a window restart; the workspace list must
-be the machine's own (`transportKind()` reads `tauri`), or the window is talking
-to fixtures and proves nothing.
 
 The native desktop (`src/apps/desktop-nsh`) mounts this same `App.tsx` over the
 in-process backend; `test/native-host.test.tsx` runs it headless through

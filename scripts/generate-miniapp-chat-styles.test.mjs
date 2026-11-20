@@ -8,8 +8,7 @@ import { buildMiniAppChatStyles } from './generate-miniapp-chat-styles.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const generated = resolve(root, 'src/apps/miniapp-shell/src/generated');
-const importer = { findFileUrl: url => url.startsWith('@/') ? pathToFileURL(resolve(root, 'src/web-ui/src', url.slice(2))) : null };
-const compile = path => sass.compile(resolve(root, path), { importers: [importer] }).css;
+const compile = path => sass.compile(resolve(root, path)).css;
 function declarations(css, selector) {
   const start = css.indexOf(`${selector} {`);
   assert.ok(start >= 0, `Missing canonical selector: ${selector}`);
@@ -22,9 +21,9 @@ test('the native stylesheet stays identical to its current Hi/FlowChat owners', 
   for (const [name, content] of Object.entries(output)) assert.equal(readFileSync(resolve(generated, name), 'utf8'), content, `${name} must be regenerated`);
   const css = output['chat-styles.css'];
   for (const [path, selectors] of [
-    ['src/web-ui/src/app/layout/FloatingMiniChat.scss', ['.openbitfun-fmc', '.openbitfun-fmc__panel', '.openbitfun-fmc__header', '.openbitfun-fmc__miniapp-suggestion']],
-    ['src/web-ui/src/flow_chat/components/FlowTextBlock.scss', ['.flow-text-block', '.flow-text-block--runtime-status']],
-    ['src/web-ui/src/flow_chat/components/modern/UserMessageItem.scss', ['.user-message-item', '.user-message-item__content']],
+    ['src/apps/miniapp-shell/styles/floating-mini-chat.scss', ['.openbitfun-fmc', '.openbitfun-fmc__panel', '.openbitfun-fmc__header', '.openbitfun-fmc__miniapp-suggestion']],
+    ['src/apps/miniapp-shell/styles/flow-text-block.scss', ['.flow-text-block', '.flow-text-block--runtime-status']],
+    ['src/apps/miniapp-shell/styles/user-message-item.scss', ['.user-message-item', '.user-message-item__content']],
   ]) {
     const owner = compile(path);
     for (const selector of selectors) assert.equal(declarations(css, selector), declarations(owner, selector), `${selector} must reuse its owner`);

@@ -26,7 +26,7 @@ pub struct ComputerUseOpenSettingsRequest {
     pub pane: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_get_status(
     state: State<'_, AppState>,
 ) -> Result<ComputerUseStatusResponse, String> {
@@ -54,7 +54,7 @@ pub async fn computer_use_get_status(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_request_permissions() -> Result<(), String> {
     // Compatibility command: older clients still invoke this from a user gesture.
     crate::computer_use::permissions::request(ComputerPermissionKind::Accessibility).await?;
@@ -62,14 +62,14 @@ pub async fn computer_use_request_permissions() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_request_permission(
     request: ComputerPermissionRequest,
 ) -> Result<ComputerPermissionReceipt, String> {
     crate::computer_use::permissions::request(request.kind).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_open_system_settings(
     request: ComputerUseOpenSettingsRequest,
 ) -> Result<(), String> {
@@ -127,7 +127,7 @@ pub struct ComputerUseControlStatusRequest {
     pub state: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_control_status(
     request: Option<ComputerUseControlStatusRequest>,
 ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String> {
@@ -145,7 +145,7 @@ pub async fn computer_use_control_status(
 pub struct ComputerUseControlRequest {
     pub generation: u64,
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_control_stop(
     request: ComputerUseControlRequest,
 ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String> {
@@ -159,7 +159,7 @@ pub async fn computer_use_control_stop(
     .await
     .map_err(|e| e.to_string())?
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_control_preview(
     request: ComputerUseControlRequest,
 ) -> Result<Option<crate::computer_use::control_session::ControlPreview>, String> {
@@ -182,12 +182,12 @@ pub struct ComputerUseShareControlRequest {
     #[serde(default)]
     pub remember: bool,
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_targets(
 ) -> Result<Vec<openbitfun_agent_tools::computer_use_control::ShareTarget>, String> {
     crate::computer_use::share_targets().await
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_start(
     state: State<'_, AppState>,
     request: ComputerUseShareStartRequest,
@@ -198,7 +198,7 @@ pub async fn computer_use_share_start(
     crate::computer_use::share_grants::apply_remembered(computer_use_grants_path(&state), snapshot)
         .await
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_control(
     state: State<'_, AppState>,
     request: ComputerUseShareControlRequest,
@@ -233,7 +233,7 @@ pub struct ComputerUseShareRequest {
     #[serde(default)]
     pub mode: openbitfun_agent_tools::computer_use_control::ControlMode,
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_request(
     request: ComputerUseShareRequest,
 ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String> {
@@ -243,7 +243,7 @@ pub async fn computer_use_share_request(
         request.mode,
     )
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_grants(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::computer_use::grants::GrantRecord>, String> {
@@ -253,7 +253,7 @@ pub async fn computer_use_share_grants(
 pub struct ComputerUseForgetGrantRequest {
     pub identity: crate::computer_use::grants::GrantIdentity,
 }
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_forget_grant(
     state: State<'_, AppState>,
     request: ComputerUseForgetGrantRequest,
@@ -262,14 +262,14 @@ pub async fn computer_use_share_forget_grant(
         .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_observe(
     request: crate::computer_use::shared_preview::SharedPreviewRequest,
 ) -> Result<crate::computer_use::shared_preview::SharedObservation, String> {
     crate::computer_use::shared_preview::observe(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn computer_use_share_input(
     request: crate::computer_use::shared_preview::SharedInputRequest,
 ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String> {

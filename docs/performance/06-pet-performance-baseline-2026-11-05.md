@@ -1,5 +1,7 @@
 # 桌面宠物性能基线报告
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 日期：2026-11-05。对象：当前默认 **BitBlob v2**。本报告不读取或修改真实用户的宠物选择；自定义宠物和其他预设的原生性能不由该样本代表。
 
 ## 结论

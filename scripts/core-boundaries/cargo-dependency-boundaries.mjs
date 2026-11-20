@@ -603,11 +603,16 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
         devProfile: dependencyProfile([], { kind: 'dev' }),
       }],
       // OBP listener integration tests drive the real server as a plain and a
-      // TLS WebSocket client; the listener itself is the Axum `ws` server.
-      ['openbitfun-desktop', dependencyProfile(['connect', 'rustls-tls-native-roots'], {
-        kind: 'dev',
-        useDefaultFeatures: false,
-      })],
+      // TLS WebSocket client; the listener itself is the Axum `ws` server. The
+      // mesh client (OBP to another account device) needs only the WebSocket
+      // handshake over its own SOCKS5 + TLS stream.
+      ['openbitfun-desktop', {
+        ...dependencyProfile(['handshake'], { useDefaultFeatures: false }),
+        devProfile: dependencyProfile(['connect', 'rustls-tls-native-roots'], {
+          kind: 'dev',
+          useDefaultFeatures: false,
+        }),
+      }],
       // Loopback WebSocket lifecycle regressions only; the relay runtime is
       // an Axum server and does not acquire a TLS/client capability.
       ['openbitfun-relay-service', dependencyProfile(['connect', 'handshake'], {

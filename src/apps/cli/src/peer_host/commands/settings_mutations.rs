@@ -158,3 +158,26 @@ pub(crate) async fn get_settings_schema(args: &Value) -> Result<Value, String> {
         .unwrap_or_default();
     settings_mutations::settings_descriptor(&paths)
 }
+
+/// The permission settings page view, as the desktop's `get_permission_settings`
+/// answers it (logic batch 4).
+pub(crate) async fn get_permission_settings() -> Result<Value, String> {
+    let config = openbitfun_core::service::config::get_global_config_service()
+        .await
+        .map_err(|error| format!("Failed to get config service: {error}"))?;
+    let read = |path: &'static str| {
+        let config = config.clone();
+        async move {
+            config
+                .get_config::<Value>(Some(path))
+                .await
+                .unwrap_or(Value::Null)
+        }
+    };
+    settings_mutations::permission_page_view(
+        &read("tool_permissions").await,
+        &read("ai.models").await,
+        &read("ai.default_models").await,
+        &read("app.flow_chat.show_permission_mode_control").await,
+    )
+}

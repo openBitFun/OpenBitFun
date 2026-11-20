@@ -21,12 +21,12 @@ on:
         default: 1
         type: number
       build_desktop_packages:
-        description: "Whether to run Desktop/Installer package producers."
+        description: "Whether to run the native Desktop package producers."
         required: false
         default: true
         type: boolean
       desktop_platforms:
-        description: "JSON array of Desktop/Installer platform names to package."
+        description: "JSON array of native Desktop platform names to package."
         required: false
         default: '["linux-x64","linux-arm64","macos-arm64","macos-x64","windows-x64"]'
         type: string
@@ -62,17 +62,15 @@ permissions:
   contents: read
 
 jobs:
-  # ── Patch version for nightly ──────────────────────────────────────
+  # ── Native desktop packages ────────────────────────────────────────
   package:
     name: Package (${{ matrix.platform }})
     if: ${{ inputs.build_desktop_packages }}
-    runs-on: ${{ fromJSON('{"linux-x64":"ubuntu-24.04","linux-arm64":"ubuntu-24.04-arm","macos-arm64":"macos-15","macos-x64":"macos-15-intel","windows-x64":"windows-latest"}')[matrix.platform] }}
-    # Use the same Linux build environment as Desktop Package.
-    container: ${{ startsWith(matrix.platform, 'linux-') && 'ubuntu:22.04' || '' }}
+    runs-on: ${{ fromJSON('{"linux-x64":"ubuntu-latest","linux-arm64":"ubuntu-24.04-arm","macos-arm64":"macos-15","macos-x64":"macos-15-intel","windows-x64":"windows-latest"}')[matrix.platform] }}
     env:
       NODE_OPTIONS: --max-old-space-size=6144
       OPENBITFUN_RELEASE_CHANNEL: nightly
-      # Nightly does not publish a Tauri latest-v1.json feed yet. Preserve its
+      # Nightly does not publish a latest-v1.json feed yet. Preserve its
       # existing stable updater endpoints until that publishing path exists.
       TAURI_UPDATER_ENDPOINT: https://github.com/openBitFun/OpenBitFun/releases/latest/download/latest-v1.json
       TAURI_UPDATER_FALLBACK_ENDPOINT: https://openbitfun.com/release/latest-v1.json
@@ -87,32 +85,36 @@ jobs:
         platform: ${{ fromJSON(inputs.desktop_platforms) }}
 
     steps:
-      - name: Install Linux desktop build dependencies
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          apt-get update
-          # linuxdeploy needs the fcitx5 GTK3 module when it builds the AppImage.
-          apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang cmake curl file git jq \
-            libclang-dev pkg-config python3 unzip xz-utils \
-            xdg-utils libglib2.0-dev libgtk-3-dev libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev gstreamer1.0-pipewire \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            fcitx5-frontend-gtk3 libxdo-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev patchelf fakeroot rpm \
-            libleptonica-dev libtesseract-dev tesseract-ocr tesseract-ocr-eng
-
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.checkout_ref }}
 
-      - name: Trust the Linux build checkout
+      # The native runner uses GTK 4 + WebKitGTK 6; the backend and the MiniApp
+      # window shell (still a Tauri/WebKitGTK 4.1 executable) need the rest.
+      - name: Install Linux system dependencies (native desktop)
         if: runner.os == 'Linux'
         shell: bash
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libwebkitgtk-6.0-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libasound2-dev \
+            libxdo-dev \
+            libleptonica-dev \
+            libtesseract-dev \
+            tesseract-ocr \
+            tesseract-ocr-eng
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
@@ -158,6 +160,14 @@ jobs:
           path: ${{ steps.bun-cache-target.outputs.path }}
           key: ${{ steps.bun-cache-target.outputs.key }}
 
+      # NSH (the UI bundle's native module and the runner) needs a newer rustc
+      # than the workspace; the packaging scripts select it with RUSTUP_TOOLCHAIN.
+      - name: Setup NSH Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          targets: ${{ env.PACKAGE_TARGET }}
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -166,8 +176,7 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          shared-key: "nightly-v3-${{ github.base_ref || github.ref_name }}-${{ matrix.platform }}"
-          key: ${{ startsWith(matrix.platform, 'linux-') && 'ubuntu-22.04' || '' }}
+          shared-key: "nightly-native-v1-${{ github.base_ref || github.ref_name }}-${{ matrix.platform }}"
           cache-bin: false
           # A PR merge ref can never become a reusable base cache. Even a
           # trusted caller cannot override this guard.
@@ -177,9 +186,15 @@ jobs:
       - name: Verify committed Cargo metadata
         run: cargo metadata --locked --no-deps
 
+      - name: Install NSH CLI
+        run: node scripts/ci/install-nsh.mjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The Windows Installer is no longer packaged here (it wraps the retired
+      # Tauri desktop executable), but its i18n projection and Tauri packages
+      # stay verified until it is moved to the native app.
       - name: Verify Installer i18n projection
         if: runner.os == 'Windows'
         run: pnpm --dir OpenBitFun-Installer run sync:i18n
@@ -200,11 +215,8 @@ jobs:
           bun install --cwd src/apps/extension-host --frozen-lockfile
           bun run --cwd src/apps/extension-host build
 
-      - name: Generate web API bindings
-        run: pnpm --dir src/web-ui run gen:types
-
-      - name: Type-check web UI
-        run: pnpm run type-check:web
+      - name: Build mobile web resources
+        run: pnpm run prepare:mobile-web
 
       - name: Patch nightly version
         shell: bash
@@ -223,43 +235,47 @@ jobs:
       - name: Verify projected Cargo metadata
         run: cargo metadata --locked --no-deps
 
-      - name: Select Xcode for macOS Icon Composer assets
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          test -d /Applications/Xcode_26.2.app/Contents/Developer
-          echo "DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer" >> "$GITHUB_ENV"
-
-      - name: Verify native macOS icon bundling
-        if: runner.os == 'macOS'
-        env:
-          OPENBITFUN_TEST_MACOS_BUNDLE: '1'
-        run: node --test scripts/macos-icon-bundle.test.mjs
+      - name: Resolve release channel build environment
+        run: node scripts/ci/desktop-release-env.mjs
 
       - name: Build desktop app
         shell: bash
         run: |
           case "${{ matrix.platform }}" in
             linux-x64)
-              pnpm run desktop:build:linux -- --target x86_64-unknown-linux-gnu --bundles deb,rpm,appimage
+              pnpm run desktop:package:linux -- --target x86_64-unknown-linux-gnu
               ;;
             linux-arm64)
-              CARGO_PROFILE_RELEASE_LTO=thin pnpm run desktop:build:linux -- --target aarch64-unknown-linux-gnu --bundles deb,rpm,appimage
+              CARGO_PROFILE_RELEASE_LTO=thin pnpm run desktop:package:linux -- --target aarch64-unknown-linux-gnu
               ;;
-            macos-arm64)
-              pnpm run desktop:build:arm64
-              ;;
-            macos-x64)
-              pnpm run desktop:build:x86_64
+            macos-arm64 | macos-x64)
+              pnpm run desktop:package:mac
               ;;
             windows-x64)
-              pnpm run installer:build
+              pnpm run desktop:package:windows -- --target x86_64-pc-windows-msvc
               ;;
             *)
               echo "Unsupported package platform: ${{ matrix.platform }}" >&2
               exit 1
               ;;
           esac
+
+      # Nightly macOS packages are not Developer ID signed; this lays out the
+      # DMG and the (unsigned) updater archive the release pipeline produces.
+      - name: Archive macOS release outputs
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          NIGHTLY_VERSION: ${{ inputs.version }}
+        run: bash scripts/ci/package-native-macos-release.sh "$PACKAGE_TARGET" "${NIGHTLY_VERSION%%+*}"
+
+      # Launches the packaged app on a scratch profile and drives its loopback
+      # OBP owner connection (version, config, workspaces, sessions, a shell
+      # round trip), then quits it and requires a clean exit.
+      - name: Smoke-test the native app
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: node tests/e2e/native/smoke.mjs --app "target/${PACKAGE_TARGET}/release/bundle/macos/OpenBitFun.app"
 
       - name: Package macOS CLI for SSH dispatch
         if: runner.os == 'macOS'
@@ -287,25 +303,6 @@ jobs:
             "${{ steps.macos-cli.outputs.archive }}" \
             "${{ steps.macos-cli.outputs.checksum }}"
 
-      - name: Verify Linux desktop package
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-          TARGET: ${{ env.PACKAGE_TARGET }}
-        run: |
-          set -euo pipefail
-          # Apply the current packaging checks when rebuilding an older tag.
-          verification_dir="$(mktemp -d)"
-          trap 'rm -rf "$verification_dir"' EXIT
-          if ! git cat-file -e "$WORKFLOW_SHA^{commit}"; then
-            git fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
-          fi
-          git archive "$WORKFLOW_SHA" scripts/ci/verify-linux-desktop-package.sh \
-            scripts/ci/check-glibc-floor.sh scripts/ci/linux-appimage-tray-libraries.json \
-            | tar -x -C "$verification_dir"
-          bash "$verification_dir/scripts/ci/verify-linux-desktop-package.sh" "$TARGET"
-
       # Keep output validation independent from artifact upload. PR callers do
       # not upload packages, but still need evidence that every selected
       # producer emitted the files its publishing caller will collect.
@@ -313,56 +310,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          shopt -s nullglob
 
-          find_bundle_file() {
-            local pattern="$1"
-            local root
-            for root in \
-              "target/${PACKAGE_TARGET}/release/bundle" \
-              "target/release/bundle" \
-              "src/apps/desktop/target/${PACKAGE_TARGET}/release/bundle" \
-              "src/apps/desktop/target/release/bundle"; do
-              if [[ -d "$root" ]] && find "$root" -type f -name "$pattern" -size +0c -print -quit | grep -q .; then
-                return 0
-              fi
-            done
-            echo "Missing non-empty package output matching $pattern for ${{ matrix.platform }}" >&2
-            return 1
-          }
-
-          find_bundle_dir() {
-            local pattern="$1"
-            local root
-            for root in \
-              "target/${PACKAGE_TARGET}/release/bundle" \
-              "target/release/bundle" \
-              "src/apps/desktop/target/${PACKAGE_TARGET}/release/bundle" \
-              "src/apps/desktop/target/release/bundle"; do
-              if [[ -d "$root" ]] && find "$root" -type d -name "$pattern" -print -quit | grep -q .; then
-                return 0
-              fi
-            done
-            echo "Missing package directory matching $pattern for ${{ matrix.platform }}" >&2
-            return 1
+          require_one() {
+            local description="$1"; shift
+            if [[ "$#" -ne 1 || ! -s "$1" ]]; then
+              echo "Missing non-empty ${description} for ${{ matrix.platform }}" >&2
+              return 1
+            fi
           }
 
           case "${{ matrix.platform }}" in
             linux-*)
-              find_bundle_file '*.deb'
-              find_bundle_file '*.rpm'
-              find_bundle_file '*.AppImage'
+              require_one 'native Linux package' target/desktop-nsh/OpenBitFun-nsh_*-linux.tar.gz
               ;;
             macos-*)
-              find_bundle_dir '*.app'
-              find_bundle_file '*.dmg'
-              shopt -s nullglob
+              bundle="target/${PACKAGE_TARGET}/release/bundle"
+              test -x "$bundle/macos/OpenBitFun.app/Contents/MacOS/OpenBitFun"
+              require_one 'macOS DMG' "$bundle"/dmg/*.dmg
+              require_one 'macOS updater archive' "$bundle"/macos/OpenBitFun-nsh_*.app.tar.gz
               cli_archives=(openbitfun-cli-*-"${PACKAGE_TARGET}".tar.gz)
               [[ ${#cli_archives[@]} -eq 1 ]]
               test -s "${cli_archives[0]}"
               test -s "${cli_archives[0]}.sha256"
               ;;
             windows-x64)
-              test -s OpenBitFun-Installer/src-tauri/target/release/openbitfun-installer.exe
+              require_one 'native Windows package' target/desktop-nsh/OpenBitFun-nsh_*-windows.zip
               ;;
             *)
               echo "Unsupported package platform: ${{ matrix.platform }}" >&2
@@ -378,10 +351,11 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.artifact_retention_days }}
           path: |
-            target/*/release/bundle
-            target/release/bundle
-            src/apps/desktop/target/release/bundle
-            OpenBitFun-Installer/src-tauri/target/release/openbitfun-installer.exe
+            target/*/release/bundle/dmg
+            target/*/release/bundle/macos/OpenBitFun-nsh_*.app.tar.gz
+            target/*/release/bundle/macos/OpenBitFun-nsh_*.app.tar.gz.sig
+            target/desktop-nsh/OpenBitFun-nsh_*-windows.zip
+            target/desktop-nsh/OpenBitFun-nsh_*-linux.tar.gz
             openbitfun-cli-*-apple-darwin.tar.gz
             openbitfun-cli-*-apple-darwin.tar.gz.sha256
             openbitfun-cli-*-apple-darwin.tar.gz.sig

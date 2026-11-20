@@ -57,7 +57,7 @@ export async function readPublicCssVariableContract({
 export async function findForbiddenUiDependencies(uiSourceDirectory) {
   const sourceFiles = await collectFiles(uiSourceDirectory, [".css", ".ts", ".tsx"]);
   const forbiddenPatterns = [
-    { label: "application source", pattern: /src[\\/]web-ui|@\// },
+    { label: "application source", pattern: /src[\\/](?:apps|nsh-ui)[\\/]|@\// },
     { label: "Tauri API", pattern: /@tauri-apps/ },
     { label: "application store", pattern: /zustand/ },
     { label: "application locale catalog", pattern: /locales?[\\/]/ },

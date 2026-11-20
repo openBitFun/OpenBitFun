@@ -1,22 +1,16 @@
 // Real Chromium DOM -> production snapshot.js -> compiled Rust presentation.
 import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { launchChrome } from './headless-chrome-cdp.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const requireE2e = createRequire(new URL('../tests/e2e/package.json', import.meta.url));
-const requireWdio = createRequire(requireE2e.resolve('@wdio/cli'));
-const puppeteer = requireWdio('puppeteer-core');
 const script = await readFile(new URL('../src/crates/assembly/core/src/agentic/tools/browser_control/snapshot.js', import.meta.url), 'utf8');
 const resolver = await readFile(new URL('../src/crates/assembly/core/src/agentic/tools/browser_control/resolve_element.js', import.meta.url), 'utf8');
-const browser = await puppeteer.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  headless: 'new',
-});
+const browser = await launchChrome();
 const dir = await mkdtemp(join(tmpdir(), 'openbitfun-dom-context-'));
 try {
   const page = await browser.newPage();

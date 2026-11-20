@@ -71,7 +71,7 @@ test('build version projection and verification work without npm workspace lockf
   const jsonFiles = [
     'package.json',
     'OpenBitFun-Installer/package.json',
-    'src/web-ui/package.json',
+    'src/apps/desktop-nsh/nsh.json',
     'src/mobile-web/package.json',
     'src/miniapp-market-web/package.json',
   ];
@@ -138,7 +138,6 @@ exclude = ["src/apps/relay-server", "OpenBitFun-Installer/src-tauri"]
     'package-lock.json',
     'OpenBitFun-Installer/package-lock.json',
     'src/mobile-web/package-lock.json',
-    'tests/e2e/package-lock.json',
   ]) {
     assert.equal(existsSync(path.join(root, relative)), false, relative);
   }

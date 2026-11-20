@@ -25,7 +25,7 @@ use crate::runtime::DesktopRuntimeContext;
 /// controller cannot tell "unsupported" from "empty".
 pub type ToolInfo = ToolInfoDto;
 
-#[tauri::command]
+// @backend-command
 pub async fn get_chat_mcp_catalog(
     request: openbitfun_core::agentic::tools::product_runtime::ChatMcpCatalogRequest,
 ) -> Result<openbitfun_core::agentic::tools::product_runtime::ChatMcpCatalog, String> {
@@ -214,7 +214,7 @@ fn ensure_workspace_requirement(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_all_tools_info() -> Result<Vec<ToolInfo>, String> {
     let tools = get_all_tools().await;
 
@@ -227,7 +227,7 @@ pub async fn get_all_tools_info() -> Result<Vec<ToolInfo>, String> {
     Ok(tool_infos)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_readonly_tools_info() -> Result<Vec<ToolInfo>, String> {
     let tools = get_readonly_tools()
         .await
@@ -242,7 +242,7 @@ pub async fn get_readonly_tools_info() -> Result<Vec<ToolInfo>, String> {
     Ok(tool_infos)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_tool_info(request: GetToolInfoRequest) -> Result<Option<ToolInfo>, String> {
     let tools = get_all_tools().await;
 
@@ -255,7 +255,7 @@ pub async fn get_tool_info(request: GetToolInfoRequest) -> Result<Option<ToolInf
     Ok(None)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn validate_tool_input(
     request: ToolValidationRequest,
 ) -> Result<ToolValidationResponse, String> {
@@ -293,7 +293,7 @@ pub async fn validate_tool_input(
     Err(format!("Tool '{}' not found", request.tool_name))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn execute_tool(request: ToolExecutionRequest) -> Result<ToolExecutionResponse, String> {
     let start_time = std::time::Instant::now();
 
@@ -390,7 +390,7 @@ pub struct StartUserQuestionInteractionRequest {
     pub tool_id: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_user_question_interaction(
     runtime: State<'_, DesktopRuntimeContext>,
     request: StartUserQuestionInteractionRequest,
@@ -401,7 +401,7 @@ pub async fn start_user_question_interaction(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn submit_user_answers(
     runtime: State<'_, DesktopRuntimeContext>,
     tool_id: String,

@@ -8,17 +8,11 @@
   ],
   "surfaceDefaults": {
     "android": "zh-CN",
-    "web-ui": "zh-CN",
     "mobile-web": "en-US",
     "installer": "en-US",
     "core": "zh-CN"
   },
   "surfaceOrders": {
-    "web-ui": [
-      "zh-CN",
-      "en-US",
-      "zh-TW"
-    ],
     "mobile-web": [
       "zh-CN",
       "zh-TW",
@@ -36,10 +30,6 @@
     ]
   },
   "surfaces": {
-    "web-ui": {
-      "resourceRoot": "src/web-ui/src/locales",
-      "loading": "eager-namespaces"
-    },
     "mobile-web": {
       "resourceRoot": "src/mobile-web/src/i18n",
       "loading": "surface-minimal"

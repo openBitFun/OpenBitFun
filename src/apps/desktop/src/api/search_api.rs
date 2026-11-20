@@ -366,7 +366,7 @@ async fn index_workspace_root(
     Ok(root)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_get_repo_status(
     state: State<'_, AppState>,
     request: SearchRepoIndexRequest,
@@ -381,7 +381,7 @@ pub async fn search_get_repo_status(
         .map_err(repo_status_error_message)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_build_index(
     state: State<'_, AppState>,
     request: SearchRepoIndexRequest,
@@ -396,7 +396,7 @@ pub async fn search_build_index(
         .map_err(|error| format!("Failed to build workspace index: {}", error))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_rebuild_index(
     state: State<'_, AppState>,
     request: SearchRepoIndexRequest,

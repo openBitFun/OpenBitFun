@@ -193,7 +193,7 @@ block-beta
 | Development area | Repository scope | Current modules |
 |---|---|---|
 | Apps | `src/apps/*` | `desktop`、`cli`、`server`、`relay-server`、`sdk-host`、`miniapp-shell`、`data-tools`、`miniapp-market-server`、`extension-host`（Bun Plugin Host 进程） |
-| Web and delivery | product roots | `src/web-ui`、`src/mobile-web`、`src/miniapp-market-web`、[OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)、`OpenBitFun-Installer`、`website`、`tests/e2e` |
+| Web and delivery | product roots | `src/nsh-ui`（桌面 UI，原生 NSH 应用与 web target）、`src/apps/desktop-nsh`、`src/mobile-web`、`src/miniapp-market-web`、[OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)、`OpenBitFun-Installer`、`website`、`tests/e2e` |
 | SDK | `sdk/*` | `typescript` |
 | Shared frontend | `src/shared`、`packages/flow-chat-presentation` | `shared`、`flow-chat-presentation` |
 | Design system | `design-system/*` | `packages/design-tokens`、`packages/theme-openbitfun`、`packages/ui`、`tooling/package-contract`、`tooling/token-engine`、`apps/design-lab` |
@@ -239,7 +239,7 @@ Computer Use 的控制会话、系统共享提示、后台输入边界与 macOS 
 
 - Deep Review、Deep Research 等按名称定义的产品工作流、提示词和报告策略；
 - MiniApp、GenUI 等产物产品及其发布、市场或界面生命周期；
-- CLI、ACP、SDK Host、Tauri、HTTP/WebSocket 等入口和协议；
+- CLI、ACP、SDK Host、原生 NSH 桌面宿主、OBP（进程内 / WebSocket / 设备组网）、HTTP/WebSocket 等入口和协议；
 - 文件系统、Git、终端、网络、MCP、远端与 AI 提供方的具体实现；
 - Delivery Profile 和某个产品应该装载哪些 Agent / Tool 的选择。
 
@@ -302,7 +302,7 @@ flowchart LR
 
 Physical View 展示当前生产环境中可执行单元到设备、主机和存储的映射。Desktop、CLI、ACP 和 SDK Host 使用 Embedded Runtime；
 Embedded 交互式 TUI 当前在同一 CLI 进程内通过 direct Runtime composition 使用 Runtime；交互式 TUI 也可以显式连接当前 Shared Runtime IPC。
-Desktop GUI 当前仍使用 Tauri adapter；独立 direct Runtime 迁移尚未实施。当前 loopback Web Server 已承载 Embedded Runtime 和 WebSocket App Server；Relay Server
+Desktop GUI 是原生 NSH 应用：runner 在同一进程内加载桌面后端库，经 `BackendService`（OBP dispatch + seq 事件流）访问 Runtime；Tauri 桌面外壳已退役（见 [unified-client-architecture.md](unified-client-architecture.md)）。当前 loopback Web Server 已承载 Embedded Runtime 和 WebSocket App Server；Relay Server
 不承载 Agent Runtime。
 
 ```mermaid
@@ -370,7 +370,7 @@ flowchart LR
 
 | Deployment unit | Main contents |
 |---|---|
-| Desktop App | Web UI、Tauri Host、embedded Agent Runtime；当前 Desktop 产品请求使用现有 Tauri adapter |
+| Desktop App | 原生 NSH 应用（`src/apps/desktop-nsh` runner + `src/nsh-ui`）、进程内桌面后端库（`src/apps/desktop`）、embedded Agent Runtime；产品请求经 `BackendService` 分发，浏览器/手机与同账号设备经 OBP 访问同一服务 |
 | CLI App | 交互式 TUI controller 直接依赖 `CliAgentRuntimeClient`，并直接调用对应 owner/service API；Headless、Peer 保留独立 adapter；可显式使用 Shared TUI |
 | Shared Runtime | 私有本机 IPC；当前只有交互式 TUI consumer；是否迁入 Shared App Server transport 仍待评审与等价证据 |
 | ACP | Embedded Agent Runtime、ACP 协议生命周期 |
@@ -489,22 +489,22 @@ correlation 可以由 `adapters/transport` 统一持有。仅 private Runtime IP
 自动重试或业务生命周期。stdio、Named Pipe/UDS、WebSocket 仍由各 Host 选择具体 framing 和安全策略；复用机械层
 不能被解释成这些入口共享同一 wire 或同一 Runtime 进程。
 
-### 3.2 宿主通信契约与 Tauri 薄适配
+### 3.2 宿主通信契约与桌面后端薄适配
 
-前后端契约按能力语义归属，不按 Tauri command 名称归属。稳定的请求、响应、状态事实和类型化错误放在对应
-`contracts/*`、Agent Runtime API 或能力归属模块。当前 Desktop GUI 仍使用 Tauri adapter，Web UI 使用 loopback WebSocket
+前后端契约按能力语义归属，不按命令名称归属。稳定的请求、响应、状态事实和类型化错误放在对应
+`contracts/*`、Agent Runtime API 或能力归属模块。当前 Desktop GUI（原生 NSH 应用）与浏览器/手机使用桌面后端的 OBP `BackendService`，loopback Web Server 使用 WebSocket
 App Server，Embedded/Shared TUI 由 `CliAgentRuntimeClient` 分别映射 direct Runtime 与 private Runtime IPC v17。目标是让
 Embedded GUI/TUI 通过 Host-owned direct adapter 调用 Runtime typed API，需要连接边界的 Web/Shared Rich Client 使用 App Server；
-Tauri 和各 Rich Client Host 负责 adapter、transport、平台能力及生命周期。ACP、Headless CLI、Peer Host 与公开 SDK 继续由各自
+原生桌面宿主和各 Rich Client Host 负责 adapter、transport、平台能力及生命周期。ACP、Headless CLI、Peer Host 与公开 SDK 继续由各自
 adapter 映射到稳定 owner 接口，不因该目标复用 App Server wire。该规则降低框架耦合，但不要求把 controller-local Desktop DTO
 搬进共享 crate。
 
 | 层 | 允许 | 禁止 |
 |---|---|---|
 | 能力归属模块 / Agent Runtime API | 字段明确的请求和响应、状态事实、权限/取消规则、与框架无关的用例方法 | `tauri::State`、`AppHandle`、窗口/菜单对象、command 宏、HTTP/WebSocket/ACP/SDK Host 消息结构 |
-| Desktop Tauri / product Host adapter | 当前组装 Tauri adapter；目标按部署组装 direct Runtime adapter 或 App Server transport、注入真实 capability 与平台 provider、管理窗口和桌面生命周期、投递 typed Runtime/App Server notification 或桌面专属事件 | 复制业务校验、持有第二份权威状态、在目标迁移完成后为同一能力保留第二条 Runtime 旁路、把 Tauri 类型传入下层 |
+| Desktop 后端 / product Host adapter | 当前组装进程内 `BackendService`（原生 NSH 宿主与 OBP 共用）；目标按部署组装 direct Runtime adapter 或 App Server transport、注入真实 capability 与平台 provider、管理窗口和桌面生命周期、投递 typed Runtime/App Server notification 或桌面专属事件 | 复制业务校验、持有第二份权威状态、在目标迁移完成后为同一能力保留第二条 Runtime 旁路、把宿主 UI 类型传入下层 |
 | Server / Remote adapter | 路由鉴权、协议消息、连接生命周期、流量控制与取消转换 | 为同一能力另建业务含义不同的 DTO 或 handler |
-| GUI / Web / TUI frontend | 当前依赖各自 infrastructure；Embedded/Shared TUI controller 直接组合 `CliAgentRuntimeClient` 与所需的 owner/service API，Web 或其他确需连接边界的 surface 才组合 App Server client；各自保留渲染状态 | 在 UI component/view 中直接依赖 Runtime 实现或私有 Shared IPC、公开 Python/TypeScript SDK、Tauri 业务 command；创建 catch-all TUI client、surface service、owner adapter、统一 TUI management 模块，或让 CLI 在 `openbitfun server` 之外依赖 App Server implementation/client（唯一经评审的例外是 `src/apps/cli/src/server_host.rs` 中的独立 stdio Server Host 装配点：它选择 `DeliveryProfile::Cli` 复用已评审的 CLI Agent 内核装配，再以 Host 注入的 allowlist/scope 收敛能力；TUI/controller/Headless CLI 仍禁止依赖 App Server） |
+| GUI / Web / TUI frontend | 当前依赖各自 infrastructure；Embedded/Shared TUI controller 直接组合 `CliAgentRuntimeClient` 与所需的 owner/service API，Web 或其他确需连接边界的 surface 才组合 App Server client；各自保留渲染状态 | 在 UI component/view 中直接依赖 Runtime 实现或私有 Shared IPC、公开 Python/TypeScript SDK、宿主业务 command；创建 catch-all TUI client、surface service、owner adapter、统一 TUI management 模块，或让 CLI 在 `openbitfun server` 之外依赖 App Server implementation/client（唯一经评审的例外是 `src/apps/cli/src/server_host.rs` 中的独立 stdio Server Host 装配点：它选择 `DeliveryProfile::Cli` 复用已评审的 CLI Agent 内核装配，再以 Host 注入的 allowlist/scope 收敛能力；TUI/controller/Headless CLI 仍禁止依赖 App Server） |
 
 本文其他章节和历史设计中出现的“Runtime SDK”，如果指 `agent-runtime::sdk`，统一称为
 **Rust Runtime SDK（当前 preview）**；它是共享 **Agent Runtime API** 的当前 Rust 入口。只有
@@ -516,13 +516,13 @@ Rust preview 的存在证明公开 SDK 已交付。
 execution Host 都是不同职责；其部署与进程生命周期以
 [`agent-runtime-deployment-design.md`](agent-runtime-deployment-design.md) 为准。
 
-Rust 与 TypeScript 的字段一致性以能力所有者的 DTO 为事实源，不以 Tauri command 参数为事实源。单宿主阶段由
+Rust 与 TypeScript 的字段一致性以能力所有者的 DTO 为事实源，不以后端命令参数为事实源。单宿主阶段由
 前端基础设施层维护对应接口，并用序列化契约测试锁定字段命名、可选字段和错误形状；达到独立版本化门槛后，才使用
-不依赖 Tauri 的 JSON Schema 或类型生成任务输出只读 TypeScript 类型。生成结果只同步数据形状，不承载权限、重试或
+不依赖宿主框架的 JSON Schema 或类型生成任务输出只读 TypeScript 类型。生成结果只同步数据形状，不承载权限、重试或
 业务分支。本阶段不为此新增生成器或框架依赖。
 
 抽取共享契约需要满足以下任一条件：至少两个当前生产宿主复用同一语义，或存在独立版本化的外部消费者。只有一个
-Desktop command 使用的序列化对象继续留在 `src/apps/desktop`；即使它不含 Tauri 类型，也不因“未来可能复用”而
+Desktop command 使用的序列化对象继续留在 `src/apps/desktop`；即使它不含宿主框架类型，也不因“未来可能复用”而
 提升为公共 DTO。共享的框架中立用例 handler 也遵循同一门槛：它必须拥有真实的编排、权限、取消或错误语义，不能
 只是通用转发层。
 
@@ -531,7 +531,7 @@ Desktop command 使用的序列化对象继续留在 `src/apps/desktop`；即使
 1. 先确认权威 owner、当前生产消费方、远程/多产品形态语义和现有行为基线。
 2. 把稳定事实与请求/响应放到能力所有者的契约模块，并以序列化、错误、取消和行为等价测试锁定。
 3. 让非 Desktop 消费方或第二宿主先通过 Agent Runtime API / owner 接口形成真实调用链。
-4. 将 Tauri command 简化为薄 adapter；前端基础设施层负责 `invoke` 映射，UI 组件不直接依赖 Tauri API。
+4. 将后端命令简化为薄 adapter；前端连接层（`src/nsh-ui/src/bridge.ts`）负责命令映射，UI 组件不直接依赖宿主 API。
 5. 删除重复 DTO、旧 handler 或兼容方法；无法证明等价时保留已标注的兼容边界，不做批量迁移。
 
 因此仓库不恢复一个通用 `api-layer` 作为默认中转层。只有达到上述复用门槛且现有 owner 无法合理承载时，才评审
@@ -560,7 +560,7 @@ Desktop command 使用的序列化对象继续留在 `src/apps/desktop`；即使
 
 ```mermaid
 flowchart LR
-  Desktop["Desktop GUI"] --> Tauri["Desktop / Tauri adapter"]
+  Desktop["Desktop GUI (native NSH)"] --> DesktopBackend["Desktop backend (BackendService / OBP)"]
   Web["Web UI"] --> WebHost["loopback WebSocket App Server"]
   TUI["Interactive TUI"] --> RuntimeClient["CliAgentRuntimeClient"]
   RuntimeClient -->|"Embedded current"| Direct["Direct Runtime adapter"]
@@ -569,7 +569,7 @@ flowchart LR
   OwnerApis --> Owners["existing owners / services"]
   Other["Headless CLI · ACP · Server · Remote"] --> Adapter["独立入口适配器"]
   SDK["Rust Runtime SDK / SDK Host preview"] --> SDKAdapter["独立 SDK adapter"]
-  Tauri --> API["Runtime API / owner ports"]
+  DesktopBackend --> API["Runtime API / owner ports"]
   WebHost --> API
   Direct --> API
   SharedIPC --> API
@@ -579,7 +579,7 @@ flowchart LR
 ```
 
 当前 Embedded TUI 核心路径经过 direct Runtime adapter，Shared TUI 通过 private Runtime IPC v17；Web UI 通过 loopback WebSocket App Server，
-Desktop GUI 通过 Tauri adapter。Headless CLI/CI、ACP、Peer Host 和 SDK Host 保留独立 adapter。所有路径最终消费同一 Runtime API 或 owner
+Desktop GUI 通过进程内桌面后端（`BackendService`）。Headless CLI/CI、ACP、Peer Host 和 SDK Host 保留独立 adapter。所有路径最终消费同一 Runtime API 或 owner
 port，部署选择不能进入业务 owner。目标路径不在本图中展开。
 
 Server bootstrap 和产品组装只创建对象并注入依赖，不是客户端请求的第二条旁路：

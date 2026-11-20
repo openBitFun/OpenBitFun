@@ -282,7 +282,7 @@ fn emit_acp_model_round_completed(
         .map_err(|e| openbitfun_core::util::errors::OpenBitFunError::service(e.to_string()))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn initialize_acp_clients(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -296,11 +296,11 @@ pub async fn initialize_acp_clients(
         service.initialize_all().await.map_err(|e| e.to_string())
     }
     .await;
-    startup_trace.record_tauri_command_elapsed("initialize_acp_clients", None, trace_started);
+    startup_trace.record_command_elapsed("initialize_acp_clients", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_acp_clients(state: State<'_, AppState>) -> Result<Vec<AcpClientInfo>, String> {
     let service = state
         .acp_client_service
@@ -309,7 +309,7 @@ pub async fn get_acp_clients(state: State<'_, AppState>) -> Result<Vec<AcpClient
     service.list_clients().await.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn probe_acp_client_requirements(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -330,15 +330,11 @@ pub async fn probe_acp_client_requirements(
             .map_err(|e| e.to_string())
     }
     .await;
-    startup_trace.record_tauri_command_elapsed(
-        "probe_acp_client_requirements",
-        None,
-        trace_started,
-    );
+    startup_trace.record_command_elapsed("probe_acp_client_requirements", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn predownload_acp_client_adapter(
     state: State<'_, AppState>,
     request: AcpClientIdRequest,
@@ -353,7 +349,7 @@ pub async fn predownload_acp_client_adapter(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn install_acp_client_cli(
     state: State<'_, AppState>,
     request: AcpClientIdRequest,
@@ -368,7 +364,7 @@ pub async fn install_acp_client_cli(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_acp_flow_session(
     state: State<'_, AppState>,
     app_handle: HostHandle,
@@ -435,7 +431,7 @@ pub async fn create_acp_flow_session(
     Ok(response)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_acp_dialog_turn(
     state: State<'_, AppState>,
     app_handle: HostHandle,
@@ -799,7 +795,7 @@ pub async fn start_acp_dialog_turn(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_acp_dialog_turn(
     state: State<'_, AppState>,
     request: CancelAcpDialogTurnRequest,
@@ -827,7 +823,7 @@ pub async fn cancel_acp_dialog_turn(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_acp_session_options(
     state: State<'_, AppState>,
     request: GetAcpSessionOptionsRequest,
@@ -875,7 +871,7 @@ pub async fn get_acp_session_options(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_acp_session_commands(
     state: State<'_, AppState>,
     request: GetAcpSessionOptionsRequest,
@@ -924,7 +920,7 @@ pub async fn get_acp_session_commands(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_acp_session_model(
     state: State<'_, AppState>,
     request: SetAcpSessionModelRequest,
@@ -953,7 +949,7 @@ pub async fn set_acp_session_model(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_acp_session_config_option(
     state: State<'_, AppState>,
     request: SetAcpSessionConfigOptionRequest,
@@ -982,7 +978,7 @@ pub async fn set_acp_session_config_option(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn stop_acp_client(
     state: State<'_, AppState>,
     request: AcpClientIdRequest,
@@ -1006,7 +1002,7 @@ pub struct SetAcpClientPermissionModeRequest {
 
 /// Sets one configured client's permission mode and returns the client list,
 /// instead of a client rewriting the whole ACP JSON document.
-#[tauri::command]
+// @backend-command
 pub async fn set_acp_client_permission_mode(
     state: State<'_, AppState>,
     request: SetAcpClientPermissionModeRequest,
@@ -1021,7 +1017,7 @@ pub async fn set_acp_client_permission_mode(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_acp_json_config(state: State<'_, AppState>) -> Result<String, String> {
     let service = state
         .acp_client_service
@@ -1030,7 +1026,7 @@ pub async fn load_acp_json_config(state: State<'_, AppState>) -> Result<String, 
     service.load_json_config().await.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_acp_json_config(
     state: State<'_, AppState>,
     json_config: String,
@@ -1045,7 +1041,7 @@ pub async fn save_acp_json_config(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn submit_acp_permission_response(
     state: State<'_, AppState>,
     request: SubmitAcpPermissionResponseRequest,

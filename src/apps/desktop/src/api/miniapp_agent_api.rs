@@ -410,7 +410,7 @@ async fn sync_agent_session_tool_enablement(
 /// the user opens its floating chat surface. This command intentionally accepts
 /// only an appdata-relative workspace, so it remains a local-host capability
 /// even while the product is viewing a remote workspace.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_agent_ensure_session(
     state: State<'_, AppState>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -504,7 +504,7 @@ pub async fn miniapp_agent_ensure_session(
 }
 
 /// Start a full agent turn for a MiniApp inside a hidden subagent session.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_agent_run(
     state: State<'_, AppState>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -681,7 +681,7 @@ pub async fn miniapp_agent_run(
 }
 
 /// Cancel a running MiniApp agent turn.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_agent_cancel(
     state: State<'_, AppState>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -706,7 +706,7 @@ pub async fn miniapp_agent_cancel(
 /// Read the assistant text of a (completed) MiniApp agent turn from the live
 /// in-memory session. Used by MiniApps as a fallback when streaming was
 /// interrupted (for example a webview reload during generation).
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_agent_turn_text(
     state: State<'_, AppState>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,
@@ -756,7 +756,7 @@ pub async fn miniapp_agent_turn_text(
 
 /// Cancel every tracked agent run for the given MiniApp. Called by the app on
 /// startup/recovery so webview reloads do not leave orphaned agent turns.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_agent_cancel_stale_runs(
     state: State<'_, AppState>,
     coordinator: State<'_, Arc<ConversationCoordinator>>,

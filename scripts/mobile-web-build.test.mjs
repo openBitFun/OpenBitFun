@@ -24,7 +24,7 @@ test('mobile-web lifecycle prepares its generated design-system package entries'
   const packageJson = JSON.parse(
     readFileSync(new URL('../src/mobile-web/package.json', import.meta.url), 'utf8'),
   );
-  // Unlike src/web-ui, mobile-web has no @openbitfun/ui source alias and
+  // mobile-web has no @openbitfun/ui source alias and
   // design-system/packages/ui/dist is generated rather than committed, so dev,
   // build, and type-check all resolve @openbitfun/ui through its package
   // exports. Every hook therefore needs the full build:packages run.

@@ -13,10 +13,14 @@ interface WorkbenchFixtures {
   enhancedBranchesFails?: boolean;
   miniapps?: Array<Record<string, unknown>>;
   runningWorkers?: string[];
-  /** `git_push` without an upstream fails the way git does until `set_upstream` is sent. */
+  /** `git_push` without an upstream fails the way git does unless the host publishes it (`publishIfNoUpstream`). */
   pushNeedsUpstream?: boolean;
+  /** An older host: no `git_watch_status`, `git_discard_files` or `git_commit_and_checkout`. */
+  gitHostOutdated?: boolean;
   /** Checking out this branch fails with git's overwrite diagnostic until the blocking file is committed. */
   checkoutBlockedBy?: { branch: string; file: string };
+  /** An older host: no `preview_cron_occurrences` / `validate_cron_job_draft`. */
+  cronPreviewMissing?: boolean;
 }
 
 function createWorkbenchBackend(
@@ -173,6 +177,50 @@ function createWorkbenchBackend(
         return { handled: true, value: null };
       case "list_cron_jobs":
         return { handled: true, value: cronJobs };
+      case "validate_cron_job_draft": {
+        if (fx.cronPreviewMissing) return { handled: true, error: "Command not found: validate_cron_job_draft" };
+        // The host's scheduler decides; this fixture answers the codes the editor localizes.
+        const issues: Array<{ field: string; code: string; message: string }> = [];
+        if (!String(payload.name ?? "").trim()) issues.push({ field: "name", code: "name_required", message: "name" });
+        const text = String((payload.payload as Record<string, unknown> | undefined)?.text ?? "");
+        if (!text.trim()) issues.push({ field: "payload", code: "payload_required", message: "payload" });
+        const schedule = (payload.schedule ?? {}) as Record<string, unknown>;
+        if (schedule.kind === "cron" && String(schedule.expr ?? "").includes("bad")) {
+          issues.push({ field: "schedule", code: "invalid_cron", message: "Invalid cron expression" });
+        }
+        return { handled: true, value: { valid: issues.length === 0, issues } };
+      }
+      case "preview_cron_occurrences": {
+        if (fx.cronPreviewMissing) return { handled: true, error: "Command not found: preview_cron_occurrences" };
+        const schedule = payload.schedule as Record<string, unknown> | undefined;
+        const fromMs = Number(payload.fromMs ?? Date.now());
+        const toMs = Number(payload.toMs ?? fromMs + 7 * 86_400_000);
+        let draft: unknown;
+        if (schedule) {
+          draft =
+            schedule.kind === "cron" && String(schedule.expr ?? "").includes("bad")
+              ? { valid: false, issue: { field: "schedule", code: "invalid_cron", message: "Invalid cron expression" }, occurrences: [], truncated: false }
+              : { valid: true, occurrences: [fromMs + 3_600_000, fromMs + 7_200_000], truncated: false };
+        }
+        const jobs = schedule && !payload.jobIds
+          ? []
+          : cronJobs
+              .filter(job => job.enabled !== false)
+              .map(job => {
+                const state = (job.state ?? {}) as Record<string, unknown>;
+                const next = Number(state.nextRunAtMs ?? NaN);
+                const sched = (job.schedule ?? {}) as Record<string, unknown>;
+                const every = Number(sched.everyMs ?? 0);
+                const runs: number[] = [];
+                if (Number.isFinite(next) && every > 0) {
+                  for (let at = next; at <= toMs && runs.length < Number(payload.count ?? 96); at += every) {
+                    if (at >= fromMs) runs.push(at);
+                  }
+                }
+                return { jobId: job.id, valid: true, occurrences: runs, truncated: false };
+              });
+        return { handled: true, value: { ...(draft ? { schedule: draft } : {}), jobs } };
+      }
       case "create_cron_job": {
         const created = {
           id: `cron-created-${cronSeq++}`,
@@ -250,8 +298,22 @@ function createWorkbenchBackend(
       case "git_get_diff": {
         const params = (payload.params ?? {}) as { files?: string[]; staged?: boolean };
         const target = params.files?.[0] ?? "file";
-        // git has no diff for a file it does not track.
-        if ((gitStatusState.untracked as string[] | undefined)?.includes(target)) return { handled: true, value: "" };
+        if ((gitStatusState.untracked as string[] | undefined)?.includes(target)) {
+          // The host draws an untracked file as all additions; an older one answers empty.
+          if (fx.gitHostOutdated) return { handled: true, value: "" };
+          return {
+            handled: true,
+            value: [
+              `diff --git a/${target} b/${target}`,
+              "new file mode 100644",
+              "--- /dev/null",
+              `+++ b/${target}`,
+              "@@ -0,0 +1,2 @@",
+              "+scratch line one",
+              "+scratch line two",
+            ].join("\n"),
+          };
+        }
         return {
           handled: true,
           value: [
@@ -318,6 +380,53 @@ function createWorkbenchBackend(
         };
         return { handled: true, value: { success: true, message: "Discarded" } };
       }
+      // git liveness (wave 4)
+      case "git_watch_status":
+        if (fx.gitHostOutdated) return { handled: true, error: "Unknown command: git_watch_status" };
+        return {
+          handled: true,
+          value: {
+            workspaceId: payload.workspaceId,
+            repositoryPath: payload.repositoryPath,
+            revision: 0,
+            status: gitStatusState,
+            mode: "watch",
+            event: "git://status-changed",
+          },
+        };
+      case "git_unwatch_status":
+        return { handled: true, value: true };
+      case "git_discard_files": {
+        if (fx.gitHostOutdated) return { handled: true, error: "Unknown command: git_discard_files" };
+        const files = (payload.files as string[]) ?? [];
+        const untracked = (gitStatusState.untracked as string[]).filter(p => files.includes(p));
+        if (untracked.length > 0 && payload.includeUntracked !== true) {
+          return { handled: true, error: `Refusing to delete untracked files without includeUntracked: ${untracked.join(", ")}` };
+        }
+        gitStatusState = {
+          ...gitStatusState,
+          staged: (gitStatusState.staged as Array<{ path: string }>).filter(f => !files.includes(f.path)),
+          unstaged: (gitStatusState.unstaged as Array<{ path: string }>).filter(f => !files.includes(f.path)),
+          untracked: (gitStatusState.untracked as string[]).filter(p => !files.includes(p)),
+          conflicts: (gitStatusState.conflicts as string[]).filter(p => !files.includes(p)),
+        };
+        return { handled: true, value: { success: true, data: { restore: files } } };
+      }
+      case "git_commit_and_checkout": {
+        if (fx.gitHostOutdated) return { handled: true, error: "Unknown command: git_commit_and_checkout" };
+        const target = String(payload.targetBranch ?? "");
+        checkoutUnblocked = true;
+        branches = branches.map(b => ({ ...b, current: b.name === target }));
+        gitStatusState = {
+          ...gitStatusState,
+          staged: [],
+          unstaged: (gitStatusState.unstaged as Array<{ path: string }>).filter(
+            f => !((payload.files as string[]) ?? []).some(file => f.path.endsWith(file)),
+          ),
+          current_branch: target,
+        };
+        return { handled: true, value: { success: true, data: { committed: true, branch: target } } };
+      }
       case "delete_file": {
         const targetPath = String(payload.path ?? "");
         gitStatusState = {
@@ -353,6 +462,13 @@ function createWorkbenchBackend(
         return { handled: true, value: { success: true, message: "Pulled" } };
       case "git_push": {
         const params = (payload.params ?? {}) as { set_upstream?: boolean };
+        if (fx.pushNeedsUpstream && payload.publishIfNoUpstream === true && !fx.gitHostOutdated) {
+          gitStatusState = { ...gitStatusState, ahead: 0 };
+          return {
+            handled: true,
+            value: { success: true, data: { published: true, remote: "origin", branch: "feat/new" } },
+          };
+        }
         if (fx.pushNeedsUpstream && params.set_upstream !== true) {
           return {
             handled: true,
@@ -570,6 +686,8 @@ function createWorkbenchBackend(
     setGitStatus: (patch: Record<string, unknown>) => {
       gitStatusState = { ...gitStatusState, ...patch };
     },
+    /** The status the host would publish in `git://status-changed`. */
+    gitStatusSnapshot: () => gitStatusState,
   };
 }
 
@@ -783,30 +901,35 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
     params: { files: ["/repo/main.rs"], staged: true },
   });
 
-  // Discard unstaged modification via git_reset_files (staged: false)
+  // Discard an unstaged modification: the host decides how (one git_discard_files).
   await app.press("label:git-discard-docs/guide.md");
   await app.waitFor("Discard");
   await app.press("Discard");
-  const discardCall = backend.calls.find(
-    c =>
-      c.action === "git_reset_files" &&
-      (c.request as { staged?: boolean })?.staged === false,
-  );
+  const discardCall = backend.calls.find(c => c.action === "git_discard_files");
   expect(discardCall?.request).toEqual({
     workspaceId: "workspace-1",
     repositoryPath: "/repo",
     files: ["/repo/docs/guide.md"],
-    staged: false,
+    includeUntracked: false,
   });
 
-  // Discard untracked file via delete_file
+  // Discard an untracked file: the delete is consented explicitly.
   await app.press("label:git-discard-scratch.txt");
   await app.waitFor("Delete");
   await app.press("Delete");
-  expect(backend.calls.find(c => c.action === "delete_file")?.request).toMatchObject({
-    workspaceId: "workspace-1",
-    path: "/repo/scratch.txt",
-  });
+  await app.waitUntil(() =>
+    backend.calls.some(
+      c =>
+        c.action === "git_discard_files" &&
+        (c.request as { includeUntracked?: boolean; files?: string[] }).includeUntracked === true &&
+        (c.request as { files?: string[] }).files?.[0] === "/repo/scratch.txt",
+    ),
+  );
+  // The client no longer composes discards from primitives.
+  expect(backend.actions()).not.toContain("delete_file");
+  expect(
+    backend.calls.some(c => c.action === "git_reset_files" && (c.request as { staged?: boolean }).staged === false),
+  ).toBe(false);
 
   // Unstage staged file, re-stage conflict, then Stage all
   await app.press("label:git-unstage-main.rs");
@@ -938,8 +1061,8 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   await app.waitFor("Release Tracker");
   expect(app.texts()).toContain("Focus Pad");
   expect(app.texts().some(t => t.includes("1 active workers"))).toBe(true);
-  // Running a Space is not built yet: the scene says so instead of hinting at a fallback.
-  expect(app.texts()).toContain("Running Spaces is not available in this preview yet");
+  // A desktop shell over its own backend opens Spaces in their own window: no "unsupported" note.
+  expect(app.shows("label:spaces-run-unsupported")).toBe(false);
   expect(app.shows("label:space-running-space-board")).toBe(true);
 
   // Open Inspector ModalDialog -> checks get_miniapp (invokeCommand) & get_miniapp_versions (invokeRawCommand)
@@ -955,6 +1078,15 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
 
   await app.press("Worker JS");
   await app.waitFor("export async function status() { return { ok: true }; }");
+
+  // Open in window: the desktop's MiniApp window, as the React catalog launches it.
+  await app.press("label:space-inspector-open");
+  await app.waitUntil(() => backend.calls.some(c => c.action === "miniapp_presentation"));
+  expect(backend.calls.find(c => c.action === "miniapp_presentation")?.request).toMatchObject({
+    operation: "open",
+    appId: "space-board",
+    kind: "window",
+  });
 
   // Stop worker from Inspector footer & close ModalDialog
   await app.press("label:space-inspector-stop");
@@ -1038,6 +1170,14 @@ test("spaces: shows Peer Device Mode notice when driving a peer", async () => {
   await app.press("Spaces");
   await app.waitFor("Release Tracker");
   expect(app.texts().some(t => t.includes("Driving peer device builder"))).toBe(true);
+  // A peer's Space never opens as a window on this computer: the scene says why.
+  await app.waitFor("label:spaces-run-unsupported");
+  expect(
+    app.texts().some(t => t.includes("belongs to the device you are driving")),
+  ).toBe(true);
+  await app.press("label:space-inspect-space-board");
+  await app.waitFor("Create a release readiness tracker Space.");
+  expect(app.shows("label:space-inspector-open")).toBe(false);
 });
 
 test("git: live status refresh, commit inspection, untracked additions, batch staging, upstream publish and commit & switch", async () => {
@@ -1050,18 +1190,38 @@ test("git: live status refresh, commit inspection, untracked additions, batch st
   await app.press("Git");
   await app.waitFor("Working Copy");
 
-  // A change made outside this window shows up from the watcher event…
+  // The scene leases live status from the host instead of polling.
+  await app.waitUntil(() => backend.actions().includes("git_watch_status"));
+  const lease = backend.calls.find(c => c.action === "git_watch_status")?.request as Record<string, unknown>;
+  expect(lease).toMatchObject({ workspaceId: "workspace-1", repositoryPath: "/repo" });
+  expect(String(lease.watcherId)).toMatch(/^nsh-git-/);
+
+  // A change made outside this window arrives as the host's status event.
+  const statusReads = () => backend.calls.filter(c => c.action === "git_get_status").length;
+  const readsBefore = statusReads();
   backend.setGitStatus({ untracked: ["/repo/scratch.txt", "/repo/agent-note.md"] });
   await app.host.send("openbitfun.event", {
-    event: "file-system-changed",
-    payload: [{ path: "/repo/agent-note.md", kind: "create", timestamp: 1 }],
+    event: "git://status-changed",
+    payload: { workspaceId: "workspace-1", repositoryPath: "/repo", revision: 1, status: backend.gitStatusSnapshot(), cause: "watch" },
   });
   await app.waitFor("agent-note.md");
-  // …and from the 2 s status poll when no event arrives.
+  // A stale revision is ignored; a newer one renders.
   backend.setGitStatus({ untracked: ["/repo/scratch.txt", "/repo/agent-note.md", "/repo/poll-only.md"] });
-  await app.waitFor("poll-only.md", { timeout: 6000 });
+  await app.host.send("openbitfun.event", {
+    event: "git://status-changed",
+    payload: { workspaceId: "workspace-1", repositoryPath: "/repo", revision: 1, status: backend.gitStatusSnapshot(), cause: "watch" },
+  });
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  expect(app.texts()).not.toContain("poll-only.md");
+  // Nothing polled while the scene sat open.
+  expect(statusReads()).toBe(readsBefore);
+  await app.host.send("openbitfun.event", {
+    event: "git://status-changed",
+    payload: { workspaceId: "workspace-1", repositoryPath: "/repo", revision: 2, status: backend.gitStatusSnapshot(), cause: "poll" },
+  });
+  await app.waitFor("poll-only.md");
 
-  // An untracked file reads as all additions instead of an empty diff.
+  // An untracked file reads as all additions (the host draws it).
   await app.press("label:git-untracked-scratch.txt");
   await app.waitFor("scratch line two");
 
@@ -1080,13 +1240,11 @@ test("git: live status refresh, commit inspection, untracked additions, batch st
     ),
   );
 
-  // Push on a branch without upstream publishes it with set_upstream.
+  // Push on a branch without upstream: the host publishes it, in one call.
   await app.press("label:git-push");
-  await app.waitUntil(() =>
-    backend.calls.some(
-      c => c.action === "git_push" && (c.request as { params?: { set_upstream?: boolean } })?.params?.set_upstream === true,
-    ),
-  );
+  await app.waitFor("Published feat/new to origin");
+  expect(backend.calls.filter(c => c.action === "git_push")).toHaveLength(1);
+  expect(backend.calls.find(c => c.action === "git_push")?.request).toMatchObject({ publishIfNoUpstream: true });
 
   // A checkout blocked by local edits offers Commit & switch.
   await app.press("Branches");
@@ -1096,12 +1254,17 @@ test("git: live status refresh, commit inspection, untracked additions, batch st
   await app.type("label:git-switch-commit-message", "wip: save guide edits");
   await app.press("label:git-commit-and-switch");
   await app.waitUntil(() => !app.shows("label:git-switch-blocker"));
-  expect(backend.calls.find(c => c.action === "git_commit")?.request).toMatchObject({
-    params: { message: "wip: save guide edits", amend: false },
+  // Commit & switch is one host operation, not add + commit + checkout from here.
+  expect(backend.calls.find(c => c.action === "git_commit_and_checkout")?.request).toMatchObject({
+    workspaceId: "workspace-1",
+    message: "wip: save guide edits",
+    files: ["docs/guide.md"],
+    targetBranch: "feat/studio",
   });
+  expect(backend.actions()).not.toContain("git_commit");
   expect(
     backend.calls.filter(c => c.action === "git_checkout_branch" && (c.request as { branchName?: string }).branchName === "feat/studio"),
-  ).toHaveLength(2);
+  ).toHaveLength(1);
 
   // History: select a commit, see its files and diff, copy, cherry-pick, reset behind a confirm.
   await app.press("History");
@@ -1138,6 +1301,26 @@ test("git: live status refresh, commit inspection, untracked additions, batch st
   });
 });
 
+
+test("git: an older host without live status says so instead of polling, and refuses compound operations loudly", async () => {
+  const backend = createWorkbenchBackend({}, { gitHostOutdated: true });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Git");
+  await app.waitFor("Working Copy");
+  await app.waitFor("This host does not push Git changes, so the status here is not live. Update OpenBitFun on it; use Refresh meanwhile.");
+  const reads = backend.calls.filter(c => c.action === "git_get_status").length;
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  expect(backend.calls.filter(c => c.action === "git_get_status").length).toBe(reads);
+
+  await app.press("label:git-discard-docs/guide.md");
+  await app.waitFor("Discard");
+  await app.press("Discard");
+  await app.waitFor("This host cannot discard changes from here. Update OpenBitFun on it.");
+  // No client-side fallback to the old primitives.
+  expect(
+    backend.calls.some(c => c.action === "git_reset_files" && (c.request as { staged?: boolean }).staged === false),
+  ).toBe(false);
+});
 
 test("routines: a routine can run in an existing session of the active workspace", async () => {
   const backend = createWorkbenchBackend({
@@ -1212,4 +1395,61 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   await app.waitFor("label:dispatch-form-toggle");
   await app.press("label:dispatch-form-toggle");
   await app.waitFor("label:dispatch-prompt");
+});
+
+test("routines: the editor previews and validates through the host scheduler", async () => {
+  const backend = createWorkbenchBackend({}, {});
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("Routines");
+  await app.press("Routines");
+  await app.waitFor("Daily PR Triage");
+  // The calendar and the due list are read from the host, not parsed here.
+  await app.waitFor("Due in the next 24 hours");
+  expect(backend.calls.some(c => c.action === "preview_cron_occurrences" && !(c.request as Record<string, unknown>)?.schedule)).toBe(true);
+  expect(app.shows("label:routines-preview-unavailable")).toBe(false);
+
+  await app.press("label:routines-new");
+  await app.waitFor("label:routine-name-input");
+  await app.press("label:routine-schedule-kind");
+  await app.press("Cron Expression (5-field)");
+  await app.clear("label:routine-cron-expr");
+  await app.type("label:routine-cron-expr", "bad cron");
+  await app.waitFor("Enter a valid 5-field cron expression (e.g. 0 9 * * 1-5).");
+  const draftCall = [...backend.calls].reverse().find(c => c.action === "preview_cron_occurrences" && (c.request as Record<string, unknown>)?.schedule);
+  expect(draftCall?.request).toMatchObject({ schedule: { kind: "cron", expr: "bad cron" } });
+
+  await app.type("label:routine-name-input", "Broken");
+  await app.type("label:routine-prompt-input", "Never saved.");
+  await app.press("label:routine-save");
+  await app.waitFor("label:routine-name-input");
+  expect(backend.calls.some(c => c.action === "validate_cron_job_draft")).toBe(true);
+  expect(backend.calls.some(c => c.action === "create_cron_job")).toBe(false);
+
+  await app.clear("label:routine-cron-expr");
+  await app.type("label:routine-cron-expr", "0 9 * * 1-5");
+  await app.waitUntil(() => app.texts().some(text => text.includes("Next:")));
+  await app.press("label:routine-save");
+  await app.waitFor("Broken");
+  expect(backend.calls.find(c => c.action === "create_cron_job")?.request).toMatchObject({
+    schedule: { kind: "cron", expr: "0 9 * * 1-5" },
+  });
+});
+
+test("routines: an older host without run previews says so and shows only the runs it reports", async () => {
+  const backend = createWorkbenchBackend({}, { cronPreviewMissing: true });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("Routines");
+  await app.press("Routines");
+  await app.waitFor("Daily PR Triage");
+  await app.waitFor("label:routines-preview-unavailable");
+  // The host-reported next run of the enabled routine still lists as due.
+  expect(app.texts()).toContain("Daily PR Triage");
+
+  await app.press("label:routines-new");
+  await app.waitFor("label:routine-name-input");
+  await app.type("label:routine-name-input", "Old Host Routine");
+  await app.type("label:routine-prompt-input", "Saved without a pre-check.");
+  await app.press("label:routine-save");
+  await app.waitFor("Old Host Routine");
+  expect(backend.calls.some(c => c.action === "create_cron_job")).toBe(true);
 });

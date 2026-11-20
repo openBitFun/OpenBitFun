@@ -20,6 +20,10 @@ use openbitfun_core::service::remote_ssh::{
     SSHConfigLookupResult, SSHConnectionConfig, SSHConnectionManager, SSHConnectionResult,
     SavedConnection, ServerInfo,
 };
+use openbitfun_services_integrations::remote_ssh::link_supervisor::{
+    ReconnectError, ReconnectReadiness, RemoteLinkFailure, RemoteLinkPhase, RemoteLinkPolicy,
+    RemoteLinkState, RemoteLinkSupervisor, RemoteLinkTransport, REMOTE_LINK_STATE_EVENT,
+};
 
 impl From<SSHServiceError> for String {
     fn from(e: SSHServiceError) -> Self {
@@ -58,7 +62,7 @@ async fn hydrate_stored_password(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_list_wsl_distributions(
 ) -> Result<openbitfun_core::service::remote_ssh::WslDistributions, String> {
     openbitfun_services_integrations::remote_ssh::wsl::list_distributions()
@@ -66,7 +70,7 @@ pub async fn ssh_list_wsl_distributions(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_list_saved_connections(
     state: State<'_, AppState>,
 ) -> Result<Vec<SavedConnection>, String> {
@@ -88,7 +92,7 @@ pub async fn ssh_list_saved_connections(
     Ok(connections)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_save_connection(
     state: State<'_, AppState>,
     config: SSHConnectionConfig,
@@ -107,7 +111,7 @@ pub async fn ssh_save_connection(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_delete_connection(
     state: State<'_, AppState>,
     connection_id: String,
@@ -119,7 +123,7 @@ pub async fn ssh_delete_connection(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_has_stored_password(
     state: State<'_, AppState>,
     connection_id: String,
@@ -128,8 +132,9 @@ pub async fn ssh_has_stored_password(
     Ok(manager.has_stored_password(&connection_id).await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_connect(
+    app: HostHandle,
     state: State<'_, AppState>,
     mut config: SSHConnectionConfig,
 ) -> Result<SSHConnectionResult, String> {
@@ -169,10 +174,25 @@ pub async fn ssh_connect(
         }
     }
     log::info!("ssh_connect result: {:?}", result);
+    if let Ok(connected) = &result {
+        if connected.success {
+            // A connect made by a client (the credential prompt, a new host)
+            // is supervised like one the backend restored.
+            let supervisor = remote_link_supervisor(&app, &state);
+            supervisor.mark_connected(&config_to_save.id);
+            if let Some(resolved) = connected
+                .connection_id
+                .as_deref()
+                .filter(|id| !id.is_empty() && *id != config_to_save.id)
+            {
+                supervisor.mark_connected(resolved);
+            }
+        }
+    }
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_test_connection(
     state: State<'_, AppState>,
     mut config: SSHConnectionConfig,
@@ -182,7 +202,7 @@ pub async fn ssh_test_connection(
     Ok(manager.test_connection(&config).await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_list_docker_containers(
     state: State<'_, AppState>,
     mut config: SSHConnectionConfig,
@@ -195,12 +215,14 @@ pub async fn ssh_list_docker_containers(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_disconnect(
+    app: HostHandle,
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<(), String> {
     let manager = state.get_ssh_manager_async().await?;
+    remote_link_supervisor(&app, &state).forget(&connection_id);
     // Tear the forwards down first. They are listeners whose only meaning is
     // this session, and leaving one running would let a later connection on it
     // reconnect the host the user just closed.
@@ -214,15 +236,16 @@ pub async fn ssh_disconnect(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn ssh_disconnect_all(state: State<'_, AppState>) -> Result<(), String> {
+// @backend-command
+pub async fn ssh_disconnect_all(app: HostHandle, state: State<'_, AppState>) -> Result<(), String> {
     let manager = state.get_ssh_manager_async().await?;
+    remote_link_supervisor(&app, &state).forget_all();
     state.port_forward_manager.stop_all().await;
     manager.disconnect_all().await;
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_is_connected(
     state: State<'_, AppState>,
     connection_id: String,
@@ -237,7 +260,7 @@ pub async fn ssh_is_connected(
     Ok(is_connected)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_get_server_info(
     state: State<'_, AppState>,
     connection_id: String,
@@ -246,7 +269,7 @@ pub async fn ssh_get_server_info(
     Ok(manager.resolve_remote_home_if_missing(&connection_id).await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_get_config(
     state: State<'_, AppState>,
     host: String,
@@ -255,7 +278,7 @@ pub async fn ssh_get_config(
     Ok(manager.get_ssh_config(&host).await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_list_config_hosts(
     state: State<'_, AppState>,
 ) -> Result<Vec<SSHConfigEntry>, String> {
@@ -265,7 +288,7 @@ pub async fn ssh_list_config_hosts(
 
 // === Remote File System Operations ===
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_read_file(
     state: State<'_, AppState>,
     connection_id: String,
@@ -279,7 +302,7 @@ pub async fn remote_read_file(
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_write_file(
     state: State<'_, AppState>,
     connection_id: String,
@@ -293,7 +316,7 @@ pub async fn remote_write_file(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_exists(
     state: State<'_, AppState>,
     connection_id: String,
@@ -306,7 +329,7 @@ pub async fn remote_exists(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_read_dir(
     state: State<'_, AppState>,
     connection_id: String,
@@ -319,7 +342,7 @@ pub async fn remote_read_dir(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_get_tree(
     state: State<'_, AppState>,
     connection_id: String,
@@ -333,7 +356,7 @@ pub async fn remote_get_tree(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_create_dir(
     state: State<'_, AppState>,
     connection_id: String,
@@ -349,7 +372,7 @@ pub async fn remote_create_dir(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_remove(
     state: State<'_, AppState>,
     connection_id: String,
@@ -377,7 +400,7 @@ pub async fn remote_remove(
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_rename(
     state: State<'_, AppState>,
     connection_id: String,
@@ -655,7 +678,7 @@ pub struct DownloadProgressPayload {
 /// concurrent downloads and cancel individual transfers. Events are throttled
 /// to at most one per 100 ms (plus a guaranteed final event) to avoid flooding
 /// the webview.
-#[tauri::command]
+// @backend-command
 pub async fn remote_download_to_local_path(
     app_handle: HostHandle,
     state: State<'_, AppState>,
@@ -1019,7 +1042,7 @@ fn scan_directory_total_size(dir: &std::path::Path) -> Result<u64, String> {
 /// bar with speed display. The `transfer_id` lets the frontend distinguish
 /// concurrent uploads and cancel individual transfers. Events are throttled to
 /// at most one per 100 ms (plus a guaranteed final event).
-#[tauri::command]
+// @backend-command
 pub async fn remote_upload_from_local_path(
     app_handle: HostHandle,
     state: State<'_, AppState>,
@@ -1222,7 +1245,7 @@ async fn upload_directory_to_remote(
 ///
 /// The transfer will abort at the next chunk boundary and the original
 /// download/upload command will return an error.
-#[tauri::command]
+// @backend-command
 pub async fn cancel_transfer(
     state: State<'_, AppState>,
     transfer_id: String,
@@ -1234,7 +1257,7 @@ pub async fn cancel_transfer(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_execute(
     state: State<'_, AppState>,
     connection_id: String,
@@ -1249,9 +1272,19 @@ pub async fn remote_execute(
 
 // === Remote Workspace Management ===
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_open_workspace(
     state: State<'_, AppState>,
+    connection_id: String,
+    remote_path: String,
+) -> Result<(), String> {
+    activate_remote_workspace(&state, connection_id, remote_path).await
+}
+
+/// Makes `remote_path` on a connected `connection_id` the active remote
+/// workspace (the body of `remote_open_workspace`).
+async fn activate_remote_workspace(
+    state: &AppState,
     connection_id: String,
     remote_path: String,
 ) -> Result<(), String> {
@@ -1305,14 +1338,14 @@ pub async fn remote_open_workspace(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_close_workspace(state: State<'_, AppState>) -> Result<(), String> {
     state.clear_remote_workspace().await;
     log::info!("Closed remote workspace");
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_remove_workspace(
     state: State<'_, AppState>,
     connection_id: String,
@@ -1329,7 +1362,7 @@ pub async fn remote_remove_workspace(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_get_workspace_info(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -1337,8 +1370,203 @@ pub async fn remote_get_workspace_info(
     let trace_started = Instant::now();
     let workspace = state.get_remote_workspace_async().await;
     log::info!("remote_get_workspace_info: returning {:?}", workspace);
-    startup_trace.record_tauri_command_elapsed("remote_get_workspace_info", None, trace_started);
+    startup_trace.record_command_elapsed("remote_get_workspace_info", None, trace_started);
     Ok(workspace)
+}
+
+// === Remote workspace link (logic batch 5) ===
+//
+// The backend owns liveness, reconnect and backoff for remote workspaces
+// (`remote_ssh::link_supervisor`); clients call `remote_workspace_ensure_connected`
+// and render `remote://link-state`.
+
+/// The supervisor's view of the SSH manager, which is created after startup.
+struct DesktopSshLinkTransport {
+    manager: Arc<tokio::sync::RwLock<Option<SSHConnectionManager>>>,
+}
+
+impl DesktopSshLinkTransport {
+    async fn manager(&self) -> Result<SSHConnectionManager, String> {
+        self.manager
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| SSHServiceError::ManagerNotInitialized.to_string())
+    }
+}
+
+#[async_trait::async_trait]
+impl RemoteLinkTransport for DesktopSshLinkTransport {
+    async fn probe(&self, connection_id: &str) -> Result<bool, String> {
+        self.manager().await?.probe(connection_id).await
+    }
+
+    async fn readiness(&self, connection_id: &str) -> ReconnectReadiness {
+        match self.manager().await {
+            Ok(manager) => manager.readiness(connection_id).await,
+            Err(_) => ReconnectReadiness::ProfileMissing,
+        }
+    }
+
+    async fn reconnect(&self, connection_id: &str) -> Result<(), ReconnectError> {
+        let manager = self.manager().await.map_err(|message| ReconnectError {
+            message,
+            needs_credentials: false,
+        })?;
+        manager.reconnect(connection_id).await
+    }
+}
+
+static REMOTE_LINK_SUPERVISOR: std::sync::OnceLock<RemoteLinkSupervisor> =
+    std::sync::OnceLock::new();
+
+/// The process's link supervisor; its states are emitted on `remote://link-state`.
+fn remote_link_supervisor(app: &HostHandle, state: &AppState) -> &'static RemoteLinkSupervisor {
+    REMOTE_LINK_SUPERVISOR.get_or_init(|| {
+        let emitter = app.clone();
+        RemoteLinkSupervisor::new(
+            Arc::new(DesktopSshLinkTransport {
+                manager: state.ssh_manager.clone(),
+            }),
+            Arc::new(move |link: &RemoteLinkState| {
+                if let Err(error) = emitter.emit(REMOTE_LINK_STATE_EVENT, link.clone()) {
+                    log::warn!("Failed to emit remote link state: {}", error);
+                }
+            }),
+            RemoteLinkPolicy::default(),
+        )
+    })
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteWorkspaceEnsureConnectedRequest {
+    /// The SSH connection to check. Optional when `workspace_id` names a remote workspace.
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    /// A remote workspace; its saved connection and root are used.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// POSIX root to activate once the link is up (defaults to the workspace's root).
+    #[serde(default)]
+    pub remote_path: Option<String>,
+    /// Activate the remote workspace once connected (default true).
+    #[serde(default = "default_true")]
+    pub activate: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteWorkspaceEnsureConnectedResponse {
+    pub link: RemoteLinkState,
+    /// Whether this call made the workspace the active remote workspace.
+    pub activated: bool,
+}
+
+/// Makes sure the transport behind a remote workspace is up: probes it,
+/// reconnects from the saved profile (vault password, key or agent) within the
+/// backend's budget and keeps a heartbeat on it. Progress is published on
+/// `remote://link-state`; the answer is the state the call ended in. A link
+/// that needs credentials ends `failed { reason: auth_required }` so the
+/// client can ask the user and reconnect through `ssh_connect`.
+// @backend-command
+pub async fn remote_workspace_ensure_connected(
+    app: HostHandle,
+    state: State<'_, AppState>,
+    request: RemoteWorkspaceEnsureConnectedRequest,
+) -> Result<RemoteWorkspaceEnsureConnectedResponse, String> {
+    let mut connection_id = request
+        .connection_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    let mut remote_path = request
+        .remote_path
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty());
+    if let Some(workspace_id) = request
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        let workspace = state
+            .workspace_service
+            .get_workspace(workspace_id)
+            .await
+            .ok_or_else(|| format!("Workspace not found: {workspace_id}"))?;
+        let workspace_connection = workspace
+            .filesystem_connection_id()?
+            .ok_or_else(|| {
+                format!("remote_workspace_not_remote: workspace {workspace_id} is local")
+            })?
+            .to_string();
+        if connection_id.is_none() {
+            connection_id = Some(workspace_connection);
+        }
+        if remote_path.is_none() {
+            // The stored root is the POSIX string the workspace was opened
+            // with; it is passed through, never re-joined with host path rules.
+            remote_path = Some(workspace.root_path.to_string_lossy().into_owned());
+        }
+    }
+    let connection_id =
+        connection_id.ok_or_else(|| "connection_id or workspace_id is required".to_string())?;
+    let supervisor = remote_link_supervisor(&app, &state);
+    let link = supervisor.ensure(&connection_id).await;
+    if link.state != RemoteLinkPhase::Connected || !request.activate {
+        return Ok(RemoteWorkspaceEnsureConnectedResponse {
+            link,
+            activated: false,
+        });
+    }
+    let Some(remote_path) = remote_path else {
+        return Ok(RemoteWorkspaceEnsureConnectedResponse {
+            link,
+            activated: false,
+        });
+    };
+    let normalized =
+        openbitfun_core::service::remote_ssh::normalize_remote_workspace_path(&remote_path);
+    let already_active = state
+        .get_remote_workspace_async()
+        .await
+        .is_some_and(|active| {
+            active.connection_id == connection_id && active.remote_path == normalized
+        });
+    if already_active {
+        return Ok(RemoteWorkspaceEnsureConnectedResponse {
+            link,
+            activated: false,
+        });
+    }
+    match activate_remote_workspace(&state, connection_id.clone(), normalized).await {
+        Ok(()) => Ok(RemoteWorkspaceEnsureConnectedResponse {
+            link,
+            activated: true,
+        }),
+        Err(error) => Ok(RemoteWorkspaceEnsureConnectedResponse {
+            link: supervisor.mark_failed(
+                &connection_id,
+                RemoteLinkFailure::WorkspaceUnavailable,
+                Some(error),
+            ),
+            activated: false,
+        }),
+    }
+}
+
+/// The last link state of every connection this backend supervises (a client
+/// re-hydrates with it after a reload or an `events-dropped`).
+// @backend-command
+pub async fn remote_workspace_link_states(
+    app: HostHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<RemoteLinkState>, String> {
+    Ok(remote_link_supervisor(&app, &state).states())
 }
 
 // === Port Forwarding ===
@@ -1348,7 +1576,7 @@ pub async fn remote_get_workspace_info(
 /// The returned `localPort` is not always the requested one: an unavailable
 /// port is replaced rather than refused, and `requestedLocalPort` carries what
 /// was asked for so the UI can say so.
-#[tauri::command]
+// @backend-command
 pub async fn ssh_start_port_forward(
     state: State<'_, AppState>,
     request: PortForwardRequest,
@@ -1367,7 +1595,7 @@ pub async fn ssh_start_port_forward(
         .map_err(|error| format!("{error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn ssh_stop_port_forward(
     state: State<'_, AppState>,
     forward_id: String,
@@ -1380,7 +1608,7 @@ pub async fn ssh_stop_port_forward(
 }
 
 /// List forwards, optionally narrowed to one connection.
-#[tauri::command]
+// @backend-command
 pub async fn ssh_list_port_forwards(
     state: State<'_, AppState>,
     connection_id: Option<String>,
@@ -1400,7 +1628,7 @@ pub async fn ssh_list_port_forwards(
 ///
 /// Discovery only. Nothing is forwarded as a result of calling this; it exists
 /// so users can pick a real port instead of guessing one.
-#[tauri::command]
+// @backend-command
 pub async fn ssh_list_remote_listening_ports(
     state: State<'_, AppState>,
     connection_id: String,

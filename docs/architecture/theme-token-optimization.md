@@ -8,7 +8,6 @@
 
 - `design-system/packages/design-tokens`
 - `design-system/packages/theme-openbitfun`
-- `src/web-ui/src/infrastructure/appearance/appearanceTokenContract.ts`
 - `scripts/theme-color-governance-baseline*.json`
 - `scripts/theme-color-near-pair-decisions.json`
 - `scripts/theme-css-var-contract.mjs`
@@ -25,9 +24,8 @@
 | 层级 | 唯一职责 | 不拥有的内容 |
 |---|---|---|
 | `@openbitfun/design-tokens` | 主题无关的命名、系统尺度和基础 Token 契约 | OpenBitFun 具体 light/dark 值、产品状态、route 或运行时选择 |
-| `@openbitfun/theme-openbitfun` | OpenBitFun 的 reference/semantic 主题值、canonical CSS 变量映射和 `default.css` | Web UI Appearance 包、产品 store、组件内部状态 |
-| `@openbitfun/ui` | 消费 semantic/system Token 的公共组件 anatomy、行为和无障碍契约 | 具体主题值、Appearance schema、旧 Web UI 变量 |
-| Web UI Appearance | 选择和组合主题，生成 schema v2 包，并投影 canonical root/scoped Token 与显式 product domain/component Token | 公共 Token 的第二套命名、兼容双写、组件私有 palette |
+| `@openbitfun/theme-openbitfun` | OpenBitFun 的 reference/semantic 主题值、canonical CSS 变量映射和 `default.css` | 产品 Appearance 包、产品 store、组件内部状态 |
+| `@openbitfun/ui` | 消费 semantic/system Token 的公共组件 anatomy、行为和无障碍契约 | 具体主题值、Appearance schema、旧产品变量 |
 | 产品前端 | 选择主题、设置设计系统 root 属性并消费 canonical Token | 复制 `theme-openbitfun` palette、随组件新增 raw color |
 
 正向依赖固定为：
@@ -37,16 +35,16 @@ flowchart LR
   System["@openbitfun/design-tokens<br/>命名与系统尺度"] --> Theme["@openbitfun/theme-openbitfun<br/>默认语义值"]
   System --> UI["@openbitfun/ui"]
   Theme --> UI
-  Theme --> Appearance["Web UI Appearance v2<br/>产品主题组合"]
-  Appearance --> Runtime["theme-tokens adapter"]
-  Runtime --> Root["canonical root --openbitfun-*"]
-  Runtime --> Scope["canonical scoped --openbitfun-*"]
   Theme --> Surfaces["Web surfaces / Desktop bootstrap / MiniApp projection"]
   Mobile["Native mobile contract"] --> Native["HarmonyOS / Android / iOS"]
 ```
 
-这里没有 compatibility projection。共享设计系统包不能反向依赖 Web UI Appearance；组件、生成产物、
-Desktop bootstrap 和产品前端也不能反向定义公共主题值。
+这里没有 compatibility projection。组件、生成产物、Desktop bootstrap 和产品前端不能反向定义公共主题值。
+
+React 桌面 UI（`src/web-ui`）及其 Appearance 运行时（schema v2 `theme-tokens` adapter、v1 读取迁移、
+内置主题工作区层级、`appearanceTokenContract.ts` 登记的 component/domain Token）已随该目录退休，
+颜色审计不再扫描该 surface，也不再保留它专属的 specialized color domain、动态变量族和 near-pair 决策。
+原生桌面客户端 `src/nsh-ui` 不使用 CSS，其主题由 `src/nsh-ui/src/theme.ts` 承载，不在本文的 CSS 审计范围内。
 
 ## Canonical Token 分层
 
@@ -55,7 +53,7 @@ Desktop bootstrap 和产品前端也不能反向定义公共主题值。
 1. **System / semantic**：`--openbitfun-color-*`、`--openbitfun-shadow-*`、`--openbitfun-effect-*`、`--openbitfun-opacity-*`
    等由设计系统发布的公共变量，是普通 UI 的默认消费层。
 2. **Component**：`--openbitfun-component-*`。仅用于跨消费方稳定存在、又无法由 semantic Token 准确表达的
-   组件差异；必须在 `appearanceTokenContract.ts` 中登记。
+   组件差异；必须在设计系统或该 surface 的最窄 owner 中登记。
 3. **Product domain**：`--openbitfun-domain-*`。用于 Git lane、语言身份、syntax、inspector、工具类别等明确的
    专用语义；不得当作普通 UI 的备用色板。
 4. **Renderer payload**：Monaco、xterm、Mermaid、GenUI 等第三方或专用渲染器的显式配置。
@@ -91,27 +89,7 @@ Primitive/reference 色值只存在于主题 authoring、明确的主题 preset 
 数值接近不是唯一判断标准；相邻背景/边框、文本层级、状态色、diff、syntax 和数据系列必须结合同时
 出现时的区分度审查。反过来，也不能以“可能有视觉差异”为理由给每个组件建立近似私有颜色。
 
-对话注释由 Web UI Appearance 的 `--openbitfun-component-conversation-excerpt-accent` 承载 UIKit 青色，
-引用公开浅色主题的 accent（`#059cb0`），保持各内置主题的注释标识一致。全局 selection 是中性选中语义，
-全局 accent 则随主题变化，均不满足这项局部设计约束。正文拖选、编辑与定位高亮使用此色的 30% 底色和
-同色文字；注释编号和工具栏交互复用同一 Token。系统强制色模式下正文选区使用系统 Highlight/HighlightText。
-
 ## 普通 UI 的硬约束
-
-更新提醒与详情弹窗共用磨砂材质。暗色通过现有 surface、content、info 与 highlight Token 提亮底面，
-并用 `--openbitfun-component-update-material-cyan` 保留青色衬光；该组件 Token 复用公开浅色主题的
-accent，由 Web UI 主题层提供默认值。暗色全局 accent 为蓝色，无法同时表达
-青蓝两种材质色；其他组件的青色 Token 也不属于更新材质。该差异因此由更新组件的最小契约承载，
-不新增基础色。历史 Appearance 数据通过现有组合逻辑补齐默认值。
-
-Session Usage 的输入、输出数据系列使用 `--openbitfun-component-session-usage-input` 和
-`--openbitfun-component-session-usage-output`，分别引用对应明暗设计系统主题的蓝色信息强调色与紫色次强调色。
-产品主题的主、次强调色可能同时为黑灰色，不能保证数据系列的彩色区分。
-这两个最小组件令牌由 Appearance 统一提供，环形图、分段图和图例共用，不新增基础色。旧皮肤自动补齐，显式覆盖继续保留。
-Token 分段图将缓存命中与未命中归入输入分组：命中复用输入蓝色，未命中以同色与场景底色混合区分，输出保留紫色。
-上下文的其他分类复用 success、warning、danger 强调色，并使用 `color-mix()` 与输入/输出系列色组合区分，
-不增加基础色或图表组件令牌；图例文字与数值始终保留，颜色不作为唯一的信息来源。
-工具定义预览的折叠标题复用这组颜色，与场景底色混合成柔和背景；展开与收起均保留底色，正文维持场景底色。
 
 普通应用组件和页面必须满足：
 
@@ -126,72 +104,14 @@ Token 分段图将缓存命中与未命中归入输入分组：命中复用输�
 静态 favicon、manifest、SVG metadata 等不参与组件主题切换的值只能计入 `assetMetadata`。它们不能迁回
 `appUi` allowlist，也不能被组件引用。
 
-## Web UI Appearance schema v2
-
-Web UI Appearance 的当前 schema 固定为 v2。颜色入口是 `theme-tokens` renderer：
-
-```ts
-{
-  "theme-tokens": {
-    version: 1,
-    settings: {
-      tokens: { "--openbitfun-color-*": "...", "--openbitfun-component-*": "...", "--openbitfun-domain-*": "..." },
-      scopes: {
-        chrome: { "--openbitfun-color-*": "..." }
-      }
-    }
-  }
-}
-```
-
-其边界如下：
-
-- `tokens` 只能包含 `appearanceTokenContract.ts` 登记的 root Token。
-- `scopes.chrome` 只能重绑定设计系统已有的 canonical theme Token，并应用到
-  `[data-openbitfun-theme-scope="chrome"]`；scope 内不发明另一套 chrome 名称。
-- `ThemeTokenAppearanceAdapter` 在切换时移除上一包写入的 root/scoped Token，再写入新包；不双写任何
-  历史名称。
-- Token 名和 Token 值都经过 allowlist 与安全校验；未登记名称、嵌套 `var()`、URL 或可注入片段直接失败。
-- builtin Appearance 从 `@openbitfun/theme-openbitfun` 的完整主题值开始，只覆盖产品 theme/preset 真正不同的
-  canonical 值，再补充受治理的 component/domain Token。
-- Widget、Desktop 首屏 bootstrap 和生成式 UI 提示只消费同一 canonical 源生成的 allowlist 产物，
-  不能反向成为主题 owner。
-
-### 内置主题的工作区层级
-
-侧栏与导航由 `color.surface.chrome` 承载，主内容由 `color.surface.scene` 承载。两者相邻且常驻，
-不能只依靠阴影或拖拽时出现的边线区分。参照 Light 的中性灰外壳与白色内容关系，命名主题在自身色调内
-拉开明度：墨韵使用暖灰宣纸外壳、浅宣纸内容与白色浮层；墨夜和午夜使用深墨外壳、炭灰内容与更亮的面板；
-Tokyo Night 使用夜靛外壳、storm 靛蓝内容与蓝紫浮层。Cyber 保留黑底与霓虹强调，其浮层比内容更亮。
-
-`color.surface.tertiary` 与 `color.surface.workbench` 用于内嵌分组及工作台；hover、selection、focus
-继续使用已有交互 Token。Monaco 当前行与输入面板保留独立色阶。辅助文字和边框按新的相邻底色调整，
-而不通过局部组件色值修补。上述配色由 builtin palette 声明，并同步生成启动页和生成式 UI 配色清单；
-不为每款主题新增 Token 名称或主题专属布局分支。
-
-旧 CSS-token adapter、Token 投影层、`css-tokens` renderer 和 `--openbitfun-appearance-token-*`
-运行时变量均已退休并从源码删除。不得为第三方包、旧组件或测试重新引入这些接口。
-
-### v1 读取不是兼容运行时
-
-升级兼容只存在于包读取入口：
-
-1. Parser 识别持久化的 schema v1 包。
-2. `migrateAppearancePackage` 将已知 `css-tokens` 字段和旧名称单向映射为 v2 `theme-tokens` root/scoped
-   canonical Token。
-3. 旧 `css-tokens` renderer 被删除，后续校验、运行时和导出只接收 v2。
-4. 已安装的旧包在加载后重新保存为 v2，之后不再依赖旧名称。
-
-因此，旧名称只允许出现在迁移映射、upgrade fixture 和“不得出现”的负向断言中。它们不是可供新代码
-消费的 alias，也不会在 DOM 中生成。未知旧字段不得被猜测或静默投影；应保留原数据并给出明确的不支持状态。
-
 ## 全前端 Surface 注册表
 
 `scripts/frontend-color-surface-registry.json` 是前端颜色治理范围的唯一清单。每个可交付或可运行的前端必须
 登记稳定 `id`、源码 root、颜色 owner 和审计引擎；新增目录不能依赖维护者再给 `package.json` 手写一段命令。
 当前注册表覆盖：
 
-- Web UI、`@openbitfun/ui`、Design Lab、Website、Mini App Market、Mobile Web 和 Installer。
+- `@openbitfun/ui`、FlowChat presentation、Design Lab、Website、Mini App Market、Mobile Web、Installer、
+  Data Tools、MiniApp chrome 与 MiniApp Shell。
 - Desktop JavaScript 启动前页面、Native Mobile 比较预览、CLI/TUI。
 - HarmonyOS、Android、iOS 三端原生源码。
 - 全部 builtin/Demo MiniApp 及其内置 Skill reference mirror。
@@ -228,9 +148,9 @@ Token；`theme.js` 在首屏绘制前选择系统浅色/深色和高对比模式
 统一颜色审计同时检查源码和生成物漂移。
 
 Desktop 的更新确认页和启动页只消费 `src/apps/desktop/src/generated/bootstrap_theme.css` 发布的 canonical
-`--openbitfun-*`，不得内联另一套启动色。该 CSS 和两个 Appearance manifest 一起由
-`generate-startup-appearance-bootstrap.mjs` 从正式主题/Appearance 源生成；统一颜色审计执行 `--check`，
-生成物漂移直接失败。
+`--openbitfun-*`，不得内联另一套启动色。该 CSS 与 `startup_appearance_bootstrap.json` 原由
+`generate-startup-appearance-bootstrap.mjs` 从 React 桌面 UI 的 Appearance 源生成；该生成器随 `src/web-ui`
+退休，两个文件现为冻结数据（在 surface registry 中登记为排除项），由桌面宿主决定保留或删除，不得手工新增色值。
 
 Native Mobile 预览的工具 chrome 消费 canonical `--openbitfun-*`；设备画布消费 `--mobile-*` 这一受登记的 scoped
 动态变量族，其值只来自生成的 mobile contract data。二者不互相 alias。预览不得直接解释 ARGB 字符串为 Web
@@ -262,9 +182,9 @@ preset 必须同时说明用户可见差异、相邻状态对比、所需 canoni
 
 ### MiniApp 公共投影
 
-MiniApp 不能读取 Web UI 内部变量全集。公开边界只有 `src/shared/miniapp-appearance/contract.json` 中登记的
+MiniApp 不能读取宿主内部变量全集。公开边界只有 `src/shared/miniapp-appearance/contract.json` 中登记的
 `--openbitfun-*`，每一项都投影自 `@openbitfun/design-tokens` 或 `@openbitfun/theme-openbitfun` 的真实 canonical 变量。
-Web UI payload、Rust 首帧 style 和 MiniApp 源码共同遵守以下约束：
+宿主 payload、Rust 首帧 style 和 MiniApp 源码共同遵守以下约束：
 
 - 使用未登记的 `--openbitfun-*`、在应用内重新定义宿主变量、或写 `var(--openbitfun-*, fallback)` 均直接失败。
 - `default_appearance_style.html` 由公共 contract 生成，不是第三个 palette owner。
@@ -296,7 +216,7 @@ colors 必须先相对编辑器背景合成为不透明 hex。
 
 ### 显式排除不是 allowlist
 
-Monaco 拷贝产物、Relay static、E2E fixture、诊断报表 HTML、PPT 内容 renderer、native template icons 和
+Relay static、E2E fixture、诊断报表 HTML、PPT 内容 renderer、native template icons 和
 generated outputs 不属于普通应用 UI 扫描。每个边界都必须在 surface registry 中用现存路径、唯一 owner、
 artifact kind 和具体理由登记；路径消失或只写模糊理由会使 registry contract test 失败。
 
@@ -347,8 +267,8 @@ pnpm run theme:color-audit:miniapps
 pnpm run theme:color-audit:native-mobile
 pnpm run theme:visual-contract
 pnpm run appearance:contract-audit
+pnpm run typography:audit
 pnpm run design-system:check
-pnpm run check:web
 ```
 
 另外还应执行被改动 surface 的 type-check/test/build。自动审计、source 检查和 build 只能证明契约与产物
@@ -361,7 +281,6 @@ pnpm run check:web
 
 - 普通 UI 的每个颜色都能追溯到一个 canonical semantic/component Token。
 - 每个专用色值都能追溯到一个 theme preset、domain、renderer 或 asset metadata owner。
-- Web UI 运行时只投影 schema v2 `theme-tokens`，DOM 中没有历史变量。
 - Mobile、Website、Market、Installer 和 Design Lab 不复制公共 palette。
 - v1 只在读取时迁移，正向源码、样式、产物与导出中不存在旧名称。
 - baseline 默认只下降，新增语义必须有真实消费方和明确审查证据。
@@ -372,6 +291,6 @@ pnpm run check:web
 ### 项目图标识别色
 
 `color.identity.project.*` 定义用户选择的八种项目识别色，复用主题 reference 色阶并分别映射浅色和深色模式。
-状态、全局强调色和助手身份色各有独立含义，不能用它们隐式定义项目色板。Web UI 与 mobile-web 只消费这组
+状态、全局强调色和助手身份色各有独立含义，不能用它们隐式定义项目色板。mobile-web 只消费这组
 canonical 变量。自定义 HEX 是经校验的用户内容，只作用于图标绘制区域；选中态、展开箭头和焦点标识继续使用
 系统 Token。自定义图片保持原色。不得通过放宽颜色审计 baseline 允许组件自建色板。

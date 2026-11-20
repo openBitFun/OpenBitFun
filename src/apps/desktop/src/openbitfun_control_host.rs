@@ -30,7 +30,6 @@ use openbitfun_product_domains::product_control::{
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tokio::sync::oneshot;
 
 use crate::api::app_state::AppState;
@@ -140,31 +139,52 @@ async fn dispatch_surface_event(
 }
 
 async fn dispatch_surface_request(request: OpenBitFunControlHostRequest) -> Result<Value, String> {
+    let mut payload = serde_json::to_value(&request).map_err(|error| error.to_string())?;
+    // The catalog resolves where a request leads, so a presentation surface
+    // only maps a destination onto its own screens instead of carrying a copy
+    // of the catalog. Additive: surfaces that predate it ignore the field.
+    if let (Some(destination), Some(object)) =
+        (presentation_destination(&request), payload.as_object_mut())
+    {
+        object.insert("destination".to_string(), destination);
+    }
     dispatch_surface_event(
         OPENBITFUN_CONTROL_REQUEST_EVENT,
-        serde_json::to_value(request).map_err(|error| error.to_string())?,
+        payload,
         OPENBITFUN_CONTROL_RESPONSE_TIMEOUT,
         "complete the presentation request",
     )
     .await
 }
 
-/// Creation owns its command registry; ProductControl only supplies correlated transport.
-pub(crate) async fn dispatch_creation_runtime(
-    action: &str,
-    command_id: Option<String>,
-    arguments: Option<Value>,
-) -> Result<Value, String> {
-    if CREATION_API_VERSION.load(Ordering::Acquire) != 1 {
-        return Err("The active frontend does not advertise Creation API v1. Restore the installed frontend before using runtime discovery or commands".into());
+/// The catalog destination of an `open` (the item's own destination, else the
+/// capability's) or of an `execute` whose operation is a product action.
+fn presentation_destination(request: &OpenBitFunControlHostRequest) -> Option<Value> {
+    let capability = product_capability(request.capability_id.as_deref()?).ok()?;
+    match request.action {
+        ProductControlAction::Open => {
+            let item_destination = request
+                .item_id
+                .as_deref()
+                .and_then(|item_id| capability.items.iter().find(|item| item.id == item_id))
+                .and_then(|item| item.destination.as_ref());
+            serde_json::to_value(item_destination.unwrap_or(&capability.destination)).ok()
+        }
+        ProductControlAction::Execute => {
+            let operation_id = request.operation_id.as_deref()?;
+            let operation = capability
+                .operations
+                .iter()
+                .find(|operation| operation.id == operation_id)?;
+            match &operation.handler {
+                ProductCapabilityOperationHandler::ProductAction { action_id } => {
+                    Some(json!({ "kind": "action", "actionId": action_id }))
+                }
+                ProductCapabilityOperationHandler::Provider { .. } => None,
+            }
+        }
+        _ => None,
     }
-    dispatch_surface_event(
-        "agentic://creation-runtime-request",
-        json!({ "action": action, "commandId": command_id, "arguments": arguments.unwrap_or_else(|| json!({})) }),
-        OPENBITFUN_CONTROL_RESPONSE_TIMEOUT,
-        "complete the Creation runtime request",
-    )
-    .await
 }
 
 async fn current_option_value(
@@ -180,13 +200,16 @@ async fn current_option_value(
             provider_id,
             option_id,
         } => match desktop_provider_option(provider_id, option_id) {
-            // The native host's login item belongs to its UI runtime.
+            // The login item belongs to the UI shell.
             Some(DesktopProviderOption::LaunchAtLogin) => app
-                .tauri("launch_at_login")?
-                .autolaunch()
-                .is_enabled()
-                .map(Value::Bool)
-                .map_err(|error| error.to_string()),
+                .native()
+                .shell_request(
+                    "loginItem.get",
+                    Value::Null,
+                    crate::host::shell::SHELL_REQUEST_TIMEOUT,
+                )
+                .await
+                .map(|value| Value::Bool(value.as_bool().unwrap_or(false))),
             Some(DesktopProviderOption::PreventSleep) => state
                 .config_service
                 .get_config(Some("app.prevent_sleep"))
@@ -290,7 +313,7 @@ fn config_path_invalidates_ai_client(path: &str) -> bool {
 }
 
 async fn apply_backend_config_effects(
-    app: &HostHandle,
+    _app: &HostHandle,
     state: &AppState,
     path: &str,
     value: &Value,
@@ -303,7 +326,7 @@ async fn apply_backend_config_effects(
         let language = value
             .as_str()
             .ok_or_else(|| "The interface language must be a string".to_string())?;
-        crate::api::i18n_api::apply_language_runtime_effects(app, state, language).await?;
+        crate::api::i18n_api::apply_language_runtime_effects(language).await?;
     }
     Ok(())
 }
@@ -884,16 +907,15 @@ async fn configure_desktop_provider_option(
         .as_bool()
         .ok_or_else(|| "Desktop lifecycle options require a boolean value".to_string())?;
     match option {
-        DesktopProviderOption::LaunchAtLogin => {
-            let app = app.tauri("launch_at_login")?;
-            if enabled {
-                app.autolaunch().enable().map_err(|error| error.to_string())
-            } else {
-                app.autolaunch()
-                    .disable()
-                    .map_err(|error| error.to_string())
-            }
-        }
+        DesktopProviderOption::LaunchAtLogin => app
+            .native()
+            .shell_request(
+                "loginItem.set",
+                json!({ "enabled": enabled }),
+                crate::host::shell::SHELL_REQUEST_TIMEOUT,
+            )
+            .await
+            .map(|_| ()),
         DesktopProviderOption::PreventSleep => {
             crate::sleep_prevention::set_prevent_sleep_enabled_from_host(app, enabled).await
         }
@@ -1261,7 +1283,7 @@ pub(crate) struct ProductControlSurfaceReadyRequest {
     creation_api_version: Option<u64>,
 }
 
-#[tauri::command]
+// @backend-command
 pub(crate) fn mark_openbitfun_control_surface_ready(
     request: Option<ProductControlSurfaceReadyRequest>,
 ) {
@@ -1274,7 +1296,7 @@ pub(crate) fn mark_openbitfun_control_surface_ready(
     SURFACE_READY.store(true, Ordering::Release);
 }
 
-#[tauri::command]
+// @backend-command
 pub(crate) fn mark_openbitfun_control_surface_unready() {
     SURFACE_READY.store(false, Ordering::Release);
     CREATION_API_VERSION.store(0, Ordering::Release);
@@ -1288,7 +1310,7 @@ pub(crate) fn mark_openbitfun_control_surface_unready() {
 
 /// Typed GUI adapter into the same Desktop executor used by OpenBitFunControl.
 /// Caller-provided source metadata is overwritten at the trusted boundary.
-#[tauri::command]
+// @backend-command
 pub(crate) async fn product_control_invoke(
     app: HostHandle,
     mut request: OpenBitFunControlHostRequest,
@@ -1309,7 +1331,7 @@ pub(crate) struct ReportOpenBitFunControlResultRequest {
 }
 
 /// Return a presentation-surface result to the waiting product-control call.
-#[tauri::command]
+// @backend-command
 pub(crate) async fn report_openbitfun_control_result(
     request: ReportOpenBitFunControlResultRequest,
 ) -> Result<(), String> {
@@ -1331,6 +1353,34 @@ pub(crate) async fn report_openbitfun_control_result(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn presentation_requests_carry_the_catalog_destination() {
+        use super::*;
+        let open = |capability: &str, item: Option<&str>| OpenBitFunControlHostRequest {
+            action: ProductControlAction::Open,
+            capability_id: Some(capability.to_string()),
+            item_id: item.map(str::to_string),
+            ..serde_json::from_value(json!({"action": "open"})).unwrap()
+        };
+        assert_eq!(
+            presentation_destination(&open("setting.tools.mcp", None)),
+            Some(json!({"kind": "settings", "pageId": "tools.mcp"}))
+        );
+        assert_eq!(
+            presentation_destination(&open("feature.git", None)),
+            Some(json!({"kind": "scene", "sceneId": "git"}))
+        );
+        // An item with its own destination wins over the capability's.
+        assert_eq!(
+            presentation_destination(&open("setting.tools.execution", Some("deferred-tools"))),
+            Some(json!({"kind": "settings", "pageId": "tools.execution", "viewId": "advanced"}))
+        );
+        assert_eq!(
+            presentation_destination(&open("no.such.capability", None)),
+            None
+        );
+    }
+
     #[test]
     fn legacy_surface_readiness_does_not_claim_creation_support() {
         let legacy: super::ProductControlSurfaceReadyRequest =

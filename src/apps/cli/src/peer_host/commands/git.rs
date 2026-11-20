@@ -116,7 +116,20 @@ async fn read_at_path(command: &str, path: &str, request: &Value) -> Result<Valu
         }
         "git_get_diff" => {
             let params = required_params(request)?;
-            git_result(command, GitService::get_diff(path, &params).await)
+            // Same projection as the desktop: an untracked file among `files`
+            // is drawn as all additions instead of an empty diff.
+            let diff = match GitService::get_diff(path, &params).await {
+                Ok(diff) => {
+                    openbitfun_core::service::git::compound::append_untracked_patches(
+                        &openbitfun_core::service::git::compound::LocalGitRunner::new(path),
+                        &params,
+                        diff,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            git_result(command, diff)
         }
         "git_get_changed_files" => {
             let params = required_params(request)?;
@@ -197,6 +210,26 @@ mod tests {
         git(dir.path(), &["add", "tracked.txt"]);
         git(dir.path(), &["commit", "-m", "initial fixture"]);
         dir
+    }
+
+    #[tokio::test]
+    async fn git_diff_of_an_untracked_file_is_drawn_as_additions() {
+        let dir = fixture();
+        std::fs::write(dir.path().join("fresh.txt"), "new line\n").unwrap();
+        let path = dir.path().to_str().unwrap();
+        let diff = read_at_path(
+            "git_get_diff",
+            path,
+            &json!({"params": {"files": ["fresh.txt"]}}),
+        )
+        .await
+        .unwrap();
+        assert!(diff.as_str().unwrap().contains("+new line"));
+        // A legacy request without `files` keeps the plain tracked diff.
+        let all = read_at_path("git_get_diff", path, &json!({"params": {}}))
+            .await
+            .unwrap();
+        assert_eq!(all.as_str().unwrap(), "");
     }
 
     #[tokio::test]

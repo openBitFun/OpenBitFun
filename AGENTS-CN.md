@@ -2,7 +2,7 @@
 
 # AGENTS-CN.md
 
-OpenBitFun 由 Rust workspace 与 React 前端组成，通过多种宿主交付（Desktop/Tauri、CLI/TUI、server、mobile、mobile-web、installer）。
+OpenBitFun 由 Rust workspace 与 TypeScript 前端组成，通过多种宿主交付（原生 NSH 桌面应用、CLI/TUI、server、mobile、mobile-web、installer）。
 
 仓库核心原则：**先保持产品逻辑平台无关，再通过平台适配层对外暴露能力**。
 
@@ -17,7 +17,7 @@ OpenBitFun 由 Rust workspace 与 React 前端组成，通过多种宿主交付�
 
 | # | 层级 | 路径 | 负责 | 不得 | 指南 |
 |---|---|---|---|---|---|
-| 1 | 接口与入口层 | `src/apps/*`, `src/web-ui`, `src/mobile-web`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | 产品宿主、命令、UI 入口、协议接口和跨形态测试 | 保留可复用行为；应下移 | 最近的本地 `AGENTS.md`；[interfaces](src/crates/interfaces/AGENTS.md) |
+| 1 | 接口与入口层 | `src/apps/*`, `src/nsh-ui`, `src/mobile-web`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | 产品宿主、命令、UI 入口、协议接口和跨形态测试 | 保留可复用行为；应下移 | 最近的本地 `AGENTS.md`；[interfaces](src/crates/interfaces/AGENTS.md) |
 | 2 | 产品组装层 | `src/crates/assembly` | 兼容导出、产品能力选择、product-full 接线、不可变内置 Agent 内容、adapter/service 注册和生态无关的来源协调 | 实现具体 adapter、OS 或 service 细节 | [AGENTS.md](src/crates/assembly/AGENTS.md) |
 | 3 | 适配层 | `src/crates/adapters` | 协议、transport、本地 IPC、WebDriver、AI provider 和外部 AI work source 的 adapter；外部 provider 转换 | 拥有产品能力选择或可复用 OS service 行为 | [AGENTS.md](src/crates/adapters/AGENTS.md) |
 | 4 | 服务实现层 | `src/crates/services` | 可复用的 OS、filesystem、terminal、MCP、remote、git、watch、process、network、session persistence 和 MiniApp runtime IO 实现 | 拥有协议/transport 投影或产品能力选择 | [AGENTS.md](src/crates/services/AGENTS.md) |
@@ -31,7 +31,7 @@ OpenBitFun 由 Rust workspace 与 React 前端组成，通过多种宿主交付�
 
 ```bash
 pnpm install
-pnpm run desktop:dev               # 主要开发循环：Vite HMR + Rust 自动重编译并重启
+pnpm run desktop:dev               # 主要开发循环：构建并运行原生 NSH 桌面应用（desktop-nsh:*）
 pnpm run fmt:rs                    # 修改 Rust 后运行；只格式化已改动 / 已暂存的 .rs 文件
 pnpm run check:repo-hygiene        # 仓库内容与文件名规则
 pnpm run check:github-config       # GitHub workflow / 配置规则
@@ -57,16 +57,16 @@ pnpm run check:core-boundaries     # Cargo feature、依赖方向、模块 owner
 
 ### 平台边界
 
-- UI 组件不直接调用 Tauri API；通过 adapter / infrastructure 层访问。
-- 桌面端专属宿主 adapter 放在 `src/apps/desktop`，经类型化能力接口回流；需要事件投递时使用生产 transport adapter。
-- 共享 core 避免使用 `tauri::AppHandle` 等宿主专属 API；使用 `openbitfun_events::EventEmitter` 等共享抽象。
+- 桌面客户端是原生 NSH 应用（`src/apps/desktop-nsh` + `src/nsh-ui`），后端库 `src/apps/desktop` 在进程内加载；没有 Tauri 运行时，也没有 WebView 承载的 UI。UI 代码只通过连接层（`src/nsh-ui/src/bridge.ts`）访问后端，通过 `nsh/*` API 访问宿主外壳。
+- 桌面端专属宿主 adapter 放在 `src/apps/desktop`，经类型化能力接口回流；窗口、托盘、通知、剪贴板和生命周期操作走 shell 通道（`host://shell-request`），没有 shell 提供该操作时明确拒绝。
+- 共享 core 避免使用宿主专属 API；使用 `openbitfun_events::EventEmitter` 和 `crate::host::HostHandle` 等共享抽象。
 
-### Tauri command
+### 后端命令
 
-command 名称使用 `snake_case`，并接收一个结构化 `request`。TypeScript 包装可以使用 `camelCase`。
+command 名称使用 `snake_case`，并接收一个结构化 `request`。在 `src/apps/desktop/src/lib.rs` 的 `backend_commands!` 中注册，处理函数前加 `// @backend-command` 标记，运行 `pnpm run desktop-nsh:generate-dispatch`，并添加注册表行。TypeScript 包装可以使用 `camelCase`。
 
 ```rust
-#[tauri::command]
+// @backend-command
 pub async fn your_command(
     state: State<'_, AppState>,
     request: YourRequest,
@@ -74,7 +74,7 @@ pub async fn your_command(
 ```
 
 ```ts
-await api.invoke('your_command', { request: { ... } });
+await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 ```
 
 ### 非交互子进程
@@ -94,13 +94,13 @@ await api.invoke('your_command', { request: { ... } });
 
 ### 日志
 
-日志只用英文，且不使用 emoji。前端：[`src/web-ui/LOGGING.md`](src/web-ui/LOGGING.md)。后端：[`src/crates/LOGGING.md`](src/crates/LOGGING.md)。
+日志只用英文，且不使用 emoji。前端（`src/nsh-ui`）：规则相同（见其 [AGENTS.md](src/nsh-ui/AGENTS.md)）。后端：[`src/crates/LOGGING.md`](src/crates/LOGGING.md)。
 
 ### 国际化
 
 - `src/shared/i18n/contract/locales.json` 统一管理 locale id、alias、fallback 规则和各形态默认语言。修改后运行 `pnpm run i18n:generate`。
 - 跨形态稳定标签放在 `src/shared/i18n/resources/shared/<locale>/terms.json`；流程文案留在所属产品形态。
-- 任何形态都不得导入其他形态的 locale catalog。`src/mobile-web`、`OpenBitFun-Installer` 和静态页面不得导入 Web UI locale 资源；静态自包含页面使用生成的 page-scoped shared-term 文件。
+- 任何形态都不得导入其他形态的 locale catalog。`src/mobile-web`、`OpenBitFun-Installer` 和静态页面不得导入桌面 UI（`src/nsh-ui`）locale 资源；静态自包含页面使用生成的 page-scoped shared-term 文件。
 - 用户可见的日期、时间和数字使用共享 i18n 格式化 helper，不直接调用 `Intl.*` 或 `toLocale*`。
 - 修改 locale 资源或用户可见文案后运行 `pnpm run i18n:audit`。它检查 key / 占位符一致性、静态与动态 key 证明，以及 literal fallback、直接 locale 格式化和源码硬编码 CJK 文案的零增长基线。
 - 细则见 [`docs/architecture/i18n.md`](docs/architecture/i18n.md)。
@@ -128,8 +128,8 @@ await api.invoke('your_command', { request: { ... } });
 | 场景 | 含义 | 设计入口 |
 |---|---|---|
 | 远程工作区 | 当前工作区位于 SSH 主机、跳板机链路或 Docker 容器；文件、终端、搜索和 Agent 子进程都必须在那一侧执行 | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md)、[remote-workspaces.md](docs/features/remote-workspaces.md) |
-| 远程控制 | 手机端 mobile web，或飞书 / Telegram / 微信 Bot，通过 Remote Connect relay 驱动 Desktop 或 CLI 宿主上的会话 | [`src/mobile-web`](src/mobile-web/AGENTS.md)、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect`、[relay-service](src/crates/services/relay-service/AGENTS.md) |
-| 多端互控（Peer Device Mode） | 同账号的一台设备成为另一台的数据平面：控制端外壳仍在本地，invoke 和事件来自 peer | [peer-device-mode.md](docs/architecture/peer-device-mode.md)、[peer-device README](src/web-ui/src/infrastructure/peer-device/README.md) |
+| 远程控制 | 手机或浏览器通过局域网或账号设备组网运行新版桌面宿主提供的同一套 NSH UI；飞书 / Telegram / 微信 Bot 通过组网上的 OBP（新版宿主）或 Remote Connect relay（旧版宿主，旧客户端仍用 `mobile-web`）驱动会话 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（设备组网）、[`src/mobile-web`](src/mobile-web/AGENTS.md)、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect`、[relay-service](src/crates/services/relay-service/AGENTS.md) |
+| 多端互控（Peer Device Mode） | 同账号的一台设备成为另一台的数据平面：控制端外壳仍在本地，invoke 和事件来自 peer；新版宿主之间走设备组网上的 OBP，旧版宿主走 relay HostInvoke | [peer-device-mode.md](docs/architecture/peer-device-mode.md)、[NSH peer 路由](src/nsh-ui/AGENTS.md) |
 | Dispatch 分离任务 | 控制端把持久化任务提交到另一台 OpenBitFun 宿主后即可断开；目标端拥有 job、session、worktree、事件日志和权限信箱 | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
 
 四种场景共同适用的规则：
@@ -143,9 +143,9 @@ await api.invoke('your_command', { request: { ... } });
 
 各场景的具体约束：
 
-- **远程工作区**：每个桌面端 Tauri 命令在 Product Operation Registry（[`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)）中有且只有一行，声明其远程工作区立场。桌面端闭包测试与能力生成器会拒绝没有对应行的命令，新行不得使用 `Unaudited`（该存量清单只减不增）。修改该表后运行 `pnpm run capabilities:generate`。见 [remote-surface-contract.md](docs/architecture/remote-surface-contract.md)。
-- **远程控制**：mobile web 和 IM Bot 通过 `RemoteCommand` wire 协议和 bot command router / menu 触达会话，不走 Web UI。新增或迁移会话级能力时（工作区或助手选择、会话生命周期、模式、模型、审批、附件），要同步扩展这些形态，或让它们给出明确的不支持回复。
-- **多端互控**：产品命令默认代理到 peer 执行。必须留在控制端的命令（窗口装饰、更新器、账号身份、本地 OS 自动化）在同一注册表行中声明为 `ControllerLocal`；桌面端 peer host、CLI peer host 和 Web UI transport adapter 都从它派生拒绝集合，`pnpm run check:core-boundaries` 会拒绝手写清单。CLI host 要执行的命令需要处理分支加行内 `cli_peer: HANDLED`；`src/apps/cli/src/peer_host/commands/mod.rs` 的闭包测试保持两者一致。Peer 能力是类型化的 `PeerHostCapability`，由注册表发布。改动 session、account 或 hydrate 路径前，先读 peer-device README 的 invariants。
+- **远程工作区**：每个已注册的后端命令在 Product Operation Registry（[`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)）中有且只有一行，声明其远程工作区立场。桌面端闭包测试与能力生成器会拒绝没有对应行的命令，新行不得使用 `Unaudited`（该存量清单只减不增）；被删除的命令保留一行 `retired(...)`，让旧客户端得到退役原因。修改该表后运行 `pnpm run capabilities:generate`。见 [remote-surface-contract.md](docs/architecture/remote-surface-contract.md)。
+- **远程控制**：mobile web 和 IM Bot 通过 `RemoteCommand` wire 协议和 bot command router / menu 触达会话，不走桌面 UI。新增或迁移会话级能力时（工作区或助手选择、会话生命周期、模式、模型、审批、附件），要同步扩展这些形态，或让它们给出明确的不支持回复。
+- **多端互控**：产品命令默认代理到 peer 执行。必须留在控制端的命令（窗口装饰、更新器、账号身份、本地 OS 自动化）在同一注册表行中声明为 `ControllerLocal`；桌面端 peer host、CLI peer host 和 NSH UI 路由（`src/nsh-ui/src/generated/peerSurface.ts`）都从它派生拒绝集合，`pnpm run check:core-boundaries` 会拒绝手写清单。CLI host 要执行的命令需要处理分支加行内 `cli_peer: HANDLED`；`src/apps/cli/src/peer_host/commands/mod.rs` 的闭包测试保持两者一致。Peer 能力是类型化的 `PeerHostCapability`，由注册表发布。改动 session、account 或 hydrate 路径前，先读 [peer-device-mode.md](docs/architecture/peer-device-mode.md) 中的多端互控 invariants。
 - **Dispatch 分离任务**：任务在目标端以 CLI delivery profile 无界面运行，没有交互宿主，也不保证控制端在线。控制端只是观察者，不是 runtime 或文件系统代理。不要引入依赖提交方常驻的行为。dispatch 协议版本和目标端必备 capability 属于兼容契约：新的目标端要求要走协商 capability，而不是默认假设。
 
 说明改动在哪些远程场景下验证过。只跑本地测试不能作为远程行为的证据。

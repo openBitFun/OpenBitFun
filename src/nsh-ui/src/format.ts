@@ -1,17 +1,26 @@
 /** Text, date, duration, and count helpers shared by the scenes. */
 
+import type { TranscriptItemView, TranscriptToolView, TranscriptTurnView } from "./api";
 import { currentLocale, tr, type AppLocale, type MessageKey } from "./i18n";
 
-const TEXT_KEYS = ["content", "text", "message", "markdown"];
-
 /**
- * Sessions are persisted Turns: a Turn nests a user message, model rounds and
- * tool activity. The MVP summary view only needs the readable text, so walk the
- * record defensively and collect the strings a reader would recognise.
+ * Readers over the host's transcript view (`get_session_transcript_view`).
+ *
+ * The host projects persisted turns once for every client: the user's message as
+ * written, then thinking, answer text and tool calls in the order they happened,
+ * subagent work nested under the call that started it. These helpers only pick
+ * what a scene draws from that view; they never re-order, filter or infer.
  */
+function viewOf(turn: unknown): TranscriptTurnView | null {
+  if (!turn || typeof turn !== "object") return null;
+  const record = turn as Partial<TranscriptTurnView>;
+  return Array.isArray(record.items) && record.user && typeof record.user === "object"
+    ? (record as TranscriptTurnView)
+    : null;
+}
+
+/** A short summary of what a turn said (its user and answer text, not its reasoning). */
 export function turnToText(turn: unknown, limit = 400): string {
-  // A summary is what the reader said in the turn: a model's reasoning notes are
-  // its own working, so they are not part of it.
   const parts = turnParts(turn).filter(part => part.role !== "thinking");
   const text = parts.map(part => part.text).join(" ").replace(/\s+/g, " ").trim();
   if (text.length <= limit) return text;
@@ -25,149 +34,20 @@ export interface TurnPart {
   reasoningKind?: "reasoning" | "summary";
 }
 
-interface OrderedRoundPart {
-  part: TurnPart;
-  orderIndex?: number;
-  /** Fallback priority when `orderIndex` is omitted (thinking before assistant text). */
-  kindOrder: number;
-  seq: number;
-}
-
-function readOrderIndex(record: Record<string, unknown>): number | undefined {
-  const raw = record.orderIndex ?? record.order_index;
-  return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
-}
-
-function readReasoningKind(record: Record<string, unknown>): "reasoning" | "summary" | undefined {
-  const raw = record.reasoningKind ?? record.reasoning_kind;
-  if (raw === "summary") return "summary";
-  if (raw === "reasoning") return "reasoning";
-  return undefined;
-}
-
-/**
- * Splits one persisted Turn into the parts a reader sees, so the transcript can
- * style the user's line and the assistant's reply differently. Supports both the
- * real Rust `DialogTurnData` / `ModelRoundData` shape (`textItems`,
- * `thinkingItems`, `orderIndex`) and legacy/fixture `assistantMessage` records.
- */
+/** The readable parts of one turn, in the view's order: the user, then thinking and answers. */
 export function turnParts(turn: unknown): TurnPart[] {
+  const view = viewOf(turn);
+  if (!view) return [];
   const parts: TurnPart[] = [];
-  if (!turn || typeof turn !== "object") return parts;
-  const record = turn as Record<string, unknown>;
-
-  const user = (record.userMessage ?? record.user_message) as Record<string, unknown> | undefined;
-  const userText = typeof user?.content === "string" ? user.content : "";
-  if (userText.trim()) parts.push({ role: "user", text: userText });
-
-  const rounds = record.modelRounds ?? record.model_rounds;
-  if (Array.isArray(rounds)) {
-    for (const round of rounds) {
-      if (!round || typeof round !== "object") continue;
-      const roundRecord = round as Record<string, unknown>;
-      const roundParts: OrderedRoundPart[] = [];
-      let seq = 0;
-
-      const thinking = roundRecord.thinkingItems ?? roundRecord.thinking_items;
-      if (Array.isArray(thinking)) {
-        for (const item of thinking) {
-          if (!item || typeof item !== "object") continue;
-          const entry = item as Record<string, unknown>;
-          const text = typeof entry.content === "string" ? entry.content : "";
-          if (!text.trim()) continue;
-          const kind = readReasoningKind(entry);
-          roundParts.push({
-            part: { role: "thinking", text, ...(kind ? { reasoningKind: kind } : {}) },
-            orderIndex: readOrderIndex(entry),
-            kindOrder: 0,
-            seq: seq++,
-          });
-        }
-      }
-
-      // Real Rust `ModelRoundData` persists assistant markdown chunks in `textItems`.
-      const textItems = roundRecord.textItems ?? roundRecord.text_items;
-      let addedTextItem = false;
-      if (Array.isArray(textItems)) {
-        for (const item of textItems) {
-          if (!item || typeof item !== "object") continue;
-          const entry = item as Record<string, unknown>;
-          const text = typeof entry.content === "string" ? entry.content : "";
-          if (!text.trim()) continue;
-          addedTextItem = true;
-          roundParts.push({
-            part: { role: "assistant", text },
-            orderIndex: readOrderIndex(entry),
-            kindOrder: 1,
-            seq: seq++,
-          });
-        }
-      }
-
-      // Backward-compatible fallback for legacy records and test fixtures.
-      if (!addedTextItem) {
-        const assistant = (roundRecord.assistantMessage ?? roundRecord.assistant_message) as
-          | Record<string, unknown>
-          | undefined;
-        const text = typeof assistant?.content === "string" ? assistant.content : "";
-        if (text.trim()) {
-          roundParts.push({
-            part: { role: "assistant", text },
-            orderIndex: undefined,
-            kindOrder: 1,
-            seq: seq++,
-          });
-        }
-      }
-
-      const hasExplicitOrder = roundParts.some(entry => entry.orderIndex !== undefined);
-      if (hasExplicitOrder) {
-        roundParts.sort((left, right) => {
-          if (left.orderIndex !== undefined && right.orderIndex !== undefined && left.orderIndex !== right.orderIndex) {
-            return left.orderIndex - right.orderIndex;
-          }
-          if (left.orderIndex !== undefined && right.orderIndex === undefined) return -1;
-          if (left.orderIndex === undefined && right.orderIndex !== undefined) return 1;
-          if (left.kindOrder !== right.kindOrder) return left.kindOrder - right.kindOrder;
-          return left.seq - right.seq;
-        });
-      }
-
-      for (const entry of roundParts) {
-        parts.push(entry.part);
-      }
+  if (view.user.text.trim()) parts.push({ role: "user", text: view.user.text });
+  for (const item of view.items) {
+    if (item.kind === "thinking" && item.text.trim()) {
+      parts.push({ role: "thinking", text: item.text, ...(item.reasoningKind ? { reasoningKind: item.reasoningKind } : {}) });
+    } else if (item.kind === "text" && item.text.trim()) {
+      parts.push({ role: "assistant", text: item.text });
     }
   }
-
-  if (parts.length === 0) {
-    const fallback: string[] = [];
-    collectText(turn, fallback, 0);
-    const text = fallback.join(" ").replace(/\s+/g, " ").trim();
-    if (text) parts.push({ role: "other", text });
-  }
   return parts;
-}
-
-function collectText(value: unknown, parts: string[], depth: number): void {
-  if (depth > 6 || parts.join(" ").length > 4000) return;
-  if (typeof value === "string") {
-    if (value.trim()) parts.push(value.trim());
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectText(item, parts, depth + 1);
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  for (const key of TEXT_KEYS) {
-    const candidate = record[key];
-    if (typeof candidate === "string" && candidate.trim()) parts.push(candidate.trim());
-  }
-  for (const [key, child] of Object.entries(record)) {
-    if (TEXT_KEYS.includes(key)) continue;
-    if (child && typeof child === "object") collectText(child, parts, depth + 1);
-  }
 }
 
 /** One tool invocation a turn made, ready for a card. */
@@ -189,8 +69,10 @@ export interface ToolCallView {
   resultForAssistant?: string;
   /** Tool execution duration in milliseconds, when persisted. */
   durationMs?: number;
-  /** Original round insertion order, when persisted. */
-  orderIndex?: number;
+  /** What a subagent the call started did, as the host nested it. */
+  subagentItems?: TranscriptItemView[];
+  /** A GenerativeUI call's source as it streamed (`GenUIStream`), before its arguments closed. */
+  genuiStream?: { source: string; title?: string; format: string };
 }
 
 function summarizeInput(value: unknown, limit = 160): string {
@@ -205,114 +87,28 @@ function summarizeInput(value: unknown, limit = 160): string {
   }
 }
 
-/**
- * The tool calls a persisted Turn holds. Supports real Rust `ModelRoundData.toolItems`
- * (with nested `toolCall.input` and `toolResult`) as well as legacy `toolCalls` /
- * `tool_calls` arrays on the turn or round.
- */
+/** A tool item of the view as a card reads it. */
+export function toolCallOf(tool: TranscriptToolView): ToolCallView {
+  return {
+    ...(tool.id ? { id: tool.id } : {}),
+    name: tool.name,
+    detail: summarizeInput(tool.input),
+    ...(tool.input === undefined || tool.input === null ? {} : { input: tool.input }),
+    ...(tool.status ? { status: tool.status } : {}),
+    ...(typeof tool.success === "boolean" ? { success: tool.success } : {}),
+    ...(tool.error ? { error: tool.error } : {}),
+    ...(tool.result === undefined || tool.result === null ? {} : { result: tool.result }),
+    ...(tool.resultForAssistant ? { resultForAssistant: tool.resultForAssistant } : {}),
+    ...(typeof tool.durationMs === "number" ? { durationMs: tool.durationMs } : {}),
+    ...(tool.subagentItems?.length ? { subagentItems: tool.subagentItems } : {}),
+  };
+}
+
+/** The tool calls a turn made, in order. */
 export function toolCallsOf(turn: unknown): ToolCallView[] {
-  const collected: Array<{ view: ToolCallView; roundIdx: number; orderIndex?: number; seq: number }> = [];
-  if (!turn || typeof turn !== "object") return [];
-  const seenKeys = new Set<string>();
-  let seq = 0;
-
-  const push = (raw: unknown, roundIdx: number) => {
-    if (!raw || typeof raw !== "object") return;
-    const record = raw as Record<string, unknown>;
-    const nestedCall = (record.toolCall ?? record.tool_call) as Record<string, unknown> | undefined;
-    const nestedResult = (record.toolResult ?? record.tool_result) as Record<string, unknown> | undefined;
-
-    const name =
-      record.toolName ??
-      record.tool_name ??
-      nestedCall?.toolName ??
-      nestedCall?.tool_name ??
-      record.name ??
-      record.tool;
-    if (typeof name !== "string" || !name) return;
-
-    const id =
-      typeof record.id === "string" && record.id
-        ? record.id
-        : typeof nestedCall?.id === "string" && nestedCall.id
-          ? nestedCall.id
-          : undefined;
-    const input =
-      nestedCall?.input ??
-      nestedCall?.arguments ??
-      record.arguments ??
-      record.input ??
-      record.parameters ??
-      record.params ??
-      record.toolInput;
-    const detail = summarizeInput(input);
-    const key = id ? `id:${id}` : `${name}\u0000${detail}`;
-    if (seenKeys.has(key)) return;
-    seenKeys.add(key);
-
-    const status = typeof record.status === "string" ? record.status : undefined;
-    const success = typeof nestedResult?.success === "boolean" ? nestedResult.success : undefined;
-    const error =
-      typeof nestedResult?.error === "string" && nestedResult.error
-        ? nestedResult.error
-        : typeof record.error === "string" && record.error
-          ? record.error
-          : undefined;
-    const result = nestedResult?.result ?? record.result;
-    const resultForAssistant = nestedResult?.resultForAssistant ?? nestedResult?.result_for_assistant;
-    const rawDuration = nestedResult?.durationMs ?? nestedResult?.duration_ms ?? record.durationMs ?? record.duration_ms;
-    const durationMs = typeof rawDuration === "number" && Number.isFinite(rawDuration) ? rawDuration : undefined;
-    const orderIndex = readOrderIndex(record);
-
-    collected.push({
-      view: {
-        ...(id ? { id } : {}),
-        name,
-        detail,
-        ...(input === undefined ? {} : { input }),
-        ...(status ? { status } : {}),
-        ...(success !== undefined ? { success } : {}),
-        ...(error ? { error } : {}),
-        ...(result === undefined ? {} : { result }),
-        ...(typeof resultForAssistant === "string" && resultForAssistant ? { resultForAssistant } : {}),
-        ...(durationMs !== undefined ? { durationMs } : {}),
-        ...(orderIndex !== undefined ? { orderIndex } : {}),
-      },
-      roundIdx,
-      orderIndex,
-      seq: seq++,
-    });
-  };
-
-  const collectFrom = (container: unknown, roundIdx: number) => {
-    if (!container || typeof container !== "object") return;
-    const record = container as Record<string, unknown>;
-    for (const key of ["toolItems", "tool_items", "toolCalls", "tool_calls"]) {
-      const list = record[key];
-      if (Array.isArray(list)) for (const item of list) push(item, roundIdx);
-    }
-  };
-
-  collectFrom(turn, -1);
-  const rounds = (turn as Record<string, unknown>).modelRounds ?? (turn as Record<string, unknown>).model_rounds;
-  if (Array.isArray(rounds)) {
-    rounds.forEach((round, roundIdx) => {
-      collectFrom(round, roundIdx);
-      if (round && typeof round === "object") {
-        collectFrom((round as Record<string, unknown>).assistantMessage, roundIdx);
-      }
-    });
-  }
-
-  collected.sort((left, right) => {
-    if (left.roundIdx !== right.roundIdx) return left.roundIdx - right.roundIdx;
-    if (left.orderIndex !== undefined && right.orderIndex !== undefined && left.orderIndex !== right.orderIndex) {
-      return left.orderIndex - right.orderIndex;
-    }
-    return left.seq - right.seq;
-  });
-
-  return collected.map(entry => entry.view);
+  const view = viewOf(turn);
+  if (!view) return [];
+  return view.items.flatMap(item => (item.kind === "tool" ? [toolCallOf(item.tool)] : []));
 }
 
 /**
@@ -326,130 +122,29 @@ export type TranscriptItem =
   | { kind: "tool"; key: string; call: ToolCallView }
   | { kind: "explore"; key: string; calls: ToolCallView[] };
 
-interface OrderedItem {
-  item: TranscriptItem;
-  orderIndex?: number;
-  kindOrder: number;
-  seq: number;
-}
-
-function itemIdOf(record: Record<string, unknown>): string {
-  const id = record.id;
-  return typeof id === "string" && id ? id : "";
-}
-
 /**
- * The persisted turn as one ordered list per model round, merged by the
- * `orderIndex` the host stores on every text, thinking and tool item. Without an
- * index (older records) a round reads thinking, then its answer, then its tools —
- * the order the live stream draws too, so nothing jumps when a turn settles.
- * Keys are the host's item ids, so a re-read never remounts an opened card.
+ * The turn's items as the transcript draws them. Keys are the host's item ids,
+ * so a re-read never remounts an opened card; a thinking block keeps its
+ * turn-plus-text key so its disclosure survives the live-to-persisted swap.
  */
 export function turnItems(turn: unknown): TranscriptItem[] {
-  if (!turn || typeof turn !== "object") return [];
-  const record = turn as Record<string, unknown>;
-  const turnKey = String(record.turnId ?? record.turn_id ?? record.id ?? "turn");
-  const items: TranscriptItem[] = [];
-
-  // Tool calls stored on the turn itself (legacy shape) come first.
-  for (const call of toolCallsOf({ toolCalls: record.toolCalls ?? record.tool_calls, toolItems: record.toolItems ?? record.tool_items })) {
-    items.push({ kind: "tool", key: `tool:${call.id ?? `${turnKey}-${call.name}-${items.length}`}`, call });
-  }
-
-  const rounds = record.modelRounds ?? record.model_rounds;
-  if (Array.isArray(rounds)) {
-    rounds.forEach((round, roundIdx) => {
-      if (!round || typeof round !== "object") return;
-      const roundRecord = round as Record<string, unknown>;
-      const ordered: OrderedItem[] = [];
-      let seq = 0;
-
-      const thinking = roundRecord.thinkingItems ?? roundRecord.thinking_items;
-      if (Array.isArray(thinking)) {
-        for (const entry of thinking) {
-          if (!entry || typeof entry !== "object") continue;
-          const thinkingRecord = entry as Record<string, unknown>;
-          const text = typeof thinkingRecord.content === "string" ? thinkingRecord.content : "";
-          if (!text.trim()) continue;
-          const kind = readReasoningKind(thinkingRecord);
-          ordered.push({
-            item: {
-              kind: "thinking",
-              // The disclosure key stays the turn plus the text, as before.
-              key: `${turnKey}|thinking|${text}`,
-              text,
-              ...(kind ? { reasoningKind: kind } : {}),
-            },
-            orderIndex: readOrderIndex(thinkingRecord),
-            kindOrder: 0,
-            seq: seq++,
-          });
-        }
-      }
-
-      const textItems = roundRecord.textItems ?? roundRecord.text_items;
-      let addedText = false;
-      if (Array.isArray(textItems)) {
-        for (const entry of textItems) {
-          if (!entry || typeof entry !== "object") continue;
-          const textRecord = entry as Record<string, unknown>;
-          const text = typeof textRecord.content === "string" ? textRecord.content : "";
-          if (!text.trim()) continue;
-          addedText = true;
-          ordered.push({
-            item: { kind: "text", key: `text:${itemIdOf(textRecord) || `${turnKey}-${roundIdx}-${seq}`}`, text },
-            orderIndex: readOrderIndex(textRecord),
-            kindOrder: 1,
-            seq: seq++,
-          });
-        }
-      }
-      const assistant = (roundRecord.assistantMessage ?? roundRecord.assistant_message) as
-        | Record<string, unknown>
-        | undefined;
-      if (!addedText) {
-        const text = typeof assistant?.content === "string" ? assistant.content : "";
-        if (text.trim()) {
-          ordered.push({
-            item: { kind: "text", key: `text:${(assistant && itemIdOf(assistant)) || `${turnKey}-${roundIdx}`}`, text },
-            kindOrder: 1,
-            seq: seq++,
-          });
-        }
-      }
-
-      const roundTools = [
-        ...toolCallsOf({ toolItems: roundRecord.toolItems ?? roundRecord.tool_items, toolCalls: roundRecord.toolCalls ?? roundRecord.tool_calls }),
-        ...(assistant ? toolCallsOf({ toolCalls: assistant.toolCalls ?? assistant.tool_calls }) : []),
-      ];
-      roundTools.forEach((call, toolIdx) => {
-        ordered.push({
-          item: { kind: "tool", key: `tool:${call.id ?? `${turnKey}-${roundIdx}-${toolIdx}-${call.name}`}`, call },
-          ...(call.orderIndex !== undefined ? { orderIndex: call.orderIndex } : {}),
-          kindOrder: 2,
-          seq: seq++,
-        });
-      });
-
-      if (ordered.some(entry => entry.orderIndex !== undefined)) {
-        ordered.sort((left, right) => {
-          if (left.orderIndex !== undefined && right.orderIndex !== undefined && left.orderIndex !== right.orderIndex) {
-            return left.orderIndex - right.orderIndex;
-          }
-          if (left.orderIndex !== undefined && right.orderIndex === undefined) return -1;
-          if (left.orderIndex === undefined && right.orderIndex !== undefined) return 1;
-          if (left.kindOrder !== right.kindOrder) return left.kindOrder - right.kindOrder;
-          return left.seq - right.seq;
-        });
-      }
-      for (const entry of ordered) items.push(entry.item);
-    });
-  }
-
-  if (items.length === 0) {
-    const fallback = turnParts(turn).filter(part => part.role === "other");
-    fallback.forEach((part, index) => items.push({ kind: "text", key: `text:${turnKey}-other-${index}`, text: part.text }));
-  }
+  const view = viewOf(turn);
+  if (!view) return [];
+  const items: TranscriptItem[] = view.items.map((item, index) => {
+    if (item.kind === "text") {
+      return { kind: "text", key: `text:${item.id || `${view.turnId}-${index}`}`, text: item.text };
+    }
+    if (item.kind === "thinking") {
+      return {
+        kind: "thinking",
+        key: `${view.turnId}|thinking|${item.text}`,
+        text: item.text,
+        ...(item.reasoningKind ? { reasoningKind: item.reasoningKind } : {}),
+      };
+    }
+    const call = toolCallOf(item.tool);
+    return { kind: "tool", key: `tool:${item.tool.id || `${view.turnId}-${index}-${item.tool.name}`}`, call };
+  });
   return groupExploreItems(items);
 }
 
@@ -522,77 +217,33 @@ export interface TurnFailure {
 }
 
 export function turnFailureOf(turn: unknown): TurnFailure | null {
-  if (!turn || typeof turn !== "object") return null;
-  const record = turn as Record<string, unknown>;
-  const status = String(record.status ?? record.state ?? "").toLowerCase();
-  const error = typeof record.error === "string" ? record.error.trim() : "";
-  const rawDetail = record.errorDetail ?? record.error_detail;
-  const detail = rawDetail && typeof rawDetail === "object" ? (rawDetail as Record<string, unknown>) : undefined;
-  const failed = status === "error" || status === "failed";
-  const cancelled = status === "cancelled" || status === "interrupted";
+  const view = viewOf(turn);
+  if (!view) return null;
+  const error = (view.error ?? "").trim();
+  const failed = view.status === "failed";
+  const cancelled = view.status === "cancelled";
   if (!error && !failed && !cancelled) return null;
   return {
     message: error,
-    status: failed || (error && !cancelled) ? "failed" : status,
-    ...(detail ? { detail } : {}),
+    status: failed || (error && !cancelled) ? "failed" : view.status,
+    ...(view.errorDetail ? { detail: view.errorDetail } : {}),
   };
 }
 
-/** Resolves the effective model name recorded on a persisted turn's rounds or metadata. */
+/** The model the turn's last round ran on, as the host recorded it. */
 export function turnEffectiveModel(turn: unknown): string | null {
-  if (!turn || typeof turn !== "object") return null;
-  const record = turn as Record<string, unknown>;
-  const rounds = record.modelRounds ?? record.model_rounds;
-  if (Array.isArray(rounds)) {
-    for (let index = rounds.length - 1; index >= 0; index -= 1) {
-      const round = rounds[index];
-      if (!round || typeof round !== "object") continue;
-      const r = round as Record<string, unknown>;
-      const candidate =
-        r.effectiveModelName ??
-        r.effective_model_name ??
-        r.modelName ??
-        r.model_name ??
-        r.model;
-      if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
-    }
-  }
-  const top =
-    record.effectiveModelName ??
-    record.effective_model_name ??
-    record.modelName ??
-    record.model_name ??
-    record.model;
-  return typeof top === "string" && top.trim() ? top.trim() : null;
+  return viewOf(turn)?.effectiveModel?.trim() || null;
 }
 
-/** Resolves a persisted turn's total duration in milliseconds, summing rounds if needed. */
+/** The turn's duration in milliseconds, as the host recorded or summed it. */
 export function turnDurationMs(turn: unknown): number | null {
-  if (!turn || typeof turn !== "object") return null;
-  const record = turn as Record<string, unknown>;
-  const direct = record.durationMs ?? record.duration_ms;
-  if (typeof direct === "number" && Number.isFinite(direct) && direct >= 0) return direct;
-  const rounds = record.modelRounds ?? record.model_rounds;
-  if (!Array.isArray(rounds)) return null;
-  let total = 0;
-  let found = false;
-  for (const round of rounds) {
-    if (!round || typeof round !== "object") continue;
-    const r = round as Record<string, unknown>;
-    const ms = r.durationMs ?? r.duration_ms;
-    if (typeof ms === "number" && Number.isFinite(ms) && ms >= 0) {
-      total += ms;
-      found = true;
-    }
-  }
-  return found ? total : null;
+  const duration = viewOf(turn)?.durationMs;
+  return typeof duration === "number" && Number.isFinite(duration) && duration >= 0 ? duration : null;
 }
 
-/** True when a persisted turn contains any assistant text, thinking, or tool call items. */
+/** True when the turn holds any answer, reasoning or tool call. */
 export function turnHasAssistantContent(turn: unknown): boolean {
-  const parts = turnParts(turn);
-  if (parts.some(part => part.role === "assistant" || part.role === "thinking")) return true;
-  return toolCallsOf(turn).length > 0;
+  return (viewOf(turn)?.items.length ?? 0) > 0;
 }
 
 /** A checklist item a tool call carries (a todo list or a plan). */

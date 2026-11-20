@@ -34,7 +34,7 @@ pub struct AiModelUpsertCommandRequest {
 /// Creates or edits models. The host mints ids, normalizes the request
 /// format, clamps the output limit, derives the stored request URL and fills
 /// capability defaults; the response is the stored list after the write.
-#[tauri::command]
+// @backend-command
 pub async fn ai_model_upsert(
     app: HostHandle,
     request: AiModelUpsertCommandRequest,
@@ -59,7 +59,7 @@ pub struct AiModelDeleteRequest {
 
 /// Removes one model. Default-model slots, task selections and agent defaults
 /// that named it are repaired by the config owner's model reconciliation.
-#[tauri::command]
+// @backend-command
 pub async fn ai_model_delete(
     app: HostHandle,
     state: State<'_, AppState>,
@@ -89,7 +89,7 @@ pub struct ResolveAiModelRequestUrlRequest {
 }
 
 /// The request URL a save would store and the URL the editor previews.
-#[tauri::command]
+// @backend-command
 pub async fn resolve_ai_model_request_url(
     request: ResolveAiModelRequestUrlRequest,
 ) -> Result<Value, String> {
@@ -114,7 +114,7 @@ pub struct SetTaskModelRequest {
     pub selection: Value,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_task_model(
     app: HostHandle,
     request: SetTaskModelRequest,
@@ -138,7 +138,7 @@ fn permission_view(stored: Value) -> Result<Value, String> {
 
 /// Switches the user-level permission mode (`ask`, `auto`, `full_access`),
 /// keeping the rule list and the approval tuning.
-#[tauri::command]
+// @backend-command
 pub async fn set_permission_mode(
     app: HostHandle,
     request: SetPermissionModeRequest,
@@ -150,7 +150,7 @@ pub async fn set_permission_mode(
     permission_view(stored)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn upsert_permission_rule(
     app: HostHandle,
     request: PermissionRuleUpsertRequest,
@@ -170,7 +170,7 @@ pub struct DeletePermissionRuleRequest {
     pub expected: Option<PermissionRuleInput>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_permission_rule(
     app: HostHandle,
     request: DeletePermissionRuleRequest,
@@ -186,7 +186,7 @@ pub async fn delete_permission_rule(
     permission_view(stored)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_approval_settings(
     app: HostHandle,
     request: ApprovalSettingsRequest,
@@ -198,7 +198,7 @@ pub async fn set_approval_settings(
     permission_view(stored)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_web_search_provider(
     app: HostHandle,
     request: WebSearchProviderRequest,
@@ -218,11 +218,35 @@ pub struct GetSettingsSchemaRequest {
 
 /// Field bounds, enums and defaults the backend enforces, so a settings
 /// surface draws them instead of keeping literal copies.
-#[tauri::command]
+// @backend-command
 pub async fn get_settings_schema(
     request: Option<GetSettingsSchemaRequest>,
 ) -> Result<Value, String> {
     settings_mutations::settings_descriptor(&request.unwrap_or_default().paths)
+}
+
+/// The permission settings page view (logic batch 4): mode, rules, approval
+/// tuning, the approval model choices and whether the composer shows the mode
+/// control, read and projected by the backend in one call.
+// @backend-command
+pub async fn get_permission_settings(state: State<'_, AppState>) -> Result<Value, String> {
+    let config = &state.config_service;
+    let read = |path: &'static str| async move {
+        config
+            .get_config::<Value>(Some(path))
+            .await
+            .unwrap_or(Value::Null)
+    };
+    let permissions = read(PERMISSIONS_PATH).await;
+    let models = read(MODELS_PATH).await;
+    let default_models = read("ai.default_models").await;
+    let show_mode_control = read("app.flow_chat.show_permission_mode_control").await;
+    settings_mutations::permission_page_view(
+        &permissions,
+        &models,
+        &default_models,
+        &show_mode_control,
+    )
 }
 
 #[cfg(test)]

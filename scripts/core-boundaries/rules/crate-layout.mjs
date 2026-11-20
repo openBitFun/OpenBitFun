@@ -31,6 +31,7 @@ export const crateLayoutRules = [
   { crateName: 'relay-service', layer: 'services', path: 'src/crates/services/relay-service' },
   { crateName: 'page-function-runtime', layer: 'services', path: 'src/crates/services/page-function-runtime' },
   { crateName: 'terminal', layer: 'services', path: 'src/crates/services/terminal' },
+  { crateName: 'mesh-service', layer: 'services', path: 'src/crates/services/mesh' },
 
   { crateName: 'acp', layer: 'interfaces', path: 'src/crates/interfaces/acp' },
   { crateName: 'app-server', layer: 'interfaces', path: 'src/crates/interfaces/app-server' },

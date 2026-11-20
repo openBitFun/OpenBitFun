@@ -8,6 +8,7 @@
 // session's question mailbox. This module is transport-neutral; every
 // connection that can drop events delivers the same event.
 
+import { forgetFollowedTurns, settleLiveTurnFromView } from "./agentEvents";
 import { listenEvent } from "./bridge";
 import { resetPermissions } from "./permissionStore";
 import { activeSessionId, loadTurns, refreshSessionsSilently } from "./state";
@@ -21,11 +22,15 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 /** Re-reads what events would have kept current. */
 export async function rehydrateAfterDroppedEvents(): Promise<void> {
   const sessionId = activeSessionId();
+  // A running turn may have lost events: the next read's snapshot replaces it.
+  forgetFollowedTurns();
   await Promise.allSettled([
     refreshSessionsSilently(),
     sessionId ? loadTurns(sessionId, { silent: true }) : Promise.resolve(null),
     sessionId ? loadQuestionMailbox(sessionId) : Promise.resolve(),
   ]);
+  // A turn whose terminal events were lost settles from the view the host sent.
+  if (sessionId) settleLiveTurnFromView(sessionId);
   resetPermissions();
 }
 

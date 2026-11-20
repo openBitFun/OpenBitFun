@@ -36,6 +36,10 @@ export interface AgentCatalogItem {
   effectiveEnabled: boolean;
   path?: string;
   externalProviderLabel?: string;
+  /** The host's verdict (wave 4); `undefined` on a host that predates the flag. */
+  canEdit?: boolean;
+  /** The host's verdict (wave 4); `undefined` on a host that predates the flag. */
+  canDelete?: boolean;
 }
 
 export interface AgentBuilderDraft {
@@ -188,6 +192,8 @@ function normalizeAgentRow(record: Record<string, unknown>, kind: AgentKind): Ag
     path: readOptionalString(record, ["path"]) ?? undefined,
     externalProviderLabel:
       readOptionalString(record, ["externalProviderLabel", "external_provider_label"]) ?? undefined,
+    canEdit: typeof record.canEdit === "boolean" ? record.canEdit : undefined,
+    canDelete: typeof record.canDelete === "boolean" ? record.canDelete : undefined,
   };
 }
 
@@ -252,6 +258,22 @@ export function canMutateCustomAgents(): boolean {
 
 export function isCustomSource(source: AgentSource): boolean {
   return source === "user" || source === "project";
+}
+
+/**
+ * Whether this agent's definition can be edited from here. The host decides
+ * (`canEdit`); a host older than the flag gets the rule it enforces itself:
+ * custom agents only, and not while the workspace's files live on a remote.
+ */
+export function agentCanEdit(item: AgentCatalogItem): boolean {
+  if (item.canEdit !== undefined) return item.canEdit;
+  return isCustomSource(item.source) && !isRemoteAgentWorkspace();
+}
+
+/** Whether this agent can be deleted from here (`canDelete`, else the older host's rule). */
+export function agentCanDelete(item: AgentCatalogItem): boolean {
+  if (item.canDelete !== undefined) return item.canDelete;
+  return isCustomSource(item.source) && !isRemoteAgentWorkspace();
 }
 
 export function effectiveToolsForAgent(item: AgentCatalogItem): string[] {
@@ -899,7 +921,7 @@ export async function saveSubagentRuntimeConfig(): Promise<void> {
 
 export async function deleteCatalogAgent(item: AgentCatalogItem): Promise<void> {
   if (!isCustomSource(item.source)) return;
-  if (isRemoteAgentWorkspace()) {
+  if (!agentCanDelete(item)) {
     agentsNotice.set(tr("agents.store.deleteRemote"));
     return;
   }

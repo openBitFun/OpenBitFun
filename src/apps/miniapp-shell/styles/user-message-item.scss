@@ -1,0 +1,543 @@
+/**
+ * User message item styles (BEM).
+ */
+@use 'transcript-layout' as transcriptLayout;
+
+.user-message-item-shell {
+  @include transcriptLayout.content-column;
+
+  // Keep the right-aligned bubble a flex item so native selection does not
+  // paint its surrounding layout gaps. Auto inline margins still own alignment;
+  // the gallery and action row retain their full reading-column layout.
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+
+  --_user-message-radius: var(--openbitfun-control-flow-chat-user-message-radius);
+  --_user-message-padding-inline: var(--_user-message-radius);
+
+  position: relative;
+  margin: var(--openbitfun-control-flow-chat-user-message-margin-block-start) 0 var(--openbitfun-control-flow-chat-flow-item-gap);
+}
+
+.user-message-item {
+  box-sizing: border-box;
+  /*
+   * The shell owns the same reading column as replies. Keep the bubble surface
+   * on that column's content edge — the edge the tool cards and the composer
+   * card end on. Extending the bubble by its radius instead (so the rounded
+   * surface overhung the column while its text met the column) left the sent
+   * message one radius past the trailing edge of both.
+   */
+  width: fit-content;
+  max-width: var(--openbitfun-control-flow-chat-user-message-max-width);
+  padding: var(--openbitfun-control-flow-chat-user-message-padding-block) var(--_user-message-padding-inline);
+  background: transparent;
+  border: none;
+  border-radius: var(--_user-message-radius);
+  margin-block: 0;
+  margin-inline: auto 0;
+  box-shadow: none;
+  transition: opacity 140ms ease;
+  /*
+   * No CSS mount animation: virtualized remounts are already settled.
+   * useSubmittedMessageMotion owns the one-shot feedback for an explicit send;
+   * it changes only paint on the contents, never this row's measured layout.
+   */
+  position: relative;
+}
+
+.user-message-item:not(.user-message-item--expanded):not(.user-message-item--editing) {
+  // Wrapped previews stay compact; explicit lines beyond the preview leave
+  // layout below, so shorter visible lines determine the content-fit width.
+  max-width: min(28rem, var(--openbitfun-control-flow-chat-user-message-max-width));
+}
+
+.user-message-item__surface {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--openbitfun-color-action-quiet-hover);
+  pointer-events: none;
+  transform-origin: right center;
+}
+
+.user-message-item--editing .user-message-item__surface {
+  display: none;
+}
+
+.user-message-item--forming .user-message-item__surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--openbitfun-color-action-quiet-hover);
+  pointer-events: none;
+  animation: user-message-forming-fill 3.4s ease-in-out 260ms infinite;
+}
+
+@keyframes user-message-forming-fill {
+  0%, 100% { opacity: 0.08; }
+  50% { opacity: 0.16; }
+}
+
+.user-message-item__submission-error {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--openbitfun-control-flow-chat-inline-gap);
+  width: fit-content;
+  max-width: var(--openbitfun-control-flow-chat-user-message-max-width);
+  margin-block-start: var(--openbitfun-space-1);
+  margin-inline: auto 0;
+  color: var(--openbitfun-color-status-danger-content);
+  font-size: var(--openbitfun-type-flow-meta-font-size);
+  line-height: var(--openbitfun-type-flow-meta-line-height);
+}
+
+.user-message-item__submission-error-icon {
+  flex: none;
+}
+
+.user-message-item--editing {
+  width: auto;
+  max-width: none;
+  margin-inline: 0;
+  padding: 0;
+  // Composer owns the edit surface and focus treatment on the reading column.
+  background: transparent;
+}
+
+.user-message-item__timestamp {
+  /* The timestamp shares the external meta row with the action cluster. */
+  color: var(--openbitfun-color-content-muted);
+  font-family: var(--openbitfun-type-flow-meta-font-family);
+  font-size: var(--openbitfun-type-flow-meta-font-size);
+  font-weight: var(--openbitfun-type-flow-meta-font-weight);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--openbitfun-type-flow-meta-line-height);
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+    visibility var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+}
+
+.user-message-item-shell:hover .user-message-item__timestamp,
+.user-message-item-shell:focus-within .user-message-item__timestamp {
+  opacity: 1;
+  visibility: visible;
+}
+
+.user-message-item__meta {
+  @include transcriptLayout.metadata-row;
+  // Metadata follows the reading column, independently of bubble decoration.
+  // Its full hit targets remain in normal flow for virtual-row measurement.
+  padding-block: calc(var(--openbitfun-space-1) / 2) 0;
+  padding-inline: 0;
+  pointer-events: auto;
+}
+
+.user-message-item__main {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--openbitfun-control-flow-chat-inline-gap);
+}
+
+.user-message-item__host-evidence {
+  margin: 0;
+  color: var(--openbitfun-color-content-secondary);
+  font-size: var(--openbitfun-type-flow-meta-font-size);
+  line-height: var(--openbitfun-type-flow-meta-line-height);
+}
+
+// Bridges children to `.user-message-item__main` flex without an extra layout box.
+.user-message-item__main-contents-bridge {
+  display: contents;
+}
+
+.user-message-item__steering-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: fit-content;
+  padding: 0.12rem 0.44rem;
+  border-radius: 999px;
+  font-size: var(--openbitfun-type-flow-micro-font-size);
+  font-weight: var(--openbitfun-type-label-selected-font-weight);
+  line-height: var(--openbitfun-type-flow-meta-line-height);
+  letter-spacing: var(--openbitfun-type-body-sm-letter-spacing);
+  user-select: none;
+}
+
+.user-message-item__steering-tag--pending {
+  color: var(--openbitfun-color-status-warning-content);
+  background: var(--openbitfun-color-status-warning-surface);
+  border: 1px solid var(--openbitfun-color-status-warning-border);
+}
+
+.user-message-item__actions {
+  @include transcriptLayout.metadata-actions;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+}
+
+.user-message-item-shell:hover .user-message-item__actions,
+.user-message-item__actions[data-menu-open],
+.user-message-item-shell:focus-within .user-message-item__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.user-message-item__blocks {
+  margin-top: var(--openbitfun-control-flow-chat-flow-item-gap);
+}
+
+.user-message-item__content {
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
+  font-size: var(--openbitfun-type-flow-control-font-size);
+  font-weight: var(--openbitfun-type-flow-control-font-weight);
+  line-height: var(--openbitfun-type-flow-body-line-height);
+  color: var(--openbitfun-color-content-primary);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  min-width: 0; /* Ensures the content can shrink properly. */
+  max-height: 4.75em; /* Collapsed: up to 3 compact lines. */
+  user-select: text;
+  transition: none;
+}
+
+// Keep the full text in DOM order for selection offsets and source references,
+// but remove hidden lines from intrinsic sizing. The ellipsis is paint only.
+.user-message-item__content-preview::after {
+  content: '\2026';
+}
+
+.user-message-item__content-overflow {
+  display: none;
+}
+
+.user-message-item--expanded .user-message-item__content-preview::after {
+  content: none;
+}
+
+.user-message-item--expanded .user-message-item__content-overflow {
+  display: contents;
+}
+
+// Expanded state (outer scroll area).
+.user-message-item--expanded {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.user-message-item--expanded:not(.user-message-item--editing) {
+  background: var(--openbitfun-color-action-quiet-hover);
+
+  .user-message-item__surface { display: none; }
+}
+
+// Failed messages keep the message fill and mark the failed state through text styling.
+.user-message-item--failed {
+  --_failed-font-size: var(--openbitfun-type-flow-control-font-size);
+  --_failed-line-height: var(--openbitfun-type-support-line-height);
+
+  border: none;
+  box-shadow: none;
+
+  .user-message-item__failed-inline-cluster {
+    display: flex;
+    flex-flow: row wrap;
+    align-items: flex-start;
+    column-gap: var(--openbitfun-control-flow-chat-inline-gap);
+    row-gap: 0.28em;
+    flex: 0 1 auto;
+    width: fit-content;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .user-message-item__failed-body {
+    flex: 0 1 auto;
+    width: fit-content;
+    max-width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--openbitfun-control-flow-chat-inline-gap);
+  }
+
+  .user-message-item__content {
+    flex: 0 1 auto;
+    width: fit-content;
+    max-width: 100%;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--_failed-font-size);
+    font-weight: var(--openbitfun-type-body-sm-font-weight);
+    font-style: italic;
+    line-height: var(--_failed-line-height);
+    text-decoration: line-through;
+    text-decoration-color: color-mix(in srgb, var(--openbitfun-color-content-muted) 72%, transparent);
+  }
+
+  .user-message-item__failed-body .user-message-item__steering-tag {
+    align-self: flex-start;
+  }
+}
+
+// Expanded message body: after --failed so multiline / whitespace always apply when open.
+.user-message-item--expanded .user-message-item__content {
+  white-space: pre-wrap;
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  overflow: visible;
+  text-overflow: unset;
+  max-height: none;
+  overflow-wrap: break-word;
+}
+
+.user-message-item__copy-btn,
+.user-message-item__edit-rollback-btn {
+  @include transcriptLayout.metadata-action;
+  // Keep the message action feedback and original pending indicator.
+  background: transparent;
+  color: var(--openbitfun-color-content-secondary);
+  cursor: pointer;
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  align-self: center;
+  outline: none;
+  user-select: none;
+
+  &:hover:not(:disabled) {
+    background: transparent;
+    color: var(--openbitfun-color-content-primary);
+    box-shadow: none;
+  }
+
+  &:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--openbitfun-color-accent-hover) 40%, transparent);
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.35;
+  }
+}
+
+.user-message-item__copy-btn.copied {
+  color: var(--openbitfun-color-status-success-content);
+  background: var(--openbitfun-color-status-success-surface);
+}
+
+.user-message-item__edit-layout {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--openbitfun-control-flow-chat-inline-gap);
+}
+
+.user-message-edit-composer {
+  width: 100%;
+}
+
+.user-message-edit-composer__textarea {
+  width: 100%;
+  min-height: var(--openbitfun-control-height-sm);
+  max-height: 45vh;
+  overflow-y: auto;
+  font-size: var(--openbitfun-type-flow-control-font-size);
+  line-height: var(--openbitfun-type-flow-body-line-height);
+}
+
+.user-message-edit-composer__rich-input {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--openbitfun-control-height-sm);
+  max-height: 45vh;
+  overflow-y: auto;
+
+  .rich-text-input {
+    min-height: var(--openbitfun-control-height-sm);
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    font-size: var(--openbitfun-type-flow-control-font-size);
+    line-height: var(--openbitfun-type-flow-body-line-height);
+  }
+}
+
+.user-message-edit-composer__actions {
+  width: 100%;
+}
+
+.user-message-item__rollback-spinner {
+  animation: user-message-item-spin 1s linear infinite;
+}
+
+@keyframes user-message-item-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+// Image thumbnails (WeChat-style). The gallery is a sibling of the bubble, so it
+// ends on the same reading-column content edge the bubble surface ends on.
+.user-message-item__images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-block: 0 6px;
+}
+
+.user-message-item__image-thumb {
+  /* Attachment-sized, not a hero image: the text stays the primary content. */
+  width: 72px;
+  height: 72px;
+  border-radius: 5px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 1px solid var(--openbitfun-color-border-default);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+
+  &:hover {
+    transform: scale(1.03);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--openbitfun-color-content-on-light) 30%, transparent);
+  }
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+}
+
+// Lightbox overlay.
+.user-message-item__lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: var(--openbitfun-layer-fullscreen);
+  background: color-mix(in srgb, var(--openbitfun-color-content-on-light) 80%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: user-message-lightbox-fade-in 180ms cubic-bezier(0.23, 1, 0.32, 1);
+
+  img {
+    max-width: 90vw;
+    max-height: 85vh;
+    border-radius: 8px;
+    box-shadow: 0 8px 32px var(--openbitfun-color-overlay-scrim);
+    object-fit: contain;
+  }
+}
+
+.user-message-item__lightbox-close,
+.user-message-item__lightbox-copy {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: color-mix(in srgb, var(--openbitfun-color-content-on-dark) 15%, transparent);
+  border: none;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--openbitfun-color-content-on-dark);
+  cursor: pointer;
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+
+  &:hover {
+    background: color-mix(in srgb, var(--openbitfun-color-content-on-dark) 30%, transparent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--openbitfun-color-content-on-dark);
+    outline-offset: 2px;
+  }
+}
+
+/* Copy sits to the left of the close control. */
+.user-message-item__lightbox-copy {
+  right: 64px;
+}
+
+@keyframes user-message-lightbox-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .user-message-item--forming .user-message-item__surface::after {
+    animation: none;
+    opacity: 0.08;
+  }
+  .user-message-item,
+  .user-message-item__timestamp,
+  .user-message-item__actions,
+  .user-message-item__copy-btn,
+  .user-message-item__edit-rollback-btn,
+    .user-message-item__image-thumb,
+  .user-message-item__lightbox-close,
+  .user-message-item__lightbox-copy {
+    transition-duration: 0ms;
+  }
+
+  .user-message-item__lightbox {
+    animation: none;
+  }
+}
+
+.user-message-item__lightbox[data-openbitfun-component='dialog'] {
+  padding: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.user-message-item__lightbox-surface[data-openbitfun-component='dialog'] {
+  width: 100%;
+  height: 100%;
+  max-inline-size: none;
+  max-block-size: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+.user-message-item__lightbox-close[data-openbitfun-component='icon-button'],
+.user-message-item__lightbox-copy[data-openbitfun-component='icon-button'] {
+  &::before { content: none; }
+  > [data-openbitfun-part='icon'] { display: contents; }
+}
+
+.user-message-item__large-paste-text {
+  min-height: 280px;
+  font-family: var(--openbitfun-type-code-md-font-family);
+}

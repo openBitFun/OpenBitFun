@@ -2,11 +2,13 @@
 import launcher from '../../../../design-system/packages/ui/src/components/LauncherButton/LauncherButton.module.css';
 import iconButton from '../../../../design-system/packages/ui/src/components/IconButton/IconButton.module.css';
 import composer from '../../../../design-system/packages/ui/src/flow-chat/composer/ChatComposer.module.css';
-import '../../../web-ui/src/app/layout/FloatingMiniChat.scss';
-import '../../../web-ui/src/flow_chat/components/ChatInput.scss';
-import '../../../web-ui/src/flow_chat/components/FlowTextBlock.scss';
-import '../../../web-ui/src/flow_chat/components/modern/UserMessageItem.scss';
-import '../../../web-ui/src/flow_chat/components/modern/ModelRoundItem.scss';
+// The Hi/FlowChat stylesheets below are owned here since the React desktop UI
+// (their former owner) was retired; the native MiniApp shell is their only consumer.
+import './floating-mini-chat.scss';
+import './chat-input.scss';
+import './flow-text-block.scss';
+import './user-message-item.scss';
+import './model-round-item.scss';
 import './chat-layout.scss';
 
 export { launcher, iconButton, composer };

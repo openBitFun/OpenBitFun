@@ -1166,7 +1166,9 @@ test("Agents and Skills load the user-level catalogue without a workspace, as th
   mock.handlers["openbitfun.invoke"] = (data: unknown) =>
     (data as { action?: string })?.action === "get_recent_workspaces"
       ? { ok: true, value: [], transport: "dev" }
-      : invoke(data);
+      : (data as { action?: string })?.action === "get_workspace_navigator"
+        ? { ok: true, value: { opened: [], recent: [], selectedId: null, selection: "none" }, transport: "dev" }
+        : invoke(data);
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
   await app.waitFor("No open workspace yet.");
 
@@ -1281,4 +1283,44 @@ test("Agents and Skills switch to the compact layout at phone width and keep the
   await app.press("skills-install-folder-toggle");
   await app.waitFor("skill-folder-path-input");
   await app.press("skill-folder-close");
+});
+
+test("Agents and Skills follow the host's capability flags instead of their own source rules", async () => {
+  const mock = createAgentsSkillsBackend({ skillConfigsShape: "array" });
+  const invoke = mock.handlers["openbitfun.invoke"];
+  // The host says the custom HelperSub is locked and the reviewer skill cannot be
+  // toggled: the wave 4 flags win over the client's old source-based derivation.
+  mock.handlers["openbitfun.invoke"] = async (data: unknown) => {
+    const result = (await invoke(data)) as { ok?: boolean; value?: unknown };
+    const action = (data as { action?: string }).action;
+    if (result?.ok && Array.isArray(result.value)) {
+      if (action === "list_subagents") {
+        result.value = (result.value as Array<Record<string, unknown>>).map(row => ({
+          ...row,
+          canEdit: false,
+          canDelete: false,
+        }));
+      }
+      if (action === "get_skill_configs") {
+        result.value = (result.value as Array<Record<string, unknown>>).map(row => ({
+          ...row,
+          canToggle: row.key !== "user::openbitfun::reviewer",
+          canDelete: true,
+        }));
+      }
+    }
+    return result;
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("Agents");
+  await app.waitFor("HelperSub");
+  await app.press("agent-actions-HelperSub");
+  await app.waitFor("agent-menu-delete-HelperSub");
+  expect(app.enabled("agent-menu-delete-HelperSub")).toBe(false);
+  await app.keyboard.press("escape");
+
+  await app.press("Skills");
+  await app.waitFor("Code Reviewer");
+  expect(app.enabled("label:skill-toggle-user::openbitfun::reviewer")).toBe(false);
 });

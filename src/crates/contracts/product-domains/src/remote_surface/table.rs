@@ -9,9 +9,11 @@
 //! Columns: id, remote workspace stance, peer stance, CLI peer host support.
 //! Desktop peer host support is derived (see `OperationDefinition::host_support`).
 //!
-//! Adding a Tauri command: register it in `src/apps/desktop/src/lib.rs`, then add
-//! one `op(...)` row here with a real stance for every column. `Unaudited` is a
-//! frozen backlog and may not be used for new rows (see `baseline.rs`).
+//! Adding a backend command: register it in `backend_commands!` in
+//! `src/apps/desktop/src/lib.rs`, then add one `op(...)` row here with a real
+//! stance for every column. `Unaudited` is a frozen backlog and may not be used
+//! for new rows (see `baseline.rs`). Removing one: replace its row with
+//! `retired(...)` so older clients get an explicit answer.
 
 use super::{
     HostSupport, OperationDefinition, OperationSurface, PeerStance, RemoteWorkspaceStance,
@@ -52,6 +54,38 @@ const fn host_invoke_only(
 }
 
 const RETIRED_GENUI_PROVIDER: &str = "the legacy GenUI provider has been retired";
+
+/// A tombstone for a command that no longer exists: it stays in the registry
+/// so every host and older client gets the stable retirement message
+/// ("command '<id>' is unsupported because <reason>") instead of an
+/// unknown-command error. It is not a registered command.
+const fn retired(id: &'static str, reason: &'static str) -> OperationDefinition {
+    OperationDefinition {
+        id,
+        surface: OperationSurface::HostInvokeOnly,
+        remote_workspace: RemoteWorkspaceStance::LocalOnly,
+        peer: PeerStance::Retired { reason },
+        cli_peer: HostSupport::Unsupported { reason },
+    }
+}
+
+// Commands retired with the Tauri desktop shell (the native NSH app is the
+// desktop client). Grouped by what they needed.
+const FRONTEND_HOT_UPDATE_RETIRED: &str =
+    "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle";
+const WEBVIEW_DEVTOOLS_RETIRED: &str =
+    "WebView devtools and the element inspector were retired with the Tauri desktop shell";
+const DESKTOP_PET_RETIRED: &str = "the desktop pet window was retired with the Tauri desktop shell";
+const DESKTOP_CARDS_RETIRED: &str =
+    "desktop cards were Tauri windows and were retired with the Tauri desktop shell";
+const DESKTOP_EXTERNAL_CONTROL_RETIRED: &str =
+    "local HTTP task control was retired with the Tauri desktop shell";
+const TAURI_WEBVIEW_RETIRED: &str =
+    "it rendered, captured or saved through the Tauri WebView, which was retired with the Tauri desktop shell";
+const SHELL_OWNS_WINDOW_RETIRED: &str =
+    "the native desktop shell owns drag and drop, menus and window geometry; the Tauri desktop shell that took this command was retired";
+const EMBEDDED_WEBDRIVER_RETIRED: &str =
+    "the embedded WebView WebDriver was retired with the Tauri desktop shell";
 
 const HANDLED: HostSupport = HostSupport::Handled;
 /// Cell used by every `ControllerLocal` / `OperatorOnly` row: the verdict refuses
@@ -143,6 +177,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("browser_webview_eval",                                       LocalOnly,   ControllerLocal,  REFUSED),
     op("browser_webview_navigate",                                   LocalOnly,   ControllerLocal,  REFUSED),
     op("browser_webview_reload",                                     LocalOnly,   ControllerLocal,  REFUSED),
+    op("browser_webview_report_page_load",                           LocalOnly,   ControllerLocal,  REFUSED),
     op("browser_webview_set_agent_target_state",                     LocalOnly,   ControllerLocal,  REFUSED),
     op("browser_webview_set_bounds",                                 LocalOnly,   ControllerLocal,  REFUSED),
     op("btw_ask_stream",                                             Routed,      Proxied,          HANDLED),
@@ -192,12 +227,12 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("computer_use_share_request",                                 LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
     op("computer_use_share_start",                                   LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
     op("computer_use_share_targets",                                 LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
-    op("confirm_frontend_update",                                    LocalOnly,   ControllerLocal,  REFUSED),
+    retired("confirm_frontend_update", FRONTEND_HOT_UPDATE_RETIRED),
     op("control_background_command",                                 Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("control_deep_review_queue",                                  Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("copy_session",                                               Routed,      Proxied,          HANDLED),
     op("create_acp_flow_session",                                    Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
-    op("create_assistant_workspace",                                 Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    op("create_assistant_workspace",                                 Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("create_control_conversation",                                Agnostic,    Proxied,          HANDLED),
     op("create_cron_job",                                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("create_custom_agent",                                        Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -206,10 +241,10 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("create_miniapp",                                             Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("create_session",                                             Unaudited,   Proxied,          HANDLED),
     op("create_subagent",                                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("debug_close_devtools",                                       LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("debug_devtools_available",                                   LocalOnly,   ControllerLocal,  REFUSED),
-    op("debug_element_picked",                                       LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("debug_open_devtools",                                        LocalOnly,   ControllerLocal,  REFUSED),
+    retired("debug_close_devtools", WEBVIEW_DEVTOOLS_RETIRED),
+    retired("debug_devtools_available", WEBVIEW_DEVTOOLS_RETIRED),
+    retired("debug_element_picked", WEBVIEW_DEVTOOLS_RETIRED),
+    retired("debug_open_devtools", WEBVIEW_DEVTOOLS_RETIRED),
     op("decompress_path",                                            Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("delete_agent_companion_pet_package",                         Unaudited,   ControllerLocal,  REFUSED),
     op("delete_all_archived_sessions",                               Unaudited,   Proxied,          HANDLED),
@@ -226,14 +261,15 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("delete_session",                                             Unaudited,   Proxied,          HANDLED),
     op("delete_skill",                                               Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("delete_subagent",                                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("desktop_card_delete",                                        LocalOnly,   ControllerLocal,  REFUSED),
-    op("desktop_card_get",                                           LocalOnly,   ControllerLocal,  REFUSED),
-    op("desktop_card_list",                                          LocalOnly,   ControllerLocal,  REFUSED),
-    op("desktop_card_refresh",                                       LocalOnly,   ControllerLocal,  REFUSED),
-    op("desktop_card_set_always_on_top",                             LocalOnly,   ControllerLocal,  REFUSED),
-    op("desktop_card_set_checklist_item",                            LocalOnly,   ControllerLocal,  REFUSED),
-    op("desktop_card_set_visible",                                   LocalOnly,   ControllerLocal,  REFUSED),
-    op("desktop_external_control",                                   Agnostic,    ControllerLocal,  REFUSED),
+    op("delete_terminal_profile",                                    Agnostic,    Proxied,          HANDLED),
+    retired("desktop_card_delete", DESKTOP_CARDS_RETIRED),
+    retired("desktop_card_get", DESKTOP_CARDS_RETIRED),
+    retired("desktop_card_list", DESKTOP_CARDS_RETIRED),
+    retired("desktop_card_refresh", DESKTOP_CARDS_RETIRED),
+    retired("desktop_card_set_always_on_top", DESKTOP_CARDS_RETIRED),
+    retired("desktop_card_set_checklist_item", DESKTOP_CARDS_RETIRED),
+    retired("desktop_card_set_visible", DESKTOP_CARDS_RETIRED),
+    retired("desktop_external_control", DESKTOP_EXTERNAL_CONTROL_RETIRED),
     op("dispatch_answer",                                            Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_append",                                            Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_cancel",                                            Agnostic,    ControllerLocal,  REFUSED),
@@ -282,8 +318,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("export_session_transcript",                                  Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("fetch_mcp_app_resource",                                     Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("fork_session",                                               Routed,      Proxied,          HANDLED),
-    op("frontend_update_candidate_failed",                           LocalOnly,   ControllerLocal,  REFUSED),
-    op("frontend_update_candidate_ready",                            LocalOnly,   ControllerLocal,  REFUSED),
+    retired("frontend_update_candidate_failed", FRONTEND_HOT_UPDATE_RETIRED),
+    retired("frontend_update_candidate_ready", FRONTEND_HOT_UPDATE_RETIRED),
     host_invoke_only("gen_ui_provider_call", Unsupported, PeerStance::Retired { reason: RETIRED_GENUI_PROVIDER }, HostSupport::Unsupported { reason: RETIRED_GENUI_PROVIDER }),
     op("generate_commit_message",                                    Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("generate_insights",                                          Routed,      ControllerLocal,  REFUSED),
@@ -325,7 +361,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("get_file_metadata",                                          Routed,      Proxied,          HANDLED),
     op("get_file_tree",                                              Routed,      Proxied,          HANDLED),
     op("get_file_watch_status",                                      LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("get_frontend_update_status",                                 LocalOnly,   ControllerLocal,  REFUSED),
+    retired("get_frontend_update_status", FRONTEND_HOT_UPDATE_RETIRED),
     op("get_global_config_health",                                   Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_global_config_status",                                   Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_global_skill_settings",                                  Agnostic,    Proxied,          HANDLED),
@@ -358,6 +394,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("get_operation_diff",                                         Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_operation_summary",                                      Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_pending_update",                                         Agnostic,    ControllerLocal,  REFUSED),
+    op("get_permission_settings",                                    Agnostic,    Proxied,          HANDLED),
+    op("get_personal_overview",                                      Agnostic,    Proxied,          HANDLED),
     op("get_prevent_sleep_enabled",                                  LocalOnly,   ControllerLocal,  REFUSED),
     op("get_primary_assistant_workspace",                            Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_project_permission_rules",                               Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
@@ -375,6 +413,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("get_session_permission_mode",                                Routed,      Proxied,          HANDLED),
     op("get_session_stats",                                          Unaudited,   Proxied,          HANDLED),
     op("get_session_thread_goal",                                    Unaudited,   Proxied,          HANDLED),
+    op("get_session_transcript_view",                                Routed,      Proxied,          HANDLED),
     op("get_session_turns",                                          Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_session_usage_report",                                   Unaudited,   Proxied,          HANDLED),
     op("get_settings_schema",                                        Agnostic,    Proxied,          HANDLED),
@@ -387,6 +426,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("get_subscription_account_quota",                            LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("get_subscription_login_status",                              LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("get_system_info",                                            Agnostic,    Proxied,          HANDLED),
+    op("get_terminal_profiles",                                      Agnostic,    Proxied,          HANDLED),
+    op("get_token_usage_activity",                                   Agnostic,    Proxied,          HANDLED),
     op("get_token_usage_statistics",                                 Agnostic,    Proxied,          HANDLED),
     op("get_tool_info",                                              Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_turn_files",                                             Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -394,6 +435,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("get_web_search_credential_status",                           Agnostic,    Proxied,          HANDLED),
     op("get_workspace_icon",                                         Agnostic,    Proxied,          HANDLED),
     host_invoke_only("get_workspace_info",                           Agnostic,    Proxied,          HANDLED),
+    op("get_workspace_navigator",                                    Agnostic,    Proxied,          HANDLED),
     op("get_workspace_reference_snapshot",                           Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_add_files",                                              Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_add_worktree",                                           Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
@@ -402,8 +444,10 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("git_cherry_pick_abort",                                      Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_cherry_pick_continue",                                   Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_commit",                                                 Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
+    op("git_commit_and_checkout",                                    Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_create_branch",                                          Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_delete_branch",                                          Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
+    op("git_discard_files",                                          Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_get_branches",                                           Routed,      Proxied,          HANDLED),
     op("git_get_changed_files",                                      Routed,      Proxied,          HANDLED),
     op("git_get_commits",                                            Routed,      Proxied,          HANDLED),
@@ -425,11 +469,15 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("git_reset_to_commit",                                        Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("git_resolve_revision",                                       Routed,      Proxied,          HANDLED),
     op("git_trust_repository",                                       Routed,      OperatorOnly,     REFUSED),
+    op("git_unwatch_status",                                         Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
+    op("git_watch_status",                                           Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("grant_miniapp_path",                                         Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("grant_miniapp_workspace",                                    Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("has_insights_data",                                          Routed,      ControllerLocal,  REFUSED),
-    op("hide_agent_companion_desktop_pet",                           LocalOnly,   ControllerLocal,  REFUSED),
+    retired("hide_agent_companion_desktop_pet", DESKTOP_PET_RETIRED),
     op("hide_main_window_after_close_request",                       LocalOnly,   ControllerLocal,  REFUSED),
+    op("host_shell_attach",                                          LocalOnly,   ControllerLocal,  REFUSED),
+    op("host_shell_respond",                                         LocalOnly,   ControllerLocal,  REFUSED),
     op("html_preview_create",                                        Routed,      ControllerLocal,  REFUSED),
     op("html_preview_read_resource",                                 Routed,      Proxied,          HANDLED),
     op("html_preview_release",                                       Agnostic,    ControllerLocal,  REFUSED),
@@ -440,6 +488,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("i18n_set_language",                                          Agnostic,    ControllerLocal,  REFUSED),
     op("import_agent_companion_pet_package",                         Unaudited,   ControllerLocal,  REFUSED),
     op("import_config",                                              Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    op("import_terminal_profiles",                                   Agnostic,    Proxied,          HANDLED),
     op("initialize_acp_clients",                                     Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
     op("initialize_ai",                                              Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("initialize_mcp_servers",                                     Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -451,6 +500,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("install_pending_update",                                     Agnostic,    ControllerLocal,  REFUSED),
     op("install_update",                                             Agnostic,    ControllerLocal,  REFUSED),
     op("interrupt_dialog_turn",                                      LocalOnly,   Proxied,          HANDLED),
+    op("launch_review",                                              Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("list_agent_companion_pets",                                  Unaudited,   ControllerLocal,  REFUSED),
     op("list_agent_tool_names",                                      Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("list_ai_models_by_config",                                   Unaudited,   Proxied,          HANDLED),
@@ -478,7 +528,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("list_subscription_accounts",                                 LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("list_visible_subagents",                                     Routed,      Proxied,          HANDLED),
     op("load_acp_json_config",                                       Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
-    op("load_agent_companion_pet_spritesheet",                       LocalOnly,   ControllerLocal,  REFUSED),
+    retired("load_agent_companion_pet_spritesheet", DESKTOP_PET_RETIRED),
     op("load_git_repo_history",                                      Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("load_insights_report",                                       LocalOnly,   ControllerLocal,  REFUSED),
     op("load_mcp_json_config",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -487,7 +537,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("load_session_trajectory",                                    Routed,      Proxied,          HANDLED),
     op("load_session_turn_window",                                   Routed,      Proxied,          HANDLED),
     op("load_session_turns",                                         Unaudited,   Proxied,          HANDLED),
-    op("local_file_download",                                       Agnostic,    ControllerLocal,  REFUSED),
+    retired("local_file_download", TAURI_WEBVIEW_RETIRED),
     op("logout_subscription_account",                                LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("logout_subscription_account_instance",                         LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("manage_dialog_queue",                                      Routed,      Proxied,          HANDLED),
@@ -495,7 +545,10 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("mark_openbitfun_control_surface_ready",                          Agnostic,    ControllerLocal,  REFUSED),
     op("mark_openbitfun_control_surface_unready",                        Agnostic,    ControllerLocal,  REFUSED),
     op("mark_session_seen",                                          Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
-    op("market_image_load",                                         Agnostic,    ControllerLocal,  REFUSED),
+    retired("market_image_load", TAURI_WEBVIEW_RETIRED),
+    op("mesh_list_devices",                                          Agnostic,    ControllerLocal,  REFUSED),
+    op("mesh_phone_join_info",                                       Agnostic,    ControllerLocal,  REFUSED),
+    op("mesh_status",                                                Agnostic,    ControllerLocal,  REFUSED),
     op("miniapp_agent_cancel",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_agent_cancel_stale_runs",                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_agent_ensure_session",                               LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -519,7 +572,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("miniapp_import_from_path",                                   Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_install_deps",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_market_browse",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("miniapp_market_capture_window",                              LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
+    retired("miniapp_market_capture_window", TAURI_WEBVIEW_RETIRED),
     op("miniapp_market_get_listing",                                 Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_market_import_package",                              LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_market_inspect_package",                             LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -529,12 +582,12 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("miniapp_market_list_submissions",                            Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_market_set_favorite",                                Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_market_set_rating",                                  Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("miniapp_market_submit_installed",                            LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
+    retired("miniapp_market_submit_installed", TAURI_WEBVIEW_RETIRED),
     op("miniapp_market_withdraw_submission",                         Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_permission_diff_for_draft",                          Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_presentation",                                      LocalOnly,   ControllerLocal,  REFUSED),
     op("miniapp_recompile",                                          Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("miniapp_render_slide_page",                                  Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    retired("miniapp_render_slide_page", TAURI_WEBVIEW_RETIRED),
     op("miniapp_runtime_status",                                     Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_set_draft_permissions",                              Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_shell_call",                                        LocalOnly,   ControllerLocal,  REFUSED),
@@ -548,6 +601,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("notify_cron_host_ready",                                     Unaudited,   Proxied,          SOFT_EMPTY_NO_CRON_HOST),
     op("obp_create_pairing",                                         Agnostic,    ControllerLocal,  REFUSED),
     op("obp_get_status",                                             Agnostic,    ControllerLocal,  REFUSED),
+    // Mesh-only bot lane: legacy peer hosts refuse it; the OBP mesh listener admits it for account devices.
+    host_invoke_only("obp_remote_command",                           Agnostic,    OperatorOnly,     REFUSED),
     op("obp_revoke_paired_client",                                   Agnostic,    ControllerLocal,  REFUSED),
     op("obp_set_lan_enabled",                                        Agnostic,    ControllerLocal,  REFUSED),
     op("open_html_file_in_browser",                                  LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -569,11 +624,16 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("peer_controller_set_active",                                 Agnostic,    ControllerLocal,  REFUSED),
     op("peer_host_bridge_ready",                                     Agnostic,    ControllerLocal,  REFUSED),
     op("peer_host_invoke_complete",                                  Agnostic,    ControllerLocal,  REFUSED),
+    op("peer_link_call",                                             Agnostic,    ControllerLocal,  REFUSED),
+    op("peer_link_connect",                                          Agnostic,    ControllerLocal,  REFUSED),
+    op("peer_link_disconnect",                                       Agnostic,    ControllerLocal,  REFUSED),
+    op("peer_link_events",                                           Agnostic,    ControllerLocal,  REFUSED),
     op("peer_mode_ping",                                             Agnostic,    HostControlPlane, HANDLED),
     op("plan_external_hook_import_command",                          Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("plan_external_mcp_import_command",                           Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("predownload_acp_client_adapter",                             Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
     op("preview_commit_message",                                     Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    op("preview_cron_occurrences",                                   Agnostic,    Proxied,          HANDLED),
     op("probe_acp_client_requirements",                              Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
     op("probe_magpie_gateway", Agnostic, Proxied, HANDLED),
     op("product_control_invoke",                                     Agnostic,    Proxied,          HANDLED),
@@ -625,6 +685,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("remote_remove_workspace",                                    Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("remote_rename",                                              Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("remote_upload_from_local_path",                              Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
+    op("remote_workspace_ensure_connected",                          Agnostic,    Proxied,          CLI_NO_REMOTE_WORKSPACE_UI),
+    op("remote_workspace_link_states",                               Agnostic,    Proxied,          CLI_NO_REMOTE_WORKSPACE_UI),
     op("remote_write_file",                                          Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("remove_project_permission_grant",                            Agnostic,    Proxied,          HANDLED),
     op("remove_recent_workspace",                                    Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
@@ -641,9 +703,9 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("reset_memory",                                               Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("reset_mode_skill_selection",                                 Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("reset_workspace_persona_files",                              Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("resize_agent_companion_desktop_pet",                         LocalOnly,   ControllerLocal,  REFUSED),
+    retired("resize_agent_companion_desktop_pet", DESKTOP_PET_RETIRED),
     op("resolve_ai_model_request_url",                               Agnostic,    ControllerLocal,  REFUSED),
-    op("resolve_browser_dropped_file_paths",                         LocalOnly,   ControllerLocal,  REFUSED),
+    retired("resolve_browser_dropped_file_paths", SHELL_OWNS_WINDOW_RETIRED),
     op("respond_permission",                                         Agnostic,    Proxied,          HANDLED),
     op("respond_permission_batch",                                   Agnostic,    Proxied,          HANDLED),
     op("restart_app",                                                LocalOnly,   ControllerLocal,  REFUSED),
@@ -668,7 +730,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("review_platform_get_workspace_context",                      Routed,      Proxied,          CLI_NO_DESKTOP_IDE_SURFACE),
     op("review_platform_get_workspace_snapshot",                     Routed,      Proxied,          CLI_NO_DESKTOP_IDE_SURFACE),
     op("review_platform_update_auth_token",                          Agnostic,    Proxied,          CLI_NO_DESKTOP_IDE_SURFACE),
-    op("rollback_frontend_update",                                   LocalOnly,   ControllerLocal,  REFUSED),
+    retired("rollback_frontend_update", FRONTEND_HOT_UPDATE_RETIRED),
     op("rollback_miniapp",                                           Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("rollback_session",                                           Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("rollback_session_to_turn",                                   Unsupported, Proxied,          HANDLED),
@@ -704,6 +766,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("set_active_workspace",                                       Agnostic,    Proxied,          HANDLED),
     op("set_agent_profile_config",                                   Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("set_approval_settings",                                      Agnostic,    Proxied,          HANDLED),
+    op("set_assistant_identity",                                     Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("set_config",                                                 Unaudited,   Proxied,          HANDLED),
     op("set_external_mcp_server_decision_command",                   Unsupported, Proxied,          HANDLED),
     op("set_external_mcp_servers_enabled_command",                   Unsupported, Proxied,          HANDLED),
@@ -715,10 +778,10 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("set_external_tool_conflict_choice_command",                  Unsupported, Proxied,          HANDLED),
     op("set_external_tool_target_decision_command",                  Unsupported, Proxied,          HANDLED),
     op("set_external_tool_targets_enabled_command",                  Unsupported, Proxied,          HANDLED),
-    op("set_file_drop_preview_target",                               LocalOnly,   ControllerLocal,  REFUSED),
+    retired("set_file_drop_preview_target", SHELL_OWNS_WINDOW_RETIRED),
     op("set_global_skill_disabled",                                  Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("set_macos_edit_menu_mode",                                   LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("set_main_window_transient_geometry",                         LocalOnly,   ControllerLocal,  REFUSED),
+    retired("set_macos_edit_menu_mode", SHELL_OWNS_WINDOW_RETIRED),
+    retired("set_main_window_transient_geometry", SHELL_OWNS_WINDOW_RETIRED),
     op("set_miniapp_draft_storage",                                  Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("set_miniapp_storage",                                        Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("set_mode_skill_disabled",                                    Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -734,7 +797,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("set_tray_unread_count",                                      LocalOnly,   ControllerLocal,  REFUSED),
     op("set_web_search_provider",                                    Agnostic,    Proxied,          HANDLED),
     op("set_workspace_icon",                                         Agnostic,    Proxied,          HANDLED),
-    op("show_agent_companion_desktop_pet",                           LocalOnly,   ControllerLocal,  REFUSED),
+    retired("show_agent_companion_desktop_pet", DESKTOP_PET_RETIRED),
     op("show_main_window",                                           LocalOnly,   ControllerLocal,  REFUSED),
     op("speech_append_audio_chunk",                                  LocalOnly,   ControllerLocal,  REFUSED),
     op("speech_append_realtime_audio",                               LocalOnly,   ControllerLocal,  REFUSED),
@@ -782,7 +845,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("start_subscription_account_login",                             LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("start_subscription_login",                                   LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("start_user_question_interaction",                           Agnostic,    Proxied,          HANDLED),
-    op("startup_window_control",                                     LocalOnly,   ControllerLocal,  REFUSED),
+    retired("startup_window_control", SHELL_OWNS_WINDOW_RETIRED),
     op("steer_dialog_turn",                                          Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("stop_acp_client",                                            Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
     op("stop_dialog_turn",                                           Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
@@ -831,10 +894,12 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("update_workspace_info",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("upload_image_contexts",                                      Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("upsert_permission_rule",                                     Agnostic,    Proxied,          HANDLED),
+    op("upsert_terminal_profile",                                    Agnostic,    Proxied,          HANDLED),
     op("validate_config",                                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    op("validate_cron_job_draft",                                    Agnostic,    Proxied,          HANDLED),
     op("validate_skill_path",                                        Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("validate_tool_input",                                        Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
-    op("webdriver_bridge_result",                                    Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    retired("webdriver_bridge_result", EMBEDDED_WEBDRIVER_RETIRED),
     op("workspace_file_upload",                                     Routed,    Proxied,          HANDLED),
     op("worktree_bind_session",                                      Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("worktree_create",                                            Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),

@@ -1,41 +1,35 @@
 # NSH frontend
 
-`src/nsh-ui` is a Native Shell (NSH) frontend for the desktop client. It is a
-second surface over the same desktop backend, built as a 12-scene **Personal
-Agent Studio** (`Home`, `Sessions`, `Assistants`, `Agents`, `Skills`, `Routines`,
-`Files`, `Git`, `Terminal`, `Spaces`, `Devices`, and `Settings`) so every core
-workflow that does not require Tauri-owned native webview windows can be
-delivered in NSH.
+`src/nsh-ui` is the OpenBitFun desktop UI. It is a Native Shell (NSH) app built as a
+12-scene **Personal Agent Studio** (`Home`, `Sessions`, `Assistants`, `Agents`,
+`Skills`, `Routines`, `Files`, `Git`, `Terminal`, `Spaces`, `Devices`, and
+`Settings`). The same TSX code renders the native desktop app
+(`src/apps/desktop-nsh`: AppKit, Win32, GTK runners with the backend library loaded
+in-process) and, as the NSH web target, browsers and phones that connect to a
+backend over OBP. Architecture owner: [unified-client-architecture.md](unified-client-architecture.md).
 
-The React surface in `src/web-ui` remains the shipping frontend until the parity
-matrix below says otherwise.
+The React desktop UI (`src/web-ui`) and the Tauri desktop shell were retired
+(wave 4 sunset); this document's history sections below still mention the Tauri
+window the NSH web target ran in during the migration.
 
-## Decision: NSH's web target inside the existing window
+## Current shape
 
-NSH ships a native backend per platform (AppKit, Win32/Direct2D, GTK 4) and a web
-backend that renders HTML with its own layout, text and animation engine compiled
-to WebAssembly. The MVP uses the **web target inside the existing desktop
-window**, because:
-
-- The desktop host owns 710 Tauri commands, remote-workspace routing, SSH and
-  Docker transports, the peer-device and dispatch paths, and the session store.
-  A native NSH process would have to re-reach all of it over a new IPC protocol,
-  which is a different project and would regress the areas the MVP must keep.
-- The MVP requirement is UI/UX parity for the areas that do not depend on
-  Tauri-frontend-only features. Keeping the host and replacing the view layer
-  reaches that parity with the same commands, so parity is a UI problem only.
-- The app model does not depend on the target: when the native host path exists,
-  the same scenes move to it. Only `host.js` and the transport change.
-
-Consequences to keep in mind:
-
-- On the web target, text, focus, scrolling and input are the browser's. That is
-  NSH's documented web behaviour, not a shortcut.
-- Tauri-only frontend capabilities stay in the React / desktop host shell:
-  interactive multi-window MiniApp webviews (while Space catalog, running
-  workers, version/source inspection, and prompt creation run in `SpacesScene`),
-  desktop cards, the companion pet, multi-window shells, embedded browser views,
-  native OS file-import wizards, and the updater UI.
+- **Native desktop.** `src/apps/desktop-nsh/App.tsx` installs the in-process
+  connection (`src/jsonWireConnection.ts` over the `openbitfun/native` module) and
+  the native window shell (`src/nshDesktopShell.ts`), then mounts this app.
+- **Browser / phone.** `servedBackend.ts` installs `webSocketConnection.ts` when the
+  page was served by a backend's OBP listener (`#nsh-params`).
+- **Peer Device Mode.** On new hosts the bridge routes to the peer's backend over
+  the device mesh (`meshPeerConnection.ts`); registry `ControllerLocal` commands stay
+  local (`src/generated/peerSurface.ts`).
+- **Page host (`host.js`).** The legacy page-host wire (`tauri` transport when a
+  host page exposes `window.__TAURI__`, `dev` fixtures otherwise) remains for
+  `nsh run --target web` development and the headless tests; nothing ships it as
+  the desktop transport.
+- Capabilities without an NSH implementation degrade loudly: the desktop pet
+  window and desktop cards (retired with the Tauri shell), in-product MiniApp tabs
+  (MiniApps open as independent windows), browser screenshots, and in-place
+  updates on Windows/Linux.
 
 ## Transport
 
@@ -56,7 +50,8 @@ runs in a plain browser during `nsh run --target web` and under `nsh test`
 without the desktop binary. `transportKind()` reads `tauri`, `dev` or `native`;
 it is no longer drawn in the chrome, so check it from a scene or the logs.
 
-Request shapes follow `src/web-ui`'s service API exactly, mixed casing included:
+Request shapes follow the backend command signatures (the wire the retired React
+UI also used), mixed casing included:
 sessions use `workspace_id`, workspace and file commands use `workspaceId`, and
 positional commands use Tauri v2's default camelCase wire names — e.g.
 `account_device_rpc` takes `targetDeviceId`, `commandJson`, `timeoutMs`, and
@@ -73,8 +68,8 @@ arrive; it had been sending those commands to this machine regardless of the
 selected device, which is a silent local fallback — a question answered, or an
 MCP server started, on the wrong host. The commands that stay here — account,
 relay, window, updater — are read from `src/nsh-ui/src/generated/peerSurface.ts`,
-a projection of the same Product Operation Registry the React peer transport
-uses, so the two surfaces cannot disagree about which command is controller-local.
+a projection of the Product Operation Registry, so the UI and every host agree
+on which command is controller-local.
 
 ## Backend connection and window shell
 
@@ -89,12 +84,13 @@ The table above is the legacy page host. `src/bridge.ts` no longer talks to
   host (`src/hostPageConnection.ts`, which keeps the `{ action, request }` /
   `{ action, raw }` envelopes above); the native desktop installs a JSON-string
   wire (`src/jsonWireConnection.ts`) over the in-process `openbitfun/native`
-  module. A WebSocket connection to a remote backend is the next one and reuses
-  the same interface: every client is the same UI over one protocol.
+  module, and browsers/phones use the OBP WebSocket connection
+  (`src/webSocketConnection.ts`) with the same interface: every client is the
+  same UI over one protocol.
 - A **window shell** (`src/windowShell.ts`): the window, title bar, application
   menu, tray, OS notifications and the local folder picker — the client's own
-  machine, never the backend's. The default drives the Tauri webview through
-  `host.js` and the desktop's own window commands; `src/nshDesktopShell.ts`
+  machine, never the backend's. The default (`host.js` page host) is for
+  development and tests; `src/nshDesktopShell.ts`
   drives a native NSH window with `nsh/desktop` (system traffic lights in a
   hidden title bar, `desktop={{ windowDrag }}` regions, `Menu` with the editing
   roles so text fields get Command-C / Command-V, `Tray`, `Notifications`,
@@ -110,7 +106,8 @@ wire, with the same algorithm (a test holds the two to the same output).
 The native desktop app is `src/apps/desktop-nsh` (`nsh.json`, `App.tsx` that
 installs the native connection and shell and then imports this app); its Rust
 side is the `native/` crate (`openbitfun/native`) and the `openbitfun-nsh`
-binary that links the backend into the same process.
+runner that loads the backend library (`libopenbitfun_desktop_lib`) into the same
+process.
 
 ## Rendering model notes
 
@@ -125,7 +122,7 @@ binary that links the backend into the same process.
 
 ## Personal Agent Studio design system and UX architecture
 
-The NSH frontend mirrors `src/web-ui`'s **OpenBitFun Tauri 5-Plane Desktop
+The NSH frontend carried over the retired React UI's **OpenBitFun 5-Plane Desktop
 Shell**, motion system, Layer-4 overlays, and Remote SSH capabilities across
 all 12 scenes:
 
@@ -243,6 +240,11 @@ what the surface does show instead of claiming a behavior it does not have.
 | Session tabs / scene bar | `app/components/SceneBar` | ported for the session canvas (an `openSessionIds` strip above the transcript: a pressed session joins it, a tab press reloads that session's turns, a tab close falls back to the last tab, and archiving or deleting a session removes its tab) |
 | Global search | `app/global-search` | partial (`src/globalSearchStore.ts`; one field over active workspace sessions by name, message hits via `search_session_content`, workspace files via `search_files`, and leading `>` commands for all 12 scenes — `>home`, `>sessions`, `>assistants`, `>agents`, `>skills`, `>routines`, `>files`, `>git`, `>terminal`, `>spaces`, `>devices`, `>settings` — plus `New session`. Typing is debounced 220 ms with request tickets so stale answers never overwrite newer ones, and a failing source sets `searchNotice` while other groups still render. Not ported: federated catalog items inside search rows, and global `Cmd+K` / `Alt+F` chords since NSH delivers key events only to a focused input) |
 | Archived and background sessions | `sections/devices`, `sections/sessions` | ported for archive and restore (`Active` / `Archived n` chips split the one catalog the host returns by `persistedStatus`, the archived row's header action restores it through `unarchive_session`, and archiving keeps its row instead of dropping it); a row also states what its session is doing, derived from this surface's own events rather than stored per session: `Running` (a turn event that names the session — including a session the user is not looking at), `Waiting for approval` (a permission prompt carrying that session), `Queued` (the host queue reported rows for it), `Last turn failed`, and `Not read yet` / `Last turn failed` from the host's unread receipt (`unread` / `failed` in the session page's activities; opening a session acknowledges it with `mark_session_seen`, and stamps older builds kept in `openbitfun.nsh.session-seen.v1` are handed to the host once). Sessions a device owns are reached by entering Peer Device Mode, not by listing them beside local ones, and a background session whose turn this surface never saw an event for shows no mark) |
+| Task card subagent steps (wave 5) | `tool-cards/TaskToolDisplay` | ported (`src/ui/toolCards.tsx` lists the subagent's tool calls and replies from the transcript view's nested `subagentItems` under an opened Task card, the latest eight first and the rest behind `Show n earlier steps`; nothing is re-derived from records) |
+| Joining a turn that is already running (wave 5) | `restore_session_view` `runtimeEventSnapshot` replay | ported (`get_session_transcript_view` now carries `runningTurn`: the runtime journal's projection of the running turn as the live `agentic://*` events plus the delivery cursor they reached; `src/agentEvents.ts` replays them through its own live handlers and drops live events at or below that cursor — a text chunk merged across it keeps only the newer text, using the `__openbitfunChunkSpans` the per-frame merge records — so a surface that connects, reopens the session or lost events mid-turn shows the turn exactly as an attached one does. A turn this surface followed from its start is not replayed again. An older host omits the field and the turn appears when it settles, as before) |
+| GenUI answers (wave 5) | `GenerativeWidgetInline`, `tools/generative-ui`, `@openuidev/react-lang` | ported for the transient inline answer (`src/genui/`: an OpenUI Lang reader for the same language — statements, positional component calls whose argument order `scripts/generate-genui-contract.mjs` generates from the product library, `$state`, hoisting, `@Each` and the library's builtins, `@ToAssistant` / `@OpenUrl` / `@Set` / `@Reset` / `@CopyToClipboard` actions — and NSH drawings for all 55 components, rendered as the source streams in through `GenUIStream` deltas and from the call's result once settled; a failed candidate leaves no card, as on the desktop. Shown differently and said so: images, maps and YouTube are captions with an Open link because this window has no network grant, and HtmlView and free `html-document` answers render as static pages with scripts off. Not ported: the owner/CAS persistence the desktop also did not have, host `Query`/`Mutation` providers, the repair request after a render diagnostic) |
+| Composer voice input and voice calls (wave 5) | `flow_chat/components/voice` | partial (`src/voiceInputStore.ts`, `src/ui/VoiceInput.tsx`: dictation runs on the system recognizer (`Speech`, macOS/iOS) in the language `app.ai_experience.voice_input.default_language` names, shows what it hears, and inserts or sends the transcript; the button follows `voice_input.enabled`. An NSH window cannot capture raw microphone audio, so the host speech service (`speech_*` input sessions with the local or cloud model) and full-duplex voice calls (`speech_*_realtime_*`) are not driven: the dictation tooltip names the system recognizer, a device without one says so, and an enabled voice call explains that this window cannot place it instead of starting anything) |
+| Agent navigation requests (wave 5) | `global-search/openBitFunControlBridge` | ported (`src/controlPresenter.ts`: the window marks itself the presentation surface with `mark_openbitfun_control_surface_ready`, answers `agentic://openbitfun-control-request` by opening the screen behind the catalog `destination` the host now resolves into the request (settings page and section, scene, product action, surface event) and reports through `report_openbitfun_control_result`; a destination this UI has no screen for, or a host that sends none, is reported as a failure naming it. Persisted language and appearance effects are applied and acknowledged. Pages served to phones or browsers never declare themselves the presenter) |
 
 ### Assistants
 
@@ -299,7 +301,7 @@ what the surface does show instead of claiming a behavior it does not have.
 | Input, workspace and the mid-turn send policy | `settings/pages/application`, `settings/pages/development` | ported for the stored values (`Input` draws the selection-toolbar switch and the local voice-input preferences — on/off, language, longest recording, microphone — from `app.flow_chat.auto_show_selection_toolbar` and `app.ai_experience.voice_input.*`; `Workspace` draws the worktree folder, branch prefix, copy-local-changes and the auto-delete policy from `app.worktrees.*`, in the camelCase keys the worktree service stores. `Message sending` is a two-chip switch over `app.flow_chat.send_during_turn` — `Steer now` or `Queue` — and the composer's primary action follows it: with `Queue` a message written during a turn goes to the queue instead of into that turn, with `Steer now` it steers, and the other route stays one press away either way. Every one of these is a leaf write, so `app.flow_chat`, `app.ai_experience` and `app.worktrees` are never replaced. Not ported: the local-model download/selection and the microphone test, which are host probes rather than stored values, and the suggestion fields the desktop groups with them) |
 | Web search provider and key | `tools/WebSearchConfig`, `ai/web_search` | ported (`ai.web_search` is read as one document and written back whole, so a provider this surface does not draw and any unknown field of a drawn one survive the write; the six providers the desktop offers are `exa_mcp_free`, `exa_search_api`, `tavily`, `deepseek`, `keenable` and the self-hosted `openbitfun_search_http`, and choosing one writes `provider` plus that provider's `credential_id` / endpoint / auth fields. The key never enters the config: `get_web_search_credential_status` states whether one is stored, `save_web_search_credential` / `clear_web_search_credential` move it through the vault, and the note above the row is what the host answered last. A provider that needs no key, such as Exa's free MCP, says so instead of showing the credential rows) |
 | Composer quick actions | `ChatInput/quickActions` | ported (`app.ai_experience.quick_actions` — `{ id, label, prompt, enabled }` — is drawn as an editable list: `Show` / `Hide` per row, `Up` / `Down` for order, `Edit` for label and prompt, `Delete`, and `Add`; the host's defaults (`commit`, `create_pr`) appear when it stores nothing. Every write re-reads `app.ai_experience` and merges, because `voice_input` and the other switches in that object are written by other sections of the same page. The composer's `Actions` menu lists the enabled rows and sends the row's prompt as a turn; a hidden row stays out of the menu but stays in the stored list) |
-| Theme and appearance application | `infrastructure/appearance`, `infrastructure/font-preference` | ported for built-in presets and scaling (`src/theme.ts` defines the 5-plane elevation tokens + all 9 built-in `APPEARANCE_PRESETS`: `Dark`, `Light`, `Monochrome`, `Slate`, `Midnight`, `Ink & Paper`, `Night Ink`, `Cyber`, `Tokyo Night` selectable via `NavPanel` header menu or `Settings → Appearance` `<SelectDropdown>`, alongside `System` / `Light` / `Dark` override persisted in `openbitfun.nsh.appearance.v1` and `openbitfun.nsh.appearance-id.v1`; `font` `{ uiSize: { level, customPx? } }` scales every text size via `textSize(base)`, and `openbitfun:appearance:flowChatWidth` controls conversation column width. Custom user-imported appearance asset packs remain in `src/web-ui`) |
+| Theme and appearance application | `infrastructure/appearance`, `infrastructure/font-preference` | ported for built-in presets and scaling (`src/theme.ts` defines the 5-plane elevation tokens + all 9 built-in `APPEARANCE_PRESETS`: `Dark`, `Light`, `Monochrome`, `Slate`, `Midnight`, `Ink & Paper`, `Night Ink`, `Cyber`, `Tokyo Night` selectable via `NavPanel` header menu or `Settings → Appearance` `<SelectDropdown>`, alongside `System` / `Light` / `Dark` override persisted in `openbitfun.nsh.appearance.v1` and `openbitfun.nsh.appearance-id.v1`; `font` `{ uiSize: { level, customPx? } }` scales every text size via `textSize(base)`, and `openbitfun:appearance:flowChatWidth` controls conversation column width. Custom user-imported appearance asset packs are not ported; the retired React UI owned them) |
 | Language selection | `infrastructure/i18n` | blocked by the surface (the configured value `app.language` is shown under `Application`, and the row states that this surface renders English only. Switching is not a scripted operation even for the desktop: the catalog marks it `open`/`unstructuredInteraction`, and applying a locale loads that locale's namespaces and repaints every live window, which a surface with no resource catalogs of its own cannot honour — offering the control here would change the desktop and leave this page unchanged) |
 | MCP servers | `tools/mcp`, `settings/pages/tools/McpConfig` | partial (`get_mcp_servers` fills the list — name, id, `transport · command` or `transport · url`, the host's status chip, and `Enable` / `Edit` / `Enable and start` / `Stop` / `Restart` / `Delete` — and `start_mcp_server` / `stop_mcp_server` / `restart_mcp_server` / `delete_mcp_server` drive one server at a time. Configuration is edited as the stored document, not as a rebuilt one: `load_mcp_json_config` returns the Cursor-format text and its fingerprint, `save_mcp_json_config` writes with that fingerprint, and a document another surface changed meanwhile is refused with the host's own `changed elsewhere` wording instead of overwriting it — the editor then reports `Not saved` rather than `Saved`, because a refused write that still reads as saved is worse than no status at all. The form writes only the fields it draws into a copy of the stored entry, so a field this surface does not show survives an edit, and a new entry is stored `enabled: false` whatever the form said, so a server never starts behind the user's back. Entries the form cannot express (a transport alias it does not know, a non-string environment, a shape it would have to guess) open the whole-document editor instead of being silently rewritten. The remote OAuth flow is its own panel: a row whose `url` the host reported carries an `Authorize` / `Reauthorize` chip (the label follows `authConfigured`), and the panel behind it runs `start_mcp_remote_oauth` and then polls `get_mcp_remote_oauth_session` once a second until the session answers `authorized` / `failed` / `cancelled` — an `authorized` answer refreshes the server list — while `Cancel authorization` sends `cancel_mcp_remote_oauth`. The address the host hands back is opened with the surface's own `openUrl`, and when that fails the panel shows the address with `Copy address` instead of dropping it. The token route is the same panel: `update_mcp_remote_auth` stores an authorization value and `clear_mcp_remote_auth` removes it, so a server without OAuth discovery still takes one. Importing another client's configuration is the pasted-document route: `Import` takes the text, `Preview` reads it through the same entry reader the edit form uses and lists one row per server with an editable target id, an entry whose id the document already holds starts unselected, and an entry the form cannot express stays listed as `Unsupported` with the reader's reason instead of being stored as a server nobody could edit — the write is one `save_mcp_json_config` of the document with the selected entries added `enabled: false`, because importing a configuration is not permission to launch what it names. What a running server publishes is browsed from the row's `Resources` entry: `list_mcp_resources` fills the list (the first read is the cached list, `Refresh` asks the server again with `refresh: true`), a filter narrows it by name, URI or description without another read, and `read_mcp_resource` renders the contents — one block prints its media type, several name themselves so they stay distinguishable, a `blob` is reported as binary instead of being decoded, and a read that fails says so under the row it belongs to. `list_mcp_prompts` / `get_mcp_prompt` are not drawn because the desktop's own surface does not call them either: there is no prompts UI to port) |
 | Token usage | `data/UsageStatisticsSettingsPage`, `infrastructure/config/components/UsageActivityHeatmap` | ported (`get_token_usage_statistics` answers the whole dashboard, and the section reads it twice, as the desktop does. The range half: the five preset ranges are chips, the granularity is derived the way the desktop derives it — `last24Hours` and `today` bucket by hour, everything else by day — and the IANA zone goes along because the host aligns calendar ranges and buckets with it. Totals, the cache hit rate (computed from `totalCachedTokens` over `totalCacheReportedInputTokens`, and shown only when that denominator is non-zero), failed and unknown-usage counts, the distribution block, the last twelve trend buckets as a stacked input/output bar chart with its legend, and the same buckets again as rows. The distribution block is the desktop's `UsageDistribution` plus the detail rows under it: `Model` and `Group` tabs over the host's own `byModel` and `byGroup` (one answer, one view drawn, both sorted by tokens), five rows at a time behind `Show all N` / `Show less`, a `cache N%` beside each row that reported telemetry, and a text filter matched against the row's primary and secondary text. The filter is matched against the rows that view holds and the match count decides the empty state, so a filter that matches nothing says so instead of reading as a host with no usage. Switching tabs clears the filter and collapses the list, the way the desktop resets its own narrowing. `By endpoint` lists `byEndpoint` with the same columns and is not narrowed by that filter, because it is the detail block rather than the distribution. Row keys are positional: the legacy `/unknown` endpoint arrives once per request group, so identical labels are expected. The activity half: the same command asked for `timeRange: "custom"` over the desktop's fixed six-calendar-month window with day granularity, projected onto a Monday-first week grid — one cell per day, days outside the window left as empty padding, a bucket the host did not report kept at zero rather than interpolated, and the five-step shade taken from the busiest day in that window. The projection is date arithmetic on the host's own buckets plus a `YYYY-MM-DD` key in the statistics zone, so the grid groups days exactly where the host bucketed them. The window is independent of the range, so switching ranges redraws only the half below it. A Peer host that answers `token_usage_statistics_unsupported` gets its own sentence instead of an error, a failed range read never renders as zeroes, and a host that answers the range but refuses the window keeps the section and says why instead of drawing an empty grid. Not ported: nothing the desktop draws. The command also accepts `filterKind` / `filterQuery` and a `custom` range, but no desktop surface exposes either — `custom` appears only as this heatmap's fixed window, which is read here too — so there is no UI to port for them) |
@@ -372,20 +374,17 @@ has no counterpart here at all.
 |---|---|---|
 | Space catalog, worker lifecycle & source inspection | `scenes/miniapps`, `MiniAppAPI` | partial (`SpacesScene` + `src/spacesStore.ts`: natural-language `"Describe a Space to build…"` launchpad calling `startQuickPromptInSession(..., "Ultimate")`, `list_miniapps`, `miniapp_worker_list_running` / `miniapp_worker_stop`, `get_miniapp`, `get_miniapp_versions`, `delete_miniapp` behind `InlineConfirmBar`, and explicit Peer Mode notice; interactive multi-window MiniApp webviews stay on the desktop host shell) |
 
-## Remaining desktop-host capabilities
+## Capabilities outside the NSH UI
 
-All 12 primary scenes (`Home`, `Sessions`, `Assistants`, `Agents`, `Skills`,
-`Routines`, `Files`, `Git`, `Terminal`, `Spaces`, `Devices`, and `Settings`) are
-now implemented in `src/nsh-ui`. The capabilities below still belong to the
-desktop host / React shell because they rely on Tauri-managed multi-window
-webviews, native OS integrations, or desktop-only filesystem discovery:
+All 12 primary scenes are implemented in `src/nsh-ui`. What the native desktop does
+not offer, and how it says so:
 
-| Desktop capability | Why it stays in the desktop host shell |
+| Capability | State in the native desktop |
 |---|---|
-| Interactive MiniApp webviews & hosted `pages` | Multi-window webview isolation, live runtime host-bridge frames, and standalone webview windows are owned by Tauri (`SpacesScene` handles Space prompt creation, listing, worker stopping, and source/version inspection) |
-| Embedded `browser`, desktop cards & companion pet | Require Tauri-managed transparent overlay/child webviews and native window geometry control |
-| `ecosystem-compatibility` account capture, pets and per-application pages | The discovery snapshot, MCP import and removed-session restore are ported in `Settings → External import`; account capture and pet handling read credential stores and app folders through desktop-only adapters |
-| Updater UI & multi-window shell chrome | Desktop binary self-update and multi-window lifecycle remain controller-local desktop chrome |
+| Interactive MiniApp windows & hosted `pages` | Independent windows through the `openbitfun-miniapp-shell` sidecar; in-product tabs are refused (`kind: tab`) |
+| Desktop cards & companion pet window | Retired with the Tauri shell (registry `retired(...)` rows; Settings says so); the agent `DesktopCard` tool hides itself without a card host |
+| `ecosystem-compatibility` account capture, pets and per-application pages | Discovery snapshot, MCP import and removed-session restore are in `Settings → External import`; account capture and pet handling use desktop-only adapters |
+| In-place updates on Windows/Linux | The updater reports that in-place install is not available yet; macOS installs in place |
 
 ## Verification
 
@@ -410,15 +409,17 @@ Tauri 1:1 migration (`sessions-ux`, `personal-hub`, `agents-skills`,
 `pnpm run capabilities:check`, and `pnpm run check:repo-hygiene`; real-window
 interactive observation notes below reflect the prior MVP desktop-window runs.
 
-Real-host smoke, which does:
+Real-host smoke (the native app on a real backend):
 
 ```bash
-nsh run src/nsh-ui --target web
-cd src/apps/desktop && cargo tauri dev --config ../../nsh-ui/tauri.nsh.conf.json
+pnpm run desktop:dev                     # build and run the native app
+pnpm run e2e:smoke                       # package-free smoke over the loopback OBP owner connection
+pnpm run desktop-nsh:package:mac -- --profile release-fast && pnpm run e2e:smoke:packaged
 ```
 
-With it, the `NavPanel` header transport badge reads `tauri`, the workspace list is the machine's own
-workspaces, and the scenes read that host's sessions, files and terminals.
+History (migration period): the steps below drove the NSH web target inside the
+retired Tauri window (`transport: tauri`); they are kept as the record of those
+observations and no longer apply.
 
 The dev server is not the only way, and here it stopped being a reliable one: in
 this environment the page `nsh run` serves did not load in the desktop webview (the
@@ -1003,8 +1004,6 @@ body, so they go through `invokeCommand` like the rest of the settings surface.
   `homeDir` explicitly; `nsh.json` grants `application`.
 - The web runtime is about 1 MB compressed; acceptable for a desktop window that
   loads from local files, and a cost to review before any web distribution.
-- The native NSH host (`src/apps/desktop-nsh`) runs the same scenes over the
-  in-process backend connection; the web target inside the Tauri window stays
-  for one transition release. Webview-only features (MiniApp windows, embedded
-  browser, companion pet, the Tauri updater) are not available in the native
-  host and say so.
+- The native NSH host (`src/apps/desktop-nsh`) is the desktop client; the Tauri
+  window that hosted the web target during the migration was retired. Capabilities
+  it does not offer are listed above and refuse with an explicit state.

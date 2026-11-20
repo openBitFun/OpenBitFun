@@ -195,6 +195,13 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
     event: "agentic://dialog-turn-completed",
     payload: { sessionId: "session-rich", turnId: "turn-live-tauri" },
   });
+  // The live reply stays until the host's durable fence says the turn is final
+  // (transcript view, wave 4): completion is emitted before persistence.
+  await app.waitFor("All checks are green.");
+  await app.host.send("openbitfun.event", {
+    event: "agentic://session-history-changed",
+    payload: { sessionId: "session-rich", settledTurnId: "turn-live-tauri" },
+  });
   await app.waitFor("Streaming response…", { state: "gone" });
 });
 
@@ -538,7 +545,7 @@ test("a turn footer forks from that turn and opens the fork", async () => {
   // The fork the host answered with is the session now open.
   await app.waitFor("Fork of turn-1");
   await app.waitUntil(() =>
-    backend.calls.some(call => call.action === "load_session_turns" && (call.request as { session_id?: string })?.session_id === "session-fork"),
+    backend.calls.some(call => call.action === "get_session_transcript_view" && (call.request as { session_id?: string })?.session_id === "session-fork"),
   );
 });
 
@@ -786,12 +793,12 @@ test("a long history opens on its newest turns and loads earlier ones on request
   withCustomTurns(backend, { "session-long": turns });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("Answer 3");
-  const first = backend.calls.find(call => call.action === "load_session_turns")?.request;
+  const first = backend.calls.find(call => call.action === "get_session_transcript_view")?.request;
   expect(first).toMatchObject({ session_id: "session-long", limit: 30 });
   await app.waitFor("load-earlier-turns");
   await app.press("load-earlier-turns");
   await app.waitUntil(() =>
-    backend.calls.some(call => call.action === "load_session_turns" && (call.request as { limit?: number })?.limit === 60),
+    backend.calls.some(call => call.action === "get_session_transcript_view" && (call.request as { limit?: number })?.limit === 60),
   );
 });
 
@@ -878,6 +885,8 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
   // settled rows are not evaluated again while the live reply grows.
   expect(Date.now() - streamStarted).toBeLessThan(30_000);
   await send("agentic://dialog-turn-completed", {});
+  // The host's durable fence settles the turn (transcript view, wave 4).
+  await send("agentic://session-history-changed", { settledTurnId: "perf-live" });
   await app.waitFor("Streaming response…", { state: "gone", timeout: 10_000 });
   // The settled card the reader opened stays open across the reload.
   expect(outputShown()).toBe(true);
@@ -910,4 +919,72 @@ test("a narrow chat runs full width with the composer controls in its + menu", a
   // Back to a wide window, the row shows its controls again.
   await app.setViewport(1440, 900);
   await app.waitFor("agent-picker");
+});
+
+// transcript view (wave 4)
+test("an older host without the transcript view says so instead of projecting turns itself", async () => {
+  const backend = createBackend({ transcriptViewUnsupported: true });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("transcript-host-update");
+  expect(app.texts().join("\n")).toContain("This host cannot show the conversation");
+  // No client-side projection of the raw records, and no welcome screen either.
+  expect(app.texts()).not.toContain("Port the session list.");
+  expect(app.texts()).not.toContain("How can I help today?");
+  expect(backend.actions()).toContain("get_session_transcript_view");
+});
+
+test("a live turn gives way when the host's view reports it settled, and re-reads ask only for what changed", async () => {
+  const backend = createBackend();
+  const persisted: Array<Record<string, unknown>> = [
+    {
+      id: "turn-1",
+      turnIndex: 0,
+      status: "completed",
+      userMessage: { id: "user-1", content: "Port the session list." },
+      modelRounds: [{ textItems: [{ id: "t-1", content: "Rendered with a virtualized list." }] }],
+    },
+  ];
+  withCustomTurns(backend, { "session-1": persisted });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("NSH skeleton");
+  await app.press("NSH skeleton >> nth=0");
+  await app.waitFor("Rendered with a virtualized list.");
+
+  const send = (event: string, payload: Record<string, unknown>) =>
+    app.host.send("openbitfun.event", { event, payload: { sessionId: "session-1", turnId: "turn-2", ...payload } });
+  await send("agentic://dialog-turn-started", { userInput: "Keep going." });
+  await send("agentic://text-chunk", { roundId: "r-2", text: "Live answer." });
+  await app.waitFor("Live answer.");
+
+  // The host persisted the turn's shell when it started; completion comes
+  // before the final record, so the live reply must stay.
+  persisted.push({
+    id: "turn-2",
+    turnIndex: 1,
+    status: "inProgress",
+    userMessage: { id: "user-2", content: "Keep going." },
+    modelRounds: [],
+  });
+  await send("agentic://dialog-turn-completed", {});
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(app.texts()).toContain("Live answer.");
+
+  persisted[1] = {
+    ...persisted[1],
+    status: "completed",
+    modelRounds: [{ textItems: [{ id: "t-2", content: "Persisted answer." }] }],
+  };
+  await send("agentic://session-history-changed", { settledTurnId: "turn-2" });
+  await app.waitFor("Persisted answer.");
+  await app.waitFor("Live answer.", { state: "gone" });
+  expect(app.texts()).toContain("Rendered with a virtualized list.");
+
+  const viewReads = backend.calls
+    .filter(call => call.action === "get_session_transcript_view")
+    .map(call => call.request as { cursor?: string });
+  expect(viewReads.length).toBeGreaterThanOrEqual(3);
+  // After the first full read every re-read names the last settled turn.
+  expect(viewReads[viewReads.length - 1].cursor ?? "").toContain("tv1:0:");
 });

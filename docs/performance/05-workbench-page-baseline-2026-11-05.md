@@ -1,5 +1,7 @@
 # 工作台页面性能基线、优化与 E2E 验证
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 日期：2026-11-05。代码基点：`18eeb95db`。本报告记录本机实测，区分已达标、仍需优化和未覆盖项。
 
 本轮工作于11月6日收尾，综合结论与最终状态见[性能优化收尾报告](08-performance-wrap-up-2026-11-06.md)。本文保留各阶段的原始口径及限制。

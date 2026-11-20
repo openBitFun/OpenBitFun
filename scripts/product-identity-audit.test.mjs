@@ -140,7 +140,7 @@ test('limits retired identity data to the one-time production migration boundary
   }
   for (const file of [
     'src/apps/desktop/src/lib.rs',
-    'src/web-ui/src/locales/en-US/settings.json',
+    'src/nsh-ui/src/locales/en-US.ts',
     'src/shared/interactive-capabilities/catalog.json',
   ]) {
     assert.equal(violationsFor(retiredName, file).length, 1);
@@ -344,16 +344,15 @@ test('rejects pre-1.0 minimum versions and OpenBitFun release assets', () => {
 });
 
 test('normalizes Windows separators and skips dependency and generated output roots', () => {
-  assert.equal(normalizeRepositoryPath('src\\web-ui\\index.ts'), 'src/web-ui/index.ts');
+  assert.equal(normalizeRepositoryPath('src\\mobile-web\\index.ts'), 'src/mobile-web/index.ts');
   assert.equal(shouldAuditPath('packages/ui/src/index.ts'), true);
   assert.equal(shouldAuditContent('packages/ui/src/index.ts'), true);
 
   for (const file of [
     'node_modules/example/index.js',
     'target/debug/generated.rs',
-    'src/web-ui/dist/index.js',
+    'src/mobile-web/dist/index.js',
     'docs/superpowers/archive.md',
-    'src/web-ui/public/monaco-editor/vs/loader.js',
   ]) {
     assert.equal(shouldAuditPath(file), false, file);
     assert.equal(shouldAuditContent(file), false, file);

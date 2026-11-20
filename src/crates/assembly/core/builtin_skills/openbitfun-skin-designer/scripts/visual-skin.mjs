@@ -16,10 +16,18 @@ const usage = `Usage: node visual-skin.mjs <command> [input] [options]
 Requires Node 22.12+, an OpenBitFun checkout with pnpm dependencies installed,
 and prepared design-system packages. No storage or running app is modified.`;
 
-function findProject(start) {
+// The visual-skin contract was owned by the React desktop UI (src/web-ui), which
+// has been retired; the native desktop client does not load visual skins. Only a
+// checkout of an older release that still contains this marker can be used.
+export const CONTRACT_MARKER = 'src/web-ui/src/infrastructure/visual-skin/parser.ts';
+export const CONTRACT_UNAVAILABLE = 'The visual-skin product contract is unavailable: it was owned by the retired React desktop UI '
+  + '(src/web-ui) and the current native desktop client does not load visual skins. Pass --project <checkout> of an older '
+  + 'OpenBitFun release that still contains ' + CONTRACT_MARKER + ' to author skins for that release.';
+
+export function findProject(start) {
   let current = resolve(start);
   for (;;) {
-    if (existsSync(join(current, 'src/web-ui/src/infrastructure/visual-skin/parser.ts'))) return current;
+    if (existsSync(join(current, CONTRACT_MARKER))) return current;
     const parent = dirname(current);
     if (parent === current) return null;
     current = parent;
@@ -28,8 +36,8 @@ function findProject(start) {
 
 export async function loadProduct(project) {
   const root = project ? resolve(project) : findProject(process.cwd()) ?? findProject(skillRoot);
-  if (!root || !existsSync(join(root, 'src/web-ui/src/infrastructure/visual-skin/parser.ts'))) {
-    throw new Error('Current product source is required. Set --project to the OpenBitFun checkout.');
+  if (!root || !existsSync(join(root, CONTRACT_MARKER))) {
+    throw new Error(CONTRACT_UNAVAILABLE);
   }
   const webRoot = join(root, 'src/web-ui');
   const require = createRequire(join(webRoot, 'package.json'));

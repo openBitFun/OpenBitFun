@@ -133,7 +133,7 @@ async fn ensure_unscoped_host_mcp_access(
         .ok_or_else(|| "MCP server is unavailable in this product surface".to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn initialize_mcp_servers(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -154,11 +154,11 @@ pub async fn initialize_mcp_servers(
         Ok(())
     }
     .await;
-    startup_trace.record_tauri_command_elapsed("initialize_mcp_servers", None, trace_started);
+    startup_trace.record_command_elapsed("initialize_mcp_servers", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn initialize_mcp_servers_non_destructive(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -179,7 +179,7 @@ pub async fn initialize_mcp_servers_non_destructive(
         Ok(())
     }
     .await;
-    startup_trace.record_tauri_command_elapsed(
+    startup_trace.record_command_elapsed(
         "initialize_mcp_servers_non_destructive",
         None,
         trace_started,
@@ -187,7 +187,7 @@ pub async fn initialize_mcp_servers_non_destructive(
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_mcp_servers(state: State<'_, AppState>) -> Result<Vec<MCPServerInfo>, String> {
     let mcp_service = state
         .mcp_service
@@ -340,7 +340,7 @@ pub async fn get_mcp_servers(state: State<'_, AppState>) -> Result<Vec<MCPServer
     Ok(infos)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_mcp_resources(
     state: State<'_, AppState>,
     request: ListMCPResourcesRequest,
@@ -353,7 +353,7 @@ pub async fn list_mcp_resources(
     load_mcp_resources(mcp_service.as_ref(), &request.server_id, request.refresh).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn read_mcp_resource(
     state: State<'_, AppState>,
     request: ReadMCPResourceRequest,
@@ -376,7 +376,7 @@ pub async fn read_mcp_resource(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_mcp_prompts(
     state: State<'_, AppState>,
     request: ListMCPPromptsRequest,
@@ -389,7 +389,7 @@ pub async fn list_mcp_prompts(
     load_mcp_prompts(mcp_service.as_ref(), &request.server_id, request.refresh).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_mcp_prompt(
     state: State<'_, AppState>,
     request: GetMCPPromptRequest,
@@ -412,7 +412,7 @@ pub async fn get_mcp_prompt(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_mcp_server(state: State<'_, AppState>, server_id: String) -> Result<(), String> {
     let mcp_service = state
         .mcp_service
@@ -429,7 +429,7 @@ pub async fn start_mcp_server(state: State<'_, AppState>, server_id: String) -> 
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn stop_mcp_server(state: State<'_, AppState>, server_id: String) -> Result<(), String> {
     let mcp_service = state
         .mcp_service
@@ -446,7 +446,7 @@ pub async fn stop_mcp_server(state: State<'_, AppState>, server_id: String) -> R
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn restart_mcp_server(
     state: State<'_, AppState>,
     server_id: String,
@@ -466,7 +466,7 @@ pub async fn restart_mcp_server(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_mcp_server_status(
     state: State<'_, AppState>,
     server_id: String,
@@ -486,7 +486,7 @@ pub async fn get_mcp_server_status(
     Ok(format!("{:?}", status))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_mcp_json_config(
     state: State<'_, AppState>,
 ) -> Result<openbitfun_core::service::mcp::config::MCPJsonConfigSnapshot, String> {
@@ -502,7 +502,7 @@ pub async fn load_mcp_json_config(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_mcp_json_config(
     state: State<'_, AppState>,
     json_config: String,
@@ -591,7 +591,7 @@ pub struct MCPAppResourceContent {
     pub permissions: Option<McpUiResourcePermissions>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_mcp_tool_ui_uri(
     _state: State<'_, AppState>,
     tool_name: String,
@@ -609,7 +609,7 @@ pub async fn get_mcp_tool_ui_uri(
     Ok(tool.and_then(|t| t.ui_resource_uri()))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn fetch_mcp_app_resource(
     state: State<'_, AppState>,
     request: FetchMCPAppResourceRequest,
@@ -755,7 +755,7 @@ pub struct CancelMCPRemoteOAuthRequest {
     pub server_id: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn send_mcp_app_message(
     state: State<'_, AppState>,
     request: SendMCPAppMessageRequest,
@@ -831,7 +831,7 @@ pub async fn send_mcp_app_message(
     Ok(SendMCPAppMessageResponse { response })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn submit_mcp_interaction_response(
     state: State<'_, AppState>,
     request: SubmitMCPInteractionResponseRequest,
@@ -861,7 +861,7 @@ pub async fn submit_mcp_interaction_response(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_mcp_remote_auth(
     state: State<'_, AppState>,
     request: UpdateMCPRemoteAuthRequest,
@@ -881,7 +881,7 @@ pub async fn update_mcp_remote_auth(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn clear_mcp_remote_auth(
     state: State<'_, AppState>,
     request: ClearMCPRemoteAuthRequest,
@@ -901,7 +901,7 @@ pub async fn clear_mcp_remote_auth(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_mcp_server(
     state: State<'_, AppState>,
     request: DeleteMCPServerRequest,
@@ -921,7 +921,7 @@ pub async fn delete_mcp_server(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_mcp_remote_oauth(
     state: State<'_, AppState>,
     request: StartMCPRemoteOAuthRequest,
@@ -939,7 +939,7 @@ pub async fn start_mcp_remote_oauth(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_mcp_remote_oauth_session(
     state: State<'_, AppState>,
     request: GetMCPRemoteOAuthSessionRequest,
@@ -954,7 +954,7 @@ pub async fn get_mcp_remote_oauth_session(
     Ok(manager.get_remote_oauth_session(&request.server_id).await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_mcp_remote_oauth(
     state: State<'_, AppState>,
     request: CancelMCPRemoteOAuthRequest,

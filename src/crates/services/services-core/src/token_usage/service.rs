@@ -738,6 +738,28 @@ impl TokenUsageService {
         }
         Ok(paths.into_iter().collect())
     }
+    /// Day-keyed activity grid for one calendar window in one zone.
+    #[cfg(feature = "token-usage-statistics")]
+    pub async fn get_activity(
+        &self,
+        request: super::activity::TokenUsageActivityRequest,
+    ) -> Result<super::activity::TokenUsageActivity, String> {
+        let window = request.window_at(Utc::now())?;
+        let (start, end) = window.utc_bounds()?;
+        let records = self
+            .query_records(TokenUsageQuery {
+                model_id: None,
+                session_id: None,
+                time_range: TimeRange::Custom { start, end },
+                time_zone: Some(window.time_zone.name().to_string()),
+                limit: None,
+                offset: None,
+                include_subagent: request.include_subagent,
+            })
+            .await?;
+        Ok(super::activity::build_usage_activity(&records, window))
+    }
+
     pub async fn get_summary(&self, query: TokenUsageQuery) -> Result<TokenUsageSummary, String> {
         let records = self.query_records(query).await?;
 
@@ -1624,6 +1646,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["start", "inside"]
         );
+    }
+
+    #[cfg(feature = "token-usage-statistics")]
+    #[tokio::test]
+    async fn activity_reads_persisted_records_into_zone_keyed_days() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = TokenUsageService::new(dir.path().to_path_buf())
+            .await
+            .expect("token usage service");
+        let now = Utc::now();
+        // Two records an hour apart late yesterday (UTC) and one subagent call.
+        let yesterday = now - Duration::days(1);
+        let mut subagent = record_at("subagent", yesterday);
+        subagent.is_subagent = true;
+        let records = vec![record_at("a", yesterday), subagent];
+        let key = yesterday.format("%Y-%m-%d").to_string();
+        fs::write(
+            service.get_records_path_for_key(&key),
+            serde_json::to_string(&RecordsBatch { records }).expect("serialize batch"),
+        )
+        .await
+        .expect("write record batch");
+
+        let activity = service
+            .get_activity(super::super::activity::TokenUsageActivityRequest::default())
+            .await
+            .expect("activity");
+        assert_eq!(activity.time_zone, "UTC");
+        let day = activity
+            .days
+            .iter()
+            .find(|day| day.date == key)
+            .expect("yesterday in grid");
+        // Subagent calls count by default, as both earlier readers asked.
+        assert_eq!(day.tokens, 4);
+        assert_eq!(activity.total_tokens, 4);
+
+        let without_subagents = service
+            .get_activity(super::super::activity::TokenUsageActivityRequest {
+                include_subagent: false,
+                ..Default::default()
+            })
+            .await
+            .expect("activity");
+        assert_eq!(without_subagents.total_tokens, 2);
     }
 
     fn record_at(turn_id: &str, timestamp: DateTime<Utc>) -> TokenUsageRecord {

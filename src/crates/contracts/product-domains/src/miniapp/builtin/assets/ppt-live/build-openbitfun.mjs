@@ -5,8 +5,7 @@
 // which is the sole JS artifact loaded at runtime (see builtin.rs → ui_js).
 //
 // IMPORTANT: `pnpm run desktop:dev` does NOT rebuild this bundle.
-//   desktop:dev provides Vite HMR for the *web-ui* frontend and auto-rebuild
-//   for *Rust* changes, but PPT Live's JS is a pre-built static asset embedded
+//   desktop:dev rebuilds the desktop UI and *Rust* changes, but PPT Live's JS is a pre-built static asset embedded
 //   via `include_str!` at Rust compile time. You must run this script manually
 //   after editing any PPT Live JS source.
 //

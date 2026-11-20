@@ -9,8 +9,9 @@ window/dialog/notification/opener adapters.
 
 Build this package in a separate Cargo invocation with the miniapp-shell profile.
 Desktop feature unification or debug builds must never inflate exported apps.
-The preparation script stages the executable for both raw builds and Tauri's
-externalBin and enforces a 16 MiB per-architecture artifact regression budget.
+The preparation script stages the executable next to the desktop runner's build
+output (`target/<profile>/openbitfun-miniapp-shell`, packaged beside the runner)
+and enforces a 16 MiB per-architecture artifact regression budget.
 `desktop:dev` runs that script once at startup, so a session that hot-reloads the
 Desktop host after these sources change keeps launching windows with the previous
 shell — a stale shell silently stops advertising capabilities the host relies on.
@@ -104,9 +105,8 @@ Focused verification (no computer-use/browser verification):
 node scripts/generate-miniapp-chrome-theme.mjs --check
 node scripts/generate-miniapp-chat-styles.mjs --check
 node --test scripts/generate-miniapp-chat-styles.test.mjs
-pnpm --dir src/web-ui run icons:check
-pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/components/MiniAppShell.test.ts src/app/scenes/miniapps/components/MiniAppTitlebar.test.tsx
-pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/components/MiniAppShellChat.test.ts
+node scripts/generate-miniapp-chrome-assets.mjs --check
+node --test scripts/miniapp-shell-presentation.test.mjs scripts/miniapp-chrome-titlebar.test.mjs scripts/miniapp-shell-chat.test.mjs
 cargo test --locked -p openbitfun-miniapp-shell --profile miniapp-shell --bin openbitfun-miniapp-shell window_chrome
 cargo test --locked -p openbitfun-miniapp-shell --profile miniapp-shell --bin openbitfun-miniapp-shell host_tests
 pnpm run prepare:miniapp-shell

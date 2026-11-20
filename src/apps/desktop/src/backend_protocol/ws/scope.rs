@@ -2,9 +2,11 @@
 //!
 //! `owner` (a loopback client holding the per-launch token) runs every command
 //! the in-process UI runs and receives every event. `paired-client` (a LAN
-//! client holding a revocable QR credential) runs only commands the Product
-//! Operation Registry marks `Proxied`, and never receives owner-only events
-//! (account, window, tray, updater). See
+//! client holding a revocable QR credential) and `account-device` (another
+//! device of the same account over the mesh, authenticated with the device
+//! key handshake) run only commands the Product Operation Registry marks
+//! `Proxied`, and never receive owner-only events (account, window, tray,
+//! updater, mesh). See
 //! `docs/architecture/unified-client-architecture.md` ("Scopes").
 
 use openbitfun_product_domains::remote_surface::{
@@ -15,7 +17,13 @@ use openbitfun_product_domains::remote_surface::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     Owner,
-    PairedClient { client_id: String },
+    PairedClient {
+        client_id: String,
+    },
+    /// Another device of the signed-in account, over the mesh listener.
+    AccountDevice {
+        device_id: String,
+    },
 }
 
 impl Scope {
@@ -23,6 +31,7 @@ impl Scope {
         match self {
             Self::Owner => "owner",
             Self::PairedClient { .. } => "paired-client",
+            Self::AccountDevice { .. } => "account-device",
         }
     }
 
@@ -49,6 +58,21 @@ pub(crate) fn check_command(scope: &Scope, command: &str) -> Result<(), String> 
             "forbidden_for_scope: command '{command}' is unknown to this OpenBitFun backend version; update the backend or check the command name"
         ));
     };
+    // Same-account host verbs (detached dispatch targets, the bot
+    // `RemoteCommand` lane, `ws::mesh_verbs`) keep the trust boundary of the
+    // legacy relay `host_invoke`: another device of this account only, never
+    // a paired client. `obp_remote_command` is `OperatorOnly` in the registry
+    // because legacy peer hosts refuse it; only this listener admits it.
+    if matches!(scope, Scope::AccountDevice { .. })
+        && definition.surface == OperationSurface::HostInvokeOnly
+        && matches!(
+            definition.peer,
+            PeerStance::HostControlPlane | PeerStance::OperatorOnly
+        )
+        && super::mesh_verbs::is_account_device_host_verb(command)
+    {
+        return Ok(());
+    }
     if definition.surface != OperationSurface::TauriCommand {
         return Err(format!(
             "forbidden_for_scope: command '{command}' is not a backend command"
@@ -89,6 +113,29 @@ mod tests {
         assert!(check_command(&paired, "obp_create_pairing").is_err());
         assert!(check_command(&paired, "no_such_command").is_err());
         assert!(check_command(&paired, "open_workspace").is_ok());
+    }
+
+    #[test]
+    fn account_devices_follow_the_registry_like_paired_clients() {
+        let device = Scope::AccountDevice {
+            device_id: "d1".into(),
+        };
+        assert_eq!(device.wire_name(), "account-device");
+        assert!(check_command(&device, "open_workspace").is_ok());
+        assert!(check_command(&device, "obp_set_lan_enabled").is_err());
+        assert!(check_command(&device, "mesh_status").is_err());
+        assert!(!event_visible(&device, "account://login-state"));
+        assert!(!event_visible(&device, "mesh://status-changed"));
+        assert!(event_visible(&device, "agentic://text-chunk"));
+        // Same-account host verbs: account devices only.
+        assert!(check_command(&device, "dispatch_target_probe").is_ok());
+        assert!(check_command(&device, "obp_remote_command").is_ok());
+        assert!(check_command(&device, "peer_mode_ping").is_err());
+        let paired = Scope::PairedClient {
+            client_id: "c1".into(),
+        };
+        assert!(check_command(&paired, "dispatch_target_probe").is_err());
+        assert!(check_command(&paired, "obp_remote_command").is_err());
     }
 
     #[test]

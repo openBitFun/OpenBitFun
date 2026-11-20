@@ -343,7 +343,7 @@ fn format_session_source(source: &CoreSessionSource) -> String {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_get_shells(
     state: State<'_, TerminalState>,
 ) -> Result<Vec<ShellInfo>, String> {
@@ -590,7 +590,7 @@ fn resolve_terminal_workspace_target(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_create(
     _app: HostHandle,
     mut request: CreateSessionRequest,
@@ -720,7 +720,7 @@ pub async fn terminal_create(
     Ok(SessionResponse::from(session))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_get(
     session_id: String,
     state: State<'_, TerminalState>,
@@ -757,7 +757,7 @@ pub async fn terminal_get(
     Ok(SessionResponse::from(session))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_list(
     state: State<'_, TerminalState>,
 ) -> Result<Vec<SessionResponse>, String> {
@@ -795,7 +795,7 @@ pub async fn terminal_list(
     Ok(all_sessions)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_close(
     request: CloseSessionRequest,
     state: State<'_, TerminalState>,
@@ -830,7 +830,7 @@ pub async fn terminal_close(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_write(
     request: WriteRequest,
     state: State<'_, TerminalState>,
@@ -865,7 +865,7 @@ pub async fn terminal_write(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_resize(
     request: ResizeRequest,
     state: State<'_, TerminalState>,
@@ -901,7 +901,7 @@ pub async fn terminal_resize(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_signal(
     request: SignalRequest,
     state: State<'_, TerminalState>,
@@ -940,7 +940,7 @@ pub async fn terminal_signal(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_ack(
     request: AcknowledgeRequest,
     state: State<'_, TerminalState>,
@@ -964,7 +964,7 @@ pub async fn terminal_ack(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_execute(
     request: ExecuteCommandRequest,
     state: State<'_, TerminalState>,
@@ -1000,7 +1000,7 @@ pub async fn terminal_execute(
     Ok(ExecuteCommandResponse::from(result))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_send_command(
     request: SendCommandRequest,
     state: State<'_, TerminalState>,
@@ -1038,7 +1038,7 @@ pub async fn terminal_send_command(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_has_shell_integration(
     session_id: String,
     state: State<'_, TerminalState>,
@@ -1055,7 +1055,7 @@ pub async fn terminal_has_shell_integration(
 ///
 /// Remote sessions live in the remote terminal manager, so stopping only the local API would leave
 /// shells running on the host after the caller was told everything was shut down.
-#[tauri::command]
+// @backend-command
 pub async fn terminal_shutdown_all(state: State<'_, TerminalState>) -> Result<(), String> {
     if let Some(remote_manager) = get_remote_workspace_manager() {
         if let Some(terminal_manager) = remote_manager.get_terminal_manager().await {
@@ -1076,7 +1076,7 @@ pub async fn terminal_shutdown_all(state: State<'_, TerminalState>) -> Result<()
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn terminal_get_history(
     session_id: String,
     after_offset: Option<u64>,

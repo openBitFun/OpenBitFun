@@ -35,6 +35,8 @@ import {
   deleteCatalogAgent,
   effectiveToolCountForAgent,
   filteredAgents,
+  agentCanDelete,
+  agentCanEdit,
   isCustomSource,
   isRemoteAgentWorkspace,
   loadAgentsCatalog,
@@ -147,7 +149,7 @@ function cardBadgeLabel(item: AgentCatalogItem): string {
 
 function editActionLabel(item: AgentCatalogItem): string {
   if (isCustomSource(item.source)) {
-    return isRemoteAgentWorkspace() ? tr("common.inspect") : tr("common.edit");
+    return agentCanEdit(item) ? tr("common.edit") : tr("common.inspect");
   }
   if (item.source === "external") return tr("common.inspect");
   return tr("common.configure");
@@ -249,7 +251,7 @@ function botMenuItems(item: AgentCatalogItem): DropdownMenuItem[] {
     resetToolFilterState();
     void openAgentInspector(item);
   };
-  const remote = isRemoteAgentWorkspace();
+  const remote = !agentCanEdit(item);
   const items: DropdownMenuItem[] = isCustomSource(item.source)
     ? [
         {
@@ -283,7 +285,7 @@ function botMenuItems(item: AgentCatalogItem): DropdownMenuItem[] {
       icon: "trash",
       danger: true,
       separator: true,
-      disabled: remote,
+      disabled: !agentCanDelete(item),
       accessibilityLabel: `agent-menu-delete-${item.id}`,
       onSelect: () => confirmDeleteAgentUid.set(item.uid),
     });

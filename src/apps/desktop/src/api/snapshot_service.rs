@@ -37,7 +37,7 @@ pub struct CleanSnapshotStorageRequest {
     candidates: Vec<Candidate>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn inspect_snapshot_storage(
     request: InspectSnapshotStorageRequest,
 ) -> Result<StorageOverview, String> {
@@ -46,7 +46,7 @@ pub async fn inspect_snapshot_storage(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn clean_snapshot_storage(
     runtime: State<'_, DesktopRuntimeContext>,
     request: CleanSnapshotStorageRequest,
@@ -509,7 +509,7 @@ async fn begin_snapshot_history_mutation(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn rollback_session(
     app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -551,7 +551,7 @@ pub async fn rollback_session(
     Ok(restored_files_str)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn rollback_session_to_turn(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: openbitfun_runtime_ports::AgentSessionRollbackToTurnRequest,
@@ -601,7 +601,7 @@ pub async fn rollback_session_to_turn(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn accept_session(
     app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -637,7 +637,7 @@ pub async fn accept_session(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn accept_file(
     app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -674,7 +674,7 @@ pub async fn accept_file(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reject_file(
     app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -717,7 +717,7 @@ pub async fn reject_file(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_files(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetSessionFilesRequest,
@@ -744,7 +744,7 @@ pub async fn get_session_files(
         .map_err(|error| format!("Failed to get session files: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_turns(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetSessionTurnsRequest,
@@ -765,7 +765,7 @@ pub async fn get_session_turns(
         .map_err(|error| format!("Failed to get session turns: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_turn_files(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetTurnFilesRequest,
@@ -795,7 +795,7 @@ pub async fn get_turn_files(
         .collect())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_file_diff(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetFileDiffRequest,
@@ -824,7 +824,7 @@ pub async fn get_file_diff(
     Ok(diff)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_operation_diff(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetOperationDiffRequest,
@@ -900,7 +900,7 @@ pub async fn get_operation_diff(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_file_diff_stats(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetSessionFileDiffStatsRequest,
@@ -928,7 +928,7 @@ pub async fn get_session_file_diff_stats(
     serde_json::to_value(&stats).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_operation_summary(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetOperationSummaryRequest,
@@ -967,7 +967,7 @@ pub async fn get_operation_summary(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_operations(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetSessionFilesRequest,
@@ -1020,7 +1020,7 @@ pub async fn get_session_operations(
     Ok(serde_json::Value::Array(operations))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn accept_operation(
     app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -1064,7 +1064,7 @@ pub async fn accept_operation(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reject_operation(
     app_handle: HostHandle,
     runtime: State<'_, DesktopRuntimeContext>,
@@ -1114,7 +1114,7 @@ pub async fn reject_operation(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_stats(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetSessionStatsRequest,
@@ -1135,7 +1135,7 @@ pub async fn get_session_stats(
         .map_err(|error| format!("Failed to get session stats: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_snapshot_system_stats(
     mut request: SnapshotWorkspaceRequest,
 ) -> Result<serde_json::Value, String> {
@@ -1150,7 +1150,7 @@ pub async fn get_snapshot_system_stats(
     Ok(stats)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_snapshot_sessions(
     mut request: SnapshotWorkspaceRequest,
 ) -> Result<Vec<String>, String> {
@@ -1164,7 +1164,7 @@ pub async fn get_snapshot_sessions(
         .map_err(|e| format!("Failed to list snapshot sessions: {}", e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn check_git_isolation(
     mut request: SnapshotWorkspaceRequest,
 ) -> Result<serde_json::Value, String> {
@@ -1182,7 +1182,7 @@ pub async fn check_git_isolation(
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_file_change_history(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetFileChangeHistoryRequest,
@@ -1232,7 +1232,7 @@ pub async fn get_file_change_history(
     serde_json::to_value(changes).map_err(|e| format!("Serialization failed: {}", e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_all_modified_files(
     runtime: State<'_, DesktopRuntimeContext>,
     mut request: GetAllModifiedFilesRequest,
@@ -1269,7 +1269,7 @@ pub async fn get_all_modified_files(
         .collect())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_baseline_snapshot_diff(
     mut request: GetBaselineSnapshotDiffRequest,
 ) -> Result<serde_json::Value, String> {

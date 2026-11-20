@@ -29,7 +29,7 @@ export const CLIENT_PROTOCOL_VERSION = 2;
  * diagnostics only; the Relay gates control on the protocol number, never on
  * this string. Sourced from the workspace `package.json` — the release version
  * release-please bumps together with `Cargo.toml` — so it is a single source and
- * never a hand-maintained literal. This is where web-ui and mobile both read it
- * from rather than each keeping a copy.
+ * never a hand-maintained literal. Surfaces read it from here rather than each
+ * keeping a copy.
  */
 export const CLIENT_VERSION: string = PACKAGE_VERSION;

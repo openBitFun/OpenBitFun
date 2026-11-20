@@ -4,19 +4,18 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{io::Write, path::Path, sync::OnceLock};
-use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_updater::UpdaterBuilder;
 
-const PROGRESS_EVENT: &str = "openbitfun-update-progress";
+pub(crate) const PROGRESS_EVENT: &str = "openbitfun-update-progress";
 const RECORD_NAME: &str = "pending.json";
 const RECEIPT_NAME: &str = "install-result.json";
 
 // Serialize downloads and installs at the host, including calls from multiple windows.
-static UPDATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-static CANCEL_DOWNLOAD: OnceLock<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
-    OnceLock::new();
+pub(crate) static UPDATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+pub(crate) static CANCEL_DOWNLOAD: OnceLock<
+    std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+> = OnceLock::new();
 
-struct DownloadCancellation;
+pub(crate) struct DownloadCancellation;
 impl Drop for DownloadCancellation {
     fn drop(&mut self) {
         if let Ok(mut sender) = CANCEL_DOWNLOAD.get_or_init(Default::default).lock() {
@@ -25,7 +24,7 @@ impl Drop for DownloadCancellation {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_app_update_download(request: PendingUpdateRequest) -> Result<(), String> {
     let _ = request;
     let sender = CANCEL_DOWNLOAD
@@ -53,7 +52,7 @@ pub struct DownloadUpdateRequest {
 }
 
 impl DownloadUpdateRequest {
-    fn validate_version(&self, available: &str) -> Result<(), String> {
+    pub(crate) fn validate_version(&self, available: &str) -> Result<(), String> {
         if let Some(expected) = &self.expected_version {
             if expected != available {
                 return Err(format!(
@@ -83,17 +82,17 @@ pub struct PendingUpdateResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PendingUpdateRecord {
-    version: String,
-    platform: String,
-    signature: String,
-    sha256: String,
+pub(crate) struct PendingUpdateRecord {
+    pub(crate) version: String,
+    pub(crate) platform: String,
+    pub(crate) signature: String,
+    pub(crate) sha256: String,
     #[serde(default)]
-    package_kind: Option<String>,
+    pub(crate) package_kind: Option<String>,
 }
 
 impl PendingUpdateRecord {
-    fn response(&self) -> PendingUpdateResponse {
+    pub(crate) fn response(&self) -> PendingUpdateResponse {
         PendingUpdateResponse {
             version: self.version.clone(),
             install_error: None,
@@ -106,7 +105,7 @@ impl PendingUpdateRecord {
         Ok(version > *current && self.platform == platform)
     }
 
-    fn package_name(&self) -> Result<String, String> {
+    pub(crate) fn package_name(&self) -> Result<String, String> {
         if self.sha256.len() != 64 || !self.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("Invalid pending update checksum".into());
         }
@@ -114,21 +113,8 @@ impl PendingUpdateRecord {
     }
 }
 
-fn platform() -> String {
+pub(crate) fn platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
-fn package_kind() -> &'static str {
-    use tauri::utils::config::BundleType;
-    match tauri::utils::platform::bundle_type() {
-        Some(BundleType::Deb) => "deb",
-        Some(BundleType::Rpm) => "rpm",
-        Some(BundleType::AppImage) => "appimage",
-        Some(BundleType::App) => "app",
-        Some(BundleType::Nsis) => "nsis",
-        Some(BundleType::Msi) => "msi",
-        _ => "unbundled",
-    }
 }
 
 #[derive(Deserialize)]
@@ -142,7 +128,7 @@ struct InstallationReceipt {
     reboot_required: bool,
 }
 
-fn pending_response(
+pub(crate) fn pending_response(
     dir: &Path,
     record: PendingUpdateRecord,
 ) -> Result<PendingUpdateResponse, String> {
@@ -174,22 +160,12 @@ fn pending_response(
     Ok(response)
 }
 
-fn cache_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    if crate::e2e_storage_guard_enabled() {
-        return Ok(openbitfun_core::infrastructure::get_path_manager_arc()
-            .user_data_dir()
-            .join("app-updates"));
-    }
-    app.path()
-        .app_cache_dir()
-        .map(|p| p.join("app-updates"))
-        .map_err(|e| e.to_string())
-}
-
-fn read_record(
+/// Reads the staged update record of `kind` from the update cache `dir`.
+pub(crate) fn read_record_for_kind(
     dir: &Path,
     current: &semver::Version,
     platform: &str,
+    kind: &str,
 ) -> Result<Option<PendingUpdateRecord>, String> {
     let bytes = match std::fs::read(dir.join(RECORD_NAME)) {
         Ok(bytes) => bytes,
@@ -205,7 +181,7 @@ fn read_record(
     if record
         .package_kind
         .as_deref()
-        .is_some_and(|kind| kind != package_kind())
+        .is_some_and(|recorded| recorded != kind)
     {
         return Err(
             "Update package belongs to another installation format; download it again".into(),
@@ -218,24 +194,6 @@ fn read_record(
     Ok(Some(record))
 }
 
-fn migrate_verified_legacy_record(
-    dir: &Path,
-    record: &mut PendingUpdateRecord,
-    bytes: &[u8],
-    kind: &str,
-) -> Result<(), String> {
-    if record.package_kind.is_some() {
-        return Ok(());
-    }
-    crate::update_maintenance::validate_cached_package(bytes, kind)?;
-    record.package_kind = Some(kind.to_string());
-    atomic_write(
-        dir,
-        RECORD_NAME,
-        &serde_json::to_vec(record).map_err(|error| error.to_string())?,
-    )
-}
-
 fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
@@ -245,7 +203,11 @@ fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn save_package(dir: &Path, record: &PendingUpdateRecord, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn save_package(
+    dir: &Path,
+    record: &PendingUpdateRecord,
+    bytes: &[u8],
+) -> Result<(), String> {
     // Commit the metadata last. A partial download can never become installable.
     atomic_write(dir, &record.package_name()?, bytes)?;
     atomic_write(
@@ -255,7 +217,11 @@ fn save_package(dir: &Path, record: &PendingUpdateRecord, bytes: &[u8]) -> Resul
     )
 }
 
-fn verify_package(bytes: &[u8], record: &PendingUpdateRecord, pubkey: &str) -> Result<(), String> {
+pub(crate) fn verify_package(
+    bytes: &[u8],
+    record: &PendingUpdateRecord,
+    pubkey: &str,
+) -> Result<(), String> {
     if format!("{:x}", Sha256::digest(bytes)) != record.sha256 {
         return Err(
             "Pending update signature verification failed: package checksum mismatch".into(),
@@ -278,199 +244,21 @@ fn verify_package(bytes: &[u8], record: &PendingUpdateRecord, pubkey: &str) -> R
         .map_err(|e| format!("Update signature verification failed: {e}"))
 }
 
-pub(super) fn configure_updater(builder: UpdaterBuilder) -> UpdaterBuilder {
-    // Public official-plugin API: bound stalls without a total download deadline.
-    builder.configure_client(|client| {
-        client
-            .connect_timeout(std::time::Duration::from_secs(20))
-            .read_timeout(std::time::Duration::from_secs(60))
-    })
-}
-
-#[cfg(windows)]
-pub(crate) fn windows_installation_scope(
-    directory: &Path,
-) -> Result<openbitfun_services_core::installation_scope::InstallationScope, String> {
-    openbitfun_services_core::installation_scope::windows_installation_scope(
-        directory,
-        "OpenBitFun",
-        None,
-    )
-}
-
-#[tauri::command]
-pub async fn get_pending_update(
-    app: AppHandle,
-    request: PendingUpdateRequest,
-) -> Result<Option<PendingUpdateResponse>, String> {
-    let _ = request;
-    let dir = cache_dir(&app)?;
-    let current = app.package_info().version.clone();
-    tokio::task::spawn_blocking(move || {
-        read_record(&dir, &current, &platform())?
-            .map(|r| pending_response(&dir, r))
-            .transpose()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn download_update(
-    app: AppHandle,
-    request: DownloadUpdateRequest,
-) -> Result<PendingUpdateResponse, String> {
-    let _operation = UPDATE
-        .get_or_init(Default::default)
-        .try_lock()
-        .map_err(|_| "An update operation is already in progress".to_string())?;
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-    *CANCEL_DOWNLOAD
-        .get_or_init(Default::default)
-        .lock()
-        .map_err(|_| "Download cancellation state is unavailable".to_string())? = Some(cancel_tx);
-    let cancellation = DownloadCancellation;
-    let transfer = async {
-        let updater = super::system_api::ranked_updater(&app).await?;
-        let update = updater
-            .check()
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "No update available".to_string())?;
-        request.validate_version(&update.version)?;
-        let mut downloaded = 0u64;
-        let bytes = update
-            .download(
-                |chunk, total| {
-                    downloaded = downloaded.saturating_add(chunk as u64);
-                    let _ = app.emit(
-                        PROGRESS_EVENT,
-                        serde_json::json!({ "downloaded": downloaded, "total": total }),
-                    );
-                },
-                || {},
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok::<_, String>((update, bytes))
-    };
-    let (update, bytes) = tokio::select! {
-        result = transfer => result?,
-        _ = cancel_rx => return Err("Update download canceled".into()),
-    };
-    // Finalization cannot be canceled midway through committing pending.json.
-    drop(cancellation);
-    let record = PendingUpdateRecord {
-        version: update.version.clone(),
-        platform: platform(),
-        signature: update.signature.clone(),
-        sha256: format!("{:x}", Sha256::digest(&bytes)),
-        package_kind: Some(package_kind().into()),
-    };
-    let response = record.response();
-    let dir = cache_dir(&app)?;
-    tokio::task::spawn_blocking(move || save_package(&dir, &record, &bytes))
-        .await
-        .map_err(|e| e.to_string())??;
-    Ok(response)
-}
-
-#[tauri::command]
-pub async fn install_pending_update(
-    app: AppHandle,
-    request: InstallPendingUpdateRequest,
-) -> Result<(), String> {
-    let _operation = UPDATE
-        .get_or_init(Default::default)
-        .try_lock()
-        .map_err(|_| "An update operation is already in progress".to_string())?;
-    let dir = cache_dir(&app)?;
-    let receipt = dir.join(RECEIPT_NAME);
-    let current = app.package_info().version.clone();
-    let pubkey = app
-        .config()
-        .plugins
-        .0
-        .get("updater")
-        .and_then(|v| v.get("pubkey"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Update signature public key is unavailable".to_string())?
-        .to_owned();
-    let (record, bytes) = tokio::task::spawn_blocking(move || {
-        let mut record = read_record(&dir, &current, &platform())?
-            .ok_or_else(|| "No downloaded update is available".to_string())?;
-        if record.version != request.version {
-            return Err(
-                "The downloaded update has changed; reopen About before installing".to_string(),
-            );
-        }
-        let bytes = std::fs::read(dir.join(record.package_name()?)).map_err(|e| e.to_string())?;
-        verify_package(&bytes, &record, &pubkey)?;
-        migrate_verified_legacy_record(&dir, &mut record, &bytes, package_kind())?;
-        Ok::<_, String>((record, bytes))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    let maintenance_app = app.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::update_maintenance::install(
-            &maintenance_app,
-            &bytes,
-            &record.version,
-            record
-                .package_kind
-                .as_deref()
-                .ok_or("Verified update format was not retained")?,
-            &receipt,
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    #[cfg(windows)]
-    {
-        // A ready supervisor now owns the handoff. It waits for this process,
-        // retains post-exit errors and restarts with the original user's token.
-        crate::save_main_window_state(&app, "install_update");
-        crate::perform_process_exit_cleanup().await;
-        crate::crash_diagnostics::mark_clean_shutdown("install_update");
-        app.cleanup_before_exit();
-        std::process::exit(0);
-    }
-    #[cfg(not(windows))]
-    super::system_api::restart_app(app, Default::default()).await
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[cfg(windows)]
-    #[test]
-    fn machine_installs_request_elevation_even_in_writable_custom_directories() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(!windows_installation_scope(root.path())
-            .unwrap()
-            .requires_machine_access());
-        std::fs::write(
-            root.path().join(".openbitfun-installed.json"),
-            br#"{"allUsers":true}"#,
-        )
-        .unwrap();
-        assert!(windows_installation_scope(root.path())
-            .unwrap()
-            .requires_machine_access());
-        std::fs::remove_file(root.path().join(".openbitfun-installed.json")).unwrap();
-        std::fs::create_dir(root.path().join(".openbitfun-maintenance")).unwrap();
-        std::fs::write(
-            root.path().join(".openbitfun-maintenance/journal.json"),
-            br#"{"integrations":{"registry":{"machine":true}}}"#,
-        )
-        .unwrap();
-        assert!(windows_installation_scope(root.path())
-            .unwrap()
-            .requires_machine_access());
+    fn package_kind() -> &'static str {
+        "nsh-app"
     }
+
+    fn read_record(
+        dir: &Path,
+        current: &semver::Version,
+        platform: &str,
+    ) -> Result<Option<PendingUpdateRecord>, String> {
+        read_record_for_kind(dir, current, platform, package_kind())
+    }
+
+    use super::*;
 
     #[test]
     fn download_request_preserves_legacy_payloads_and_checks_the_selected_version() {
@@ -584,65 +372,6 @@ mod tests {
         let roundtrip: PendingUpdateRecord =
             serde_json::from_slice(&serde_json::to_vec(&decoded).unwrap()).unwrap();
         assert_eq!(roundtrip.version, "2.0.0");
-    }
-
-    #[test]
-    fn legacy_cache_is_readable_and_only_verified_matching_packages_are_migrated() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut record = record(b"package");
-        record.package_kind = None;
-        save_package(dir.path(), &record, b"package").unwrap();
-        let mut old = serde_json::to_value(&record).unwrap();
-        old.as_object_mut().unwrap().remove("packageKind");
-        std::fs::write(
-            dir.path().join(RECORD_NAME),
-            serde_json::to_vec(&old).unwrap(),
-        )
-        .unwrap();
-        assert!(read_record(dir.path(), &"1.0.0".parse().unwrap(), "test")
-            .unwrap()
-            .is_some());
-        let original = std::fs::read(dir.path().join(RECORD_NAME)).unwrap();
-        assert!(
-            migrate_verified_legacy_record(dir.path(), &mut record, b"ambiguous", "nsis").is_err()
-        );
-        assert_eq!(
-            std::fs::read(dir.path().join(RECORD_NAME)).unwrap(),
-            original
-        );
-        let bytes = b"MZfixture-OPENBITFUN_MAINTENANCE_V1";
-        record = self::record(bytes);
-        record.package_kind = None;
-        save_package(dir.path(), &record, bytes).unwrap();
-        assert!(verify_package(bytes, &record, "invalid-key").is_err());
-        assert_eq!(
-            serde_json::from_slice::<PendingUpdateRecord>(
-                &std::fs::read(dir.path().join(RECORD_NAME)).unwrap()
-            )
-            .unwrap()
-            .package_kind,
-            None
-        );
-        migrate_verified_legacy_record(dir.path(), &mut record, bytes, "nsis").unwrap();
-        assert_eq!(
-            serde_json::from_slice::<PendingUpdateRecord>(
-                &std::fs::read(dir.path().join(RECORD_NAME)).unwrap()
-            )
-            .unwrap()
-            .package_kind
-            .as_deref(),
-            Some("nsis")
-        );
-        record.package_kind = Some("other-format".into());
-        save_package(dir.path(), &record, b"package").unwrap();
-        assert!(read_record(dir.path(), &"1.0.0".parse().unwrap(), "test")
-            .unwrap_err()
-            .contains("installation format"));
-        assert!(dir.path().join(record.package_name().unwrap()).is_file());
-        let mut legacy = serde_json::to_value(&record).unwrap();
-        legacy.as_object_mut().unwrap().remove("packageKind");
-        let decoded: PendingUpdateRecord = serde_json::from_value(legacy).unwrap();
-        assert!(decoded.package_kind.is_none());
     }
 
     #[test]

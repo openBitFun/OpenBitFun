@@ -1,5 +1,7 @@
 # 桌面宠物优化报告
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 日期：2026-11-05。配套：[基线报告](06-pet-performance-baseline-2026-11-05.md) · [原始采样与检查结果](pet-performance-evidence-2026-11-05.json)。所有改动仍在工作区，未提交或发布。
 
 整体性能工作的最终状态见[11月6日收尾报告](08-performance-wrap-up-2026-11-06.md)；本页的小幅观察收益不代表整体应用CPU、GPU或内存目标已完成。
@@ -16,7 +18,7 @@
 2. **让计时器与可见内容对应。** SVG 熊猫的待机动作/过渡计时器不再为精灵图运行；隐藏页面和 reduced motion 下不调度这些 SVG 动作。隐藏精灵图暂停 CSS 动画；桌面鼠标轮询在隐藏时撤销 interval，显示时立即读取一次并恢复原来的 120ms 间隔。没有降低可见鼠标响应或动画帧数。
 3. **合并用户精灵图并发读取并防止释放竞态。** 同一路径的进行中读取共用一个 Promise 和一个 Blob URL。删除/释放使旧读取失效，旧请求完成不会重新填充缓存，也不会清除新的替代请求；失败后可重试。图片探测卸载时同时移除 onload/onerror 回调。单测证明并发请求只读一次、只创建一个 URL；默认内置路径的 RSS 并不能代表这项修复的收益。
 
-主要代码在 [AgentCompanionPet.tsx](../../src/web-ui/src/flow_chat/components/AgentCompanionPet.tsx)、[AgentCompanionDesktopPet.tsx](../../src/web-ui/src/app/components/AgentCompanionDesktopPet/AgentCompanionDesktopPet.tsx)、[AgentCompanionPetService.ts](../../src/web-ui/src/infrastructure/config/services/AgentCompanionPetService.ts)。没有更改持久化、wire payload、命令注册或跨平台所有权边界。
+主要代码在 `src/web-ui/src/flow_chat/components/AgentCompanionPet.tsx`、`src/web-ui/src/app/components/AgentCompanionDesktopPet/AgentCompanionDesktopPet.tsx`、`src/web-ui/src/infrastructure/config/services/AgentCompanionPetService.ts`。没有更改持久化、wire payload、命令注册或跨平台所有权边界。
 
 ## 前后量化结果
 

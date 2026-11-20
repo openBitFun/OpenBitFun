@@ -50,10 +50,6 @@ Configure client-wide hands-free realtime voice calls, your desktop pet mascot a
   - Turn desktop cards on or off globally (hiding cards and removing the agent tool when off)
   - 说明：默认开启。关闭后会隐藏所有桌面小卡片，且智能体上下文中不再暴露小卡片工具；已创建的卡片与布局数据会完好保留，重开即恢复。
   - Why & how: Enabled by default. Turning it off hides all cards and removes the desktop-card tool from agents without deleting your saved cards or positions.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）
-  - Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)
-  - 说明：在支持桌面层固定的 Windows 环境下，可逐张开关卡片固定状态，让卡片位于桌面图标之上、普通窗口之下；即使某张卡片当前处于隐藏状态也能在此提前设好。
-  - Why & how: On Windows hosts that support desktop-layer pinning, toggle pinning per card so it sits above desktop icons and behind regular app windows — even for cards that are currently hidden.
 
 ## 怎么用 / How to use it
 
@@ -101,7 +97,7 @@ Configure client-wide hands-free realtime voice calls, your desktop pet mascot a
 - 关闭“启用桌面小卡片”不会清空已有卡片；等演示或录屏结束重新打开开关，原来的卡片会按原尺寸和位置回来。
   - Turning off Enable Desktop Cards never deletes existing cards; toggle it back on after your meeting and every card returns in place.
 
-关联条目 / Related: `feature.desktop-pet`, `feature.voice-input`, `feature.desktop-cards`, `setting.application.input`
+关联条目 / Related: `feature.desktop-pet`, `feature.voice-input`, `setting.application.input`
 
 智能体会先查找相关功能或设置，确认目标后再替你打开、执行或修改。完整能力目录不会预先塞进对话上下文。
 

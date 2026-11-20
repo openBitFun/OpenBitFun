@@ -23,10 +23,9 @@ import {
 } from '../src/export-diagnostics.js';
 import { STRINGS } from '../src/i18n.js';
 
-const requireFromWebUi = createRequire(
-  new URL('../../../../../../../../../web-ui/package.json', import.meta.url),
-);
-const { JSDOM, VirtualConsole } = requireFromWebUi('jsdom');
+// jsdom is a root devDependency (owner of `pnpm run test:ppt-live`).
+const requireFromRepository = createRequire(import.meta.url);
+const { JSDOM, VirtualConsole } = requireFromRepository('jsdom');
 
 test('editable scene rejects fallback fields with located diagnostics', () => {
   for (const fallbackField of ['rasterBase64', 'renderRaster']) {

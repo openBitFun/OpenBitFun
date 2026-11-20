@@ -87,7 +87,7 @@ impl DesktopRuntimeContext {
             }
         };
         let runtime = self.agent_runtime().clone();
-        tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 match receiver.recv().await {
                     Ok(event) => {
@@ -155,14 +155,15 @@ mod tests {
 
         let app_source = include_str!("../lib.rs");
         assert!(app_source.contains("DesktopRuntimeContext::build("));
-        assert!(app_source.contains(".manage(desktop_runtime)"));
+        let host_source = include_str!("../native_host.rs");
+        assert!(host_source.contains(".manage(desktop_runtime)"));
 
         assert!(runtime_source.contains("DesktopSessionApplication::build("));
         let session_commands = include_str!("../api/session_api.rs");
         assert_eq!(
             session_commands.matches("PersistenceManager::new").count(),
             0,
-            "Tauri Session commands must delegate persistence ownership to the application boundary"
+            "Session commands must delegate persistence ownership to the application boundary"
         );
         let session_application = include_str!("session_application.rs");
         assert!(session_application.contains("save_persisted_dialog_turn"));
@@ -321,7 +322,7 @@ mod tests {
                 .split_once(mutation)
                 .unwrap_or_else(|| panic!("missing snapshot mutation: {mutation}"))
                 .1
-                .split_once("#[tauri::command]")
+                .split_once("// @backend-command")
                 .unwrap_or_else(|| panic!("missing snapshot mutation boundary: {mutation}"))
                 .0;
             assert!(

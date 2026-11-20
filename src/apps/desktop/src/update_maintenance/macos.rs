@@ -3,9 +3,7 @@ use std::{fs, io, path::Path};
 
 pub(super) fn install(bytes: &[u8]) -> io::Result<()> {
     let executable = std::env::current_exe()?;
-    // The official public helper understands the Contents/MacOS bundle layout.
-    let target = tauri_plugin_updater::extract_path_from_executable(&executable)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let target = bundle_of_executable(&executable)?;
     if !target
         .extension()
         .is_some_and(|extension| extension == "app")
@@ -77,6 +75,23 @@ pub(super) fn install(bytes: &[u8]) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// `<Name>.app` for an executable at `<Name>.app/Contents/MacOS/<exe>`.
+fn bundle_of_executable(executable: &Path) -> io::Result<std::path::PathBuf> {
+    let macos = executable.parent();
+    let contents = macos.and_then(Path::parent);
+    match (macos, contents, contents.and_then(Path::parent)) {
+        (Some(macos), Some(contents), Some(bundle))
+            if macos.file_name().is_some_and(|name| name == "MacOS")
+                && contents.file_name().is_some_and(|name| name == "Contents") =>
+        {
+            Ok(bundle.to_path_buf())
+        }
+        _ => Err(io::Error::other(
+            "This macOS installation requires a manual update",
+        )),
+    }
 }
 
 fn authorized_script(parent: &Path, new_app: &Path, target: &Path) -> String {

@@ -1,0 +1,39 @@
+# OpenBitFun mesh credential issuer (openbitfun-mesh-issuer from
+# src/apps/relay-server). Install as
+# /etc/systemd/system/openbitfun-mesh-issuer.service; see README.md.
+[Unit]
+Description=OpenBitFun mesh credential issuer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openbitfun-mesh
+Group=openbitfun-mesh
+# MESH_ISSUER_LISTEN_ADDR, MESH_ISSUER_KEY_FILE, MESH_ISSUER_PEERS,
+# MESH_ISSUER_EASYTIER_VERSION (README.md); the key file itself is 0600.
+EnvironmentFile=/opt/openbitfun-mesh-issuer/etc/issuer.env
+ExecStart=/opt/openbitfun-mesh-issuer/bin/openbitfun-mesh-issuer
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

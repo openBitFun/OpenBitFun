@@ -51,7 +51,7 @@ pub struct UploadedImageContextResponse {
     pub image_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn upload_image_contexts(
     request: UploadImageContextRequest,
 ) -> Result<Vec<UploadedImageContextResponse>, String> {

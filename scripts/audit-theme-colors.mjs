@@ -12,8 +12,6 @@ import {
   COLOR_DOMAIN_RULES,
   COLOR_EXTENSIONS,
   CONTRACT_VAR_DEFINITION_PATH_PARTS,
-  DEFAULT_BASELINE_PATH,
-  DEFAULT_ROOT,
   DYNAMIC_VAR_FAMILY_CONTRACTS,
   EXCEPTION_PATH_PARTS,
   FALLBACK_VAR_CONTRACTS,
@@ -108,11 +106,6 @@ const GENERATED_WIDGET_APPEARANCE_PAYLOAD_PATH = 'infrastructure/appearance/adap
 const REPORT_ROW_LIMIT = 100;
 const COLOR_DOMAIN_CONTRACT_BY_KEY = new Map(COLOR_DOMAIN_CONTRACTS.map(contract => [contract.key, contract]));
 const FALLBACK_VAR_CONTRACT_BY_KEY = new Map(FALLBACK_VAR_CONTRACTS.map(contract => [contract.key, contract]));
-const VENDORED_GENUI_EXCLUSIONS = [
-  'src/tools/generative-ui/components/openui',
-  'src/tools/generative-ui/components/openuiLibrary.tsx',
-  'src/tools/generative-ui/components/vendor',
-];
 const TOKEN_COMPATIBILITY_ALIAS_BY_KEY = new Map(
   TOKEN_COMPATIBILITY_ALIAS_CONTRACTS.map(contract => [contract.key, contract]),
 );
@@ -144,7 +137,7 @@ function resolveCompatibilityAliasContract(name) {
 
 function parseArgs(argv) {
   const options = {
-    root: DEFAULT_ROOT,
+    root: null,
     json: false,
     reportJson: null,
     baselinePath: undefined,
@@ -206,7 +199,7 @@ function parseArgs(argv) {
       }
       options.excludePaths.push(excludePath);
     } else if (arg === '--root') {
-      options.root = argv[++index] ?? DEFAULT_ROOT;
+      options.root = argv[++index] ?? null;
     } else if (arg === '--top') {
       options.top = Number(argv[++index] ?? options.top);
     } else if (arg === '--budget') {
@@ -219,14 +212,8 @@ function parseArgs(argv) {
     }
   }
 
-  // The checked-in OpenUI/Harmony resources are vendored renderer payloads;
-  // their upstream palette and fallback variables are audited by their own
-  // source boundary rather than Web UI app-token budgets. Apply this only to
-  // the repository's real Web UI root so fixture roots remain explicit.
-  if (path.resolve(options.root) === path.resolve(DEFAULT_ROOT)) {
-    for (const exclusion of VENDORED_GENUI_EXCLUSIONS) {
-      if (!options.excludePaths.includes(exclusion)) options.excludePaths.push(exclusion);
-    }
+  if (!options.root) {
+    throw new Error('--root <path> is required: pass the surface root (see scripts/frontend-color-surface-registry.json).');
   }
 
   return options;
@@ -236,7 +223,7 @@ function printHelp() {
   console.log(`Usage: node scripts/audit-theme-colors.mjs [options]
 
 Options:
-  --root <path>          Directory to scan. Default: ${DEFAULT_ROOT}
+  --root <path>          Directory to scan. Required.
   --top <number>         Number of top rows to print. Default: 15
   --budget <number>      Unique app color budget for the summary. Default: 120
   --baseline <path>      Enforce a theme color governance baseline.
@@ -296,14 +283,6 @@ function isAuditTestFile(relativePath) {
   return (
     /(^|\/)__tests__\//.test(relativePath)
     || /\.(?:test|spec)\.[a-z0-9]+$/i.test(relativePath)
-  );
-}
-
-function isGeneratedBuildArtifact(rootRelativePath) {
-  return (
-    rootRelativePath === 'generated/version.ts'
-    || rootRelativePath === 'generated/version-injection.html'
-    || rootRelativePath.startsWith('public/monaco-editor/')
   );
 }
 
@@ -821,13 +800,6 @@ function resolveBaselinePath(options) {
     return path.resolve(options.baselinePath);
   }
 
-  const root = path.resolve(options.root);
-  const defaultRoot = path.resolve(DEFAULT_ROOT);
-  const defaultBaselinePath = path.resolve(DEFAULT_BASELINE_PATH);
-  if (root === defaultRoot && fs.existsSync(defaultBaselinePath)) {
-    return defaultBaselinePath;
-  }
-
   return null;
 }
 
@@ -970,7 +942,6 @@ function applyBaseline(report, options) {
 
 function audit(options) {
   const root = path.resolve(options.root);
-  const checksFullThemeSourceRoot = root === path.resolve(DEFAULT_ROOT);
   const rootRelativePath = normalizePath(path.relative(process.cwd(), root));
   const files = walkFiles(root);
   const cwd = process.cwd();
@@ -983,20 +954,14 @@ function audit(options) {
     fileEntries.map(entry => [entry.relativePath, entry.rootRelativePath]),
   );
   const ignoredTestFiles = fileEntries.filter(entry => isAuditTestFile(entry.relativePath));
-  const ignoredGeneratedFiles = fileEntries.filter(entry => (
-    !isAuditTestFile(entry.relativePath)
-    && isGeneratedBuildArtifact(entry.rootRelativePath)
-  ));
   const ignoredExplicitFiles = fileEntries.filter(entry => (
     !isAuditTestFile(entry.relativePath)
-    && !isGeneratedBuildArtifact(entry.rootRelativePath)
     && isExplicitlyExcluded(entry.rootRelativePath, options.excludePaths)
   ));
   const auditedFiles = fileEntries
     .filter(entry => (
       !isAuditTestFile(entry.relativePath)
-      && !isGeneratedBuildArtifact(entry.rootRelativePath)
-      && !isExplicitlyExcluded(entry.rootRelativePath, options.excludePaths)
+        && !isExplicitlyExcluded(entry.rootRelativePath, options.excludePaths)
     ))
     .map(entry => entry.file);
   const importedPackageNames = collectImportedPackageNames(auditedFiles, cwd);
@@ -1226,14 +1191,13 @@ function audit(options) {
       key: prefix,
       files: Array.from(dynamicDefinitionFiles.get(prefix) ?? []).sort().slice(0, 5),
     }));
-  const staleRegisteredDynamicFamilyEntries = checksFullThemeSourceRoot
-    ? DYNAMIC_VAR_FAMILY_CONTRACTS
-      .filter(contract => contractOwnerMatchesRoot(contract, rootRelativePath))
-      .map(contract => contract.prefix)
-      .filter(prefix => !dynamicDefinitionPrefixes.has(prefix))
-      .sort((a, b) => a.localeCompare(b))
-      .map(prefix => ({ key: prefix }))
-    : [];
+  // Every audited root owns the registrations whose owner path lies under it.
+  const staleRegisteredDynamicFamilyEntries = DYNAMIC_VAR_FAMILY_CONTRACTS
+    .filter(contract => contractOwnerMatchesRoot(contract, rootRelativePath))
+    .map(contract => contract.prefix)
+    .filter(prefix => !dynamicDefinitionPrefixes.has(prefix))
+    .sort((a, b) => a.localeCompare(b))
+    .map(prefix => ({ key: prefix }));
   const nonContractDefinedEntries = Array.from(varUsageCounts.entries())
     .filter(([name]) => definedVars.has(name) && !contractVarDefinitions.has(name))
     .map(([key, count]) => ({
@@ -1514,8 +1478,8 @@ function audit(options) {
     .filter(entry => entry.canonicalDefinitionKind && !generatedWidgetPayloadVarNames.has(entry.canonical))
     .map(({ key, canonical, count, files }) => ({ key, canonical, count, files }))
     .sort((a, b) => a.key.localeCompare(b.key));
-  const staleCompatibilityAliasEntries = checksFullThemeSourceRoot
-    ? TOKEN_COMPATIBILITY_ALIAS_CONTRACTS
+  const staleCompatibilityAliasEntries = TOKEN_COMPATIBILITY_ALIAS_CONTRACTS
+      .filter(contract => contractOwnerMatchesRoot(contract, rootRelativePath))
       .map(contract => ({
         key: contract.key,
         canonical: contract.canonical,
@@ -1523,13 +1487,10 @@ function audit(options) {
         canonicalDefinitionKind: getDefinitionKind(contract.canonical),
       }))
       .filter(entry => !entry.definitionKind || !entry.canonicalDefinitionKind)
-      .sort((a, b) => a.key.localeCompare(b.key))
-    : [];
-  const staleCompatibilityAliasFamilyEntries = checksFullThemeSourceRoot
-    ? compatibilityAliasFamilyEntries
+      .sort((a, b) => a.key.localeCompare(b.key));
+  const staleCompatibilityAliasFamilyEntries = compatibilityAliasFamilyEntries
       .filter(entry => !entry.canonicalDefined)
-      .map(entry => ({ key: entry.key, canonical: entry.canonical }))
-    : [];
+      .map(entry => ({ key: entry.key, canonical: entry.canonical }));
   const uncontractedFallbackVars = fallbackVars
     .filter(entry => !FALLBACK_VAR_CONTRACT_BY_KEY.has(entry.key))
     .map(entry => ({
@@ -1537,12 +1498,11 @@ function audit(options) {
       count: entry.count,
       files: entry.files,
     }));
-  const staleFallbackContractEntries = checksFullThemeSourceRoot
-    ? FALLBACK_VAR_CONTRACTS
+  const staleFallbackContractEntries = FALLBACK_VAR_CONTRACTS
+      .filter(contract => contractOwnerMatchesRoot(contract, rootRelativePath))
       .filter(contract => !fallbackTokenCounts.has(contract.key))
       .map(contract => ({ key: contract.key }))
-      .sort((a, b) => a.key.localeCompare(b.key))
-    : [];
+      .sort((a, b) => a.key.localeCompare(b.key));
   const missingColorDomainContractEntries = COLOR_DOMAIN_RULES
     .filter(rule => !COLOR_DOMAIN_CONTRACT_BY_KEY.has(rule.key))
     .map(rule => ({ key: rule.key }))
@@ -1578,22 +1538,20 @@ function audit(options) {
     })
     .filter(entry => entry.count > 0)
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
-  const missingSurfaceTokenRenameCanonicalEntries = checksFullThemeSourceRoot
-    ? SURFACE_TOKEN_RENAME_CONTRACTS
+  const missingSurfaceTokenRenameCanonicalEntries = SURFACE_TOKEN_RENAME_CONTRACTS
+      .filter(contract => contractOwnerMatchesRoot(contract, rootRelativePath))
       .map(contract => ({
         key: contract.key,
         canonical: contract.canonical,
         canonicalDefinitionKind: getDefinitionKind(contract.canonical),
       }))
       .filter(entry => !entry.canonicalDefinitionKind)
-      .sort((a, b) => a.key.localeCompare(b.key))
-    : [];
+      .sort((a, b) => a.key.localeCompare(b.key));
 
   return {
     root: normalizePath(path.relative(cwd, root)) || '.',
     filesScanned: auditedFiles.length,
     ignoredTestFiles: ignoredTestFiles.length,
-    ignoredGeneratedFiles: ignoredGeneratedFiles.length,
     ignoredExplicitFiles: ignoredExplicitFiles.length,
     explicitExclusions: options.excludePaths.map(normalizeRootRelativePath).sort(),
     filesWithColors: fileColorCounts.size,
@@ -1768,7 +1726,6 @@ function printText(report) {
   console.log(`Theme color audit: ${report.root}`);
   console.log(`Files scanned: ${report.filesScanned}`);
   console.log(`Ignored test files: ${report.ignoredTestFiles}`);
-  console.log(`Ignored generated files: ${report.ignoredGeneratedFiles}`);
   console.log(`Ignored explicitly excluded files: ${report.ignoredExplicitFiles}`);
   console.log(`Files with colors: ${report.filesWithColors}`);
   console.log(`Color occurrences: ${report.colorOccurrences}`);

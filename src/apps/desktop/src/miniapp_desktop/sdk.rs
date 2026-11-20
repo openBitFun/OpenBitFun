@@ -1,6 +1,6 @@
 //! Closed SDK dispatch. Shell requests cannot invoke arbitrary Desktop commands.
 use super::*;
-use crate::api::{miniapp_agent_api as agent, miniapp_export_api};
+use crate::api::miniapp_agent_api as agent;
 
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
@@ -10,7 +10,7 @@ fn encode(value: impl Serialize) -> Result<Value, String> {
 }
 
 pub(crate) async fn call(
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     instance: &MiniAppInstance,
     view_id: &str,
     method: String,
@@ -165,9 +165,9 @@ pub(crate) async fn call(
             {
                 return Err("MiniApp lacks host.deck_render permission".into());
             }
-            encode(
-                miniapp_export_api::miniapp_render_slide_page(app.clone(), decode(params)?).await?,
-            )
+            Err(crate::host::unsupported_in_native_host(
+                "deck.renderPage (slide rendering needed the retired Tauri WebView)",
+            ))
         }
         "authorizeLocal" => {
             let action = string(&params, "action")?;
@@ -217,10 +217,10 @@ pub(crate) async fn call(
     result
 }
 
-pub(crate) fn install_events(app: &tauri::AppHandle) {
+pub(crate) fn install_events(app: &HostHandle) {
     let handle = app.clone();
     app.listen("miniapp://ai-stream", move |event| {
-        let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {
+        let Ok(payload) = serde_json::from_str::<Value>(event) else {
             return;
         };
         let Some(stream) = payload["streamId"].as_str() else {
@@ -255,7 +255,7 @@ pub(crate) fn install_events(app: &tauri::AppHandle) {
     ] {
         let handle = app.clone();
         app.listen(format!("agentic://{event_name}"), move |event| {
-            let Ok(mut payload) = serde_json::from_str::<Value>(event.payload()) else {
+            let Ok(mut payload) = serde_json::from_str::<Value>(event) else {
                 return;
             };
             let Some(session) = payload["sessionId"].as_str().map(str::to_owned) else {
@@ -286,7 +286,7 @@ pub(crate) fn install_events(app: &tauri::AppHandle) {
     }
 }
 
-pub(crate) fn install_worker_events(app: &tauri::AppHandle, app_id: &str) {
+pub(crate) fn install_worker_events(app: &HostHandle, app_id: &str) {
     let handle = app.clone();
     let app_id = app_id.to_string();
     for name in [
@@ -297,7 +297,7 @@ pub(crate) fn install_worker_events(app: &tauri::AppHandle, app_id: &str) {
         let handle = app.clone();
         let id = app_id.clone();
         app.listen(name, move |event| {
-            let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {
+            let Ok(payload) = serde_json::from_str::<Value>(event) else {
                 return;
             };
             if payload["id"].as_str() != Some(id.as_str()) {
@@ -320,7 +320,7 @@ pub(crate) fn install_worker_events(app: &tauri::AppHandle, app_id: &str) {
         });
     }
     app.listen(format!("miniapp://worker-event:{app_id}"), move |event| {
-        let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {
+        let Ok(payload) = serde_json::from_str::<Value>(event) else {
             return;
         };
         let host = handle.state::<DesktopMiniApps>();

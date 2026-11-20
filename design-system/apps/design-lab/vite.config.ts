@@ -11,15 +11,12 @@ const uiSourceDirectory = path.join(designSystemDirectory, "packages/ui/src");
 const flowChatPresentationDirectory = path.resolve(designSystemDirectory, "../packages/flow-chat-presentation");
 const brandExportsDirectory = path.resolve(designSystemDirectory, "../assets/brand/exports");
 const brandWordmarkFile = path.resolve(designSystemDirectory, "../png/openbitfun-wordmark.png");
-const subagentIdentityDirectory = path.resolve(designSystemDirectory, "../src/web-ui/src/flow_chat/subagent-identity");
-const subagentArtworkDirectory = path.resolve(designSystemDirectory, "../src/web-ui/src/flow_chat/assets/subagent-avatars");
 
 export default defineConfig(({ command }) => ({
   plugins: [
     react(),
     watchSourcePlugin(uiSourceDirectory),
     watchSourcePlugin(flowChatPresentationDirectory),
-    watchSourcePlugin(subagentArtworkDirectory),
     createTokenAuthoringPlugin({ designSystemDirectory }),
   ],
   resolve: {
@@ -63,7 +60,7 @@ export default defineConfig(({ command }) => ({
   },
   server: {
     fs: {
-      allow: [brandExportsDirectory, brandWordmarkFile, designSystemDirectory, subagentIdentityDirectory, subagentArtworkDirectory, flowChatPresentationDirectory],
+      allow: [brandExportsDirectory, brandWordmarkFile, designSystemDirectory, flowChatPresentationDirectory],
     },
     host: "127.0.0.1",
     port: 4178,

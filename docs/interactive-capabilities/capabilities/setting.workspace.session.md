@@ -26,10 +26,6 @@ Configure the Default agent execution mode for new sessions, automatic session t
 
 ## 完整功能清单 / Everything included
 
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式
-  - Set Default agent execution mode: follow the last chat input selection or fix a default mode
-  - 说明：经常在不同执行模式间切换时选“跟随上一次选择”最顺手；希望每次新建普通会话都使用固定模式时可直接锁定目标。
-  - Why & how: Follow your last chat input choice when you switch modes often, or fix a default execution mode so every new regular session starts identically.
 - **智能体可直接控制 / Direct Agent control** · 启用或停用根据会话内容自动生成标题
   - Enable or disable automatic titles generated from session content
   - 说明：开启后会在对话起步阶段自动提炼简短标题替换默认的“新会话”，省去手动重命名的麻烦。

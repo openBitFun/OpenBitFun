@@ -94,8 +94,8 @@ jobs:
           done < <(git ls-files -z '*.sh' '*.bash')
           exit "$rc"
 
-      - name: Verify release and version-generation contracts
-        run: node --test scripts/release-channel.test.mjs scripts/tauri-release-manifest.test.mjs scripts/linux-binaries-manifest.test.mjs scripts/version-generation.test.mjs
+      - name: Verify release contracts
+        run: node --test scripts/release-channel.test.mjs scripts/tauri-release-manifest.test.mjs scripts/linux-binaries-manifest.test.mjs scripts/ci/native-release-tooling.test.mjs
 
       - name: Validate Relay deployment and packaging contracts
         run: node --test scripts/relay/*.test.mjs
@@ -465,6 +465,93 @@ jobs:
           tool_context_runtime::path_resolution_tests file_read_state_runtime::tests
           service::snapshot:: product_runtime::tests::session_fork_
 
+  # ── Native desktop UI: the shared NSH frontend (`src/nsh-ui`) ─────
+  # Type check plus the headless UI suites (each test opens the app on an
+  # engine of its own, playing the backend through request-shape fixtures),
+  # and the generated native command dispatcher of the desktop backend.
+  nsh-ui:
+    name: Native Desktop UI
+    needs: build-impact
+    if: ${{ !cancelled() && needs.build-impact.outputs.frontend_required != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      - name: Install NSH CLI
+        run: node scripts/ci/install-nsh.mjs
+
+      - name: Check the desktop native dispatcher
+        run: node scripts/generate-desktop-native-dispatch.mjs --check
+
+      - name: Type-check the native desktop UI
+        working-directory: src/nsh-ui
+        run: nsh check
+
+      - name: Run the headless UI suites
+        working-directory: src/nsh-ui
+        run: nsh test .
+
+  # ── Native NSH desktop runners: Windows (Win32 + WebView2) and Linux (GTK) ──
+  # The runner crate is a workspace of its own (`src/apps/desktop-nsh/native`,
+  # NSH needs a newer rustc and another `unicode-width` than the root), so the
+  # workspace check above never builds it. macOS is packaged and exercised
+  # locally (`pnpm run desktop-nsh:package:mac`); these jobs keep the Windows
+  # and Linux runners compiling against `nsh-windows-app` / `nsh-linux-app`.
+  desktop-nsh-runners:
+    name: Native Desktop Runner (${{ matrix.os }})
+    needs: build-impact
+    if: ${{ !cancelled() && needs.build-impact.outputs.rust_required != 'false' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      RUSTUP_TOOLCHAIN: "1.98.1"
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux system dependencies (NSH GTK runner)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-4-dev \
+            libwebkitgtk-6.0-dev \
+            libsoup-3.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src/apps/desktop-nsh/native -> ../../../../target/desktop-nsh-runner"
+          shared-key: "ci-nsh-runner-v1-${{ github.base_ref || github.ref_name }}-${{ runner.os }}"
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/1.0.0-explore') }}
+
+      - name: Check the native desktop runner
+        run: cargo check --locked --manifest-path src/apps/desktop-nsh/native/Cargo.toml --features runner --target-dir target/desktop-nsh-runner
+
   # Call the standalone Linux/Relay workflow directly. Calling the Nightly
   # artifact orchestrator would register a misleading skipped Desktop package
   # check on every producer-selected PR even when that matrix is disabled.
@@ -538,8 +625,8 @@ jobs:
           }
 
   # ── DeepSeek Harness bridge: profile packaging on Windows ──────────
-  # `prepare:dsh-profile` runs from `frontend:build-all` / official desktop
-  # packaging, not from desktop:dev or cargo check. Until this job existed,
+  # `prepare:dsh-profile` runs from the native desktop packaging scripts
+  # (`scripts/desktop-nsh-package-common.mjs`), not from desktop:dev or cargo check. Until this job existed,
   # its first Windows execution ever was a release build, and it failed there
   # (`spawnSync npm ENOENT`: npm is a `.cmd` shim Node will not spawn without
   # a shell). This job is the cheapest thing that exercises the whole
@@ -674,10 +761,6 @@ jobs:
           bun install --cwd src/apps/extension-host --frozen-lockfile
           bun run --cwd src/apps/extension-host build
 
-      - name: Generate web API bindings
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm --dir src/web-ui run gen:types
-
       - name: Validate PPT Live generated-file contract
         if: needs.build-impact.outputs.frontend_required != 'false'
         run: pnpm run test:ppt-live
@@ -713,22 +796,6 @@ jobs:
       - name: Validate theme visual governance contract
         if: needs.build-impact.outputs.frontend_required != 'false'
         run: pnpm run theme:visual-contract
-
-      - name: Validate WebKit compatibility gate
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm run verify:webkit-compatibility:test
-
-      - name: Lint web UI
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm run lint:web
-
-      - name: Run web UI tests
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm --dir src/web-ui run test:run
-
-      - name: Build web UI
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm run build:web
 
       - name: Type-check mobile web
         if: needs.build-impact.outputs.frontend_required != 'false'

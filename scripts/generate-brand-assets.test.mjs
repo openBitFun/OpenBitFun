@@ -92,7 +92,8 @@ test('macOS ICNS PNG representations preserve a visible body and transparent Doc
 });
 
 test('desktop and installer retain independent Windows/Linux icons alongside the macOS fallback', () => {
-  for (const configPath of ['src/apps/desktop/tauri.conf.json', 'OpenBitFun-Installer/src-tauri/tauri.conf.json']) {
+  // The native desktop packages copy these files directly (scripts/package-desktop-nsh-*.mjs).
+  for (const configPath of ['OpenBitFun-Installer/src-tauri/tauri.conf.json']) {
     const { bundle } = JSON.parse(readFileSync(configPath, 'utf8'));
     assert.equal(bundle.icon.find(icon => icon.endsWith('.icns')), 'icons/openbitfun-app-icon.icns');
     assert.equal(bundle.icon.find(icon => icon.endsWith('.png')), 'icons/openbitfun-app-icon.png');
@@ -149,16 +150,6 @@ test('brand exports provide decodable transparent PNGs at every advertised size'
   );
 });
 
-test('Web UI exposes the canonical mark as a reusable currentColor vector asset', () => {
-  const source = readFileSync('assets/brand/source/openbitfun-mark.svg', 'utf8');
-  const webAsset = readFileSync('src/web-ui/public/brand/openbitfun-mark.svg', 'utf8');
-
-  assert.equal(webAsset, source.replaceAll('stroke="black"', 'stroke="currentColor"'));
-  assert.equal(webAsset.match(/<path\b/g)?.length, 15);
-  assert.match(webAsset, /stroke="currentColor"/);
-  assert.doesNotMatch(webAsset, /#[0-9a-f]{3,8}\b/i);
-});
-
 test('Windows ICO frames contain the size-specific app PNGs', async () => {
   const ico = readFileSync('src/apps/desktop/icons/openbitfun-app-icon.ico');
   assert.equal(ico.readUInt16LE(0), 0);
@@ -200,20 +191,18 @@ test('small icons retain a bright rim around the entire silhouette', async () =>
   }
 });
 
-test('desktop tray uses a macOS template and the application icon on other platforms', () => {
-  const source = readFileSync('src/apps/desktop/src/tray.rs', 'utf8');
-  assert.match(source, /#\[cfg\(target_os = "macos"\)\]\s*let icon = macos_tray_icon\(\)\?/);
-  assert.match(source, /#\[cfg\(not\(target_os = "macos"\)\)\]\s*let icon = app\s*\.default_window_icon\(\)/);
-  assert.doesNotMatch(source, /openbitfun-tray-template/);
-  assert.match(source, /\.icon_as_template\(cfg!\(target_os = "macos"\)\)/);
-  // The unread badge is gone, so the mark is built once and never swapped:
-  // nothing may re-apply the icon or write a numeric tray title afterwards.
-  assert.doesNotMatch(source, /set_icon_with_as_template|set_title/);
+test('the native desktop tray uses the bundled template mark', () => {
+  // The NSH shell owns the tray (`nsh/desktop` Tray); the runner passes the mark in.
+  const transport = readFileSync('src/apps/desktop-nsh/src/nativeTransport.ts', 'utf8');
+  assert.match(transport, /import trayMark from "\.\.\/assets\/tray-mark\.svg";/);
+  assert.match(transport, /trayIcon: trayMark/);
+  const shell = readFileSync('src/nsh-ui/src/nshDesktopShell.ts', 'utf8');
+  assert.match(shell, /Tray\.set\(\{\s*icon: deps\.trayIcon/);
+  assert.doesNotMatch(transport, /openbitfun-tray-template/);
 });
 
 test('browser entry points reference generated application favicons', () => {
   for (const [htmlPath, assetDir] of [
-    ['src/web-ui/index.html', 'src/web-ui/public/brand'],
     ['src/mobile-web/index.html', 'src/mobile-web/public/brand'],
     ['src/apps/relay-server/static/index.html', 'src/apps/relay-server/static/brand'],
     ['OpenBitFun-Installer/index.html', 'OpenBitFun-Installer/src/assets'],
@@ -240,7 +229,7 @@ test('ICNS canonicalization rejects malformed containers', () => {
 
 test('verification email reuses the current mark and the OpenBitFun reference palette', () => {
   const emailMark = readFileSync('src/miniapp-market-web/public/assets/openbitfun-email-app-icon.png');
-  assert.deepEqual(emailMark, readFileSync('src/web-ui/public/brand/openbitfun-app-icon.png'));
+  assert.deepEqual(emailMark, readFileSync('src/mobile-web/public/brand/openbitfun-app-icon.png'));
   assert.deepEqual(emailMark, readFileSync('src/crates/services/miniapp-market-service/src/email/app-icon.png'));
   const html = readFileSync('src/crates/services/miniapp-market-service/src/email/sign-in.html', 'utf8');
   const tokens = JSON.parse(readFileSync('design-system/packages/theme-openbitfun/src/reference.tokens.json', 'utf8'));

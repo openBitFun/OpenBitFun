@@ -144,7 +144,7 @@ OpenBitFun はまだ進化の途中です。探っていきたい 3 つの方向
 [OpenBitFun Data Tools](src/apps/data-tools/README.md) を使ってください。現在、安定版のリリース 0.2.17〜0.2.19 で
 使えます。
 
-ソースから実行するには、[Node.js](https://nodejs.org/) 22.12+、[pnpm](https://pnpm.io/) 10.15.0、[Rust のツールチェーン](https://rustup.rs/)、[Tauri の前提条件](https://v2.tauri.app/start/prerequisites/)をインストールしてください。リポジトリをクローンしてから、次を実行します：
+ソースから実行するには、[Node.js](https://nodejs.org/) 22.12+、[pnpm](https://pnpm.io/) 10.15.0、[Rust のツールチェーン](https://rustup.rs/)（ネイティブデスクトップアプリには 1.98.1）、NSH CLI（`nsh` 0.6、[`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md) を参照）をインストールしてください。リポジトリをクローンしてから、次を実行します：
 
 ```bash
 pnpm install

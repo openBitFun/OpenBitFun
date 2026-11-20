@@ -99,6 +99,7 @@ impl BackendBridge for NativeBridge {
         self.backend.log(level, message);
     }
 
+    #[cfg(target_os = "macos")]
     fn pick_directory(&self, options_json: String) -> Option<BoxFuture<Result<String, String>>> {
         Some(crate::folder_picker::pick_directory(options_json))
     }

@@ -5,12 +5,10 @@ packages:
   - "design-system/packages/*"
   - "design-system/tooling/*"
   - "design-system/apps/*"
-  - "src/web-ui"
   - "src/mobile-web"
   - "src/miniapp-market-web"
   - "OpenBitFun-Installer"
   - "website"
-  - "tests/e2e"
 
 patchedDependencies:
   "@xterm/xterm@6.1.0-beta.141": patches/@xterm__xterm@6.1.0-beta.141.patch

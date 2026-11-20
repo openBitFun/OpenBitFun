@@ -11,8 +11,8 @@ use openbitfun_core::infrastructure::PathManager;
 use openbitfun_core::service::dispatch::{
     answer_device_dispatch, answer_dispatch, append_device_dispatch, append_dispatch,
     cancel_device_dispatch, cancel_dispatch, continue_device_dispatch_job, continue_dispatch_job,
-    decode_device_dispatch_response, encode_device_dispatch_command, get_device_dispatch_status,
-    get_dispatch_status, list_device_dispatch_jobs, list_dispatch_jobs, list_dispatch_targets,
+    get_device_dispatch_status, get_dispatch_status, invoke_device_dispatch,
+    list_device_dispatch_jobs, list_dispatch_jobs, list_dispatch_targets,
     probe_device_dispatch_target, probe_dispatch_target, query_device_dispatch_job,
     query_dispatch_job, submit_device_dispatch, submit_dispatch, sync_device_dispatch_result,
     sync_dispatch_model_config, sync_dispatch_result, DeviceDispatchRpc, DispatchAnswerRequest,
@@ -37,16 +37,25 @@ struct AccountDeviceDispatchRpc;
 
 #[async_trait]
 impl DeviceDispatchRpc for AccountDeviceDispatchRpc {
+    /// New targets on the account device mesh run the verb over OBP; older
+    /// targets get the `host_invoke` envelope over the relay RPC.
     async fn invoke(&self, device_id: &str, command: &str, args: Value) -> anyhow::Result<Value> {
-        let command_json = encode_device_dispatch_command(command, args)?;
-        let raw = super::remote_connect_api::account_device_rpc(
-            device_id.to_string(),
-            command_json,
-            None,
+        invoke_device_dispatch(
+            openbitfun_services_integrations::remote_connect::mesh_route::mesh_route(),
+            device_id,
+            command,
+            args,
+            |command_json| async move {
+                super::remote_connect_api::account_device_rpc(
+                    device_id.to_string(),
+                    command_json,
+                    None,
+                )
+                .await
+                .map_err(anyhow::Error::msg)
+            },
         )
         .await
-        .map_err(anyhow::Error::msg)?;
-        decode_device_dispatch_response(command, &raw)
     }
 }
 
@@ -108,7 +117,7 @@ pub(crate) async fn execute_agent_dispatch_control(
         .map_err(|error| format!("{error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_list_targets(
     state: State<'_, AppState>,
     request: DispatchListTargetsRequest,
@@ -146,7 +155,7 @@ pub async fn dispatch_list_targets(
     Ok(targets)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_probe_target(
     state: State<'_, AppState>,
     request: DispatchProbeTargetRequest,
@@ -165,7 +174,7 @@ pub async fn dispatch_probe_target(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_sync_model_config(
     state: State<'_, AppState>,
     request: DispatchConnectionRequest,
@@ -179,7 +188,7 @@ pub async fn dispatch_sync_model_config(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_submit(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -212,7 +221,7 @@ pub async fn dispatch_submit(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_status(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -246,7 +255,7 @@ pub async fn dispatch_status(
 /// controller fast-forwards its baseline onto the result. There is no separate
 /// apply step because there is nothing to reconcile — both sides branched from
 /// the same commit.
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_sync_result(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -279,7 +288,7 @@ pub async fn dispatch_sync_result(
 /// A dispatch session is a conversation, not a single exchange: this reuses the
 /// target's session, worktree, and event log, so the projection keeps growing
 /// as one transcript.
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_continue(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -307,7 +316,7 @@ pub async fn dispatch_continue(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_query(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -335,7 +344,7 @@ pub async fn dispatch_query(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_cancel(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -363,7 +372,7 @@ pub async fn dispatch_cancel(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_list_jobs(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -396,7 +405,7 @@ pub async fn dispatch_list_jobs(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_answer(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -424,7 +433,7 @@ pub async fn dispatch_answer(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_append(
     state: State<'_, AppState>,
     path_manager: State<'_, Arc<PathManager>>,
@@ -457,7 +466,7 @@ pub async fn dispatch_append(
 /// Purely local: it touches neither the target nor any local session runtime.
 /// A missing or unreadable cache returns `null` and the observer replays the
 /// job from the beginning.
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_load_transcript(
     path_manager: State<'_, Arc<PathManager>>,
     request: DispatchTranscriptRequest,
@@ -475,7 +484,7 @@ pub async fn dispatch_load_transcript(
 ///
 /// Returns `false` when the transcript exceeds the cache ceiling, in which case
 /// the previous entry is kept and the renderer keeps polling as before.
-#[tauri::command]
+// @backend-command
 pub async fn dispatch_save_transcript(
     path_manager: State<'_, Arc<PathManager>>,
     request: DispatchSaveTranscriptRequest,
@@ -496,7 +505,7 @@ pub async fn dispatch_save_transcript(
 
 #[cfg(test)]
 mod tests {
-    use super::decode_device_dispatch_response;
+    use openbitfun_core::service::dispatch::decode_device_dispatch_response;
 
     fn decode_device_dispatch_rpc(raw: &str) -> anyhow::Result<serde_json::Value> {
         decode_device_dispatch_response("dispatch_target_submit", raw)

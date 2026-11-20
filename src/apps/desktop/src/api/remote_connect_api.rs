@@ -717,7 +717,7 @@ static RENEWAL_WAKE: std::sync::LazyLock<Arc<tokio::sync::Notify>> =
 static TOKEN_EXPIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Check if the account token has been marked expired by the sync loop.
-#[tauri::command]
+// @backend-command
 pub async fn account_token_expired() -> bool {
     TOKEN_EXPIRED.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -1253,7 +1253,7 @@ async fn revoke_replaced_account(client: &AccountClient, account: Option<Account
 // Owned by shared `session_store` so Desktop and CLI use the same hint file.
 
 /// Tauri command: get the persisted credential hint for pre-filling the login form.
-#[tauri::command]
+// @backend-command
 pub async fn account_get_credential_hint() -> Option<AccountHint> {
     load_credential_hint()
 }
@@ -1678,7 +1678,7 @@ fn detect_from_exe() -> Option<String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if cfg!(target_os = "macos") {
-        // Primary: tauri.conf.json maps dist -> mobile-web/dist in Resources
+        // Primary: the native bundle packages mobile-web/dist in Resources
         candidates.push(exe_dir.join("../Resources/mobile-web/dist"));
         // Fallback: legacy layout without dist subdirectory
         candidates.push(exe_dir.join("../Resources/mobile-web"));
@@ -1941,7 +1941,7 @@ fn is_ipv4(s: &str) -> bool {
     s.split('.').count() == 4 && s.split('.').all(|p| p.parse::<u8>().is_ok())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_get_device_info() -> Result<DeviceInfo, String> {
     ensure_service().await?;
     // Always read the persisted/account-adopted identity — not a stale copy
@@ -1954,12 +1954,12 @@ pub async fn remote_connect_get_device_info() -> Result<DeviceInfo, String> {
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_get_lan_ip() -> Result<String, String> {
     lan::get_local_ip().map_err(|e| format!("get local ip: {e}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_get_lan_network_info() -> Result<LanNetworkInfo, String> {
     let interfaces = lan::list_local_ips().map_err(|e| format!("list local ips: {e}"))?;
     let local_ip = interfaces
@@ -1991,7 +1991,7 @@ pub async fn remote_connect_get_lan_network_info() -> Result<LanNetworkInfo, Str
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_get_methods() -> Result<Vec<ConnectionMethodInfo>, String> {
     ensure_service().await?;
     let holder = get_service_holder();
@@ -2094,7 +2094,7 @@ async fn official_route_is_serving(prepared_relay_url: &str) -> bool {
 /// A LAN route is one endpoint per interface. It is reused when the request
 /// names no interface or the one it uses (also when that one was chosen
 /// automatically at start); a request for another interface restarts it there.
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_start(
     request: StartRemoteConnectRequest,
 ) -> Result<ConnectionResult, String> {
@@ -2177,7 +2177,7 @@ pub struct StopRemoteConnectRequest {
     pub method: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_stop(request: Option<StopRemoteConnectRequest>) -> Result<(), String> {
     let selected = request
         .map(|request| match request.method.as_str() {
@@ -2201,7 +2201,7 @@ pub async fn remote_connect_stop(request: Option<StopRemoteConnectRequest>) -> R
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_stop_bot() -> Result<(), String> {
     for method in ["weixin", "telegram", "feishu"] {
         bot_control()
@@ -2212,7 +2212,7 @@ pub async fn remote_connect_stop_bot() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_status() -> Result<RemoteConnectStatusResponse, String> {
     ensure_service().await?;
 
@@ -2271,17 +2271,17 @@ pub struct SetRemoteControlRequest {
     allowed: bool,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_set_allowed(request: SetRemoteControlRequest) -> Result<(), String> {
     device::set_remote_control_allowed(request.allowed).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_get_form_state() -> Result<bot::RemoteConnectFormState, String> {
     Ok(bot::load_bot_persistence().form_state)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_set_form_state(
     request: bot::RemoteConnectFormState,
 ) -> Result<(), String> {
@@ -2314,7 +2314,7 @@ pub struct WeixinQrPollRequest {
     pub verify_code: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_configure_bot(request: ConfigureBotRequest) -> Result<(), String> {
     ensure_service().await?;
     let bot_config = match request.bot_type.as_str() {
@@ -2339,7 +2339,7 @@ pub async fn remote_connect_configure_bot(request: ConfigureBotRequest) -> Resul
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_weixin_qr_start(
     request: WeixinQrStartRequest,
 ) -> Result<weixin::WeixinQrStartResponse, String> {
@@ -2352,7 +2352,7 @@ pub async fn remote_connect_weixin_qr_start(
     .map_err(|e| format!("weixin qr start: {e}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_weixin_qr_poll(
     request: WeixinQrPollRequest,
 ) -> Result<weixin::WeixinQrPollResponse, String> {
@@ -2361,13 +2361,13 @@ pub async fn remote_connect_weixin_qr_poll(
         .map_err(|e| format!("weixin qr poll: {e}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_get_bot_verbose_mode() -> Result<bool, String> {
     let data = bot::load_bot_persistence();
     Ok(data.verbose_mode)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remote_connect_set_bot_verbose_mode(verbose: bool) -> Result<(), String> {
     log::info!(
         "remote_connect_set_bot_verbose_mode called with verbose={}",
@@ -2416,7 +2416,7 @@ async fn persist_account_session(
         .map_err(|e| format!("persist session: {e}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_login(_request: AccountAuthRequest) -> Result<AccountLoginResult, String> {
     login_account_on_relay(openbitfun_product_domains::account::DEFAULT_RELAY_URL.to_string()).await
 }
@@ -2547,7 +2547,7 @@ async fn login_account_on_relay_for_generation(
     Ok(result)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_status() -> Result<AccountStatus, String> {
     let context = read_account_context().await.ok();
     let logged_in = context.is_some();
@@ -2629,7 +2629,7 @@ async fn clear_account_login_state(revoke_relay_token: bool) {
     );
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_logout(app: HostHandle) -> Result<(), String> {
     let mut identity = openbitfun_services_integrations::account_identity::AccountIdentityClient::from_environment()
         .await.map_err(|error| error.to_string())?;
@@ -2686,7 +2686,7 @@ async fn reconnect_requested_devices(
 /// Connect to the account relay for device-to-device routing. Must be called
 /// after `account_login`. The event receiver is consumed in a background task
 /// that logs presence updates; device messages are forwarded to the RemoteConnectService.
-#[tauri::command]
+// @backend-command
 pub async fn account_connect_devices() -> Result<Vec<OnlineDeviceInfo>, String> {
     connect_route_devices(RelayRoute::Official).await
 }
@@ -3221,7 +3221,7 @@ async fn connect_route_devices_for_generation(
 }
 
 /// Get the current online device list.
-#[tauri::command]
+// @backend-command
 pub async fn account_online_devices() -> Result<Vec<OnlineDeviceInfo>, String> {
     let account_generation = account_context_generation();
     let (session, _) = read_account_context_for_generation(account_generation).await?;
@@ -3238,7 +3238,7 @@ pub async fn account_online_devices() -> Result<Vec<OnlineDeviceInfo>, String> {
 
 /// Execute a task on a remote device — sends an ExecuteOnDevice command
 /// over the device-messaging WS pathway.
-#[tauri::command]
+// @backend-command
 pub async fn account_execute_on_device(
     target_device_id: String,
     session_id: Option<String>,
@@ -3330,11 +3330,39 @@ pub struct AccountDeviceInfo {
     pub device_client_version: Option<String>,
     pub device_client_protocol: Option<u32>,
     pub compatible: Option<bool>,
+    /// Directory presence merged with the live relay presence this host holds.
     pub online: bool,
     pub last_seen_at: Option<i64>,
+    /// `live` (this host's relay socket sees it now), `directory` (the account
+    /// directory says online) or `offline`. Absent on hosts that predate the
+    /// merge; such a list carries directory presence only.
+    pub presence: &'static str,
+    /// The device this host runs on.
+    pub is_local: bool,
 }
 
-#[tauri::command]
+/// Merges the live relay presence into the directory rows, so every client
+/// shows the same online state without reading two lists and joining them.
+fn merge_device_presence(
+    devices: &mut [AccountDeviceInfo],
+    live: &[OnlineDeviceInfo],
+    local_device_id: Option<&str>,
+) {
+    for device in devices.iter_mut() {
+        let live_now = live.iter().any(|entry| entry.device_id == device.device_id);
+        device.is_local = local_device_id == Some(device.device_id.as_str());
+        device.presence = if live_now {
+            "live"
+        } else if device.online {
+            "directory"
+        } else {
+            "offline"
+        };
+        device.online = live_now || device.online;
+    }
+}
+
+// @backend-command
 pub async fn account_list_devices() -> Result<Vec<AccountDeviceInfo>, String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -3352,7 +3380,11 @@ pub async fn account_list_devices() -> Result<Vec<AccountDeviceInfo>, String> {
     if !account_context_is_current(generation) {
         return Err("account context changed".to_string());
     }
-    Ok(devices
+    let live = device_presence_for_account(generation, &session.token).unwrap_or_default();
+    let local_device_id = DeviceIdentity::from_current_machine()
+        .ok()
+        .map(|identity| identity.device_id);
+    let mut devices: Vec<AccountDeviceInfo> = devices
         .into_iter()
         .map(|d| AccountDeviceInfo {
             device_id: d.device_id,
@@ -3367,8 +3399,12 @@ pub async fn account_list_devices() -> Result<Vec<AccountDeviceInfo>, String> {
             compatible: d.compatible,
             online: d.online,
             last_seen_at: d.last_seen_at,
+            presence: "offline",
+            is_local: false,
         })
-        .collect())
+        .collect();
+    merge_device_presence(&mut devices, &live, local_device_id.as_deref());
+    Ok(devices)
 }
 
 #[derive(Deserialize)]
@@ -3377,7 +3413,7 @@ pub struct AccountUpdateDeviceAliasRequest {
     pub device_alias: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_update_device_alias(
     request: AccountUpdateDeviceAliasRequest,
 ) -> Result<(), String> {
@@ -3395,7 +3431,7 @@ pub async fn account_update_device_alias(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_relay_capabilities() -> Result<Vec<String>, String> {
     let generation = account_context_generation();
     let (_, relay_url) = read_account_context_for_generation(generation).await?;
@@ -3410,7 +3446,7 @@ pub async fn account_relay_capabilities() -> Result<Vec<String>, String> {
 }
 
 /// Remove a device from the account.
-#[tauri::command]
+// @backend-command
 pub async fn account_delete_device(targetDeviceId: String) -> Result<(), String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -3460,7 +3496,7 @@ fn account_device_rpc_timeout_ms(requested: Option<u64>) -> u64 {
         )
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_device_rpc(
     target_device_id: String,
     command_json: String,
@@ -4044,7 +4080,7 @@ pub struct UnsubscribeSessionRequest {
     subscription_id: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_load_older_session(request: UnsubscribeSessionRequest) -> Result<(), String> {
     let load = {
         let subscriptions = SESSION_SUBSCRIPTIONS
@@ -4059,7 +4095,7 @@ pub async fn account_load_older_session(request: UnsubscribeSessionRequest) -> R
     load.await.map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_subscribe_session(request: SubscribeSessionRequest) -> Result<String, String> {
     let generation = account_context_generation();
     let (session, relay) = read_account_context_for_generation(generation).await?;
@@ -4109,7 +4145,7 @@ pub async fn account_subscribe_session(request: SubscribeSessionRequest) -> Resu
     Ok(id)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn account_unsubscribe_session(request: UnsubscribeSessionRequest) -> Result<(), String> {
     if let Some(subscriptions) = SESSION_SUBSCRIPTIONS.get() {
         subscriptions
@@ -4153,5 +4189,68 @@ mod relay_account_login_tests {
             Some("http://192.168.1.2:9700"),
             official
         ));
+    }
+}
+
+#[cfg(test)]
+mod device_presence_merge_tests {
+    use super::{merge_device_presence, AccountDeviceInfo, OnlineDeviceInfo};
+
+    fn device(id: &str, online: bool) -> AccountDeviceInfo {
+        AccountDeviceInfo {
+            device_id: id.to_string(),
+            device_name: id.to_string(),
+            device_kind: None,
+            device_alias: None,
+            device_model: None,
+            device_os: None,
+            device_os_version: None,
+            device_client_version: None,
+            device_client_protocol: None,
+            compatible: None,
+            online,
+            last_seen_at: None,
+            presence: "offline",
+            is_local: false,
+        }
+    }
+
+    #[test]
+    fn live_presence_marks_directory_offline_rows_online() {
+        let mut devices = vec![
+            device("live-only", false),
+            device("directory", true),
+            device("gone", false),
+            device("me", false),
+        ];
+        let live = vec![OnlineDeviceInfo {
+            device_id: "live-only".to_string(),
+            device_name: "Live".to_string(),
+            ..Default::default()
+        }];
+        merge_device_presence(&mut devices, &live, Some("me"));
+        let states: Vec<_> = devices
+            .iter()
+            .map(|device| {
+                (
+                    device.device_id.as_str(),
+                    device.online,
+                    device.presence,
+                    device.is_local,
+                )
+            })
+            .collect();
+        assert_eq!(
+            states,
+            vec![
+                ("live-only", true, "live", false),
+                ("directory", true, "directory", false),
+                ("gone", false, "offline", false),
+                ("me", false, "offline", true),
+            ]
+        );
+        let value = serde_json::to_value(&devices[0]).unwrap();
+        assert_eq!(value["presence"], "live");
+        assert_eq!(value["is_local"], false);
     }
 }

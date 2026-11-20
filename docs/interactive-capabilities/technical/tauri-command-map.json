@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "b18e476cf2b8f36360fc1fc9edc5dcf20454aaf4d51bf2fde4193e2c56b21dd4",
-  "commandCount": 725,
+  "catalogDigest": "17a124b388ec4662d540fd802d1c6d90cd54bc65c1b1616ccbe806aab60289ff",
+  "commandCount": 720,
   "coverage": {
-    "commandCount": 725,
-    "documentedCommandCount": 648,
-    "implementationCommandCount": 77,
-    "implementationDigest": "776aedc42b51fa67aba2d3f15a74b3adb19106eba0e25d1416409c606fc029a6"
+    "commandCount": 720,
+    "documentedCommandCount": 639,
+    "implementationCommandCount": 81,
+    "implementationDigest": "2c4853750bb9cda28b728cad24c947c51fac2a3909b9866f25a7ff4c8be3a653"
   },
   "commands": [
     {
@@ -667,9 +667,9 @@
         "feature.browser:reload-status"
       ],
       "visibility": "documented",
-      "rustPath": "api::browser_api::browser_get_url",
-      "sourceFile": "src/apps/desktop/src/api/browser_api.rs",
-      "signature": "fn browser_get_url( app: tauri::AppHandle, request: WebviewLabelRequest, ) -> Result<String, String>",
+      "rustPath": "backend_protocol::native_commands::browser_get_url",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/browser.rs",
+      "signature": "fn browser_get_url( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -683,9 +683,9 @@
         "feature.browser:embedded-webview"
       ],
       "visibility": "documented",
-      "rustPath": "api::browser_api::browser_webview_capture_preview",
-      "sourceFile": "src/apps/desktop/src/api/browser_api.rs",
-      "signature": "fn browser_webview_capture_preview( app: tauri::AppHandle, request: WebviewLabelRequest, ) -> Result<WebviewPreviewResponse, String>",
+      "rustPath": "backend_protocol::native_commands::browser_webview_capture_preview",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/browser.rs",
+      "signature": "fn browser_webview_capture_preview( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -699,9 +699,9 @@
         "feature.browser:open-urls"
       ],
       "visibility": "documented",
-      "rustPath": "api::browser_api::browser_webview_create",
-      "sourceFile": "src/apps/desktop/src/api/browser_api.rs",
-      "signature": "fn browser_webview_create( app: tauri::AppHandle, request: WebviewCreateRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::browser_webview_create",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/browser.rs",
+      "signature": "fn browser_webview_create( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -715,9 +715,9 @@
         "feature.browser:agent-page-automation"
       ],
       "visibility": "documented",
-      "rustPath": "api::browser_api::browser_webview_eval",
-      "sourceFile": "src/apps/desktop/src/api/browser_api.rs",
-      "signature": "fn browser_webview_eval( app: tauri::AppHandle, request: WebviewEvalRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::browser_webview_eval",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/browser.rs",
+      "signature": "fn browser_webview_eval( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -731,9 +731,9 @@
         "feature.browser:open-urls"
       ],
       "visibility": "documented",
-      "rustPath": "api::browser_api::browser_webview_navigate",
-      "sourceFile": "src/apps/desktop/src/api/browser_api.rs",
-      "signature": "fn browser_webview_navigate( app: tauri::AppHandle, request: WebviewNavigateRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::browser_webview_navigate",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/browser.rs",
+      "signature": "fn browser_webview_navigate( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -747,9 +747,25 @@
         "feature.browser:reload-status"
       ],
       "visibility": "documented",
-      "rustPath": "api::browser_api::browser_webview_reload",
+      "rustPath": "backend_protocol::native_commands::browser_webview_reload",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/browser.rs",
+      "signature": "fn browser_webview_reload( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "browser_webview_report_page_load",
+      "moduleId": "browser",
+      "capabilityId": "feature.browser",
+      "capabilityIds": [
+        "feature.browser"
+      ],
+      "documentedItemIds": [
+        "feature.browser:embedded-webview"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::browser_api::browser_webview_report_page_load",
       "sourceFile": "src/apps/desktop/src/api/browser_api.rs",
-      "signature": "fn browser_webview_reload( app: tauri::AppHandle, request: WebviewLabelRequest, ) -> Result<(), String>",
+      "signature": "fn browser_webview_report_page_load( host: crate::host::HostHandle, request: BrowserPageLoadReport, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -779,9 +795,9 @@
         "feature.browser:embedded-webview"
       ],
       "visibility": "documented",
-      "rustPath": "api::browser_api::browser_webview_set_bounds",
-      "sourceFile": "src/apps/desktop/src/api/browser_api.rs",
-      "signature": "fn browser_webview_set_bounds( app: tauri::AppHandle, request: WebviewBoundsRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::browser_webview_set_bounds",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/browser.rs",
+      "signature": "fn browser_webview_set_bounds( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -1021,7 +1037,7 @@
     },
     {
       "id": "check_for_updates",
-      "moduleId": "system",
+      "moduleId": "update",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
@@ -1031,9 +1047,9 @@
         "setting.application.general:manual-update"
       ],
       "visibility": "documented",
-      "rustPath": "check_for_updates",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn check_for_updates( app: AppHandle, request: CheckForUpdatesRequest, ) -> Result<CheckForUpdatesResponse, String>",
+      "rustPath": "backend_protocol::native_commands::check_for_updates",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/update.rs",
+      "signature": "fn check_for_updates( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -1101,22 +1117,6 @@
       "sourceFile": "src/apps/desktop/src/api/external_sources_api.rs",
       "signature": "fn choose_external_subagent_conflict_command( request: ChooseExternalSubagentConflictRequest, ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse>",
       "remoteWorkspacePolicy": "RemoteUnsupported"
-    },
-    {
-      "id": "clean_snapshot_storage",
-      "moduleId": "snapshot_service",
-      "capabilityId": "setting.data.storage",
-      "capabilityIds": [
-        "setting.data.storage"
-      ],
-      "documentedItemIds": [
-        "setting.data.storage:clean"
-      ],
-      "visibility": "documented",
-      "rustPath": "clean_snapshot_storage",
-      "sourceFile": "src/apps/desktop/src/api/snapshot_service.rs",
-      "signature": "fn clean_snapshot_storage( runtime: State<'_, DesktopRuntimeContext>, request: CleanSnapshotStorageRequest, ) -> Result<CleanupResult, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "cleanup_invalid_workspaces",
@@ -1541,22 +1541,6 @@
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
-      "id": "confirm_frontend_update",
-      "moduleId": "frontend_workbench",
-      "capabilityId": "feature.ai-assistant",
-      "capabilityIds": [
-        "feature.ai-assistant"
-      ],
-      "documentedItemIds": [
-        "feature.ai-assistant:creative-frontend-authoring"
-      ],
-      "visibility": "documented",
-      "rustPath": "frontend_workbench::confirm_frontend_update",
-      "sourceFile": "src/apps/desktop/src/frontend_workbench.rs",
-      "signature": "fn confirm_frontend_update( state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>, webview: tauri::WebviewWindow, request: FrontendUpdateDecisionRequest, ) -> Result<Value, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
       "id": "control_background_command",
       "moduleId": "agentic",
       "capabilityId": "feature.ai-assistant",
@@ -1633,8 +1617,8 @@
       "visibility": "documented",
       "rustPath": "create_assistant_workspace",
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
-      "signature": "fn create_assistant_workspace( state: State<'_, AppState>, app: HostHandle, _request: CreateAssistantWorkspaceRequest, ) -> Result<WorkspaceInfoDto, String>",
-      "remoteWorkspacePolicy": "LegacyUnaudited"
+      "signature": "fn create_assistant_workspace( state: State<'_, AppState>, app: HostHandle, request: CreateAssistantWorkspaceRequest, ) -> Result<WorkspaceInfoDto, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "create_control_conversation",
@@ -1744,7 +1728,7 @@
       "visibility": "documented",
       "rustPath": "api::agentic_api::create_session",
       "sourceFile": "src/apps/desktop/src/api/agentic_api.rs",
-      "signature": "fn create_session( coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, request: CreateSessionRequest, ) -> Result<CreateSessionResponse, String>",
+      "signature": "fn create_session( coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, mut request: CreateSessionRequest, ) -> Result<CreateSessionResponse, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
@@ -1762,70 +1746,6 @@
       "sourceFile": "src/apps/desktop/src/api/subagent_api.rs",
       "signature": "fn create_subagent( state: State<'_, AppState>, request: CreateSubagentRequest, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
-    },
-    {
-      "id": "debug_close_devtools",
-      "moduleId": "debug",
-      "capabilityId": "setting.data.diagnostics",
-      "capabilityIds": [
-        "setting.data.diagnostics"
-      ],
-      "documentedItemIds": [
-        "setting.data.diagnostics:devtools"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::debug_api::debug_close_devtools",
-      "sourceFile": "src/apps/desktop/src/api/debug_api.rs",
-      "signature": "fn debug_close_devtools(app: tauri::AppHandle) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "debug_devtools_available",
-      "moduleId": "debug",
-      "capabilityId": "setting.data.diagnostics",
-      "capabilityIds": [
-        "setting.data.diagnostics"
-      ],
-      "documentedItemIds": [
-        "setting.data.diagnostics:devtools"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::debug_api::debug_devtools_available",
-      "sourceFile": "src/apps/desktop/src/api/debug_api.rs",
-      "signature": "fn debug_devtools_available() -> Result<bool, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "debug_element_picked",
-      "moduleId": "debug",
-      "capabilityId": "setting.data.diagnostics",
-      "capabilityIds": [
-        "setting.data.diagnostics"
-      ],
-      "documentedItemIds": [
-        "setting.data.diagnostics:element-inspector"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::debug_api::debug_element_picked",
-      "sourceFile": "src/apps/desktop/src/api/debug_api.rs",
-      "signature": "fn debug_element_picked(request: DebugElementPickedRequest) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "debug_open_devtools",
-      "moduleId": "debug",
-      "capabilityId": "setting.data.diagnostics",
-      "capabilityIds": [
-        "setting.data.diagnostics"
-      ],
-      "documentedItemIds": [
-        "setting.data.diagnostics:devtools"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::debug_api::debug_open_devtools",
-      "sourceFile": "src/apps/desktop/src/api/debug_api.rs",
-      "signature": "fn debug_open_devtools(app: tauri::AppHandle) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "decompress_path",
@@ -2085,132 +2005,19 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
-      "id": "desktop_card_delete",
-      "moduleId": "commands",
-      "capabilityId": "feature.desktop-cards",
+      "id": "delete_terminal_profile",
+      "moduleId": "terminal_profiles",
+      "capabilityId": "feature.terminal",
       "capabilityIds": [
-        "feature.desktop-cards"
+        "feature.terminal"
       ],
       "documentedItemIds": [
-        "feature.desktop-cards:home-management"
+        "feature.terminal:create-terminal"
       ],
       "visibility": "documented",
-      "rustPath": "desktop_cards::commands::desktop_card_delete",
-      "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
-      "signature": "fn desktop_card_delete( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardIdRequest, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "desktop_card_get",
-      "moduleId": "commands",
-      "capabilityId": "feature.desktop-cards",
-      "capabilityIds": [
-        "feature.desktop-cards"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-cards:card-actions"
-      ],
-      "visibility": "documented",
-      "rustPath": "desktop_cards::commands::desktop_card_get",
-      "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
-      "signature": "fn desktop_card_get( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardIdRequest, ) -> Result<DesktopCardRecord, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "desktop_card_list",
-      "moduleId": "commands",
-      "capabilityId": "feature.desktop-cards",
-      "capabilityIds": [
-        "feature.desktop-cards"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-cards:home-management"
-      ],
-      "visibility": "documented",
-      "rustPath": "desktop_cards::commands::desktop_card_list",
-      "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
-      "signature": "fn desktop_card_list( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardListRequest, ) -> Result<Value, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "desktop_card_refresh",
-      "moduleId": "commands",
-      "capabilityId": "feature.desktop-cards",
-      "capabilityIds": [
-        "feature.desktop-cards"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-cards:card-actions"
-      ],
-      "visibility": "documented",
-      "rustPath": "desktop_cards::commands::desktop_card_refresh",
-      "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
-      "signature": "fn desktop_card_refresh( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardIdRequest, ) -> Result<DesktopCardRecord, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "desktop_card_set_always_on_top",
-      "moduleId": "commands",
-      "capabilityId": "feature.desktop-cards",
-      "capabilityIds": [
-        "feature.desktop-cards"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-cards:card-actions",
-        "feature.desktop-cards:desktop-pinning"
-      ],
-      "visibility": "documented",
-      "rustPath": "desktop_cards::commands::desktop_card_set_always_on_top",
-      "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
-      "signature": "fn desktop_card_set_always_on_top( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardAlwaysOnTopRequest, ) -> Result<DesktopCardRecord, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "desktop_card_set_checklist_item",
-      "moduleId": "commands",
-      "capabilityId": "feature.desktop-cards",
-      "capabilityIds": [
-        "feature.desktop-cards"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-cards:card-actions"
-      ],
-      "visibility": "documented",
-      "rustPath": "desktop_cards::commands::desktop_card_set_checklist_item",
-      "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
-      "signature": "fn desktop_card_set_checklist_item( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardChecklistItemRequest, ) -> Result<DesktopCardRecord, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "desktop_card_set_visible",
-      "moduleId": "commands",
-      "capabilityId": "feature.desktop-cards",
-      "capabilityIds": [
-        "feature.desktop-cards"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-cards:home-management"
-      ],
-      "visibility": "documented",
-      "rustPath": "desktop_cards::commands::desktop_card_set_visible",
-      "sourceFile": "src/apps/desktop/src/desktop_cards/commands.rs",
-      "signature": "fn desktop_card_set_visible( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardSetVisibleRequest, ) -> Result<DesktopCardRecord, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "desktop_external_control",
-      "moduleId": "external_control",
-      "capabilityId": "setting.tools.desktop-control",
-      "capabilityIds": [
-        "setting.tools.desktop-control"
-      ],
-      "documentedItemIds": [
-        "setting.tools.desktop-control:external-control"
-      ],
-      "visibility": "documented",
-      "rustPath": "external_control::desktop_external_control",
-      "sourceFile": "src/apps/desktop/src/external_control.rs",
-      "signature": "fn desktop_external_control( webview: tauri::Webview, app: AppHandle, request: ControllerSettingsRequest, ) -> Result<Value, String>",
+      "rustPath": "api::terminal_profiles_api::delete_terminal_profile",
+      "sourceFile": "src/apps/desktop/src/api/terminal_profiles_api.rs",
+      "signature": "fn delete_terminal_profile( app: HostHandle, request: DeleteTerminalProfileRequest, ) -> Result<TerminalProfilesResponse, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -2464,9 +2271,9 @@
         "setting.application.general:manual-update"
       ],
       "visibility": "documented",
-      "rustPath": "api::update_api::download_update",
-      "sourceFile": "src/apps/desktop/src/api/update_api.rs",
-      "signature": "fn download_update( app: AppHandle, request: DownloadUpdateRequest, ) -> Result<PendingUpdateResponse, String>",
+      "rustPath": "backend_protocol::native_commands::download_update",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/update.rs",
+      "signature": "fn download_update( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -2732,38 +2539,6 @@
       "sourceFile": "src/apps/desktop/src/api/session_api.rs",
       "signature": "fn fork_session( request: ForkSessionRequest, runtime: State<'_, DesktopRuntimeContext>, ) -> Result<ForkSessionResponse, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
-    },
-    {
-      "id": "frontend_update_candidate_failed",
-      "moduleId": "frontend_workbench",
-      "capabilityId": "feature.ai-assistant",
-      "capabilityIds": [
-        "feature.ai-assistant"
-      ],
-      "documentedItemIds": [
-        "feature.ai-assistant:creative-frontend-authoring"
-      ],
-      "visibility": "documented",
-      "rustPath": "frontend_workbench::frontend_update_candidate_failed",
-      "sourceFile": "src/apps/desktop/src/frontend_workbench.rs",
-      "signature": "fn frontend_update_candidate_failed( state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>, webview: tauri::Webview, request: FrontendUpdateFailureRequest, ) -> Result<Value, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "frontend_update_candidate_ready",
-      "moduleId": "frontend_workbench",
-      "capabilityId": "feature.ai-assistant",
-      "capabilityIds": [
-        "feature.ai-assistant"
-      ],
-      "documentedItemIds": [
-        "feature.ai-assistant:creative-frontend-authoring"
-      ],
-      "visibility": "documented",
-      "rustPath": "frontend_workbench::frontend_update_candidate_ready",
-      "sourceFile": "src/apps/desktop/src/frontend_workbench.rs",
-      "signature": "fn frontend_update_candidate_ready( state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>, webview: tauri::Webview, request: FrontendUpdateDecisionRequest, ) -> Result<Value, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "generate_commit_message",
@@ -3059,7 +2834,7 @@
     },
     {
       "id": "get_clipboard_files",
-      "moduleId": "clipboard_file",
+      "moduleId": "native_shell",
       "capabilityId": "feature.files-editor",
       "capabilityIds": [
         "feature.files-editor"
@@ -3068,14 +2843,14 @@
         "feature.files-editor:attachments"
       ],
       "visibility": "documented",
-      "rustPath": "get_clipboard_files",
-      "sourceFile": "src/apps/desktop/src/api/clipboard_file_api.rs",
-      "signature": "fn get_clipboard_files(app: tauri::AppHandle) -> Result<ClipboardFilesResponse, String>",
+      "rustPath": "backend_protocol::native_commands::get_clipboard_files",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn get_clipboard_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "get_clipboard_image",
-      "moduleId": "clipboard_file",
+      "moduleId": "native_shell",
       "capabilityId": "feature.files-editor",
       "capabilityIds": [
         "feature.files-editor"
@@ -3084,9 +2859,9 @@
         "feature.files-editor:attachments"
       ],
       "visibility": "documented",
-      "rustPath": "get_clipboard_image",
-      "sourceFile": "src/apps/desktop/src/api/clipboard_file_api.rs",
-      "signature": "fn get_clipboard_image(app: tauri::AppHandle) -> Result<ClipboardImageResponse, String>",
+      "rustPath": "backend_protocol::native_commands::get_clipboard_image",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn get_clipboard_image(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -3403,22 +3178,6 @@
       "rustPath": "get_file_watch_status",
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn get_file_watch_status() -> Result<file_watch::FileWatchStatus, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "get_frontend_update_status",
-      "moduleId": "frontend_workbench",
-      "capabilityId": "feature.ai-assistant",
-      "capabilityIds": [
-        "feature.ai-assistant"
-      ],
-      "documentedItemIds": [
-        "feature.ai-assistant:creative-frontend-authoring"
-      ],
-      "visibility": "documented",
-      "rustPath": "frontend_workbench::get_frontend_update_status",
-      "sourceFile": "src/apps/desktop/src/frontend_workbench.rs",
-      "signature": "fn get_frontend_update_status( state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>, webview: tauri::WebviewWindow, request: FrontendUpdateDecisionRequest, ) -> Result<Value, String>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -3865,9 +3624,39 @@
         "setting.application.general:manual-update"
       ],
       "visibility": "documented",
-      "rustPath": "api::update_api::get_pending_update",
-      "sourceFile": "src/apps/desktop/src/api/update_api.rs",
-      "signature": "fn get_pending_update( app: AppHandle, request: PendingUpdateRequest, ) -> Result<Option<PendingUpdateResponse>, String>",
+      "rustPath": "backend_protocol::native_commands::get_pending_update",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/update.rs",
+      "signature": "fn get_pending_update( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "get_permission_settings",
+      "moduleId": "settings_mutation",
+      "capabilityId": "setting.application.general",
+      "capabilityIds": [
+        "setting.application.general"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "api::settings_mutation_api::get_permission_settings",
+      "sourceFile": "src/apps/desktop/src/api/settings_mutation_api.rs",
+      "signature": "fn get_permission_settings(state: State<'_, AppState>) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "get_personal_overview",
+      "moduleId": "view_model",
+      "capabilityId": "feature.insights",
+      "capabilityIds": [
+        "feature.insights"
+      ],
+      "documentedItemIds": [
+        "feature.insights:usage-statistics"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::view_model_api::get_personal_overview",
+      "sourceFile": "src/apps/desktop/src/api/view_model_api.rs",
+      "signature": "fn get_personal_overview( state: State<'_, AppState>, request: PersonalOverviewRequest, ) -> Result<PersonalOverview, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -4141,6 +3930,22 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
+      "id": "get_session_transcript_view",
+      "moduleId": "transcript_view",
+      "capabilityId": "feature.ai-assistant",
+      "capabilityIds": [
+        "feature.ai-assistant"
+      ],
+      "documentedItemIds": [
+        "feature.ai-assistant:history-search"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::transcript_view_api::get_session_transcript_view",
+      "sourceFile": "src/apps/desktop/src/api/transcript_view_api.rs",
+      "signature": "fn get_session_transcript_view( runtime: State<'_, DesktopRuntimeContext>, request: GetSessionTranscriptViewRequest, ) -> Result<DesktopSessionTranscriptView, String>",
+      "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
       "id": "get_session_turns",
       "moduleId": "snapshot_service",
       "capabilityId": "feature.files-editor",
@@ -4329,6 +4134,38 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
+      "id": "get_terminal_profiles",
+      "moduleId": "terminal_profiles",
+      "capabilityId": "feature.terminal",
+      "capabilityIds": [
+        "feature.terminal"
+      ],
+      "documentedItemIds": [
+        "feature.terminal:create-terminal"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::terminal_profiles_api::get_terminal_profiles",
+      "sourceFile": "src/apps/desktop/src/api/terminal_profiles_api.rs",
+      "signature": "fn get_terminal_profiles( state: State<'_, AppState>, request: GetTerminalProfilesRequest, ) -> Result<TerminalProfilesResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "get_token_usage_activity",
+      "moduleId": "token_usage",
+      "capabilityId": "feature.insights",
+      "capabilityIds": [
+        "feature.insights"
+      ],
+      "documentedItemIds": [
+        "feature.insights:usage-statistics"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::token_usage_api::get_token_usage_activity",
+      "sourceFile": "src/apps/desktop/src/api/token_usage_api.rs",
+      "signature": "fn get_token_usage_activity( request: TokenUsageActivityRequest, state: State<'_, AppState>, ) -> Result<TokenUsageActivity, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "get_token_usage_statistics",
       "moduleId": "token_usage",
       "capabilityId": null,
@@ -4424,6 +4261,22 @@
       "rustPath": "get_workspace_icon",
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn get_workspace_icon( state: State<'_, AppState>, request: openbitfun_core::service::workspace::WorkspaceIconRequest, ) -> Result<openbitfun_core::service::workspace::WorkspaceIconSnapshot, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "get_workspace_navigator",
+      "moduleId": "view_model",
+      "capabilityId": "feature.projects",
+      "capabilityIds": [
+        "feature.projects"
+      ],
+      "documentedItemIds": [
+        "feature.projects:close-switch-reorder"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::view_model_api::get_workspace_navigator",
+      "sourceFile": "src/apps/desktop/src/api/view_model_api.rs",
+      "signature": "fn get_workspace_navigator( state: State<'_, AppState>, request: GetWorkspaceNavigatorRequest, ) -> Result<WorkspaceNavigator<WorkspaceInfoDto>, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -4555,6 +4408,22 @@
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
+      "id": "git_commit_and_checkout",
+      "moduleId": "git",
+      "capabilityId": "feature.git",
+      "capabilityIds": [
+        "feature.git"
+      ],
+      "documentedItemIds": [
+        "feature.git:branches"
+      ],
+      "visibility": "documented",
+      "rustPath": "git_commit_and_checkout",
+      "sourceFile": "src/apps/desktop/src/api/git_api.rs",
+      "signature": "fn git_commit_and_checkout( state: State<'_, AppState>, mut request: GitCommitAndCheckoutRequest, ) -> Result<GitOperationResult, String>",
+      "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
       "id": "git_create_branch",
       "moduleId": "git",
       "capabilityId": "feature.git",
@@ -4584,6 +4453,22 @@
       "rustPath": "git_delete_branch",
       "sourceFile": "src/apps/desktop/src/api/git_api.rs",
       "signature": "fn git_delete_branch( state: State<'_, AppState>, mut request: GitDeleteBranchRequest, ) -> Result<GitOperationResult, String>",
+      "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
+      "id": "git_discard_files",
+      "moduleId": "git",
+      "capabilityId": "feature.git",
+      "capabilityIds": [
+        "feature.git"
+      ],
+      "documentedItemIds": [
+        "feature.git:stage-reset"
+      ],
+      "visibility": "documented",
+      "rustPath": "git_discard_files",
+      "sourceFile": "src/apps/desktop/src/api/git_api.rs",
+      "signature": "fn git_discard_files( state: State<'_, AppState>, mut request: GitDiscardFilesRequest, ) -> Result<GitOperationResult, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
@@ -4927,6 +4812,38 @@
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
+      "id": "git_unwatch_status",
+      "moduleId": "git",
+      "capabilityId": "feature.git",
+      "capabilityIds": [
+        "feature.git"
+      ],
+      "documentedItemIds": [
+        "feature.git:status-diff"
+      ],
+      "visibility": "documented",
+      "rustPath": "git_unwatch_status",
+      "sourceFile": "src/apps/desktop/src/api/git_api.rs",
+      "signature": "fn git_unwatch_status(mut request: GitWatchStatusRequest) -> Result<bool, String>",
+      "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
+      "id": "git_watch_status",
+      "moduleId": "git",
+      "capabilityId": "feature.git",
+      "capabilityIds": [
+        "feature.git"
+      ],
+      "documentedItemIds": [
+        "feature.git:status-diff"
+      ],
+      "visibility": "documented",
+      "rustPath": "git_watch_status",
+      "sourceFile": "src/apps/desktop/src/api/git_api.rs",
+      "signature": "fn git_watch_status( state: State<'_, AppState>, mut request: GitWatchStatusRequest, ) -> Result<GitStatusWatchSnapshot, String>",
+      "remoteWorkspacePolicy": "RemoteRouted"
+    },
+    {
       "id": "grant_miniapp_path",
       "moduleId": "miniapp",
       "capabilityId": "feature.miniapps",
@@ -4975,31 +4892,45 @@
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
-      "id": "hide_agent_companion_desktop_pet",
-      "moduleId": "appearance",
-      "capabilityId": "feature.desktop-pet",
+      "id": "hide_main_window_after_close_request",
+      "moduleId": "native_shell",
+      "capabilityId": "setting.application.general",
       "capabilityIds": [
-        "feature.desktop-pet"
+        "setting.application.general"
       ],
-      "documentedItemIds": [
-        "feature.desktop-pet:desktop-window"
-      ],
-      "visibility": "documented",
-      "rustPath": "appearance::hide_agent_companion_desktop_pet",
-      "sourceFile": "src/apps/desktop/src/appearance.rs",
-      "signature": "fn hide_agent_companion_desktop_pet(app: tauri::AppHandle) -> Result<(), String>",
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "backend_protocol::native_commands::hide_main_window_after_close_request",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn hide_main_window_after_close_request( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
-      "id": "hide_main_window_after_close_request",
-      "moduleId": "lib",
-      "capabilityId": null,
-      "capabilityIds": [],
+      "id": "host_shell_attach",
+      "moduleId": "native_shell",
+      "capabilityId": "setting.application.general",
+      "capabilityIds": [
+        "setting.application.general"
+      ],
       "documentedItemIds": [],
-      "visibility": "internal",
-      "rustPath": "hide_main_window_after_close_request",
-      "sourceFile": "src/apps/desktop/src/lib.rs",
-      "signature": "fn hide_main_window_after_close_request(app: tauri::AppHandle) -> Result<(), String>",
+      "visibility": "implementation",
+      "rustPath": "api::native_shell_api::host_shell_attach",
+      "sourceFile": "src/apps/desktop/src/api/native_shell_api.rs",
+      "signature": "fn host_shell_attach( app: HostHandle, request: HostShellAttachRequest, ) -> Result<HostShellAttachResponse, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "host_shell_respond",
+      "moduleId": "native_shell",
+      "capabilityId": "setting.application.general",
+      "capabilityIds": [
+        "setting.application.general"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "api::native_shell_api::host_shell_respond",
+      "sourceFile": "src/apps/desktop/src/api/native_shell_api.rs",
+      "signature": "fn host_shell_respond(app: HostHandle, request: ShellResponse) -> Result<(), String>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -5159,6 +5090,22 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
+      "id": "import_terminal_profiles",
+      "moduleId": "terminal_profiles",
+      "capabilityId": "feature.terminal",
+      "capabilityIds": [
+        "feature.terminal"
+      ],
+      "documentedItemIds": [
+        "feature.terminal:create-terminal"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::terminal_profiles_api::import_terminal_profiles",
+      "sourceFile": "src/apps/desktop/src/api/terminal_profiles_api.rs",
+      "signature": "fn import_terminal_profiles( app: HostHandle, request: ImportTerminalProfilesRequest, ) -> Result<TerminalProfilesResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "initialize_acp_clients",
       "moduleId": "acp_client",
       "capabilityId": "setting.tools.acp",
@@ -5218,16 +5165,16 @@
     },
     {
       "id": "initialize_tray_after_startup",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
       ],
       "documentedItemIds": [],
       "visibility": "implementation",
-      "rustPath": "api::system_api::initialize_tray_after_startup",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn initialize_tray_after_startup( app: tauri::AppHandle, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::initialize_tray_after_startup",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn initialize_tray_after_startup( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -5243,22 +5190,6 @@
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn initialize_workspace_startup_state( state: State<'_, AppState>, app: HostHandle, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<WorkspaceStartupStateSnapshotDto, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
-    },
-    {
-      "id": "inspect_snapshot_storage",
-      "moduleId": "snapshot_service",
-      "capabilityId": "setting.data.storage",
-      "capabilityIds": [
-        "setting.data.storage"
-      ],
-      "documentedItemIds": [
-        "setting.data.storage:clean"
-      ],
-      "visibility": "documented",
-      "rustPath": "inspect_snapshot_storage",
-      "sourceFile": "src/apps/desktop/src/api/snapshot_service.rs",
-      "signature": "fn inspect_snapshot_storage( request: InspectSnapshotStorageRequest, ) -> Result<StorageOverview, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "install_acp_client_cli",
@@ -5287,23 +5218,23 @@
         "setting.application.general:manual-update"
       ],
       "visibility": "documented",
-      "rustPath": "api::update_api::install_pending_update",
-      "sourceFile": "src/apps/desktop/src/api/update_api.rs",
-      "signature": "fn install_pending_update( app: AppHandle, request: InstallPendingUpdateRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::install_pending_update",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/update.rs",
+      "signature": "fn install_pending_update( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "install_update",
-      "moduleId": "system",
+      "moduleId": "update",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
       ],
       "documentedItemIds": [],
       "visibility": "implementation",
-      "rustPath": "install_update",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn install_update(app: AppHandle, request: InstallUpdateRequest) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::install_update",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/update.rs",
+      "signature": "fn install_update( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -5321,6 +5252,22 @@
       "sourceFile": "src/apps/desktop/src/api/agentic_api.rs",
       "signature": "fn interrupt_dialog_turn( runtime: State<'_, DesktopRuntimeContext>, request: CancelDialogTurnRequest, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "launch_review",
+      "moduleId": "review_launch",
+      "capabilityId": "feature.code-review",
+      "capabilityIds": [
+        "feature.code-review"
+      ],
+      "documentedItemIds": [
+        "feature.code-review:deep-review"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::review_launch_api::launch_review",
+      "sourceFile": "src/apps/desktop/src/api/review_launch_api.rs",
+      "signature": "fn launch_review( app: HostHandle, coordinator: State<'_, Arc<ConversationCoordinator>>, app_state: State<'_, AppState>, runtime: State<'_, DesktopRuntimeContext>, request: LaunchReviewRequest, ) -> Result<LaunchReviewResponse, String>",
+      "remoteWorkspacePolicy": "RemoteUnsupported"
     },
     {
       "id": "list_agent_companion_pets",
@@ -5497,7 +5444,7 @@
       "visibility": "documented",
       "rustPath": "api::miniapp_api::list_miniapps",
       "sourceFile": "src/apps/desktop/src/api/miniapp_api.rs",
-      "signature": "fn list_miniapps( state: State<'_, AppState>, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<Vec<MiniAppMeta>, String>",
+      "signature": "fn list_miniapps( state: State<'_, AppState>, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<Vec<MiniAppListItem>, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
@@ -5661,7 +5608,7 @@
       "visibility": "documented",
       "rustPath": "list_subagents",
       "sourceFile": "src/apps/desktop/src/api/subagent_api.rs",
-      "signature": "fn list_subagents( state: State<'_, AppState>, request: ListSubagentsRequest, ) -> Result<Vec<AgentInfo>, String>",
+      "signature": "fn list_subagents( state: State<'_, AppState>, request: ListSubagentsRequest, ) -> Result<Vec<SubagentListItem>, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
@@ -5725,20 +5672,6 @@
       "sourceFile": "src/apps/desktop/src/api/acp_client_api.rs",
       "signature": "fn load_acp_json_config(state: State<'_, AppState>) -> Result<String, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
-    },
-    {
-      "id": "load_agent_companion_pet_spritesheet",
-      "moduleId": "commands",
-      "capabilityId": "feature.projects",
-      "capabilityIds": [
-        "feature.projects"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "load_agent_companion_pet_spritesheet",
-      "sourceFile": "src/apps/desktop/src/api/commands.rs",
-      "signature": "fn load_agent_companion_pet_spritesheet( state: State<'_, AppState>, request: LoadAgentCompanionPetSpritesheetRequest, ) -> Result<tauri::ipc::Response, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "load_git_repo_history",
@@ -5869,20 +5802,6 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
-      "id": "local_file_download",
-      "moduleId": "local_file_download",
-      "capabilityId": "feature.files-editor",
-      "capabilityIds": [
-        "feature.files-editor"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::local_file_download::local_file_download",
-      "sourceFile": "src/apps/desktop/src/api/local_file_download.rs",
-      "signature": "fn local_file_download( webview: tauri::Webview, request: LocalFileDownloadRequest, ) -> Result<LocalFileDownloadResponse, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "logout_subscription_account",
       "moduleId": "commands",
       "capabilityId": "setting.ai.models",
@@ -5983,15 +5902,45 @@
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
-      "id": "market_image_load",
-      "moduleId": "market_image",
-      "capabilityId": null,
-      "capabilityIds": [],
+      "id": "mesh_list_devices",
+      "moduleId": "mesh",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
       "documentedItemIds": [],
-      "visibility": "internal",
-      "rustPath": "api::market_image_api::market_image_load",
-      "sourceFile": "src/apps/desktop/src/api/market_image_api.rs",
-      "signature": "fn market_image_load( app: tauri::AppHandle, request: MarketImageRequest, ) -> Result<tauri::ipc::Response, String>",
+      "visibility": "implementation",
+      "rustPath": "mesh::mesh_api::mesh_list_devices",
+      "sourceFile": "src/apps/desktop/src/mesh/mesh_api.rs",
+      "signature": "fn mesh_list_devices() -> Result<Vec<MeshDeviceEntry>, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "mesh_phone_join_info",
+      "moduleId": "mesh",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "mesh::mesh_api::mesh_phone_join_info",
+      "sourceFile": "src/apps/desktop/src/mesh/mesh_api.rs",
+      "signature": "fn mesh_phone_join_info() -> Result<MeshPhoneJoinInfo, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "mesh_status",
+      "moduleId": "mesh",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "mesh::mesh_api::mesh_status",
+      "sourceFile": "src/apps/desktop/src/mesh/mesh_api.rs",
+      "signature": "fn mesh_status() -> Result<MeshStatus, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -6103,7 +6052,7 @@
       "visibility": "documented",
       "rustPath": "api::miniapp_api::miniapp_ai_chat",
       "sourceFile": "src/apps/desktop/src/api/miniapp_api.rs",
-      "signature": "fn miniapp_ai_chat( app: AppHandle, state: State<'_, AppState>, request: MiniAppAiChatRequest, ) -> Result<MiniAppAiChatStartedResponse, String>",
+      "signature": "fn miniapp_ai_chat( app: crate::host::HostHandle, state: State<'_, AppState>, request: MiniAppAiChatRequest, ) -> Result<MiniAppAiChatStartedResponse, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
@@ -6363,22 +6312,6 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "miniapp_market_capture_window",
-      "moduleId": "miniapp_market",
-      "capabilityId": "feature.miniapps",
-      "capabilityIds": [
-        "feature.miniapps"
-      ],
-      "documentedItemIds": [
-        "feature.miniapps:market"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::miniapp_market_api::miniapp_market_capture_window",
-      "sourceFile": "src/apps/desktop/src/api/miniapp_market_api.rs",
-      "signature": "fn miniapp_market_capture_window( app: AppHandle, webview: Webview, ) -> Result<String, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
       "id": "miniapp_market_get_listing",
       "moduleId": "miniapp_market",
       "capabilityId": "feature.miniapps",
@@ -6523,22 +6456,6 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "miniapp_market_submit_installed",
-      "moduleId": "miniapp_market",
-      "capabilityId": "feature.miniapps",
-      "capabilityIds": [
-        "feature.miniapps"
-      ],
-      "documentedItemIds": [
-        "feature.miniapps:agent-market-submit"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::miniapp_market_api::miniapp_market_submit_installed",
-      "sourceFile": "src/apps/desktop/src/api/miniapp_market_api.rs",
-      "signature": "fn miniapp_market_submit_installed( app: AppHandle, state: State<'_, AppState>, request: MarketSubmitInstalledRequest, ) -> Result<MarketSubmission, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
       "id": "miniapp_market_withdraw_submission",
       "moduleId": "miniapp_market",
       "capabilityId": "feature.miniapps",
@@ -6581,9 +6498,9 @@
         "feature.miniapps:runtime"
       ],
       "visibility": "documented",
-      "rustPath": "api::miniapp_api::miniapp_presentation",
-      "sourceFile": "src/apps/desktop/src/api/miniapp_api.rs",
-      "signature": "fn miniapp_presentation( app: AppHandle, webview: tauri::Webview, request: crate::miniapp_desktop::PresentationRequest, ) -> Result<Value, String>",
+      "rustPath": "backend_protocol::native_commands::miniapp_presentation",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/miniapp.rs",
+      "signature": "fn miniapp_presentation( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -6600,22 +6517,6 @@
       "rustPath": "api::miniapp_api::miniapp_recompile",
       "sourceFile": "src/apps/desktop/src/api/miniapp_api.rs",
       "signature": "fn miniapp_recompile( state: State<'_, AppState>, request: MiniAppRecompileRequest, ) -> Result<RecompileResult, String>",
-      "remoteWorkspacePolicy": "LegacyUnaudited"
-    },
-    {
-      "id": "miniapp_render_slide_page",
-      "moduleId": "miniapp_export",
-      "capabilityId": "feature.miniapps",
-      "capabilityIds": [
-        "feature.miniapps"
-      ],
-      "documentedItemIds": [
-        "feature.miniapps:publishing"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::miniapp_export_api::miniapp_render_slide_page",
-      "sourceFile": "src/apps/desktop/src/api/miniapp_export_api.rs",
-      "signature": "fn miniapp_render_slide_page( app: AppHandle, request: MiniAppRenderSlidePageRequest, ) -> Result<String, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
@@ -6746,7 +6647,7 @@
     },
     {
       "id": "minimize_to_tray",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
@@ -6755,9 +6656,9 @@
         "setting.application.general:close-behavior"
       ],
       "visibility": "documented",
-      "rustPath": "api::system_api::minimize_to_tray",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn minimize_to_tray( app: tauri::AppHandle, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::minimize_to_tray",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn minimize_to_tray(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -6860,7 +6761,7 @@
     },
     {
       "id": "open_html_file_in_browser",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "feature.browser",
       "capabilityIds": [
         "feature.browser"
@@ -6869,9 +6770,9 @@
         "feature.browser:open-urls"
       ],
       "visibility": "documented",
-      "rustPath": "api::system_api::open_html_file_in_browser",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn open_html_file_in_browser( app: AppHandle, request: OpenHtmlFileInBrowserRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::open_html_file_in_browser",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn open_html_file_in_browser(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -7159,6 +7060,62 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
+      "id": "peer_link_call",
+      "moduleId": "peer_link",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "mesh::peer_link::peer_link_call",
+      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
+      "signature": "fn peer_link_call(request: PeerLinkCallRequest) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "peer_link_connect",
+      "moduleId": "peer_link",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "mesh::peer_link::peer_link_connect",
+      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
+      "signature": "fn peer_link_connect(request: PeerLinkConnectRequest) -> Result<PeerLinkInfo, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "peer_link_disconnect",
+      "moduleId": "peer_link",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "mesh::peer_link::peer_link_disconnect",
+      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
+      "signature": "fn peer_link_disconnect(request: PeerLinkDisconnectRequest) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "peer_link_events",
+      "moduleId": "peer_link",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "mesh::peer_link::peer_link_events",
+      "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
+      "signature": "fn peer_link_events(request: PeerLinkEventsRequest) -> Result<PeerEventsBatch, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "peer_mode_ping",
       "moduleId": "peer_host_invoke",
       "capabilityId": "feature.remote-connect",
@@ -7243,6 +7200,22 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
+      "id": "preview_cron_occurrences",
+      "moduleId": "cron",
+      "capabilityId": "feature.tasks-automation",
+      "capabilityIds": [
+        "feature.tasks-automation"
+      ],
+      "documentedItemIds": [
+        "feature.tasks-automation:create-edit"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::cron_api::preview_cron_occurrences",
+      "sourceFile": "src/apps/desktop/src/api/cron_api.rs",
+      "signature": "fn preview_cron_occurrences( request: PreviewCronOccurrencesRequest, ) -> Result<PreviewCronOccurrencesResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "probe_acp_client_requirements",
       "moduleId": "acp_client",
       "capabilityId": "setting.tools.acp",
@@ -7320,7 +7293,7 @@
     },
     {
       "id": "quit_app",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
@@ -7329,9 +7302,9 @@
         "setting.application.general:close-behavior"
       ],
       "visibility": "documented",
-      "rustPath": "api::system_api::quit_app",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn quit_app(app: tauri::AppHandle) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::quit_app",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn quit_app(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -8056,6 +8029,38 @@
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
+      "id": "remote_workspace_ensure_connected",
+      "moduleId": "ssh",
+      "capabilityId": "feature.remote-workspaces",
+      "capabilityIds": [
+        "feature.remote-workspaces"
+      ],
+      "documentedItemIds": [
+        "feature.remote-workspaces:connection-lifecycle"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::ssh_api::remote_workspace_ensure_connected",
+      "sourceFile": "src/apps/desktop/src/api/ssh_api.rs",
+      "signature": "fn remote_workspace_ensure_connected( app: HostHandle, state: State<'_, AppState>, request: RemoteWorkspaceEnsureConnectedRequest, ) -> Result<RemoteWorkspaceEnsureConnectedResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "remote_workspace_link_states",
+      "moduleId": "ssh",
+      "capabilityId": "feature.remote-workspaces",
+      "capabilityIds": [
+        "feature.remote-workspaces"
+      ],
+      "documentedItemIds": [
+        "feature.remote-workspaces:connection-lifecycle"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::ssh_api::remote_workspace_link_states",
+      "sourceFile": "src/apps/desktop/src/api/ssh_api.rs",
+      "signature": "fn remote_workspace_link_states( app: HostHandle, state: State<'_, AppState>, ) -> Result<Vec<RemoteLinkState>, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "remote_write_file",
       "moduleId": "ssh",
       "capabilityId": "feature.remote-workspaces",
@@ -8290,22 +8295,6 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
-      "id": "resize_agent_companion_desktop_pet",
-      "moduleId": "appearance",
-      "capabilityId": "feature.desktop-pet",
-      "capabilityIds": [
-        "feature.desktop-pet"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-pet:desktop-window"
-      ],
-      "visibility": "documented",
-      "rustPath": "appearance::resize_agent_companion_desktop_pet",
-      "sourceFile": "src/apps/desktop/src/appearance.rs",
-      "signature": "fn resize_agent_companion_desktop_pet( app: tauri::AppHandle, width: f64, height: f64, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
       "id": "resolve_ai_model_request_url",
       "moduleId": "settings_mutation",
       "capabilityId": "setting.application.general",
@@ -8318,22 +8307,6 @@
       "sourceFile": "src/apps/desktop/src/api/settings_mutation_api.rs",
       "signature": "fn resolve_ai_model_request_url( request: ResolveAiModelRequestUrlRequest, ) -> Result<Value, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "resolve_browser_dropped_file_paths",
-      "moduleId": "browser_file_drop",
-      "capabilityId": "feature.files-editor",
-      "capabilityIds": [
-        "feature.files-editor"
-      ],
-      "documentedItemIds": [
-        "feature.files-editor:attachments"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::browser_file_drop_api::resolve_browser_dropped_file_paths",
-      "sourceFile": "src/apps/desktop/src/api/browser_file_drop_api.rs",
-      "signature": "fn resolve_browser_dropped_file_paths( webview: tauri::Webview, request: ResolveBrowserDroppedFilePathsRequest, ) -> Result<Vec<String>, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "respond_permission",
@@ -8369,16 +8342,16 @@
     },
     {
       "id": "restart_app",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
       ],
       "documentedItemIds": [],
       "visibility": "implementation",
-      "rustPath": "restart_app",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn restart_app(app: AppHandle, request: RestartAppRequest) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::restart_app",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn restart_app(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -8719,22 +8692,6 @@
       "sourceFile": "src/apps/desktop/src/api/review_platform_api.rs",
       "signature": "fn review_platform_update_auth_token( _state: State<'_, AppState>, request: ReviewPlatformUpdateAuthTokenRequest, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "rollback_frontend_update",
-      "moduleId": "frontend_workbench",
-      "capabilityId": "feature.ai-assistant",
-      "capabilityIds": [
-        "feature.ai-assistant"
-      ],
-      "documentedItemIds": [
-        "feature.ai-assistant:creative-frontend-authoring"
-      ],
-      "visibility": "documented",
-      "rustPath": "frontend_workbench::rollback_frontend_update",
-      "sourceFile": "src/apps/desktop/src/frontend_workbench.rs",
-      "signature": "fn rollback_frontend_update( state: crate::host::State<'_, Arc<FrontendWorkbenchManager>>, webview: tauri::WebviewWindow, request: FrontendUpdateDecisionRequest, ) -> Result<Value, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "rollback_miniapp",
@@ -9186,7 +9143,7 @@
     },
     {
       "id": "send_system_notification",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
@@ -9195,9 +9152,9 @@
         "setting.application.general:notifications"
       ],
       "visibility": "documented",
-      "rustPath": "send_system_notification",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn send_system_notification( app: tauri::AppHandle, request: SendNotificationRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::send_system_notification",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn send_system_notification(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -9290,6 +9247,22 @@
       "rustPath": "api::settings_mutation_api::set_approval_settings",
       "sourceFile": "src/apps/desktop/src/api/settings_mutation_api.rs",
       "signature": "fn set_approval_settings( app: HostHandle, request: ApprovalSettingsRequest, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "set_assistant_identity",
+      "moduleId": "commands",
+      "capabilityId": "feature.personal-assistants",
+      "capabilityIds": [
+        "feature.personal-assistants"
+      ],
+      "documentedItemIds": [
+        "feature.personal-assistants:assistant-gallery"
+      ],
+      "visibility": "documented",
+      "rustPath": "set_assistant_identity",
+      "sourceFile": "src/apps/desktop/src/api/commands.rs",
+      "signature": "fn set_assistant_identity( state: State<'_, AppState>, app: HostHandle, request: SetAssistantIdentityRequest, ) -> Result<SetAssistantIdentityResponse, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -9467,22 +9440,6 @@
       "remoteWorkspacePolicy": "RemoteUnsupported"
     },
     {
-      "id": "set_file_drop_preview_target",
-      "moduleId": "file_drop_preview",
-      "capabilityId": "feature.files-editor",
-      "capabilityIds": [
-        "feature.files-editor"
-      ],
-      "documentedItemIds": [
-        "feature.files-editor:attachments"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::file_drop_preview_api::set_file_drop_preview_target",
-      "sourceFile": "src/apps/desktop/src/api/file_drop_preview_api.rs",
-      "signature": "fn set_file_drop_preview_target( webview: tauri::Webview, request: SetFileDropPreviewTargetRequest, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
       "id": "set_global_skill_disabled",
       "moduleId": "skill",
       "capabilityId": "feature.skills",
@@ -9497,34 +9454,6 @@
       "sourceFile": "src/apps/desktop/src/api/skill_api.rs",
       "signature": "fn set_global_skill_disabled( request: SetGlobalSkillDisabledRequest, ) -> Result<GlobalSkillSettingsResponse, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "set_macos_edit_menu_mode",
-      "moduleId": "system",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "set_macos_edit_menu_mode",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn set_macos_edit_menu_mode( state: State<'_, AppState>, app: tauri::AppHandle, request: SetMacosEditMenuModeRequest, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
-      "id": "set_main_window_transient_geometry",
-      "moduleId": "system",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::system_api::set_main_window_transient_geometry",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn set_main_window_transient_geometry( app: tauri::AppHandle, request: SetMainWindowTransientGeometryRequest, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "set_miniapp_draft_storage",
@@ -9714,16 +9643,16 @@
     },
     {
       "id": "set_tray_unread_count",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
       ],
       "documentedItemIds": [],
       "visibility": "implementation",
-      "rustPath": "api::system_api::set_tray_unread_count",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn set_tray_unread_count( app: tauri::AppHandle, request: SetTrayUnreadCountRequest, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::set_tray_unread_count",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn set_tray_unread_count(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -9757,35 +9686,17 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "show_agent_companion_desktop_pet",
-      "moduleId": "appearance",
-      "capabilityId": "feature.desktop-pet",
-      "capabilityIds": [
-        "feature.desktop-pet"
-      ],
-      "documentedItemIds": [
-        "feature.desktop-pet:desktop-window"
-      ],
-      "visibility": "documented",
-      "rustPath": "appearance::show_agent_companion_desktop_pet",
-      "sourceFile": "src/apps/desktop/src/appearance.rs",
-      "signature": "fn show_agent_companion_desktop_pet(app: tauri::AppHandle) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LocalOnly"
-    },
-    {
       "id": "show_main_window",
-      "moduleId": "appearance",
-      "capabilityId": "feature.desktop-pet",
+      "moduleId": "native_shell",
+      "capabilityId": "setting.application.general",
       "capabilityIds": [
-        "feature.desktop-pet"
+        "setting.application.general"
       ],
-      "documentedItemIds": [
-        "feature.desktop-pet:desktop-window"
-      ],
-      "visibility": "documented",
-      "rustPath": "appearance::show_main_window",
-      "sourceFile": "src/apps/desktop/src/appearance.rs",
-      "signature": "fn show_main_window(app: tauri::AppHandle) -> Result<(), String>",
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "backend_protocol::native_commands::show_main_window",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn show_main_window(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -10100,7 +10011,7 @@
       "visibility": "documented",
       "rustPath": "api::ssh_api::ssh_connect",
       "sourceFile": "src/apps/desktop/src/api/ssh_api.rs",
-      "signature": "fn ssh_connect( state: State<'_, AppState>, mut config: SSHConnectionConfig, ) -> Result<SSHConnectionResult, String>",
+      "signature": "fn ssh_connect( app: HostHandle, state: State<'_, AppState>, mut config: SSHConnectionConfig, ) -> Result<SSHConnectionResult, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -10132,7 +10043,7 @@
       "visibility": "documented",
       "rustPath": "api::ssh_api::ssh_disconnect",
       "sourceFile": "src/apps/desktop/src/api/ssh_api.rs",
-      "signature": "fn ssh_disconnect( state: State<'_, AppState>, connection_id: String, ) -> Result<(), String>",
+      "signature": "fn ssh_disconnect( app: HostHandle, state: State<'_, AppState>, connection_id: String, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -10148,7 +10059,7 @@
       "visibility": "documented",
       "rustPath": "api::ssh_api::ssh_disconnect_all",
       "sourceFile": "src/apps/desktop/src/api/ssh_api.rs",
-      "signature": "fn ssh_disconnect_all(state: State<'_, AppState>) -> Result<(), String>",
+      "signature": "fn ssh_disconnect_all(app: HostHandle, state: State<'_, AppState>) -> Result<(), String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -10532,20 +10443,6 @@
       "sourceFile": "src/apps/desktop/src/api/tool_api.rs",
       "signature": "fn start_user_question_interaction( runtime: State<'_, DesktopRuntimeContext>, request: StartUserQuestionInteractionRequest, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "startup_window_control",
-      "moduleId": "system",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::system_api::startup_window_control",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn startup_window_control( state: State<'_, AppState>, startup_trace: State<'_, DesktopStartupTrace>, app: tauri::AppHandle, request: StartupWindowControlRequest, ) -> Result<StartupWindowControlResponse, String>",
-      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "steer_dialog_turn",
@@ -10986,7 +10883,7 @@
     },
     {
       "id": "toggle_main_window_fullscreen",
-      "moduleId": "system",
+      "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
       "capabilityIds": [
         "setting.application.general"
@@ -10995,9 +10892,9 @@
         "setting.application.general:close-behavior"
       ],
       "visibility": "documented",
-      "rustPath": "api::system_api::toggle_main_window_fullscreen",
-      "sourceFile": "src/apps/desktop/src/api/system_api.rs",
-      "signature": "fn toggle_main_window_fullscreen( app: tauri::AppHandle, request: ToggleMainWindowFullscreenRequest, ) -> Result<ToggleMainWindowFullscreenResponse, String>",
+      "rustPath": "backend_protocol::native_commands::toggle_main_window_fullscreen",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn toggle_main_window_fullscreen( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -11319,6 +11216,22 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
+      "id": "upsert_terminal_profile",
+      "moduleId": "terminal_profiles",
+      "capabilityId": "feature.terminal",
+      "capabilityIds": [
+        "feature.terminal"
+      ],
+      "documentedItemIds": [
+        "feature.terminal:create-terminal"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::terminal_profiles_api::upsert_terminal_profile",
+      "sourceFile": "src/apps/desktop/src/api/terminal_profiles_api.rs",
+      "signature": "fn upsert_terminal_profile( app: HostHandle, request: UpsertTerminalProfileRequest, ) -> Result<TerminalProfilesResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "validate_config",
       "moduleId": "config",
       "capabilityId": "setting.data.diagnostics",
@@ -11333,6 +11246,22 @@
       "sourceFile": "src/apps/desktop/src/api/config_api.rs",
       "signature": "fn validate_config(state: State<'_, AppState>) -> Result<Value, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "validate_cron_job_draft",
+      "moduleId": "cron",
+      "capabilityId": "feature.tasks-automation",
+      "capabilityIds": [
+        "feature.tasks-automation"
+      ],
+      "documentedItemIds": [
+        "feature.tasks-automation:create-edit"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::cron_api::validate_cron_job_draft",
+      "sourceFile": "src/apps/desktop/src/api/cron_api.rs",
+      "signature": "fn validate_cron_job_draft(request: CronJobDraft) -> Result<CronDraftValidation, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "validate_skill_path",
@@ -11365,18 +11294,6 @@
       "sourceFile": "src/apps/desktop/src/api/tool_api.rs",
       "signature": "fn validate_tool_input( request: ToolValidationRequest, ) -> Result<ToolValidationResponse, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
-    },
-    {
-      "id": "webdriver_bridge_result",
-      "moduleId": "lib",
-      "capabilityId": null,
-      "capabilityIds": [],
-      "documentedItemIds": [],
-      "visibility": "internal",
-      "rustPath": "webdriver_bridge_result",
-      "sourceFile": "src/apps/desktop/src/lib.rs",
-      "signature": "fn webdriver_bridge_result(request: WebdriverBridgeResultRequest) -> Result<(), String>",
-      "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
       "id": "workspace_file_upload",
@@ -11526,16 +11443,16 @@
     },
     {
       "id": "write_clipboard_image",
-      "moduleId": "clipboard_file",
-      "capabilityId": "feature.files-editor",
+      "moduleId": "native_shell",
+      "capabilityId": "setting.application.general",
       "capabilityIds": [
-        "feature.files-editor"
+        "setting.application.general"
       ],
       "documentedItemIds": [],
       "visibility": "implementation",
-      "rustPath": "write_clipboard_image",
-      "sourceFile": "src/apps/desktop/src/api/clipboard_file_api.rs",
-      "signature": "fn write_clipboard_image( app: tauri::AppHandle, request: tauri::ipc::Request<'_>, ) -> Result<(), String>",
+      "rustPath": "backend_protocol::native_commands::write_clipboard_image",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/mod.rs",
+      "signature": "fn write_clipboard_image(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {

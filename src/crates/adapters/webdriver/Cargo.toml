@@ -3,42 +3,17 @@ name = "openbitfun-webdriver"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "Embedded WebDriver server for OpenBitFun desktop"
+description = "Browser-engine adapter of the OpenBitFun desktop backend (CDP-shaped actions over a host web view actuator)"
 
 [features]
 default = []
-embedded = []
 
 [dependencies]
-anyhow = { workspace = true }
-axum = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
-serde = { workspace = true }
 serde_json = { workspace = true }
-log = { workspace = true }
-tauri = { workspace = true, features = ["unstable"] }
-uuid = { workspace = true }
-base64 = { workspace = true }
-image = { workspace = true, features = ["jpeg", "png"] }
+tokio = { workspace = true, features = ["time"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-block2 = { workspace = true }
-objc2 = { workspace = true }
-objc2-app-kit = { workspace = true, features = ["std", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
-objc2-foundation = { workspace = true, features = ["std", "NSString", "NSData", "NSError", "NSDictionary"] }
-objc2-web-kit = { workspace = true, features = ["std", "WKContentWorld", "WKWebView", "WKSnapshotConfiguration", "WKPDFConfiguration", "block2", "objc2-app-kit"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-tempfile = { workspace = true }
-webview2-com = { workspace = true }
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage"] }
-windows-core = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-glib = { workspace = true }
-gtk = { workspace = true }
-tempfile = { workspace = true }
-webkit2gtk = { workspace = true }
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

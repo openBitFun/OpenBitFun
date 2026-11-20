@@ -12,8 +12,6 @@ use std::sync::{
     Mutex, OnceLock, RwLock,
 };
 use std::thread;
-use tauri::{plugin::TauriPlugin, Runtime};
-use tauri_plugin_log::{fern, RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
 const SESSION_DIR_PATTERN: &str = r"^\d{8}T\d{6}$";
 const MAX_LOG_SESSIONS: usize = 10;
@@ -91,7 +89,7 @@ impl EarlyFileLogger {
             return;
         };
         let line = format!(
-            "[{}][tid:{}][INFO][openbitfun_desktop::logging] Early startup logging handoff completed: runtime_backend=tauri_plugin_log\n",
+            "[{}][tid:{}][INFO][openbitfun_desktop::logging] Early startup logging handoff completed: runtime_backend=fern\n",
             Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
             get_thread_id()
         );
@@ -207,11 +205,6 @@ pub struct LogConfig {
     pub session_log_dir: PathBuf,
 }
 
-pub(crate) fn is_embedded_webdriver_mode() -> bool {
-    (cfg!(debug_assertions) || cfg!(feature = "devtools"))
-        && std::env::var_os("OPENBITFUN_WEBDRIVER_PORT").is_some()
-}
-
 fn resolve_logs_root() -> PathBuf {
     if let Some(path) = std::env::var_os("OPENBITFUN_LOG_DIR").map(PathBuf::from) {
         return path;
@@ -219,13 +212,6 @@ fn resolve_logs_root() -> PathBuf {
 
     if let Some(path) = std::env::var_os("OPENBITFUN_E2E_LOG_DIR").map(PathBuf::from) {
         return path;
-    }
-
-    if is_embedded_webdriver_mode() {
-        return std::env::temp_dir().join(format!(
-            "{}-e2e-logs",
-            openbitfun_core_types::product_identity::data_namespace()
-        ));
     }
 
     get_path_manager_arc().logs_dir()
@@ -522,102 +508,7 @@ pub fn create_session_log_dir() -> PathBuf {
     session_dir
 }
 
-pub fn build_log_targets(config: &LogConfig) -> Vec<Target> {
-    let mut targets = Vec::new();
-    let session_dir = config.session_log_dir.clone();
-    let use_stdout_only = is_embedded_webdriver_mode();
-
-    if config.is_debug || use_stdout_only {
-        targets.push(
-            Target::new(TargetKind::Stdout)
-                .filter(|metadata| {
-                    let target = metadata.target();
-                    !target.starts_with("ai")
-                        && !target.starts_with("webview")
-                        && !is_flashgrep_target(target)
-                })
-                .format(|out, message, record| {
-                    let target = record.target();
-                    let simplified_target = if target.starts_with("webview:") {
-                        "webview"
-                    } else {
-                        target
-                    };
-
-                    let (level_color, reset) = match record.level() {
-                        log::Level::Error => ("\x1b[31m", "\x1b[0m"), // Red
-                        log::Level::Warn => ("\x1b[33m", "\x1b[0m"),  // Yellow
-                        log::Level::Info => ("\x1b[32m", "\x1b[0m"),  // Green
-                        log::Level::Debug => ("\x1b[36m", "\x1b[0m"), // Cyan
-                        log::Level::Trace => ("\x1b[90m", "\x1b[0m"), // Gray
-                    };
-
-                    out.finish(format_args!(
-                        "[{}][tid:{}][{}{}{}][{}] {}",
-                        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                        get_thread_id(),
-                        level_color,
-                        record.level(),
-                        reset,
-                        simplified_target,
-                        message
-                    ))
-                }),
-        );
-    }
-
-    if !use_stdout_only {
-        let app_log_dir = session_dir.clone();
-        targets.push(
-            Target::new(TargetKind::Folder {
-                path: app_log_dir,
-                file_name: Some("app".into()),
-            })
-            .filter(|metadata| {
-                let target = metadata.target();
-                !target.starts_with("ai")
-                    && !target.starts_with("webview")
-                    && !is_flashgrep_target(target)
-            })
-            .format(format_log_plain),
-        );
-
-        let ai_log_dir = session_dir.clone();
-        targets.push(
-            Target::new(TargetKind::Folder {
-                path: ai_log_dir,
-                file_name: Some("ai".into()),
-            })
-            .filter(|metadata| metadata.target().starts_with("ai"))
-            .format(format_log_plain),
-        );
-
-        let flashgrep_log_dir = session_dir.clone();
-        targets.push(
-            Target::new(TargetKind::Folder {
-                path: flashgrep_log_dir,
-                file_name: Some("flashgrep".into()),
-            })
-            .filter(|metadata| is_flashgrep_target(metadata.target()))
-            .format(format_log_plain),
-        );
-
-        let webview_log_dir = session_dir;
-        targets.push(
-            Target::new(TargetKind::Folder {
-                path: webview_log_dir,
-                file_name: Some("webview".into()),
-            })
-            .filter(|metadata| metadata.target().starts_with("webview"))
-            .format(format_log_plain),
-        );
-    }
-
-    targets
-}
-
-/// Per-target levels shared by the Tauri log plugin and the native host's
-/// logger. Targets that emit hot-path trace diagnostics during event routing
+/// Per-target levels of the runtime logger. Targets that emit hot-path trace diagnostics during event routing
 /// keep debug diagnostics, warnings and errors without drowning app traces.
 const TARGET_LEVELS: &[(&str, log::LevelFilter)] = &[
     ("ignore", log::LevelFilter::Off),
@@ -652,26 +543,13 @@ const TARGET_LEVELS: &[(&str, log::LevelFilter)] = &[
     ("grep_searcher", log::LevelFilter::Warn),
 ];
 
-fn configured_log_builder(log_targets: Vec<Target>) -> tauri_plugin_log::Builder {
-    let mut builder = tauri_plugin_log::Builder::new().level(log::LevelFilter::Trace);
-    for (target, level) in TARGET_LEVELS {
-        builder = builder.level_for(*target, *level);
-    }
-    builder
-        .targets(log_targets)
-        .rotation_strategy(RotationStrategy::KeepSome(2)) // 1 active + 2 backups
-        .max_file_size(10 * 1024 * 1024)
-        .timezone_strategy(TimezoneStrategy::UseLocal)
-        .clear_format()
-}
-
 fn is_app_log_target(target: &str) -> bool {
     !target.starts_with("ai") && !target.starts_with("webview") && !is_flashgrep_target(target)
 }
 
-/// The native host's runtime logger (it has no Tauri log plugin): the same
-/// per-target levels and session files as the Tauri build (`app.log`,
-/// `ai.log`, `flashgrep.log`, `webview.log`), plus stdout in debug builds.
+/// The runtime logger: per-target levels and the session files `app.log`,
+/// `ai.log`, `flashgrep.log` and `webview.log` (UI logs), plus stdout in
+/// debug builds.
 /// Files are not rotated within a session; old sessions are pruned by
 /// [`spawn_log_cleanup_task`].
 pub fn install_native_runtime_logging(config: &LogConfig) -> Result<(), String> {
@@ -690,7 +568,7 @@ pub fn install_native_runtime_logging(config: &LogConfig) -> Result<(), String> 
     let plain = |out: fern::FormatCallback, message: &std::fmt::Arguments, record: &log::Record| {
         format_log_plain(out, message, record)
     };
-    if config.is_debug || is_embedded_webdriver_mode() {
+    if config.is_debug {
         dispatch = dispatch.chain(
             fern::Dispatch::new()
                 .filter(|metadata| is_app_log_target(metadata.target()))
@@ -734,35 +612,6 @@ pub fn install_native_runtime_logging(config: &LogConfig) -> Result<(), String> 
         early_log_path.display()
     );
     Ok(())
-}
-
-pub fn build_log_command_plugin<R: Runtime>() -> TauriPlugin<R> {
-    tauri_plugin_log::Builder::new().skip_logger().build()
-}
-
-pub fn build_log_plugin<R: Runtime>(log_targets: Vec<Target>) -> TauriPlugin<R> {
-    configured_log_builder(log_targets).build()
-}
-
-pub fn build_log_handoff_plugin<R: Runtime>(log_targets: Vec<Target>) -> TauriPlugin<R> {
-    tauri::plugin::Builder::new("logging-handoff")
-        .setup(move |app_handle, _api| {
-            let (_unused_plugin, max_level, runtime_logger) =
-                configured_log_builder(log_targets).split(app_handle)?;
-            let router = GLOBAL_LOG_ROUTER.get().copied().ok_or_else(|| {
-                std::io::Error::other("Global early startup logger is not installed")
-            })?;
-            let early_log_path = router
-                .install_runtime_backend(runtime_logger)
-                .map_err(std::io::Error::other)?;
-            log::set_max_level(max_level);
-            log::info!(
-                "Runtime logging backend ready: early_startup_log_path={}",
-                early_log_path.display()
-            );
-            Ok(())
-        })
-        .build()
 }
 
 fn format_log_plain(

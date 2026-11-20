@@ -83,7 +83,7 @@ fn is_expected_config_path_not_found(error: &OpenBitFunError, path: Option<&str>
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_config(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -109,15 +109,11 @@ pub async fn get_config(
             }
         }
     };
-    startup_trace.record_tauri_command_elapsed(
-        "get_config",
-        trace_target.as_deref(),
-        trace_started,
-    );
+    startup_trace.record_command_elapsed("get_config", trace_target.as_deref(), trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_configs(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -144,7 +140,7 @@ pub async fn get_configs(
                 if request.skip_retry_on_not_found
                     && is_expected_config_path_not_found(&e, Some(path.as_str()))
                 {
-                    startup_trace.record_tauri_command_elapsed(
+                    startup_trace.record_command_elapsed(
                         "get_configs",
                         Some(&trace_target),
                         trace_started,
@@ -152,7 +148,7 @@ pub async fn get_configs(
                     return Err(format!("Failed to get config: {}", e));
                 }
                 error!("Failed to get config: path={}, error={}", path, e);
-                startup_trace.record_tauri_command_elapsed(
+                startup_trace.record_command_elapsed(
                     "get_configs",
                     Some(&trace_target),
                     trace_started,
@@ -162,7 +158,7 @@ pub async fn get_configs(
         }
     }
 
-    startup_trace.record_tauri_command_elapsed("get_configs", Some(&trace_target), trace_started);
+    startup_trace.record_command_elapsed("get_configs", Some(&trace_target), trace_started);
     Ok(configs)
 }
 
@@ -209,7 +205,7 @@ mod tests {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_config(
     _state: State<'_, AppState>,
     app: HostHandle,
@@ -236,15 +232,11 @@ pub async fn set_config(
             Err(format!("Failed to set config: {error}"))
         }
     };
-    startup_trace.record_tauri_command_elapsed(
-        "set_config",
-        Some(trace_target.as_str()),
-        trace_started,
-    );
+    startup_trace.record_command_elapsed("set_config", Some(trace_target.as_str()), trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_cloud_speech_config(
     state: State<'_, AppState>,
     request: SaveCloudSpeechConfigRequest,
@@ -269,7 +261,7 @@ pub async fn save_cloud_speech_config(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_web_search_credential_status(
     _state: State<'_, AppState>,
     request: GetWebSearchCredentialStatusRequest,
@@ -279,7 +271,7 @@ pub async fn get_web_search_credential_status(
         .map_err(|error| format!("Failed to read WebSearch credential status: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_web_search_credential(
     _state: State<'_, AppState>,
     request: openbitfun_core::service::web_search::SaveWebSearchCredentialRequest,
@@ -289,7 +281,7 @@ pub async fn save_web_search_credential(
         .map_err(|error| format!("Failed to save WebSearch credential: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn clear_web_search_credential(
     _state: State<'_, AppState>,
     request: openbitfun_core::service::web_search::ClearWebSearchCredentialRequest,
@@ -299,7 +291,7 @@ pub async fn clear_web_search_credential(
         .map_err(|error| format!("Failed to clear WebSearch credential: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_decision_model_credential_status(
     _state: State<'_, AppState>,
     _request: GetDecisionModelCredentialStatusRequest,
@@ -309,7 +301,7 @@ pub async fn get_decision_model_credential_status(
         .map_err(|error| format!("Failed to read decision-model credential status: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_decision_model_credential(
     _state: State<'_, AppState>,
     request: openbitfun_core::service::decision_model::SaveDecisionModelCredentialRequest,
@@ -319,7 +311,7 @@ pub async fn save_decision_model_credential(
         .map_err(|error| format!("Failed to save decision-model credential: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn clear_decision_model_credential(
     _state: State<'_, AppState>,
     _request: GetDecisionModelCredentialStatusRequest,
@@ -329,7 +321,7 @@ pub async fn clear_decision_model_credential(
         .map_err(|error| format!("Failed to clear decision-model credential: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reset_config(
     state: State<'_, AppState>,
     request: ResetConfigRequest,
@@ -370,7 +362,7 @@ pub async fn reset_config(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn export_config(state: State<'_, AppState>) -> Result<Value, String> {
     let config_service = &state.config_service;
 
@@ -383,7 +375,7 @@ pub async fn export_config(state: State<'_, AppState>) -> Result<Value, String> 
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn import_config(
     state: State<'_, AppState>,
     request: ImportConfigRequest,
@@ -407,7 +399,7 @@ pub async fn import_config(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn validate_config(state: State<'_, AppState>) -> Result<Value, String> {
     let config_service = &state.config_service;
 
@@ -423,7 +415,7 @@ pub async fn validate_config(state: State<'_, AppState>) -> Result<Value, String
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reload_config(state: State<'_, AppState>) -> Result<String, String> {
     let config_service = &state.config_service;
 
@@ -439,12 +431,12 @@ pub async fn reload_config(state: State<'_, AppState>) -> Result<String, String>
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_global_config_health() -> Result<bool, String> {
     Ok(openbitfun_core::service::config::GlobalConfigManager::is_initialized())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_runtime_logging_info(
     startup_trace: State<'_, DesktopStartupTrace>,
     _state: State<'_, AppState>,
@@ -453,11 +445,11 @@ pub async fn get_runtime_logging_info(
     let trace_started = Instant::now();
     let logging_info = crate::logging::get_runtime_logging_info();
     let result = to_json_value(logging_info, "runtime logging info");
-    startup_trace.record_tauri_command_elapsed("get_runtime_logging_info", None, trace_started);
+    startup_trace.record_command_elapsed("get_runtime_logging_info", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn export_diagnostics_bundle(
     _state: State<'_, AppState>,
     _request: ExportDiagnosticsBundleRequest,
@@ -466,19 +458,19 @@ pub async fn export_diagnostics_bundle(
     to_json_value(bundle_info, "diagnostics bundle info")
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn append_flow_chat_diagnostics(
     _state: State<'_, AppState>,
     request: AppendFlowChatDiagnosticsRequest,
 ) -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         crate::logging::append_flow_chat_diagnostics(&request.entries)
     })
     .await
     .map_err(|error| format!("Flow Chat diagnostics writer task failed: {}", error))?
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_agent_profile_configs(_state: State<'_, AppState>) -> Result<Value, String> {
     let agent_profiles =
         openbitfun_core::service::config::mode_config_canonicalizer::get_agent_profile_views()
@@ -488,7 +480,7 @@ pub async fn get_agent_profile_configs(_state: State<'_, AppState>) -> Result<Va
     to_json_value(agent_profiles, "agent profile configs")
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_agent_profile_config(
     _state: State<'_, AppState>,
     agent_id: String,
@@ -503,7 +495,7 @@ pub async fn get_agent_profile_config(
     to_json_value(config, "agent profile config")
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_agent_profile_config(
     state: State<'_, AppState>,
     agent_id: String,
@@ -527,7 +519,7 @@ pub async fn set_agent_profile_config(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reset_agent_profile_config(
     _state: State<'_, AppState>,
     agent_id: String,
@@ -551,7 +543,7 @@ pub async fn reset_agent_profile_config(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn canonicalize_agent_profile_configs(
     _state: State<'_, AppState>,
 ) -> Result<Value, String> {

@@ -98,7 +98,7 @@ test("selecting a session loads its turns", async () => {
   await app.waitFor("Terminal migration");
   await app.press("Terminal migration >> nth=0");
   await app.waitFor("Port the terminal.");
-  expect(backend.actions()).toContain("load_session_turns");
+  expect(backend.actions()).toContain("get_session_transcript_view");
   expect(app.texts()).toContain("Port the terminal.");
 });
 
@@ -1010,7 +1010,7 @@ test("a running turn streams its text and can be stopped", async () => {
   await app.press("NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
-  const turnsBefore = backend.actions().filter(action => action === "load_session_turns").length;
+  const turnsBefore = backend.actions().filter(action => action === "get_session_transcript_view").length;
 
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
@@ -1036,7 +1036,7 @@ test("a running turn streams its text and can be stopped", async () => {
     payload: { sessionId: "session-1" },
   });
   await app.waitFor("Rendered with a virtualized list.");
-  const turnsAfter = backend.actions().filter(action => action === "load_session_turns").length;
+  const turnsAfter = backend.actions().filter(action => action === "get_session_transcript_view").length;
   expect(turnsAfter).toBeGreaterThan(turnsBefore);
 });
 
@@ -1983,7 +1983,7 @@ test("driving another device routes product commands through the peer transport"
   await app.waitFor("peer workspace on device-linux");
   // Product traffic goes to the peer; account and relay calls stay here, which
   // is why none of them appear inside the Device RPC envelopes.
-  expect(commands).toContain("get_opened_workspaces");
+  expect(commands).toContain("get_workspace_navigator");
   expect(commands).toContain("list_persisted_sessions_page");
   expect(commands.some(command => String(command).startsWith("account_"))).toBe(false);
 
@@ -2206,7 +2206,11 @@ test("a saved terminal profile reopens its shell with its startup command", asyn
   await app.type("profile-command", "pnpm run dev");
   await app.press("profile-save");
   await app.waitFor("Saved Terminal 1");
-  // Saving a profile is this surface's own record: nothing reached the host.
+  // The host keeps the profile (and mints its id); saving types nothing into a shell.
+  expect(backend.calls.find(call => call.action === "upsert_terminal_profile")?.request).toMatchObject({
+    workspaceId: "workspace-1",
+    profile: { name: "Terminal 1", shellId: "shell-bash", shellType: "Bash", startupCommand: "pnpm run dev" },
+  });
   expect(backend.actions()).not.toContain("terminal_write");
 
   // The saved profile is listed, and opening it starts its shell.
@@ -2221,8 +2225,11 @@ test("a saved terminal profile reopens its shell with its startup command", asyn
   await app.press("profiles-toggle");
   await app.press("profile-delete-Terminal 1");
   await app.waitFor("Profile deleted");
-  // The list is this workspace's own record, not the host's.
-  expect(app.storage()["openbitfun.nsh.terminal-profiles.v1"]).not.toContain("Terminal 1");
+  expect(backend.calls.find(call => call.action === "delete_terminal_profile")?.request).toMatchObject({
+    workspaceId: "workspace-1",
+  });
+  // Nothing is kept in this surface's storage any more.
+  expect(app.storage()["openbitfun.nsh.terminal-profiles.v1"] ?? "").not.toContain("Terminal 1");
 });
 
 test("a profile a previous run saved is offered again", async () => {
@@ -2246,11 +2253,44 @@ test("a profile a previous run saved is offered again", async () => {
   await app.press("profiles-toggle");
   await app.waitFor("Open Dev server");
   expect(app.texts()).toContain("Profiles 1");
+  // The list an earlier build kept under the workspace root was handed to the host once
+  // (the malformed row stayed behind) and then forgotten here.
+  expect(backend.calls.filter(call => call.action === "import_terminal_profiles")).toHaveLength(1);
+  expect(backend.calls.find(call => call.action === "import_terminal_profiles")?.request).toMatchObject({
+    workspaceId: "workspace-1",
+    profiles: [{ id: "p1", name: "Dev server", shellId: "shell-zsh", shellType: "Zsh", startupCommand: "pnpm run dev" }],
+  });
+  await app.waitUntil(() => app.storage()["openbitfun.nsh.terminal-profiles.v1"] === undefined);
 
   await app.press("Open Dev server");
   await app.waitFor("Dev server");
   const written = backend.calls.filter(call => call.action === "terminal_write").pop();
   expect(written?.request).toMatchObject({ data: "pnpm run dev\r" });
+});
+
+test("an older host without profile commands keeps stored profiles openable and says saving needs an update", async () => {
+  const backend = createBackend({ terminalProfilesUnsupported: true });
+  const app = await open("./App.tsx", {
+    ...DESKTOP,
+    host: { handlers: backend.handlers },
+    storage: {
+      "openbitfun.nsh.terminal-profiles.v1": JSON.stringify({
+        "id:local:workspace-1": [
+          { id: "p1", name: "Dev server", shellId: "shell-zsh", shellType: "Zsh", startupCommand: "pnpm run dev" },
+        ],
+      }),
+    },
+  });
+
+  await app.press("Terminal");
+  await app.waitFor("shell 1");
+  await app.press("profiles-toggle");
+  await app.waitFor("Open Dev server");
+  await app.press("profile-save");
+  await app.waitFor("This host cannot keep terminal profiles. Update OpenBitFun on it to save or delete profiles; profiles saved earlier still open.");
+  expect(backend.actions()).not.toContain("upsert_terminal_profile");
+  // Nothing is deleted from storage while the host cannot take the rows.
+  expect(app.storage()["openbitfun.nsh.terminal-profiles.v1"]).toContain("Dev server");
 });
 
 test("settings assigns a model to a product task, in the shape the host reads", async () => {
@@ -2686,21 +2726,18 @@ test("usage draws the fixed six-month activity grid beside the range", async () 
   await app.press("Settings");
   await app.press("nav-settings-page-usage");
   await app.waitFor("Usage");
-  // Only the two days inside the window are counted, not the bucket from 2020.
+  // The grid is the host's view model: its total, not a sum of trend buckets.
   await app.waitFor("Each cell is one day; the busiest day is darkest. 4.0K tokens over the window.");
-  expect(app.texts().join("\n")).not.toContain("104K tokens over the window.");
 
-  const window = backend.usageRequests.find(call => call.timeRange === "custom");
-  expect(window).toMatchObject({ timeRange: "custom", granularity: "day", includeSubagent: true });
-  expect(typeof window?.start).toBe("string");
-  expect(typeof window?.end).toBe("string");
-  // The window is the desktop's: six calendar months, ending now.
-  expect(Date.parse(String(window?.start))).toBeLessThan(Date.parse(String(window?.end)));
+  // One read of the host's day-keyed activity, in this surface's zone.
+  const window = backend.usageRequests.find(call => call.command === "get_token_usage_activity");
+  expect(window).toMatchObject({ months: 6, includeSubagent: true });
+  expect(backend.usageRequests.some(call => call.timeRange === "custom")).toBe(false);
 
   // Switching the range reads the range again; the grid's window does not move.
   await app.press("usage-range-today");
   await app.waitFor("Each cell is one day; the busiest day is darkest. 4.0K tokens over the window.");
-  expect(backend.usageRequests.filter(call => call.timeRange === "custom").length).toBe(2);
+  expect(backend.usageRequests.filter(call => call.command === "get_token_usage_activity").length).toBe(2);
 });
 
 test("a host that refuses the activity window keeps the range and says why", async () => {
@@ -2711,6 +2748,17 @@ test("a host that refuses the activity window keeps the range and says why", asy
   await app.press("nav-settings-page-usage");
   await app.waitFor("42 requests · 120K tokens");
   await app.waitFor("This host would not answer the six-month activity window.");
+  expect(app.texts().join("\n")).not.toContain("tokens over the window.");
+});
+
+test("a host older than the activity view model asks for an update instead of keying days here", async () => {
+  const backend = createBackend({ usageActivityCommand: false });
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+
+  await app.press("Settings");
+  await app.press("nav-settings-page-usage");
+  await app.waitFor("42 requests · 120K tokens");
+  await app.waitFor("Update this host to see the activity chart; it is too old to compute it.");
   expect(app.texts().join("\n")).not.toContain("tokens over the window.");
 });
 
@@ -4009,4 +4057,19 @@ test("voice input lists this machine's speech models and downloads one", async (
   await app.press("speech-download-sensevoice-small-int8");
   expect(downloads).toEqual([{ modelId: "sensevoice-small-int8" }]);
   await app.waitFor("Ready");
+});
+
+test("the permission page is one host read: policy, approval models and the composer switch", async () => {
+  const backend = createBackend();
+  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("nav-settings-page-permissions");
+  await app.waitFor("Composer switch on");
+  expect(backend.calls.some(call => call.action === "get_permission_settings")).toBe(true);
+  // The page no longer reads and normalizes the stored documents itself.
+  expect(
+    backend.calls.some(
+      call => call.action === "get_config" && (call.request as Record<string, unknown>)?.path === "tool_permissions",
+    ),
+  ).toBe(false);
 });

@@ -31,6 +31,10 @@ export interface SkillRecord {
   isShadowed: boolean;
   shadowedByKey?: string;
   argumentHint?: string;
+  /** The host's verdict (wave 4); `undefined` on a host that predates the flag. */
+  canDelete?: boolean;
+  /** The host's verdict (wave 4); `undefined` on a host that predates the flag. */
+  canToggle?: boolean;
 }
 
 export interface SkillDiagnostic {
@@ -151,6 +155,8 @@ function normalizeSkillRow(raw: unknown): SkillRecord | null {
     isShadowed: readBoolean(record, ["isShadowed", "is_shadowed"], false),
     shadowedByKey: readOptionalString(record, ["shadowedByKey", "shadowed_by_key"]),
     argumentHint: readOptionalString(record, ["argumentHint", "argument_hint"]),
+    canDelete: typeof record.canDelete === "boolean" ? record.canDelete : undefined,
+    canToggle: typeof record.canToggle === "boolean" ? record.canToggle : undefined,
   };
 }
 
@@ -300,6 +306,9 @@ export function isSkillDisabled(skillKey: string): boolean {
 }
 
 export function canDeleteInstalledSkill(skill: SkillRecord): boolean {
+  if (skill.canDelete !== undefined) return skill.canDelete;
+  // Compatibility read for a host (or CLI peer) older than the `canDelete` flag:
+  // the same ownership rule its `delete_skill` enforces.
   if (skill.isBuiltin) return false;
   const sourceId = skill.sourceId.trim().toLowerCase();
   if (sourceId) {
@@ -314,8 +323,9 @@ export function canDeleteInstalledSkill(skill: SkillRecord): boolean {
 
 export function canToggleInstalledSkill(skill: SkillRecord): boolean {
   if (!directSkillManagementSupported()) return false;
-  if (activeWorkspace()?.workspaceKind === "remote" && skill.level === "project") return false;
-  return true;
+  if (skill.canToggle !== undefined) return skill.canToggle;
+  // Compatibility read for a host older than the `canToggle` flag.
+  return !(activeWorkspace()?.workspaceKind === "remote" && skill.level === "project");
 }
 
 let skillsLoadTicket = 0;

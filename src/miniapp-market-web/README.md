@@ -18,8 +18,8 @@
    当作普通重命名处理。
 4. 网页必须通过 `src/api.ts` 访问同源 API，并保留 Cookie、CSRF 和统一错误
    envelope 的行为。组件里不要直接拼另一个服务器地址。
-5. 这个站点是独立的小型产品界面，不得导入 `src/web-ui` 的完整 locale
-   目录。用户可见文本要同时维护 `zh-CN`、`zh-TW`、`en-US` fallback。
+5. 这个站点是独立的小型产品界面，不得导入其他界面（如 `src/nsh-ui`）的完整
+   locale 目录。用户可见文本要同时维护 `zh-CN`、`zh-TW`、`en-US` fallback。
 6. 不要把 GitHub client secret、session secret、Cookie、token 或生产
    `.env` 写进源码、日志、截图或提交记录。
 7. 未完成本文件中的最小验证、没有明确 Git commit，或生产健康检查未通过
@@ -57,9 +57,9 @@
 `index.html` 里的 `<link rel="icon">` 必须带 `/miniapp/` 前缀——站点不在
 域名根目录下，浏览器默认探测的 `/favicon.ico` 会被 Nginx 挡在 404。
 
-OpenBitFun 桌面端内嵌的原生市场 Scene 不在这里。它位于
-`src/web-ui/src/app/scenes/miniapps/`，通过
-`src/apps/desktop/src/api/miniapp_market_api.rs` 访问市场。
+OpenBitFun 桌面端内嵌的市场界面不在这里。原 React 桌面界面（`src/web-ui`）的市场
+Scene 已随该界面退役；当前原生桌面界面 `src/nsh-ui` 尚无市场视图，后端入口仍是
+`src/apps/desktop/src/api/miniapp_market_api.rs`。
 
 ## 市场展示图规格
 
@@ -75,9 +75,8 @@ OpenBitFun 桌面端内嵌的原生市场 Scene 不在这里。它位于
 | --- | --- |
 | 网页卡片 | `src/styles.css` 的 `.card-visual` |
 | 网页详情页 | `src/styles.css` 的 `.detail-gallery` |
-| 桌面端卡片 | `src/web-ui/src/app/scenes/miniapps/views/MiniAppMarketView.scss` |
 
-改动其中一处必须同步另外两处，否则同一张展示图在两个界面里的裁剪结果会不一致。
+改动其中一处必须同步另一处（桌面端恢复市场视图时一并纳入），否则同一张展示图在两个界面里的裁剪结果会不一致。
 
 给投稿方的要点：
 

@@ -5,6 +5,13 @@ use crate::host::State;
 use crate::startup_trace::DesktopStartupTrace;
 use log::{error, info};
 use openbitfun_core::infrastructure::storage::StorageOptions;
+use openbitfun_core::service::git::compound::{
+    self, GitCommandRunner, GitCommitAndCheckoutParams, GitPushPlan, LocalGitRunner,
+};
+use openbitfun_core::service::git::status_watch::{
+    get_global_git_status_monitor, GitStatusReader, GitStatusWatchSnapshot, GitStatusWatchTarget,
+};
+use openbitfun_core::service::git::GitCommandOutput;
 use openbitfun_core::service::git::{
     build_git_changed_files_args, build_git_diff_args, parse_name_status_output, GitAddParams,
     GitChangedFile, GitChangedFilesParams, GitCommitParams, GitDiffParams, GitFileStatus,
@@ -506,6 +513,11 @@ pub struct GitPushRequest {
     #[serde(default)]
     pub repository_path: String,
     pub params: GitPushParams,
+    /// Publishes the current branch (`push -u <origin|only remote> <branch>`)
+    /// when it has no upstream and `params` names neither remote nor branch.
+    /// Absent (older clients): the push runs exactly as requested.
+    #[serde(default)]
+    pub publish_if_no_upstream: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -642,7 +654,7 @@ pub struct GitRemoveWorktreeRequest {
 /// is listed in the protected `safe.directory` configuration. Surfaces call
 /// this to tell that state apart from "not a repository" before offering the
 /// trust decision.
-#[tauri::command]
+// @backend-command
 pub async fn git_get_repository_trust(
     state: State<'_, AppState>,
     mut request: GitRepositoryRequest,
@@ -674,7 +686,7 @@ pub async fn git_get_repository_trust(
 /// repository. A decision that could not be applied here (remote workspace,
 /// read-only configuration) is reported with `state != trusted` and the manual
 /// command, never silently swallowed.
-#[tauri::command]
+// @backend-command
 pub async fn git_trust_repository(
     state: State<'_, AppState>,
     mut request: GitRepositoryRequest,
@@ -811,7 +823,7 @@ fn remote_probe_found_repository(output: &RemoteGitOutput) -> bool {
     trust::is_untrusted_repository_message(&remote_git_diagnostic(output))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_is_repository(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -844,11 +856,11 @@ pub async fn git_is_repository(
             })
     };
 
-    startup_trace.record_tauri_command_elapsed("git_is_repository", None, trace_started);
+    startup_trace.record_command_elapsed("git_is_repository", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_repository(
     state: State<'_, AppState>,
     mut request: GitRepositoryRequest,
@@ -916,7 +928,7 @@ pub async fn git_get_repository(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_repository_basic(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -975,11 +987,11 @@ pub async fn git_get_repository_basic(
     }
     .await;
 
-    startup_trace.record_tauri_command_elapsed("git_get_repository_basic", None, trace_started);
+    startup_trace.record_command_elapsed("git_get_repository_basic", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_resolve_revision(
     state: State<'_, AppState>,
     mut request: GitResolveRevisionRequest,
@@ -1014,7 +1026,7 @@ pub async fn git_resolve_revision(
         .map_err(|e| git_error_message("Failed to resolve Git revision", &e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_tracked_change_count(
     state: State<'_, AppState>,
     request: GitTrackedChangeCountRequest,
@@ -1067,7 +1079,7 @@ pub async fn git_get_tracked_change_count(
         .map_err(|error| git_error_message("Failed to count tracked changes", &error))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_status(
     state: State<'_, AppState>,
     mut request: GitRepositoryRequest,
@@ -1104,7 +1116,7 @@ pub async fn git_get_status(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_branches(
     state: State<'_, AppState>,
     mut request: GitBranchesRequest,
@@ -1140,7 +1152,7 @@ pub async fn git_get_branches(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_enhanced_branches(
     state: State<'_, AppState>,
     mut request: GitBranchesRequest,
@@ -1176,7 +1188,7 @@ pub async fn git_get_enhanced_branches(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_commits(
     state: State<'_, AppState>,
     mut request: GitCommitsRequest,
@@ -1204,12 +1216,13 @@ pub async fn git_get_commits(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_add_files(
     state: State<'_, AppState>,
     mut request: GitAddFilesRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     if let Some(target) = resolve_remote_git_target(
         request.workspace_id.as_deref().expect("resolved workspace"),
         &request.repository_path,
@@ -1238,12 +1251,13 @@ pub async fn git_add_files(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_commit(
     state: State<'_, AppState>,
     mut request: GitCommitRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     if let Some(target) = resolve_remote_git_target(
         request.workspace_id.as_deref().expect("resolved workspace"),
         &request.repository_path,
@@ -1282,12 +1296,32 @@ pub async fn git_commit(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_push(
     state: State<'_, AppState>,
     mut request: GitPushRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
+    if request.publish_if_no_upstream {
+        let (runner, remote) = git_runner_for(
+            &state,
+            request.workspace_id.as_deref().expect("resolved workspace"),
+            &request.repository_path,
+        )
+        .await?;
+        let plan = GitPushPlan {
+            remote: request.params.remote,
+            branch: request.params.branch,
+            force: request.params.force.unwrap_or(false),
+            set_upstream: request.params.set_upstream.unwrap_or(false),
+            publish_if_no_upstream: true,
+            timeout: remote.is_none().then(|| std::time::Duration::from_secs(30)),
+        };
+        return compound::push(runner.as_ref(), plan)
+            .await
+            .map_err(|error| compound_error("Failed to push", remote.as_ref(), error));
+    }
     if let Some(target) = resolve_remote_git_target(
         request.workspace_id.as_deref().expect("resolved workspace"),
         &request.repository_path,
@@ -1321,12 +1355,13 @@ pub async fn git_push(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_pull(
     state: State<'_, AppState>,
     mut request: GitPullRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     if let Some(target) = resolve_remote_git_target(
         request.workspace_id.as_deref().expect("resolved workspace"),
         &request.repository_path,
@@ -1357,12 +1392,13 @@ pub async fn git_pull(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_checkout_branch(
     state: State<'_, AppState>,
     mut request: GitCheckoutBranchRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     if let Some(target) = resolve_remote_git_target(
         request.workspace_id.as_deref().expect("resolved workspace"),
         &request.repository_path,
@@ -1388,12 +1424,13 @@ pub async fn git_checkout_branch(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_create_branch(
     state: State<'_, AppState>,
     mut request: GitCreateBranchRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     if let Some(target) = resolve_remote_git_target(
         request.workspace_id.as_deref().expect("resolved workspace"),
         &request.repository_path,
@@ -1426,12 +1463,13 @@ pub async fn git_create_branch(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_delete_branch(
     state: State<'_, AppState>,
     mut request: GitDeleteBranchRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     let force = request.force.unwrap_or(false);
     if let Some(target) = resolve_remote_git_target(
         request.workspace_id.as_deref().expect("resolved workspace"),
@@ -1462,7 +1500,7 @@ pub async fn git_delete_branch(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_diff(
     state: State<'_, AppState>,
     mut request: GitDiffRequest,
@@ -1474,11 +1512,23 @@ pub async fn git_get_diff(
     )
     .await?
     {
-        return execute_remote_git_success(&state, &target, &build_git_diff_args(&request.params))
-            .await;
+        let diff =
+            execute_remote_git_success(&state, &target, &build_git_diff_args(&request.params))
+                .await?;
+        let manager = state
+            .get_ssh_manager_async()
+            .await
+            .map_err(|e| e.to_string())?;
+        let runner = RemoteGitRunner {
+            manager,
+            target: target.clone(),
+        };
+        return compound::append_untracked_patches(&runner, &request.params, diff)
+            .await
+            .map_err(|error| remote_git_error_message(&target.repository_path, error.to_string()));
     }
 
-    GitService::get_diff(&request.repository_path, &request.params)
+    let diff = GitService::get_diff(&request.repository_path, &request.params)
         .await
         .map_err(|e| {
             error!(
@@ -1486,10 +1536,18 @@ pub async fn git_get_diff(
                 request.repository_path, e
             );
             git_error_message("Failed to get Git diff", &e)
-        })
+        })?;
+    // An untracked file among `files` is drawn as all additions.
+    compound::append_untracked_patches(
+        &LocalGitRunner::new(request.repository_path.as_str()),
+        &request.params,
+        diff,
+    )
+    .await
+    .map_err(|e| git_error_message("Failed to get Git diff", &e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_changed_files(
     state: State<'_, AppState>,
     mut request: GitChangedFilesRequest,
@@ -1523,12 +1581,13 @@ pub async fn git_get_changed_files(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_reset_files(
     state: State<'_, AppState>,
     mut request: GitResetFilesRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     let staged = request.staged.unwrap_or(false);
 
     info!(
@@ -1562,7 +1621,7 @@ pub async fn git_reset_files(
         .map_err(|e| git_error_message("Failed to reset files", &e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_file_content(
     state: State<'_, AppState>,
     mut request: GitGetFileContentRequest,
@@ -1599,12 +1658,13 @@ pub async fn git_get_file_content(
     Ok(content)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_reset_to_commit(
     state: State<'_, AppState>,
     mut request: GitResetToCommitRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     info!(
         "Resetting to commit '{}' with mode '{}' in repo '{}'",
         request.commit_hash, request.mode, request.repository_path
@@ -1649,7 +1709,7 @@ pub async fn git_reset_to_commit(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_get_graph(
     _state: State<'_, AppState>,
     repository_path: Option<String>,
@@ -1679,12 +1739,13 @@ pub async fn git_get_graph(
         .map_err(|e| git_error_message("Failed to get Git graph", &e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_cherry_pick(
     state: State<'_, AppState>,
     mut request: GitCherryPickRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     let no_commit = request.no_commit.unwrap_or(false);
 
     info!(
@@ -1717,12 +1778,13 @@ pub async fn git_cherry_pick(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_cherry_pick_abort(
     state: State<'_, AppState>,
     mut request: GitRepositoryRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     info!("Aborting cherry-pick in repo '{}'", request.repository_path);
 
     if let Some(target) = resolve_remote_git_target(
@@ -1750,12 +1812,13 @@ pub async fn git_cherry_pick_abort(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_cherry_pick_continue(
     state: State<'_, AppState>,
     mut request: GitRepositoryRequest,
 ) -> Result<GitOperationResult, String> {
     resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
     info!(
         "Continuing cherry-pick in repo '{}'",
         request.repository_path
@@ -1786,7 +1849,7 @@ pub async fn git_cherry_pick_continue(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_list_worktrees(
     state: State<'_, AppState>,
     mut request: GitRepositoryRequest,
@@ -1820,7 +1883,7 @@ pub async fn git_list_worktrees(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_add_worktree(
     state: State<'_, AppState>,
     mut request: GitAddWorktreeRequest,
@@ -1859,7 +1922,7 @@ pub async fn git_add_worktree(
     Ok(worktree)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn git_remove_worktree(
     state: State<'_, AppState>,
     mut request: GitRemoveWorktreeRequest,
@@ -1898,6 +1961,259 @@ pub async fn git_remove_worktree(
     Ok(result)
 }
 
+// MARK: Compound workbench operations and status liveness (logic batch 5)
+
+/// Runs Git for the compound operations on an SSH host.
+struct RemoteGitRunner {
+    manager: openbitfun_services_integrations::remote_ssh::SSHConnectionManager,
+    target: RemoteGitTarget,
+}
+
+#[async_trait::async_trait]
+impl GitCommandRunner for RemoteGitRunner {
+    async fn run(&self, args: &[String]) -> Result<GitCommandOutput, GitError> {
+        let command = build_remote_git_command(&self.target.repository_path, args);
+        let (stdout, stderr, exit_code) = self
+            .manager
+            .execute_command(&self.target.connection_id, &command)
+            .await
+            .map_err(|error| GitError::CommandFailed(error.to_string()))?;
+        Ok(GitCommandOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
+    }
+}
+
+/// The runner for a resolved request: the SSH host of a remote workspace, or
+/// the local repository.
+async fn git_runner_for(
+    state: &AppState,
+    workspace_id: &str,
+    repository_path: &str,
+) -> Result<(Box<dyn GitCommandRunner>, Option<RemoteGitTarget>), String> {
+    match resolve_remote_git_target(workspace_id, repository_path).await? {
+        Some(target) => {
+            let manager = state
+                .get_ssh_manager_async()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((
+                Box::new(RemoteGitRunner {
+                    manager,
+                    target: target.clone(),
+                }),
+                Some(target),
+            ))
+        }
+        None => Ok((Box::new(LocalGitRunner::new(repository_path)), None)),
+    }
+}
+
+fn compound_error(context: &str, remote: Option<&RemoteGitTarget>, error: GitError) -> String {
+    match remote {
+        Some(target) => remote_git_error_message(&target.repository_path, error.to_string()),
+        None => git_error_message(context, &error),
+    }
+}
+
+/// Publishes the repository's status after a mutating command, so every
+/// client (and an SSH workspace, which has no watcher) sees the result at once.
+struct GitStatusPoke {
+    workspace_id: Option<String>,
+    repository_path: String,
+}
+
+impl GitStatusPoke {
+    fn new(workspace_id: &Option<String>, repository_path: &str) -> Self {
+        Self {
+            workspace_id: workspace_id.clone(),
+            repository_path: repository_path.to_string(),
+        }
+    }
+}
+
+impl Drop for GitStatusPoke {
+    fn drop(&mut self) {
+        get_global_git_status_monitor().poke(self.workspace_id.as_deref(), &self.repository_path);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiscardFilesRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub repository_path: String,
+    pub files: Vec<String>,
+    /// Untracked paths among `files` are deleted only when set; without it the
+    /// command refuses instead of deleting user files.
+    #[serde(default)]
+    pub include_untracked: bool,
+}
+
+/// Discards the changes of `files`, whatever their state: tracked files go
+/// back to `HEAD` (index and working tree), files only added in the index are
+/// removed, and untracked files are deleted when `includeUntracked` is set.
+// @backend-command
+pub async fn git_discard_files(
+    state: State<'_, AppState>,
+    mut request: GitDiscardFilesRequest,
+) -> Result<GitOperationResult, String> {
+    resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
+    let (runner, remote) = git_runner_for(
+        &state,
+        request.workspace_id.as_deref().expect("resolved workspace"),
+        &request.repository_path,
+    )
+    .await?;
+    compound::discard_files(runner.as_ref(), &request.files, request.include_untracked)
+        .await
+        .map_err(|error| compound_error("Failed to discard changes", remote.as_ref(), error))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitAndCheckoutRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub repository_path: String,
+    #[serde(flatten)]
+    pub params: GitCommitAndCheckoutParams,
+}
+
+/// Commit & switch as one operation: stages `files`, commits with `message`,
+/// then checks out `targetBranch` (created from `startPoint` when given).
+/// Refuses before committing while conflicts are unresolved; a checkout that
+/// still fails reports `success: false`, `data.committed` and the blocking files.
+// @backend-command
+pub async fn git_commit_and_checkout(
+    state: State<'_, AppState>,
+    mut request: GitCommitAndCheckoutRequest,
+) -> Result<GitOperationResult, String> {
+    resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let _poke = GitStatusPoke::new(&request.workspace_id, &request.repository_path);
+    let (runner, remote) = git_runner_for(
+        &state,
+        request.workspace_id.as_deref().expect("resolved workspace"),
+        &request.repository_path,
+    )
+    .await?;
+    compound::commit_and_checkout(runner.as_ref(), request.params)
+        .await
+        .map_err(|error| compound_error("Failed to commit and switch", remote.as_ref(), error))
+}
+
+struct LocalStatusReader(String);
+
+#[async_trait::async_trait]
+impl GitStatusReader for LocalStatusReader {
+    async fn read_status(&self) -> Result<GitStatus, String> {
+        GitService::get_status(&self.0)
+            .await
+            .map_err(|error| git_error_message("Failed to get Git status", &error))
+    }
+}
+
+struct RemoteStatusReader(RemoteGitRunner);
+
+#[async_trait::async_trait]
+impl GitStatusReader for RemoteStatusReader {
+    async fn read_status(&self) -> Result<GitStatus, String> {
+        let output = self
+            .0
+            .run(&[
+                "status".to_string(),
+                "--porcelain=v1".to_string(),
+                "--branch".to_string(),
+                "-z".to_string(),
+            ])
+            .await
+            .map_err(|error| error.to_string())?;
+        if output.exit_code != 0 {
+            return Err(remote_git_error_message(
+                &self.0.target.repository_path,
+                remote_git_diagnostic(&RemoteGitOutput {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    exit_code: output.exit_code,
+                }),
+            ));
+        }
+        Ok(parse_remote_git_status(&output.stdout))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWatchStatusRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub repository_path: String,
+    /// One id per client view; watching twice with the same id is one lease.
+    pub watcher_id: String,
+}
+
+/// Leases live status for a repository: returns the status now and then
+/// publishes `git://status-changed` whenever it changes (filesystem events for
+/// a local repository, a backend poll for an SSH workspace).
+// @backend-command
+pub async fn git_watch_status(
+    state: State<'_, AppState>,
+    mut request: GitWatchStatusRequest,
+) -> Result<GitStatusWatchSnapshot, String> {
+    let watcher_id = request.watcher_id.trim().to_string();
+    if watcher_id.is_empty() {
+        return Err("watcherId is required".to_string());
+    }
+    resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    let workspace_id = request.workspace_id.clone().expect("resolved workspace");
+    let (reader, local_root): (std::sync::Arc<dyn GitStatusReader>, _) =
+        match resolve_remote_git_target(&workspace_id, &request.repository_path).await? {
+            Some(target) => {
+                let manager = state
+                    .get_ssh_manager_async()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                (
+                    std::sync::Arc::new(RemoteStatusReader(RemoteGitRunner { manager, target })),
+                    None,
+                )
+            }
+            None => (
+                std::sync::Arc::new(LocalStatusReader(request.repository_path.clone())),
+                Some(std::path::PathBuf::from(&request.repository_path)),
+            ),
+        };
+    Ok(get_global_git_status_monitor()
+        .watch(
+            GitStatusWatchTarget {
+                workspace_id,
+                repository_path: request.repository_path,
+                local_root,
+            },
+            &watcher_id,
+            reader,
+        )
+        .await)
+}
+
+/// Ends a `git_watch_status` lease; the last lease stops watching the repository.
+// @backend-command
+pub async fn git_unwatch_status(mut request: GitWatchStatusRequest) -> Result<bool, String> {
+    resolve_git_request(&mut request.workspace_id, &mut request.repository_path).await?;
+    Ok(get_global_git_status_monitor().unwatch(
+        request.workspace_id.as_deref().expect("resolved workspace"),
+        &request.repository_path,
+        request.watcher_id.trim(),
+    ))
+}
+
 // MARK: Git Repo History
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1920,7 +2236,7 @@ pub struct SaveGitRepoHistoryRequest {
     pub repos: Vec<GitRepoHistory>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_git_repo_history(
     state: State<'_, AppState>,
     request: SaveGitRepoHistoryRequest,
@@ -1942,7 +2258,7 @@ pub async fn save_git_repo_history(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn load_git_repo_history(
     state: State<'_, AppState>,
 ) -> Result<Vec<GitRepoHistory>, String> {
@@ -1966,6 +2282,54 @@ pub async fn load_git_repo_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_push_request_keeps_the_plain_push() {
+        let request: GitPushRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "ws",
+            "repositoryPath": "/repo",
+            "params": {"remote": null, "branch": null, "force": false, "set_upstream": false}
+        }))
+        .unwrap();
+        assert!(!request.publish_if_no_upstream);
+        let request: GitPushRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "ws",
+            "params": {},
+            "publishIfNoUpstream": true
+        }))
+        .unwrap();
+        assert!(request.publish_if_no_upstream);
+    }
+
+    #[test]
+    fn compound_git_requests_read_their_wire_shapes() {
+        let discard: GitDiscardFilesRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "ws",
+            "files": ["a.txt"]
+        }))
+        .unwrap();
+        assert!(
+            !discard.include_untracked,
+            "deleting untracked files is opt-in"
+        );
+        let switch: GitCommitAndCheckoutRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "ws",
+            "repositoryPath": "/repo",
+            "message": "wip",
+            "files": ["a.txt"],
+            "targetBranch": "feat/x",
+            "startPoint": "origin/feat/x"
+        }))
+        .unwrap();
+        assert_eq!(switch.params.target_branch, "feat/x");
+        assert_eq!(switch.params.start_point.as_deref(), Some("origin/feat/x"));
+        let watch: GitWatchStatusRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "ws",
+            "watcherId": "git-scene-1"
+        }))
+        .unwrap();
+        assert_eq!(watch.repository_path, "");
+    }
 
     fn remote_output(stdout: &str, stderr: &str, exit_code: i32) -> RemoteGitOutput {
         RemoteGitOutput {

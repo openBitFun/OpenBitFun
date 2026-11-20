@@ -11,6 +11,7 @@ pub mod diagnostics;
 pub mod execution_policy;
 pub mod focused_assignment;
 pub mod incremental_cache;
+pub mod launch_plan;
 pub mod manifest;
 pub mod queue;
 pub mod report;

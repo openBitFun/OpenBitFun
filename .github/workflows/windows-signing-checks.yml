@@ -6,14 +6,14 @@ on:
       - '.github/workflows/desktop-package.yml'
       - '.github/workflows/windows-signing-checks.yml'
       - 'scripts/ci/sign-windows*.ps1'
-      - 'scripts/desktop-tauri-build*.mjs'
+      - 'scripts/package-desktop-nsh-windows.mjs'
   push:
     branches: [main]
     paths:
       - '.github/workflows/desktop-package.yml'
       - '.github/workflows/windows-signing-checks.yml'
       - 'scripts/ci/sign-windows*.ps1'
-      - 'scripts/desktop-tauri-build*.mjs'
+      - 'scripts/package-desktop-nsh-windows.mjs'
 
 permissions:
   contents: read
@@ -28,8 +28,8 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - name: Test Tauri signing configuration
-        run: node --test scripts/desktop-tauri-build.test.mjs
+      - name: Test native Windows package tooling
+        run: node --test scripts/ci/native-release-tooling.test.mjs
       - name: Test signing failure handling without credentials
         shell: pwsh
         run: ./scripts/ci/sign-windows.test.ps1

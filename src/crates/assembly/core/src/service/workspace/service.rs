@@ -1496,6 +1496,54 @@ impl WorkspaceService {
         Ok(new_workspace)
     }
 
+    /// Writes identity fields into an assistant's `IDENTITY.md` (logic batch 5).
+    ///
+    /// The stored document is read right before the write and only the given
+    /// fields change, so an edit made elsewhere survives; writes are serialized.
+    /// Returns the written document and the identity change, if any, which the
+    /// caller publishes as `workspace-identity-changed`.
+    pub async fn set_assistant_identity(
+        &self,
+        workspace_id: &str,
+        patch: &super::identity_document::IdentityFieldPatch,
+    ) -> OpenBitFunResult<(String, Option<WorkspaceIdentityChangedEvent>)> {
+        static IDENTITY_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let workspace = self.get_workspace(workspace_id).await.ok_or_else(|| {
+            OpenBitFunError::service(format!("Workspace not found: {}", workspace_id))
+        })?;
+        if workspace.workspace_kind != WorkspaceKind::Assistant {
+            return Err(OpenBitFunError::validation(format!(
+                "Workspace {} is not an assistant workspace",
+                workspace_id
+            )));
+        }
+        let _guard = IDENTITY_WRITE_LOCK.lock().await;
+        let identity_path = workspace.root_path.join(super::manager::IDENTITY_FILE_NAME);
+        let current = match fs::read_to_string(&identity_path).await {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                return Err(OpenBitFunError::service(format!(
+                    "Failed to read identity file '{}': {}",
+                    identity_path.display(),
+                    error
+                )))
+            }
+        };
+        let next = super::identity_document::apply_identity_patch(&current, patch);
+        if next != current {
+            fs::write(&identity_path, &next).await.map_err(|error| {
+                OpenBitFunError::service(format!(
+                    "Failed to write identity file '{}': {}",
+                    identity_path.display(),
+                    error
+                ))
+            })?;
+        }
+        let changed = self.refresh_workspace_identity(workspace_id).await?;
+        Ok((next, changed))
+    }
+
     /// Refreshes the parsed `IDENTITY.md` content for an assistant workspace.
     pub async fn refresh_workspace_identity(
         &self,

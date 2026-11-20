@@ -44,14 +44,6 @@ Change backend log verbosity without restarting, open the runtime log folder, re
   - Inspect previous crashes, unclean shutdown notices, and startup or configuration recovery details
   - 说明：如果上一次运行发生了崩溃或配置文件局部损坏回退，页面顶部会用醒目卡片列出原因摘要与对应历史日志位置，帮你快速定位现场。
   - Why & how: Whenever the previous run exited abnormally or triggered startup/config recovery, a banner highlights what happened and points straight to the preserved crash log.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器
-  - Development builds only: check desktop DevTools availability and open or close them
-  - 说明：专为本地开发调试 OpenBitFun 客户端准备的内部入口，正式发布版客户端默认隐藏该能力，普通日常使用无需关心。
-  - Why & how: Internal debugging hook available only when running a development build of OpenBitFun; hidden in standard release builds.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息
-  - Development builds only: inspect main-window UI elements and report the selected element
-  - 说明：同样仅在开发构建中启用，用于在联调桌面界面时点选主窗口 DOM 元素获取组件定位，正式版不会暴露此调试钩子。
-  - Why & how: Also restricted to development builds for picking and inspecting main-window DOM elements during UI development; not exposed in release builds.
 
 ## 怎么用 / How to use it
 

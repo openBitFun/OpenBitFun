@@ -9,8 +9,9 @@ const scriptRootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 const rootDir = process.env.OPENBITFUN_GITHUB_CONFIG_TEST_ROOT
   ? path.resolve(process.env.OPENBITFUN_GITHUB_CONFIG_TEST_ROOT)
   : scriptRootDir;
-const requireFromWebUi = createRequire(path.join(scriptRootDir, 'src/web-ui/package.json'));
-const yaml = requireFromWebUi('yaml');
+// `yaml` is a root devDependency of the repository tooling.
+const requireFromRoot = createRequire(path.join(scriptRootDir, 'package.json'));
+const yaml = requireFromRoot('yaml');
 
 const minimumNode24ActionMajors = new Map([
   ['actions/checkout', 5],

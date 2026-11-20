@@ -21,7 +21,7 @@ This file applies to `design-system/**`. Repository-wide rules in the root `AGEN
 
 - Prefer component-owned classes for sibling rules in dynamic views; tag-only or universal sibling selectors can invalidate unrelated elements even under a scoped ancestor or CSS Module.
 - Use layout `gap` only where spacing semantics remain equivalent. Preserve adjacency, specificity, and state overrides when narrowing selectors; `:where()` can add class constraints without raising specificity.
-- Use Selector Stats for cause analysis and ordinary traces for performance comparisons. Invalidation records alone do not prove a scrolling speedup. See `src/web-ui/AGENTS.md` for generated-content guidance; do not blanket-ban sibling selectors.
+- Use Selector Stats for cause analysis and ordinary traces for performance comparisons. Invalidation records alone do not prove a scrolling speedup. Generated content (Markdown, raw HTML, math) may keep semantic tag selectors; for measured hotspots add renderer-owned classes, using `:where(.owned-class)` to narrow without raising specificity. Do not blanket-ban sibling selectors.
 
 ## Publication boundary
 
@@ -62,14 +62,12 @@ For SplitView geometry, drag cancellation, and cached resize bounds:
 
 ```bash
 pnpm --dir design-system run build:ui && node --test design-system/packages/ui/tests/split-view.test.mjs
-pnpm --dir src/web-ui exec vitest run src/shared/ui/SplitView.test.tsx
 ```
 
 For Select presentation, compact/expanded labels, native form participation and keyboard selection:
 
 ```bash
 pnpm --dir design-system run build:ui && node --test design-system/packages/ui/tests/select.test.mjs design-system/packages/ui/tests/registry.test.mjs
-pnpm --dir src/web-ui exec vitest run src/shared/ui/Select.test.tsx
 ```
 
 These package and DOM checks do not establish native rendering or live remote behavior.
@@ -78,37 +76,21 @@ For Spinner presentations, FlowChat integration and decorative playback:
 
 ```bash
 pnpm --dir design-system run build:ui && node --test design-system/packages/ui/tests/spinner.test.mjs design-system/packages/ui/tests/brand.test.mjs design-system/packages/ui/tests/registry.test.mjs
-pnpm --dir src/web-ui exec vitest run src/shared/ui/FlowChatRuntimeStatus.test.tsx src/flow_chat/components/modern/RuntimeStatusSlot.test.tsx
 ```
 
-The runtime status fixture checks resident geometry ownership and playback through
-exit, reversal, cancellation and unmount. DOM tests do not prove native transition
-rendering; the workload E2E records actual status fade-out outside resource windows.
+Package tests do not prove native transition rendering.
 
 For ColorPicker HEX drafts, flower selection, curved lightness dragging and keyboard input:
 
 ```bash
 pnpm --dir design-system run build:ui && node --test design-system/packages/ui/tests/color-picker.test.mjs design-system/packages/ui/tests/registry.test.mjs
-pnpm --dir src/web-ui run test:run src/shared/ui/ColorPicker.test.tsx src/app/components/WorkspaceIcon/WorkspaceIconDialog.test.tsx
 ```
 
 These package and DOM checks do not establish visual fidelity or live remote behavior.
 
 For Subagent motion rendering and playback, build UI and run the focused brand
-contract above. After building the production Web UI, the opt-in native geometry
-contract compares all 20 artworks, three sizes and authored actions to a named
-Git revision, including opacity, pause/resume, reduced motion and cleanup:
+contract above. The 20 authored artworks live in
+`packages/ui/src/brand/assets/subagent-avatars` (checked by
+`node scripts/check-subagent-avatar-assets.mjs`); Design Lab is their only
+renderer since the React desktop UI was retired.
 
-```bash
-OPENBITFUN_WORKBENCH_MOTION_CONTRACT=1 OPENBITFUN_MOTION_REFERENCE_COMMIT=HEAD OPENBITFUN_WORKBENCH_PANELS_ONLY=1 node tests/e2e/scripts/run-workbench-performance.mjs
-```
-
-Use a pre-change reference commit when testing an already committed change.
-The native fixture runs outside performance windows. Geometry equivalence does
-not establish pixel-identical rasterization or coverage on other WebView engines.
-
-For shared queue dragging, arrow-key pass-through, cancellation and focus retention:
-
-```bash
-pnpm --dir src/web-ui exec vitest run src/flow_chat/components/useQueueReorder.test.tsx
-```

@@ -61,7 +61,8 @@ pub enum RemoteWorkspaceStance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationSurface {
-    /// Registered in the desktop `generate_handler!` block.
+    /// Registered in the desktop `backend_commands!` list (the historic
+    /// name and wire value `tauri_command` are kept for compatibility).
     TauriCommand,
     /// A CLI peer host alias kept for older controllers, or a detached
     /// dispatch target verb routed before the peer bridge.
@@ -339,6 +340,11 @@ pub struct RemoteSurfaceRegistryExport {
     pub retired_command_prefixes: Vec<RetiredPrefixExport>,
     pub capabilities: CapabilitiesExport,
     pub operations: Vec<OperationDefinition>,
+    /// The event stance (`events::OWNER_ONLY_EVENT_PREFIXES`) for generated
+    /// client routing. Filled only in [`export`], after the digest, so the
+    /// stance stays outside the registry digest as `events` documents.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub owner_only_event_prefixes: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -376,6 +382,7 @@ fn export_without_digest() -> RemoteSurfaceRegistryExport {
                 .collect(),
         },
         operations: operations().to_vec(),
+        owner_only_event_prefixes: Vec::new(),
     }
 }
 
@@ -401,6 +408,10 @@ pub fn digest() -> String {
 pub fn export() -> RemoteSurfaceRegistryExport {
     let mut export = export_without_digest();
     export.digest = digest();
+    export.owner_only_event_prefixes = OWNER_ONLY_EVENT_PREFIXES
+        .iter()
+        .map(|(prefix, _)| *prefix)
+        .collect();
     export
 }
 

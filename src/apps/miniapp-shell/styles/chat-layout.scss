@@ -1,4 +1,4 @@
-@use '../../../web-ui/src/flow_chat/transcript-layout' as transcriptLayout;
+@use 'transcript-layout' as transcriptLayout;
 
 // Only native-Shell anatomy adapters live here. Hi and FlowChat own their visuals.
 .miniapp-chat.openbitfun-fmc {

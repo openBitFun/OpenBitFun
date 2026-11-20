@@ -39,6 +39,7 @@ members = [
     "src/crates/services/relay-service",
     "src/crates/services/page-function-runtime",
     "src/crates/services/terminal",
+    "src/crates/services/mesh",
     "src/crates/assembly/product-capabilities",
     "src/crates/contracts/product-domains",
     "src/crates/execution/agent-runtime",
@@ -130,8 +131,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
 chrono-tz = "0.10.4"
+fern = { version = "0.7.1", default-features = false }
 cron = "0.15.0"
-# Tauri 2.9.2 utilities conflict with time 0.3.48 on current stable Rust.
+# Tauri 2.9.2 utilities conflict with time 0.3.48 on current stable Rust
+# (pinned through the Tauri users: src/apps/miniapp-shell).
 time = { version = "=0.3.47", default-features = false }
 # brotli-decompressor 5.0.2 / alloc-stdlib 0.2.3 pull alloc-no-stdlib 3.x while brotli still uses 2.x.
 brotli-decompressor = "=5.0.0"
@@ -222,21 +225,12 @@ oxc-parse = { package = "oxc", version = "0.138.0", default-features = false }
 sqlx = { version = "0.8", default-features = false }
 rusqlite = { version = "0.32", default-features = false }
 
-# Tauri (desktop only)
+# Tauri: the MiniApp window shell sidecar (`src/apps/miniapp-shell`) and Data
+# Tools. The desktop app itself is the native NSH app and does not use Tauri.
 tauri = { version = "2.11" }
-wry = { version = "0.56.0", default-features = false }
 tauri-plugin-opener = "2.5"
 tauri-plugin-dialog = "2.7"
-tauri-plugin-fs = "2.5"
-tauri-plugin-log = "2.8"
-tauri-plugin-autostart = "2.5"
 tauri-plugin-notification = "2.3"
-tauri-plugin-updater = "2.10"
-tauri-plugin-single-instance = "2.4"
-# 2.4+ requires tauri 2.12, which pulls webview2-com 0.39 and breaks the
-# webview2-com 0.38 COM types openbitfun-webdriver is built against.
-tauri-plugin-clipboard-manager = "~2.3.3"
-notify-rust = { version = "4.18", default-features = false }
 tauri-build = { version = "2.6", features = [] }
 keepawake = "0.6.0"
 
@@ -255,15 +249,9 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false }
 objc2-app-kit = { version = "0.3", default-features = false }
 objc2-vision = { version = "0.3.2", default-features = false }
-objc2-web-kit = { version = "0.3", default-features = false }
 tempfile = "3"
-webview2-com = "0.38"
 windows = "0.61"
 windows-core = "0.61"
-windows-version = "0.1"
-glib = "0.18"
-gtk = "0.18"
-webkit2gtk = "2.0"
 
 # Windows-specific dependencies
 win32job = "2.0"

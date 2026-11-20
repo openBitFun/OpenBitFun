@@ -62,3 +62,5 @@ FlowChat 按会话、轮次和子 Agent 身份查找该段文字之前最后一�
 ## 旧版 OpenUI 只读回放
 
 旧会话中的 `GenerativeUI` 与 `CallDeferredTool` 记录仍使用原来的工具标识、源码、组件库版本和已保存的状态。FlowChat 遇到这类消息才加载 OpenUI 阅读器；未知版本保留原始内容。历史 HTML、SVG 和嵌入的 HtmlView 使用禁用脚本的静态文档。已保存的 YouTube 视频以链接回放，打开消息时不启动第三方播放器。旧展厅、宿主图搜、地名查询、路线查询和 MCP 提供器均已退役。旧控制端向新版 Peer 请求该提供器时收到明确的退役原因。
+
+NSH 桌面界面（`src/nsh-ui/src/genui/`）不能加载 `@openuidev/react-lang`，因此自带同一 OpenUI Lang 的读取器：语句、位置参数（参数顺序由 `scripts/generate-genui-contract.mjs` 从产品组件库生成到 `genuiSignatures.ts`，`--check` 校验其新鲜度）、`$state`、提升、`@Each` 与组件库内置函数，以及 `@ToAssistant` / `@OpenUrl` / `@Set` / `@Reset` / `@CopyToClipboard` 动作；它用 NSH 组件绘制全部 55 个组件，按 `GenUIStream` 增量流式渲染，结束后读取工具结果。该界面没有网络授权，图片、地图与 YouTube 以说明文字加“打开”链接呈现；HtmlView 与 `html-document` 以关闭脚本、禁止网络（CSP）的静态页面呈现，并显式标注。未知组件会在卡片下方列出而不是静默丢弃。

@@ -1,4 +1,4 @@
-// Shared by the lightweight native shell and the Web UI draft preview.
+// Used by the lightweight native MiniApp shell.
 // All SVG comes from the generated Lucide catalog; app strings remain text.
 export const defaultTitlebar = Object.freeze({
   title: null, showTitle: true, showIcon: false, titleAlignment: 'start',

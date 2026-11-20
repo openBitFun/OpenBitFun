@@ -1,5 +1,4 @@
 import { expect, open, test } from "nsh/test";
-import { setIdentityField } from "../src/identityDocument";
 import { createBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -8,6 +7,24 @@ type Recorded = { action: string; payload: Record<string, unknown>; raw: boolean
 
 const SEEDED_IDENTITY =
   "---\nname: Muse\ncreature: Fox\nvibe: Calm\navatar: joystick-ink-mint\nemoji: \"🦊\"\nmood: bright\n---\n\n# Who I am\n\nSeeded persona body.\n";
+
+/**
+ * The host's `set_assistant_identity` as far as these tests need it: each given
+ * field's frontmatter line is replaced (or appended), everything else stays.
+ * The real rewrite (quoting, multi-line values, missing frontmatter) is the
+ * backend's and is covered by its Rust tests.
+ */
+function applyIdentityPatch(content: string, patch: Record<string, unknown>): string {
+  let next = content;
+  for (const field of ["name", "creature", "vibe", "avatar", "emoji"]) {
+    const value = patch[field];
+    if (typeof value !== "string") continue;
+    const line = value ? `${field}: ${value}` : `${field}:`;
+    const pattern = new RegExp(`^${field}:.*$`, "m");
+    next = pattern.test(next) ? next.replace(pattern, line) : next.replace(/\n---\n/, `\n${line}\n---\n`);
+  }
+  return next;
+}
 
 /** An assistant host with one primary assistant, its IDENTITY.md and two sessions. */
 function assistantHost() {
@@ -52,6 +69,12 @@ function assistantHost() {
       files[String(payload.filePath ?? "")] = String(payload.content ?? "");
       return reply(null);
     }
+    if (action === "set_assistant_identity") {
+      const path = `/tmp/assistants/${String(payload.workspaceId ?? "")}/IDENTITY.md`;
+      const content = applyIdentityPatch(files[path] ?? "", payload);
+      files[path] = content;
+      return reply({ workspace: { id: payload.workspaceId }, content });
+    }
     if (action === "list_persisted_sessions_page" && payload.workspace_id === "asst-1") {
       return reply({
         sessions: [
@@ -68,19 +91,6 @@ function assistantHost() {
   };
   return { backend: base, recorded, files };
 }
-
-test("an identity field write keeps every other frontmatter field and the body", () => {
-  const renamed = setIdentityField(SEEDED_IDENTITY, "name", "Muse Prime");
-  expect(renamed).toBe(SEEDED_IDENTITY.replace("name: Muse\n", "name: Muse Prime\n"));
-  // A cleared field stays as an empty key, the way the desktop writes it.
-  const cleared = setIdentityField(SEEDED_IDENTITY, "avatar", "");
-  expect(cleared).toContain("\navatar:\n");
-  expect(cleared).toContain("mood: bright");
-  // A field that is not there yet is appended; a value YAML would misread is quoted.
-  const added = setIdentityField("---\nname: A\n---\n\nBody\n", "emoji", "🧭");
-  expect(added).toBe("---\nname: A\nemoji: 🧭\n---\n\nBody\n");
-  expect(setIdentityField("", "name", "yes")).toBe('---\nname: "yes"\n---\n');
-});
 
 test("the assistants list puts the primary assistant first and offers delete only for the others", async () => {
   const { backend } = assistantHost();
@@ -150,20 +160,18 @@ test("the assistant page edits the name in place and the avatar from the picker"
     SEEDED_IDENTITY.replace("name: Muse\n", "name: Muse Prime\n"),
   );
   await app.waitFor("Muse Prime");
-  const write = recorded.find(item => item.action === "write_file_content");
+  // The host rewrites the document; this surface sends only the changed field.
+  const write = recorded.find(item => item.action === "set_assistant_identity");
   expect(write?.raw).toBe(false);
-  expect(write?.payload).toMatchObject({
-    workspaceId: "asst-1",
-    workspacePath: "/tmp/assistants/asst-1",
-    filePath: "/tmp/assistants/asst-1/IDENTITY.md",
-  });
+  expect(write?.payload).toEqual({ workspaceId: "asst-1", name: "Muse Prime" });
+  expect(recorded.some(item => item.action === "write_file_content")).toBe(false);
 
   // Pressing the name again and leaving it unchanged writes nothing.
-  const writesBefore = recorded.filter(item => item.action === "write_file_content").length;
+  const writesBefore = recorded.filter(item => item.action === "set_assistant_identity").length;
   await app.press("assistant-name-edit");
   await app.submit("assistant-name-input");
   await app.waitFor("assistant-name-edit");
-  expect(recorded.filter(item => item.action === "write_file_content").length).toBe(writesBefore);
+  expect(recorded.filter(item => item.action === "set_assistant_identity").length).toBe(writesBefore);
 
 
   // An emoji clears the artwork preset so the emoji is what shows.
@@ -172,6 +180,11 @@ test("the assistant page edits the name in place and the avatar from the picker"
   expect(app.shows("Choose an avatar")).toBe(true);
   await app.press("assistant-avatar-emoji-0");
   await app.waitUntil(() => files["/tmp/assistants/asst-1/IDENTITY.md"]!.includes('emoji: 🧭'));
+  expect(recorded.filter(item => item.action === "set_assistant_identity").pop()?.payload).toEqual({
+    workspaceId: "asst-1",
+    avatar: "",
+    emoji: "🧭",
+  });
   const afterEmoji = files["/tmp/assistants/asst-1/IDENTITY.md"]!;
   expect(afterEmoji).toContain("\navatar:\n");
   expect(afterEmoji).toContain("mood: bright");
@@ -197,7 +210,7 @@ test("a failed identity write says so and the next read restores the host's valu
   const invoke = backend.handlers["openbitfun.invoke"];
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
     const args = (data ?? {}) as { action?: string };
-    if (args.action === "write_file_content") return { ok: false, error: "Permission denied", transport: "dev" };
+    if (args.action === "set_assistant_identity") return { ok: false, error: "Permission denied", transport: "dev" };
     return invoke(data);
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
@@ -232,7 +245,7 @@ test("the assistant page lists the assistant's own sessions and opens one in Ses
 
   await app.press("assistant-session-asst-s-2");
   await app.waitUntil(() =>
-    recorded.some(item => item.action === "load_session_turns" && item.payload.session_id === "asst-s-2"),
+    recorded.some(item => item.action === "get_session_transcript_view" && item.payload.session_id === "asst-s-2"),
   );
   expect(recorded.some(item => item.action === "set_active_workspace" && item.payload.workspaceId === "asst-1")).toBe(
     true,
@@ -266,4 +279,28 @@ test("home shows the desktop personal overview's five usage metrics", async () =
   for (const label of ["Total Tokens", "Peak Daily Tokens", "Requests (30d)", "Longest Streak", "Current Streak"]) {
     expect(app.shows(label)).toBe(true);
   }
+});
+
+test("an older host without set_assistant_identity asks for an update instead of editing the file here", async () => {
+  const { backend, recorded } = assistantHost();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string };
+    if (args.action === "set_assistant_identity") {
+      return { ok: false, error: "Command not found: set_assistant_identity", transport: "dev" };
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.waitFor("OpenBitFun");
+  await app.press("Assistants");
+  await app.press("assistant-card-asst-1");
+  await app.press("assistant-name-edit");
+  await app.clear("assistant-name-input");
+  await app.type("assistant-name-input", "Muse Prime");
+  await app.submit("assistant-name-input");
+  await app.waitUntil(() =>
+    app.texts().some(text => text.includes("This host cannot change an assistant's identity from here.")),
+  );
+  expect(recorded.some(item => item.action === "write_file_content")).toBe(false);
 });

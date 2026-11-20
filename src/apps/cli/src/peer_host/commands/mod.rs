@@ -2,6 +2,7 @@
 
 mod btw;
 mod config;
+mod cron;
 mod dialog;
 mod external_sources;
 mod filesystem;
@@ -18,7 +19,9 @@ mod snapshot;
 mod soft;
 mod system;
 mod terminal;
+mod terminal_profiles;
 mod tools;
+mod view_models;
 mod workspace;
 
 use serde_json::Value;
@@ -84,6 +87,7 @@ pub(crate) fn dispatch<'a>(
         "set_approval_settings" => Box::pin(settings_mutations::set_approval_settings(args)),
         "set_web_search_provider" => Box::pin(settings_mutations::set_web_search_provider(args)),
         "get_settings_schema" => Box::pin(settings_mutations::get_settings_schema(args)),
+        "get_permission_settings" => Box::pin(settings_mutations::get_permission_settings()),
         "get_web_search_credential_status" => Box::pin(config::get_web_search_credential_status(args)),
         "save_web_search_credential" => Box::pin(config::save_web_search_credential(args)),
         "clear_web_search_credential" => Box::pin(config::clear_web_search_credential(args)),
@@ -128,6 +132,11 @@ pub(crate) fn dispatch<'a>(
         "terminal_has_shell_integration" => Box::pin(terminal::has_shell_integration(args)),
         "terminal_send_command" => Box::pin(terminal::send_command(args)),
         "terminal_shutdown_all" => Box::pin(terminal::shutdown_all()),
+        // Saved terminal profiles (wave 4 remote link + terminal profiles).
+        "get_terminal_profiles" => Box::pin(terminal_profiles::get(args)),
+        "upsert_terminal_profile" => Box::pin(terminal_profiles::upsert(args)),
+        "delete_terminal_profile" => Box::pin(terminal_profiles::delete(args)),
+        "import_terminal_profiles" => Box::pin(terminal_profiles::import(args)),
         // Filesystem
         "workspace_file_upload" => Box::pin(filesystem::workspace_file_upload(state, args)),
         "html_preview_read_resource" => Box::pin(filesystem::html_preview_read_resource(args)),
@@ -181,6 +190,7 @@ pub(crate) fn dispatch<'a>(
         "load_session_trajectory" => Box::pin(session::load_session_trajectory(state, args)),
         "load_session_turn_window" => Box::pin(session::load_session_turn_window(state, args)),
         "load_session_turns" => Box::pin(session::load_session_turns(state, args)),
+        "get_session_transcript_view" => Box::pin(session::get_session_transcript_view(state, args)),
         "load_session_event_backfill" => Box::pin(std::future::ready(session::load_session_event_backfill(state, args))),
         "restore_session_view" => Box::pin(session::restore_session_view(state, args)),
         "restore_session_with_turns" => Box::pin(session::restore_session_with_turns(state, args)),
@@ -280,6 +290,9 @@ pub(crate) fn dispatch<'a>(
         | "git_resolve_revision" => Box::pin(git::read(command, args)),
 
         // Soft empty / no-op for Desktop-only subsystems
+        // Routine previews (wave 4).
+        "validate_cron_job_draft" => Box::pin(cron::validate_draft(args)),
+        "preview_cron_occurrences" => Box::pin(cron::preview_occurrences(args)),
         "notify_cron_host_ready" => Box::pin(soft::notify_cron_host_ready()),
         "list_miniapps" => Box::pin(soft::list_miniapps()),
         "miniapp_worker_list_running" => Box::pin(soft::miniapp_worker_list_running()),
@@ -295,6 +308,10 @@ pub(crate) fn dispatch<'a>(
         "get_system_info" => Box::pin(system::get_system_info()),
         "get_runtime_logging_info" => Box::pin(system::get_runtime_logging_info()),
         "get_token_usage_statistics" => Box::pin(system::get_token_usage_statistics(state, args)),
+        // View models (wave 4)
+        "get_token_usage_activity" => Box::pin(view_models::get_token_usage_activity(state, args)),
+        "get_workspace_navigator" => Box::pin(view_models::get_workspace_navigator(state, args)),
+        "get_personal_overview" => Box::pin(view_models::get_personal_overview(state, args)),
 
         // Only reachable if the registry marks a command Handled without a
         // matching arm above; the closure test below fails first.
@@ -324,6 +341,11 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "terminal_has_shell_integration",
     "terminal_send_command",
     "terminal_shutdown_all",
+    // Saved terminal profiles (wave 4 remote link + terminal profiles).
+    "get_terminal_profiles",
+    "upsert_terminal_profile",
+    "delete_terminal_profile",
+    "import_terminal_profiles",
     "terminal_create",
     "terminal_write",
     "terminal_resize",
@@ -434,6 +456,9 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "get_session_thread_goal",
     "get_system_info",
     "get_token_usage_statistics",
+    "get_token_usage_activity",
+    "get_workspace_navigator",
+    "get_personal_overview",
     "get_web_search_credential_status",
     "get_decision_model_credential_status",
     "get_workspace_info",
@@ -462,6 +487,7 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "load_session_turn_window",
     "load_session_trajectory",
     "load_session_turns",
+    "get_session_transcript_view",
     "open_workspace",
     "product_control_invoke",
     "reload_config",
@@ -490,6 +516,9 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "set_approval_settings",
     "set_web_search_provider",
     "get_settings_schema",
+    "get_permission_settings",
+    "validate_cron_job_draft",
+    "preview_cron_occurrences",
     "set_external_mcp_server_decision_command",
     "set_external_mcp_servers_enabled_command",
     "set_external_source_conflict_choice_command",

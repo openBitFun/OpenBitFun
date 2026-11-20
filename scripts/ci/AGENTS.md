@@ -73,10 +73,30 @@ symbols/addresses. No automatic rebuild with debug info is attempted. If more
 evidence is needed, reproduce locally with debug info or add a targeted future
 layout/checkpoint probe. Logs contain normal test output; never log credentials.
 
+## Native desktop release helpers
+
+- `install-nsh.mjs` installs the pinned NSH CLI release (SHA-256 digests pinned
+  in the script; bump it together with the `nsh-*` crates of
+  `src/apps/desktop-nsh/native/Cargo.toml`) and adds it to `GITHUB_PATH`.
+- `desktop-release-env.mjs` compiles the release channel's updater endpoints and
+  the minisign release key into the native backend (`GITHUB_ENV`); publishing
+  builds fail without both release keys.
+- `package-native-macos-release.sh` turns `target/desktop-nsh/OpenBitFun.app`
+  into `target/<target>/release/bundle/{macos,dmg}`: Developer ID signing,
+  notarization and stapling when configured, the DMG, and the signed updater
+  archive `OpenBitFun-nsh_<version>_<arch>.app.tar.gz`. `verify-macos-signing.sh`
+  and `repair-macos-stapling.sh` read that layout. Release builds require the
+  `Contents/MacOS/openbitfun-desktop` link through which installed Tauri builds
+  update (`OPENBITFUN_REQUIRE_LEGACY_BRIDGE=true`).
+
+The manifest layout these feed is described in
+[`docs/development/releasing.md`](../../docs/development/releasing.md).
+
 ## Focused verification
 
 ```bash
 node --test scripts/ci/rust-stack-diagnostics.test.mjs
+node --test scripts/ci/native-release-tooling.test.mjs scripts/ci/classify-build-impact.test.mjs
 node --test --test-name-pattern='keeps Rust CI independent' scripts/check-github-config.test.mjs
 ```
 

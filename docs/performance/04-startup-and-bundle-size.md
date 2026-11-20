@@ -1,5 +1,7 @@
 # OpenBitFun 启动性能与产物体积审阅报告
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 - 审阅日期:2026-07-26
 - 审阅范围:Tauri 冷启动链路(src/apps/desktop)、前端首包与分包(src/web-ui)、静态资源(public/dist)、Rust release profile
 - 方法:只读源码分析 + 现成 dist 产物统计(未运行完整构建)

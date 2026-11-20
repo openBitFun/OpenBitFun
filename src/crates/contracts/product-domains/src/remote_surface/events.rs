@@ -35,8 +35,24 @@ pub const OWNER_ONLY_EVENT_PREFIXES: &[(&str, &str)] = &[
     ),
     ("app-update", "the backend machine's updater"),
     (
+        "browser-webview-page-load",
+        "page loads of the embedded browser in the backend machine's own window",
+    ),
+    (
         "desktop-card://",
         "desktop cards are windows of the backend machine",
+    ),
+    (
+        "host://",
+        "requests from the backend to the native UI shell of the backend machine",
+    ),
+    (
+        "mesh://",
+        "the backend machine's own device-mesh node (addresses, peers)",
+    ),
+    (
+        "openbitfun-update-progress",
+        "download progress of the backend machine's updater",
     ),
     (
         "openbitfun://file-drop-preview",
@@ -83,6 +99,8 @@ mod tests {
             "tray://mark-all-read",
             "updater://progress",
             "peer-host-invoke://request",
+            "host://shell-request",
+            "openbitfun-update-progress",
         ] {
             assert_eq!(event_stance(event), EventStance::OwnerOnly, "{event}");
         }

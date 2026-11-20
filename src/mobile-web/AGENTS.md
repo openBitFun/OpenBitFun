@@ -4,7 +4,7 @@ Mobile web is the browser-based remote control client for OpenBitFun desktop ses
 
 ## Boundaries
 
-- Keep mobile-web logic inside `src/mobile-web`; do not import from `src/web-ui`.
+- Keep mobile-web logic inside `src/mobile-web`; do not import from the desktop UI (`src/nsh-ui`).
 - Treat pairing, reconnect, disconnect, session list, and chat state as one connected product flow.
 - The compact sidebar uses the host's opened-workspace catalog, including assistant
   identity names. `list_recent_workspaces.opened_workspaces` is an additive capability

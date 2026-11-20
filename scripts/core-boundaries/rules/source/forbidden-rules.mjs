@@ -232,12 +232,12 @@ export const forbiddenContentRules = [
     ],
   },
   {
-    path: 'src/crates/adapters/transport/src/adapters/tauri.rs',
+    path: 'src/crates/adapters/transport/src/adapters/sink.rs',
     patterns: [
       {
         regex: /\bAgenticEvent::[A-Z]/,
         message:
-          'Tauri transport adapter must not match agentic event variants directly; use openbitfun-events frontend projection',
+          'the sink transport adapter must not match agentic event variants directly; use openbitfun-events frontend projection',
       },
     ],
   },
@@ -4103,7 +4103,7 @@ export const forbiddenContentUnderRules = [
     ],
   },
   {
-    path: 'src/web-ui',
+    path: 'src/nsh-ui',
     reason:
       'frontend surfaces must consume capability-surface projections instead of raw plugin runtime client contracts',
     patterns: [

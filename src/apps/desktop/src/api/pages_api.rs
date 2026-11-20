@@ -67,7 +67,7 @@ pub struct PageOpenRequest {
 }
 
 /// Save a new immutable version (does not change production).
-#[tauri::command]
+// @backend-command
 pub async fn page_save_version(
     request: PagePublishRequest,
 ) -> Result<PageSaveVersionResult, String> {
@@ -92,7 +92,7 @@ pub async fn page_save_version(
 }
 
 /// Legacy alias for [`page_save_version`] (save only, no deploy).
-#[tauri::command]
+// @backend-command
 pub async fn page_publish(request: PagePublishRequest) -> Result<PagePublishResult, String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -109,7 +109,7 @@ pub async fn page_publish(request: PagePublishRequest) -> Result<PagePublishResu
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_list() -> Result<Vec<PageInfo>, String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -118,7 +118,7 @@ pub async fn page_list() -> Result<Vec<PageInfo>, String> {
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_list_versions(request: PageSlugRequest) -> Result<Vec<PageVersionInfo>, String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -133,7 +133,7 @@ pub async fn page_list_versions(request: PageSlugRequest) -> Result<Vec<PageVers
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_create_open_link(request: PageOpenRequest) -> Result<PageOpenLink, String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -149,7 +149,7 @@ pub async fn page_create_open_link(request: PageOpenRequest) -> Result<PageOpenL
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_deploy(request: PageDeployRequest) -> Result<PageInfo, String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -165,7 +165,7 @@ pub async fn page_deploy(request: PageDeployRequest) -> Result<PageInfo, String>
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_delete_version(request: PageDeleteVersionRequest) -> Result<(), String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -181,7 +181,7 @@ pub async fn page_delete_version(request: PageDeleteVersionRequest) -> Result<()
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_update(request: PageUpdateRequest) -> Result<PageInfo, String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -198,7 +198,7 @@ pub async fn page_update(request: PageUpdateRequest) -> Result<PageInfo, String>
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_unpublish(request: PageSlugRequest) -> Result<(), String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;
@@ -213,7 +213,7 @@ pub async fn page_unpublish(request: PageSlugRequest) -> Result<(), String> {
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn page_delete(request: PageSlugRequest) -> Result<(), String> {
     let generation = account_context_generation();
     let (session, relay_url) = read_account_context_for_generation(generation).await?;

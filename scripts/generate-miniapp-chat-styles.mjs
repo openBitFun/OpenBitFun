@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Compile the actual Hi/FlowChat CSS owners, without bundling their JS runtime.
+// Compile the MiniApp shell's Hi/FlowChat stylesheets (src/apps/miniapp-shell/styles) and the
+// design-system CSS modules they compose, without bundling any JS runtime.
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +13,6 @@ export async function buildMiniAppChatStyles() {
     configFile: false,
     root,
     logLevel: 'error',
-    resolve: { alias: { '@': resolve(root, 'src/web-ui/src') } },
     css: { modules: { generateScopedName: (name, filename) => `miniapp-${basename(filename, '.module.css')}-${name}` } },
     build: {
       write: false, minify: false, cssMinify: false, cssCodeSplit: false, sourcemap: false,

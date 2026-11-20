@@ -50,6 +50,14 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"], optional = true }
 dispatch = { version = "0.2", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+nsh-windows-app = { version = "=0.6.0", default-features = false, optional = true }
+nsh-platform-windows = { version = "=0.6.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-linux-app = { version = "=0.6.0", default-features = false, optional = true }
+nsh-platform-linux = { version = "=0.6.0", default-features = false, optional = true }
+
 [features]
 default = []
 # The runner with the NSH feature set `nsh` generates for a JS app.
@@ -78,6 +86,45 @@ runner = [
     "nsh-macos-app?/websocket",
     "nsh-macos-app?/updater",
     "nsh-macos-app?/svg",
+    # Windows (`nsh-windows-app`, WebView2) and Linux (`nsh-linux-app`, GTK).
+    "dep:nsh-windows-app",
+    "dep:nsh-platform-windows",
+    "nsh-windows-app?/js",
+    "nsh-windows-app?/shader",
+    "nsh-windows-app?/editor",
+    "nsh-windows-app?/emoji-picker",
+    "nsh-windows-app?/highlight",
+    "nsh-windows-app?/math",
+    "nsh-windows-app?/plot",
+    "nsh-windows-app?/rich-editor",
+    "nsh-windows-app?/term",
+    "nsh-windows-app?/zlib",
+    "nsh-windows-app?/crypto",
+    "nsh-windows-app?/websocket",
+    "nsh-windows-app?/updater",
+    "nsh-windows-app?/svg",
+    "nsh-windows-app?/net",
+    "nsh-windows-app?/webview",
+    "nsh-windows-app?/media",
+    "dep:nsh-linux-app",
+    "dep:nsh-platform-linux",
+    "nsh-linux-app?/js",
+    "nsh-linux-app?/shader",
+    "nsh-linux-app?/editor",
+    "nsh-linux-app?/emoji-picker",
+    "nsh-linux-app?/highlight",
+    "nsh-linux-app?/math",
+    "nsh-linux-app?/plot",
+    "nsh-linux-app?/rich-editor",
+    "nsh-linux-app?/term",
+    "nsh-linux-app?/zlib",
+    "nsh-linux-app?/crypto",
+    "nsh-linux-app?/websocket",
+    "nsh-linux-app?/updater",
+    "nsh-linux-app?/svg",
+    "nsh-linux-app?/net",
+    "nsh-linux-app?/webview",
+    "nsh-linux-app?/sound",
 ]
 
 [lints.rust]
@@ -98,6 +145,7 @@ debug = "line-tables-only"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+strip = true
 
 [profile.release-fast]
 inherits = "release"

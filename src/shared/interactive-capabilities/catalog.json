@@ -309,24 +309,15 @@
       ]
     },
     {
-      "id": "desktop-cards-mixed",
-      "query": "小卡片 desktop cards 桌面小组件",
-      "expectedFirstCapabilityId": "feature.desktop-cards",
-      "expectedCapabilityIds": [
-        "feature.desktop-cards",
-        "setting.application.pet"
-      ]
-    },
-    {
-      "id": "builtin-element-picker",
-      "query": "内置浏览器 element picker 元素选择",
+      "id": "builtin-browser-history",
+      "query": "内置浏览器 后退 前进 history",
       "expectedFirstCapabilityId": "feature.browser",
       "expectedCapabilityIds": [
         "feature.browser"
       ],
       "expectedItem": {
         "capabilityId": "feature.browser",
-        "itemId": "element-picker"
+        "itemId": "history-navigation"
       }
     },
     {
@@ -505,11 +496,27 @@
       "tool": "CallDeferredTool",
       "reasonZh": "延迟工具的框架级分发原语，只转发到已经由具体功能映射的目标工具，不应单独出现在说明书中。",
       "reasonEn": "Framework dispatch primitive for forwarding to a target tool that is already mapped to a concrete capability; it should not appear as a separate manual feature."
+    },
+    {
+      "tool": "DesktopCard",
+      "reasonZh": "桌面小卡片由已退役的 Tauri 桌面窗口承载；原生桌面应用没有卡片宿主，工具因宿主不可用而自动隐藏，仅为旧配置保留。",
+      "reasonEn": "Desktop cards were rendered by windows of the retired Tauri desktop shell; the native desktop app has no card host, so the tool hides itself as host-unavailable and is kept only for existing configurations."
+    },
+    {
+      "tool": "FrontendWorkbench",
+      "reasonZh": "该工具编辑已退役的 React 桌面界面的覆盖层；原生桌面应用没有该宿主，工具因宿主不可用而自动隐藏。",
+      "reasonEn": "The tool edited overlays of the retired React desktop UI; the native desktop app has no such host, so the tool hides itself as host-unavailable."
     }
   ],
   "implementationOnlyCommands": {
-    "publicMarketImageCache": [
-      "market_image_load"
+    "deviceMeshTransport": [
+      "mesh_list_devices",
+      "mesh_phone_join_info",
+      "mesh_status",
+      "peer_link_call",
+      "peer_link_connect",
+      "peer_link_disconnect",
+      "peer_link_events"
     ],
     "legacyUpdateCompatibility": [
       "install_update"
@@ -542,6 +549,7 @@
       "ai_model_delete",
       "ai_model_upsert",
       "delete_permission_rule",
+      "get_permission_settings",
       "get_settings_schema",
       "resolve_ai_model_request_url",
       "set_acp_client_permission_mode",
@@ -565,6 +573,8 @@
       "touch_session_activity"
     ],
     "hostBridges": [
+      "host_shell_attach",
+      "host_shell_respond",
       "mark_miniapp_web_surface_ready",
       "mark_openbitfun_control_surface_ready",
       "mark_openbitfun_control_surface_unready",
@@ -574,20 +584,15 @@
       "product_control_invoke",
       "report_miniapp_web_result",
       "report_openbitfun_control_result",
-      "report_ide_control_result",
-      "webdriver_bridge_result"
+      "report_ide_control_result"
     ],
     "platformWindowLifecycle": [
       "hide_main_window_after_close_request",
       "restart_app",
-      "set_macos_edit_menu_mode",
-      "set_main_window_transient_geometry",
-      "startup_window_control"
+      "show_main_window"
     ],
     "fileTransferPrimitives": [
-      "local_file_download",
       "export_local_file_to_path",
-      "load_agent_companion_pet_spritesheet",
       "paste_files",
       "workspace_file_upload",
       "write_clipboard_image"
@@ -692,7 +697,8 @@
             "reasonEn": "“Review your activity heatmap and connected devices on Home, with quick actions for Agents, Assistants, Mini Apps, and Skills” depends on what you want to inspect or launch from the live Home dashboard; the Agent opens Home directly so you can act in place."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/personal-overview/PersonalOverviewScene.tsx#PersonalOverviewScene"
+            "source:src/nsh-ui/src/homeStore.ts#PersonalOverview",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"home.activityHeatmapTitle\""
           ]
         },
         {
@@ -708,8 +714,7 @@
             "reasonEn": "“Search across messages, sessions, files, features, and settings with ⌘K / Ctrl+K, or type > to run commands” lets you type queries and pick from live session, file, action, and settings matches; you can also ask the Agent to open a specific page directly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/global-search/globalSearchStore.ts#openGlobalSearch",
-            "source:src/web-ui/src/app/global-search/productActionCatalog.ts#PRODUCT_ACTION_CATALOG"
+            "source:src/nsh-ui/src/globalSearchStore.ts#export function openGlobalSearch"
           ]
         },
         {
@@ -725,8 +730,7 @@
             "reasonEn": "Pane sizing, tab drag-and-drop placement, and split focus are visual layout interactions controlled directly via the tab bar, splitter, or keyboard shortcuts."
           },
           "evidence": [
-            "source:src/web-ui/src/app/workbench/WorkbenchLayout.tsx#WorkbenchLayout",
-            "source:src/web-ui/src/shared/constants/shortcuts.ts#CANVAS_SHORTCUTS"
+            "source:src/nsh-ui/src/state.ts#WorkbenchLayout"
           ]
         },
         {
@@ -742,24 +746,7 @@
             "reasonEn": "“Customize pinned items and ordering in the left sidebar, plus pin favorite Mini App shortcuts” is a personal navigation preference configured interactively in Appearance settings under Left sidebar or from Mini App menus."
           },
           "evidence": [
-            "source:src/web-ui/src/app/navigation/sidebarContributions.ts#sidebarRegistry",
-            "source:src/web-ui/src/app/navigation/sidebarPreferences.ts#DEFAULT_SIDEBAR_PINS"
-          ]
-        },
-        {
-          "id": "floating-window",
-          "titleZh": "一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口",
-          "titleEn": "Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime",
-          "descriptionZh": "点击侧边栏左下角齿轮菜单中的「悬浮窗模式」，主窗口会收起为小巧的桌面悬浮条，方便你在阅读网页、文档或调试其他软件时随手提问，需要看代码时一键展开回完整工作台。",
-          "descriptionEn": "Choose Floating window mode from the bottom-left gear menu to collapse OpenBitFun into a compact floating bar while working in other apps, then expand back to the full workbench in one click.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口」涉及本机桌面窗口形态与屏幕位置切换，需由你在左下角菜单中手动开启或点恢复按钮回到主窗口。",
-            "reasonEn": "“Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime” changes the local desktop window geometry and focus, so you trigger it from the bottom-left menu and restore the full window when ready."
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/components/NavPanel/components/PersistentFooterActions.tsx#enableToolbarMode"
+            "source:src/crates/contracts/config-contracts/src/types.rs#pub sidebar: SidebarConfig"
           ]
         }
       ],
@@ -965,8 +952,8 @@
             "reasonEn": "“Attach files, folders, past sessions, and Skills with @, and run slash commands with / or $” is an interactive composer workflow where you pick context chips and slash commands while drafting your prompt."
           },
           "evidence": [
-            "source:src/web-ui/src/flow_chat/components/ChatContextPicker.tsx#ChatContextPicker",
-            "source:src/web-ui/src/flow_chat/utils/slashCommand.ts#matchesSlashCommand"
+            "source:src/nsh-ui/src/mentionStore.ts#@",
+            "source:src/nsh-ui/src/scenes/SessionsScene.tsx#parseSlashCommand"
           ]
         },
         {
@@ -982,9 +969,7 @@
             "reasonEn": "“Use @ in chat to select MCP servers available to the current mode” requires the user to select a server and edit the current composer draft; no structured Command completes that interaction directly. Tool names and descriptions can find their owning server without separate tool rows. The catalog is scoped to the current host, workspace, and mode; Minimal hides MCP. Remote workspaces are unsupported; Peer Hosts must advertise chat_mcp_catalog_v1."
           },
           "evidence": [
-            "command:get_chat_mcp_catalog",
-            "source:src/web-ui/src/flow_chat/components/ChatContextPicker.tsx#onSelectMcp",
-            "source:src/web-ui/src/flow_chat/components/ChatInput.tsx#selectContextMcp"
+            "command:get_chat_mcp_catalog"
           ]
         },
         {
@@ -1000,7 +985,7 @@
             "reasonEn": "“Select transcript text to collect numbered batch annotations or ask a focused Side Question” starts from highlighting specific text in the conversation transcript and writing your note or side question in place."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/flow-chat.json#selection.annotate"
+            "source:src/crates/assembly/core/src/agentic/coordination/coordinator.rs#build_btw_user_input"
           ]
         },
         {
@@ -1136,41 +1121,6 @@
             "command:btw_cancel",
             "command:editor_ai_stream",
             "command:editor_ai_cancel"
-          ]
-        },
-        {
-          "id": "creative-frontend-authoring",
-          "titleZh": "切换到「创造（Creative）」模式，安全定制正在运行的 OpenBitFun 界面与交互能力",
-          "titleEn": "Switch to Creative mode to customize the live OpenBitFun interface with automatic 15-second rollback protection",
-          "descriptionZh": "无需下载源码或搭编译环境，直接告诉创造模式的智能体你想怎么改界面样式或组合快捷功能；新改动激活后会弹出 15 秒不可变确认倒计时，万一渲染异常会自动回滚保底。",
-          "descriptionEn": "No source checkout or build toolchain needed: describe the UI tweak or custom workflow you want in Creative mode, preview it live, and rely on the 15-second confirmation window to roll back automatically if anything goes wrong.",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "FrontendWorkbench",
-              "Read",
-              "Write",
-              "Edit"
-            ],
-            "workflowZh": [
-              "在本地桌面创造模式中调用 FrontendWorkbench prepare，阅读随包 API；只编辑草稿中的 CSS、JavaScript 和自有资源，无需源码或构建工具",
-              "用原草稿 ID 调用 apply；宿主在真实界面和自定义代码激活后才启动不可变确认窗口的 15 秒倒计时，apply 会等待并返回 confirmed 或 rolled_back 的最终结果",
-              "用 commands、state 和 events 组合可复用能力；通过 FrontendWorkbench inspect 发现命令和错误，再按 schema 用 invoke 验证执行"
-            ],
-            "workflowEn": [
-              "Call FrontendWorkbench prepare on the local Desktop in Creative mode, read the packaged API, and edit only draft CSS, JavaScript and owned assets without source or build tools",
-              "Apply with the original draft ID; the host starts the immutable review window's 15-second countdown only after the real shell and customization activate, and apply waits for a final confirmed or rolled_back outcome",
-              "Compose commands, state and events into reusable capabilities; use FrontendWorkbench inspect to discover schemas and diagnostics, then invoke to verify execution"
-            ]
-          },
-          "evidence": [
-            "source:src/crates/assembly/core/src/agentic/tools/implementations/frontend_workbench_tool.rs#FrontendWorkbench",
-            "source:src/apps/desktop/src/frontend_workbench.rs#FrontendWorkbenchManager",
-            "command:frontend_update_candidate_ready",
-            "command:get_frontend_update_status",
-            "command:confirm_frontend_update",
-            "command:rollback_frontend_update",
-            "command:frontend_update_candidate_failed"
           ]
         },
         {
@@ -1321,7 +1271,8 @@
             "command:list_sessions",
             "command:list_persisted_sessions",
             "command:load_persisted_session_metadata",
-            "command:load_session_turns"
+            "command:load_session_turns",
+            "command:get_session_transcript_view"
           ]
         },
         {
@@ -1567,7 +1518,6 @@
             "reasonEn": "“Inspect each agent’s enabled tools, Skills, and read-only safety posture at a glance” surfaces per-role capability summaries and read-only boundaries interactively in the Agents gallery."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/agents/components/AgentCapabilityTooltip.tsx#AgentCapabilityTooltip",
             "command:get_available_tools",
             "command:get_tool_info",
             "command:get_readonly_tools_info",
@@ -1591,11 +1541,8 @@
           },
           "evidence": [
             "command:list_agent_tool_names",
-            "source:src/web-ui/src/app/scenes/agents/components/ToolGroupPicker.tsx#ToolGroupPicker",
-            "source:src/web-ui/src/app/scenes/agents/components/SkillGroupPicker.tsx#SkillGroupPicker",
             "command:set_agent_profile_config",
-            "command:reset_agent_profile_config",
-            "source:src/web-ui/src/app/scenes/agents/hooks/useAgentsList.ts#useAgentsList"
+            "command:reset_agent_profile_config"
           ]
         },
         {
@@ -1749,8 +1696,8 @@
           },
           "evidence": [
             "command:create_assistant_workspace",
-            "command:get_assistant_workspaces",
-            "source:src/web-ui/src/app/scenes/profile/views/NurseryGallery.tsx#NurseryGallery"
+            "command:set_assistant_identity",
+            "command:get_assistant_workspaces"
           ]
         },
         {
@@ -1767,9 +1714,7 @@
           },
           "evidence": [
             "command:close_workspace",
-            "command:open_workspace",
-            "source:src/web-ui/src/app/components/NavPanel/sections/workspaces/WorkspaceItem.tsx#handleCloseWorkspace",
-            "source:src/web-ui/src/app/scenes/profile/views/NurseryGallery.tsx#handleOpenAssistant"
+            "command:open_workspace"
           ]
         },
         {
@@ -1804,8 +1749,7 @@
             "reasonEn": "“Edit an assistant’s name, role archetype, and conversational vibe, and pick a preset avatar, emoji, or custom glyph” is a visual customization flow on the assistant detail page with live avatar preview."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#updateIdentityField",
-            "source:src/web-ui/src/app/scenes/profile/views/AssistantAvatarPicker.tsx#ASSISTANT_AVATAR_PRESETS"
+            "source:src/nsh-ui/src/assistantStore.ts#ASSISTANT_AVATAR_PRESETS"
           ]
         },
         {
@@ -1821,7 +1765,6 @@
             "reasonEn": "“Read and edit autosaved IDENTITY.md, SOUL.md, and USER.md persona documents in plain Markdown” provides an interactive Markdown editor with frontmatter synchronization right inside the assistant configuration page."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#PERSONA_DOC_FILES",
             "command:read_file_content",
             "command:write_file_content"
           ]
@@ -1839,8 +1782,7 @@
             "reasonEn": "“Pick a model, send a quick message, and browse all past conversations from the assistant’s page” combines a quick message composer and session history list on the assistant’s detail view."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/profile/views/AssistantQuickInput.tsx#handleSend",
-            "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#SessionsSection"
+            "source:src/nsh-ui/src/assistantStore.ts#sessions"
           ]
         },
         {
@@ -1856,7 +1798,7 @@
             "reasonEn": "“Create and manage scheduled sessions and recurring automated jobs scoped to a specific assistant” lets you review, add, pause, or edit scheduled prompts scoped specifically to the selected assistant workspace."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#ScheduledJobsView"
+            "source:src/nsh-ui/src/routinesStore.ts#CronJobTarget"
           ]
         }
       ],
@@ -1993,8 +1935,7 @@
             "reasonEn": "“Configure per-project default models and mode in Project Resources, alongside project permissions, schedules, subagents, and Skills” applies to a chosen project workspace and its live host catalogs; open Project Resources from the project row in the sidebar to edit them in one place."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/project-resources/ProjectResourcesScene.tsx#ProjectResourcesScene",
-            "source:src/web-ui/src/app/scenes/project-resources/ProjectDefaultsSection.tsx#ProjectDefaultsSection"
+            "source:src/crates/contracts/config-contracts/src/types.rs#pub project_defaults:"
           ]
         },
         {
@@ -2013,7 +1954,8 @@
             "command:close_workspace",
             "command:set_active_workspace",
             "command:reorder_opened_workspaces",
-            "command:get_opened_workspaces"
+            "command:get_opened_workspaces",
+            "command:get_workspace_navigator"
           ]
         },
         {
@@ -2049,8 +1991,7 @@
           "evidence": [
             "command:scan_workspace_info",
             "command:update_workspace_info",
-            "command:reset_workspace_persona_files",
-            "source:src/web-ui/src/app/scenes/project-resources/ProjectDirectoriesSection.tsx#ProjectDirectoriesSection"
+            "command:reset_workspace_persona_files"
           ]
         },
         {
@@ -2428,9 +2369,8 @@
             "reasonEn": "“Edit and preview Markdown, implementation plans, and LaTeX builds, and annotate PDFs with highlights, notes, and ink” activates format-aware visual editors and annotation layers automatically whenever you open Markdown, plan, LaTeX, or PDF files."
           },
           "evidence": [
-            "source:src/web-ui/src/tools/editor/components/MarkdownEditor.tsx#MarkdownEditor",
-            "source:src/web-ui/src/tools/editor/components/LatexEditor.tsx#LatexEditor",
-            "source:src/web-ui/src/tools/editor/pdf-review/PdfReviewEditor.tsx#PdfReviewEditor"
+            "source:src/nsh-ui/src/scenes/FilesScene.tsx#markdown",
+            "source:src/apps/desktop/src/api/latex_api.rs#LatexEngine"
           ]
         },
         {
@@ -2478,22 +2418,6 @@
           ]
         },
         {
-          "id": "language-actions",
-          "titleZh": "仅在当前语言提供器实际支持时显示格式化、定义与类型跳转、引用、重命名、快速修复和符号导航",
-          "titleEn": "Show formatting, definition and type navigation, references, rename, quick fixes, and symbol navigation only when supported by the active language provider",
-          "descriptionZh": "编辑器右键菜单与面包屑符号树会根据当前文件语言的真实支持能力动态呈现，点得出来的动作就一定能用。",
-          "descriptionEn": "Context-menu actions and symbol breadcrumbs adapt dynamically to what the active file’s language provider genuinely supports.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「仅在当前语言提供器实际支持时显示格式化、定义与类型跳转、引用、重命名、快速修复和符号导航」与你在编辑器中聚焦的文件类型和光标所在符号位置绑定，可在代码编辑器右键菜单或快捷键中直接调用。",
-            "reasonEn": "“Show formatting, definition and type navigation, references, rename, quick fixes, and symbol navigation only when supported by the active language provider” depends on the focused file type and cursor symbol in the code editor, surfaced through context menus and breadcrumbs."
-          },
-          "evidence": [
-            "source:src/web-ui/src/shared/context-menu-system/providers/EditorMenuProvider.ts#supportsEditorAction"
-          ]
-        },
-        {
           "id": "attachments",
           "titleZh": "在本地桌面会话中直接粘贴剪贴板截图，或把本机文件与文件夹拖进聊天框",
           "titleEn": "Paste clipboard images or drag local files and folders straight into Desktop sessions",
@@ -2508,13 +2432,7 @@
           "evidence": [
             "command:get_clipboard_files",
             "command:get_clipboard_image",
-            "command:resolve_browser_dropped_file_paths",
-            "command:set_file_drop_preview_target",
-            "command:upload_image_contexts",
-            "source:src/web-ui/src/flow_chat/utils/externalFileIntake.ts#buildExternalFileContexts",
-            "source:src/web-ui/src/flow_chat/utils/externalFileIntake.test.ts#buildExternalFileContexts",
-            "source:src/web-ui/src/infrastructure/files/resolveBrowserDroppedFilePaths.ts#resolveBrowserDroppedFilePaths",
-            "source:src/web-ui/src/infrastructure/files/useLocalFileDrop.ts#useLocalFileDrop"
+            "command:upload_image_contexts"
           ]
         },
         {
@@ -2674,7 +2592,11 @@
             "options": []
           },
           "evidence": [
-            "command:terminal_create"
+            "command:terminal_create",
+            "command:get_terminal_profiles",
+            "command:upsert_terminal_profile",
+            "command:delete_terminal_profile",
+            "command:import_terminal_profiles"
           ]
         },
         {
@@ -2708,8 +2630,7 @@
             "reasonEn": "“Auto-detect installed shells (zsh, bash, PowerShell, Git Bash, WSL) and pick a default or per-terminal shell” queries the shells installed on your host so you can choose one from the New Terminal menu or Terminal settings."
           },
           "evidence": [
-            "command:terminal_get_shells",
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#terminal.controls.autoDetect"
+            "command:terminal_get_shells"
           ]
         },
         {
@@ -3160,6 +3081,8 @@
           },
           "evidence": [
             "command:git_get_status",
+            "command:git_watch_status",
+            "command:git_unwatch_status",
             "command:git_get_tracked_change_count",
             "command:git_get_changed_files",
             "command:git_get_diff",
@@ -3219,6 +3142,7 @@
           "evidence": [
             "command:git_add_files",
             "command:git_reset_files",
+            "command:git_discard_files",
             "command:git_reset_to_commit"
           ]
         },
@@ -3272,6 +3196,7 @@
             "command:git_get_branches",
             "command:git_create_branch",
             "command:git_checkout_branch",
+            "command:git_commit_and_checkout",
             "command:git_delete_branch",
             "command:git_get_enhanced_branches"
           ]
@@ -3510,8 +3435,8 @@
           },
           "evidence": [
             "command:control_deep_review_queue",
-            "source:src/web-ui/src/flow_chat/deep-review/launch/DeepReviewService.ts#DeepReviewService",
-            "command:get_default_review_team_definition"
+            "command:get_default_review_team_definition",
+            "command:launch_review"
           ]
         },
         {
@@ -3781,50 +3706,7 @@
             "kind": "delegate"
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/browser/BrowserScene.tsx#BrowserScene",
-            "source:src/web-ui/src/app/scenes/browser/BrowserPanel.tsx#BrowserPanel"
-          ]
-        },
-        {
-          "id": "element-picker",
-          "titleZh": "启动元素选择器，悬停时高亮页面元素并显示标签、ID 和 Class",
-          "titleEn": "Start the element picker to highlight hovered elements and show tag, ID, and class details",
-          "descriptionZh": "点击浏览器地址栏旁的拾取按钮进入指哪打哪模式，鼠标移过之处会实时浮现半透明蓝色高亮框与节点标签信息。",
-          "descriptionEn": "Click the inspector button in the browser toolbar to hover over live DOM nodes with a blue highlight overlay showing tag, ID, and class names.",
-          "control": {
-            "kind": "delegate"
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/scenes/browser/BrowserPanel.tsx#handleInspector",
-            "source:src/web-ui/src/app/scenes/browser/browserInspectorScript.ts#Adds a semi-transparent blue highlight overlay"
-          ]
-        },
-        {
-          "id": "element-context",
-          "titleZh": "点击元素后捕获 CSS 路径、属性、文本和 HTML，并加入当前会话上下文",
-          "titleEn": "Click an element to capture its CSS path, attributes, text, and HTML into the current session context",
-          "descriptionZh": "点选目标元素后无需手动复制粘贴选择器，节点特征会自动变成上下文标签插入你正在编写的聊天草稿中。",
-          "descriptionEn": "Clicking a highlighted element automatically inserts a structured context chip with its CSS selector, attributes, text, and outerHTML into your chat composer.",
-          "control": {
-            "kind": "delegate"
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/scenes/browser/browserInspectorScript.ts#On click, captures: tagName, CSS path, attributes, textContent, outerHTML",
-            "source:src/web-ui/src/app/scenes/browser/BrowserPanel.tsx#insert-context-tag"
-          ]
-        },
-        {
-          "id": "element-picker-cancel",
-          "titleZh": "再次点击选择按钮或按 Esc 取消元素选择并清理高亮",
-          "titleEn": "Click the picker again or press Escape to cancel selection and remove overlays",
-          "descriptionZh": "不想选了随时按一下 Esc 或再点一次拾取图标，页面立即恢复正常点击与滚动交互。",
-          "descriptionEn": "Press Escape or click the picker button again anytime to clear highlight overlays and return to normal page interaction.",
-          "control": {
-            "kind": "delegate"
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/scenes/browser/browserInspectorScript.ts#Pressing Escape cancels inspection",
-            "source:src/web-ui/src/app/scenes/browser/BrowserPanel.tsx#stopInspector"
+            "source:src/nsh-ui/src/scenes/BrowserScene.tsx#browserGoBack"
           ]
         },
         {
@@ -3890,8 +3772,8 @@
             "kind": "delegate"
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/browser/useEmbeddedBrowserWebview.ts#history.back()",
-            "source:src/web-ui/src/app/scenes/browser/useEmbeddedBrowserWebview.ts#history.forward()"
+            "source:src/nsh-ui/src/browserStore.ts#export function browserGoBack",
+            "source:src/nsh-ui/src/browserStore.ts#export function browserGoForward"
           ]
         },
         {
@@ -3905,8 +3787,7 @@
           },
           "evidence": [
             "command:browser_webview_reload",
-            "command:browser_get_url",
-            "source:src/web-ui/src/app/scenes/browser/useEmbeddedBrowserWebview.ts#BROWSER_WEBVIEW_PAGE_LOAD_EVENT"
+            "command:browser_get_url"
           ]
         },
         {
@@ -3920,7 +3801,7 @@
           },
           "evidence": [
             "source:src/crates/assembly/core/src/agentic/tools/browser_control/automation_client.rs#pub trait BrowserAutomationClient",
-            "source:src/apps/desktop/src/builtin_browser_host.rs#impl BuiltInBrowserHost"
+            "source:src/apps/desktop/src/native_browser.rs#impl BuiltInBrowserHost for NativeBuiltInBrowserHost"
           ]
         },
         {
@@ -3949,9 +3830,7 @@
           "evidence": [
             "command:browser_webview_set_bounds",
             "command:browser_webview_capture_preview",
-            "source:src/web-ui/src/app/scenes/browser/browserPreviewCache.ts#export class BrowserPreviewCache",
-            "source:src/web-ui/src/app/scenes/browser/BrowserPanel.tsx#sandbox=",
-            "source:src/web-ui/src/app/scenes/browser/browserInspectorScript.ts#BLANK_TARGET_INTERCEPT_SCRIPT"
+            "command:browser_webview_report_page_load"
           ]
         }
       ],
@@ -4174,7 +4053,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#computerUse.sectionDescription"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.computerUse\"",
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.computer_use_enabled\""
           ]
         },
         {
@@ -4191,8 +4071,7 @@
           },
           "evidence": [
             "command:computer_use_control_status",
-            "command:computer_use_control_preview",
-            "source:src/web-ui/src/app/components/ComputerUseControlCard.tsx#ComputerUseControlCard"
+            "command:computer_use_control_preview"
           ]
         },
         {
@@ -4216,8 +4095,7 @@
             ]
           },
           "evidence": [
-            "command:computer_use_control_stop",
-            "source:src/web-ui/src/app/components/ComputerUseControlCard.tsx#ComputerUseControlCard"
+            "command:computer_use_control_stop"
           ]
         },
         {
@@ -4503,7 +4381,7 @@
             "reasonEn": "\"Automatically prioritize project Skills over same-named user Skills with clear badges\" surfaces scope precedence and shadowed-item badges directly in the catalog UI; the Agent opens the Skills list so you can inspect them."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/skills.json#list.item.shadowedDetail"
+            "source:src/nsh-ui/src/skillsCatalogStore.ts#shadowed"
           ]
         },
         {
@@ -4672,7 +4550,6 @@
             "command:miniapp_market_get_listing",
             "command:miniapp_market_install",
             "command:miniapp_market_installed_status",
-            "command:miniapp_market_capture_window",
             "command:miniapp_market_import_package",
             "command:miniapp_market_inspect_package"
           ]
@@ -4878,8 +4755,7 @@
             ]
           },
           "evidence": [
-            "source:src/crates/assembly/core/src/agentic/tools/implementations/miniapp_publish_tool.rs#PublishMiniApp",
-            "command:miniapp_market_submit_installed"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/miniapp_publish_tool.rs#PublishMiniApp"
           ]
         },
         {
@@ -4909,8 +4785,8 @@
         },
         {
           "id": "publishing",
-          "titleZh": "查看我的市场投稿审核进度、撤回发布申请与预览展示页",
-          "titleEn": "Track your Market submissions, withdraw pending releases, and render showcase slides",
+          "titleZh": "查看我的市场投稿审核进度、撤回发布申请",
+          "titleEn": "Track your Market submissions and withdraw pending releases",
           "descriptionZh": "提交市场后可随时查看审核队列状态，发现疏漏支持主动撤回重提，并可渲染应用展示幻灯片。",
           "descriptionEn": "Check where your submitted releases stand in review, withdraw a pending submission if you spot a bug, and render presentation slides.",
           "control": {
@@ -4921,8 +4797,7 @@
           },
           "evidence": [
             "command:miniapp_market_withdraw_submission",
-            "command:miniapp_market_list_submissions",
-            "command:miniapp_render_slide_page"
+            "command:miniapp_market_list_submissions"
           ]
         }
       ],
@@ -5075,7 +4950,7 @@
             "reasonEn": "\"Track work across Plan Overview, Scheduled Tasks, Calendar, and Inactive sections\" combines live due-time badges, interactive month-day selection, and grouped sections; the Agent opens the Task Board scene directly for you."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/todos/TodosScene.tsx#TodoCalendar"
+            "source:src/nsh-ui/src/scenes/RoutinesScene.tsx#calendar"
           ]
         },
         {
@@ -5101,15 +4976,17 @@
           "evidence": [
             "command:create_cron_job",
             "command:update_cron_job",
-            "command:delete_cron_job"
+            "command:delete_cron_job",
+            "command:validate_cron_job_draft",
+            "command:preview_cron_occurrences"
           ]
         },
         {
           "id": "schedule-types",
           "titleZh": "设置单次、固定间隔或自定义 Cron 时间表",
           "titleEn": "Choose one-time, interval, or custom Cron schedule types",
-          "descriptionZh": "既支持“今天 17:30 跑一次”和“每 2 小时跑一次”，也支持标准 Cron 表达式与时区感知，AI 创建前会先核对当前准确时间。",
-          "descriptionEn": "Supports exact one-off timestamps, simple intervals (every N minutes/hours/days), and full timezone-aware Cron expressions verified against live system time.",
+          "descriptionZh": "既支持“今天 17:30 跑一次”和“每 2 小时跑一次”，也支持标准 Cron 表达式与时区感知，AI 创建前会先核对当前准确时间。5 段表达式的星期字段按标准 Unix 规则：0 和 7 是周日，1-5 是周一到周五（升级说明：旧版本把 1-5 当成周日到周四执行，升级后改为周一到周五；曾用 2-6 凑工作日的任务请改回 1-5）。",
+          "descriptionEn": "Supports exact one-off timestamps, simple intervals (every N minutes/hours/days), and full timezone-aware Cron expressions verified against live system time. In 5-field expressions the day of week follows standard Unix cron: 0 and 7 are Sunday, 1-5 is Monday to Friday (upgrade note: earlier versions ran 1-5 on Sunday to Thursday; after upgrading it runs Monday to Friday, so jobs that used 2-6 to get weekdays should go back to 1-5).",
           "control": {
             "kind": "delegate",
             "tools": [
@@ -5126,7 +5003,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/todos/components/TodoEditor.tsx#schedule"
+            "source:src/nsh-ui/src/routinesStore.ts#cron"
           ]
         },
         {
@@ -5142,7 +5019,7 @@
             "reasonEn": "\"Click any date on the calendar to preview next and future run occurrences\" lets you flip through months and click individual days to inspect scheduled runs; the Agent opens the Task Board calendar for you."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/todos/todoOccurrences.ts#occurrence"
+            "source:src/nsh-ui/src/routinesStore.ts#occurrence"
           ]
         },
         {
@@ -5158,7 +5035,7 @@
             "reasonEn": "\"Configure the workspace, agent role, model, and session target per job\" links live workspace, agent-mode, and target-session selectors in the Todo editor; the Agent opens the task surface so you can configure them."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/todos/components/TodoEditor.tsx#agent"
+            "source:src/nsh-ui/src/scenes/RoutinesScene.tsx#workspace"
           ]
         },
         {
@@ -5174,7 +5051,7 @@
             "reasonEn": "\"Schedule automated work for local projects or connected remote environments\" depends on selecting among currently open local or connected remote workspaces; the Agent opens the Task Board so you can confirm the target."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/todos/components/TodoEditor.tsx#target"
+            "source:src/nsh-ui/src/routinesStore.ts#remoteSshHost"
           ]
         },
         {
@@ -5371,7 +5248,9 @@
             "reasonEn": "\"Connect project activity with model, token, and prompt-cache metrics\" pairs visual usage metrics with narrative report cards; the Agent opens Insights so you can explore both together."
           },
           "evidence": [
-            "command:get_token_usage_statistics"
+            "command:get_token_usage_statistics",
+            "command:get_token_usage_activity",
+            "command:get_personal_overview"
           ]
         },
         {
@@ -5387,7 +5266,7 @@
             "reasonEn": "\"Reflect on project focus, active hours, task types, and AI collaboration style\" presents multi-faceted narrative cards across your projects and habits; the Agent opens the Insights scene for you to read."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/my-agent/InsightsScene.tsx#InsightsScene"
+            "source:src/nsh-ui/src/homeStore.ts#Insights"
           ]
         }
       ],
@@ -5528,8 +5407,7 @@
             "command:get_external_ecosystem_awareness_command",
             "command:get_external_source_snapshot",
             "command:get_instruction_source_catalog",
-            "command:get_external_source_discovery_snapshot",
-            "source:src/web-ui/src/app/scenes/ecosystem-compatibility/ExternalDiscoveryToggle.tsx#ExternalDiscoveryToggle"
+            "command:get_external_source_discovery_snapshot"
           ]
         },
         {
@@ -5546,9 +5424,7 @@
           },
           "evidence": [
             "command:list_removed_external_sessions",
-            "command:restore_removed_external_session",
-            "source:src/web-ui/src/app/scenes/ecosystem-compatibility/RemovedExternalSessions.tsx#RemovedExternalSessions",
-            "source:src/web-ui/src/app/scenes/ecosystem-compatibility/ExternalAgentSessions.tsx#ExternalAgentSessions"
+            "command:restore_removed_external_session"
           ]
         },
         {
@@ -5565,9 +5441,7 @@
           },
           "evidence": [
             "command:list_removed_external_sessions",
-            "command:restore_removed_external_session",
-            "source:src/web-ui/src/app/scenes/ecosystem-compatibility/RemovedExternalSessions.tsx#RemovedExternalSessions",
-            "source:src/web-ui/src/app/scenes/ecosystem-compatibility/ExternalAgentSessions.tsx#ExternalAgentSessions"
+            "command:restore_removed_external_session"
           ]
         },
         {
@@ -6021,7 +5895,9 @@
           "evidence": [
             "command:ssh_is_connected",
             "command:ssh_disconnect",
-            "command:ssh_disconnect_all"
+            "command:ssh_disconnect_all",
+            "command:remote_workspace_ensure_connected",
+            "command:remote_workspace_link_states"
           ]
         }
       ],
@@ -6211,8 +6087,8 @@
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「在手机或浏览器中打开同一界面」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
-            "reasonEn": "\"Open the same UI on a phone or browser\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you."
+            "reasonZh": "「在手机或浏览器中打开同一界面，扫码配对并随时撤销」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
+            "reasonEn": "\"Open the same UI on a phone or browser, pair by QR, and revoke at any time\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you."
           },
           "evidence": [
             "command:obp_get_status",
@@ -7120,8 +6996,6 @@
             "reasonEn": "\"Choose Auto or an explicit recognition language and pick your active system microphone\" depends on your connected audio hardware and language preference; the Agent opens Voice settings so you can pick the right mic and language."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#composer.language.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.microphone.label",
             "command:save_cloud_speech_config"
           ]
         },
@@ -7138,7 +7012,7 @@
             "reasonEn": "\"Run a quick mic and recognition test in Settings with millisecond timing feedback\" requires speaking a live test phrase and checking the transcribed output; the Agent opens the Voice diagnostics section for you."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.recognition.start"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#recognition"
           ]
         },
         {
@@ -7154,8 +7028,7 @@
             "reasonEn": "\"Place transcribed text into the chat composer so you can edit before sending\" takes place directly inside your live chat composer draft so you can refine wording or attach files before sending."
           },
           "evidence": [
-            "command:speech_finish_input_session",
-            "source:src/web-ui/src/flow_chat/components/voice/useComposerVoiceInput.ts#result.text.trim()"
+            "command:speech_finish_input_session"
           ]
         }
       ],
@@ -7261,7 +7134,7 @@
             "kind": "delegate"
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#features.pet.enable"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#function DesktopCompanionRow"
           ]
         },
         {
@@ -7301,25 +7174,6 @@
           },
           "evidence": [
             "command:delete_agent_companion_pet_package"
-          ]
-        },
-        {
-          "id": "desktop-window",
-          "titleZh": "显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面",
-          "titleEn": "Show, hide, and resize the companion window, and return quickly to the main window",
-          "descriptionZh": "独立无边框悬浮窗支持按屏幕分辨率调大调小，主窗口最小化时点它就能快速回到工作台。",
-          "descriptionEn": "Resize the frameless companion window to fit high-DPI or compact displays, and jump straight back to the main OpenBitFun window anytime.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面」涉及你在桌面上直接拖拽缩放悬浮窗尺寸或点击唤回主窗口；智能体可帮你开关伙伴并打开「宠物与助手」设置页。",
-            "reasonEn": "\"Show, hide, and resize the companion window, and return quickly to the main window\" involves visual window placement, resizing, and clicking on your desktop; the Agent can toggle the companion or open Pet & assistant settings for you."
-          },
-          "evidence": [
-            "command:show_agent_companion_desktop_pet",
-            "command:hide_agent_companion_desktop_pet",
-            "command:resize_agent_companion_desktop_pet",
-            "command:show_main_window"
           ]
         }
       ],
@@ -7388,201 +7242,7 @@
       ],
       "relatedIds": [
         "setting.application.pet",
-        "feature.desktop-cards",
         "feature.voice-input"
-      ]
-    },
-    {
-      "id": "feature.desktop-cards",
-      "kind": "feature",
-      "categoryId": "application",
-      "titleZh": "桌面小卡片",
-      "titleEn": "Desktop cards",
-      "summaryZh": "让智能体把倒计时提醒、上线核对清单、PR 状态、接口健康指标或行情看板做成轻巧的独立小卡片，贴在屏幕任意顺眼的位置——支持定时自动拉取数据刷新、Windows 桌面图标层固定，关掉应用再重开也会按原位置和尺寸自动恢复。",
-      "summaryEn": "Let agents place lightweight, draggable cards outside the main window for glanceable info like countdowns, checklists, PR status, service metrics, or quotes—with automatic HTTP/command refresh, Windows desktop-layer pinning, and exact position/size restore on relaunch.",
-      "keywordsZh": [
-        "小卡片",
-        "桌面卡片",
-        "桌面小组件",
-        "磁贴",
-        "倒计时提醒",
-        "桌面盯盘"
-      ],
-      "keywordsEn": [
-        "desktop cards",
-        "desktop widget",
-        "live tile",
-        "glanceable card",
-        "countdown reminder",
-        "status card"
-      ],
-      "highlightsZh": [
-        "一句话创建倒计时、待办清单、便签、进度条、指标卡、图表卡等多种形态，支持定时自动刷新",
-        "卡片上可直接打勾清单、手动刷新、置顶悬浮，或一键跳回创建它的原始会话",
-        "Windows 支持「固定到桌面」嵌入桌面图标之上、应用窗口之下，像原生桌面小组件一样不挡视线",
-        "在「首页 → 小卡片」或设置页统一查看、显示、隐藏或删除所有卡片，重启应用自动恢复布局"
-      ],
-      "highlightsEn": [
-        "Ask in chat for countdown, checklist, note, progress, metric, chart, or custom cards—with optional scheduled HTTP or local-command refresh",
-        "Check off tasks, refresh live data, toggle always-on-top, open links, or jump straight back to the source session from any card",
-        "On Windows, pin cards to the desktop layer (above desktop icons, behind app windows) so they never block active work",
-        "Manage visibility and clean up cards in one place from Home → Desktop cards or Settings, with layout restored across restarts"
-      ],
-      "items": [
-        {
-          "id": "agent-cards",
-          "titleZh": "一句话创建倒计时、清单、便签、进度、指标与图表卡片，支持 HTTP 或命令定时刷新",
-          "titleEn": "Create countdown, checklist, note, progress, metric, and chart cards with optional live refresh",
-          "descriptionZh": "内置丰富卡片预设，既能展示静态备忘与倒计时，也能绑定 HTTP 接口或本机轻量命令定期拉取最新数字。",
-          "descriptionEn": "Pick from rich built-in presets or custom layouts, optionally wired to an HTTP endpoint or local command for scheduled updates.",
-          "control": {
-            "kind": "delegate"
-          },
-          "evidence": [
-            "source:src/crates/assembly/core/src/agentic/tools/implementations/desktop_card_tool.rs#\"countdown-reminder\"",
-            "source:src/crates/assembly/core/src/agentic/tools/implementations/desktop_card_tool.rs#\"usage-breakdown\""
-          ]
-        },
-        {
-          "id": "home-management",
-          "titleZh": "在「首页 → 小卡片」集中浏览全部卡片，一键显示、隐藏或删除",
-          "titleEn": "View all cards in Home → Desktop cards and show, hide, or delete any card",
-          "descriptionZh": "哪怕卡片被你藏起来了或挪到了外接显示器角落，回到首页「我的卡片」列表也能一目了然地找回或清理。",
-          "descriptionEn": "Even if a card is hidden, every card stays listed in Home → Desktop cards so you can show, hide, or remove it easily.",
-          "control": {
-            "kind": "delegate"
-          },
-          "evidence": [
-            "command:desktop_card_list",
-            "command:desktop_card_set_visible",
-            "command:desktop_card_delete",
-            "source:src/web-ui/src/locales/zh-CN/scenes/personal-overview.json#desktopCards.title"
-          ]
-        },
-        {
-          "id": "card-actions",
-          "titleZh": "在卡片上直接刷新数据、勾选待办项、切换窗口置顶或一键回到来源会话",
-          "titleEn": "Refresh data, check off items, toggle always-on-top, open links, or jump to the source session",
-          "descriptionZh": "卡片不只是静态展示牌——直接在上面勾掉完成的任务，或者点一下回到当初生成它的聊天窗口继续吩咐 AI。",
-          "descriptionEn": "Cards are interactive: check off tasks right on the surface, trigger an immediate refresh, or jump back to the chat that created it.",
-          "control": {
-            "kind": "delegate"
-          },
-          "evidence": [
-            "command:desktop_card_get",
-            "command:desktop_card_refresh",
-            "command:desktop_card_set_checklist_item",
-            "command:desktop_card_set_always_on_top"
-          ]
-        },
-        {
-          "id": "desktop-pinning",
-          "titleZh": "在卡片菜单、首页卡片列表或设置里将卡片固定到 Windows 桌面图标层",
-          "titleEn": "Pin cards to the Windows desktop layer from the card menu, Home list, or Settings",
-          "descriptionZh": "嵌入 Windows Explorer 桌面层（位于桌面图标之上、其他软件窗口之下），连已隐藏的卡片也可提前切换固定偏好。",
-          "descriptionEn": "Embeds the card onto the Windows desktop plane—above desktop icons and behind normal app windows—without blocking active coding.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「在卡片菜单、首页卡片列表或设置里将卡片固定到 Windows 桌面图标层」会将卡片放入 Windows Explorer 桌面层（位于桌面图标之上、应用窗口之下，需 Explorer 可用且 DPI 上下文一致）；这项显示偏好由你在卡片菜单、首页卡片列表或设置页手动切换，智能体可为你直接打开对应管理入口。",
-            "reasonEn": "\"Pin cards to the Windows desktop layer from the card menu, Home list, or Settings\" places the card into the Windows Explorer desktop layer (above desktop icons and behind app windows while Explorer is available with a matching DPI context); you toggle this display preference in the card menu, Home list, or Settings while the Agent opens the exact entry."
-          },
-          "evidence": [
-            "command:desktop_card_set_always_on_top",
-            "source:src/apps/desktop/src/desktop_cards/desktop_layer.rs#SHELLDLL_DefView",
-            "source:src/web-ui/src/app/scenes/personal-overview/OverviewDesktopCardsSection.tsx#desktopCards.pin",
-            "source:src/web-ui/src/app/scenes/settings/pages/application/DesktopCardsSettingsSection.tsx#desktop-card-pin-row"
-          ]
-        },
-        {
-          "id": "drag-restore",
-          "titleZh": "自由拖拽摆放并拉伸卡片边缘调整尺寸，关闭重启 OpenBitFun 后自动按原样恢复",
-          "titleEn": "Drag and resize cards freely on screen, with positions and sizes restored on relaunch",
-          "descriptionZh": "退出客户端时卡片会随之干净收起，下次启动自动回到你上次摆好的屏幕坐标与大小，不用重新排布。",
-          "descriptionEn": "Cards tuck away cleanly when OpenBitFun exits and reappear at the exact same position and dimensions next time you launch.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "visualSelection",
-            "reasonZh": "卡片位置由用户在桌面上直接拖动决定，没有可以代替视觉摆放的结构化命令；智能体只说明操作方式，摆放保留给用户。",
-            "reasonEn": "Card positions are chosen by dragging directly on the desktop, and no structured command can replace that visual placement; the Agent explains the interaction and leaves placement to the user."
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/components/DesktopCard/DesktopCardWindow.tsx#startDesktopCardWindowDrag",
-            "source:src/apps/desktop/src/desktop_cards/store.rs#cards.json"
-          ]
-        }
-      ],
-      "stepsZh": [
-        "在任意桌面端本地会话中告诉智能体你想盯什么信息（如倒计时、待办清单、PR 状态或某个接口指标），智能体会自动挑选合适模板创建卡片",
-        "按住卡片拖到屏幕顺手的位置，拖动边缘或四角调整到舒服的大小",
-        "通过卡片右上角菜单可手动刷新、勾选清单、切换「置顶」或在 Windows 上选择「固定到桌面」",
-        "需要暂时收起或清理时，在卡片菜单、「首页 → 小卡片」区域或「设置 → 应用与界面 → 宠物与助手 → 小卡片」中隐藏或删除"
-      ],
-      "stepsEn": [
-        "Ask an agent in a Desktop session for the glanceable card you want (countdown, checklist, PR watcher, or live metric)",
-        "Drag the card anywhere on your screen and resize it from its edges or corners",
-        "Use the card menu to refresh data, check off items, toggle always-on-top, or Pin to desktop on Windows",
-        "Show, hide, or delete cards anytime from the card menu, Home → Desktop cards, or Settings → Pet & assistant → Desktop cards"
-      ],
-      "agentControl": {
-        "tool": "DesktopCard",
-        "workflowZh": [
-          "不确定卡片形态时先用 `presets` 查看预置卡片，再用 `create` 创建；需要定时刷新时为卡片提供 http 或 command 数据源",
-          "用 `list`/`get` 读取已有卡片，避免重复创建；用 `update`、`show`、`hide`、`delete`、`refresh` 维护卡片",
-          "小卡片仅在桌面端可用，远程控制会话无法使用；远程工作区不能使用本机命令数据源，失败时明确告知用户"
-        ],
-        "workflowEn": [
-          "When unsure about the card shape, call `presets` first, then `create`; give the card an http or command data source when it should refresh",
-          "Use `list`/`get` to read existing cards instead of creating duplicates; maintain cards with `update`, `show`, `hide`, `delete`, and `refresh`",
-          "Desktop cards exist only on the desktop host and are unavailable from remote control sessions; remote workspaces cannot use local command data sources, and failures must be reported explicitly"
-        ]
-      },
-      "agentExamplesZh": [
-        "20 分钟后提醒我参加产品评审会",
-        "做一张桌面小卡片帮我盯着当前分支 PR 的 CI 状态",
-        "帮我把今晚发版要检查的 5 件事做成一张桌面清单卡片",
-        "把桌面上那张已经跑完的倒计时卡片删掉"
-      ],
-      "agentExamplesEn": [
-        "Remind me about the meeting in 20 minutes",
-        "Make a card that keeps an eye on this PR",
-        "Create a desktop checklist card for tonight’s 5 release verification steps",
-        "Hide or delete the finished countdown card on my desktop"
-      ],
-      "destination": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      },
-      "operations": [],
-      "directoryGroupId": "creative-companion",
-      "order": 64,
-      "entryPathZh": "在对话中直接让智能体创建；集中管理位于「首页 → 小卡片」或「设置 (⌘, / Ctrl+,) → 应用与界面 → 宠物与助手 → 小卡片」",
-      "entryPathEn": "Ask an agent in chat to create a card; manage all cards in Home → Desktop cards or Settings (⌘, / Ctrl+,) → Application & Interface → Pet & assistant → Desktop cards",
-      "scenariosZh": [
-        "写代码容易忘时间？随口说一句“25 分钟后提醒我站起来活动一下”，屏幕角落立刻多出一张倒计时卡陪你专注",
-        "提交完大 PR 等 CI 跑完，让 AI 做一张每两分钟自动刷新的 PR 状态小卡片贴在副屏，不用来回切网页盯进度",
-        "把发版前的 6 步手工核对项做成桌面清单卡，做完一步勾一步，随时点卡片菜单跳回原对话让 AI 接着执行下一步"
-      ],
-      "scenariosEn": [
-        "Say \"Remind me about design review in 20 minutes\" and get a clean countdown card tucked in the corner of your screen",
-        "Keep a self-refreshing PR status or build-health card on your secondary monitor instead of constantly reloading GitHub tabs",
-        "Pin a release checklist card to your desktop, check items off as you go, and jump back to the originating chat in one click"
-      ],
-      "tipsZh": [
-        "「置顶」与 Windows「固定到桌面」的区别：开启「置顶」会让卡片浮在所有窗口最前面（适合紧急倒计时）；Windows 的「固定到桌面」则把卡片贴在壁纸图标层上，看桌面时才露出来，平时完全不挡代码窗口。",
-        "在设置里关闭总开关不会删卡：如果你在「宠物与助手 → 小卡片」里暂时关闭小卡片功能，所有卡片只是隐藏收起，重新开启后立刻原样恢复。",
-        "桌面端本机专属：小卡片需要本机图形窗口承载，手机远控会话暂不支持创建；在远程 SSH 工作区中可使用 HTTP 数据源卡片，但不能绑定本机命令刷新。"
-      ],
-      "tipsEn": [
-        "Always-on-top vs Pin to desktop (Windows): Always-on-top floats above active windows for urgent timers, while Pin to desktop tucks the card onto the wallpaper layer behind your apps.",
-        "Turning off Desktop cards keeps your data: disabling the master toggle in Pet & assistant settings hides existing cards safely until you re-enable them.",
-        "Desktop-host scope: Desktop cards require the native Desktop host (unavailable from mobile remote control), and remote SSH workspaces cannot attach local shell commands as card data sources."
-      ],
-      "relatedIds": [
-        "setting.application.pet",
-        "feature.desktop-pet",
-        "feature.tasks-automation"
       ]
     },
     {
@@ -7655,7 +7315,8 @@
             "reasonEn": "“Switch the UI language among Simplified Chinese, English, and Traditional Chinese in General” lives at the top of Application & Interface → General in the graphical UI; the Agent can either switch the language option directly or open General settings for visual selection."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/LanguageSettingsSection.tsx#LanguageSettingsSection"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#writeAppLanguage",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.language.title\""
           ]
         },
         {
@@ -7674,7 +7335,6 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#autoUpdate.toggleLabel",
             "command:check_for_updates"
           ]
         },
@@ -7715,7 +7375,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#launchAtLogin.toggleLabel"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#function LaunchAtLoginRow",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.launchAtLogin\""
           ]
         },
         {
@@ -7754,7 +7415,6 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#windowBehavior.closeButtonLabel",
             "command:minimize_to_tray",
             "command:quit_app",
             "command:toggle_main_window_fullscreen"
@@ -7779,8 +7439,6 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#notifications.dialogCompletion.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#notifications.permissionRequest.label",
             "command:send_system_notification"
           ]
         }
@@ -7950,23 +7608,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#appearance.presets.openbitfun-tokyo-night.name"
-          ]
-        },
-        {
-          "id": "visual-skins",
-          "titleZh": "导入、预览、启用或停用自定义视觉皮肤包（支持动态视频背景）",
-          "titleEn": "Import, preview, activate, or deactivate custom visual skin packs (including video backdrops)",
-          "descriptionZh": "支持导入 `.openbitfun-skin`、`.zip` 或 `.json` 格式的声明式皮肤包，先预览静态或循环视频背景效果再正式启用，也可随时一键停用回退到内置主题。",
-          "descriptionEn": "Import `.openbitfun-skin`, `.zip`, or `.json` skin packages, preview static imagery or looping video backdrops before activating, and deactivate or clean up invalid packs anytime.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“导入、预览、启用或停用自定义视觉皮肤包（支持动态视频背景）”需要选择本地皮肤包文件并在界面中肉眼确认预览效果；智能体会打开外观页对应区域由你挑选与启用。",
-            "reasonEn": "“Import, preview, activate, or deactivate custom visual skin packs (including video backdrops)” requires picking a local skin package file and visually reviewing its live preview; the Agent opens Appearance settings so you can preview and activate it."
-          },
-          "evidence": [
-            "source:src/web-ui/src/infrastructure/config/components/VisualSkinConfigSection.tsx#VisualSkinConfigSection"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#openbitfun-tokyo-night",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.appearance.presetTokyoNight\""
           ]
         },
         {
@@ -7982,7 +7625,8 @@
             "reasonEn": "“Adjust global UI font-size presets or set a custom 12–20 px size with live preview” works best with visual inspection against the live preview card; the Agent opens the Appearance font-size section for you."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#appearance.fontSize.uiSizeLabel"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.appearance.textSize\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.appearance.fontCustom\""
           ]
         },
         {
@@ -8003,7 +7647,7 @@
             "reasonEn": "“Pin, unpin, reorder, or reset left sidebar navigation entries” involves interactive ordering and visibility review across sidebar entries; the Agent opens the Left Sidebar section directly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/SidebarSettingsSection.tsx#SidebarSettingsSection"
+            "source:src/crates/contracts/config-contracts/src/types.rs#pub sidebar: SidebarConfig"
           ]
         },
         {
@@ -8019,23 +7663,8 @@
             "reasonEn": "“Adjust or reset the preferred pixel width of the conversation stream” depends on your monitor geometry and visual comfort; the Agent opens the Appearance width control for interactive tuning."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/FlowChatWidthSettingsSection.tsx#FlowChatWidthSettingsSection"
-          ]
-        },
-        {
-          "id": "session-panel-layout",
-          "titleZh": "在“并排”与“覆盖”之间切换会话侧边面板展示模式",
-          "titleEn": "Switch the session side-panel display mode between Side by side and Overlay",
-          "descriptionZh": "宽屏下选“并排”方便一边对话一边对照文件或预览；笔记本小窗口下选“覆盖”让侧边面板浮层展开，不挤压主对话区宽度。",
-          "descriptionEn": "Choose Side by side (`split`) on wide monitors to inspect files and previews next to chat, or Overlay on compact windows so side panels float over the workspace without squeezing the conversation.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“在“并排”与“覆盖”之间切换会话侧边面板展示模式”需要结合当前窗口宽度体验分栏与浮层效果；智能体会打开外观页会话侧边面板配置项。",
-            "reasonEn": "“Switch the session side-panel display mode between Side by side and Overlay” is easiest to judge visually against your current window width; the Agent opens the Session Panel section in Appearance settings."
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/SessionPanelSettingsSection.tsx#SessionPanelSettingsSection"
+            "source:src/nsh-ui/src/contentWidthStore.ts#DEFAULT_CONTENT_WIDTH",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.appearance.contentWidth\""
           ]
         },
         {
@@ -8195,7 +7824,6 @@
             "reasonEn": "“Configure client-wide realtime voice calls, Volcengine API key, and voice ID” involves entering your local speech-service API key credential and voice preference; the Agent opens Pet & assistant → Realtime Voice Call directly without handling your secret."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/RealtimeVoiceSettingsSection.tsx#RealtimeVoiceSettingsSection",
             "command:speech_get_realtime_config",
             "command:speech_save_realtime_config"
           ]
@@ -8216,7 +7844,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#features.pet.enable"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#function DesktopCompanionRow",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.desktopCompanion\""
           ]
         },
         {
@@ -8234,8 +7863,7 @@
             "options": []
           },
           "evidence": [
-            "command:list_agent_companion_pets",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#features.pet.petLabel"
+            "command:list_agent_companion_pets"
           ]
         },
         {
@@ -8270,8 +7898,7 @@
             "options": []
           },
           "evidence": [
-            "command:delete_agent_companion_pet_package",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#features.pet.delete"
+            "command:delete_agent_companion_pet_package"
           ]
         },
         {
@@ -8295,28 +7922,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#features.desktopCards.enable"
-          ]
-        },
-        {
-          "id": "desktop-cards-pinning",
-          "titleZh": "将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）",
-          "titleEn": "Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)",
-          "descriptionZh": "在支持桌面层固定的 Windows 环境下，可逐张开关卡片固定状态，让卡片位于桌面图标之上、普通窗口之下；即使某张卡片当前处于隐藏状态也能在此提前设好。",
-          "descriptionEn": "On Windows hosts that support desktop-layer pinning, toggle pinning per card so it sits above desktop icons and behind regular app windows — even for cards that are currently hidden.",
-          "destination": {
-            "kind": "settings",
-            "pageId": "application.pet",
-            "sectionId": "desktop-cards"
-          },
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）”需要按当前机器已有的具体卡片列表逐张选择；智能体会直达“宠物与助手 → 桌面小卡片”区域供你勾选。",
-            "reasonEn": "“Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)” depends on the live list of cards on this computer; the Agent opens Pet & assistant → Desktop Cards so you can toggle each card."
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/DesktopCardsSettingsSection.tsx#desktop-card-pin-row"
+            "source:src/crates/contracts/config-contracts/src/types.rs#pub enable_desktop_cards: bool"
           ]
         }
       ],
@@ -8355,7 +7961,6 @@
       "relatedIds": [
         "feature.desktop-pet",
         "feature.voice-input",
-        "feature.desktop-cards",
         "setting.application.input"
       ],
       "destination": {
@@ -8488,7 +8093,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#composer.enabled.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.voice_input.enabled\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.voiceInput\""
           ]
         },
         {
@@ -8510,8 +8116,7 @@
           "evidence": [
             "command:speech_download_model",
             "command:speech_verify_model",
-            "command:speech_delete_model",
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#model.repair"
+            "command:speech_delete_model"
           ]
         },
         {
@@ -8534,7 +8139,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#composer.language.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.voice_input.default_language\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.voiceLanguage\""
           ]
         },
         {
@@ -8557,7 +8163,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/infrastructure/config/types/index.ts#max_recording_seconds"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.voice_input.max_recording_seconds\""
           ]
         },
         {
@@ -8577,8 +8183,8 @@
             "reasonEn": "“Select a microphone device and run a live speech-recognition test” requires enumerating live audio input hardware and speaking a test phrase; the Agent opens the microphone diagnostic section directly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.microphone.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.recognition.start"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.voice_input.microphone_device_id\"",
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#recognition"
           ]
         },
         {
@@ -8599,28 +8205,8 @@
             "reasonEn": "“Choose whether messages sent during an active turn steer immediately or wait in queue” is an interactive input preference scoped to the active surface; the Agent opens Input & Interaction → Message Sending so you can switch modes."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/MessageSendingSettingsSection.tsx#SEND_DURING_TURN_CONFIG_PATH"
-          ]
-        },
-        {
-          "id": "btw-close-confirmation",
-          "titleZh": "开启或关闭侧问（/btw）面板关闭前的丢弃确认提示",
-          "titleEn": "Enable or disable the confirmation prompt before closing a /btw side conversation",
-          "descriptionZh": "侧问（`/btw`）专为不污染主会话上下文的临时追问设计，关闭后对话内容不会落盘保存；开启确认可避免误点关闭丢掉刚问出的参考答案。",
-          "descriptionEn": "`/btw` side conversations keep quick tangents out of your main session context and discard their messages on close; keeping this confirmation on prevents accidental loss.",
-          "destination": {
-            "kind": "settings",
-            "pageId": "application.voice",
-            "sectionId": "btw-close-confirmation"
-          },
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“开启或关闭侧问（/btw）面板关闭前的丢弃确认提示”保存在当前界面的交互偏好中，智能体会为你打开“会话与记忆 → 侧问”中的确认开关。",
-            "reasonEn": "“Enable or disable the confirmation prompt before closing a /btw side conversation” is stored as a client UI interaction preference; the Agent opens Session & Memory → Side questions for you."
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/BtwSettingsSection.tsx#BtwSettingsSection"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"sessions.steer\"",
+            "source:src/crates/assembly/core/src/agentic/session_policy.rs#send_during_turn"
           ]
         },
         {
@@ -8644,8 +8230,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/TextSelectionSettingsSection.tsx#AUTO_SHOW_SELECTION_TOOLBAR_CONFIG_PATH",
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#textSelection.autoShowToolbar"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.flow_chat.auto_show_selection_toolbar\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.selectionToolbar\""
           ]
         }
       ],
@@ -8792,7 +8378,8 @@
             "reasonEn": "“Search and browse all shortcuts across Global, Agent Session, Code Editor, Terminal, and Git scopes” reflects your OS modifier symbols and any custom overrides you have saved; the Agent opens the Keyboard Shortcuts section in Input & Interaction so you can browse them."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#lists every known shortcut"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#settings.shortcuts.title",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.shortcuts.defaults\""
           ]
         },
         {
@@ -8812,8 +8399,8 @@
             "reasonEn": "“Record new shortcuts, detect conflicts live, revert single bindings or reset all, and click Apply to save” requires pressing physical key combinations on your keyboard, reviewing conflict badges, and clicking Apply; the Agent opens the Keyboard Shortcuts section directly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#buildFinalConflictMap",
-            "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#buildStoredKeybindings({})"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#keybindings",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.shortcuts.overridesStoredOne\""
           ]
         }
       ],
@@ -8953,8 +8540,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#appearance.fontSize",
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#appearance.cursorStyle"
+            "source:src/nsh-ui/src/settingsStore.ts#\"editor.font_size\"",
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"editor.cursor_style\""
           ]
         },
         {
@@ -8992,8 +8579,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#behavior.tabSize",
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#behavior.wordWrap"
+            "source:src/nsh-ui/src/settingsStore.ts#\"editor.tab_size\"",
+            "source:src/nsh-ui/src/settingsStore.ts#\"editor.word_wrap\""
           ]
         },
         {
@@ -9031,8 +8618,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#display.minimap",
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#display.whitespace"
+            "source:src/nsh-ui/src/settingsStore.ts#\"editor.minimap.enabled\"",
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"editor.render_whitespace\""
           ]
         },
         {
@@ -9073,8 +8660,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#advanced.semanticHighlighting",
-            "source:src/web-ui/src/locales/zh-CN/settings/editor.json#advanced.formatOnSave"
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"editor.semantic_highlighting\"",
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"editor.format_on_save\""
           ]
         }
       ],
@@ -9383,9 +8970,7 @@
           },
           "evidence": [
             "command:get_model_configs",
-            "command:refresh_model_client",
-            "source:src/web-ui/src/locales/zh-CN/settings/models.json#providerSelection.customTitle",
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/MagpieSourceSection.tsx#MagpieSourceSection"
+            "command:refresh_model_client"
           ]
         },
         {
@@ -9401,8 +8986,7 @@
             "reasonEn": "API keys must be entered through the protected model-credential form; the Agent can open that setting but never places secret values in the capability graph or tool results."
           },
           "evidence": [
-            "command:test_ai_config_connection",
-            "source:src/web-ui/src/locales/zh-CN/settings/models.json#providerSelection.fetchModels"
+            "command:test_ai_config_connection"
           ]
         },
         {
@@ -9439,9 +9023,9 @@
             "reasonEn": "“Choose Primary, Fast, Economy, image-understanding, image-generation, and speech-recognition defaults” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#core.primary.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#core.economy.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#optional.capabilities.image_generation.label"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.defaultModels.primary\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.defaultModels.economy\"",
+            "source:src/nsh-ui/src/modelSettingsStore.ts#image_generation"
           ]
         },
         {
@@ -9473,10 +9057,7 @@
             "reasonEn": "“Configure Smart Mode routing with Primary, Economy, and router classifier models” depends on execution-host routing availability plus live connectivity checks across the Primary, Economy, and router classifier models; the Agent opens the exact model settings entry so you can configure and verify them."
           },
           "evidence": [
-            "command:get_model_routing_status",
-            "source:src/web-ui/src/infrastructure/config/components/ModelRouterSettings.tsx#ModelRouterSettings",
-            "source:src/web-ui/src/flow_chat/components/NativeModelSelectionPanel.tsx#onRoutingSettings",
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#settings-smart-mode-configure"
+            "command:get_model_routing_status"
           ]
         },
         {
@@ -9498,7 +9079,6 @@
             "command:get_model_pool_status",
             "command:get_session_model_target",
             "command:update_session_model_target",
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelPoolsSection.tsx#ModelPoolsSection",
             "command:retry_model_pool_member"
           ]
         },
@@ -9540,8 +9120,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/models.json#streamIdleTimeout",
-            "source:src/web-ui/src/locales/zh-CN/settings/models.json#streamTtftTimeout"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.stream_idle_timeout_secs\"",
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.stream_ttft_timeout_secs\""
           ]
         },
         {
@@ -9557,7 +9137,8 @@
             "reasonEn": "“Configure HTTP, HTTPS, or SOCKS5 network proxies and bypass rules for AI requests” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#sections.proxy"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.proxy.url\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.proxyEnabled\""
           ]
         },
         {
@@ -9573,9 +9154,8 @@
             "reasonEn": "Custom headers and request bodies may contain tokens or other secrets, so they must be edited in the protected model configuration flow and cannot enter Agent-readable discovery data."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#custom_headers",
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#custom_request_body",
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#skip_ssl_verify"
+            "source:src/nsh-ui/src/modelSettingsStore.ts#custom_headers",
+            "source:src/nsh-ui/src/modelSettingsStore.ts#skip_ssl_verify"
           ]
         },
         {
@@ -9759,8 +9339,8 @@
             "reasonEn": "“Switch the default permission mode between Ask (default), Auto-approve, and Full access” changes your tool-execution safety boundary (and Full access requires an explicit high-risk confirmation dialog); the Agent opens Permission Rules so you choose directly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#PermissionsSettingsPage",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.mode"
+            "source:src/nsh-ui/src/permissionPolicyStore.ts#auto_approve_ask",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.modeAsk\""
           ]
         },
         {
@@ -9776,8 +9356,8 @@
             "reasonEn": "The dedicated Jev decision-model API key is a device-encrypted secret that must be saved or cleared in the protected Permission Rules form; the Agent never reads or echoes raw keys."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#autoApprove",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.autoApprove"
+            "source:src/nsh-ui/src/permissionPolicyStore.ts#ai.decision_model",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.decisionModel\""
           ]
         },
         {
@@ -9793,8 +9373,8 @@
             "reasonEn": "“Configure auto-approval timeout (30s default) and fallback actions on uncertainty or errors” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#approvalTimeout",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.approvalTimeout"
+            "source:src/nsh-ui/src/permissionPolicyStore.ts#timeout_ms",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.whenFails\""
           ]
         },
         {
@@ -9810,8 +9390,8 @@
             "reasonEn": "“Edit and order global Allow, Ask, and Deny permission rules” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#GlobalPermissionRulesDialog",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.globalRules"
+            "source:src/nsh-ui/src/permissionPolicyStore.ts#upsert_permission_rule",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.globalRulesTitle\""
           ]
         },
         {
@@ -9827,8 +9407,8 @@
             "reasonEn": "“Choose whether to show the quick permission-mode switcher below the chat input” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#SHOW_PERMISSION_MODE_CONTROL_CONFIG_PATH",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.showInChatInput"
+            "source:src/nsh-ui/src/permissionPolicyStore.ts#app.flow_chat.show_permission_mode_control",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.composerSwitchOn\""
           ]
         }
       ],
@@ -9953,8 +9533,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.generateMemories.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.useMemories.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.generate_memories\"",
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.use_memories\""
           ]
         },
         {
@@ -9973,7 +9553,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.generateForBtwSessions.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.generate_for_btw_sessions\""
           ]
         },
         {
@@ -9992,7 +9572,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.externalContextPolicy.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.external_context_policy\""
           ]
         },
         {
@@ -10020,8 +9600,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.minRolloutIdleHours.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.maxRolloutsPerStartup.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.min_rollout_idle_hours\"",
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.max_rollouts_per_startup\""
           ]
         },
         {
@@ -10043,8 +9623,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.phase1MaxConcurrency.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.maxRawMemories.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.phase1_max_concurrency\"",
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.max_raw_memories_for_consolidation\""
           ]
         },
         {
@@ -10060,7 +9640,7 @@
             "reasonEn": "The choices come from the live set of enabled model configurations and must be selected against that list; the Agent can open the exact setting without pretending any arbitrary string is a valid model."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.extractModel.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.extract_model\""
           ]
         },
         {
@@ -10076,7 +9656,7 @@
             "reasonEn": "“Choose the Phase 2 consolidation model (follow Primary, Extraction, or a specific model)” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.consolidationModel.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.consolidation_model\""
           ]
         },
         {
@@ -10095,7 +9675,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.maxUnusedDays.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"memories.max_unused_days\""
           ]
         },
         {
@@ -10113,7 +9693,6 @@
           "evidence": [
             "command:get_memory_paths",
             "command:reset_memory",
-            "source:src/web-ui/src/locales/zh-CN/settings/memory.json#actions.resetSettings",
             "command:reset_config"
           ]
         }
@@ -10292,23 +9871,6 @@
       ],
       "items": [
         {
-          "id": "default-agent-harness",
-          "titleZh": "设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式",
-          "titleEn": "Set Default agent execution mode: follow the last chat input selection or fix a default mode",
-          "descriptionZh": "经常在不同执行模式间切换时选“跟随上一次选择”最顺手；希望每次新建普通会话都使用固定模式时可直接锁定目标。",
-          "descriptionEn": "Follow your last chat input choice when you switch modes often, or fix a default execution mode so every new regular session starts identically.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式”由“会话与记忆”设置页中的关联控件共同管理，目前没有单一结构化命令静默替代；智能体会直接打开该入口供你选择。",
-            "reasonEn": "“Set Default agent execution mode: follow the last chat input selection or fix a default mode” is managed by linked controls on the Sessions & Memory settings page; the Agent opens the exact section so you can pick visibly."
-          },
-          "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/DefaultHarnessSection.tsx#DefaultHarnessSection",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#defaultHarness.title"
-          ]
-        },
-        {
           "id": "automatic-titles",
           "titleZh": "启用或停用根据会话内容自动生成标题",
           "titleEn": "Enable or disable automatic titles generated from session content",
@@ -10324,8 +9886,7 @@
             ]
           },
           "evidence": [
-            "command:generate_session_title",
-            "source:src/web-ui/src/locales/zh-CN/settings/ai-features.json#features.sessionTitle.title"
+            "command:generate_session_title"
           ]
         },
         {
@@ -10341,7 +9902,8 @@
             "reasonEn": "“Make title generation inherit the Fast or Primary model, or use a selected lightweight model” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/models.json#sessionTitle.model.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.enable_session_title_generation\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.sessionTitleGeneration\""
           ]
         },
         {
@@ -10360,8 +9922,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/PromptSuggestionSection.tsx#PromptSuggestionSection",
-            "source:src/web-ui/src/locales/zh-CN/settings/models.json#promptSuggestion.title"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.enable_prompt_suggestion\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.promptSuggestion\""
           ]
         },
         {
@@ -10397,8 +9959,7 @@
             ]
           },
           "evidence": [
-            "command:search_build_index",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#features.workspaceSearch.enable"
+            "command:search_build_index"
           ]
         },
         {
@@ -10555,7 +10116,7 @@
             "reasonEn": "“Enable or disable accelerated workspace search for local projects” renders dynamically when a local workspace is active; the Agent opens Workspace & Git → Accelerated Workspace Search for you."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/development/WorkspaceSearchSection.tsx#enable_workspace_search"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.enable_workspace_search\""
           ]
         },
         {
@@ -10571,7 +10132,7 @@
             "reasonEn": "“Enable or disable OpenBitFun Co-authored-by attribution on agent-created Git commits” toggles immediately under Workspace & Git → Git Commit Attribution; the Agent opens that exact section for you."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/development/GitCommitSettingsSection.tsx#enable_git_commit_coauthor"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.enable_git_commit_coauthor\""
           ]
         },
         {
@@ -10587,7 +10148,8 @@
             "reasonEn": "Whether a new session uses isolation is selected at session creation against the live repository state; this page stores only managed-worktree defaults, so the contract does not invent a global enable switch."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#settings.isolation.title"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"git.tabWorktrees\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.worktreeRoot\""
           ]
         },
         {
@@ -10606,7 +10168,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#settings.rootPath.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.worktrees.rootPath\""
           ]
         },
         {
@@ -10625,7 +10187,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#settings.branchPrefix.label"
+            "source:src/nsh-ui/src/settingsStore.ts#worktree-branch-prefix",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.worktreeBranchPrefix\""
           ]
         },
         {
@@ -10644,7 +10207,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#settings.copyChanges.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.worktrees.copyLocalChanges\""
           ]
         },
         {
@@ -10666,7 +10229,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#settings.autoDeleteLimit.label"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.worktreeAutoDelete\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.worktreeAutoDeleteLimit\""
           ]
         },
         {
@@ -10691,7 +10255,6 @@
           },
           "evidence": [
             "command:worktree_list",
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#management.state.unpublishedCommits",
             "command:check_git_isolation",
             "command:git_list_worktrees",
             "command:worktree_list_projects"
@@ -10711,8 +10274,6 @@
           },
           "evidence": [
             "command:worktree_remove",
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#management.sessions.restoreTitle",
-            "source:src/web-ui/src/locales/zh-CN/worktrees.json#management.delete.forceTitle",
             "command:git_remove_worktree"
           ]
         }
@@ -10885,7 +10446,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#deferredToolLoading.sectionTitle"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.enable_deferred_tool_loading\""
           ]
         },
         {
@@ -10909,7 +10470,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.executionTimeout"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.tool_execution_timeout_secs\""
           ]
         },
         {
@@ -10930,8 +10491,7 @@
             "reasonEn": "“Set how long user questions wait for your reply (180s default)” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/ExecutionSettingsPage.tsx#user_question_timeout_secs",
-            "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.userQuestionTimeout"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.user_question_timeout_secs\""
           ]
         },
         {
@@ -10952,8 +10512,7 @@
             "reasonEn": "Selectable targets come from your live enabled models and model pools in Execution & Collaboration settings, while per-subagent overrides live in Agent management."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/ai/ExecutionSettingsPage.tsx#subagentDefaultModel",
-            "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.subagentDefaultModel"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"agents.modelOverride\""
           ]
         },
         {
@@ -10983,8 +10542,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.subagentMaxConcurrency",
-            "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.subagentBatchPolicy.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.subagent_max_concurrency\"",
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.subagent_batch_execution_policy\""
           ]
         },
         {
@@ -11008,7 +10567,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#toolPresentation.mode"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.tool_presentation_mode\""
           ]
         },
         {
@@ -11032,7 +10591,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/models.json#toolArgumentJsonRepair.title"
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"ai.allow_tool_json_repair\""
           ]
         },
         {
@@ -11053,8 +10612,7 @@
             "reasonEn": "“Set maximum parallel Deep Review reviewers and queue wait time” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/review-capacity.json#capacity.maxParallelReviewers.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/review-capacity.json#capacity.maxQueueWaitSeconds.label"
+            "source:src/crates/contracts/config-contracts/src/types.rs#max_parallel_reviewers"
           ]
         },
         {
@@ -11075,7 +10633,6 @@
             "reasonEn": "“Choose Ask, Auto-approve, or Full access permission mode and confirm high-risk warnings” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.mode",
             "command:update_session_permission_mode"
           ]
         },
@@ -11100,7 +10657,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.showInChatInput"
+            "source:src/nsh-ui/src/permissionPolicyStore.ts#app.flow_chat.show_permission_mode_control"
           ]
         },
         {
@@ -11122,8 +10679,7 @@
           },
           "evidence": [
             "command:get_project_permission_rules",
-            "command:save_project_permission_rules",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.globalRules"
+            "command:save_project_permission_rules"
           ]
         },
         {
@@ -11166,7 +10722,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#computerUse.sectionDescription"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.computer_use_enabled\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.computerUse\""
           ]
         },
         {
@@ -11202,7 +10759,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#browserControl.autoConnectOnStartup"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.browser_control_auto_connect_on_startup\""
           ]
         },
         {
@@ -11241,7 +10798,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.subagentModelOverride.label"
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"ai.allow_subagent_model_override\""
           ]
         }
       ],
@@ -11437,8 +10994,7 @@
             ]
           },
           "evidence": [
-            "command:terminal_get_shells",
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#terminal.sections.defaultTerminal"
+            "command:terminal_get_shells"
           ]
         },
         {
@@ -11457,7 +11013,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#terminal.panelPosition.label"
+            "source:src/crates/contracts/product-domains/src/product_control_owner_registry.rs#\"terminal.terminal_panel_position\""
           ]
         }
       ],
@@ -11572,22 +11128,6 @@
       ],
       "items": [
         {
-          "id": "external-control",
-          "titleZh": "为本机集成授权工作区",
-          "titleEn": "Authorize workspaces for local integrations",
-          "descriptionZh": "启用本机 HTTP 接口，为每个集成创建或撤销令牌。外部任务在桌面会话中运行。",
-          "descriptionEn": "Enable local HTTP access and issue or revoke workspace-scoped integration tokens. Submitted tasks run in desktop sessions.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "visualSelection",
-            "reasonZh": "用户需要在桌面设置中选择此集成可以访问的工作区，并复制仅在创建时显示一次的令牌。",
-            "reasonEn": "In Desktop settings, the user chooses which workspaces the integration can access and copies the token while it is visible at creation."
-          },
-          "evidence": [
-            "command:desktop_external_control"
-          ]
-        },
-        {
           "id": "permissions",
           "titleZh": "查看“允许桌面控制”开关及“辅助功能”、“屏幕录制”系统授权状态并完成授权",
           "titleEn": "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
@@ -11601,8 +11141,7 @@
           },
           "evidence": [
             "command:computer_use_get_status",
-            "command:computer_use_request_permissions",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#computerUse.sectionTitle"
+            "command:computer_use_request_permissions"
           ]
         },
         {
@@ -11618,8 +11157,8 @@
             "reasonEn": "“Keep desktop automation bounded with the in-app toggle, per-window sharing, and host isolation” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/tools/DeviceControlSettingsPage.tsx#DeviceControlSettingsPage",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#computerUse.sectionDescription"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.computer_use_enabled\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.computerUse\""
           ]
         }
       ],
@@ -11735,8 +11274,8 @@
             "reasonEn": "“Choose whether web links in chat open in the built-in browser or your system default browser” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/tools/BrowserLinkSettingsSection.tsx#BrowserLinkSettingsSection",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#browserLinks.defaultTarget"
+            "source:src/nsh-ui/src/settingsStore.ts#\"ai.browser_control_preferred_browser\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.preferredBrowser\""
           ]
         },
         {
@@ -11754,8 +11293,7 @@
           "evidence": [
             "command:browser_control_get_status",
             "command:browser_control_list_browsers",
-            "command:browser_control_enable_default_cdp",
-            "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#browserControl.sectionTitle"
+            "command:browser_control_enable_default_cdp"
           ]
         }
       ],
@@ -11883,8 +11421,8 @@
             "reasonEn": "“Enable and customize the built-in Commit and Create Pull Request post-coding quick actions” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#quickActions.defaults.commit.label",
-            "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#quickActions.defaults.createPr.label"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.quickActions.title\"",
+            "source:src/crates/contracts/config-contracts/src/types.rs#pub quick_actions: Vec<AiExperienceQuickAction>"
           ]
         },
         {
@@ -11905,8 +11443,8 @@
             "reasonEn": "“Add, edit, and delete custom post-coding quick action buttons and prompts” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#sections.custom.title",
-            "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#modal.promptField"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.quickActions.newTitle\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.quickActions.promptPlaceholder\""
           ]
         },
         {
@@ -11930,7 +11468,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/hooks.json#fields.enabled.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.hooks.enabled\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.hooksEnabled\""
           ]
         },
         {
@@ -11954,7 +11493,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/hooks.json#.openbitfun/config/hooks.json"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.hooks.project_hooks_enabled\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.hooksProject\""
           ]
         },
         {
@@ -11985,7 +11525,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/hooks.json#修改 hooks.json 后立即生效"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.section.agentHooks\"",
+            "source:docs/features/agent-hooks.md#hooks.json"
           ]
         },
         {
@@ -12188,7 +11729,8 @@
             "reasonEn": "“Choose Exa MCP (free), Exa Search API, Tavily, DeepSeek, Keenable, or Custom HTTP service” depends on provider-specific endpoint and credential readiness that must be reviewed and saved together on the Web Search settings page; the Agent opens the exact entry for you."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#providers"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.provider\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.providerTavily\""
           ]
         },
         {
@@ -12206,8 +11748,7 @@
           "evidence": [
             "command:get_web_search_credential_status",
             "command:save_web_search_credential",
-            "command:clear_web_search_credential",
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#sections.credential.description"
+            "command:clear_web_search_credential"
           ]
         },
         {
@@ -12223,9 +11764,9 @@
             "reasonEn": "“Configure the endpoint URL, auth mode, and validated header name for OpenBitFun Search HTTP Protocol” combines endpoint URL, transport restrictions, and authentication fields that must be validated and explicitly saved together in Settings; the Agent opens the entry without guessing."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#fields.endpoint",
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#fields.authMode",
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#fields.headerName"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.endpoint\"",
+            "source:src/nsh-ui/src/webSearchStore.ts#authMode",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.headerName\""
           ]
         },
         {
@@ -12241,9 +11782,7 @@
             "reasonEn": "The protocol specification is shown only when OpenBitFun Search HTTP Protocol is selected and the Settings page owns the complete copyable content; the Agent opens the exact entry instead of substituting an incomplete summary."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#protocol.request.description",
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#protocol.success.description",
-            "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#protocol.notes.transportLimits"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.providerHttp\""
           ]
         }
       ],
@@ -12381,8 +11920,8 @@
             "options": []
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/mcp.json#server.typeLocal",
-            "source:src/web-ui/src/locales/zh-CN/settings/mcp.json#server.typeRemote"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.mcp.transport\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.mcp.serverUrl\""
           ]
         },
         {
@@ -12716,7 +12255,8 @@
             "reasonEn": "“Enable native ACP CLIs (opencode, dsh, omp) or npx-bridged presets (Claude Code, Codex) on the Local tab” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/acp-agents.json#presets.codex.description"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.title\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.installCli\""
           ]
         },
         {
@@ -12783,7 +12323,8 @@
             "reasonEn": "“Detect available ACP agents on SSH remote hosts on the SSH tab with explicit unsupported reasons” involves linked form fields, live state checks, or explicit confirmation that no single structured command should silently bypass; the Agent opens the exact settings section so you can review and adjust visibly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/acp-agents.json#remote.refreshDetection"
+            "source:src/nsh-ui/src/acpStore.ts#remote",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.probing\""
           ]
         },
         {
@@ -12974,7 +12515,8 @@
             "reasonEn": "“Review daily AI collaboration intensity on the top Activity Heatmap” is a visual analytics chart; the Agent opens Data & Maintenance → Call Statistics so you can inspect it directly."
           },
           "evidence": [
-            "source:src/web-ui/src/app/scenes/settings/pages/data/UsageStatisticsSettingsPage.tsx#UsageActivityHeatmap"
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#HEATMAP_HEIGHT",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.activityHeading\""
           ]
         },
         {
@@ -12990,7 +12532,8 @@
             "reasonEn": "“Switch the time window among Last 24 Hours, Today, This Week, This Month (default), or All Time” lets you interactively slice charts and rankings across time windows; the Agent opens Call Statistics for you."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#timeRange.last24Hours"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.range24h\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.rangeMonth\""
           ]
         },
         {
@@ -13006,7 +12549,8 @@
             "reasonEn": "“Automatically match hourly or daily trend granularity to the selected time range” updates automatically alongside your chosen time range in the Call Statistics view; the Agent opens the page for you."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#granularity.hour"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byHour\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byDay\""
           ]
         },
         {
@@ -13022,8 +12566,8 @@
             "reasonEn": "“Inspect total tokens, input/output tokens, request count, cached tokens, and cache-hit rate” presents multi-metric usage summaries visually; the Agent opens Call Statistics directly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#summary.requests",
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#summary.cacheHitRate"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.requests\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.cacheHitRate\""
           ]
         },
         {
@@ -13039,8 +12583,8 @@
             "reasonEn": "“Compare usage across Model and Provider tabs and inspect per-endpoint details” supports interactive tab switching and proportion inspection; the Agent opens Call Statistics for you."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#distributions.byModel",
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#distributions.byEndpoint"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byModel\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byEndpoint\""
           ]
         },
         {
@@ -13056,7 +12600,7 @@
             "reasonEn": "“Filter model, provider, or endpoint usage rows by search keyword” is designed for interactive filtering inside the usage table; the Agent opens Call Statistics for you."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#filter.kind.provider"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.filterRows\""
           ]
         },
         {
@@ -13072,8 +12616,7 @@
             "reasonEn": "“Track Input and Output token volume over time in the stacked bar chart” is best explored visually with bar hover tooltips; the Agent opens Call Statistics for you."
           },
           "evidence": [
-            "command:get_token_usage_statistics",
-            "source:src/web-ui/src/locales/zh-CN/settings/usage.json#trend.legend.cacheRead"
+            "command:get_token_usage_statistics"
           ]
         }
       ],
@@ -13432,7 +12975,6 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.levels.trace",
             "command:get_runtime_logging_info"
           ]
         },
@@ -13452,7 +12994,8 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.sensitiveDiagnostics.label"
+            "source:src/nsh-ui/src/settingsStore.ts#\"app.logging.include_sensitive_diagnostics\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.loggingSensitive\""
           ]
         },
         {
@@ -13468,7 +13011,8 @@
             "reasonEn": "“Inspect the active session log directory path and open the log folder in one click” opens your local OS file manager on the live runtime directory; the Agent opens Logs & Diagnostics directly."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.actions.openFolder"
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.logs.openFolder\"",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.logs.title\""
           ]
         },
         {
@@ -13506,44 +13050,7 @@
             "reasonEn": "“Inspect previous crashes, unclean shutdown notices, and startup or configuration recovery details” displays live startup-recovery findings from this machine; the Agent opens Logs & Diagnostics so you can inspect them."
           },
           "evidence": [
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.previousCrash.title",
-            "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.startupRecovery.title",
             "command:get_startup_native_trace"
-          ]
-        },
-        {
-          "id": "devtools",
-          "titleZh": "仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器",
-          "titleEn": "Development builds only: check desktop DevTools availability and open or close them",
-          "descriptionZh": "专为本地开发调试 OpenBitFun 客户端准备的内部入口，正式发布版客户端默认隐藏该能力，普通日常使用无需关心。",
-          "descriptionEn": "Internal debugging hook available only when running a development build of OpenBitFun; hidden in standard release builds.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器”仅在开发构建宿主中开放交互调试窗口；智能体不会在常规生产环境中误触该入口。",
-            "reasonEn": "“Development builds only: check desktop DevTools availability and open or close them” is available only inside development host builds for interactive window inspection; standard release builds keep it disabled."
-          },
-          "evidence": [
-            "command:debug_devtools_available",
-            "command:debug_open_devtools",
-            "command:debug_close_devtools"
-          ]
-        },
-        {
-          "id": "element-inspector",
-          "titleZh": "仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息",
-          "titleEn": "Development builds only: inspect main-window UI elements and report the selected element",
-          "descriptionZh": "同样仅在开发构建中启用，用于在联调桌面界面时点选主窗口 DOM 元素获取组件定位，正式版不会暴露此调试钩子。",
-          "descriptionEn": "Also restricted to development builds for picking and inspecting main-window DOM elements during UI development; not exposed in release builds.",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息”需要开发者在开发构建主窗口中用鼠标点选目标元素；智能体将交互保留在可见界面。",
-            "reasonEn": "“Development builds only: inspect main-window UI elements and report the selected element” requires clicking a target element directly inside a development-build main window; the Agent keeps the interaction visible."
-          },
-          "evidence": [
-            "command:debug_element_picked",
-            "source:src/web-ui/src/infrastructure/debug/mainWindowInspector.ts#debug_element_picked"
           ]
         }
       ],
@@ -13663,7 +13170,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/tools/visualize/WidgetView.tsx#WidgetView"
+            "source:src/crates/assembly/core/src/agentic/inline_figure.rs#written_figure_uri"
           ]
         },
         {
@@ -13688,7 +13195,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/tools/visualize/CodexFigure.tsx#CodexFigure"
+            "source:src/crates/assembly/core/src/agentic/inline_figure.rs#figure_uri"
           ]
         },
         {
@@ -13713,7 +13220,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/tools/visualize/VisualAnswer.tsx#readPreferences"
+            "source:src/crates/assembly/core/src/agentic/inline_figure.rs#FigureCheckRequest"
           ]
         },
         {
@@ -13738,7 +13245,7 @@
             ]
           },
           "evidence": [
-            "source:src/web-ui/src/tools/visualize/document.ts#parseVisualDocument"
+            "source:src/crates/assembly/core/src/agentic/inline_figure.rs#verify_written_figure"
           ]
         }
       ],
@@ -13831,13 +13338,13 @@
     "agentic": {
       "capabilityId": "feature.ai-assistant"
     },
-    "external_control": {
-      "capabilityId": "setting.tools.desktop-control"
-    },
-    "frontend_workbench": {
-      "capabilityId": "feature.ai-assistant"
-    },
     "obp": {
+      "capabilityId": "feature.remote-connect"
+    },
+    "mesh": {
+      "capabilityId": "feature.remote-connect"
+    },
+    "peer_link": {
       "capabilityId": "feature.remote-connect"
     },
     "remote_connect": {
@@ -13876,6 +13383,12 @@
     "session_policy": {
       "capabilityId": "feature.ai-assistant"
     },
+    "transcript_view": {
+      "capabilityId": "feature.ai-assistant"
+    },
+    "view_model": {
+      "capabilityId": "feature.projects"
+    },
     "session_storage_directory": {
       "capabilityId": "feature.ai-assistant"
     },
@@ -13888,19 +13401,22 @@
     "update": {
       "capabilityId": "setting.application.general"
     },
+    "native_shell": {
+      "capabilityId": "setting.application.general"
+    },
     "miniapp_market": {
       "capabilityId": "feature.miniapps"
     },
     "miniapp_web_host": {
       "capabilityId": "feature.miniapps"
     },
-    "market_image": {
-      "capabilityId": null
-    },
     "acp_client": {
       "capabilityId": "setting.tools.acp"
     },
     "terminal": {
+      "capabilityId": "feature.terminal"
+    },
+    "terminal_profiles": {
       "capabilityId": "feature.terminal"
     },
     "skill": {
@@ -13911,6 +13427,9 @@
     },
     "pages": {
       "capabilityId": "feature.pages"
+    },
+    "review_launch": {
+      "capabilityId": "feature.code-review"
     },
     "review_platform": {
       "capabilityId": "feature.code-review"
@@ -13957,12 +13476,6 @@
     "peer_host_invoke": {
       "capabilityId": "feature.remote-connect"
     },
-    "debug": {
-      "capabilityId": "setting.data.diagnostics"
-    },
-    "appearance": {
-      "capabilityId": "feature.desktop-pet"
-    },
     "diff": {
       "capabilityId": "feature.files-editor"
     },
@@ -13984,13 +13497,7 @@
     "editor_ai": {
       "capabilityId": "feature.ai-assistant"
     },
-    "local_file_download": {
-      "capabilityId": "feature.files-editor"
-    },
     "clipboard_file": {
-      "capabilityId": "feature.files-editor"
-    },
-    "browser_file_drop": {
       "capabilityId": "feature.files-editor"
     },
     "sleep_prevention": {
@@ -14002,9 +13509,6 @@
     "token_usage": {
       "capabilityId": "feature.insights"
     },
-    "miniapp_export": {
-      "capabilityId": "feature.miniapps"
-    },
     "openbitfun_control_host": {
       "capabilityId": null
     },
@@ -14013,9 +13517,6 @@
     },
     "account_identity": {
       "capabilityId": "feature.remote-connect"
-    },
-    "file_drop_preview": {
-      "capabilityId": "feature.files-editor"
     },
     "model_pool": {
       "capabilityId": "setting.ai.models"

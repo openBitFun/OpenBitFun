@@ -4,6 +4,9 @@
 //! the legacy public path.
 
 mod file_name_search;
+// Backend-owned link liveness and reconnect policy (wave 4 remote link).
+#[cfg(feature = "remote-ssh-concrete")]
+pub mod link_supervisor;
 pub mod paths;
 mod product_paths;
 pub mod remote_git;

@@ -87,19 +87,19 @@ cargo test --locked -p openbitfun-product-domains --no-default-features --featur
 ```
 
 For executable MiniApp bridge changes, also run the injected-script behavior
-fixtures (parent/schema validation, tab/window keyboard parity, and observation
-semantics):
+fixtures (parent/schema validation, keyboard event normalization and holds, and
+observation semantics):
 
 ```bash
-pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/agent/miniAppAgentInjectedRuntime.test.ts
+node --test scripts/miniapp-injected-sdk.test.mjs
 ```
 
-For the Regex Playground business actions and the InitMiniApp scaffold, run
-`pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/agent/miniAppAgentBusiness.test.ts src/app/scenes/miniapps/components/MiniAppShell.test.ts`.
-These execute the real app and injected SDK through tab/opaque bridge and Shell
-relay fixtures, checking unsaved drafts, document identity, UI/action parity,
-invalid actions, observation bounds, and legacy hosts/storage. They do not prove
-native window rendering or live remote behavior.
+For the Regex Playground business actions, run
+`node --test scripts/miniapp-shell-presentation.test.mjs`.
+It executes the real app and injected SDK through the MiniApp Shell relay
+fixture, checking that observe/act requests keep unsaved drafts and document
+identity and never persist or reload. It does not prove native window rendering
+or live remote behavior.
 
 These DOM fixtures execute the embedded script template; they do not establish
 native WebView or live remote behavior.
@@ -107,8 +107,8 @@ native WebView or live remote behavior.
 For the injected MiniApp SDK's request-scoped image inheritance and PPT Live input:
 
 ```bash
-pnpm --dir src/web-ui run test:run src/app/scenes/miniapps/miniAppBridgeImages.test.ts
+node --test scripts/miniapp-injected-sdk.test.mjs
 node --test src/crates/contracts/product-domains/src/miniapp/builtin/assets/ppt-live/test/image-input.test.mjs
 ```
 
-Historical GenUI payload and component replay checks live in the [FlowChat history viewer guide](../../../../src/web-ui/src/tools/generative-ui/AGENTS.md).
+The historical GenUI component catalog is generated from `src/shared/generative-ui/library.json`; check it with `node scripts/generate-genui-contract.mjs --check`. Historical OpenUI payload replay lives in the native NSH UI (`src/nsh-ui/src/genui/`).

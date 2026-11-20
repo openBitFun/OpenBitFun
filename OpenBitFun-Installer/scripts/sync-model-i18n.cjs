@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 
 const INSTALLER_ROOT = path.resolve(__dirname, '..');
-const PROJECT_ROOT = path.resolve(INSTALLER_ROOT, '..');
+// Installer-owned source strings (moved from the retired React desktop UI locale catalogs).
+const SOURCES_DIR = path.join(INSTALLER_ROOT, 'src', 'i18n', 'sources');
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -78,7 +79,7 @@ function buildFormatsPatch(formats) {
   };
 }
 
-/** Hardcoded installer-only strings that have no web-ui source key. */
+/** Hardcoded installer-only strings that have no source key in src/i18n/sources. */
 const LITERALS = {
   en: {
     modelNoResults: 'No matching models',
@@ -201,35 +202,15 @@ const LOCALE_MAP = {
 function syncOne(languageTag) {
   const { localeDir, installerLocale } = LOCALE_MAP[languageTag];
 
-  const sourceAiModelPath = path.join(
-    PROJECT_ROOT,
-    'src',
-    'web-ui',
-    'src',
-    'locales',
-    localeDir,
-    'settings',
-    'models.json'
-  );
-  const sourceComponentsPath = path.join(
-    PROJECT_ROOT,
-    'src',
-    'web-ui',
-    'src',
-    'locales',
-    localeDir,
-    'components.json'
-  );
-
+  const sourcePath = path.join(SOURCES_DIR, `${localeDir}.json`);
   const targetPath = path.join(INSTALLER_ROOT, 'src', 'i18n', 'locales', installerLocale);
 
-  const settingsAiModel = readJson(sourceAiModelPath);
-  let components = {};
-  try {
-    components = readJson(sourceComponentsPath);
-  } catch {
-    // optional
+  const source = readJson(sourcePath);
+  const settingsAiModel = source.settingsModels;
+  if (!settingsAiModel || typeof settingsAiModel !== 'object') {
+    throw new Error(`Missing settingsModels in ${sourcePath}`);
   }
+  const components = source.components || {};
   const target = readJson(targetPath);
 
   const patch = buildModelPatch(settingsAiModel, languageTag, components);
@@ -242,7 +223,7 @@ function main() {
   syncOne('en');
   syncOne('zh');
   syncOne('zh-TW');
-  console.log('[sync-model-i18n] Synced installer model i18n from web-ui locales.');
+  console.log('[sync-model-i18n] Synced installer model i18n from src/i18n/sources.');
 }
 
 main();

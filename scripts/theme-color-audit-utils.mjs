@@ -6,7 +6,7 @@ function blendAlphaChannel(channel, alpha, base) {
 }
 
 // CLI theme presets are hex-only. These helpers intentionally do not model CSS
-// rgba/hsl alpha semantics used by the web-ui color-domain audit.
+// rgba/hsl alpha semantics used by the theme color-domain audit.
 export function cliRgbToHex(r, g, b) {
   return `#${[r, g, b].map(value => value.toString(16).padStart(2, '0')).join('')}`;
 }

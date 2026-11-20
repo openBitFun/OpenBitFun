@@ -110,12 +110,21 @@ import {
   type MessageKey,
 } from "../i18n";
 import { peerBusy, peerError, peerReconnecting, peerScope } from "../peerState";
-import { enterPeer, leavePeer, reconnectPeer } from "../peerStore";
+import {
+  enterPeer,
+  leavePeer,
+  meshLinkState,
+  peerTransportLabel,
+  readMeshDevices,
+  reconnectPeer,
+  type MeshDeviceEntry,
+} from "../peerStore";
 import { activeScene, resetForDeviceChange, runStep } from "../state";
 import { forgetTerminals } from "../terminalStore";
 import { fontMono, palette, radii, textLineHeight, textSize, textStyle } from "../theme";
 import { onAccountAuthChanged, openAccountAuthModal } from "../ui/AccountAuthModal";
 import { ObpPairingCard } from "./ObpPairingCard";
+import { UseOnPhonePanel } from "./UseOnPhonePanel";
 import { Icon, type IconName } from "../ui/icons";
 import {
   InsetGroup,
@@ -255,7 +264,11 @@ function readString(record: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
-function readDevice(record: Record<string, unknown>, onlineIds: Set<string>): DeviceRow {
+/**
+ * One directory row. `online` is the host's merge of the account directory and
+ * the live relay presence it holds; this scene does not join a second list.
+ */
+function readDevice(record: Record<string, unknown>): DeviceRow {
   const id = readString(record, ["deviceId", "device_id", "id"]);
   return {
     id,
@@ -278,35 +291,41 @@ function readDevice(record: Record<string, unknown>, onlineIds: Set<string>): De
         "displayName",
         "display_name",
       ]) || undefined,
-    online:
-      record.online === true ||
-      record.is_online === true ||
-      record.isOnline === true ||
-      onlineIds.has(id),
+    online: record.online === true || record.is_online === true || record.isOnline === true,
   };
+}
+
+/** Set when the host's rows carry directory presence only (a host older than the merge). */
+const devicesPresenceNotice = signal("");
+/** This machine's device-mesh list by device id (empty when it runs no mesh). */
+const meshDevicesById = signal<Record<string, MeshDeviceEntry>>({});
+
+/** A device the mesh reaches counts as online even when the relay presence says otherwise. */
+function deviceReachable(device: DeviceRow): boolean {
+  return device.online || meshDevicesById()[device.id]?.reachable === true;
 }
 
 export async function loadDevices(): Promise<void> {
   void loadDevicePreferences();
   void loadLocalDeviceId();
+  void readMeshDevices().then(mesh => {
+    const byId: Record<string, MeshDeviceEntry> = {};
+    for (const entry of mesh.devices ?? []) byId[entry.deviceId] = entry;
+    meshDevicesById.set(byId);
+  });
   await runStep(async () => {
     devicesError.set(null);
-    const [list, online] = await Promise.all([
-      invokeRawCommand<Array<Record<string, unknown>>>("account_list_devices").catch(error => {
-        devicesError.set(error instanceof Error ? error.message : String(error));
-        return [] as Array<Record<string, unknown>>;
-      }),
-      invokeRawCommand<Array<Record<string, unknown>>>("account_online_devices").catch(
-        () => [] as Array<Record<string, unknown>>,
-      ),
-    ]);
-    const onlineIds = new Set(
-      (Array.isArray(online) ? online : []).map(record =>
-        readString(record ?? {}, ["deviceId", "device_id", "id"]),
-      ),
+    const list = await invokeRawCommand<Array<Record<string, unknown>>>("account_list_devices").catch(error => {
+      devicesError.set(error instanceof Error ? error.message : String(error));
+      return [] as Array<Record<string, unknown>>;
+    });
+    const records = (Array.isArray(list) ? list : []).map(record => record ?? {});
+    devicesPresenceNotice.set(
+      records.length > 0 && records.some(record => typeof record.presence !== "string")
+        ? tr("devices.presenceDirectoryOnly")
+        : "",
     );
-    const rows = (Array.isArray(list) ? list : []).map(record => readDevice(record ?? {}, onlineIds));
-    devices.set(rows);
+    devices.set(records.map(record => readDevice(record)));
     devicesLoaded.set(true);
   });
 }
@@ -1095,7 +1114,7 @@ function DispatchSection() {
 function deviceDotKind(device: DeviceRow): StatusDotKind {
   if (connectingDeviceId() === device.id) return "accent";
   if (peerScope()?.deviceId === device.id) return "accent";
-  return device.online ? "success" : "muted";
+  return deviceReachable(device) ? "success" : "muted";
 }
 
 function deviceMenuItems(device: DeviceRow): DropdownMenuItem[] {
@@ -1192,11 +1211,11 @@ function DeviceListRow(props: { device: () => DeviceRow; first: boolean }) {
         </View>
       }
       label={props.device().alias || props.device().name}
-      detail={`${props.device().platform || tr("devices.unknownPlatform")} · ${props.device().online ? tr("devices.online") : tr("devices.offline")} · ${props.device().id}`}
+      detail={`${props.device().platform || tr("devices.unknownPlatform")} · ${deviceReachable(props.device()) ? tr("devices.online") : tr("devices.offline")}${meshDevicesById()[props.device().id] ? ` · ${tr("peer.onMesh")}` : ""} · ${props.device().id}`}
       value={isPeer() ? tr("devices.activePeer") : isLocal() ? tr("devices.thisDevice") : undefined}
       trailing={
         <>
-          <If when={!isPeer() && props.device().online && !isLocal()}>
+          <If when={!isPeer() && deviceReachable(props.device()) && !isLocal()}>
             <Button
               label={
                 connectingDeviceId() === props.device().id ? tr("devices.connectingEllipsis") : tr("common.use")
@@ -1262,6 +1281,20 @@ function PeerModeNote() {
             })
           : tr("devices.drivingIdleHint")}
       </Text>
+      <If when={peerScope()}>
+        {scope => (
+          <Text
+            accessibilityLabel="devices-peer-transport"
+            style={{
+              color: meshLinkState() === "reconnecting" ? palette().warning : palette().textMuted,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.5),
+            }}
+          >
+            {meshLinkState() === "reconnecting" ? tr("peer.linkReconnecting") : peerTransportLabel(scope())}
+          </Text>
+        )}
+      </If>
       <If when={Boolean(peerScope())}>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
           <Button
@@ -2177,7 +2210,11 @@ export function DevicesScene() {
               <InlineBanner tone="warning" message={message()} onDismiss={() => devicesError.set(null)} />
             )}
           </If>
+          <If when={devicesPresenceNotice()}>
+            {message => <InlineBanner tone="info" message={message()} />}
+          </If>
           <DevicesSection />
+          <UseOnPhonePanel />
           <ObpPairingCard />
           <ChannelsSection />
           <DispatchSection />

@@ -1,4 +1,6 @@
 #[cfg(feature = "token-usage-statistics")]
+mod activity;
+#[cfg(feature = "token-usage-statistics")]
 mod request;
 mod service;
 #[cfg(feature = "token-usage-statistics")]
@@ -7,6 +9,12 @@ mod statistics;
 mod time_zone;
 pub mod types;
 
+#[cfg(feature = "token-usage-statistics")]
+pub use activity::{
+    build_usage_activity, ActivityWindow, TokenUsageActivity, TokenUsageActivityRequest,
+    UsageActivityDay, UsageActivityMonthHeader, ACTIVITY_LEVELS, DEFAULT_ACTIVITY_MONTHS,
+    MAX_ACTIVITY_MONTHS,
+};
 #[cfg(feature = "token-usage-statistics")]
 pub use request::{ResolvedTokenUsageStatisticsRequest, TokenUsageStatisticsRequest};
 pub use service::TokenUsageService;

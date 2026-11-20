@@ -7,7 +7,6 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { prepareDataToolsTauriConfig, dataToolsEnvironment } from './data-tools-tauri-build.mjs';
 import { releaseVersion, validateReleaseTag, stage, PLATFORMS } from './data-tools-release.mjs';
-import { prepareTauriConfig } from './desktop-tauri-build.mjs';
 const ROOT = resolve(import.meta.dirname, '..');
 const APP = join(ROOT, 'src/apps/data-tools');
 const TEMP_ROOT = tmpdir();
@@ -48,11 +47,13 @@ test('a Desktop product environment cannot change the migration destination iden
 });
 
 test('Desktop package generation has no Data Tools payload or build hook', () => {
-  const desktop = join(ROOT, 'src/apps/desktop');
-  const output = prepareTauriConfig(join(desktop, 'tauri.conf.json'), { desktopDir: desktop });
-  const config = JSON.parse(readFileSync(output, 'utf8'));
-  assert.ok(!(config.bundle.externalBin || []).some((file) => /data-migrator|data-tools/.test(file)));
-  for (const file of ['scripts/dev.cjs', 'scripts/desktop-tauri-build.mjs', 'src/apps/desktop/src/lib.rs']) {
+  for (const file of [
+    'scripts/desktop-nsh-package-common.mjs',
+    'scripts/package-desktop-nsh-macos.mjs',
+    'scripts/package-desktop-nsh-windows.mjs',
+    'scripts/package-desktop-nsh-linux.mjs',
+    'src/apps/desktop/src/lib.rs',
+  ]) {
     assert.doesNotMatch(readFileSync(join(ROOT, file), 'utf8'), /data-migrator|data-tools|legacy_migration_api/);
   }
 });

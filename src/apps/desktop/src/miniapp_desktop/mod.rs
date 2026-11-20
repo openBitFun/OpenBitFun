@@ -7,6 +7,7 @@ mod sdk;
 mod system_install;
 
 use crate::api::{app_state::AppState, miniapp_api};
+use crate::host::HostHandle;
 use openbitfun_product_domains::miniapp::instances::*;
 use openbitfun_services_core::process_manager::create_command;
 use openbitfun_services_integrations::miniapp::instances::MiniAppInstances;
@@ -14,28 +15,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Listener, Manager};
-
-pub(crate) use openbitfun_miniapp_ipc::launcher::launch_manifest;
-
-/// Old shortcuts may still target the Desktop executable.
-/// Delegate them to the installed lightweight shell before starting any runtime.
-pub(crate) fn run_shell(manifest: std::path::PathBuf) -> Result<(), String> {
-    let record = launcher::read_record(&manifest)?;
-    #[cfg(target_os = "macos")]
-    create_command("/usr/bin/open")
-        .arg("-n")
-        .arg(launcher::runtime_bundle(&record)?)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    #[cfg(not(target_os = "macos"))]
-    create_command(launcher::shell_executable(&record.host_executable)?)
-        .arg("--miniapp-launch")
-        .arg(manifest)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 /// Retain the old Desktop command name for installed clients. Shell commands
 /// are now implemented exclusively by the independent window executable.
@@ -72,47 +51,44 @@ fn host_lock(
         .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn claim_host(
-    background: bool,
+/// The native host's MiniApp host lease, taken without waiting: when another
+/// OpenBitFun host (the Tauri desktop) already owns this profile's MiniApp
+/// windows, the native host leaves them to it and says so on `open`.
+pub(crate) fn try_claim_host_now(
     channel: ipc::HostChannel,
 ) -> Result<Option<std::fs::File>, String> {
     let paths =
         openbitfun_core::infrastructure::try_get_path_manager_arc().map_err(|e| e.to_string())?;
     let owner = host_lock(&paths.user_data_dir(), channel)?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(70);
-    loop {
-        match owner.try_lock() {
-            Ok(()) => return Ok(Some(owner)),
-            Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
-            Err(std::fs::TryLockError::WouldBlock) => {}
-        }
-        if let Ok(bytes) = tokio::fs::read(channel.endpoint_path(&paths.user_data_dir())).await {
-            if let Ok(endpoint) = serde_json::from_slice::<ipc::Endpoint>(&bytes) {
-                if endpoint.protocol_version != MINIAPP_PRESENTATION_PROTOCOL {
-                    return Err("The running OpenBitFun host uses an incompatible MiniApp protocol. Restart the host before opening this version.".into());
-                }
-                if let Ok(Ok(_)) = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    ipc::call(
-                        &endpoint,
-                        if background { "ping" } else { "showMain" },
-                        json!({}),
-                    ),
-                )
-                .await
-                {
-                    eprintln!("An existing OpenBitFun host in the {channel:?} channel accepted this launch; exiting the secondary process");
-                    return Ok(None);
-                }
+    match owner.try_lock() {
+        Ok(()) => Ok(Some(owner)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.to_string()),
+    }
+}
+
+/// Keeps the native host's MiniApp lease for the life of the process.
+pub(crate) struct MiniAppHostLease(#[allow(dead_code)] pub(crate) std::fs::File);
+
+/// Starts MiniApp windows in the native host: the lease, the instance owner
+/// and the local IPC endpoint the lightweight shell connects to.
+pub(crate) fn start_native(app: &HostHandle) {
+    let host = app.native();
+    let channel = host_channel();
+    match try_claim_host_now(channel) {
+        Ok(Some(lease)) => {
+            host.manage(MiniAppHostLease(lease));
+            host.manage(DesktopMiniApps::new(channel));
+            if let Err(error) = install(app) {
+                log::warn!("MiniApp windows are unavailable in the native host: {}", error);
+            } else {
+                log::info!("MiniApp window host started in the native host: channel={:?}", channel);
             }
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(
-                "The existing OpenBitFun host did not become ready; its data was left untouched"
-                    .into(),
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        Ok(None) => log::warn!(
+            "Another OpenBitFun host owns MiniApp windows for this profile; the native host leaves them to it"
+        ),
+        Err(error) => log::warn!("MiniApp host lease unavailable: {}", error),
     }
 }
 
@@ -569,15 +545,12 @@ struct Ticket {
     view: MiniAppView,
 }
 
-fn changed(app: &tauri::AppHandle) {
+fn changed(app: &HostHandle) {
     let snapshot = app.state::<DesktopMiniApps>().instances.snapshot();
     let _ = app.emit_to("main", "miniapp-instances-changed", snapshot);
 }
 
-async fn local_workspace(
-    app: &tauri::AppHandle,
-    path: Option<String>,
-) -> Result<Option<String>, String> {
+async fn local_workspace(app: &HostHandle, path: Option<String>) -> Result<Option<String>, String> {
     if let Some(path) = path.filter(|path| !path.is_empty()) {
         let state = crate::host::State::from(app.state::<AppState>());
         let target =
@@ -593,7 +566,7 @@ async fn local_workspace(
 }
 
 async fn record(
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     app_id: &str,
     workspace_path: Option<String>,
 ) -> Result<launcher::LaunchRecord, String> {
@@ -645,7 +618,7 @@ async fn record(
 }
 
 async fn open_window(
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     record: launcher::LaunchRecord,
     icon_svg: Option<String>,
 ) -> Result<Ticket, String> {
@@ -721,7 +694,7 @@ async fn open_window(
 /// Only macOS has a bundle that can be launched this way; the other platforms
 /// keep their menu entry and fall through to the in-product surface.
 pub(crate) async fn exported_desktop_app(
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     app_id: &str,
 ) -> Result<Option<std::path::PathBuf>, String> {
     #[cfg(not(target_os = "macos"))]
@@ -770,21 +743,30 @@ pub(crate) fn launch_desktop_app(bundle: &std::path::Path) -> Result<(), String>
     }
 }
 
-pub(crate) async fn miniapp_presentation(
-    app: tauri::AppHandle,
-    webview: tauri::Webview,
+/// The native host's MiniApp presentation: independent windows only (the
+/// lightweight shell sidecar, as in Tauri). In-product tabs need the Web UI
+/// tab runtime, which the native UI does not host, so they are refused
+/// explicitly instead of preparing a view nobody renders.
+pub(crate) async fn native_presentation(
+    app: &HostHandle,
     request: PresentationRequest,
 ) -> Result<Value, String> {
-    if webview.label() != "main" {
-        return Err("MiniApp presentation requires the main product surface".into());
+    if app.try_state::<DesktopMiniApps>().is_none() {
+        return Err(crate::host::unsupported_in_native_host(
+            "miniapp_presentation (another OpenBitFun host owns MiniApp windows for this profile; quit it and restart)",
+        ));
     }
-    presentation(&app, request).await
+    if let PresentationRequest::Open { kind, .. } = &request {
+        if *kind != MiniAppViewKind::Window {
+            return Err(crate::host::unsupported_in_native_host(
+                "miniapp_presentation (in-product MiniApp tabs; open the Space in its own window)",
+            ));
+        }
+    }
+    presentation(app, request).await
 }
 
-async fn presentation(
-    app: &tauri::AppHandle,
-    request: PresentationRequest,
-) -> Result<Value, String> {
+async fn presentation(app: &HostHandle, request: PresentationRequest) -> Result<Value, String> {
     let host = app.state::<DesktopMiniApps>();
     let result = match request {
         PresentationRequest::Snapshot => json!(host.instances.snapshot()),
@@ -884,11 +866,7 @@ async fn presentation(
 
 /// Hold launches so a new view cannot attach between the last close
 /// and cleanup. A late close from a transfer source cannot stop its destination.
-async fn close_view(
-    app: &tauri::AppHandle,
-    instance_id: &str,
-    view_id: &str,
-) -> Result<(), String> {
+async fn close_view(app: &HostHandle, instance_id: &str, view_id: &str) -> Result<(), String> {
     let host = app.state::<DesktopMiniApps>();
     let _guard = host.launches.lock().await;
     if host.instances.detach(instance_id, view_id).is_some() {
@@ -899,7 +877,7 @@ async fn close_view(
 
 /// Serialize accepted shell starts before stopping their app-owned work. Tab
 /// starts are drained by the explicit frontend close path before it detaches.
-async fn stop_instance(app: &tauri::AppHandle, instance_id: &str) -> Result<(), String> {
+async fn stop_instance(app: &HostHandle, instance_id: &str) -> Result<(), String> {
     let host = app.state::<DesktopMiniApps>();
     let Ok(instance) = host.instances.get(instance_id) else {
         return Ok(());
@@ -950,13 +928,13 @@ fn string(value: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Missing MiniApp {key}"))
 }
 
-async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result<Value, String> {
+async fn dispatch(app: &HostHandle, method: &str, params: Value) -> Result<Value, String> {
     let host = app.state::<DesktopMiniApps>();
     if method == "ping" {
         return Ok(json!({"hostEpoch":host.instances.snapshot().host_epoch}));
     }
     if method == "showMain" {
-        crate::handle_secondary_launch(app);
+        crate::handle_secondary_launch_host(app);
         return Ok(Value::Null);
     }
     if method == "open" {
@@ -1152,7 +1130,7 @@ async fn dispatch(app: &tauri::AppHandle, method: &str, params: Value) -> Result
                 instance.workspace_path,
                 MiniAppViewKind::Tab,
             )?;
-            crate::handle_secondary_launch(app);
+            crate::handle_secondary_launch_host(app);
             changed(app);
             Ok(json!(Ticket { instance, view }))
         }
@@ -1258,7 +1236,7 @@ mod tests {
 
     #[test]
     fn the_agent_bridge_attaches_to_a_ready_window_that_advertised_it() {
-        let mut host = DesktopMiniApps::new(ipc::HostChannel::Development);
+        let host = DesktopMiniApps::new(ipc::HostChannel::Development);
         let (instance, view) = host
             .instances
             .prepare("demo".into(), None, MiniAppViewKind::Window)
@@ -1603,7 +1581,7 @@ mod tests {
 }
 
 async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    app: tauri::AppHandle,
+    app: HostHandle,
     mut stream: S,
     endpoint: ipc::Endpoint,
 ) {
@@ -1621,7 +1599,7 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     let _ = ipc::write(&mut stream, &response).await;
 }
 
-pub(crate) fn install(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn install(app: &HostHandle) -> Result<(), String> {
     let host = app.state::<DesktopMiniApps>();
     let dir = tempfile::Builder::new()
         .prefix("obf-miniapp-")
@@ -1659,10 +1637,10 @@ pub(crate) fn install(app: &tauri::AppHandle) -> Result<(), String> {
     *host.endpoint.lock().unwrap_or_else(|p| p.into_inner()) = Some(endpoint.clone());
     *host.socket_dir.lock().unwrap_or_else(|p| p.into_inner()) = Some(dir);
     let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         #[cfg(unix)]
         while let Ok((stream, _)) = listener.accept().await {
-            tauri::async_runtime::spawn(serve(handle.clone(), stream, endpoint.clone()));
+            tokio::spawn(serve(handle.clone(), stream, endpoint.clone()));
         }
         #[cfg(windows)]
         {
@@ -1677,19 +1655,17 @@ pub(crate) fn install(app: &tauri::AppHandle) -> Result<(), String> {
                     Ok(next) => next,
                     Err(_) => break,
                 };
-                tauri::async_runtime::spawn(serve(handle.clone(), server, endpoint.clone()));
+                tokio::spawn(serve(handle.clone(), server, endpoint.clone()));
                 server = next;
             }
         }
     });
     let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             let state = handle.state::<DesktopMiniApps>();
-            if handle.get_webview("main").is_some() {
-                state.instances.renew_committed_views(MiniAppViewKind::Tab);
-            }
+            // The native UI renders no MiniApp tabs, so tab views are never renewed.
             {
                 let _guard = state.launches.lock().await;
                 // Expired/crashed shells and failed initial presentations must
@@ -1717,7 +1693,7 @@ pub(crate) fn install(app: &tauri::AppHandle) -> Result<(), String> {
     });
     let handle = app.clone();
     app.listen("miniapp-deleted", move |event| {
-        let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {
+        let Ok(payload) = serde_json::from_str::<Value>(event) else {
             return;
         };
         let Some(app_id) = payload["id"].as_str() else {

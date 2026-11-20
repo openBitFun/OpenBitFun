@@ -41,9 +41,6 @@ const LEGACY_APPLICATION_ASSETS = [
   'src/apps/desktop/icons/Square284x284Logo.png',
   'src/apps/desktop/icons/Square310x310Logo.png',
   'src/apps/desktop/icons/StoreLogo.png',
-  'src/web-ui/public/Logo-ICON.png',
-  'src/web-ui/public/Logo-ICON-128.png',
-  'src/web-ui/public/OpenBitFun-Logo.png',
   'src/mobile-web/src/assets/Logo-ICON.png',
   'OpenBitFun-Installer/src/Logo-ICON.png',
   'OpenBitFun-Installer/src-tauri/icons/icon.png',
@@ -214,7 +211,6 @@ async function generateBrandAssets() {
   const applicationIcon = await createApplicationIcon(applicationMark);
   const applicationIconLarge = await resizePng(applicationIcon, APP_ICON_SIZE);
   const darkMarkSmall = await renderMark(svg, 128, '#202020');
-  const lightMarkSmall = await renderMark(svg, 128, '#e8e8e8');
   const iconCache = new Map([
     [BRAND_SIZE, Promise.resolve(applicationIcon)],
     [APP_ICON_SIZE, Promise.resolve(applicationIconLarge)],
@@ -258,14 +254,6 @@ async function generateBrandAssets() {
 
   await writePng(outputPath('src', 'crates', 'services', 'miniapp-market-service', 'src', 'email', 'app-icon.png'), applicationIcon);
 
-  const webBrandDir = outputPath('src', 'web-ui', 'public', 'brand');
-  await writePng(path.join(webBrandDir, 'openbitfun-mark-dark.png'), darkMark);
-  await writePng(path.join(webBrandDir, 'openbitfun-mark-light.png'), lightMark);
-  await writePng(path.join(webBrandDir, 'openbitfun-mark-dark-128.png'), darkMarkSmall);
-  await writePng(path.join(webBrandDir, 'openbitfun-mark-light-128.png'), lightMarkSmall);
-  await writePng(path.join(webBrandDir, 'openbitfun-app-icon.png'), applicationIcon);
-  await writeFile(path.join(webBrandDir, 'openbitfun-mark.svg'), createReusableWebMark(svg), 'utf8');
-
   const desktopIconDir = outputPath('src', 'apps', 'desktop', 'icons');
   await writePng(path.join(desktopIconDir, 'openbitfun-app-icon.png'), applicationIconLarge);
   await writePng(path.join(desktopIconDir, 'openbitfun-app-icon.ico'), windowsIcon);
@@ -299,7 +287,7 @@ async function generateBrandAssets() {
   await writePng(path.join(installerIconDir, 'openbitfun-app-icon.ico'), windowsIcon);
   await writePng(path.join(installerIconDir, 'openbitfun-app-icon.icns'), macosFallback);
 
-  for (const directory of [webBrandDir, installerBrandDir,
+  for (const directory of [installerBrandDir,
     outputPath('src', 'mobile-web', 'public', 'brand'),
     outputPath('src', 'apps', 'relay-server', 'static', 'brand')]) {
     for (const size of [16, 32]) {

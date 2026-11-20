@@ -89,6 +89,7 @@ RUN --mount=type=cache,id=openbitfun-relay-cargo-registry,target=/usr/local/carg
     && printf 'fn main() {}\n' > src/main.rs \
     && printf 'pub use openbitfun_relay_service::*;\n' > src/lib.rs \
     && printf 'fn main() {}\n' > src/bin/relay_admin.rs \
+    && printf 'fn main() {}\n' > src/bin/mesh_issuer.rs \
     && printf '// placeholder\n' > ../../crates/services/relay-service/src/lib.rs \
     && printf '// placeholder\n' > ../../crates/services/page-function-runtime/src/lib.rs \
     && { [ -n "${CARGO_BUILD_JOBS:-}" ] || unset CARGO_BUILD_JOBS; } \
@@ -108,23 +109,27 @@ RUN --mount=type=cache,id=openbitfun-relay-cargo-registry,target=/usr/local/carg
     --mount=type=cache,id=openbitfun-relay-target,target=/build/src/apps/relay-server/target,sharing=locked \
     rm -f target/release/openbitfun-relay-server \
         target/release/relay-admin \
+        target/release/openbitfun-mesh-issuer \
         target/release/deps/*openbitfun_relay_service* \
         target/release/deps/*openbitfun_page_function_runtime* \
         target/release/deps/*openbitfun_relay_server* \
         target/release/deps/*relay_admin* \
+        target/release/deps/*mesh_issuer* \
     && rm -rf target/release/.fingerprint/openbitfun-relay-service-* \
         target/release/.fingerprint/openbitfun-page-function-runtime-* \
         target/release/.fingerprint/openbitfun-relay-server-* \
         target/release/.fingerprint/relay-admin-* \
+        target/release/.fingerprint/openbitfun-mesh-issuer-* \
     && touch ../../crates/services/relay-service/src/lib.rs \
         ../../crates/services/page-function-runtime/src/lib.rs \
         src/lib.rs \
         src/main.rs \
         src/bin/relay_admin.rs \
+        src/bin/mesh_issuer.rs \
     && { [ -n "${CARGO_BUILD_JOBS:-}" ] || unset CARGO_BUILD_JOBS; } \
     && cargo build --release \
-    && cp target/release/openbitfun-relay-server target/release/relay-admin /out/ \
-    && (strip /out/openbitfun-relay-server /out/relay-admin || true)
+    && cp target/release/openbitfun-relay-server target/release/relay-admin target/release/openbitfun-mesh-issuer /out/ \
+    && (strip /out/openbitfun-relay-server /out/relay-admin /out/openbitfun-mesh-issuer || true)
 
 FROM debian:bookworm-slim
 

@@ -12,8 +12,9 @@ const SOURCE_GROUPS = Object.freeze({
     'design-system/packages/ui/src',
     'packages/flow-chat-presentation/src',
   ],
-  'web-ui': [
-    'src/web-ui/src',
+  // Product web surfaces outside the design system. The React desktop UI (src/web-ui)
+  // was retired; the native desktop client (src/nsh-ui) styles through NSH, not CSS.
+  products: [
     'src/mobile-web/src',
     'OpenBitFun-Installer/src',
   ],
@@ -27,12 +28,6 @@ const SELF_AUDIT_FILES = new Set([
   'scripts/audit-typography-tokens.mjs',
   'scripts/audit-typography-tokens.test.mjs',
 ]);
-const WEB_FONT_PROFILE_STYLE_ROOT = 'src/web-ui/src/font-profiles/';
-const WEB_FONT_PROFILE_STACK_PROPERTIES = new Set([
-  '--openbitfun-font-family-sans',
-  '--openbitfun-font-family-control',
-  '--openbitfun-font-family-mono',
-]);
 
 const SEMANTIC_ROLE_COMPONENT_STYLE_ROOT = 'design-system/packages/ui/src/';
 const SEMANTIC_ROLE_COMPONENT_STYLE_EXCEPTIONS = new Set([
@@ -43,41 +38,20 @@ const SEMANTIC_ROLE_COMPONENT_STYLE_EXCEPTIONS = new Set([
 
 const SEMANTIC_ROLE_PRODUCT_STYLE_ROOTS = [
   'packages/flow-chat-presentation/src/',
-  'src/web-ui/src/',
   'src/mobile-web/src/',
   'OpenBitFun-Installer/src/',
   'design-system/apps/design-lab/src/',
 ];
 
 const COMPLETE_PRODUCT_STYLE_ROOTS = [
-  'src/web-ui/src/',
   'src/mobile-web/src/',
   'OpenBitFun-Installer/src/',
-];
-
-// These files are intentionally vendored style resources. Their typography is
-// part of the upstream renderer contract and is scoped by the GenUI host before
-// it reaches the product surface. Keep this allowlist narrow: product-owned
-// GenUI styles continue to use the canonical OpenBitFun type roles below.
-const VENDORED_TYPOGRAPHY_OWNER_ROOTS = [
-  'src/web-ui/src/tools/generative-ui/components/openui/',
-  'src/web-ui/src/tools/generative-ui/components/vendor/',
 ];
 
 const TYPOGRAPHY_PROPERTIES = new Set([
   'font',
   'fontFamily',
   'fontSize',
-  'fontWeight',
-  'letterSpacing',
-  'lineHeight',
-]);
-
-const APPEARANCE_STYLE_TYPOGRAPHY_PROPERTIES = new Set([
-  'fontFamily',
-  'fontSize',
-  'fontStyle',
-  'fontVariantNumeric',
   'fontWeight',
   'letterSpacing',
   'lineHeight',
@@ -152,103 +126,10 @@ const RETIRED_PATTERNS = Object.freeze([
   },
 ]);
 
-const FORBIDDEN_PATHS = Object.freeze([
-  'src/web-ui/src/flow_chat/_typography.scss',
-]);
+// Retired typography owner files that must not come back (none outside retired trees).
+const FORBIDDEN_PATHS = Object.freeze([]);
 
 const FILE_CONTRACTS = Object.freeze([
-  {
-    path: 'src/web-ui/src/infrastructure/appearance/builtins/AppearancePalette.ts',
-    forbidden: [
-      {
-        code: 'appearance-owns-typography',
-        pattern: /\btypography\s*\??\s*:/,
-        message: 'AppearancePalette must not own typography.',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/infrastructure/appearance/types/index.ts',
-    forbidden: [
-      {
-        code: 'appearance-font-family-contract-reintroduced',
-        pattern: /\b(?:AppearanceFontFamily(?:Literal|Value)|fontFamilies)\b/,
-        message: 'Appearance packages must not define a parallel font-family token contract.',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/infrastructure/appearance/compiler/AppearanceCompiler.ts',
-    forbidden: [
-      {
-        code: 'appearance-compiler-typography-reintroduced',
-        pattern: /\b(?:fontFamily|fontSize|fontWeight|fontVariantNumeric|lineHeight|letterSpacing)\b|(?:^|\s)fontStyle\s*:/m,
-        message: 'AppearanceCompiler must not compile typography properties.',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/infrastructure/appearance/schema/AppearancePackageValidator.ts',
-    forbidden: [
-      {
-        code: 'appearance-validator-typography-reintroduced',
-        pattern: /\b(?:fontFamilies|fontFamily|fontSize|fontWeight|fontStyle|fontVariantNumeric|lineHeight|letterSpacing)\b/,
-        message: 'Appearance package validation must not accept typography properties or globals.',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/infrastructure/appearance/appearancePropertyProfiles.ts',
-    forbidden: [
-      {
-        code: 'appearance-profile-typography-reintroduced',
-        pattern: /['"](?:fontFamily|fontSize|fontWeight|fontStyle|fontVariantNumeric|lineHeight|letterSpacing)['"]/,
-        message: 'Appearance property profiles must not expose typography properties.',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/infrastructure/appearance/builtins/composeAppearancePackage.ts',
-    forbidden: [
-      {
-        code: 'appearance-font-global-merge-reintroduced',
-        pattern: /\bfontFamilies\b/,
-        message: 'Appearance package composition must not merge font-family globals.',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/infrastructure/font-preference/types/index.ts',
-    forbidden: [
-      {
-        code: 'flowchat-font-preference-reintroduced',
-        pattern: /\bflowChat\s*:/,
-        message: 'FontPreference must not expose a FlowChat-specific font scale.',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/infrastructure/font-preference/core/FontPreferenceService.ts',
-    required: [
-      {
-        code: 'canonical-font-runtime-missing',
-        pattern: /setProperty\(`--openbitfun-font-size-\$\{key\}`/,
-        message: 'Global font preference must override canonical --openbitfun-font-size-* primitives.',
-      },
-    ],
-    forbidden: [
-      {
-        code: 'appearance-font-runtime-reintroduced',
-        pattern: /--openbitfun-appearance-token-(?:flowchat-)?font/,
-        message: 'FontPreferenceService must not write Appearance or FlowChat font variables.',
-      },
-      {
-        code: 'flowchat-font-runtime-reintroduced',
-        pattern: /\bflowChat\b/,
-        message: 'FontPreferenceService must not own a FlowChat-specific font preference.',
-      },
-    ],
-  },
   {
     path: 'src/crates/assembly/core/src/service/config/types.rs',
     forbidden: [
@@ -372,42 +253,6 @@ function normalizeCssValue(value) {
     .trim();
 }
 
-function cssAtRuleRanges(source, atRulePattern) {
-  const ranges = [];
-  const pattern = new RegExp(`${atRulePattern}\\s*\\{`, 'gi');
-  for (const match of source.matchAll(pattern)) {
-    const openBrace = (match.index ?? 0) + match[0].lastIndexOf('{');
-    let depth = 1;
-    for (let index = openBrace + 1; index < source.length; index += 1) {
-      if (source[index] === '{') depth += 1;
-      if (source[index] === '}') depth -= 1;
-      if (depth === 0) {
-        ranges.push([openBrace, index]);
-        break;
-      }
-    }
-  }
-  return ranges;
-}
-
-function isBuildOwnedWebFontDeclaration(relativePath, source, offset, property, customProperty) {
-  if (!normalizePath(relativePath).startsWith(WEB_FONT_PROFILE_STYLE_ROOT)) return false;
-
-  if (customProperty) {
-    return property === 'fontFamily'
-      && WEB_FONT_PROFILE_STACK_PROPERTIES.has(customProperty.toLowerCase());
-  }
-
-  if (property !== 'fontFamily' && property !== 'fontWeight') return false;
-  return cssAtRuleRanges(source, '@font-face').some(([start, end]) => (
-    offset >= start && offset <= end
-  ));
-}
-
-function hasVendoredTypographyOwner(relativePath) {
-  return VENDORED_TYPOGRAPHY_OWNER_ROOTS.some(root => relativePath.startsWith(root));
-}
-
 function isStructuralZero(property, value) {
   return (property === 'fontSize' || property === 'lineHeight') && /^0(?:\.0+)?$/.test(value);
 }
@@ -438,7 +283,6 @@ function auditCssDeclarations(text, relativePath) {
     // are still caught because they contain no interpolation marker.
     if (value.includes('${')) continue;
     if (isCanonicalTypographyValue(property, value)) continue;
-    if (isBuildOwnedWebFontDeclaration(relativePath, source, match.index ?? 0, property)) continue;
     if (hasLocalTypographyException(lines, line)) continue;
 
     issues.push(createIssue(
@@ -469,13 +313,6 @@ function auditCssDeclarations(text, relativePath) {
     if (
       isCanonicalTypographyValue(property, value)
       || /^var\(--_[a-z0-9-]+\)$/i.test(normalizedValue)
-      || isBuildOwnedWebFontDeclaration(
-        relativePath,
-        source,
-        match.index ?? 0,
-        property,
-        customProperty,
-      )
       || hasLocalTypographyException(lines, line)
     ) {
       continue;
@@ -667,8 +504,6 @@ function auditRetiredReferences(text, relativePath) {
 }
 
 function requiresSemanticRoleConsumption(relativePath) {
-  if (relativePath.startsWith(WEB_FONT_PROFILE_STYLE_ROOT)) return false;
-
   return (
     relativePath.startsWith(SEMANTIC_ROLE_COMPONENT_STYLE_ROOT)
     && relativePath.endsWith('.module.css')
@@ -722,7 +557,6 @@ export function auditTypographyText(text, relativePath, options = {}) {
   const issues = auditRetiredReferences(text, normalizedPath);
 
   if (options.retiredOnly) return issues;
-  if (hasVendoredTypographyOwner(normalizedPath)) return issues;
   if (STYLE_EXTENSIONS.has(extension) && productionSource) {
     issues.push(...auditCssDeclarations(text, normalizedPath));
     issues.push(...auditSemanticRoleConsumption(text, normalizedPath));
@@ -783,34 +617,6 @@ export function auditTypographyFileContractText(text, relativePath) {
     }
   }
 
-  if (normalizedPath === 'src/web-ui/src/infrastructure/appearance/types/index.ts') {
-    const sourceFile = ts.createSourceFile(
-      normalizedPath,
-      text,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    const appearanceStyle = sourceFile.statements.find(statement => (
-      ts.isInterfaceDeclaration(statement)
-      && statement.name.text === 'AppearanceStyle'
-    ));
-    if (appearanceStyle && ts.isInterfaceDeclaration(appearanceStyle)) {
-      for (const member of appearanceStyle.members) {
-        const property = propertyNameText(member.name);
-        if (!property || !APPEARANCE_STYLE_TYPOGRAPHY_PROPERTIES.has(property)) continue;
-        const start = member.getStart(sourceFile);
-        const { line } = sourceFile.getLineAndCharacterOfPosition(start);
-        issues.push(createIssue(
-          normalizedPath,
-          line + 1,
-          'appearance-style-typography-reintroduced',
-          'AppearanceStyle must not expose typography properties.',
-          member.getText(sourceFile),
-        ));
-      }
-    }
-  }
   return issues;
 }
 
@@ -853,12 +659,12 @@ function auditFileContracts(repositoryRoot, scope) {
 export function auditTypographyRepository(options = {}) {
   const repositoryRoot = path.resolve(options.repositoryRoot ?? DEFAULT_REPOSITORY_ROOT);
   const scope = options.scope ?? 'all';
-  if (!['all', 'design-system', 'web-ui'].includes(scope)) {
+  if (!['all', 'design-system', 'products'].includes(scope)) {
     throw new TypeError(`Unknown typography audit scope: ${scope}`);
   }
 
   const sourceRoots = scope === 'all'
-    ? [...SOURCE_GROUPS['design-system'], ...SOURCE_GROUPS['web-ui']]
+    ? [...SOURCE_GROUPS['design-system'], ...SOURCE_GROUPS.products]
     : SOURCE_GROUPS[scope];
   const issues = [];
 

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { prepareMiniAppShell, SHELL_NAME } from './prepare-miniapp-shell.mjs';
-import { prepareTauriConfig } from './desktop-tauri-build.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 
@@ -129,17 +128,16 @@ test('empty and oversized sidecars fail before staging a system launcher', (t) =
   }
 });
 
-test('Desktop packages the shell through externalBin for native signing and sibling placement', (t) => {
-  const root = fixture(t);
-  const desktopDir = join(root, 'src/apps/desktop');
-  const base = join(desktopDir, 'tauri.conf.json');
-  mkdirSync(desktopDir, { recursive: true });
-  writeFileSync(base, JSON.stringify({ bundle: { resources: {}, externalBin: ['other-sidecar'] } }));
-  const sidecarBase = join(desktopDir, 'gen/miniapp-shell', SHELL_NAME);
-  const config = JSON.parse(readFileSync(prepareTauriConfig(base, {
-    desktopDir, miniappShell: { sidecarBase },
-  }), 'utf8'));
-  assert.deepEqual(config.bundle.externalBin, ['other-sidecar', `gen/miniapp-shell/${SHELL_NAME}`]);
+test('the native desktop packages place the shell next to the runner', () => {
+  // The backend launches the shell from beside its own executable
+  // (`miniapp_desktop::launcher`); the release step signs it with the runner.
+  const mac = readFileSync(join(ROOT, 'scripts/package-desktop-nsh-macos.mjs'), 'utf8');
+  assert.match(mac, /"MacOS\/openbitfun-miniapp-shell"/);
+  for (const platform of ['windows', 'linux']) {
+    const source = readFileSync(join(ROOT, `scripts/package-desktop-nsh-${platform}.mjs`), 'utf8');
+    assert.match(source, /miniAppShellBinary\(options\)/, platform);
+    assert.match(source, /join\(app, "openbitfun-miniapp-shell(?:\.exe)?"\)/, platform);
+  }
 });
 
 test('the standalone shell dependency graph cannot link product runtime owners', () => {

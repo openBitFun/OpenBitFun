@@ -40,6 +40,66 @@ pub enum AgentSource {
     External,
 }
 
+impl AgentSource {
+    /// A user- or project-level definition this product owns.
+    pub fn is_custom(self) -> bool {
+        matches!(self, Self::Project | Self::User)
+    }
+
+    /// What a client may do with a definition from this source. Built-in and
+    /// external agents are configured, never edited or deleted; custom ones are
+    /// editable only when their files live on this host (not a remote workspace).
+    pub fn mutability(self, local_workspace: bool) -> AgentMutability {
+        let mutable = self.is_custom() && local_workspace;
+        AgentMutability {
+            can_edit: mutable,
+            can_delete: mutable,
+        }
+    }
+}
+
+/// Capability flags carried in agent list DTOs (logic batch 4), so clients do
+/// not derive them from `source` and the workspace kind themselves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMutability {
+    #[serde(default)]
+    pub can_edit: bool,
+    #[serde(default)]
+    pub can_delete: bool,
+}
+
+#[cfg(test)]
+mod agent_mutability_tests {
+    use super::*;
+
+    #[test]
+    fn only_local_custom_agents_are_mutable() {
+        for source in [AgentSource::User, AgentSource::Project] {
+            assert_eq!(
+                source.mutability(true),
+                AgentMutability {
+                    can_edit: true,
+                    can_delete: true
+                }
+            );
+            assert_eq!(source.mutability(false), AgentMutability::default());
+        }
+        for source in [AgentSource::Builtin, AgentSource::External] {
+            assert_eq!(source.mutability(true), AgentMutability::default());
+        }
+        let json = serde_json::to_value(AgentSource::User.mutability(true)).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "canEdit": true, "canDelete": true })
+        );
+        // An older host's row without the flags reads as not mutable.
+        let legacy: AgentMutability =
+            serde_json::from_value(serde_json::json!({})).expect("legacy");
+        assert_eq!(legacy, AgentMutability::default());
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentToolPolicy {
     pub allowed_tools: Vec<String>,

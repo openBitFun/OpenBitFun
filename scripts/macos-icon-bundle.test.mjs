@@ -8,7 +8,6 @@ import test from 'node:test';
 import sharp from 'sharp';
 import { COMPOSER_ICON, ROOT, macosSourceDigest, readMacosFallback } from './macos-icon-assets.mjs';
 import { requireModernIconTools, verifyMacosIconBundle } from './macos-icon-bundle.mjs';
-import { prepareTauriConfig } from './desktop-tauri-build.mjs';
 
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const run = (command, args, options = {}) => execFileSync(command, args, {
@@ -68,38 +67,34 @@ test('Windows autocrlf checkout preserves the committed macOS icon source digest
   }
 });
 
-test('CLI is locked and macOS overlays preserve the same dev/legacy icon', () => {
+// The Installer is the remaining Tauri bundle with the OpenBitFun icon; the
+// desktop ships as the native app, which copies the committed legacy ICNS.
+const TAURI_ICON_APP = 'OpenBitFun-Installer/src-tauri';
+
+test('CLI is locked and the Installer macOS overlay preserves the same legacy icon', () => {
   for (const packagePath of ['package.json', 'OpenBitFun-Installer/package.json']) {
     const manifest = join(ROOT, packagePath);
     const installed = createRequire(manifest)('@tauri-apps/cli/package.json').version;
     assert.equal(json(manifest).devDependencies['@tauri-apps/cli'], installed,
       `${packagePath} must pin the exact Tauri CLI used by its build`);
   }
-  for (const app of ['src/apps/desktop', 'OpenBitFun-Installer/src-tauri']) {
-    const directory = join(ROOT, app);
-    const base = json(join(directory, 'tauri.conf.json'));
-    const mac = json(join(directory, 'tauri.macos.conf.json'));
-    assert.deepEqual(mac.bundle.icon.filter(icon => !icon.endsWith('.icon')), base.bundle.icon);
-    assert.equal(resolve(directory, mac.bundle.icon.find(icon => icon.endsWith('.icon'))), COMPOSER_ICON);
-    assert.match(mac.build.beforeBundleCommand, /check:macos-icons/);
-  }
-  assert.equal(json(join(ROOT, 'src/apps/desktop/tauri.dev.conf.json')).bundle.icon, undefined);
+  const directory = join(ROOT, TAURI_ICON_APP);
+  const base = json(join(directory, 'tauri.conf.json'));
+  const mac = json(join(directory, 'tauri.macos.conf.json'));
+  assert.deepEqual(mac.bundle.icon.filter(icon => !icon.endsWith('.icon')), base.bundle.icon);
+  assert.equal(resolve(directory, mac.bundle.icon.find(icon => icon.endsWith('.icon'))), COMPOSER_ICON);
+  assert.match(mac.build.beforeBundleCommand, /check:macos-icons/);
 });
 
-test('generated release config cannot overwrite platform icon selection', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'openbitfun-icon-config-'));
-  const updaterEnabled = process.env.OPENBITFUN_ENABLE_UPDATER_ARTIFACTS;
-  process.env.OPENBITFUN_ENABLE_UPDATER_ARTIFACTS = 'false';
-  try {
-    const configPath = join(directory, 'tauri.conf.json');
-    writeFileSync(configPath, JSON.stringify({ bundle: { icon: ['legacy.icns', 'windows.ico'] } }));
-    const generated = prepareTauriConfig(configPath, { desktopDir: directory });
-    assert.equal(json(generated).bundle.icon, undefined);
-  } finally {
-    if (updaterEnabled === undefined) delete process.env.OPENBITFUN_ENABLE_UPDATER_ARTIFACTS;
-    else process.env.OPENBITFUN_ENABLE_UPDATER_ARTIFACTS = updaterEnabled;
-    rmSync(directory, { recursive: true, force: true });
-  }
+test('the native desktop bundle uses the committed legacy ICNS export', () => {
+  const packaging = readFileSync(join(ROOT, 'scripts/package-desktop-nsh-macos.mjs'), 'utf8');
+  const common = readFileSync(join(ROOT, 'scripts/desktop-nsh-package-common.mjs'), 'utf8');
+  // A product definition may declare its own icons; the default product uses the committed export.
+  assert.match(packaging, /\[productIcon\(identity, "macos"\), "AppIcon\.icns"\]/);
+  assert.match(common, /macos: "icns"/);
+  assert.match(common, /src\/apps\/desktop\/icons\/openbitfun-app-icon\.\$\{extension\}/);
+  assert.match(packaging, /<key>CFBundleIconFile<\/key><string>AppIcon<\/string>/);
+  assert.deepEqual(readFileSync(join(ROOT, 'src/apps/desktop/icons/openbitfun-app-icon.icns')), readMacosFallback());
 });
 
 test('missing, old, and unparseable actool fail instead of silently dropping modern icons', () => {
@@ -186,7 +181,7 @@ function bundleFixture(modern) {
     // Bundle a real Mach-O without building/launching the application. This
     // exercises the locked Tauri bundler and Apple asset tools, not Dock UI.
     copyFileSync('/usr/bin/true', join(directory, 'target/release/icon-probe'));
-    const desktop = join(ROOT, 'src/apps/desktop');
+    const desktop = join(ROOT, TAURI_ICON_APP);
     const selected = json(join(desktop, modern ? 'tauri.macos.conf.json' : 'tauri.conf.json'));
     writeFileSync(join(directory, 'tauri.conf.json'), JSON.stringify({
       productName: 'Icon Probe', version: '0.1.0', identifier: 'com.openbitfun.iconprobe',

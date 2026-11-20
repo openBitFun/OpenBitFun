@@ -16,6 +16,7 @@
 | `miniapp-market-service` | MiniApp market 的具体 SQLite、artifact 存储、GitHub OAuth、包校验和 HTTP 行为 | [README.md](miniapp-market-service/README.md) |
 | `skin-market-service` | Skin market 的具体 SQLite、artifact 存储、Appearance 包校验、审核和 HTTP 行为 | [README.md](skin-market-service/README.md) |
 | `relay-service` | standalone 与 embedded 宿主共享的 Remote Connect relay 状态、存储及 HTTP/WebSocket 路由 | [AGENTS.md](relay-service/AGENTS.md) |
+| `mesh`（`openbitfun-mesh-service`） | 设备 mesh：EasyTier `easytier-core` sidecar 的监管（无 TUN、隐藏子进程）、基于 `easytier-cli` 的状态、mesh 凭据的线上结构，以及 account-device 握手证明 | [AGENTS.md](mesh/AGENTS.md) |
 | `page-function-runtime` | OpenBitFun Pages 嵌入式 JS Page Function runtime（rquickjs） | [AGENTS.md](page-function-runtime/AGENTS.md) |
 | `terminal` | PTY、shell integration 与 terminal session infrastructure | [AGENTS.md](terminal/AGENTS.md) |
 

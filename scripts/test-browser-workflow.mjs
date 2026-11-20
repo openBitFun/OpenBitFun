@@ -1,14 +1,11 @@
 // Disposable Chromium -> production ControlHub -> DOM/ref/readiness/result contracts.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { launchChrome } from './headless-chrome-cdp.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const requireE2e = createRequire(new URL('../tests/e2e/package.json', import.meta.url));
-const requireWdio = createRequire(requireE2e.resolve('@wdio/cli'));
-const puppeteer = requireWdio('puppeteer-core');
 let pageRequests = 0;
 const server = createServer((request, response) => {
   if (request.url === '/api') {
@@ -31,30 +28,15 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
 let otherBrowser;
 async function closeFixtureBrowser(instance) {
-  if (!instance) return;
-  const child = instance.process();
-  try {
-    await instance.close();
-  } finally {
-    // Chrome crash/update helpers can inherit stderr after the browser exits.
-    // Release only our pipes; those unrelated helpers do not keep this test alive.
-    child?.stdin?.destroy();
-    child?.stdout?.destroy();
-    child?.stderr?.destroy();
-  }
+  // `Browser.close` also releases the pipes that Chrome crash/update helpers can inherit.
+  if (instance) await instance.close();
 }
 try {
-  browser = await puppeteer.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    headless: 'new',
-  });
+  browser = await launchChrome();
   const existing = (await browser.pages())[0];
   await existing.goto('data:text/html,<title>Unrelated fixture tab</title><p>Preserve me</p>');
-  const existingUrl = existing.url();
-  otherBrowser = await puppeteer.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    headless: 'new',
-  });
+  const existingUrl = await existing.url();
+  otherBrowser = await launchChrome();
   const testName = 'agentic::tools::implementations::control_hub_tool::browser_workflow_tests::real_browser_workflow';
   const args = ['--ignored', '--exact', testName, '--nocapture'];
   const exitCode = await new Promise((resolve, reject) => {
@@ -75,7 +57,7 @@ try {
     child.on('close', code => resolve(code ?? 1));
   });
   assert.equal(exitCode, 0, 'production browser workflow must pass');
-  assert.equal(existing.url(), existingUrl, 'first navigation must preserve unrelated tabs');
+  assert.equal(await existing.url(), existingUrl, 'first navigation must preserve unrelated tabs');
   assert.equal(pageRequests, 2, 'one initial navigation and one explicit legacy read; no setup/recovery replays');
   console.log('PASS production ControlHub workflow, unrelated tab preservation, and exact navigation count');
 } finally {

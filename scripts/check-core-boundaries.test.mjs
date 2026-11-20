@@ -1262,18 +1262,18 @@ test('external source integration tests keep reviewed owner and process boundari
   );
 });
 
-test('Web UI command contracts do not become Rust compilation inputs', async () => {
-  const webApiPath = 'src/web-ui/src/infrastructure/api/service-api/ExternalSourcesAPI.ts';
+test('desktop UI command contracts do not become Rust compilation inputs', async () => {
+  const webApiPath = 'src/nsh-ui/src/externalImportStore.ts';
   const webCommandRule = requiredContentRules.find(
     (rule) => rule.path === webApiPath
       && rule.reason.includes('stable Desktop command'),
   );
-  assert.ok(webCommandRule, 'Web API must retain a boundary-owned stable command contract');
+  assert.ok(webCommandRule, 'Desktop UI must retain a boundary-owned stable command contract');
 
   const webCommandPattern = webCommandRule.patterns.find(
     (pattern) => pattern.message.includes('external-source control snapshot'),
   )?.regex;
-  assert.ok(webCommandPattern, 'Web API command contract must name the control snapshot');
+  assert.ok(webCommandPattern, 'Desktop UI command contract must name the control snapshot');
 
   const webApi = await readFile(new URL(`../${webApiPath}`, import.meta.url), 'utf8');
   assert.equal(webCommandPattern.test(webApi), true);
@@ -3993,20 +3993,6 @@ test('embedded relay concrete lifecycle stays desktop-owned', async () => {
   assert.match(desktopHost, /impl EmbeddedRelayHost for DesktopEmbeddedRelayHost/);
   assert.match(desktopHost, /TcpListener::bind/);
   assert.match(desktopHost, /ServeDir::new/);
-});
-
-test('desktop preview rebuild inputs use the current crate layout', async () => {
-  const devScript = await readFile(new URL('./dev.cjs', import.meta.url), 'utf8');
-
-  assert.match(
-    devScript,
-    /path\.join\(ROOT_DIR, 'src', 'crates'\)/,
-  );
-  assert.doesNotMatch(
-    devScript,
-    /'src', 'crates', '(?:core|transport|events|ai-adapters|webdriver|api-layer|assembly|adapters|contracts|execution|interfaces|services)'/,
-  );
-  assert.match(devScript, /prompts\$\{path\.sep\}/);
 });
 
 test('split core boundary check keeps self-test execution behavior', () => {

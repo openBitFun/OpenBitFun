@@ -64,7 +64,7 @@ Follow the user's prompt exactly.\n\
 - Do not call tools.\n"
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn editor_ai_cancel(
     state: State<'_, AppState>,
     request: EditorAiCancelRequest,
@@ -80,7 +80,7 @@ pub async fn editor_ai_cancel(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn editor_ai_stream(
     app: HostHandle,
     state: State<'_, AppState>,

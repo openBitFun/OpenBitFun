@@ -1,6 +1,6 @@
 //! Desktop closure test for the Product Operation Registry.
 //!
-//! Every Tauri command registered in `lib.rs` (`tauri::generate_handler!`)
+//! Every backend command registered in `lib.rs` (`backend_commands!`)
 //! must have exactly one row in
 //! `openbitfun_product_domains::remote_surface`, which declares how the command
 //! behaves for remote SSH/Docker workspaces and in Peer Device Mode. Remote SSH
@@ -13,12 +13,13 @@
 //!
 //! The registry owns the stances, the frozen `Unaudited` backlog, and the
 //! ratchet tests; this module only proves the desktop registration set and the
-//! registry's `TauriCommand` rows are the same set. See
+//! registry's `TauriCommand` rows (the historic name of registered backend
+//! commands) are the same set. See
 //! `docs/architecture/remote-surface-contract.md`.
 
 pub use openbitfun_product_domains::remote_surface::RemoteWorkspaceStance as RemoteWorkspacePolicy;
 
-/// The declared remote-workspace stance of a registered Tauri command.
+/// The declared remote-workspace stance of a registered backend command.
 pub fn remote_workspace_policy(command: &str) -> Option<RemoteWorkspacePolicy> {
     openbitfun_product_domains::remote_surface::operation(command).map(|op| op.remote_workspace)
 }
@@ -29,17 +30,17 @@ mod tests {
     use openbitfun_product_domains::remote_surface::{operations, OperationSurface};
     use std::collections::BTreeSet;
 
-    /// Extracts the command names registered in `tauri::generate_handler!`.
+    /// Extracts the command names registered in `backend_commands!`.
     pub(crate) fn registered_commands() -> BTreeSet<String> {
         let source = include_str!("../lib.rs");
         let start = source
-            .find("generate_handler![")
-            .expect("lib.rs must register commands via tauri::generate_handler!")
-            + "generate_handler![".len();
+            .find("backend_commands![")
+            .expect("lib.rs must register commands via backend_commands!")
+            + "backend_commands![".len();
         let block = &source[start..];
         let end = block
-            .find("])")
-            .expect("generate_handler! block must terminate with `])`");
+            .find("];")
+            .expect("backend_commands! block must terminate with `];`");
         block[..end]
             .lines()
             .map(str::trim)
@@ -60,7 +61,7 @@ mod tests {
         let registered = registered_commands();
         assert!(
             registered.len() > 400,
-            "generate_handler! parsing looks broken; only {} commands found",
+            "backend_commands! parsing looks broken; only {} commands found",
             registered.len()
         );
 
@@ -73,7 +74,7 @@ mod tests {
         let missing: Vec<_> = registered.difference(&declared).cloned().collect();
         assert!(
             missing.is_empty(),
-            "commands registered in generate_handler! without a Product Operation Registry row \
+            "commands registered in backend_commands! without a Product Operation Registry row \
              (add one `op(...)` row in src/crates/contracts/product-domains/src/remote_surface/table.rs; \
              new commands must not use Unaudited): {missing:?}"
         );
@@ -81,8 +82,8 @@ mod tests {
         let stale: Vec<_> = declared.difference(&registered).cloned().collect();
         assert!(
             stale.is_empty(),
-            "registry rows declared as Tauri commands that are no longer registered \
-             (delete the row, or mark it HostInvokeOnly if a peer alias must survive): {stale:?}"
+            "registry rows declared as registered commands that are no longer registered \
+             (retire the row with `retired(...)`, or mark it HostInvokeOnly if a peer alias must survive): {stale:?}"
         );
     }
 
@@ -111,32 +112,21 @@ mod tests {
     }
 
     #[test]
-    fn frontend_update_decisions_are_local_desktop_only() {
+    fn retired_tauri_shell_commands_are_tombstones_with_a_reason() {
+        let registered = registered_commands();
         for command in [
             "frontend_update_candidate_ready",
-            "frontend_update_candidate_failed",
-            "get_frontend_update_status",
             "confirm_frontend_update",
-            "rollback_frontend_update",
+            "debug_open_devtools",
+            "show_agent_companion_desktop_pet",
+            "desktop_card_list",
+            "startup_window_control",
+            "webdriver_bridge_result",
         ] {
-            assert_eq!(
-                remote_workspace_policy(command),
-                Some(RemoteWorkspacePolicy::LocalOnly),
-                "{command} must stay with the immutable controller-side confirmation window"
-            );
-        }
-    }
-
-    #[test]
-    fn external_mcp_import_commands_explicitly_reject_remote_workspaces() {
-        for command in [
-            "plan_external_mcp_import_command",
-            "apply_external_mcp_import_command",
-        ] {
-            assert_eq!(
-                remote_workspace_policy(command),
-                Some(RemoteWorkspacePolicy::Unsupported),
-                "{command} must never fall back to the controller's local MCP config"
+            assert!(!registered.contains(command), "{command} must stay retired");
+            assert!(
+                openbitfun_product_domains::remote_surface::retired_reason(command).is_some(),
+                "{command} must answer older clients with its retirement reason"
             );
         }
     }

@@ -65,7 +65,7 @@ pub struct MutateExternalHookImportRequest {
     pub mutation: ExternalHookImportMutationRequestV1,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_external_hook_catalog(
     request: ExternalHookCatalogRequest,
 ) -> ExternalSourceOperationResult<ExternalHookCatalogResponse> {
@@ -78,7 +78,7 @@ pub async fn get_external_hook_catalog(
     local_external_hook_catalog_snapshot(workspace, request.force_refresh).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_external_hook_import_snapshot(
     request: ExternalHookImportSnapshotRequest,
 ) -> ExternalSourceOperationResult<ExternalHookImportSnapshotV1> {
@@ -95,7 +95,7 @@ pub async fn get_external_hook_import_snapshot(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn plan_external_hook_import_command(
     request: PlanExternalHookImportRequest,
 ) -> ExternalSourceOperationResult<ExternalHookImportPlanV1> {
@@ -109,7 +109,7 @@ pub async fn plan_external_hook_import_command(
         .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn apply_external_hook_import_command(
     request: ApplyExternalHookImportRequest,
 ) -> ExternalSourceOperationResult<ExternalHookImportApplyResultV1> {
@@ -126,7 +126,7 @@ pub async fn apply_external_hook_import_command(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn mutate_external_hook_import_command(
     request: MutateExternalHookImportRequest,
 ) -> ExternalSourceOperationResult<ExternalHookImportSnapshotV1> {

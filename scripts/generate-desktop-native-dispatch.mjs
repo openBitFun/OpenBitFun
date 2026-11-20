@@ -1,16 +1,23 @@
 #!/usr/bin/env node
-// Generates the native (Tauri-free) command dispatcher of the desktop backend.
+// Generates the command dispatcher of the desktop backend (the only command
+// entry: the in-process NSH host, OBP WebSocket and mesh connections all go
+// through `BackendService::dispatch`).
 //
-// Input: the `tauri::generate_handler![...]` list in `src/apps/desktop/src/lib.rs`
-// and the `#[tauri::command]` definitions under `src/apps/desktop/src`.
+// Input: the `backend_commands![...]` list in `src/apps/desktop/src/lib.rs`
+// (the product command vocabulary) and the command definitions under
+// `src/apps/desktop/src`, each marked by a `// @backend-command` line right
+// before its `fn` (`// @backend-command(rename_all = "snake_case")` keeps
+// snake_case argument keys).
 // Output: `src/apps/desktop/src/backend_protocol/dispatch_generated.rs`, one
 // boxed future per command (see the stack-frame note in
-// `src/apps/cli/src/peer_host/commands/mod.rs`). Parameters are filled the
-// way Tauri fills them: managed `State<T>` from the native host registry,
-// `HostHandle` as the native host, every other parameter deserialized from
-// `args[camelCase(name)]` (or the snake_case name under
-// `rename_all = "snake_case"`). Commands that take a Tauri webview, window,
-// raw IPC request or `tauri::AppHandle` get an explicit unsupported arm.
+// `src/apps/cli/src/peer_host/commands/mod.rs`). Parameters are filled the way
+// the retired Tauri host filled them, so clients keep their wire shape:
+// managed `State<T>` from the host registry, `HostHandle` as the host, every
+// other parameter deserialized from `args[camelCase(name)]` (or the snake_case
+// name under `rename_all = "snake_case"`). A registered name may instead be a
+// host adapter in `backend_protocol/native_commands/`
+// (`pub(super) fn <command>(host: &Arc<NativeHost>, args: Value) ->
+// DispatchFuture<'_>`), listed as `backend_protocol::native_commands::<command>`.
 //
 // Usage: node scripts/generate-desktop-native-dispatch.mjs [--check]
 
@@ -101,27 +108,26 @@ export function snakeCase(name) {
     .toLowerCase();
 }
 
-/** Parses every `#[tauri::command]` function in one source file. */
+export const COMMAND_MARKER = '// @backend-command';
+
+/** Parses every `// @backend-command` function in one source file. */
 export function parseCommands(source, file) {
   const commands = [];
   let index = 0;
-  while ((index = source.indexOf('#[tauri::command', index)) !== -1) {
-    // Only attributes count: skip mentions in comments and string literals.
+  while ((index = source.indexOf(COMMAND_MARKER, index)) !== -1) {
+    // Only a marker line counts: skip mentions inside other comments and strings.
     const lineStart = source.lastIndexOf('\n', index - 1) + 1;
     if (source.slice(lineStart, index).trim() !== '') {
       index += 1;
       continue;
     }
-    let attrEnd = index;
-    let depth = 0;
-    for (; attrEnd < source.length; attrEnd += 1) {
-      if (source[attrEnd] === '[') depth += 1;
-      else if (source[attrEnd] === ']') {
-        depth -= 1;
-        if (depth === 0) break;
-      }
+    let lineEnd = source.indexOf('\n', index);
+    if (lineEnd === -1) lineEnd = source.length;
+    const attribute = source.slice(index, lineEnd).trim();
+    if (!/^\/\/ @backend-command(\(rename_all = "[a-z_]+"\))?$/.test(attribute)) {
+      throw new Error(`${file}: malformed command marker ${attribute}`);
     }
-    const attribute = source.slice(index, attrEnd + 1);
+    const attrEnd = lineEnd - 1;
     const fnPattern = /(pub(?:\([^)]*\))?\s+)?(async\s+)?fn\s+([A-Za-z0-9_]+)\s*(<[^(]*>)?\s*\(/g;
     fnPattern.lastIndex = attrEnd;
     const match = fnPattern.exec(source);
@@ -131,7 +137,7 @@ export function parseCommands(source, file) {
       throw new Error(`${file}: unexpected item between ${attribute} and fn ${match[3]}`);
     }
     let cursor = fnPattern.lastIndex;
-    depth = 1;
+    let depth = 1;
     while (depth > 0) {
       const ch = source[cursor];
       if (ch === '(') depth += 1;
@@ -170,12 +176,14 @@ export function parseCommands(source, file) {
   return commands;
 }
 
-/** The handler paths registered in `tauri::generate_handler![...]`. */
+export const REGISTRATION_MACRO = 'backend_commands![';
+
+/** The command paths registered in `backend_commands![...]`. */
 export function parseRegisteredHandlers(libSource) {
-  const start = libSource.indexOf('tauri::generate_handler![');
-  if (start === -1) throw new Error('lib.rs: generate_handler! not found');
-  const end = libSource.indexOf(']', start + 'tauri::generate_handler!['.length);
-  const body = stripLineComments(libSource.slice(start + 'tauri::generate_handler!['.length, end));
+  const start = libSource.indexOf(REGISTRATION_MACRO);
+  if (start === -1) throw new Error('lib.rs: backend_commands! not found');
+  const end = libSource.indexOf(']', start + REGISTRATION_MACRO.length);
+  const body = stripLineComments(libSource.slice(start + REGISTRATION_MACRO.length, end));
   return splitTopLevel(body).map((entry) => {
     if (!/^[A-Za-z0-9_:]+$/.test(entry)) throw new Error(`lib.rs: unexpected handler entry ${entry}`);
     const segments = entry.split('::');
@@ -186,6 +194,7 @@ export function parseRegisteredHandlers(libSource) {
 const TAURI_ONLY_TYPE =
   /(^|::|\s|<)(AppHandle|Webview|WebviewWindow|Window)\b|tauri::ipc::|tauri::Window|tauri::State/;
 
+/** `state` (managed state), `host` (the host handle), `tauri` (a retired Tauri type: rejected) or `arg`. */
 export function classifyParam(param) {
   const type = param.type.replace(/\s+/g, '');
   if (/^(crate::host::)?State<'_,/.test(type) || /^(crate::host::)?State<'[a-z]+,/.test(type)) {
@@ -209,9 +218,28 @@ function signatureKey(command) {
     .join(',');
 }
 
+const ADAPTER_DIR = 'backend_protocol/native_commands';
+const ADAPTER_FN =
+  /pub\((?:super|in crate::backend_protocol)\)\s+fn\s+([a-z0-9_]+)\s*\(\s*host:\s*&Arc<NativeHost>,\s*args:\s*Value,?\s*\)\s*->\s*DispatchFuture<'_>/g;
+
+/** Native host adapters: `pub(super) fn <command>(host, args)` under `backend_protocol/native_commands/`. */
+export function parseAdapters(files) {
+  const adapters = new Map();
+  for (const { file, source } of files) {
+    if (!file.split(path.sep).join('/').startsWith(`${ADAPTER_DIR}/`)) continue;
+    for (const match of stripLineComments(source).matchAll(ADAPTER_FN)) {
+      if (adapters.has(match[1])) throw new Error(`duplicate native adapter ${match[1]}`);
+      adapters.set(match[1], file);
+    }
+  }
+  return adapters;
+}
+
 export function buildDispatcher(libSource, files) {
+  const adapters = parseAdapters(files);
   const definitions = new Map();
   for (const { file, source } of files) {
+    if (file.split(path.sep).join('/').startsWith(`${ADAPTER_DIR}/`)) continue;
     for (const command of parseCommands(source, file)) {
       if (!definitions.has(command.name)) definitions.set(command.name, []);
       definitions.get(command.name).push(command);
@@ -224,6 +252,22 @@ export function buildDispatcher(libSource, files) {
     if (seen.has(handler.name)) throw new Error(`duplicate handler ${handler.name}`);
     seen.add(handler.name);
     let candidates = definitions.get(handler.name) ?? [];
+    const adapter = adapters.has(handler.name);
+    if (adapter) {
+      if (candidates.length) {
+        throw new Error(
+          `${handler.name} has a typed command definition; remove its stale native adapter (${adapters.get(handler.name)})`,
+        );
+      }
+      if (handler.path !== `backend_protocol::native_commands::${handler.name}`) {
+        throw new Error(
+          `${handler.name} is a host adapter; register it as backend_protocol::native_commands::${handler.name}`,
+        );
+      }
+      adapters.delete(handler.name);
+      entries.push({ handler, adapter: true });
+      continue;
+    }
     if (handler.path.includes('::')) {
       const modulePath = handler.path.split('::').slice(0, -1).join('/');
       const narrowed = candidates.filter((candidate) => {
@@ -232,7 +276,7 @@ export function buildDispatcher(libSource, files) {
       });
       if (narrowed.length) candidates = narrowed;
     }
-    if (!candidates.length) throw new Error(`no #[tauri::command] definition for ${handler.path}`);
+    if (!candidates.length) throw new Error(`no ${COMMAND_MARKER} definition for ${handler.path}`);
     const files = new Set(candidates.map((candidate) => candidate.file));
     if (files.size > 1) {
       throw new Error(
@@ -248,18 +292,27 @@ export function buildDispatcher(libSource, files) {
     if (command.generics) throw new Error(`${handler.name}: generic commands are not supported`);
     const kinds = command.params.map(classifyParam);
     const tauriOnly = command.params.filter((_, i) => kinds[i] === 'tauri');
-    // A raw Tauri IPC response (binary body) has no JSON projection.
-    if (/\btauri::/.test(command.returnType)) {
-      tauriOnly.push({ pattern: '->', type: command.returnType });
+    if (/\btauri::/.test(command.returnType)) tauriOnly.push({ pattern: '->', type: command.returnType });
+    if (tauriOnly.length) {
+      throw new Error(
+        `${handler.name} takes ${tauriOnly.map((param) => param.type).join(', ')}: the Tauri host is retired; take HostHandle or write a host adapter in ${ADAPTER_DIR}/`,
+      );
     }
-    entries.push({ handler, command, kinds, supported: tauriOnly.length === 0, tauriOnly });
+    entries.push({ handler, command, kinds, adapter: false });
+  }
+  if (adapters.size) {
+    throw new Error(`native adapters without a registered command: ${[...adapters.keys()].join(', ')}`);
+  }
+  const marked = [...definitions.keys()].filter((name) => !seen.has(name));
+  if (marked.length) {
+    throw new Error(`${COMMAND_MARKER} functions missing from backend_commands!: ${marked.sort().join(', ')}`);
   }
   entries.sort((a, b) => a.handler.name.localeCompare(b.handler.name));
 
   const lines = [];
   lines.push('// @generated by scripts/generate-desktop-native-dispatch.mjs. Do not edit by hand.');
   lines.push('// Regenerate with `node scripts/generate-desktop-native-dispatch.mjs` after');
-  lines.push('// adding, removing or changing a registered `#[tauri::command]`.');
+  lines.push('// adding, removing or changing a registered backend command.');
   lines.push('');
   lines.push('// Formatting is the generator\'s, so `--check` stays stable under `fmt:rs`.');
   lines.push('#![cfg_attr(rustfmt, rustfmt::skip)]');
@@ -274,21 +327,21 @@ export function buildDispatcher(libSource, files) {
   lines.push('use super::DispatchFuture;');
   lines.push('use crate::host::{HostHandle, NativeHost};');
   lines.push('');
-  lines.push('/// Whether the native host runs a registered command.');
+  lines.push('/// How the backend answers a registered command.');
   lines.push('#[derive(Debug, Clone, Copy, PartialEq, Eq)]');
   lines.push('pub enum NativeCommandSupport {');
-  lines.push('    /// Runs in the native host.');
+  lines.push('    /// A typed command handler (`// @backend-command`).');
   lines.push('    Native,');
-  lines.push('    /// Needs a Tauri webview, window, raw IPC request or app handle; the');
-  lines.push('    /// native host rejects it with `unsupported_in_native_host: <command>`.');
-  lines.push('    Unsupported,');
+  lines.push('    /// A host adapter (`backend_protocol::native_commands`) that works on');
+  lines.push('    /// the host and its shell channel directly.');
+  lines.push('    Adapter,');
   lines.push('}');
   lines.push('');
-  lines.push('/// Every command registered in `tauri::generate_handler!`, sorted by name.');
+  lines.push('/// Every command registered in `backend_commands!`, sorted by name.');
   lines.push('pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[');
   for (const entry of entries) {
     lines.push(
-      `    ("${entry.handler.name}", NativeCommandSupport::${entry.supported ? 'Native' : 'Unsupported'}),`,
+      `    ("${entry.handler.name}", NativeCommandSupport::${entry.adapter ? 'Adapter' : 'Native'}),`,
     );
   }
   lines.push('];');
@@ -305,21 +358,20 @@ export function buildDispatcher(libSource, files) {
   lines.push('    match command {');
   const handlers = [];
   for (const entry of entries) {
-    const { handler, command, kinds } = entry;
+    const { handler } = entry;
     const name = handler.name;
-    if (!entry.supported) {
-      const reason = entry.tauriOnly.map((param) => param.type.replace(/\s+/g, ' ')).join(', ');
-      lines.push(`        // Tauri-only: ${reason}`);
-      lines.push(`        "${name}" => Box::pin(async move { unsupported("${name}") }),`);
+    if (entry.adapter) {
+      lines.push(`        "${name}" => super::native_commands::${name}(host, args),`);
       continue;
     }
+    const { command, kinds } = entry;
     lines.push(`        "${name}" => command_${name}(host, args),`);
     const callArgs = command.params.map((param, i) => {
       switch (kinds[i]) {
         case 'state':
           return `host.command_state("${name}")?`;
         case 'host':
-          return 'HostHandle::Native(Arc::clone(host))';
+          return 'HostHandle::new(Arc::clone(host))';
         default:
           return `arg(&args, "${argumentKey(command, param)}", "${name}")?`;
       }
@@ -342,23 +394,18 @@ export function buildDispatcher(libSource, files) {
   return {
     text: lines.join('\n'),
     total: entries.length,
-    native: entries.filter((entry) => entry.supported).length,
-    unsupported: entries.filter((entry) => !entry.supported).map((entry) => entry.handler.name),
+    native: entries.filter((entry) => !entry.adapter).length,
+    adapters: entries.filter((entry) => entry.adapter).map((entry) => entry.handler.name),
   };
 }
 
 function main() {
   const check = process.argv.includes('--check');
-  const list = process.argv.includes('--list-unsupported');
   const libSource = fs.readFileSync(libPath, 'utf8');
   const files = walk(desktopSrc)
     .filter((file) => file !== outputPath)
     .map((file) => ({ file: path.relative(desktopSrc, file), source: fs.readFileSync(file, 'utf8') }));
   const result = buildDispatcher(libSource, files);
-  if (list) {
-    console.log(result.unsupported.join('\n'));
-    return;
-  }
   const current = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
   if (check) {
     if (current !== result.text) {
@@ -367,12 +414,14 @@ function main() {
       );
       process.exit(1);
     }
-    console.log(`native dispatcher is up to date (${result.native}/${result.total} commands native)`);
+    console.log(
+      `backend dispatcher is up to date (${result.total} commands: ${result.native} typed, ${result.adapters.length} host adapters)`,
+    );
     return;
   }
   if (current !== result.text) fs.writeFileSync(outputPath, result.text);
   console.log(
-    `wrote ${path.relative(repoRoot, outputPath)}: ${result.native}/${result.total} commands native, ${result.unsupported.length} unsupported`,
+    `wrote ${path.relative(repoRoot, outputPath)}: ${result.total} commands (${result.native} typed, ${result.adapters.length} host adapters)`,
   );
 }
 

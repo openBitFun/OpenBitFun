@@ -63,7 +63,7 @@ struct CompiledLatex {
     log: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn compile_workspace_latex(
     request: CompileWorkspaceLatexRequest,
 ) -> Result<CompileWorkspaceLatexResponse, String> {

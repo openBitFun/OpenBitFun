@@ -46,7 +46,26 @@ impl RemoteBotTarget {
             .ok_or_else(|| "Execution host omitted the attachment path".into())
     }
 
+    /// One `RemoteCommand` on the execution host. A new host on the account
+    /// device mesh answers over OBP (`obp_remote_command`); only an older host
+    /// (or a bot host without a mesh) uses the encrypted relay RPC.
     async fn rpc_response(&self, command: Value) -> Result<Value, String> {
+        use crate::remote_connect::mesh_route::{
+            call_mesh_or_legacy, mesh_route, CAPABILITY_REMOTE_COMMAND_V1, OBP_REMOTE_COMMAND,
+        };
+        let (reply, _transport) = call_mesh_or_legacy(
+            mesh_route(),
+            &self.device_id,
+            CAPABILITY_REMOTE_COMMAND_V1,
+            OBP_REMOTE_COMMAND,
+            json!({ "command": command }),
+            |args| self.legacy_rpc_response(args["command"].clone()),
+        )
+        .await;
+        reply
+    }
+
+    async fn legacy_rpc_response(&self, command: Value) -> Result<Value, String> {
         let session = self
             .account
             .session(&self.relay_url)

@@ -11,8 +11,6 @@ const skipAuditIntegrationTests = contractTestProfile === 'ci' && !runAuditInteg
 const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'locales.json');
 const sharedTermsDir = path.join(root, 'src', 'shared', 'i18n', 'resources', 'shared');
 const expectedGeneratedFiles = [
-  'src/web-ui/src/infrastructure/i18n/presets/generatedLocaleContract.ts',
-  'src/web-ui/index.html',
   'src/mobile-web/src/i18n/generatedLocaleContract.ts',
   'OpenBitFun-Installer/src/i18n/generatedLocaleContract.ts',
   'src/crates/assembly/core/src/service/i18n/generated_locale_contract.rs',
@@ -80,12 +78,6 @@ function flattenKeys(value, prefix = '') {
     .sort();
 }
 
-function getValueByPath(value, dottedPath) {
-  return dottedPath.split('.').reduce((current, segment) => (
-    current && typeof current === 'object' ? current[segment] : undefined
-  ), value);
-}
-
 function listFiles(dir, predicate) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   return entries.flatMap((entry) => {
@@ -96,16 +88,6 @@ function listFiles(dir, predicate) {
 
     return predicate(absolutePath) ? [absolutePath] : [];
   });
-}
-
-function extractStringArrayConstant(source, exportName) {
-  const marker = `export const ${exportName} = [`;
-  const start = source.indexOf(marker);
-  assert.notEqual(start, -1, `missing ${exportName} constant`);
-  const body = source.slice(start + marker.length);
-  const end = body.indexOf('] as const');
-  assert.notEqual(end, -1, `${exportName} must be an as const string array`);
-  return [...body.slice(0, end).matchAll(/'([^']+)'/g)].map((entry) => entry[1]);
 }
 
 function escapeRegExp(value) {
@@ -176,9 +158,6 @@ test('core runtime uses the generated locale contract for language identity', ()
 });
 
 test('shared i18n terms are consumed by each product surface runtime', () => {
-  const webI18nSource = readText('src/web-ui/src/infrastructure/i18n/core/I18nService.ts');
-  assert.match(webI18nSource, /SHARED_TERMS_BY_LOCALE/, 'Web UI should merge shared terms into i18next resources');
-
   const mobileMessagesSource = readText('src/mobile-web/src/i18n/messages.ts');
   assert.match(mobileMessagesSource, /SHARED_TERMS_BY_LOCALE/, 'mobile-web should expose shared terms through its message tree');
 
@@ -190,16 +169,6 @@ test('shared i18n terms are consumed by each product surface runtime', () => {
 });
 
 test('frontend runtimes use generated locale defaults and fallback chains', () => {
-  const webPresetIndexSource = readText('src/web-ui/src/infrastructure/i18n/presets/index.ts');
-  assert.doesNotMatch(
-    webPresetIndexSource,
-    /export const DEFAULT_(?:FALLBACK_)?LOCALE\s*=\s*['"]/,
-    'Web UI preset defaults should be re-exported from the generated contract, not hard-coded',
-  );
-
-  const webI18nSource = readText('src/web-ui/src/infrastructure/i18n/core/I18nService.ts');
-  assert.match(webI18nSource, /getLocaleFallbackChain/, 'Web UI i18next should use the generated locale fallback chain');
-
   const mobileProviderSource = readText('src/mobile-web/src/i18n/I18nProvider.tsx');
   assert.match(mobileProviderSource, /getMobileFallbackChain/, 'mobile-web translate should use the generated locale fallback chain');
   assert.doesNotMatch(
@@ -211,118 +180,6 @@ test('frontend runtimes use generated locale defaults and fallback chains', () =
   const installerI18nSource = readText('OpenBitFun-Installer/src/i18n/index.ts');
   assert.match(installerI18nSource, /DEFAULT_INSTALLER_UI_LANGUAGE/, 'installer i18next should use the generated default UI language');
   assert.match(installerI18nSource, /getInstallerUiFallbackChain/, 'installer i18next should use the generated locale fallback chain');
-});
-
-test('web-ui runtime keeps locale namespaces lazy outside its bootstrap set', () => {
-  const webI18nSource = readText('src/web-ui/src/infrastructure/i18n/core/I18nService.ts');
-
-  assert.match(webI18nSource, /WEB_UI_BOOTSTRAP_NAMESPACES/, 'Web UI should declare the small eager namespace set');
-  assert.match(webI18nSource, /import\.meta\.glob\(\[\s*'\.\.\/\.\.\/\.\.\/locales\/\*\*\/\*\.json'/, 'Web UI should keep a lazy namespace glob for non-bootstrap resources');
-  const lazyGlobBlock = webI18nSource.match(/const lazyLocaleModules = import\.meta\.glob\([\s\S]*?\) as/)?.[0] ?? '';
-  assert.doesNotMatch(
-    lazyGlobBlock,
-    /eager:\s*true/,
-    'Web UI must not eagerly import every locale namespace',
-  );
-});
-
-test('web-ui synchronous i18nService.t namespaces stay in the bootstrap set', () => {
-  const registrySource = readText('src/web-ui/src/infrastructure/i18n/presets/namespaceRegistry.ts');
-  const bootstrapNamespaces = new Set(extractStringArrayConstant(registrySource, 'WEB_UI_BOOTSTRAP_NAMESPACES'));
-  const sourceRoot = path.join(root, 'src', 'web-ui', 'src');
-  const missing = new Set();
-
-  const sourceFiles = listFiles(sourceRoot, (file) => {
-    const normalized = file.replace(/\\/g, '/');
-    return (
-      /\.(ts|tsx)$/.test(file) &&
-      !normalized.includes('/locales/') &&
-      !normalized.endsWith('.test.ts') &&
-      !normalized.endsWith('.test.tsx') &&
-      !normalized.endsWith('.spec.ts') &&
-      !normalized.endsWith('.spec.tsx')
-    );
-  });
-
-  for (const file of sourceFiles) {
-    const text = fs.readFileSync(file, 'utf8');
-    const patterns = [/i18nService\.t\(\s*(['"`])([^'"`:]+):/g];
-    if (text.includes('i18nService.getT()')) {
-      patterns.push(/\bt\(\s*(['"`])([^'"`:]+):/g);
-    }
-
-    for (const pattern of patterns) {
-      for (const match of text.matchAll(pattern)) {
-        const namespace = match[2];
-        if (!bootstrapNamespaces.has(namespace)) {
-          missing.add(`${namespace} (${path.relative(root, file).replace(/\\/g, '/')})`);
-        }
-      }
-    }
-  }
-
-  assert.deepEqual(
-    [...missing].sort(),
-    [],
-    'synchronous i18nService.t(...) call sites require eager bootstrap namespaces',
-  );
-});
-
-test('web-ui slash command picker distinguishes all commands from quick actions', () => {
-  const source = readText('src/web-ui/src/flow_chat/components/ChatInput.tsx');
-  const allCommandsStart = source.indexOf("if (slashCommandState.kind === 'all')");
-  const allCommandsEnd = source.indexOf(
-    "if (slashCommandState.kind === 'skills')",
-    allCommandsStart,
-  );
-  assert.notEqual(allCommandsStart, -1, 'ChatInput should render an all-command slash picker state');
-  assert.notEqual(allCommandsEnd, -1, 'ChatInput all-command branch should stay before the skills-only branch');
-
-  const allCommandsBlock = source.slice(allCommandsStart, allCommandsEnd);
-  assert.match(
-    allCommandsBlock,
-    /t\('chatInput\.commands'\)/,
-    'all-command slash picker should use a Commands label, not the quick-action label',
-  );
-  assert.doesNotMatch(
-    allCommandsBlock,
-    /t\('chatInput\.quickAction'\)/,
-    'all-command slash picker must not reuse the quick-action label',
-  );
-
-  const contract = readJson('src/shared/i18n/contract/locales.json');
-  for (const locale of contract.locales.map((entry) => entry.id)) {
-    const resource = readJson(`src/web-ui/src/locales/${locale}/flow-chat.json`);
-    const commands = getValueByPath(resource, 'chatInput.commands');
-    const quickAction = getValueByPath(resource, 'chatInput.quickAction');
-    assert.equal(typeof commands, 'string', `${locale} flow-chat chatInput.commands should exist`);
-    assert.notEqual(commands, quickAction, `${locale} chatInput.commands should not duplicate chatInput.quickAction`);
-  }
-});
-
-test('review platform relative time labels are locale resources', () => {
-  const source = readText('src/web-ui/src/app/components/panels/review-platform/ReviewPlatformPanel.tsx');
-
-  assert.match(source, /common:reviewPlatform\.relativeTime\.minutesAgo/, 'minute relative time label should be localized');
-  assert.match(source, /common:reviewPlatform\.relativeTime\.hoursAgo/, 'hour relative time label should be localized');
-  assert.match(source, /common:reviewPlatform\.relativeTime\.daysAgo/, 'day relative time label should be localized');
-  assert.doesNotMatch(source, /`[^`]*\bm ago`/, 'relative minute text must not be hard-coded in ReviewPlatformPanel');
-  assert.doesNotMatch(source, /`[^`]*\bh ago`/, 'relative hour text must not be hard-coded in ReviewPlatformPanel');
-  assert.doesNotMatch(source, /`[^`]*\bd ago`/, 'relative day text must not be hard-coded in ReviewPlatformPanel');
-
-  const contract = readJson('src/shared/i18n/contract/locales.json');
-  for (const locale of contract.locales.map((entry) => entry.id)) {
-    const resource = readJson(`src/web-ui/src/locales/${locale}/common.json`);
-    for (const key of [
-      'reviewPlatform.relativeTime.minutesAgo',
-      'reviewPlatform.relativeTime.hoursAgo',
-      'reviewPlatform.relativeTime.daysAgo',
-    ]) {
-      const value = getValueByPath(resource, key);
-      assert.equal(typeof value, 'string', `${locale} common ${key} should exist`);
-      assert.match(value, /\{\{\s*count\s*\}\}/, `${locale} common ${key} should interpolate count`);
-    }
-  }
 });
 
 test('i18n audit enforces the checked-in hardcoded source candidate budget', () => {
@@ -344,23 +201,20 @@ test('i18n audit treats locale key parity as an error', () => {
   assert.match(auditSource, /auditInstallerKeyParity/, 'installer locale keys should be covered by i18n:audit');
 });
 
-test('CI runs i18n contract and audit guards before frontend builds', () => {
+test('CI runs i18n contract and audit guards', () => {
   const ciSource = readText('.github/workflows/ci.yml');
   const contractIndex = ciSource.indexOf('pnpm run i18n:contract:test:ci');
   const auditIndex = ciSource.indexOf('pnpm run i18n:audit');
-  const buildIndex = ciSource.indexOf('pnpm run build:web');
 
   assert.notEqual(contractIndex, -1, 'CI should run pnpm run i18n:contract:test:ci');
   assert.notEqual(auditIndex, -1, 'CI should run pnpm run i18n:audit');
-  assert.ok(contractIndex < buildIndex, 'i18n contract checks should run before web build');
   assert.ok(contractIndex < auditIndex, 'CI should run the fast contract check before the full i18n audit');
-  assert.ok(auditIndex < buildIndex, 'i18n audit should run before web build');
 });
 
 test('i18n audit enforces interpolation parameter parity across resource formats', () => {
   const auditSource = readText('scripts/i18n-audit.mjs');
 
-  assert.match(auditSource, /auditWebI18nextPlaceholderParity/, 'Web UI JSON placeholders should be audited');
+  assert.match(auditSource, /auditSharedTermPlaceholderParity/, 'shared term JSON placeholders should be audited');
   assert.match(auditSource, /auditMobileWebPlaceholderParity/, 'mobile-web placeholders should be audited');
   assert.match(auditSource, /auditInstallerPlaceholderParity/, 'installer placeholders should be audited');
   assert.match(auditSource, /auditCoreFluentParity/, 'core Fluent keys and placeholders should be audited');
@@ -395,39 +249,11 @@ test('i18n audit report surface summaries derive from owned scan and budget sour
   );
 });
 
-test('i18n audit fails literal fallbacks and unknown static keys', () => {
-  const auditSource = readText('scripts/i18n-audit.mjs');
-  const sourceTextAudit = auditSource.match(/function auditSourceText\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-
-  assert.match(sourceTextAudit, /reportError/, 'literal t(key, "fallback") candidates should fail audit');
-  assert.match(auditSource, /auditWebUiStaticTranslationKeys/, 'static Web UI translation keys should be checked');
-  assert.match(auditSource, /collectWebUiStaticTranslationKeys/, 'static key collection should be explicit');
-});
-
-test('i18n audit gates object-form literal fallbacks with an explicit budget', () => {
-  const auditSource = readText('scripts/i18n-audit.mjs');
-  const fallbackBaselineSource = readText('scripts/i18n-literal-fallback-baseline.json');
-  const fallbackBaseline = JSON.parse(fallbackBaselineSource);
-
-  assert.ok(
-    fallbackBaseline.budgets.every((entry) => (
-      entry.literalDefaultValues &&
-      typeof entry.literalDefaultValues === 'object' &&
-      !Array.isArray(entry.literalDefaultValues)
-    )),
-    'literal fallback baseline should allowlist exact keys per file',
-  );
-  assert.match(auditSource, /i18n-literal-fallback-baseline\.json/, 'audit should read the literal fallback baseline');
-  assert.match(auditSource, /auditWebUiLiteralFallbackBudget/, 'object-form defaultValue fallbacks should have a no-growth gate');
-  assert.match(auditSource, /defaultValue/, 'audit should inspect i18next defaultValue options');
-});
-
-auditIntegrationTest('i18n audit reports literal fallback and locale formatting candidate baselines', { concurrency: false }, () => {
+auditIntegrationTest('i18n audit reports locale formatting candidate baselines', { concurrency: false }, () => {
   const auditSource = readText('scripts/i18n-audit.mjs');
   const localeFormatBaselineSource = readText('scripts/i18n-locale-format-baseline.json');
   const localeFormatBaseline = JSON.parse(localeFormatBaselineSource);
 
-  assert.match(auditSource, /literalDefaultValueFallbacks/, 'governance report should include literal fallback candidates');
   assert.match(auditSource, /i18n-locale-format-baseline\.json/, 'audit should read the direct locale format baseline');
   assert.match(auditSource, /auditLocaleFormatUsageBudget/, 'direct locale formatting should have a no-growth gate');
   assert.ok(
@@ -447,13 +273,9 @@ auditIntegrationTest('i18n audit reports literal fallback and locale formatting 
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const report = readJson(reportPath);
     assert.equal(
-      report.summary.byCategory.localeFormatCandidates.bySurface['web-ui'],
-      report.localeFormatCandidates.filter((entry) => entry.surface === 'web-ui').length,
+      report.summary.byCategory.localeFormatCandidates.bySurface['mobile-web'],
+      report.localeFormatCandidates.filter((entry) => entry.surface === 'mobile-web').length,
       'report should summarize direct locale formatting candidates by surface',
-    );
-    assert.ok(
-      report.summary.byCategory.literalDefaultValueFallbacks.byFile,
-      'report should summarize literal fallbacks by file',
     );
   } finally {
     fs.rmSync(absoluteReportPath, { force: true });
@@ -462,7 +284,7 @@ auditIntegrationTest('i18n audit reports literal fallback and locale formatting 
   const baselinePath = 'scripts/i18n-locale-format-baseline.json';
   const baseline = readJson(baselinePath);
   baseline.budgets.push({
-    path: 'src/web-ui/src/__removed_locale_format_fixture__.ts',
+    path: 'src/mobile-web/src/__removed_locale_format_fixture__.ts',
     maxLocaleFormatCalls: 1,
   });
 
@@ -476,7 +298,7 @@ auditIntegrationTest('i18n audit reports literal fallback and locale formatting 
     );
   });
 
-  withTemporaryTextFile('src/web-ui/src/__locale_format_fixture__.ts', 'export const value = Intl.NumberFormat().format(1234);\n', () => {
+  withTemporaryTextFile('src/mobile-web/src/__locale_format_fixture__.ts', 'export const value = Intl.NumberFormat().format(1234);\n', () => {
     const result = runI18nAudit();
     assert.notEqual(result.status, 0, 'direct Intl format calls without new must fail audit');
     assert.match(
@@ -505,7 +327,6 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
     assert.ok(Array.isArray(report.sharedTermDuplicates), 'report should include shared-term duplicate candidates');
     assert.ok(Array.isArray(report.sameTextLocaleInventory), 'report should include same-text locale inventory');
     assert.ok(Array.isArray(report.l10nQualityCandidates), 'report should include l10n quality candidates');
-    assert.ok(Array.isArray(report.literalDefaultValueFallbacks), 'report should include literal defaultValue fallback candidates');
     assert.ok(Array.isArray(report.localeFormatCandidates), 'report should include direct locale formatting candidates');
     assert.deepEqual(
       report.summary.counts,
@@ -515,7 +336,6 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
         sharedTermDuplicates: report.sharedTermDuplicates.length,
         sameTextLocaleInventory: report.sameTextLocaleInventory.length,
         l10nQualityCandidates: report.l10nQualityCandidates.length,
-        literalDefaultValueFallbacks: report.literalDefaultValueFallbacks.length,
         localeFormatCandidates: report.localeFormatCandidates.length,
       },
       'report counts should match finding arrays',
@@ -531,13 +351,13 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
       );
     }
     assert.equal(
-      report.summary.byCategory.l10nQualityCandidates.bySurface['web-ui'] ?? 0,
-      report.l10nQualityCandidates.filter((entry) => entry.surface === 'web-ui').length,
+      report.summary.byCategory.l10nQualityCandidates.bySurface.installer ?? 0,
+      report.l10nQualityCandidates.filter((entry) => entry.surface === 'installer').length,
       'report should summarize l10n candidates by surface',
     );
     assert.equal(
-      report.summary.byCategory.sameTextLocaleInventory.bySurface['web-ui'] ?? 0,
-      report.sameTextLocaleInventory.filter((entry) => entry.surface === 'web-ui').length,
+      report.summary.byCategory.sameTextLocaleInventory.bySurface.installer ?? 0,
+      report.sameTextLocaleInventory.filter((entry) => entry.surface === 'installer').length,
       'report should summarize same-text locale inventory by surface',
     );
     assert.ok(
@@ -545,8 +365,8 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
       'same-text locale inventory should retain broad non-blocking review data beyond actionable l10n signals',
     );
     assert.equal(
-      report.summary.byCategory.l10nQualityCandidates.byNamespace['flow-chat'] ?? 0,
-      report.l10nQualityCandidates.filter((entry) => entry.namespace === 'flow-chat').length,
+      report.summary.byCategory.l10nQualityCandidates.byNamespace.shared ?? 0,
+      report.l10nQualityCandidates.filter((entry) => entry.namespace === 'shared').length,
       'report should summarize l10n candidates by namespace',
     );
     assert.equal(
@@ -576,10 +396,6 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
       'reviewed same-writing zh-CN/zh-TW copy without a script or terminology signal should not create l10n noise',
     );
     assert.ok(
-      report.literalDefaultValueFallbacks.every((entry) => entry.file && entry.key && entry.location),
-      'literal fallback candidates should include file, key, and location for cleanup reviews',
-    );
-    assert.ok(
       report.localeFormatCandidates.every((entry) => entry.surface && entry.file && entry.location),
       'locale format candidates should include surface, file, and location for cleanup reviews',
     );
@@ -589,29 +405,31 @@ test('i18n audit can emit a machine-readable governance report', { concurrency: 
 });
 
 auditIntegrationTest('i18n audit reports same-text zh-TW copy with a terminology signal', { concurrency: false }, () => {
-  const localePath = 'src/web-ui/src/locales/zh-TW/settings/external-apps.json';
+  const simplifiedPath = 'OpenBitFun-Installer/src/i18n/locales/zh.json';
+  const traditionalPath = 'OpenBitFun-Installer/src/i18n/locales/zh-TW.json';
   const reportPath = 'scripts/.tmp-i18n-l10n-signal-report.json';
   const absoluteReportPath = path.join(root, reportPath);
-  const source = readText(localePath);
-  const fixture = source.replace(
-    '"summary": "有 {{count}} 項內容需要注意，請查看詳細資料以瞭解影響範圍。"',
-    '"summary": "有 {{count}} 项内容需要注意，请查看详情了解影响范围。"',
-  );
-
-  assert.notEqual(fixture, source, 'test fixture should introduce same-text zh-TW terminology debt');
+  const sameText = '安装路径必须是绝对路径，请了解后重试。';
+  const withSameText = (relativePath) => {
+    const resource = readJson(relativePath);
+    assert.equal(typeof resource.errors?.installPath?.notAbsolute, 'string', `${relativePath} fixture key should exist`);
+    resource.errors.installPath.notAbsolute = sameText;
+    return `${JSON.stringify(resource, null, 2)}\n`;
+  };
+  const simplifiedFixture = withSameText(simplifiedPath);
+  const traditionalFixture = withSameText(traditionalPath);
   fs.rmSync(absoluteReportPath, { force: true });
 
   try {
-    withTemporaryTextFile(localePath, fixture, () => {
+    withTemporaryTextFile(simplifiedPath, simplifiedFixture, () => withTemporaryTextFile(traditionalPath, traditionalFixture, () => {
       const result = runI18nAudit(['--report-json', reportPath]);
       assert.notEqual(result.status, 0, 'same-text zh-TW terminology debt should exceed the zero l10n baseline');
 
       const report = readJson(reportPath);
       assert.ok(
         report.l10nQualityCandidates.some((entry) => (
-          entry.surface === 'web-ui' &&
-          entry.namespace === 'settings/external-apps' &&
-          entry.key === 'diagnostics.summary' &&
+          entry.surface === 'installer' &&
+          entry.key === 'errors.installPath.notAbsolute' &&
           entry.locale === 'zh-TW' &&
           entry.comparisonLocale === 'zh-CN' &&
           entry.signal?.type === 'terminology' &&
@@ -621,9 +439,8 @@ auditIntegrationTest('i18n audit reports same-text zh-TW copy with a terminology
       );
       assert.ok(
         report.sameTextLocaleInventory.some((entry) => (
-          entry.surface === 'web-ui' &&
-          entry.namespace === 'settings/external-apps' &&
-          entry.key === 'diagnostics.summary' &&
+          entry.surface === 'installer' &&
+          entry.key === 'errors.installPath.notAbsolute' &&
           entry.locale === 'zh-TW' &&
           entry.comparisonLocale === 'zh-CN' &&
           entry.signalType === 'terminology' &&
@@ -631,7 +448,7 @@ auditIntegrationTest('i18n audit reports same-text zh-TW copy with a terminology
         )),
         'audit inventory should retain the same-text pair even though only signal-bearing entries are governance candidates',
       );
-    });
+    }));
   } finally {
     fs.rmSync(absoluteReportPath, { force: true });
   }
@@ -703,87 +520,6 @@ auditIntegrationTest('mobile-web uses shared terms for stable shared concept lab
       legacyReferences,
       [],
       'mobile-web source should not call removed local keys for migrated shared terms',
-    );
-  } finally {
-    fs.rmSync(absoluteReportPath, { force: true });
-  }
-});
-
-auditIntegrationTest('web-ui uses shared terms for stable navigation and feature labels', { concurrency: false }, () => {
-  const reportPath = 'scripts/.tmp-i18n-web-ui-shared-terms-report.json';
-  const absoluteReportPath = path.join(root, reportPath);
-  fs.rmSync(absoluteReportPath, { force: true });
-
-  try {
-    const result = runI18nAudit(['--report-json', reportPath]);
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-
-    const report = readJson(reportPath);
-    const migratedResourceKeys = new Set([
-      'common:app.name',
-      'common:header.remoteConnect',
-      'common:nav.sections.workspace',
-      'common:nav.sessions.newCodeSessionShort',
-      'common:nav.sessions.newCoworkSessionShort',
-      'common:scenes.settings',
-      'common:tabs.settings',
-      'common:remoteConnect.title',
-      'common:remoteConnect.tabOpenBitFunServer',
-      'common:remoteConnect.tabLan',
-      'flow-chat:layout.noPanels',
-      'flow-chat:deepReviewActionBar.minimizedDeep',
-      'flow-chat:toolCards.codeReview.reviewMode',
-      'flow-chat:toolbar.settings',
-      'flow-chat:toolCards.sessionControl.workspace',
-      'flow-chat:toolCards.sessionMessage.workspace',
-      'flow-chat:welcome.workspace',
-      'scenes/skills:suite.modes.claw',
-      'settings:title',
-      'settings:workspace.title',
-    ]);
-    const webUiDuplicates = report.sharedTermDuplicates
-      .filter((entry) => entry.surface === 'web-ui' && migratedResourceKeys.has(entry.resourceKey))
-      .map((entry) => `${entry.sharedKey}:${entry.resourceKey}:${entry.locale}`)
-      .sort();
-    const legacyWebUiKeys = [
-      'header.remoteConnect',
-      'remoteConnect.title',
-      'remoteConnect.tabOpenBitFunServer',
-      'remoteConnect.tabLan',
-      'nav.sections.workspace',
-      'nav.sessions.newCodeSessionShort',
-      'nav.sessions.newCoworkSessionShort',
-      'scenes.settings',
-      'tabs.settings',
-      'layout.noPanels',
-      'deepReviewActionBar.minimizedDeep',
-      'toolbar.settings',
-      'toolCards.codeReview.reviewMode',
-      'toolCards.sessionControl.workspace',
-      'toolCards.sessionMessage.workspace',
-      'welcome.workspace',
-      'suite.modes.claw',
-      'workspace.title',
-    ];
-    const webUiSourceFiles = listFiles(path.join(root, 'src', 'web-ui', 'src'), (file) => (
-      /\.(?:ts|tsx)$/.test(file)
-    ));
-    const legacyReferences = webUiSourceFiles.flatMap((file) => {
-      const source = fs.readFileSync(file, 'utf8');
-      return legacyWebUiKeys
-        .filter((key) => source.includes(`'${key}'`) || source.includes(`"${key}"`))
-        .map((key) => `${path.relative(root, file)}:${key}`);
-    }).sort();
-
-    assert.deepEqual(
-      webUiDuplicates,
-      [],
-      'web-ui should resolve migrated stable labels from shared terms instead of copied values',
-    );
-    assert.deepEqual(
-      legacyReferences,
-      [],
-      'web-ui source should not call removed local keys for migrated shared terms',
     );
   } finally {
     fs.rmSync(absoluteReportPath, { force: true });
@@ -1029,97 +765,6 @@ auditIntegrationTest('i18n audit fails stale dynamic key source references', { c
   });
 });
 
-test('i18n audit validates static hook translation keys with namespace context', () => {
-  const auditSource = readText('scripts/i18n-audit.mjs');
-
-  assert.match(auditSource, /use(?:I18n|Translation)/, 'audit should inspect hook namespace declarations');
-  assert.match(auditSource, /hookNamespaceByTranslator/, 'audit should remember namespace aliases returned by hooks');
-  assert.match(auditSource, /relative static Web UI i18n key/, 'audit should report missing relative hook keys clearly');
-});
-
-auditIntegrationTest('i18n audit catches array-namespace keys and stale literal fallback budgets', { concurrency: false }, () => {
-  const arrayNamespaceFixture = 'src/web-ui/src/__i18n_array_namespace_audit_fixture__.tsx';
-  const missingFullKey = 'components:__arrayNamespaceAuditMissingKey__';
-  const missingRelativeKey = 'components:__arrayNamespaceAuditMissingRelativeKey__';
-  const missingUseTranslationKey = 'common:__arrayNamespaceUseTranslationMissingKey__';
-
-  withTemporaryTextFile(
-    arrayNamespaceFixture,
-    [
-      "import { useI18n, useTranslation } from '@/infrastructure/i18n';",
-      'export function I18nArrayNamespaceAuditFixture() {',
-      "  const { t } = useI18n(['components', 'common', 'errors']);",
-      "  const [translate] = useTranslation(['common', 'errors']);",
-      `  return <div>{t('${missingFullKey}')}{t('__arrayNamespaceAuditMissingRelativeKey__')}{translate('${missingUseTranslationKey}')}</div>;`,
-      '}',
-      '',
-    ].join('\n'),
-    () => {
-      const result = runI18nAudit();
-      assert.notEqual(result.status, 0, 'array namespace full keys must be included in unknown-key audit');
-      assert.match(
-        `${result.stdout}\n${result.stderr}`,
-        new RegExp(missingFullKey),
-        'audit output should identify the missing array-namespace key',
-      );
-      assert.match(
-        `${result.stdout}\n${result.stderr}`,
-        new RegExp(missingRelativeKey),
-        'audit output should resolve relative array-namespace keys against the first namespace',
-      );
-      assert.match(
-        `${result.stdout}\n${result.stderr}`,
-        new RegExp(missingUseTranslationKey),
-        'audit output should cover useTranslation array namespace aliases',
-      );
-    },
-  );
-
-  const baselinePath = 'scripts/i18n-literal-fallback-baseline.json';
-  const baseline = readJson(baselinePath);
-  baseline.budgets.push({
-    path: 'src/web-ui/src/__removed_literal_fallback_fixture__.tsx',
-    literalDefaultValues: {
-      'common:actions.close': 1,
-    },
-  });
-
-  withTemporaryTextFile(baselinePath, `${JSON.stringify(baseline, null, 2)}\n`, () => {
-    const result = runI18nAudit();
-    assert.notEqual(result.status, 0, 'stale literal fallback baseline entries must fail audit');
-    assert.match(
-      `${result.stdout}\n${result.stderr}`,
-      /no longer has literal i18next defaultValue fallback/,
-      'audit output should explain the stale literal fallback budget',
-    );
-  });
-});
-
-auditIntegrationTest('i18n audit catches composed literal defaultValue fallbacks', { concurrency: false }, () => {
-  const composedFallbackFixture = 'src/web-ui/src/__i18n_composed_default_value_fixture__.tsx';
-
-  withTemporaryTextFile(
-    composedFallbackFixture,
-    [
-      "import { useI18n } from '@/infrastructure/i18n';",
-      'export function I18nComposedDefaultValueFixture() {',
-      "  const { t } = useI18n('flow-chat');",
-      "  return <div>{t('flowChatHeader.turnBadge', { current: 1, defaultValue: `Turn ${1}` + ' fallback' })}</div>;",
-      '}',
-      '',
-    ].join('\n'),
-    () => {
-      const result = runI18nAudit();
-      assert.notEqual(result.status, 0, 'composed static defaultValue fallback should fail audit');
-      assert.match(
-        `${result.stdout}\n${result.stderr}`,
-        /literal i18next defaultValue fallback/,
-        'audit output should identify composed defaultValue fallback debt',
-      );
-    },
-  );
-});
-
 test('i18n generation checks are stable across line endings', () => {
   const generatorSource = readText('scripts/generate-i18n-contract.mjs');
 
@@ -1151,9 +796,7 @@ test('i18n contract surface resource roots point at existing owned resources', (
     assert.ok(fs.existsSync(resourceRoot), `${surface} resourceRoot does not exist: ${config.resourceRoot}`);
 
     for (const localeId of contract.surfaceOrders[surface] ?? []) {
-      if (surface === 'web-ui') {
-        assert.ok(fs.existsSync(path.join(resourceRoot, localeId)), `${surface} is missing ${localeId} locale directory`);
-      } else if (surface === 'installer') {
+      if (surface === 'installer') {
         const locale = localeById.get(localeId);
         assert.ok(locale?.installer?.uiCode, `${localeId} is missing installer.uiCode`);
         assert.ok(fs.existsSync(path.join(resourceRoot, `${locale.installer.uiCode}.json`)), `${surface} is missing ${localeId} resource JSON`);

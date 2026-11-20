@@ -27,9 +27,11 @@ observation/targeting helpers, used by both built-in and external browser client
 ```bash
 node scripts/test-computer-use-context.mjs
 # Real Chromium collection and ref activation, followed by compiled Rust
-# parsing/presentation of the actual browser payload (Node 22/24 + Chrome):
+# parsing/presentation of the actual browser payload. Node 22+ drives a
+# disposable headless Chrome/Chromium/Edge (or CHROME_PATH) over CDP through
+# scripts/headless-chrome-cdp.mjs; no Puppeteer or WebDriver install:
 node scripts/test-browser-snapshot.mjs
-# Production dispatcher workflow in disposable Chromium (same Node requirement):
+# Production dispatcher workflow in disposable Chromium (same requirements):
 node scripts/test-browser-workflow.mjs
 cargo test -p openbitfun-core --no-default-features --features agent-runtime,tools-browser-web,tools-computer-use,git --lib browser_control::
 cargo test -p openbitfun-core --no-default-features --features agent-runtime,tools-browser-web,tools-computer-use,git --lib control_hub_tool::

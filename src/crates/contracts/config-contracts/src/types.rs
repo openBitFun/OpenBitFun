@@ -836,6 +836,31 @@ pub struct TerminalConfig {
     pub cursor_blink: bool,
     pub cursor_style: String,
     pub scrollback: u32,
+    /// Saved terminal profiles keyed by workspace id. Older configs have none;
+    /// the rules that edit it live in `settings_mutations::terminal_profiles`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub profiles: std::collections::BTreeMap<String, Vec<TerminalProfileConfig>>,
+}
+
+/// One saved terminal profile: a shell plus the command it starts with.
+/// Fields this build does not know are kept in `extra`, so a profile written by
+/// a newer build survives an edit made here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalProfileConfig {
+    pub id: String,
+    pub name: String,
+    /// The discovered shell this profile starts, by its own id.
+    #[serde(alias = "shellId")]
+    pub shell_id: String,
+    /// A plain shell type name, for a host that names shells instead of numbering them.
+    #[serde(alias = "shellType")]
+    pub shell_type: String,
+    /// Written into the shell once it is up, without the trailing newline.
+    #[serde(alias = "startupCommand")]
+    pub startup_command: String,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Workspace configuration.
@@ -2330,6 +2355,7 @@ impl Default for TerminalConfig {
             cursor_blink: true,
             cursor_style: "block".to_string(),
             scrollback: 1000,
+            profiles: std::collections::BTreeMap::new(),
         }
     }
 }

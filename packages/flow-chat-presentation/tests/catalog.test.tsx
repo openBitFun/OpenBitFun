@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { renderToString } from 'react-dom/server';
-import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { componentRegistry } from '@openbitfun/ui/registry';
 import { compatibilityToolPresentationOwners, dedicatedToolNames, genericToolNames, productOwnedToolNames, toolPresentationRegistry, toolsForComponent } from '../src/registry';
@@ -12,33 +11,12 @@ import { translateFromCatalog } from '../../../design-system/apps/design-lab/src
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
-function productionAdapterNames(name: string): string[] {
-  const source = ts.createSourceFile('index.ts', read('../../../src/web-ui/src/flow_chat/tool-cards/index.ts'), ts.ScriptTarget.Latest, true);
-  for (const statement of source.statements) {
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (declaration.name.getText(source) !== name || !declaration.initializer) continue;
-      let expression = declaration.initializer;
-      while (ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression)) expression = expression.expression;
-      if (!ts.isObjectLiteralExpression(expression)) throw new Error(`Unexpected adapter declaration: ${name}`);
-      return expression.properties.map((property) => property.name?.getText(source).replace(/['"]/g, '') ?? '').sort();
-    }
-  }
-  throw new Error(`Missing production adapter registry: ${name}`);
-}
-
-it('the catalog matches production adapter owners and real public exports', () => {
+// The React desktop UI (src/web-ui) that held the production tool-card adapter registries was retired;
+// Design Lab is now this catalog's only renderer, so consistency is checked against it and the public exports.
+it('the catalog matches its owners, Design Lab specimens and real public exports', () => {
   const standard = Object.entries(toolPresentationRegistry).filter(([, entry]) => entry.owner === 'standard');
   const compatibility = Object.entries(compatibilityToolPresentationOwners);
   expect(compatibility.map(([name]) => name).filter(name => dedicatedToolNames.has(name))).toEqual([]);
-  expect(productionAdapterNames('STANDARD_TOOL_CARD_ADAPTERS')).toEqual([
-    ...standard.map(([name]) => name),
-    ...compatibility.filter(([, owner]) => owner === 'standard').map(([name]) => name),
-  ].sort());
-  expect(productionAdapterNames('PRODUCT_OWNED_TOOL_CARD_COMPONENTS')).toEqual([
-    ...productOwnedToolNames,
-    ...compatibility.filter(([, owner]) => owner === 'product').map(([name]) => name),
-  ].sort());
   expect([...dedicatedToolNames].sort()).toEqual([...standard.map(([name]) => name), ...productOwnedToolNames].sort());
   const published = new Set(componentRegistry.map(({ name }) => name));
   for (const entry of Object.values(toolPresentationRegistry)) {
@@ -64,9 +42,8 @@ it('every built-in backend tool has a current, compatibility, generic or deferre
 
 it('the private presentation layer has no application, store or transport dependency', () => {
   for (const path of ['exec/ExecProcessPresentation.tsx', 'exec/model.ts', 'thinking.ts', 'explore.ts', 'terminal/TerminalOutputRenderer.tsx', 'registry.ts']) {
-    expect(read(`../src/${path}`)).not.toMatch(/from\s+['"](?:@\/|.*web-ui|.*tauri|zustand)/);
+    expect(read(`../src/${path}`)).not.toMatch(/from\s+['"](?:@\/|.*src\/(?:apps|nsh-ui)\/|.*tauri|zustand)/);
   }
-  expect(read('../../../src/web-ui/src/flow_chat/tool-cards/ExecProcessToolCardView.tsx')).toContain('<ExecProcessPresentation');
   expect(read('../../../design-system/apps/design-lab/src/preview/FlowChatScenarios.tsx')).toContain('<ExecProcessPresentation');
   expect(read('../src/terminal/LazyTerminalOutputRenderer.tsx')).toContain("import('./TerminalOutputRenderer')");
 });

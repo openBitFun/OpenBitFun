@@ -8,8 +8,9 @@ mod subscriber;
 
 pub use openbitfun_services_core::token_usage::types;
 pub use openbitfun_services_core::token_usage::{
-    aggregate_statistics, ModelTokenStats, SessionTokenStats, TimeRange, TokenUsageQuery,
-    TokenUsageRecord, TokenUsageStatisticsRequest, TokenUsageSummary, UsageAttribution,
+    aggregate_statistics, ModelTokenStats, SessionTokenStats, TimeRange, TokenUsageActivity,
+    TokenUsageActivityRequest, TokenUsageQuery, TokenUsageRecord, TokenUsageStatisticsRequest,
+    TokenUsageSummary, UsageActivityDay, UsageActivityMonthHeader, UsageAttribution,
     UsageAttributionStatus, UsageDimensionAttribution, UsageGranularity, UsageStatistics,
     UsageStatisticsEntry, UsageStatisticsFilter, UsageStatisticsFilterKind, UsageTrendPoint,
 };

@@ -81,6 +81,43 @@ fn can_delete_owned_skill(source_id: &str, source_slot: &str, is_builtin: bool) 
     source_slot.starts_with("openbitfun")
 }
 
+/// Whether a skill's enable switch applies on this host: project skills of a
+/// remote workspace live on the remote and are not toggled from here.
+fn can_toggle_skill(level: &str, remote_workspace: bool) -> bool {
+    !(remote_workspace && level.eq_ignore_ascii_case("project"))
+}
+
+/// Adds `canDelete` / `canToggle` to each serialized skill row (logic batch 4),
+/// with the same rules `delete_skill` and the toggle commands enforce, so
+/// clients stop deriving them from `isBuiltin` / `sourceId` / `level`.
+fn annotate_skill_capabilities(response: &mut Value, remote_workspace: bool) {
+    let rows = match response {
+        Value::Array(rows) => rows,
+        Value::Object(object) => match object.get_mut("skills") {
+            Some(Value::Array(rows)) => rows,
+            _ => return,
+        },
+        _ => return,
+    };
+    for row in rows {
+        let Some(object) = row.as_object_mut() else {
+            continue;
+        };
+        let text = |key: &str| object.get(key).and_then(Value::as_str).unwrap_or_default();
+        let can_delete = can_delete_owned_skill(
+            text("sourceId"),
+            text("sourceSlot"),
+            object
+                .get("isBuiltin")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
+        let can_toggle = can_toggle_skill(text("level"), remote_workspace);
+        object.insert("canDelete".into(), Value::Bool(can_delete));
+        object.insert("canToggle".into(), Value::Bool(can_toggle));
+    }
+}
+
 fn ensure_skill_can_be_deleted(skill: &SkillInfo) -> Result<(), String> {
     if can_delete_owned_skill(&skill.source_id, &skill.source_slot, skill.is_builtin) {
         Ok(())
@@ -598,7 +635,7 @@ async fn clear_project_mode_skill_selection_remote(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_skill_configs(
     state: State<'_, AppState>,
     force_refresh: Option<bool>,
@@ -617,9 +654,13 @@ pub async fn get_skill_configs(
     let all_skills =
         get_skill_scan_report_for_workspace_input(&state, registry, workspace.as_ref()).await?;
 
+    let remote_workspace = workspace
+        .as_ref()
+        .is_some_and(|record| record.workspace_kind == WorkspaceKind::Remote);
     let mut response =
         serialize_skill_scan_response(all_skills, include_diagnostics.unwrap_or(false))
             .map_err(|e| format!("Failed to serialize skill configs: {}", e))?;
+    annotate_skill_capabilities(&mut response, remote_workspace);
     if let Some(object) = response.as_object_mut() {
         let supported = match workspace.as_ref() {
             Some(record) => record.workspace_kind != WorkspaceKind::Remote,
@@ -685,7 +726,7 @@ async fn skill_availability_settings(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_global_skill_settings(
     request: Option<GetGlobalSkillSettingsRequest>,
 ) -> Result<GlobalSkillSettingsResponse, String> {
@@ -697,7 +738,7 @@ pub async fn get_global_skill_settings(
     skill_availability_settings(workspace.as_ref()).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_global_skill_disabled(
     request: SetGlobalSkillDisabledRequest,
 ) -> Result<GlobalSkillSettingsResponse, String> {
@@ -747,7 +788,7 @@ pub async fn set_global_skill_disabled(
     skill_availability_settings(workspace.as_ref()).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_mode_skill_configs(
     state: State<'_, AppState>,
     mode_id: String,
@@ -842,7 +883,7 @@ pub async fn get_mode_skill_configs(
         .map_err(|e| format!("Failed to serialize mode skill configs: {}", e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_mode_skill_disabled(
     state: State<'_, AppState>,
     mode_id: String,
@@ -974,7 +1015,7 @@ pub async fn set_mode_skill_disabled(
     ))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn replace_mode_skill_selection(
     state: State<'_, AppState>,
     request: ReplaceModeSkillSelectionRequest,
@@ -1043,7 +1084,7 @@ pub async fn replace_mode_skill_selection(
     ))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reset_mode_skill_selection(
     state: State<'_, AppState>,
     request: ResetModeSkillSelectionRequest,
@@ -1107,7 +1148,7 @@ async fn resolve_external_skill_import_source(
     Ok(source)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn validate_skill_path(
     path: String,
     source_key: Option<String>,
@@ -1192,7 +1233,7 @@ pub async fn validate_skill_path(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn add_skill(
     _state: State<'_, AppState>,
     source_path: String,
@@ -1327,7 +1368,7 @@ async fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_skill(
     state: State<'_, AppState>,
     skill_key: String,
@@ -1411,6 +1452,43 @@ pub async fn delete_skill(
         skill_path.display()
     );
     Ok(format!("Skill '{}' deleted successfully", skill_info.name))
+}
+
+#[cfg(test)]
+mod capability_flag_tests {
+    use super::*;
+
+    #[test]
+    fn skill_rows_carry_delete_and_toggle_flags() {
+        let mut array = serde_json::json!([
+            { "key": "a", "isBuiltin": true, "sourceId": "openbitfun", "sourceSlot": "", "level": "user" },
+            { "key": "b", "sourceId": "openbitfun", "sourceSlot": "", "level": "project" },
+            { "key": "c", "sourceId": "claude", "sourceSlot": "", "level": "user" },
+            { "key": "d", "sourceSlot": "openbitfun-user", "level": "user" }
+        ]);
+        annotate_skill_capabilities(&mut array, true);
+        let flags: Vec<(bool, bool)> = array
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                (
+                    row["canDelete"].as_bool().expect("canDelete"),
+                    row["canToggle"].as_bool().expect("canToggle"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            vec![(false, true), (true, false), (false, true), (true, true)]
+        );
+
+        let mut report = serde_json::json!({ "skills": [{ "key": "b", "level": "project" }], "diagnostics": [] });
+        annotate_skill_capabilities(&mut report, false);
+        assert_eq!(report["skills"][0]["canToggle"], true);
+        // No source at all is not an OpenBitFun-owned skill, which `delete_skill` refuses.
+        assert_eq!(report["skills"][0]["canDelete"], false);
+    }
 }
 
 #[cfg(test)]
@@ -1729,7 +1807,7 @@ mod tests {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_skill_market(
     state: State<'_, AppState>,
     request: SkillMarketListRequest,
@@ -1749,7 +1827,7 @@ pub async fn list_skill_market(
         .response(request.include_diagnostics)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_skill_market(
     state: State<'_, AppState>,
     request: SkillMarketSearchRequest,
@@ -1775,7 +1853,7 @@ pub async fn search_skill_market(
     .response(request.include_diagnostics)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn download_skill_market(
     state: State<'_, AppState>,
     request: SkillMarketDownloadRequest,

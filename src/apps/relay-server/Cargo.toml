@@ -17,6 +17,11 @@ path = "src/main.rs"
 name = "relay-admin"
 path = "src/bin/relay_admin.rs"
 
+# Per-account mesh credentials (EasyTier); see deploy/easytier/README.md.
+[[bin]]
+name = "openbitfun-mesh-issuer"
+path = "src/bin/mesh_issuer.rs"
+
 [dependencies]
 # Dependencies stay explicit so this application and relay-service can be
 # built from their reduced standalone Docker context.

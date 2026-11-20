@@ -67,9 +67,8 @@ MCP 副本的连接状态不借用外部来源 activation，页面明确“尚�
 本地 Desktop 导入能力不外推至 Server/Web、Peer、远程工作区；不支持写入时显示当前环境限制，仍可查看宿主返回的目录。
 远程控制与 Detached Dispatch 不因共享此展示代码而获得导入能力；任何新目标写入能力仍需独立协商和验证。
 
-状态投影与交互回归见 Web UI 的 `ecosystemContentPresentation.test.ts`、`ExternalAgentContent.test.tsx`。
-其中远程工作区和 Peer 为前端能力门禁模拟，不是 SSH、IM、Peer 或 Detached Dispatch 端到端证据；手工步骤见
-[Web UI 使用说明](../../../src/web-ui/README.zh-CN.md#外部导入状态检查)。
+状态投影与交互回归见原生桌面界面的 `src/nsh-ui/test/external-import.test.tsx`（`cd src/nsh-ui && nsh test .`）。
+其中远程工作区和 Peer 为前端能力门禁模拟，不是 SSH、IM、Peer 或 Detached Dispatch 端到端证据。
 
 ### Claude Code 会话来源
 
@@ -781,8 +780,8 @@ flowchart TB
   EcosystemAdapters["adapters/*\n生态解析与原生覆盖"]
   Services["services/*\n文件观察、原子存储、进程/网络"]
   CapabilityOwners["execution / services / core owners\nCommand、Tool、Subagent、MCP"]
-  DesktopAdapter["apps/desktop\nTauri / Peer Host adapter"]
-  WebUi["web-ui\n简短概览 / 能力专项设置"]
+  DesktopAdapter["apps/desktop\n原生宿主 / Peer Host adapter"]
+  WebUi["nsh-ui\n简短概览 / 能力专项设置"]
   Cli["apps/cli\n/extensions /tools /agent /mcp /hooks"]
 
   WebUi --> DesktopAdapter

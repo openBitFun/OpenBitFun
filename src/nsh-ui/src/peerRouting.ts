@@ -1,14 +1,44 @@
 // Peer Device Mode routing, kept in one module so it can be swapped out.
 //
-// backend-owned: today the UI wraps a product command in a HostInvoke envelope
-// and sends it through this machine's `account_device_rpc`, and filters the
-// peer's re-emitted events by their source tag. The target design connects
-// this UI's backend connection to the peer's backend instead, at which point
-// this module goes away. Keep it thin: no product decisions here, only the
-// envelope and the tag.
+// Two transports, negotiated per device (`peerStore.ts`):
+// - `mesh` (devices advertising `obp_v1` + `mesh_v1`): this UI's backend
+//   connection is the peer's backend over OBP (`meshPeerConnection.ts`).
+//   Registry-`Proxied` commands go to the peer and `ControllerLocal` ones stay
+//   here; owner-only events (account, window, mesh, updater, shell) come from
+//   this machine and every other event from the peer. Both sets are generated
+//   from the Product Operation Registry (`generated/peerSurface.ts`).
+// - `relay` (older devices): the legacy path wraps a product command in a
+//   HostInvoke envelope sent through this machine's `account_device_rpc`, and
+//   filters the peer's re-emitted events by their source tag. It stays until no
+//   supported peer needs it. Keep it thin: only the envelope and the tag.
 
-import { PEER_CONTROLLER_LOCAL_COMMANDS } from "./generated/peerSurface";
+import {
+  PEER_CONTROLLER_LOCAL_COMMANDS,
+  PEER_OWNER_ONLY_EVENT_PREFIXES,
+} from "./generated/peerSurface";
 import type { PeerScope } from "./peerState";
+
+/**
+ * The old relay transport's data-plane commands. A mesh peer never needs them;
+ * `test/peer-mesh.test.tsx` fails if a mesh session invokes one.
+ */
+export const LEGACY_RELAY_TRANSPORT_COMMANDS: ReadonlySet<string> = new Set([
+  "account_device_rpc",
+  "account_execute_on_device",
+  "account_subscribe_session",
+  "account_unsubscribe_session",
+  "account_load_older_session",
+]);
+
+/** Whether a command stays on this machine while a peer is driven (registry `ControllerLocal`). */
+export function staysOnController(command: string): boolean {
+  return PEER_CONTROLLER_LOCAL_COMMANDS.has(command);
+}
+
+/** Whether an event belongs to the backend owner's machine (registry event stance). */
+export function isOwnerOnlyEvent(event: string): boolean {
+  return PEER_OWNER_ONLY_EVENT_PREFIXES.some(prefix => event.startsWith(prefix));
+}
 
 /** Payload key injected by the Rust controller on re-emitted Peer DeviceEvents. */
 export const PEER_EVENT_SOURCE_KEY = "__openbitfunSourceDeviceId";
@@ -35,7 +65,7 @@ export function peerRouteFor(
   args: Record<string, unknown> | undefined,
   positional: boolean,
 ): PeerRoute | null {
-  if (!peer || PEER_CONTROLLER_LOCAL_COMMANDS.has(command)) return null;
+  if (!peer || peer.transport === "mesh" || PEER_CONTROLLER_LOCAL_COMMANDS.has(command)) return null;
   const forwarded = positional ? (args ?? null) : { request: args?.request ?? null };
   return {
     command: PEER_RPC_COMMAND,
@@ -84,6 +114,7 @@ const SURFACE_SCOPED_EVENTS = new Set<string>([
   "session-state",
   "file-system-changed",
   "file-watch-status-changed",
+  "git://status-changed",
   "permission://event",
   "account://settings-applied",
   "ai://model-catalog-updated",

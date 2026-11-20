@@ -56,8 +56,8 @@ Relay URL. A private Relay therefore needs a matching client build.
 1. Fork this workspace and read `CONTRIBUTING.md`. Build the Relay and mobile
    controller from the same revision. Keep your fork's changes in source control.
 2. Select your HTTPS endpoint in `src/crates/contracts/product-domains/src/account.rs`, then align
-   the frontend constants in `src/web-ui/src/infrastructure/remote-connect/remoteConnectionState.ts`
-   and `src/mobile-web/src/services/pairingLink.ts`. Native clients have
+   the mobile controller constant in `src/mobile-web/src/services/pairingLink.ts` (the desktop
+   UI keeps no copy of the endpoint). Native clients have
    matching constants in KMP `core-transport/AccountDeviceLink.kt` and HarmonyOS
    `services/AccountDeviceLink.ets`; update the HarmonyOS account-link parser too.
    Search for `https://remote.openbitfun.com/relay?v=` to verify every runtime

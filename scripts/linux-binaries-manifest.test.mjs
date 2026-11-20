@@ -415,6 +415,74 @@ test('website download manifest uses installer while updater manifest keeps setu
     website.platforms['darwin-aarch64'].signatureUrl,
     'https://openbitfun.test/release/1.2.3/OpenBitFun_1.2.3_aarch64.dmg.sig'
   );
+  assert.equal(website.platforms['windows-x86_64'].format, 'exe');
+  assert.equal(website.platforms['windows-x86_64'].kind, 'installer');
+});
+
+test('website downloads of a native desktop release come from manual installers only', (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-native-downloads-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const versionDir = path.join(temp, 'release', '1.3.0');
+  fs.mkdirSync(versionDir, { recursive: true });
+  const base = 'https://openbitfun.test/release/1.3.0';
+  const archive = { url: `${base}/OpenBitFun-nsh_1.3.0_aarch64.app.tar.gz`, signature: 'sig' };
+  const manual = (name) => ({ url: `${base}/${name}`, signature_url: `${base}/${name}.sig` });
+  const updater = {
+    version: '1.3.0',
+    platforms: { 'darwin-aarch64': archive, 'darwin-aarch64-nsh': archive },
+    manual_installers: {
+      'darwin-aarch64': manual('OpenBitFun_1.3.0_aarch64.dmg'),
+      'windows-x86_64': manual('OpenBitFun-nsh_1.3.0_x64-windows.zip'),
+      'linux-x86_64': manual('OpenBitFun-nsh_1.3.0_x86_64-linux.tar.gz'),
+    },
+  };
+  fs.writeFileSync(path.join(versionDir, 'latest-v1.json'), `${JSON.stringify(updater, null, 2)}\n`);
+  const write = () => spawnSync('bash', ['-c', `
+      source "$SYNC_SCRIPT"
+      VERSION_DIR="$TEST_VERSION_DIR"
+      OPENBITFUN_BASE_URL="https://openbitfun.test/release"
+      WINDOWS_INSTALLER_FILENAME="openbitfun-installer.exe"
+      WEBSITE_DOWNLOADS_MANIFEST="downloads.json"
+      write_website_download_manifest
+    `], {
+    encoding: 'utf8',
+    env: { ...process.env, SYNC_SCRIPT: path.join(repoRoot, 'scripts/openbitfun-release-sync.sh'), TEST_VERSION_DIR: versionDir },
+  });
+  const result = write();
+  assert.equal(result.status, 0, result.stderr);
+  const website = JSON.parse(fs.readFileSync(path.join(versionDir, 'downloads.json'), 'utf8'));
+  assert.deepEqual(Object.keys(website.platforms).sort(), ['darwin-aarch64', 'linux-x86_64', 'windows-x86_64']);
+  assert.equal(website.platforms['windows-x86_64'].url, `${base}/OpenBitFun-nsh_1.3.0_x64-windows.zip`);
+  assert.equal(website.platforms['windows-x86_64'].signatureUrl, `${base}/OpenBitFun-nsh_1.3.0_x64-windows.zip.sig`);
+  assert.equal(website.platforms['linux-x86_64'].url, `${base}/OpenBitFun-nsh_1.3.0_x86_64-linux.tar.gz`);
+  assert.equal(website.platforms['darwin-aarch64'].url, `${base}/OpenBitFun_1.3.0_aarch64.dmg`);
+  // The website labels the native Windows zip and Linux tarball as archives to
+  // extract and names the program to start (the runner of each package).
+  const describe = ({ fileName, format, kind, entry }) => ({ fileName, format, kind, entry });
+  assert.deepEqual(describe(website.platforms['windows-x86_64']), {
+    fileName: 'OpenBitFun-nsh_1.3.0_x64-windows.zip',
+    format: 'zip',
+    kind: 'archive',
+    entry: 'OpenBitFun/openbitfun-desktop.exe',
+  });
+  assert.deepEqual(describe(website.platforms['linux-x86_64']), {
+    fileName: 'OpenBitFun-nsh_1.3.0_x86_64-linux.tar.gz',
+    format: 'tar.gz',
+    kind: 'archive',
+    entry: 'OpenBitFun/openbitfun-nsh',
+  });
+  assert.deepEqual(describe(website.platforms['darwin-aarch64']), {
+    fileName: 'OpenBitFun_1.3.0_aarch64.dmg',
+    format: 'dmg',
+    kind: 'installer',
+    entry: undefined,
+  });
+
+  delete updater.manual_installers['windows-x86_64'];
+  fs.writeFileSync(path.join(versionDir, 'latest-v1.json'), `${JSON.stringify(updater, null, 2)}\n`);
+  const missing = write();
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /declares no Windows download/);
 });
 
 test('stable Linux archives are mirrored before the much larger Desktop packages', () => {

@@ -169,8 +169,8 @@ test("the NSH desktop shell owns the window: menu shortcuts, close press, About 
   await app.press("About OpenBitFun");
   await app.waitFor("9.8.7");
 
-  // The updater is Tauri's; the native shell says it is unsupported instead of failing.
-  expect(wire.invokes.map(call => call.command)).not.toContain("get_pending_update");
+  // The native backend runs the app's own update channel: the menu reads the staged update.
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "get_pending_update"));
 
   // The close button asks the page; macOS hides the window and keeps running.
   await app.window("main").pressClose();
@@ -296,4 +296,41 @@ test("driving a peer over the native wire sends the page host's exact device RPC
   const viaWire = await run(true);
   expect(viaWire.length).toBeGreaterThan(0);
   expect(viaWire).toEqual(viaPageHost);
+});
+
+test("the native shell attaches to the backend and answers its shell requests", async () => {
+  const backend = createBackend();
+  const wire = wireHost(backend);
+  const app = await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
+
+  await app.waitFor("NSH skeleton");
+  // The shell announces exactly the operations it runs.
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_attach"));
+  const attach = wire.invokes.find(call => call.command === "host_shell_attach");
+  const ops = (attach?.args.request as { ops?: string[] } | undefined)?.ops ?? [];
+  for (const op of ["app.quit", "notification.show", "window.hide", "clipboard.readImage", "loginItem.set"]) {
+    expect(ops).toContain(op);
+  }
+
+  // A backend command that needs the window (quit_app's sibling minimize_to_tray) asks the shell.
+  await app.host.send(
+    "openbitfun.wireEvents",
+    wire.batch([{ event: "host://shell-request", payload: { id: 41, op: "window.hide", args: null } }]),
+  );
+  await app.waitUntil(() => app.window("main").state()?.visible === false);
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_respond"));
+  const answered = wire.invokes.find(call => call.command === "host_shell_respond");
+  expect(answered?.args.request).toEqual({ id: 41, ok: true, value: null });
+
+  // An operation the shell does not run is refused, not left waiting.
+  await app.host.send(
+    "openbitfun.wireEvents",
+    wire.batch([{ event: "host://shell-request", payload: { id: 42, op: "window.teleport", args: {} } }]),
+  );
+  await app.waitUntil(() =>
+    wire.invokes.some(call => (call.args.request as { id?: number } | undefined)?.id === 42),
+  );
+  const refused = wire.invokes.find(call => (call.args.request as { id?: number } | undefined)?.id === 42);
+  expect((refused?.args.request as { ok?: boolean }).ok).toBe(false);
+  expect(String((refused?.args.request as { error?: string }).error)).toContain("unsupported_in_native_host");
 });

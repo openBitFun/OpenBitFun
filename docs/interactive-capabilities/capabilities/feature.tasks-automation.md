@@ -36,8 +36,8 @@ Plan and track automated work in the Task Board—view upcoming runs and a month
   - Why & how: Manage schedules visually in the Todo editor or ask the agent in chat to add, update, pause, remove, or test-run a job immediately.
 - **由专用智能体工具控制 / Delegated Agent tool** · `GetTime` / `Cron` · 设置单次、固定间隔或自定义 Cron 时间表
   - Choose one-time, interval, or custom Cron schedule types
-  - 说明：既支持“今天 17:30 跑一次”和“每 2 小时跑一次”，也支持标准 Cron 表达式与时区感知，AI 创建前会先核对当前准确时间。
-  - Why & how: Supports exact one-off timestamps, simple intervals (every N minutes/hours/days), and full timezone-aware Cron expressions verified against live system time.
+  - 说明：既支持“今天 17:30 跑一次”和“每 2 小时跑一次”，也支持标准 Cron 表达式与时区感知，AI 创建前会先核对当前准确时间。5 段表达式的星期字段按标准 Unix 规则：0 和 7 是周日，1-5 是周一到周五（升级说明：旧版本把 1-5 当成周日到周四执行，升级后改为周一到周五；曾用 2-6 凑工作日的任务请改回 1-5）。
+  - Why & how: Supports exact one-off timestamps, simple intervals (every N minutes/hours/days), and full timezone-aware Cron expressions verified against live system time. In 5-field expressions the day of week follows standard Unix cron: 0 and 7 are Sunday, 1-5 is Monday to Friday (upgrade note: earlier versions ran 1-5 on Sunday to Thursday; after upgrading it runs Monday to Friday, so jobs that used 2-6 to get weekdays should go back to 1-5).
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在月度日历上点选日期，直观预览下一次与未来排期分布
   - Click any date on the calendar to preview next and future run occurrences
   - 说明：复杂 Cron 表达式不用自己心算——在日历上直接看到每天排了几项任务，避免多个重任务撞在同一时刻。

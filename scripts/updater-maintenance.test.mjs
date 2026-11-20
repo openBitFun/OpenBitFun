@@ -5,16 +5,21 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-test('desktop updates use the official registry crate without a source patch', () => {
+test('desktop updates never depend on a patched updater crate', () => {
   const manifest = readFileSync(new URL('../Cargo.toml', import.meta.url), 'utf8');
-  const patches = manifest.split('[patch.crates-io]')[1].split(/^\[/m)[0];
+  const patches = manifest.split('[patch.crates-io]')[1]?.split(/^\[/m)[0] ?? '';
   assert.doesNotMatch(patches, /^tauri-plugin-updater\s*=/m);
   assert.equal(existsSync(new URL('../third_party/tauri-plugin-updater', import.meta.url)), false);
+  // The native desktop verifies updates with minisign-verify directly; while a
+  // workspace member still locks the Tauri updater plugin, it must be the
+  // registry crate.
   const lock = readFileSync(new URL('../Cargo.lock', import.meta.url), 'utf8');
   const updater = lock.match(/\[\[package\]\]\r?\nname = "tauri-plugin-updater"[\s\S]*?(?=\[\[package\]\]|$)/)?.[0];
-  assert.ok(updater);
-  assert.match(updater, /source = "registry\+https:\/\/github.com\/rust-lang\/crates.io-index"/);
-  assert.match(updater, /checksum = "[0-9a-f]{64}"/);
+  if (updater) {
+    assert.match(updater, /source = "registry\+https:\/\/github.com\/rust-lang\/crates.io-index"/);
+    assert.match(updater, /checksum = "[0-9a-f]{64}"/);
+  }
+  assert.match(lock, /name = "minisign-verify"/);
 });
 
 test('packaged native maintenance does not consume application flags after /ARGS', {

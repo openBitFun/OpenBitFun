@@ -18,12 +18,12 @@ import { createSubagentMotionPlayer, type SubagentMotionPlayer } from "./subagen
 import "./SubagentMotionPreview.css";
 
 const characterSources = import.meta.glob<string>(
-  "../../../../../src/web-ui/src/flow_chat/assets/subagent-avatars/robot-*.svg",
+  "../../../../packages/ui/src/brand/assets/subagent-avatars/robot-*.svg",
   { eager: true, query: "?raw", import: "default" },
 );
 
 const characterArtworks = new Map(SUBAGENT_AVATAR_CATALOG.map(({ id }) => {
-  const source = characterSources[`../../../../../src/web-ui/src/flow_chat/assets/subagent-avatars/${id}.svg`];
+  const source = characterSources[`../../../../packages/ui/src/brand/assets/subagent-avatars/${id}.svg`];
   if (!source) throw new Error(`Missing Subagent motion artwork: ${id}`);
   // These are trusted local assets. Each sample gets its name from the preview.
   const artwork = source

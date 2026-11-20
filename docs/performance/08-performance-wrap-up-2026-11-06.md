@@ -1,5 +1,7 @@
 # 性能优化收尾报告
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 日期：2026-11-06。范围：工作台页面、首页与隐藏页面、长驻留、生成中并发、终端、Browser、MiniApp、桌宠及E2E测量。按用户要求结束本轮工作，文件编辑器专项已停止；没有继续分析或调整Monaco生命周期。
 
 ## 整体结论

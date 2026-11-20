@@ -7,9 +7,10 @@
 // by the long-polled `nextEvents`, exactly as the native module hands them out.
 
 import { host } from "nsh";
-import { installBackendConnection, installWindowShell } from "../../src/bridge";
+import { installBackendConnection, installWindowShell, invokeCommand, listenEvent } from "../../src/bridge";
 import { createJsonWireConnection } from "../../src/jsonWireConnection";
 import { createNshDesktopShell } from "../../src/nshDesktopShell";
+import { startNshShellRequests } from "../../src/nshShellRequests";
 
 const queued: string[] = [];
 let waiting: ((batch: string) => void) | null = null;
@@ -41,12 +42,15 @@ installBackendConnection(
   ),
 );
 
-installWindowShell(
-  createNshDesktopShell({
-    pickDirectory: async options => {
-      const text = await host.call<string>("openbitfun.wirePickDirectory", options);
-      const value: unknown = text ? JSON.parse(text) : null;
-      return typeof value === "string" && value ? value : null;
-    },
-  }),
-);
+const shell = createNshDesktopShell({
+  pickDirectory: async options => {
+    const text = await host.call<string>("openbitfun.wirePickDirectory", options);
+    const value: unknown = text ? JSON.parse(text) : null;
+    return typeof value === "string" && value ? value : null;
+  },
+});
+
+installWindowShell(shell);
+// The backend asks this shell for window, tray, notification, clipboard,
+// login-item and lifecycle operations its commands need.
+startNshShellRequests({ shell, invokeCommand, listenEvent });

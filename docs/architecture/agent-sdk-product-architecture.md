@@ -414,7 +414,7 @@ flowchart LR
 - 浏览器不直接启动或连接本机 SDK Host，不持有 Provider/MCP/OpenBitFun Host 凭据。
 - 开发者后端负责用户认证、租户隔离、速率限制，并把公开 SDK 事件转换为自己的前端协议。
 - OpenBitFun SDK 负责 Agent 能力；它不负责 React 状态、路由、主题、组件或业务认证。
-- 第一方 `src/web-ui` 不作为 npm SDK 发布；它包含 Desktop/Server 产品假设和内部命令，直接复用会固化私有 ABI。
+- 第一方桌面界面（原 `src/web-ui`，现为原生界面 `src/nsh-ui`）不作为 npm SDK 发布；它包含 Desktop/Server 产品假设和内部命令，直接复用会固化私有 ABI。
 
 SDK Preview 提供最小参考应用，证明浏览器认证后端、流式 Query、取消，以及无法继续时显示 `action_required`；
 Beta 再扩展 Permission callback、审批提交和断线/Host 崩溃恢复。参考应用是示例而不是稳定 UI ABI。

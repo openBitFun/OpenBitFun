@@ -1,9 +1,9 @@
 //! Sink transport adapter.
 //!
 //! Delivers projected frontend events to an in-process sink (an ordered event
-//! hub, a channel, a protocol server). Used by hosts without a webview event
-//! bus. Agentic event names and payload shapes are projected by
-//! `openbitfun-events`, exactly as the Tauri adapter projects them.
+//! hub, a channel, a protocol server). Agentic event names and payload shapes
+//! are projected by `openbitfun-events`, so every client sees the same wire
+//! events.
 
 use crate::traits::TransportAdapter;
 use async_trait::async_trait;

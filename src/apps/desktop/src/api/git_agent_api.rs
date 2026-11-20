@@ -37,7 +37,7 @@ pub struct PreviewCommitMessageResponse {
     pub deletions: u32,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn generate_commit_message(
     app_state: State<'_, AppState>,
     request: GenerateCommitMessageRequest,
@@ -52,7 +52,7 @@ pub async fn generate_commit_message(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn quick_commit_message(
     app_state: State<'_, AppState>,
     request: QuickCommitMessageRequest,
@@ -72,7 +72,7 @@ pub async fn quick_commit_message(
         })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn preview_commit_message(
     app_state: State<'_, AppState>,
     request: PreviewCommitMessageRequest,

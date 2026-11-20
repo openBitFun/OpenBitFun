@@ -25,42 +25,6 @@
       ]
     },
     {
-      "id": "web-ui",
-      "label": "Web UI",
-      "kind": "canonical-web",
-      "owner": "@openbitfun/theme-openbitfun plus Web UI Appearance theme-tokens",
-      "root": "src/web-ui",
-      "audit": {
-        "engine": "theme",
-        "baseline": "scripts/theme-color-governance-baseline.json",
-        "excludePaths": [
-          "src/flow_chat/assets/subagent-avatars/robot-01.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-02.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-03.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-04.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-05.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-06.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-07.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-08.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-09.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-10.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-11.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-12.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-13.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-14.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-15.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-16.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-17.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-18.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-19.svg",
-          "src/flow_chat/assets/subagent-avatars/robot-20.svg",
-          "src/tools/generative-ui/components/openui",
-          "src/tools/generative-ui/components/openuiLibrary.tsx",
-          "src/tools/generative-ui/components/vendor"
-        ]
-      }
-    },
-    {
       "id": "design-system-ui",
       "label": "Public design-system UI package",
       "kind": "canonical-web",
@@ -69,7 +33,29 @@
       "audit": {
         "engine": "theme",
         "baseline": "scripts/theme-color-governance-baseline.design-system-ui.json",
-        "excludePaths": ["src/brand/assets/subagent-egg.svg"],
+        "excludePaths": [
+          "src/brand/assets/subagent-egg.svg",
+          "src/brand/assets/subagent-avatars/robot-01.svg",
+          "src/brand/assets/subagent-avatars/robot-02.svg",
+          "src/brand/assets/subagent-avatars/robot-03.svg",
+          "src/brand/assets/subagent-avatars/robot-04.svg",
+          "src/brand/assets/subagent-avatars/robot-05.svg",
+          "src/brand/assets/subagent-avatars/robot-06.svg",
+          "src/brand/assets/subagent-avatars/robot-07.svg",
+          "src/brand/assets/subagent-avatars/robot-08.svg",
+          "src/brand/assets/subagent-avatars/robot-09.svg",
+          "src/brand/assets/subagent-avatars/robot-10.svg",
+          "src/brand/assets/subagent-avatars/robot-11.svg",
+          "src/brand/assets/subagent-avatars/robot-12.svg",
+          "src/brand/assets/subagent-avatars/robot-13.svg",
+          "src/brand/assets/subagent-avatars/robot-14.svg",
+          "src/brand/assets/subagent-avatars/robot-15.svg",
+          "src/brand/assets/subagent-avatars/robot-16.svg",
+          "src/brand/assets/subagent-avatars/robot-17.svg",
+          "src/brand/assets/subagent-avatars/robot-18.svg",
+          "src/brand/assets/subagent-avatars/robot-19.svg",
+          "src/brand/assets/subagent-avatars/robot-20.svg"
+        ],
         "packageContracts": ["@openbitfun/design-tokens", "@openbitfun/theme-openbitfun"]
       }
     },
@@ -183,19 +169,10 @@
         "packageContracts": [
           "@openbitfun/design-tokens",
           "@openbitfun/theme-openbitfun"
+        ],
+        "excludePaths": [
+          "src/generated"
         ]
-      }
-    },
-    {
-      "id": "desktop-bootstrap",
-      "label": "Desktop pre-JavaScript bootstrap pages",
-      "kind": "canonical-web",
-      "owner": "generated @openbitfun/theme-openbitfun bootstrap projection",
-      "root": "src/apps/desktop/bootstrap-ui",
-      "audit": {
-        "engine": "theme",
-        "policy": "canonical-ui-zero",
-        "packageContracts": ["@openbitfun/design-tokens", "@openbitfun/theme-openbitfun"]
       }
     },
     {
@@ -413,18 +390,13 @@
   "generatedChecks": [
     {
       "id": "subagent-avatar-artwork",
-      "surfaceIds": ["web-ui", "design-system-ui"],
+      "surfaceIds": ["design-system-ui"],
       "command": ["node", "scripts/check-subagent-avatar-assets.mjs"]
     },
     {
       "id": "data-tools-design-system",
       "surfaceIds": ["data-tools"],
       "command": ["node", "scripts/generate-data-tools-theme.mjs", "--check"]
-    },
-    {
-      "id": "desktop-appearance-projection",
-      "surfaceIds": ["web-ui", "desktop-bootstrap"],
-      "command": ["node", "scripts/generate-startup-appearance-bootstrap.mjs", "--check"]
     },
     {
       "id": "miniapp-chat-styles",
@@ -435,6 +407,11 @@
       "id": "miniapp-chrome-theme",
       "surfaceIds": ["miniapp-chrome", "miniapp-shell"],
       "command": ["node", "scripts/generate-miniapp-chrome-theme.mjs", "--check"]
+    },
+    {
+      "id": "miniapp-chrome-assets",
+      "surfaceIds": ["miniapp-chrome", "miniapp-shell"],
+      "command": ["node", "scripts/generate-miniapp-chrome-assets.mjs", "--check"]
     },
     {
       "id": "miniapp-appearance-projection",
@@ -452,17 +429,10 @@
     },
     {
       "id": "subagent-avatar-artwork",
-      "path": "src/web-ui/src/flow_chat/assets/subagent-avatars",
+      "path": "design-system/packages/ui/src/brand/assets/subagent-avatars",
       "kind": "authored-vector-artwork",
-      "owner": "src/web-ui/src/flow_chat/assets/subagent-avatars/palette.json",
+      "owner": "design-system/packages/ui/src/brand/assets/subagent-avatars/palette.json",
       "reason": "Only the twenty explicitly named SVGs leave the generic metadata budget. The asset check enforces their exact inventory and per-character palette; all surrounding UI remains under theme governance."
-    },
-    {
-      "id": "monaco-generated",
-      "path": "src/web-ui/public/monaco-editor",
-      "kind": "generated-third-party",
-      "owner": "Monaco package copy step",
-      "reason": "Vendored editor output is verified by the Monaco asset check and is not OpenBitFun application UI source."
     },
     {
       "id": "relay-static",
@@ -470,13 +440,6 @@
       "kind": "static-operational-surface",
       "owner": "Relay server",
       "reason": "Self-contained relay operational pages do not load the product design-system runtime and are governed by their owning server surface."
-    },
-    {
-      "id": "e2e-fixtures",
-      "path": "tests/e2e/fixtures",
-      "kind": "test-fixture",
-      "owner": "E2E tests",
-      "reason": "Fixture colors describe test input and are never shipped as product UI."
     },
     {
       "id": "diagnostic-report-html",
@@ -517,8 +480,8 @@
       "id": "desktop-bootstrap-generated",
       "path": "src/apps/desktop/src/generated",
       "kind": "generated-output",
-      "owner": "scripts/generate-startup-appearance-bootstrap.mjs",
-      "reason": "Desktop first-paint theme CSS and manifests are generated from canonical Appearance and theme sources."
+      "owner": "src/apps/desktop (appearance catalog snapshot read by appearance.rs; its generator was retired with the React desktop UI)",
+      "reason": "The built-in appearance catalog snapshot that MiniApp windows read for their light/dark launch mode; frozen data until the desktop host reads appearance from the shared design tokens."
     },
     {
       "id": "miniapp-appearance-generated",

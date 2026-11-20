@@ -198,8 +198,6 @@ jobs:
   package:
     name: Package (${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.os }}
-    # Compile and bundle with Ubuntu 22.04's glibc on both Linux architectures.
-    container: ${{ startsWith(matrix.platform.name, 'linux-') && 'ubuntu:22.04' || '' }}
     needs: prepare
     if: needs.prepare.outputs.relay_image_only != 'true' && !inputs.artifact_run_ids && !inputs.verification_recovery_run_id
     env:
@@ -208,6 +206,8 @@ jobs:
       OPENBITFUN_RELEASE_CHANNEL: ${{ needs.prepare.outputs.release_channel }}
       TAURI_UPDATER_ENDPOINT: ${{ github.repository_id != '1147866277' && (needs.prepare.outputs.release_channel == 'beta' && format('https://github.com/{0}/releases/download/channel-v1-beta/latest-v1.json', github.repository) || format('https://github.com/{0}/releases/latest/download/latest-v1.json', github.repository)) || '' }}
       TAURI_UPDATER_FALLBACK_ENDPOINT: ${{ github.repository_id != '1147866277' && (needs.prepare.outputs.release_channel == 'beta' && format('https://github.com/{0}/releases/download/channel-v1-beta/latest-v1.json', github.repository) || format('https://github.com/{0}/releases/latest/download/latest-v1.json', github.repository)) || '' }}
+      # The native updater verifies packages with the release key compiled into
+      # the backend (`OPENBITFUN_NATIVE_UPDATER_PUBKEY`, from this secret).
       TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
       # Same trust root, compiled into the Desktop binary so one-click relay
       # deploy can verify the signed checksum locally and hand the remote host
@@ -222,24 +222,6 @@ jobs:
         platform: ${{ fromJSON(needs.prepare.outputs.package_matrix) }}
 
     steps:
-      - name: Install Linux desktop build dependencies
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          apt-get update
-          # linuxdeploy needs the fcitx5 GTK3 module when it builds the AppImage.
-          apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang cmake curl file git jq \
-            libclang-dev pkg-config python3 unzip xz-utils \
-            xdg-utils libglib2.0-dev libgtk-3-dev libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev gstreamer1.0-pipewire \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            fcitx5-frontend-gtk3 libxdo-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev patchelf fakeroot rpm \
-            libleptonica-dev libtesseract-dev tesseract-ocr tesseract-ocr-eng
-
       # Also preserve bytes when rebuilding an older immutable tag that does
       # not yet pin every hashed source file in .gitattributes.
       - name: Preserve source bytes on Windows
@@ -251,11 +233,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.checkout_ref }}
-
-      - name: Trust the Linux build checkout
-        if: runner.os == 'Linux'
-        shell: bash
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Check Windows signing configuration
         if: runner.os == 'Windows'
@@ -283,28 +260,32 @@ jobs:
             "WINDOWS_CERTIFICATE_THUMBPRINT=$thumbprint" >> $env:GITHUB_ENV
           }
 
-      - name: Install NSIS (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+      # The native runner uses GTK 4 + WebKitGTK 6; the backend and the MiniApp
+      # window shell (still a Tauri/WebKitGTK 4.1 executable) need the rest.
+      - name: Install Linux system dependencies (native desktop)
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          choco install nsis -y --no-progress
-          $nsisRoot = "${env:ProgramFiles(x86)}\NSIS"
-          $nsisBin = "${env:ProgramFiles(x86)}\NSIS\Bin"
-          if (Test-Path $nsisRoot) {
-            Add-Content $env:GITHUB_PATH $nsisRoot
-          }
-          if (Test-Path $nsisBin) {
-            Add-Content $env:GITHUB_PATH $nsisBin
-          }
-
-      - name: Verify NSIS (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          where.exe makensis
-          makensis /VERSION
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libwebkitgtk-6.0-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libasound2-dev \
+            libxdo-dev \
+            libleptonica-dev \
+            libtesseract-dev \
+            tesseract-ocr \
+            tesseract-ocr-eng
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
@@ -349,6 +330,14 @@ jobs:
           path: ${{ steps.bun-cache-target.outputs.path }}
           key: ${{ steps.bun-cache-target.outputs.key }}
 
+      # NSH (the UI bundle's native module and the runner) needs a newer rustc
+      # than the workspace; the packaging scripts select it with RUSTUP_TOOLCHAIN.
+      - name: Setup NSH Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+          targets: ${{ matrix.platform.target }}
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -357,9 +346,11 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          shared-key: "package-v2-${{ matrix.platform.name }}"
-          key: ${{ startsWith(matrix.platform.name, 'linux-') && 'ubuntu-22.04' || '' }}
+          shared-key: "package-native-v1-${{ matrix.platform.name }}"
           cache-bin: false
+
+      - name: Install NSH CLI
+        run: node scripts/ci/install-nsh.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -385,31 +376,23 @@ jobs:
       - name: Verify release version metadata
         run: node scripts/verify-release-version-sync.mjs --version "${{ needs.prepare.outputs.version }}"
 
-      - name: Download and verify target Flashgrep binary
-        run: node scripts/prepare-flashgrep-resource.mjs --target "${{ matrix.platform.target }}"
-
-      - name: Select Xcode for macOS Icon Composer assets
+      - name: Select Xcode for macOS notarization tools
         if: runner.os == 'macOS'
         shell: bash
         run: |
           test -d /Applications/Xcode_26.2.app/Contents/Developer
           echo "DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer" >> "$GITHUB_ENV"
 
-      - name: Verify native macOS icon bundling
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          OPENBITFUN_TEST_MACOS_BUNDLE: '1'
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: |
-          set -euo pipefail
-          # Load the verification policy from this workflow. Its relative imports,
-          # fixtures and installed CLIs still resolve in the release checkout.
-          probe="scripts/.macos-icon-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.test.mjs"
-          trap 'rm -f "$probe"' EXIT
-          git fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
-          git show "${WORKFLOW_SHA}:scripts/macos-icon-bundle.test.mjs" > "$probe"
-          node --test "$probe"
+      - name: Resolve release channel build environment
+        run: node scripts/ci/desktop-release-env.mjs
+
+      # Optional resources of the package: the OpenCode extension Host and the
+      # legacy relay mobile UI. The packaging scripts copy what exists.
+      - name: Build plugin Host resources
+        run: pnpm run plugin-host:prepare
+
+      - name: Build mobile web resources
+        run: pnpm run prepare:mobile-web
 
       - name: Build desktop app
         run: ${{ matrix.platform.build_command }}
@@ -425,46 +408,48 @@ jobs:
           certum-key-id: ${{ env.WINDOWS_CERTIFICATE_THUMBPRINT }}
           capture-diagnostics: 'false'
 
-      - name: Bundle Windows updater and verify Authenticode
+      # Authenticode covers the executables and the backend library of the
+      # package; the release archive is rebuilt around the signed files. The
+      # archive itself gets its minisign signature in the release job.
+      - name: Sign and archive Windows package
         if: runner.os == 'Windows'
         timeout-minutes: 20
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
-          node scripts/desktop-tauri-build.mjs --bundle-only --target x86_64-pc-windows-msvc --bundles nsis --verbose
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $app = 'target/desktop-nsh/windows/OpenBitFun'
+          $archive = "target/desktop-nsh/OpenBitFun-nsh_${env:RELEASE_VERSION}_x64-windows.zip"
+          if (-not (Test-Path "$app/openbitfun-desktop.exe")) { throw 'The native Windows package was not produced.' }
           if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
-            # Tauri restores the unsigned raw EXE after bundling; sign it again
-            # before the custom installer snapshots and hashes its payload.
-            & ./scripts/ci/sign-windows.ps1 -Path 'target/x86_64-pc-windows-msvc/release/openbitfun-desktop.exe'
-            $installers = @(Get-ChildItem 'target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe' -File)
-            if ($installers.Count -eq 0) { throw 'NSIS installer was not produced.' }
-            foreach ($installer in $installers) {
-              & ./scripts/ci/sign-windows.ps1 -Path $installer.FullName -VerifyOnly
+            foreach ($file in @('openbitfun-desktop.exe', 'openbitfun_desktop_lib.dll', 'openbitfun-miniapp-shell.exe', 'flashgrep/flashgrep-x86_64-pc-windows-msvc.exe')) {
+              $path = Join-Path $app $file
+              if (Test-Path $path) { & ./scripts/ci/sign-windows.ps1 -Path (Resolve-Path $path).Path }
             }
+            Remove-Item -Force -ErrorAction SilentlyContinue $archive
+            Compress-Archive -Path $app -DestinationPath $archive
           }
+          if (-not (Test-Path $archive)) { throw "Missing Windows package archive $archive" }
 
-      - name: Build and sign custom Windows installer
-        if: runner.os == 'Windows'
-        timeout-minutes: 60
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # The payload manifest must hash the already signed desktop executable.
-          $env:OPENBITFUN_INSTALLER_APP_EXE = 'target/x86_64-pc-windows-msvc/release/openbitfun-desktop.exe'
-          # The pinned workflow supplies packaging tools even for an older source tag.
-          git fetch --no-tags --depth=1 origin '${{ github.workflow_sha }}'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $stagingScript = Join-Path $env:RUNNER_TEMP 'stage-desktop-runtime.mjs'
-          git show '${{ github.workflow_sha }}:scripts/windows/stage-desktop-runtime.mjs' | Set-Content -Encoding utf8 $stagingScript
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node $stagingScript src/apps/desktop $env:OPENBITFUN_INSTALLER_APP_EXE
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm run installer:build:only
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
-            & ./scripts/ci/sign-windows.ps1 -Path 'OpenBitFun-Installer/src-tauri/target/release/openbitfun-installer.exe'
-          }
+      - name: Sign, notarize and archive macOS release
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          # Release builds must carry the `openbitfun-desktop` link through which
+          # installed Tauri builds update to the native app.
+          OPENBITFUN_REQUIRE_LEGACY_BRIDGE: ${{ needs.prepare.outputs.upload_to_release }}
+          OPENBITFUN_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          OPENBITFUN_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          OPENBITFUN_SIGNING_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: bash scripts/ci/package-native-macos-release.sh "${{ matrix.platform.target }}" "${{ needs.prepare.outputs.version }}"
+
+      # Launches the signed app on a scratch profile and drives its loopback
+      # OBP owner connection, then quits it and requires a clean exit.
+      - name: Smoke-test the native app
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: node tests/e2e/native/smoke.mjs --app "target/${{ matrix.platform.target }}/release/bundle/macos/OpenBitFun.app"
 
       - name: Verify Apple signature and notarization
         id: apple_verification
@@ -482,25 +467,6 @@ jobs:
             scripts/ci/macos-ticket-network.sh \
             | tar -x -C "$verification_dir"
           bash "$verification_dir/scripts/ci/verify-macos-signing.sh" "${{ matrix.platform.target }}"
-
-      - name: Verify Linux desktop package
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          WORKFLOW_SHA: ${{ github.workflow_sha }}
-          TARGET: ${{ matrix.platform.target }}
-        run: |
-          set -euo pipefail
-          # Apply the current packaging checks when rebuilding an older tag.
-          verification_dir="$(mktemp -d)"
-          trap 'rm -rf "$verification_dir"' EXIT
-          if ! git cat-file -e "$WORKFLOW_SHA^{commit}"; then
-            git fetch --no-tags --depth=1 origin "$WORKFLOW_SHA"
-          fi
-          git archive "$WORKFLOW_SHA" scripts/ci/verify-linux-desktop-package.sh \
-            scripts/ci/check-glibc-floor.sh scripts/ci/linux-appimage-tray-libraries.json \
-            | tar -x -C "$verification_dir"
-          bash "$verification_dir/scripts/ci/verify-linux-desktop-package.sh" "$TARGET"
 
       - name: Preserve macOS verification recovery bundles
         if: failure() && runner.os == 'macOS' && steps.apple_verification.outcome == 'failure'
@@ -525,9 +491,8 @@ jobs:
           if-no-files-found: error
           path: |
             target/*/release/bundle
-            target/release/bundle
-            src/apps/desktop/target/release/bundle
-            OpenBitFun-Installer/src-tauri/target/release/openbitfun-installer.exe
+            target/desktop-nsh/OpenBitFun-nsh_*-windows.zip
+            target/desktop-nsh/OpenBitFun-nsh_*-linux.tar.gz
 
   recover-macos:
     name: Package (${{ matrix.platform.name }})
@@ -572,7 +537,7 @@ jobs:
             x86_64-apple-darwin) architecture=x86_64 ;;
             aarch64-apple-darwin) architecture=arm64 ;;
           esac
-          lipo "target/$MACOS_TARGET/release/bundle/macos/OpenBitFun.app/Contents/MacOS/openbitfun-desktop" -verify_arch "$architecture"
+          lipo "target/$MACOS_TARGET/release/bundle/macos/OpenBitFun.app/Contents/MacOS/OpenBitFun" -verify_arch "$architecture"
       - name: Configure Apple Developer ID signing and notarization
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -840,11 +805,16 @@ jobs:
         needs.publish-relay-image.result == 'success'))
     runs-on: ubuntu-latest
     env:
-      # Bundle-type Linux keys are load-bearing: tauri-plugin-updater on a deb
-      # (or rpm) install rejects every non-deb (non-rpm) payload with
-      # "invalid updater binary format", so the manifest MUST carry
-      # linux-*-deb / linux-*-rpm entries alongside the AppImage keys.
-      REQUIRED_UPDATER_PLATFORMS: windows-x86_64,darwin-x86_64,darwin-aarch64,linux-x86_64,linux-aarch64,linux-x86_64-deb,linux-aarch64-deb,linux-x86_64-rpm,linux-aarch64-rpm
+      # The desktop ships as the native app. `darwin-<arch>-nsh` is its in-app
+      # update package; `darwin-<arch>` carries the same signed archive for
+      # installed Tauri builds (the upgrade bridge). Windows and Linux have no
+      # in-place updater yet: they get no platform key (an older Tauri package
+      # under this version would reinstall in a loop) and ship as manual
+      # downloads instead.
+      REQUIRED_UPDATER_PLATFORMS: darwin-aarch64-nsh,darwin-x86_64-nsh,darwin-aarch64,darwin-x86_64
+      BRIDGE_UPDATER_PLATFORMS: darwin-aarch64,darwin-x86_64
+      FORBIDDEN_UPDATER_PLATFORM_PREFIXES: windows-,linux-
+      REQUIRED_MANUAL_PLATFORMS: darwin-aarch64,darwin-x86_64,windows-x86_64,linux-x86_64,linux-aarch64
 
     steps:
       - name: Checkout
@@ -895,36 +865,13 @@ jobs:
           echo "Relay image descriptor:"
           find relay-image-assets -type f | sort
 
-      - name: Prepare versioned Windows installer
+      - name: Collect updater assets
         run: |
-          node scripts/prepare-windows-installer-asset.mjs \
+          node scripts/collect-tauri-updater-assets.mjs \
             --assets-dir release-assets \
             --version "${{ needs.prepare.outputs.version }}" \
-            --out-dir release-manual-assets
-
-      - name: Sign versioned Windows installer
-        shell: bash
-        env:
-          OPENBITFUN_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          OPENBITFUN_SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          OPENBITFUN_SIGNING_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
-        run: bash scripts/sign-release-assets.sh release-manual-assets/*.exe
-
-      - name: Collect updater assets
-        shell: bash
-        env:
-          RELEASE_SOURCE: ${{ needs.prepare.outputs.checkout_ref }}
-        run: |
-          set -euo pipefail
-          # Releases predating the maintenance installer use the signed NSIS updater.
-          args=(--assets-dir release-assets --version "${{ needs.prepare.outputs.version }}"
-            --out-dir release-updater-assets --required-platforms "${REQUIRED_UPDATER_PLATFORMS}")
-          if git grep -q OPENBITFUN_MAINTENANCE_V1 "$RELEASE_SOURCE" -- OpenBitFun-Installer/src-tauri/src/installer/commands.rs; then
-            args+=(--windows-installer-dir release-manual-assets)
-          elif [[ $? != 1 ]]; then
-            exit 1
-          fi
-          node scripts/collect-tauri-updater-assets.mjs "${args[@]}"
+            --out-dir release-updater-assets \
+            --required-platforms darwin-aarch64-nsh,darwin-x86_64-nsh
 
       - name: Generate Linux binaries manifest
         run: |
@@ -935,10 +882,8 @@ jobs:
             --repo "${{ github.repository }}" \
             --out linux-release-assets/linux-binaries-v1.json
 
-      # The Tauri bundler signs the five updater artifacts during `tauri build`,
-      # but the installers people download by hand from the release page — dmg,
-      # deb, rpm, the Windows installer and the direct AppImages — shipped with
-      # no signature at all. Sign them with the same key so every published
+      # The macOS updater archives are signed in their package jobs. Sign what
+      # people download by hand, with the same key, so every published desktop
       # artifact is verifiable. (This is not OS-level code signing: Gatekeeper
       # and SmartScreen still need Apple/Authenticode certificates.)
       - name: Sign installer packages
@@ -950,9 +895,9 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t assets < <(
-            find release-assets -type f \
-              \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
-                 -o -name '*.dmg' \) | sort
+            find release-assets -type f -not -path '*.app/*' \
+              \( -name '*.dmg' -o -name 'OpenBitFun-nsh_*-windows.zip' \
+                 -o -name 'OpenBitFun-nsh_*-linux.tar.gz' \) | sort
           )
           if [[ "${#assets[@]}" -eq 0 ]]; then
             echo "No installer packages found to sign."
@@ -965,21 +910,21 @@ jobs:
           node scripts/write-minisign-public-key.mjs \
             --out release-assets/minisign.pub
 
-      # Runs after the signing step because the manifest declares the macOS
-      # .dmg installers, and a manual installer is only declarable once its
-      # detached signature exists next to it.
+      # Runs after the signing step because the manifest declares the manual
+      # downloads, and a manual installer is only declarable once its detached
+      # signature exists next to it.
       - name: Generate updater manifest
         run: |
           node scripts/generate-tauri-latest-json.mjs \
             --assets-dir release-updater-assets \
-            --manual-assets-dir release-manual-assets \
             --installer-assets-dir release-assets \
             --version "${{ needs.prepare.outputs.version }}" \
             --tag "${{ needs.prepare.outputs.release_tag }}" \
             --repo "${{ github.repository }}" \
             --notes-file "scripts/release-notes/${{ needs.prepare.outputs.version }}.md" \
             --out release-updater-assets/latest-v1.json \
-            --required-platforms "${REQUIRED_UPDATER_PLATFORMS}"
+            --required-platforms "${REQUIRED_UPDATER_PLATFORMS}" \
+            --required-manual-platforms "${REQUIRED_MANUAL_PLATFORMS}"
 
       - name: Verify updater manifest
         run: |
@@ -987,7 +932,9 @@ jobs:
             --manifest release-updater-assets/latest-v1.json \
             --version "${{ needs.prepare.outputs.version }}" \
             --required-platforms "${REQUIRED_UPDATER_PLATFORMS}" \
-            --required-manual-platforms "windows-x86_64,darwin-aarch64,darwin-x86_64"
+            --bridge-platforms "${BRIDGE_UPDATER_PLATFORMS}" \
+            --forbidden-platform-prefixes "${FORBIDDEN_UPDATER_PLATFORM_PREFIXES}" \
+            --required-manual-platforms "${REQUIRED_MANUAL_PLATFORMS}"
 
       - name: Verify staged Relay image descriptor
         shell: bash
@@ -1018,17 +965,17 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s globstar
-          # AppImage, deb, and rpm files are already copied into the
-          # canonical release-updater-assets directory above. Publishing the
-          # raw Tauri bundle names as well creates a second public copy of
-          # every Linux installer and doubles the signature count.
+          # The macOS updater archives are staged once, from the canonical
+          # release-updater-assets directory; the raw bundle copies stay out.
           node scripts/stage-github-release-assets.mjs \
             --out-dir release-upload-assets \
             release-updater-assets/* \
-            release-manual-assets/*.exe \
-            release-manual-assets/*.exe.sig \
             release-assets/**/*.dmg \
             release-assets/**/*.dmg.sig \
+            release-assets/**/OpenBitFun-nsh_*-windows.zip \
+            release-assets/**/OpenBitFun-nsh_*-windows.zip.sig \
+            release-assets/**/OpenBitFun-nsh_*-linux.tar.gz \
+            release-assets/**/OpenBitFun-nsh_*-linux.tar.gz.sig \
             release-assets/minisign.pub \
             linux-release-assets/openbitfun-cli-*.tar.gz \
             linux-release-assets/openbitfun-cli-*.tar.gz.sha256 \
@@ -1126,7 +1073,9 @@ jobs:
             --manifest latest.published.json \
             --version "${{ needs.prepare.outputs.version }}" \
             --required-platforms "${REQUIRED_UPDATER_PLATFORMS}" \
-            --required-manual-platforms "windows-x86_64,darwin-aarch64,darwin-x86_64" \
+            --bridge-platforms "${BRIDGE_UPDATER_PLATFORMS}" \
+            --forbidden-platform-prefixes "${FORBIDDEN_UPDATER_PLATFORM_PREFIXES}" \
+            --required-manual-platforms "${REQUIRED_MANUAL_PLATFORMS}" \
             --check-urls true
 
       - name: Verify published Linux binaries manifest

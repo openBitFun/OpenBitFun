@@ -10,6 +10,12 @@
     "picker": true,
     "notifications": true,
     "statusBar": true,
+    "webview": {
+      "hosts": [
+        "*"
+      ],
+      "input": true
+    },
     "openUrl": {
       "schemes": [
         "https",

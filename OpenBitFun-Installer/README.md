@@ -48,12 +48,22 @@ Use this as the release entrypoint. `pnpm run tauri:build` does not prepare vali
 pnpm run installer:build:only
 ```
 
-`installer:build:only` requires an existing `target/release/openbitfun-desktop.exe`
-and its adjacent runtime directories. It never falls back to `release-fast` or
-`debug`. For an explicit Cargo target, pass the exact executable:
+The installer installs the native desktop app: the Windows package directory
+that `pnpm run desktop-nsh:package:windows` writes to
+`target/desktop-nsh/windows/OpenBitFun/` (the NSH runner as
+`openbitfun-desktop.exe`, the backend `openbitfun_desktop_lib.dll`, the UI bundle
+in `nsh\`, and `resources\`, `flashgrep\`, `nsh-web\`, `mobile-web\`, `bin\`).
+The runner keeps the executable name of the retired Tauri build, so shortcuts,
+the uninstall entry and earlier installs keep pointing at it; files an earlier
+install owned that the new package lacks (such as `frontend\`) are removed.
+
+`installer:build:only` requires that package directory and the
+`OpenBitFun.package.json` the packaging script writes next to it, built with the
+mode's exact profile (`release`, or `release-fast` for the fast modes). It never
+falls back to another profile. For a package directory elsewhere:
 
 ```powershell
-$env:OPENBITFUN_INSTALLER_APP_EXE = "target/x86_64-pc-windows-msvc/release/openbitfun-desktop.exe"
+$env:OPENBITFUN_INSTALLER_APP_DIR = "D:/build/desktop-nsh/windows/OpenBitFun"
 pnpm run installer:build:only
 ```
 
@@ -340,7 +350,7 @@ reduced-motion preference.
 
 ### Adding Installer Payload
 
-Place the built OpenBitFun application files in `src-tauri/payload/` before building the installer. The build script handles this automatically.
+The build script copies the native Windows package directory into `src-tauri/payload/` (with `payload-manifest.json`) before building the installer.
 During `cargo build`, the payload directory is packed into an embedded zip inside `openbitfun-installer.exe`.
 
 ## Integration with CI/CD

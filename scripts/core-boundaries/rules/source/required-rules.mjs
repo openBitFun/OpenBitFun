@@ -6,13 +6,13 @@ const agentRuntimeDefinitionContractModules = new Set(['custom_agent', 'prompt',
 
 export const requiredContentRules = [
   {
-    path: 'src/web-ui/src/infrastructure/api/service-api/ExternalSourcesAPI.ts',
+    path: 'src/nsh-ui/src/externalImportStore.ts',
     reason:
-      'the Web API must continue invoking the stable Desktop command without making Web source a Rust compilation input',
+      'the desktop UI must continue invoking the stable Desktop command without making UI source a Rust compilation input',
     patterns: [
       {
         regex:
-          /\binvokeSurfaceSnapshot\(\s*['"]get_external_source_control_snapshot['"]/,
+          /\binvokeCommand(?:<[^>]*>)?\(\s*['"]get_external_source_control_snapshot['"]/,
         message: 'missing stable external-source control snapshot invocation',
       },
     ],
@@ -353,17 +353,17 @@ export const requiredContentRules = [
     ],
   },
   {
-    path: 'src/crates/adapters/transport/src/adapters/tauri.rs',
+    path: 'src/crates/adapters/transport/src/adapters/sink.rs',
     reason:
-      'Tauri transport adapter must only deliver projected events and must not own agentic event field mapping',
+      'the sink transport adapter must only deliver projected events and must not own agentic event field mapping',
     patterns: [
       {
         regex: /\bproject_agentic_frontend_event\b/,
-        message: 'missing shared frontend projection usage in Tauri transport',
+        message: 'missing shared frontend projection usage in the sink transport',
       },
       {
-        regex: /\.emit\(projected\.event_name\.as_str\(\), projected\.payload\)/,
-        message: 'Tauri transport must emit projected event name and payload',
+        regex: /\(self\.sink\)\(projected\.event_name\.as_str\(\), projected\.payload\)/,
+        message: 'the sink transport must deliver the projected event name and payload',
       },
     ],
   },
@@ -8325,171 +8325,6 @@ export const requiredContentRules = [
       {
         regex: /\bformats_startup_timeout_error_message\b/,
         message: 'missing ACP startup timeout regression',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/flow_chat/tool-cards/FileOperationToolCard.tsx',
-    reason:
-      'web-ui file operation surface must preserve snapshot-independent inline diffs after the design-system migration',
-    patterns: [
-      {
-        regex: /\bInlineDiffPreview\b/,
-        message: 'missing snapshot-independent inline diff renderer',
-      },
-      {
-        regex: /previewVariant === 'completed-diff'/,
-        message: 'missing completed file-operation diff state',
-      },
-      {
-        regex: /originalContent=\{oldStringContent\}/,
-        message: 'missing Edit original-content projection',
-      },
-      {
-        regex: /modifiedContent=\{newStringContent\}/,
-        message: 'missing Edit modified-content projection',
-      },
-      {
-        regex: /originalContent=""/,
-        message: 'missing Write empty-baseline projection',
-      },
-      {
-        regex: /modifiedContent=\{contentPreview\}/,
-        message: 'missing Write content projection',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/main.tsx',
-    reason:
-      'web startup scheduling and trace orchestration remain web product-surface behavior, not core contract runtime',
-    patterns: [
-      {
-        regex: /\bstartupTrace\b/,
-        message: 'missing web startup trace surface',
-      },
-      {
-        regex: /\bbackgroundTaskScheduler\b/,
-        message: 'missing deferred startup scheduler surface',
-      },
-      {
-        regex: /\binitializeAllTools\b/,
-        message: 'missing narrow tool-startup entry integration',
-      },
-      {
-        regex: /\bafter_render_start\b/,
-        message: 'missing post-render startup phase',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/shared/utils/startupTrace.ts',
-    reason:
-      'web startup trace classification and redaction remain web infrastructure behavior until a telemetry contract is reviewed',
-    patterns: [
-      {
-        regex: /\bfunction sanitizeTraceData\b/,
-        message: 'missing startup trace sanitization',
-      },
-      {
-        regex: /\bexport function isRemoteTraceRequest\b/,
-        message: 'missing remote request classifier',
-      },
-      {
-        regex: /\brecordApiCall\b/,
-        message: 'missing startup API-call trace recorder',
-      },
-      {
-        regex: /\bflushSummary\b/,
-        message: 'missing bounded startup summary flush',
-      },
-      {
-        regex: /\bmarkPhaseAfterAnimationFrames\b/,
-        message: 'missing frame-delayed startup marker',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/shared/utils/backgroundTaskScheduler.ts',
-    reason:
-      'web background startup scheduling remains web infrastructure behavior and must preserve dedupe/cancel semantics',
-    patterns: [
-      {
-        regex: /\bexport class BackgroundTaskScheduler\b/,
-        message: 'missing background task scheduler',
-      },
-      {
-        regex: /\binFlightKey\b/,
-        message: 'missing in-flight dedupe key',
-      },
-      {
-        regex: /\bAbortController\b/,
-        message: 'missing cancellation controller',
-      },
-      {
-        regex: /\bBackgroundTaskCancelledError\b/,
-        message: 'missing cancellation error contract',
-      },
-      {
-        regex: /\bcancelIdle\b/,
-        message: 'missing idle callback cancellation',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/tools/initializeTools.ts',
-    reason:
-      'web tool startup must stay behind a narrow app-layer entry instead of importing product tools through shared contracts',
-    patterns: [
-      {
-        regex: /\bexport async function initializeAllTools\b/,
-        message: 'missing narrow tool startup entry',
-      },
-      {
-        regex: /\binitializeGit\b/,
-        message: 'missing Git startup initializer call',
-      },
-      {
-        regex: /does not import every tool/,
-        message: 'missing narrow startup import guard',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/tools/editor/services/MonacoStartupWarmup.ts',
-    reason:
-      'Monaco startup warmup remains a deferred web-app optimization, not a core runtime dependency',
-    patterns: [
-      {
-        regex: /\bexport function scheduleMonacoStartupWarmup\b/,
-        message: 'missing deferred Monaco warmup entry',
-      },
-      {
-        regex: /\bbackgroundTaskScheduler\b/,
-        message: 'missing background scheduler integration',
-      },
-      {
-        regex: /startup:monaco-warmup/,
-        message: 'missing Monaco warmup dedupe key',
-      },
-    ],
-  },
-  {
-    path: 'src/web-ui/src/flow_chat/services/flow-chat-manager/SessionModule.ts',
-    reason:
-      'flow-chat history hydration remains web startup/product-surface behavior until a UI equivalence plan exists',
-    patterns: [
-      {
-        regex: /\bhistorical_session_hydrate_request\b/,
-        message: 'missing historical session hydrate trace',
-      },
-      {
-        regex: /Load history in the background/,
-        message: 'missing non-blocking history load contract',
-      },
-      {
-        regex: /\bhistoryState: 'ready'/,
-        message: 'missing history-ready state contract',
       },
     ],
   },

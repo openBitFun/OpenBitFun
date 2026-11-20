@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "b18e476cf2b8f36360fc1fc9edc5dcf20454aaf4d51bf2fde4193e2c56b21dd4",
+  "digest": "17a124b388ec4662d540fd802d1c6d90cd54bc65c1b1616ccbe806aab60289ff",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -50,24 +50,15 @@
       ]
     },
     {
-      "id": "desktop-cards-mixed",
-      "query": "小卡片 desktop cards 桌面小组件",
-      "expectedFirstCapabilityId": "feature.desktop-cards",
-      "expectedCapabilityIds": [
-        "feature.desktop-cards",
-        "setting.application.pet"
-      ]
-    },
-    {
-      "id": "builtin-element-picker",
-      "query": "内置浏览器 element picker 元素选择",
+      "id": "builtin-browser-history",
+      "query": "内置浏览器 后退 前进 history",
       "expectedFirstCapabilityId": "feature.browser",
       "expectedCapabilityIds": [
         "feature.browser"
       ],
       "expectedItem": {
         "capabilityId": "feature.browser",
-        "itemId": "element-picker"
+        "itemId": "history-navigation"
       }
     },
     {
@@ -184,14 +175,14 @@
     }
   ],
   "counts": {
-    "features": 24,
-    "settings": 24,
-    "userFacing": 48,
-    "documentedItems": 371,
+    "features": 23,
+    "settings": 23,
+    "userFacing": 46,
+    "documentedItems": 350,
     "controlCoverage": {
       "direct": 63,
-      "delegated": 74,
-      "interactive": 234,
+      "delegated": 67,
+      "interactive": 220,
       "unsupported": 0
     }
   },
@@ -241,8 +232,7 @@
         "home-overview",
         "global-search",
         "split-workbench",
-        "sidebar-pins",
-        "floating-window"
+        "sidebar-pins"
       ],
       "kind": "query",
       "risk": "read",
@@ -468,52 +458,6 @@
       }
     },
     {
-      "id": "feature.home-search:open:floating-window",
-      "capabilityId": "feature.home-search",
-      "itemIds": [
-        "floating-window"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "personal-overview"
-      }
-    },
-    {
       "id": "feature.ai-assistant:query",
       "capabilityId": "feature.ai-assistant",
       "itemIds": [
@@ -529,7 +473,6 @@
         "goal-maintenance",
         "working-plan",
         "btw-editor-ai",
-        "creative-frontend-authoring",
         "image-generation",
         "office-document-generation",
         "tool-activity",
@@ -1128,54 +1071,6 @@
         "additionalProperties": true
       },
       "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "session"
-      }
-    },
-    {
-      "id": "feature.ai-assistant:delegate:creative-frontend-authoring",
-      "capabilityId": "feature.ai-assistant",
-      "itemIds": [
-        "creative-frontend-authoring"
-      ],
-      "kind": "delegate",
-      "risk": "execute",
-      "executionHost": "workspaceHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "delegateTools": [
-        "FrontendWorkbench",
-        "Read",
-        "Write",
-        "Edit"
-      ],
       "presentationTarget": {
         "kind": "scene",
         "sceneId": "session"
@@ -2877,7 +2772,6 @@
         "rich-previews-pdf-latex",
         "indexed-search",
         "search-index-management",
-        "language-actions",
         "attachments",
         "image-analysis",
         "reveal-in-system"
@@ -3288,52 +3182,6 @@
         "additionalProperties": true
       },
       "openReason": "visualSelection",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      }
-    },
-    {
-      "id": "feature.files-editor:open:language-actions",
-      "capabilityId": "feature.files-editor",
-      "itemIds": [
-        "language-actions"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
       "presentationTarget": {
         "kind": "action",
         "actionId": "surface.files.open"
@@ -5058,9 +4906,6 @@
       "itemIds": [
         "open-urls",
         "scene-and-panel",
-        "element-picker",
-        "element-context",
-        "element-picker-cancel",
         "agent-page-automation",
         "agent-web-research",
         "history-navigation",
@@ -5158,141 +5003,6 @@
       "capabilityId": "feature.browser",
       "itemIds": [
         "scene-and-panel"
-      ],
-      "kind": "delegate",
-      "risk": "execute",
-      "executionHost": "workspaceHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "delegateTools": [
-        "ControlHub"
-      ],
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.browser.open"
-      }
-    },
-    {
-      "id": "feature.browser:delegate:element-picker",
-      "capabilityId": "feature.browser",
-      "itemIds": [
-        "element-picker"
-      ],
-      "kind": "delegate",
-      "risk": "execute",
-      "executionHost": "workspaceHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "delegateTools": [
-        "ControlHub"
-      ],
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.browser.open"
-      }
-    },
-    {
-      "id": "feature.browser:delegate:element-context",
-      "capabilityId": "feature.browser",
-      "itemIds": [
-        "element-context"
-      ],
-      "kind": "delegate",
-      "risk": "execute",
-      "executionHost": "workspaceHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "delegateTools": [
-        "ControlHub"
-      ],
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.browser.open"
-      }
-    },
-    {
-      "id": "feature.browser:delegate:element-picker-cancel",
-      "capabilityId": "feature.browser",
-      "itemIds": [
-        "element-picker-cancel"
       ],
       "kind": "delegate",
       "risk": "execute",
@@ -11765,8 +11475,7 @@
         "enable",
         "presets",
         "petdex-import",
-        "petdex-delete",
-        "desktop-window"
+        "petdex-delete"
       ],
       "kind": "query",
       "risk": "read",
@@ -11985,334 +11694,6 @@
       "presentationTarget": {
         "kind": "settings",
         "pageId": "application.pet"
-      }
-    },
-    {
-      "id": "feature.desktop-pet:open:desktop-window",
-      "capabilityId": "feature.desktop-pet",
-      "itemIds": [
-        "desktop-window"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet"
-      }
-    },
-    {
-      "id": "feature.desktop-cards:query",
-      "capabilityId": "feature.desktop-cards",
-      "itemIds": [
-        "agent-cards",
-        "home-management",
-        "card-actions",
-        "desktop-pinning",
-        "drag-restore"
-      ],
-      "kind": "query",
-      "risk": "read",
-      "executionHost": "productHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "valueSource": {
-        "kind": "static"
-      },
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      }
-    },
-    {
-      "id": "feature.desktop-cards:delegate:agent-cards",
-      "capabilityId": "feature.desktop-cards",
-      "itemIds": [
-        "agent-cards"
-      ],
-      "kind": "delegate",
-      "risk": "execute",
-      "executionHost": "workspaceHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "delegateTools": [
-        "DesktopCard"
-      ],
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      }
-    },
-    {
-      "id": "feature.desktop-cards:delegate:home-management",
-      "capabilityId": "feature.desktop-cards",
-      "itemIds": [
-        "home-management"
-      ],
-      "kind": "delegate",
-      "risk": "execute",
-      "executionHost": "workspaceHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "delegateTools": [
-        "DesktopCard"
-      ],
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      }
-    },
-    {
-      "id": "feature.desktop-cards:delegate:card-actions",
-      "capabilityId": "feature.desktop-cards",
-      "itemIds": [
-        "card-actions"
-      ],
-      "kind": "delegate",
-      "risk": "execute",
-      "executionHost": "workspaceHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "delegateTools": [
-        "DesktopCard"
-      ],
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      }
-    },
-    {
-      "id": "feature.desktop-cards:open:desktop-pinning",
-      "capabilityId": "feature.desktop-cards",
-      "itemIds": [
-        "desktop-pinning"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      }
-    },
-    {
-      "id": "feature.desktop-cards:open:drag-restore",
-      "capabilityId": "feature.desktop-cards",
-      "itemIds": [
-        "drag-restore"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "visualSelection",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
       }
     },
     {
@@ -12740,11 +12121,9 @@
       "capabilityId": "setting.application.appearance",
       "itemIds": [
         "built-in-appearance",
-        "visual-skins",
         "ui-font-size",
         "sidebar-navigation",
         "chat-content-width",
-        "session-panel-layout",
         "language"
       ],
       "kind": "query",
@@ -12892,52 +12271,6 @@
       }
     },
     {
-      "id": "setting.application.appearance:open:visual-skins",
-      "capabilityId": "setting.application.appearance",
-      "itemIds": [
-        "visual-skins"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.appearance"
-      }
-    },
-    {
       "id": "setting.application.appearance:open:ui-font-size",
       "capabilityId": "setting.application.appearance",
       "itemIds": [
@@ -13077,52 +12410,6 @@
       }
     },
     {
-      "id": "setting.application.appearance:open:session-panel-layout",
-      "capabilityId": "setting.application.appearance",
-      "itemIds": [
-        "session-panel-layout"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.appearance"
-      }
-    },
-    {
       "id": "setting.application.pet:query",
       "capabilityId": "setting.application.pet",
       "itemIds": [
@@ -13131,8 +12418,7 @@
         "preset-selection",
         "import",
         "delete-refresh",
-        "desktop-cards-enabled",
-        "desktop-cards-pinning"
+        "desktop-cards-enabled"
       ],
       "kind": "query",
       "risk": "read",
@@ -13506,53 +12792,6 @@
       }
     },
     {
-      "id": "setting.application.pet:open:desktop-cards-pinning",
-      "capabilityId": "setting.application.pet",
-      "itemIds": [
-        "desktop-cards-pinning"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      }
-    },
-    {
       "id": "setting.application.input:query",
       "capabilityId": "setting.application.input",
       "itemIds": [
@@ -13562,7 +12801,6 @@
         "recording-limit",
         "microphone-test",
         "message-sending",
-        "btw-close-confirmation",
         "auto-show-selection-toolbar"
       ],
       "kind": "query",
@@ -13926,53 +13164,6 @@
         "kind": "settings",
         "pageId": "application.voice",
         "sectionId": "message-sending"
-      }
-    },
-    {
-      "id": "setting.application.input:open:btw-close-confirmation",
-      "capabilityId": "setting.application.input",
-      "itemIds": [
-        "btw-close-confirmation"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.voice",
-        "sectionId": "btw-close-confirmation"
       }
     },
     {
@@ -16963,7 +16154,6 @@
       "id": "setting.workspace.session:query",
       "capabilityId": "setting.workspace.session",
       "itemIds": [
-        "default-agent-harness",
         "automatic-titles",
         "title-model",
         "next-input-suggestion",
@@ -17137,52 +16327,6 @@
       "valueSource": {
         "kind": "static"
       },
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "workspace.session"
-      }
-    },
-    {
-      "id": "setting.workspace.session:open:default-agent-harness",
-      "capabilityId": "setting.workspace.session",
-      "itemIds": [
-        "default-agent-harness"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
       "presentationTarget": {
         "kind": "settings",
         "pageId": "workspace.session"
@@ -18912,7 +18056,6 @@
       "id": "setting.tools.desktop-control:query",
       "capabilityId": "setting.tools.desktop-control",
       "itemIds": [
-        "external-control",
         "permissions",
         "safety-posture"
       ],
@@ -18950,52 +18093,6 @@
       "valueSource": {
         "kind": "static"
       },
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.desktop-control"
-      }
-    },
-    {
-      "id": "setting.tools.desktop-control:open:external-control",
-      "capabilityId": "setting.tools.desktop-control",
-      "itemIds": [
-        "external-control"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "visualSelection",
       "presentationTarget": {
         "kind": "settings",
         "pageId": "tools.desktop-control"
@@ -21466,97 +20563,6 @@
       }
     },
     {
-      "id": "setting.data.storage:query",
-      "capabilityId": "setting.data.storage",
-      "itemIds": [
-        "clean"
-      ],
-      "kind": "query",
-      "risk": "read",
-      "executionHost": "productHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "valueSource": {
-        "kind": "static"
-      },
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.storage"
-      }
-    },
-    {
-      "id": "setting.data.storage:open:clean",
-      "capabilityId": "setting.data.storage",
-      "itemIds": [
-        "clean"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.storage"
-      }
-    },
-    {
       "id": "setting.data.archived:query",
       "capabilityId": "setting.data.archived",
       "itemIds": [
@@ -21843,9 +20849,7 @@
         "sensitive-diagnostics",
         "log-path",
         "export-bundle",
-        "crash-recovery",
-        "devtools",
-        "element-inspector"
+        "crash-recovery"
       ],
       "kind": "query",
       "risk": "read",
@@ -22079,98 +21083,6 @@
       "capabilityId": "setting.data.diagnostics",
       "itemIds": [
         "crash-recovery"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.diagnostics"
-      }
-    },
-    {
-      "id": "setting.data.diagnostics:open:devtools",
-      "capabilityId": "setting.data.diagnostics",
-      "itemIds": [
-        "devtools"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.diagnostics"
-      }
-    },
-    {
-      "id": "setting.data.diagnostics:open:element-inspector",
-      "capabilityId": "setting.data.diagnostics",
-      "itemIds": [
-        "element-inspector"
       ],
       "kind": "open",
       "risk": "ui",
@@ -22532,17 +21444,6 @@
             "reasonZh": "「自定义左侧边栏固定入口与顺序，并固定常用的 Mini App 快捷图标」属于当前窗口的个性化导航偏好，可在外观设置的「左侧导航栏」分区中按个人习惯勾选和调整顺序。",
             "reasonEn": "“Customize pinned items and ordering in the left sidebar, plus pin favorite Mini App shortcuts” is a personal navigation preference configured interactively in Appearance settings under Left sidebar or from Mini App menus."
           }
-        },
-        {
-          "id": "floating-window",
-          "titleZh": "一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口",
-          "titleEn": "Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口」涉及本机桌面窗口形态与屏幕位置切换，需由你在左下角菜单中手动开启或点恢复按钮回到主窗口。",
-            "reasonEn": "“Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime” changes the local desktop window geometry and focus, so you trigger it from the bottom-left menu and restore the full window when ready."
-          }
         }
       ],
       "stepsZh": [
@@ -22613,8 +21514,6 @@
         "Work side by side in the split workbench with draggable tabs, pane maximize, and canvas overview shortcuts",
         "自定义左侧边栏固定入口与顺序，并固定常用的 Mini App 快捷图标",
         "Customize pinned items and ordering in the left sidebar, plus pin favorite Mini App shortcuts",
-        "一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口",
-        "Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime",
         "帮我打开键盘快捷键设置",
         "带我去外观设置调整左侧导航栏",
         "打开任务看板看看今天有哪些计划任务",
@@ -22839,30 +21738,6 @@
             "reasonCode": "unstructuredInteraction",
             "reasonZh": "「用 /btw（或 Ctrl+Alt+B）随手发起临时「侧问」，以及在代码编辑器中使用内联 AI」是在你当前阅读或编码位置即开即用的轻量交互，可随时发起或按取消键中止。",
             "reasonEn": "“Ask quick ephemeral side questions with /btw (or Ctrl+Alt+B) and invoke inline AI inside the code editor” is an on-the-spot lightweight interaction launched from your active chat composer or editor cursor and cancellable anytime."
-          }
-        },
-        {
-          "id": "creative-frontend-authoring",
-          "titleZh": "切换到「创造（Creative）」模式，安全定制正在运行的 OpenBitFun 界面与交互能力",
-          "titleEn": "Switch to Creative mode to customize the live OpenBitFun interface with automatic 15-second rollback protection",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "FrontendWorkbench",
-              "Read",
-              "Write",
-              "Edit"
-            ],
-            "workflowZh": [
-              "在本地桌面创造模式中调用 FrontendWorkbench prepare，阅读随包 API；只编辑草稿中的 CSS、JavaScript 和自有资源，无需源码或构建工具",
-              "用原草稿 ID 调用 apply；宿主在真实界面和自定义代码激活后才启动不可变确认窗口的 15 秒倒计时，apply 会等待并返回 confirmed 或 rolled_back 的最终结果",
-              "用 commands、state 和 events 组合可复用能力；通过 FrontendWorkbench inspect 发现命令和错误，再按 schema 用 invoke 验证执行"
-            ],
-            "workflowEn": [
-              "Call FrontendWorkbench prepare on the local Desktop in Creative mode, read the packaged API, and edit only draft CSS, JavaScript and owned assets without source or build tools",
-              "Apply with the original draft ID; the host starts the immutable review window's 15-second countdown only after the real shell and customization activate, and apply waits for a final confirmed or rolled_back outcome",
-              "Compose commands, state and events into reusable capabilities; use FrontendWorkbench inspect to discover schemas and diagnostics, then invoke to verify execution"
-            ]
           }
         },
         {
@@ -23118,8 +21993,6 @@
         "Let the agent track step-by-step todos, write .openbitfun/plans specs, and ask clarifying questions when choices matter",
         "用 /btw（或 Ctrl+Alt+B）随手发起临时「侧问」，以及在代码编辑器中使用内联 AI",
         "Ask quick ephemeral side questions with /btw (or Ctrl+Alt+B) and invoke inline AI inside the code editor",
-        "切换到「创造（Creative）」模式，安全定制正在运行的 OpenBitFun 界面与交互能力",
-        "Switch to Creative mode to customize the live OpenBitFun interface with automatic 15-second rollback protection",
         "通过已配置的默认图像模型在对话中直接生成配图与素材",
         "Generate illustrations, icons, and visual assets directly in chat with your configured image model",
         "用 GenOfficeFile 免安装 Office 创建并编辑 Word、Excel 与 PowerPoint 文档",
@@ -23157,16 +22030,6 @@
         "缺少会改变结果的用户选择时用 AskUserQuestion；能从仓库或当前上下文查明的信息不重复询问",
         "Use TodoWrite to maintain progress for complex work; create formal plan artifacts with Write under the project's .openbitfun/plans directory",
         "Use AskUserQuestion only for a missing choice that changes the outcome; do not ask again for facts available from the repository or current context",
-        "FrontendWorkbench",
-        "Read",
-        "Write",
-        "Edit",
-        "在本地桌面创造模式中调用 FrontendWorkbench prepare，阅读随包 API；只编辑草稿中的 CSS、JavaScript 和自有资源，无需源码或构建工具",
-        "用原草稿 ID 调用 apply；宿主在真实界面和自定义代码激活后才启动不可变确认窗口的 15 秒倒计时，apply 会等待并返回 confirmed 或 rolled_back 的最终结果",
-        "用 commands、state 和 events 组合可复用能力；通过 FrontendWorkbench inspect 发现命令和错误，再按 schema 用 invoke 验证执行",
-        "Call FrontendWorkbench prepare on the local Desktop in Creative mode, read the packaged API, and edit only draft CSS, JavaScript and owned assets without source or build tools",
-        "Apply with the original draft ID; the host starts the immutable review window's 15-second countdown only after the real shell and customization activate, and apply waits for a final confirmed or rolled_back outcome",
-        "Compose commands, state and events into reusable capabilities; use FrontendWorkbench inspect to discover schemas and diagnostics, then invoke to verify execution",
         "generate_image",
         "使用 generate_image 按用户描述生成图片，默认省略 service_id 以使用已配置的默认图像模型",
         "按需指定数量和尺寸，通过返回的文件路径交付图片；远程工作区文件通过当前工作区数据面读写",
@@ -23184,6 +22047,7 @@
         "ListWorkspaces",
         "SessionControl",
         "SessionHistory",
+        "Read",
         "Grep",
         "先用 SessionControl 的 list 找到目标会话，再用 SessionHistory 导出带索引的会话记录",
         "先只读取导出文件的索引区，再用 Read 或 Grep 定位并读取需要的轮次，避免把完整历史塞进上下文",
@@ -24086,17 +22950,6 @@
           }
         },
         {
-          "id": "language-actions",
-          "titleZh": "仅在当前语言提供器实际支持时显示格式化、定义与类型跳转、引用、重命名、快速修复和符号导航",
-          "titleEn": "Show formatting, definition and type navigation, references, rename, quick fixes, and symbol navigation only when supported by the active language provider",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「仅在当前语言提供器实际支持时显示格式化、定义与类型跳转、引用、重命名、快速修复和符号导航」与你在编辑器中聚焦的文件类型和光标所在符号位置绑定，可在代码编辑器右键菜单或快捷键中直接调用。",
-            "reasonEn": "“Show formatting, definition and type navigation, references, rename, quick fixes, and symbol navigation only when supported by the active language provider” depends on the focused file type and cursor symbol in the code editor, surfaced through context menus and breadcrumbs."
-          }
-        },
-        {
           "id": "attachments",
           "titleZh": "在本地桌面会话中直接粘贴剪贴板截图，或把本机文件与文件夹拖进聊天框",
           "titleEn": "Paste clipboard images or drag local files and folders straight into Desktop sessions",
@@ -24218,8 +23071,6 @@
         "Search the workspace by filename globs, plain text, or regular expressions with streaming context previews",
         "启用本地工作区加速搜索索引，实现毫秒级大仓库内容检索",
         "Maintain accelerated local workspace search indexes for instant large-repo lookups",
-        "仅在当前语言提供器实际支持时显示格式化、定义与类型跳转、引用、重命名、快速修复和符号导航",
-        "Show formatting, definition and type navigation, references, rename, quick fixes, and symbol navigation only when supported by the active language provider",
         "在本地桌面会话中直接粘贴剪贴板截图，或把本机文件与文件夹拖进聊天框",
         "Paste clipboard images or drag local files and folders straight into Desktop sessions",
         "让智能体直接查看并深度分析工作区配图、UI 截图、报错图或架构草图",
@@ -25399,69 +24250,6 @@
           }
         },
         {
-          "id": "element-picker",
-          "titleZh": "启动元素选择器，悬停时高亮页面元素并显示标签、ID 和 Class",
-          "titleEn": "Start the element picker to highlight hovered elements and show tag, ID, and class details",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "ControlHub"
-            ],
-            "workflowZh": [
-              "用户给出网址时，用 browser.navigate（target=builtin）直接打开，缺少页面时自动创建；需要读取或交互时附带 observe=article 或 snapshot，并复用返回的 session_id；用户只要求显示内置浏览器且没有网址时，改用 OpenBitFunControl 打开 feature.browser 能力根入口，不得臆造 about:blank",
-              "对同一个 session_id 指定 target 为 builtin；选择已打开页面时，用 browser.connect 和唯一匹配的 target_url 或 target_title；快照、点击、填写、滚动和截图等动作与外部 CDP 浏览器共用同一套契约",
-              "复用 navigate 返回的观察结果，只在下一步需要新页面状态时重新快照；涉及用户账号登录态时，优先使用用户在设置中已授权连接的 external 浏览器，未授权时请用户连接，不得自行开启权限；CDP 协议扩展同样需要可用的外接连接"
-            ],
-            "workflowEn": [
-              "When the user supplies a URL, use browser.navigate with target=builtin (creates a page when needed), add observe=article or snapshot for reading/interaction, and keep the returned session_id; when they only want the built-in browser surface, open the feature.browser capability root with OpenBitFunControl and never invent about:blank",
-              "Address that session_id with target set to builtin; to select an existing page, use browser.connect with a unique target_url or target_title match. Portable actions share the external CDP contract",
-              "Reuse the observation returned by navigate; refresh only when the next decision needs new page state. For account/login-dependent work, prefer the external browser the user authorized in Settings; if unavailable, ask the user to connect it and never enable permissions yourself. CDP extensions also require an available external connection"
-            ]
-          }
-        },
-        {
-          "id": "element-context",
-          "titleZh": "点击元素后捕获 CSS 路径、属性、文本和 HTML，并加入当前会话上下文",
-          "titleEn": "Click an element to capture its CSS path, attributes, text, and HTML into the current session context",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "ControlHub"
-            ],
-            "workflowZh": [
-              "用户给出网址时，用 browser.navigate（target=builtin）直接打开，缺少页面时自动创建；需要读取或交互时附带 observe=article 或 snapshot，并复用返回的 session_id；用户只要求显示内置浏览器且没有网址时，改用 OpenBitFunControl 打开 feature.browser 能力根入口，不得臆造 about:blank",
-              "对同一个 session_id 指定 target 为 builtin；选择已打开页面时，用 browser.connect 和唯一匹配的 target_url 或 target_title；快照、点击、填写、滚动和截图等动作与外部 CDP 浏览器共用同一套契约",
-              "复用 navigate 返回的观察结果，只在下一步需要新页面状态时重新快照；涉及用户账号登录态时，优先使用用户在设置中已授权连接的 external 浏览器，未授权时请用户连接，不得自行开启权限；CDP 协议扩展同样需要可用的外接连接"
-            ],
-            "workflowEn": [
-              "When the user supplies a URL, use browser.navigate with target=builtin (creates a page when needed), add observe=article or snapshot for reading/interaction, and keep the returned session_id; when they only want the built-in browser surface, open the feature.browser capability root with OpenBitFunControl and never invent about:blank",
-              "Address that session_id with target set to builtin; to select an existing page, use browser.connect with a unique target_url or target_title match. Portable actions share the external CDP contract",
-              "Reuse the observation returned by navigate; refresh only when the next decision needs new page state. For account/login-dependent work, prefer the external browser the user authorized in Settings; if unavailable, ask the user to connect it and never enable permissions yourself. CDP extensions also require an available external connection"
-            ]
-          }
-        },
-        {
-          "id": "element-picker-cancel",
-          "titleZh": "再次点击选择按钮或按 Esc 取消元素选择并清理高亮",
-          "titleEn": "Click the picker again or press Escape to cancel selection and remove overlays",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "ControlHub"
-            ],
-            "workflowZh": [
-              "用户给出网址时，用 browser.navigate（target=builtin）直接打开，缺少页面时自动创建；需要读取或交互时附带 observe=article 或 snapshot，并复用返回的 session_id；用户只要求显示内置浏览器且没有网址时，改用 OpenBitFunControl 打开 feature.browser 能力根入口，不得臆造 about:blank",
-              "对同一个 session_id 指定 target 为 builtin；选择已打开页面时，用 browser.connect 和唯一匹配的 target_url 或 target_title；快照、点击、填写、滚动和截图等动作与外部 CDP 浏览器共用同一套契约",
-              "复用 navigate 返回的观察结果，只在下一步需要新页面状态时重新快照；涉及用户账号登录态时，优先使用用户在设置中已授权连接的 external 浏览器，未授权时请用户连接，不得自行开启权限；CDP 协议扩展同样需要可用的外接连接"
-            ],
-            "workflowEn": [
-              "When the user supplies a URL, use browser.navigate with target=builtin (creates a page when needed), add observe=article or snapshot for reading/interaction, and keep the returned session_id; when they only want the built-in browser surface, open the feature.browser capability root with OpenBitFunControl and never invent about:blank",
-              "Address that session_id with target set to builtin; to select an existing page, use browser.connect with a unique target_url or target_title match. Portable actions share the external CDP contract",
-              "Reuse the observation returned by navigate; refresh only when the next decision needs new page state. For account/login-dependent work, prefer the external browser the user authorized in Settings; if unavailable, ask the user to connect it and never enable permissions yourself. CDP extensions also require an available external connection"
-            ]
-          }
-        },
-        {
           "id": "agent-page-automation",
           "titleZh": "让智能体对内置网页执行快照、读取、点击、悬停、填写、按键、滚动、等待、脚本求值和截图",
           "titleEn": "Let an agent snapshot, read, click, hover, fill, press keys, scroll, wait, evaluate scripts, and capture the built-in page",
@@ -25687,12 +24475,6 @@
         "Open full URLs, local hostnames, or development-service ports inside OpenBitFun",
         "既可作为独立浏览器场景，也可在会话旁的辅助面板中打开",
         "Use the browser as a standalone scene or an auxiliary panel beside a session",
-        "启动元素选择器，悬停时高亮页面元素并显示标签、ID 和 Class",
-        "Start the element picker to highlight hovered elements and show tag, ID, and class details",
-        "点击元素后捕获 CSS 路径、属性、文本和 HTML，并加入当前会话上下文",
-        "Click an element to capture its CSS path, attributes, text, and HTML into the current session context",
-        "再次点击选择按钮或按 Esc 取消元素选择并清理高亮",
-        "Click the picker again or press Escape to cancel selection and remove overlays",
         "让智能体对内置网页执行快照、读取、点击、悬停、填写、按键、滚动、等待、脚本求值和截图",
         "Let an agent snapshot, read, click, hover, fill, press keys, scroll, wait, evaluate scripts, and capture the built-in page",
         "让智能体搜索公开网页并按需抓取指定页面正文用于技术查证",
@@ -26461,8 +25243,8 @@
         },
         {
           "id": "publishing",
-          "titleZh": "查看我的市场投稿审核进度、撤回发布申请与预览展示页",
-          "titleEn": "Track your Market submissions, withdraw pending releases, and render showcase slides",
+          "titleZh": "查看我的市场投稿审核进度、撤回发布申请",
+          "titleEn": "Track your Market submissions and withdraw pending releases",
           "control": {
             "kind": "open",
             "reasonCode": "visualSelection",
@@ -26836,8 +25618,8 @@
         "Ask an agent to package release notes and submit your Mini App for Market review",
         "让智能体读懂小应用源码并直接在当前窗口帮你交互操作",
         "Let an agent understand a Mini App’s source and operate its live UI for you",
-        "查看我的市场投稿审核进度、撤回发布申请与预览展示页",
-        "Track your Market submissions, withdraw pending releases, and render showcase slides",
+        "查看我的市场投稿审核进度、撤回发布申请",
+        "Track your Market submissions and withdraw pending releases",
         "帮我创建一个带任务统计和声音提醒的番茄钟小应用",
         "列出我目前已安装的所有小应用",
         "把「每日清单」小应用里的按钮改成圆角并加上按标签筛选功能",
@@ -27930,8 +26712,8 @@
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「在手机或浏览器中打开同一界面」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
-            "reasonEn": "\"Open the same UI on a phone or browser\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you."
+            "reasonZh": "「在手机或浏览器中打开同一界面，扫码配对并随时撤销」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
+            "reasonEn": "\"Open the same UI on a phone or browser, pair by QR, and revoke at any time\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you."
           }
         },
         {
@@ -29273,17 +28055,6 @@
               "Read back the real state with get or list-pets; local package paths are unavailable to remote workspaces and failures must be explicit"
             ]
           }
-        },
-        {
-          "id": "desktop-window",
-          "titleZh": "显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面",
-          "titleEn": "Show, hide, and resize the companion window, and return quickly to the main window",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面」涉及你在桌面上直接拖拽缩放悬浮窗尺寸或点击唤回主窗口；智能体可帮你开关伙伴并打开「宠物与助手」设置页。",
-            "reasonEn": "\"Show, hide, and resize the companion window, and return quickly to the main window\" involves visual window placement, resizing, and clicking on your desktop; the Agent can toggle the companion or open Pet & assistant settings for you."
-          }
         }
       ],
       "stepsZh": [
@@ -29358,8 +28129,6 @@
         "Import a `.zip` pack in Settings, or ask an agent to load a local Petdex folder or `.zip` archive",
         "移除不再使用的自定义 Petdex 包并自动回退到可用角色",
         "Remove an imported Petdex package and fall back cleanly to an available character",
-        "显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面",
-        "Show, hide, and resize the companion window, and return quickly to the main window",
         "帮我把桌面宠物打开，看看现在有哪些可选角色",
         "从 ~/petdex/pixel-fox 导入并启用这个新的桌面伙伴",
         "先帮我把桌面伙伴关掉，一会儿要投屏演示",
@@ -29375,227 +28144,6 @@
         "OpenBitFunControl"
       ],
       "docsUrl": "https://playbook.openbitfun.com/capabilities/feature.desktop-pet/"
-    },
-    {
-      "id": "feature.desktop-cards",
-      "kind": "feature",
-      "categoryId": "application",
-      "titleZh": "桌面小卡片",
-      "titleEn": "Desktop cards",
-      "summaryZh": "让智能体把倒计时提醒、上线核对清单、PR 状态、接口健康指标或行情看板做成轻巧的独立小卡片，贴在屏幕任意顺眼的位置——支持定时自动拉取数据刷新、Windows 桌面图标层固定，关掉应用再重开也会按原位置和尺寸自动恢复。",
-      "summaryEn": "Let agents place lightweight, draggable cards outside the main window for glanceable info like countdowns, checklists, PR status, service metrics, or quotes—with automatic HTTP/command refresh, Windows desktop-layer pinning, and exact position/size restore on relaunch.",
-      "keywordsZh": [
-        "小卡片",
-        "桌面卡片",
-        "桌面小组件",
-        "磁贴",
-        "倒计时提醒",
-        "桌面盯盘"
-      ],
-      "keywordsEn": [
-        "desktop cards",
-        "desktop widget",
-        "live tile",
-        "glanceable card",
-        "countdown reminder",
-        "status card"
-      ],
-      "highlightsZh": [
-        "一句话创建倒计时、待办清单、便签、进度条、指标卡、图表卡等多种形态，支持定时自动刷新",
-        "卡片上可直接打勾清单、手动刷新、置顶悬浮，或一键跳回创建它的原始会话",
-        "Windows 支持「固定到桌面」嵌入桌面图标之上、应用窗口之下，像原生桌面小组件一样不挡视线",
-        "在「首页 → 小卡片」或设置页统一查看、显示、隐藏或删除所有卡片，重启应用自动恢复布局"
-      ],
-      "highlightsEn": [
-        "Ask in chat for countdown, checklist, note, progress, metric, chart, or custom cards—with optional scheduled HTTP or local-command refresh",
-        "Check off tasks, refresh live data, toggle always-on-top, open links, or jump straight back to the source session from any card",
-        "On Windows, pin cards to the desktop layer (above desktop icons, behind app windows) so they never block active work",
-        "Manage visibility and clean up cards in one place from Home → Desktop cards or Settings, with layout restored across restarts"
-      ],
-      "items": [
-        {
-          "id": "agent-cards",
-          "titleZh": "一句话创建倒计时、清单、便签、进度、指标与图表卡片，支持 HTTP 或命令定时刷新",
-          "titleEn": "Create countdown, checklist, note, progress, metric, and chart cards with optional live refresh",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "DesktopCard"
-            ],
-            "workflowZh": [
-              "不确定卡片形态时先用 `presets` 查看预置卡片，再用 `create` 创建；需要定时刷新时为卡片提供 http 或 command 数据源",
-              "用 `list`/`get` 读取已有卡片，避免重复创建；用 `update`、`show`、`hide`、`delete`、`refresh` 维护卡片",
-              "小卡片仅在桌面端可用，远程控制会话无法使用；远程工作区不能使用本机命令数据源，失败时明确告知用户"
-            ],
-            "workflowEn": [
-              "When unsure about the card shape, call `presets` first, then `create`; give the card an http or command data source when it should refresh",
-              "Use `list`/`get` to read existing cards instead of creating duplicates; maintain cards with `update`, `show`, `hide`, `delete`, and `refresh`",
-              "Desktop cards exist only on the desktop host and are unavailable from remote control sessions; remote workspaces cannot use local command data sources, and failures must be reported explicitly"
-            ]
-          }
-        },
-        {
-          "id": "home-management",
-          "titleZh": "在「首页 → 小卡片」集中浏览全部卡片，一键显示、隐藏或删除",
-          "titleEn": "View all cards in Home → Desktop cards and show, hide, or delete any card",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "DesktopCard"
-            ],
-            "workflowZh": [
-              "不确定卡片形态时先用 `presets` 查看预置卡片，再用 `create` 创建；需要定时刷新时为卡片提供 http 或 command 数据源",
-              "用 `list`/`get` 读取已有卡片，避免重复创建；用 `update`、`show`、`hide`、`delete`、`refresh` 维护卡片",
-              "小卡片仅在桌面端可用，远程控制会话无法使用；远程工作区不能使用本机命令数据源，失败时明确告知用户"
-            ],
-            "workflowEn": [
-              "When unsure about the card shape, call `presets` first, then `create`; give the card an http or command data source when it should refresh",
-              "Use `list`/`get` to read existing cards instead of creating duplicates; maintain cards with `update`, `show`, `hide`, `delete`, and `refresh`",
-              "Desktop cards exist only on the desktop host and are unavailable from remote control sessions; remote workspaces cannot use local command data sources, and failures must be reported explicitly"
-            ]
-          }
-        },
-        {
-          "id": "card-actions",
-          "titleZh": "在卡片上直接刷新数据、勾选待办项、切换窗口置顶或一键回到来源会话",
-          "titleEn": "Refresh data, check off items, toggle always-on-top, open links, or jump to the source session",
-          "control": {
-            "kind": "delegate",
-            "tools": [
-              "DesktopCard"
-            ],
-            "workflowZh": [
-              "不确定卡片形态时先用 `presets` 查看预置卡片，再用 `create` 创建；需要定时刷新时为卡片提供 http 或 command 数据源",
-              "用 `list`/`get` 读取已有卡片，避免重复创建；用 `update`、`show`、`hide`、`delete`、`refresh` 维护卡片",
-              "小卡片仅在桌面端可用，远程控制会话无法使用；远程工作区不能使用本机命令数据源，失败时明确告知用户"
-            ],
-            "workflowEn": [
-              "When unsure about the card shape, call `presets` first, then `create`; give the card an http or command data source when it should refresh",
-              "Use `list`/`get` to read existing cards instead of creating duplicates; maintain cards with `update`, `show`, `hide`, `delete`, and `refresh`",
-              "Desktop cards exist only on the desktop host and are unavailable from remote control sessions; remote workspaces cannot use local command data sources, and failures must be reported explicitly"
-            ]
-          }
-        },
-        {
-          "id": "desktop-pinning",
-          "titleZh": "在卡片菜单、首页卡片列表或设置里将卡片固定到 Windows 桌面图标层",
-          "titleEn": "Pin cards to the Windows desktop layer from the card menu, Home list, or Settings",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「在卡片菜单、首页卡片列表或设置里将卡片固定到 Windows 桌面图标层」会将卡片放入 Windows Explorer 桌面层（位于桌面图标之上、应用窗口之下，需 Explorer 可用且 DPI 上下文一致）；这项显示偏好由你在卡片菜单、首页卡片列表或设置页手动切换，智能体可为你直接打开对应管理入口。",
-            "reasonEn": "\"Pin cards to the Windows desktop layer from the card menu, Home list, or Settings\" places the card into the Windows Explorer desktop layer (above desktop icons and behind app windows while Explorer is available with a matching DPI context); you toggle this display preference in the card menu, Home list, or Settings while the Agent opens the exact entry."
-          }
-        },
-        {
-          "id": "drag-restore",
-          "titleZh": "自由拖拽摆放并拉伸卡片边缘调整尺寸，关闭重启 OpenBitFun 后自动按原样恢复",
-          "titleEn": "Drag and resize cards freely on screen, with positions and sizes restored on relaunch",
-          "control": {
-            "kind": "open",
-            "reasonCode": "visualSelection",
-            "reasonZh": "卡片位置由用户在桌面上直接拖动决定，没有可以代替视觉摆放的结构化命令；智能体只说明操作方式，摆放保留给用户。",
-            "reasonEn": "Card positions are chosen by dragging directly on the desktop, and no structured command can replace that visual placement; the Agent explains the interaction and leaves placement to the user."
-          }
-        }
-      ],
-      "stepsZh": [
-        "在任意桌面端本地会话中告诉智能体你想盯什么信息（如倒计时、待办清单、PR 状态或某个接口指标），智能体会自动挑选合适模板创建卡片",
-        "按住卡片拖到屏幕顺手的位置，拖动边缘或四角调整到舒服的大小",
-        "通过卡片右上角菜单可手动刷新、勾选清单、切换「置顶」或在 Windows 上选择「固定到桌面」",
-        "需要暂时收起或清理时，在卡片菜单、「首页 → 小卡片」区域或「设置 → 应用与界面 → 宠物与助手 → 小卡片」中隐藏或删除"
-      ],
-      "stepsEn": [
-        "Ask an agent in a Desktop session for the glanceable card you want (countdown, checklist, PR watcher, or live metric)",
-        "Drag the card anywhere on your screen and resize it from its edges or corners",
-        "Use the card menu to refresh data, check off items, toggle always-on-top, or Pin to desktop on Windows",
-        "Show, hide, or delete cards anytime from the card menu, Home → Desktop cards, or Settings → Pet & assistant → Desktop cards"
-      ],
-      "agentControl": {
-        "tool": "DesktopCard",
-        "workflowZh": [
-          "不确定卡片形态时先用 `presets` 查看预置卡片，再用 `create` 创建；需要定时刷新时为卡片提供 http 或 command 数据源",
-          "用 `list`/`get` 读取已有卡片，避免重复创建；用 `update`、`show`、`hide`、`delete`、`refresh` 维护卡片",
-          "小卡片仅在桌面端可用，远程控制会话无法使用；远程工作区不能使用本机命令数据源，失败时明确告知用户"
-        ],
-        "workflowEn": [
-          "When unsure about the card shape, call `presets` first, then `create`; give the card an http or command data source when it should refresh",
-          "Use `list`/`get` to read existing cards instead of creating duplicates; maintain cards with `update`, `show`, `hide`, `delete`, and `refresh`",
-          "Desktop cards exist only on the desktop host and are unavailable from remote control sessions; remote workspaces cannot use local command data sources, and failures must be reported explicitly"
-        ]
-      },
-      "agentExamplesZh": [
-        "20 分钟后提醒我参加产品评审会",
-        "做一张桌面小卡片帮我盯着当前分支 PR 的 CI 状态",
-        "帮我把今晚发版要检查的 5 件事做成一张桌面清单卡片",
-        "把桌面上那张已经跑完的倒计时卡片删掉"
-      ],
-      "agentExamplesEn": [
-        "Remind me about the meeting in 20 minutes",
-        "Make a card that keeps an eye on this PR",
-        "Create a desktop checklist card for tonight’s 5 release verification steps",
-        "Hide or delete the finished countdown card on my desktop"
-      ],
-      "destination": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      },
-      "operations": [],
-      "options": [],
-      "searchTerms": [
-        "feature.desktop-cards",
-        "桌面小卡片",
-        "Desktop cards",
-        "应用设置",
-        "Application settings",
-        "小卡片",
-        "桌面卡片",
-        "桌面小组件",
-        "磁贴",
-        "倒计时提醒",
-        "桌面盯盘",
-        "desktop cards",
-        "desktop widget",
-        "live tile",
-        "glanceable card",
-        "countdown reminder",
-        "status card",
-        "一句话创建倒计时、待办清单、便签、进度条、指标卡、图表卡等多种形态，支持定时自动刷新",
-        "卡片上可直接打勾清单、手动刷新、置顶悬浮，或一键跳回创建它的原始会话",
-        "Windows 支持「固定到桌面」嵌入桌面图标之上、应用窗口之下，像原生桌面小组件一样不挡视线",
-        "在「首页 → 小卡片」或设置页统一查看、显示、隐藏或删除所有卡片，重启应用自动恢复布局",
-        "Ask in chat for countdown, checklist, note, progress, metric, chart, or custom cards—with optional scheduled HTTP or local-command refresh",
-        "Check off tasks, refresh live data, toggle always-on-top, open links, or jump straight back to the source session from any card",
-        "On Windows, pin cards to the desktop layer (above desktop icons, behind app windows) so they never block active work",
-        "Manage visibility and clean up cards in one place from Home → Desktop cards or Settings, with layout restored across restarts",
-        "一句话创建倒计时、清单、便签、进度、指标与图表卡片，支持 HTTP 或命令定时刷新",
-        "Create countdown, checklist, note, progress, metric, and chart cards with optional live refresh",
-        "在「首页 → 小卡片」集中浏览全部卡片，一键显示、隐藏或删除",
-        "View all cards in Home → Desktop cards and show, hide, or delete any card",
-        "在卡片上直接刷新数据、勾选待办项、切换窗口置顶或一键回到来源会话",
-        "Refresh data, check off items, toggle always-on-top, open links, or jump to the source session",
-        "在卡片菜单、首页卡片列表或设置里将卡片固定到 Windows 桌面图标层",
-        "Pin cards to the Windows desktop layer from the card menu, Home list, or Settings",
-        "自由拖拽摆放并拉伸卡片边缘调整尺寸，关闭重启 OpenBitFun 后自动按原样恢复",
-        "Drag and resize cards freely on screen, with positions and sizes restored on relaunch",
-        "20 分钟后提醒我参加产品评审会",
-        "做一张桌面小卡片帮我盯着当前分支 PR 的 CI 状态",
-        "帮我把今晚发版要检查的 5 件事做成一张桌面清单卡片",
-        "把桌面上那张已经跑完的倒计时卡片删掉",
-        "Remind me about the meeting in 20 minutes",
-        "Make a card that keeps an eye on this PR",
-        "Create a desktop checklist card for tonight’s 5 release verification steps",
-        "Hide or delete the finished countdown card on my desktop",
-        "不确定卡片形态时先用 `presets` 查看预置卡片，再用 `create` 创建；需要定时刷新时为卡片提供 http 或 command 数据源",
-        "用 `list`/`get` 读取已有卡片，避免重复创建；用 `update`、`show`、`hide`、`delete`、`refresh` 维护卡片",
-        "小卡片仅在桌面端可用，远程控制会话无法使用；远程工作区不能使用本机命令数据源，失败时明确告知用户",
-        "When unsure about the card shape, call `presets` first, then `create`; give the card an http or command data source when it should refresh",
-        "Use `list`/`get` to read existing cards instead of creating duplicates; maintain cards with `update`, `show`, `hide`, `delete`, and `refresh`",
-        "Desktop cards exist only on the desktop host and are unavailable from remote control sessions; remote workspaces cannot use local command data sources, and failures must be reported explicitly",
-        "DesktopCard"
-      ],
-      "docsUrl": "https://playbook.openbitfun.com/capabilities/feature.desktop-cards/"
     },
     {
       "id": "setting.application.general",
@@ -29969,17 +28517,6 @@
           }
         },
         {
-          "id": "visual-skins",
-          "titleZh": "导入、预览、启用或停用自定义视觉皮肤包（支持动态视频背景）",
-          "titleEn": "Import, preview, activate, or deactivate custom visual skin packs (including video backdrops)",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“导入、预览、启用或停用自定义视觉皮肤包（支持动态视频背景）”需要选择本地皮肤包文件并在界面中肉眼确认预览效果；智能体会打开外观页对应区域由你挑选与启用。",
-            "reasonEn": "“Import, preview, activate, or deactivate custom visual skin packs (including video backdrops)” requires picking a local skin package file and visually reviewing its live preview; the Agent opens Appearance settings so you can preview and activate it."
-          }
-        },
-        {
           "id": "ui-font-size",
           "titleZh": "调整全局界面字号档位，或按 12–20 px 自定义像素大小并实时预览",
           "titleEn": "Adjust global UI font-size presets or set a custom 12–20 px size with live preview",
@@ -30015,17 +28552,6 @@
             "reasonCode": "unstructuredInteraction",
             "reasonZh": "“微调或重置对话流内容区的首选像素宽度”取决于当前显示器尺寸与个人视觉阅读习惯；智能体会为你打开外观页宽度调节项。",
             "reasonEn": "“Adjust or reset the preferred pixel width of the conversation stream” depends on your monitor geometry and visual comfort; the Agent opens the Appearance width control for interactive tuning."
-          }
-        },
-        {
-          "id": "session-panel-layout",
-          "titleZh": "在“并排”与“覆盖”之间切换会话侧边面板展示模式",
-          "titleEn": "Switch the session side-panel display mode between Side by side and Overlay",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“在“并排”与“覆盖”之间切换会话侧边面板展示模式”需要结合当前窗口宽度体验分栏与浮层效果；智能体会打开外观页会话侧边面板配置项。",
-            "reasonEn": "“Switch the session side-panel display mode between Side by side and Overlay” is easiest to judge visually against your current window width; the Agent opens the Session Panel section in Appearance settings."
           }
         },
         {
@@ -30151,16 +28677,12 @@
         "Left sidebar pinning & ordering, preferred chat width, and Side by side vs Overlay session panels",
         "选择跟随系统或暗色、浅色、黑白撞色、午夜、墨韵、墨夜、赛博、石板灰、东京夜等内置主题",
         "Choose Follow System or Dark, Light, Black & White, Midnight, Ink Charm, Ink Night, Cyber, Slate, or Tokyo Night built-in theme appearance",
-        "导入、预览、启用或停用自定义视觉皮肤包（支持动态视频背景）",
-        "Import, preview, activate, or deactivate custom visual skin packs (including video backdrops)",
         "调整全局界面字号档位，或按 12–20 px 自定义像素大小并实时预览",
         "Adjust global UI font-size presets or set a custom 12–20 px size with live preview",
         "固定、取消固定或调整左侧导航栏场景入口顺序",
         "Pin, unpin, reorder, or reset left sidebar navigation entries",
         "微调或重置对话流内容区的首选像素宽度",
         "Adjust or reset the preferred pixel width of the conversation stream",
-        "在“并排”与“覆盖”之间切换会话侧边面板展示模式",
-        "Switch the session side-panel display mode between Side by side and Overlay",
         "通过智能体直接切换简体中文、English 或繁體中文界面语言",
         "Switch the interface language among Simplified Chinese, English, and Traditional Chinese",
         "帮我切换成东京夜主题",
@@ -30300,22 +28822,6 @@
                 "id": "desktop-cards-enabled"
               }
             ]
-          }
-        },
-        {
-          "id": "desktop-cards-pinning",
-          "titleZh": "将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）",
-          "titleEn": "Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)",
-          "destination": {
-            "kind": "settings",
-            "pageId": "application.pet",
-            "sectionId": "desktop-cards"
-          },
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）”需要按当前机器已有的具体卡片列表逐张选择；智能体会直达“宠物与助手 → 桌面小卡片”区域供你勾选。",
-            "reasonEn": "“Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)” depends on the live list of cards on this computer; the Agent opens Pet & assistant → Desktop Cards so you can toggle each card."
           }
         }
       ],
@@ -30530,8 +29036,6 @@
         "Refresh the character list and delete imported Petdex packs you no longer need",
         "开启或关闭桌面小卡片总开关（关闭后隐藏全部卡片且收起小卡片工具）",
         "Turn desktop cards on or off globally (hiding cards and removing the agent tool when off)",
-        "将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）",
-        "Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)",
         "关闭桌面宠物",
         "让 OpenBitFun 使用 /path/to/pet 里的萌宠",
         "打开实时语音通话设置",
@@ -30692,22 +29196,6 @@
             "reasonCode": "unstructuredInteraction",
             "reasonZh": "“配置智能体执行期间发送消息的默认行为（立即发送纠偏 vs 排队等待）”属于当前设备的交互手感偏好，智能体会直接定位到“输入与交互 → 消息发送”区域供你切换。",
             "reasonEn": "“Choose whether messages sent during an active turn steer immediately or wait in queue” is an interactive input preference scoped to the active surface; the Agent opens Input & Interaction → Message Sending so you can switch modes."
-          }
-        },
-        {
-          "id": "btw-close-confirmation",
-          "titleZh": "开启或关闭侧问（/btw）面板关闭前的丢弃确认提示",
-          "titleEn": "Enable or disable the confirmation prompt before closing a /btw side conversation",
-          "destination": {
-            "kind": "settings",
-            "pageId": "application.voice",
-            "sectionId": "btw-close-confirmation"
-          },
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“开启或关闭侧问（/btw）面板关闭前的丢弃确认提示”保存在当前界面的交互偏好中，智能体会为你打开“会话与记忆 → 侧问”中的确认开关。",
-            "reasonEn": "“Enable or disable the confirmation prompt before closing a /btw side conversation” is stored as a client UI interaction preference; the Agent opens Session & Memory → Side questions for you."
           }
         },
         {
@@ -30882,8 +29370,6 @@
         "Select a microphone device and run a live speech-recognition test",
         "配置智能体执行期间发送消息的默认行为（立即发送纠偏 vs 排队等待）",
         "Choose whether messages sent during an active turn steer immediately or wait in queue",
-        "开启或关闭侧问（/btw）面板关闭前的丢弃确认提示",
-        "Enable or disable the confirmation prompt before closing a /btw side conversation",
         "开启或关闭在对话中划选文字后自动弹出快捷操作栏",
         "Enable or disable the automatic floating toolbar when selecting conversation text",
         "启用聊天框语音输入，把识别语言设为中文",
@@ -32739,17 +31225,6 @@
       ],
       "items": [
         {
-          "id": "default-agent-harness",
-          "titleZh": "设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式",
-          "titleEn": "Set Default agent execution mode: follow the last chat input selection or fix a default mode",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式”由“会话与记忆”设置页中的关联控件共同管理，目前没有单一结构化命令静默替代；智能体会直接打开该入口供你选择。",
-            "reasonEn": "“Set Default agent execution mode: follow the last chat input selection or fix a default mode” is managed by linked controls on the Sessions & Memory settings page; the Agent opens the exact section so you can pick visibly."
-          }
-        },
-        {
           "id": "automatic-titles",
           "titleZh": "启用或停用根据会话内容自动生成标题",
           "titleEn": "Enable or disable automatic titles generated from session content",
@@ -32935,8 +31410,6 @@
         "Generate clear session titles automatically and bind them to your Fast model to save latency",
         "Show a one-line next-step prompt suggestion in the chat input after replies—press Tab or → to accept",
         "Enable accelerated local repository search while remote workspaces cleanly use remote search paths",
-        "设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式",
-        "Set Default agent execution mode: follow the last chat input selection or fix a default mode",
         "启用或停用根据会话内容自动生成标题",
         "Enable or disable automatic titles generated from session content",
         "让标题模型继承快速模型、主模型或使用指定轻量模型",
@@ -34112,17 +32585,6 @@
       ],
       "items": [
         {
-          "id": "external-control",
-          "titleZh": "为本机集成授权工作区",
-          "titleEn": "Authorize workspaces for local integrations",
-          "control": {
-            "kind": "open",
-            "reasonCode": "visualSelection",
-            "reasonZh": "用户需要在桌面设置中选择此集成可以访问的工作区，并复制仅在创建时显示一次的令牌。",
-            "reasonEn": "In Desktop settings, the user chooses which workspaces the integration can access and copies the token while it is visible at creation."
-          }
-        },
-        {
           "id": "permissions",
           "titleZh": "查看“允许桌面控制”开关及“辅助功能”、“屏幕录制”系统授权状态并完成授权",
           "titleEn": "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
@@ -34199,8 +32661,6 @@
         "Shows live grant status for both Accessibility (mouse/keyboard input) and Screen Recording (visual capture)",
         "One-click permission request or direct jump into your operating system’s Privacy & Security settings",
         "Works alongside single-window App Sharing, live control status cards, and immediate stop controls",
-        "为本机集成授权工作区",
-        "Authorize workspaces for local integrations",
         "查看“允许桌面控制”开关及“辅助功能”、“屏幕录制”系统授权状态并完成授权",
         "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
         "结合应用级总开关、单窗口共享与主机边界安全管控桌面操作",
@@ -35795,79 +34255,6 @@
       "docsUrl": "https://playbook.openbitfun.com/capabilities/setting.data.usage/"
     },
     {
-      "id": "setting.data.storage",
-      "kind": "setting",
-      "categoryId": "data",
-      "titleZh": "存储空间",
-      "titleEn": "Storage",
-      "summaryZh": "按工作区查看本机文件快照占用，手动清理符合条件的会话。",
-      "summaryEn": "Inspect local file snapshot usage by workspace and clean up eligible session histories.",
-      "keywordsZh": [
-        "存储空间",
-        "快照清理"
-      ],
-      "keywordsEn": [
-        "storage",
-        "snapshot cleanup"
-      ],
-      "highlightsZh": [
-        "查看每个工作区的快照占用及共享文件大小。"
-      ],
-      "highlightsEn": [
-        "See snapshot usage and shared file sizes for each workspace."
-      ],
-      "items": [
-        {
-          "id": "clean",
-          "titleZh": "预览并清理会话文件快照",
-          "titleEn": "Preview and clean up session file snapshots",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“预览并清理会话文件快照”会永久移除所选会话的文件回退记录，请在存储空间页面核对并确认。",
-            "reasonEn": "“Preview and clean up session file snapshots” opens Storage so you can review the affected sessions before permanently removing their file rollback history."
-          }
-        }
-      ],
-      "stepsZh": [
-        "打开存储空间，选择工作区和清理范围。",
-        "核对预览并确认删除文件快照。"
-      ],
-      "stepsEn": [
-        "Open Storage and select the workspaces and inactivity period.",
-        "Review the preview and confirm deletion of file snapshots."
-      ],
-      "agentExamplesZh": [
-        "打开快照存储设置"
-      ],
-      "agentExamplesEn": [
-        "Open snapshot storage settings"
-      ],
-      "destination": {
-        "kind": "settings",
-        "pageId": "data.storage"
-      },
-      "operations": [],
-      "options": [],
-      "searchTerms": [
-        "setting.data.storage",
-        "存储空间",
-        "Storage",
-        "数据与诊断",
-        "Data & diagnostics",
-        "快照清理",
-        "storage",
-        "snapshot cleanup",
-        "查看每个工作区的快照占用及共享文件大小。",
-        "See snapshot usage and shared file sizes for each workspace.",
-        "预览并清理会话文件快照",
-        "Preview and clean up session file snapshots",
-        "打开快照存储设置",
-        "Open snapshot storage settings"
-      ],
-      "docsUrl": "https://playbook.openbitfun.com/capabilities/setting.data.storage/"
-    },
-    {
       "id": "setting.data.archived",
       "kind": "setting",
       "categoryId": "data",
@@ -36127,28 +34514,6 @@
             "reasonZh": "“查看上次异常退出、崩溃记录以及启动与配置自动恢复详情”需要根据本机启动自检记录动态呈现异常摘要；智能体会为你打开“日志与诊断”页查看。",
             "reasonEn": "“Inspect previous crashes, unclean shutdown notices, and startup or configuration recovery details” displays live startup-recovery findings from this machine; the Agent opens Logs & Diagnostics so you can inspect them."
           }
-        },
-        {
-          "id": "devtools",
-          "titleZh": "仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器",
-          "titleEn": "Development builds only: check desktop DevTools availability and open or close them",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器”仅在开发构建宿主中开放交互调试窗口；智能体不会在常规生产环境中误触该入口。",
-            "reasonEn": "“Development builds only: check desktop DevTools availability and open or close them” is available only inside development host builds for interactive window inspection; standard release builds keep it disabled."
-          }
-        },
-        {
-          "id": "element-inspector",
-          "titleZh": "仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息",
-          "titleEn": "Development builds only: inspect main-window UI elements and report the selected element",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息”需要开发者在开发构建主窗口中用鼠标点选目标元素；智能体将交互保留在可见界面。",
-            "reasonEn": "“Development builds only: inspect main-window UI elements and report the selected element” requires clicking a target element directly inside a development-build main window; the Agent keeps the interaction visible."
-          }
         }
       ],
       "stepsZh": [
@@ -36253,10 +34618,6 @@
         "Confirm the privacy notice to export a local ZIP diagnostics bundle and reveal it in your file manager",
         "查看上次异常退出、崩溃记录以及启动与配置自动恢复详情",
         "Inspect previous crashes, unclean shutdown notices, and startup or configuration recovery details",
-        "仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器",
-        "Development builds only: check desktop DevTools availability and open or close them",
-        "仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息",
-        "Development builds only: inspect main-window UI elements and report the selected element",
         "把日志级别改成 info",
         "打开日志与诊断设置，我要导出诊断包",
         "帮我关闭敏感调试信息记录",

@@ -1,9 +1,16 @@
 # Peer Device Mode
 
 Peer Device Mode switches the desktop (and mobile control target) data plane
-onto another same-account online OpenBitFun device. The React shell stays local;
-product invokes and agentic events come from the peer. The peer may be Desktop
+onto another same-account online OpenBitFun device. The controller's UI shell
+stays local; product invokes and agentic events come from the peer. The peer may be Desktop
 or CLI: both speak the same HostInvoke / DeviceEvent protocol.
+
+Two transports exist, negotiated per device (see
+[OBP over the device mesh](#obp-over-the-device-mesh-new-hosts)): devices on
+the account's EasyTier mesh that advertise `obp_v1` + `mesh_v1` are driven over
+the backend protocol (OBP) with live events; older devices keep the relay
+HostInvoke / DeviceEvent path the rest of this document describes. A device
+on the mesh is never driven over the old relay.
 
 ## Product goal
 
@@ -40,9 +47,9 @@ Two rules follow, and both are load-bearing:
   the background one bus carries several agent streams. The desktop controller
   tags each re-emitted payload with `__openbitfunSourceDeviceId`
   (`remote_connect_api::PEER_EVENT_SOURCE_KEY`; non-object payloads are wrapped
-  under `__openbitfunSourcePayload`), and `deviceSurfaceRouting.ts` — applied inside
-  `TauriTransportAdapter.listen` — delivers a surface-scoped event only when its
-  producing device is the rendered one. Untagged events are local by definition.
+  under `__openbitfunSourcePayload`), and the UI's peer routing
+  (`src/nsh-ui/src/peerRouting.ts`, applied by the bridge over any connection)
+  delivers a surface-scoped event only when its producing device is the rendered one. Untagged events are local by definition.
   Control-plane events (`account://…`, window chrome, updater) are never scoped
   and always pass.
 
@@ -64,6 +71,11 @@ remains the controller regardless of the rendered surface. Transport/event
 routing and container selection commit synchronously in `activateSurface` so
 no observer can see B's state while requests still target A.
 
+Frontend class names in this document (`PeerDeviceSurfaceController`,
+`PeerConnectionManager`, `ApiClient`, ...) name the retired React desktop UI
+(`src/web-ui`, see Git history); the rules they implement remain the contract
+for the native desktop UI's peer path
+(`src/nsh-ui/src/{peerRouting,peerStore,peerState,meshPeerConnection}.ts`).
 `PeerDeviceSurfaceController` serializes activation outside React. Rapid
 requests coalesce to the last target, a committed-but-superseded hydrate is
 invalidated before the next target proceeds, and a real activation failure
@@ -438,7 +450,7 @@ capture, configuration and realtime connections remain on the controller.
 Config mutations publish in-memory values and change notifications only after
 atomic persistence succeeds. Model CRUD and Agent/Skill map edits use a shared
 read/modify/write operation; startup profile canonicalization updates only its
-map. User backups have unique names even within the same second. Web UI reads
+map. User backups have unique names even within the same second. Desktop UI reads
 resolve legacy model metadata without writing it back, model edits read fresh
 host data inside the client mutation queue, and AI-experience controls save
 only edited fields. An explicit empty quick-action list stays empty across
@@ -464,7 +476,8 @@ FS) and must not be mixed with Peer Device Mode.
   control plane) never execute on the peer on behalf of a controller. Which
   commands those are is declared once, per command, in the Product Operation
   Registry (`openbitfun_product_domains::remote_surface`); the desktop host, the
-  CLI host, and the Web UI transport adapter derive their tables from it. See
+  CLI host, and the NSH UI peer routing (`src/nsh-ui/src/peerRouting.ts`, from the
+  generated `src/nsh-ui/src/generated/peerSurface.ts`) derive their tables from it. See
   [remote-surface-contract.md](remote-surface-contract.md).
 - Unsupported or denied commands fail loudly; they must not fall back to the
   local host (that would leak local content). The CLI host distinguishes
@@ -472,7 +485,96 @@ FS) and must not be mixed with Peer Device Mode.
   "unknown to this host version" so a controller can tell a policy refusal
   from a version mismatch.
 
-## Transport
+## OBP over the device mesh (new hosts)
+
+Owner: `src/apps/desktop/src/mesh/peer_link.rs` (controller link),
+`src/nsh-ui/src/{peerStore,meshPeerConnection,peerRouting,bridge}.ts` (NSH
+surface). The mesh itself (EasyTier sidecar, issuer, `account-device`
+listener, handshake) is described in
+[unified-client-architecture.md](unified-client-architecture.md#device-mesh-obp-between-account-devices-over-easytier-wave-4-implemented).
+
+**Negotiation.** When the user picks a device, the controller reads its own
+`mesh_list_devices` (owner command, `ControllerLocal`). Only versions that join
+the mesh are ever in it, so:
+
+| The device is | Transport |
+|---|---|
+| in the mesh, its OBP listener answers, advertises `obp_v1` + `mesh_v1` | OBP over the mesh |
+| in the mesh but its listener does not answer, or advertises another protocol | refused with the reason (never the relay) |
+| not in the mesh, but seen there in the last 14 days (`openbitfun.mesh-devices.v1`, controller-local storage) | refused: "not on the mesh right now" (never the relay) |
+| not in the mesh and never seen there, or this host runs no mesh (Tauri host, signed out) | legacy relay HostInvoke |
+
+The surface says which transport is in use (the peer banner and Devices:
+"Live over the device mesh (direct, 3 ms)" / "Over the legacy relay: B runs an
+older OpenBitFun").
+
+**Data plane.** The device handshake needs this device's X25519 key, which
+stays in the backend, so the controller's own backend holds the authenticated
+`account-device` OBP connection (`crate::mesh::connect_device`) and exposes it
+to its UIs with four `ControllerLocal` commands:
+
+| Command | Does |
+|---|---|
+| `peer_link_connect {deviceId}` | Opens (or reuses) the link; answers the peer's hello (scope, capabilities, `hostCapabilities`, backend version and instance) and the mesh route (p2p or relayed, latency) |
+| `peer_link_call {deviceId, command, args}` | Runs one command on the peer: `args` is the exact Tauri args object, the result the peer's own JSON (no envelope, no re-projection) |
+| `peer_link_events {deviceId, afterSeq?, instanceId?, waitMs?}` | Long poll (25 s) over the peer's event stream; items are the peer's own `{seq, event, payload}` |
+| `peer_link_disconnect {deviceId}` | Closes the link |
+
+For the native UI the extra hop is an in-process function call; token chunks
+are delivered as the peer emits them (no nudge-then-pull). The link keeps the
+peer events it took in a ring (4,096 events / 16 MiB) and, when the mesh
+connection drops, reconnects with backoff and `lastSeq` + `instanceId`, so the
+peer replays the gap. A UI cursor that fell out of the ring or belongs to an
+earlier peer instance gets a synthetic `backend://events-dropped` first and the
+UI re-hydrates through ordinary commands (`backendResync.ts`). A link nobody
+polled or called for five minutes closes; all links close with the mesh
+(sign-out, account switch, quit). Calls during a reconnect fail with
+`peer_reconnecting:` instead of waiting.
+
+**Routing.** The NSH bridge installs the link as a second backend connection.
+Registry `ControllerLocal` commands (`PEER_CONTROLLER_LOCAL_COMMANDS`) stay on
+this machine; every other command goes to the peer. Owner-only events
+(`PEER_OWNER_ONLY_EVENT_PREFIXES`: account, window, tray, updater, mesh, shell)
+come from this machine's backend; every other event comes from the peer, whose
+`account-device` scope withholds its own owner-only events. Both lists are
+generated from the Product Operation Registry
+(`scripts/generate-interactive-capabilities.mjs` -> `src/nsh-ui/src/generated/peerSurface.ts`).
+No source tag or surface filter is needed: the two streams are separate.
+Feature gates that read the peer's capabilities use the hello's
+`hostCapabilities` (the registry's desktop peer-host list), the same booleans
+`peer_mode_ping` advertises on the relay path.
+
+**Not used on the mesh path:** `account_device_rpc`, relay `rpc-call`,
+`machine-event` / DeviceEvent fan-out, `HostStream` / `account_subscribe_session`,
+`peer_mode_ping`, `peer_control_attach/detach` and the host webview bridge. The
+peer runs the command in its own `BackendService::dispatch`. Permission and
+question prompts are ordinary proxied events plus the session interaction
+mailbox, so the controller answers them like a local prompt.
+`test/peer-mesh.test.tsx` fails if a mesh session invokes any of
+`LEGACY_RELAY_TRANSPORT_COMMANDS`.
+
+**Detached Dispatch and IM bots.** Controllers reach new targets the same way:
+the `account-device` scope also runs the detached-dispatch target verbs
+(`dispatch_target_*`) and `obp_remote_command` (a bot's `RemoteCommand`),
+advertised as `dispatch_target_v1` / `remote_command_v1` on the mesh hello and
+`/obp/mesh/info`. The controller side is the `remote_connect::mesh_route` port
+(services-integrations) with the desktop implementation in
+`src/apps/desktop/src/mesh/route.rs`: a device on the mesh with the capability
+goes over OBP (a failure is reported, never retried over the relay); any other
+device keeps the relay RPC. CLI hosts run no mesh and stay on the relay.
+
+**Scenarios.** Remote workspaces are unchanged: the peer runs the command
+where its workspace lives. Peer Device Mode through the mesh needs the native
+desktop host on both ends (the Tauri host runs no mesh). Exercised: two
+in-process backends over the mesh client with the real handshake
+(`mesh_tests::peer_device_mode_links_call_stream_and_resume_over_the_mesh`),
+the NSH routing and fallback tests (`src/nsh-ui/test/peer-mesh.test.tsx`), and
+a live run in which two real EasyTier sidecars join a throwaway `obf-` network
+through the relay node and the controller link streams paced tokens
+(`mesh_tests::peer_link_e2e_streams_live_tokens_over_the_relay_node`, ignored by
+default). Two native apps need two profiles signed in to one account.
+
+## Transport (legacy relay)
 
 - One account-scoped Socket.IO connection owns RPC acknowledgements, method
   registration, presence and session updates. Rust `relay_client` supplies account
@@ -642,18 +744,17 @@ comes from the account WebSocket, without a second periodic directory RPC.
   webview bridge). Device routing in `src/apps/cli/src/account.rs` special-cases
   `HostInvoke` / `DeviceEvent`. Same machine Desktop+CLI share one `device_id`;
   the authenticated connection epoch retires the previous connection.
-- Frontend mode + transport: `src/web-ui/src/infrastructure/peer-device/`,
-  `adapters/peer-device-adapter.ts`
-- Surface routing / switcher: `deviceSurfaceRouting.ts`,
-  `deviceSurfaceReconcile.ts`, `deviceActivity.ts`,
-  `DeviceSurfaceSwitcher.tsx`, `useAccountDeviceRoster.ts`
-- Peer directory picker: `pickWorkspaceDirectory.ts`, `PeerDirectoryBrowser.tsx`,
-  `PeerDirectoryPickerHost.tsx`
+- Frontend mode + transport (native desktop UI): `src/nsh-ui/src/peerRouting.ts`,
+  `peerStore.ts`, `peerState.ts`, `meshPeerConnection.ts`, and the generated
+  `src/nsh-ui/src/generated/peerSurface.ts`. The React desktop UI's
+  `src/web-ui/src/infrastructure/peer-device/` was retired with the Tauri shell.
 
 ## Regression guards (read before changing session/account paths)
 
-Frontend invariants and known failure modes:
-[`src/web-ui/src/infrastructure/peer-device/README.md`](../../src/web-ui/src/infrastructure/peer-device/README.md).
+Frontend invariants and known failure modes were recorded for the retired React
+desktop UI in `src/web-ui/src/infrastructure/peer-device/README.md` (Git
+history); the native desktop UI's peer routing rules live in
+[`src/nsh-ui/AGENTS.md`](../../src/nsh-ui/AGENTS.md).
 
 Especially: Peer Mode must not call fail-closed `account_fetch_session_turns`
 during hydrate; clear stale `currentWorkspacePath` on peer switch; pass live

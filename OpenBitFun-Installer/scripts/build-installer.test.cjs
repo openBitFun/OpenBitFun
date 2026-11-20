@@ -5,48 +5,67 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  MAIN_APP_EXE,
   REQUIRED_PAYLOAD_FILES,
+  copyPackageWithManifest,
   getExpectedAppProfile,
-  getPayloadSourceExeName,
-  resolveAppExePath,
-  shouldCopySiblingRuntimeFile,
+  getMainAppBuildCommand,
+  resolveAppDir,
+  shouldCopyPackageFile,
+  validatePackageInfo,
   validateRequiredPayloadFiles,
 } = require("./build-installer.cjs");
 
 const installerRoot = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(installerRoot, "..");
 
-test("installer modes select only their exact Cargo profile", () => {
+test("installer modes package and accept only their exact Cargo profile", () => {
   assert.equal(getExpectedAppProfile("release"), "release");
   assert.equal(getExpectedAppProfile("fast"), "release-fast");
-
-  const releasePath = resolveAppExePath("release", [], {});
-  assert.match(releasePath, /target[\\/]release[\\/]openbitfun-desktop\.exe$/);
-  assert.doesNotMatch(releasePath, /release-fast|debug/);
+  assert.equal(
+    getMainAppBuildCommand("fast"),
+    "pnpm run desktop-nsh:package:windows -- --profile release-fast"
+  );
+  const info = { profile: "release", executable: MAIN_APP_EXE, target: null };
+  assert.doesNotThrow(() => validatePackageInfo(info, "release"));
+  assert.throws(() => validatePackageInfo(info, "fast"), /release profile, not release-fast/);
+  assert.throws(() => validatePackageInfo(null, "release"), /package\.json/);
+  assert.throws(
+    () => validatePackageInfo({ ...info, target: "aarch64-pc-windows-msvc" }, "release"),
+    /x86_64 Windows/
+  );
+  assert.throws(
+    () => validatePackageInfo({ ...info, executable: "acme-desktop.exe" }, "release"),
+    /installs openbitfun-desktop\.exe/
+  );
 });
 
-test("an explicit desktop executable wins over target directory discovery", () => {
-  const explicit = path.join(os.tmpdir(), "custom-target", "openbitfun-desktop.exe");
+test("the installer installs the native Windows package directory", () => {
+  const defaultDir = resolveAppDir([], {});
+  assert.match(defaultDir, /target[\\/]desktop-nsh[\\/]windows[\\/]OpenBitFun$/);
+  const explicit = path.join(os.tmpdir(), "custom-package", "OpenBitFun");
+  assert.equal(resolveAppDir(["--app-dir", explicit], { OPENBITFUN_INSTALLER_APP_DIR: "ignored" }), path.normalize(explicit));
+  assert.equal(resolveAppDir([], { OPENBITFUN_INSTALLER_APP_DIR: explicit }), path.normalize(explicit));
+  // The older `--app-exe` spelling names the package's executable.
   assert.equal(
-    resolveAppExePath("release", ["--app-exe", explicit], {
-      CARGO_TARGET_DIR: "ignored-target",
-    }),
+    resolveAppDir(["--app-exe", path.join(explicit, MAIN_APP_EXE)], {}),
     path.normalize(explicit)
   );
 });
 
-test("payload manifests record only the canonical executable name", () => {
-  const appExe = path.join(
-    os.tmpdir(),
-    "openbitfun-build-root",
-    "target",
-    "release",
-    "openbitfun-desktop.exe"
-  );
-  assert.equal(getPayloadSourceExeName(appExe), "openbitfun-desktop.exe");
-  assert.equal(path.isAbsolute(getPayloadSourceExeName(appExe)), false);
+test("the installer executable is the one the Windows package names its runner", () => {
+  // `<binaryName>.exe` of the default product definition.
+  const product = fs.readFileSync(path.join(repoRoot, "products/openbitfun/product.jsonc"), "utf8");
+  assert.match(product, /"binaryName": "openbitfun-desktop",\s*"bundleId"/);
+  assert.equal(MAIN_APP_EXE, "openbitfun-desktop.exe");
+  const packaging = fs.readFileSync(path.join(repoRoot, "scripts/package-desktop-nsh-windows.mjs"), "utf8");
+  assert.match(packaging, /const executable = `\$\{identity\.binaryName\}\.exe`/);
+  assert.match(packaging, /writePackageInfo\(app, \{ \.\.\.options, identity, version: pkg\.version, executable \}\)/);
+  const modRs = fs.readFileSync(path.join(installerRoot, "src-tauri/src/installer/mod.rs"), "utf8");
+  assert.match(modRs, /const MAIN_APP_EXE: &str = "openbitfun-desktop\.exe";/);
 });
 
-test("payload validation requires every desktop runtime surface", () => {
+test("payload validation requires every native runtime surface", () => {
   const payload = fs.mkdtempSync(path.join(os.tmpdir(), "openbitfun-installer-payload-"));
   const manifest = { files: [] };
 
@@ -58,24 +77,49 @@ test("payload validation requires every desktop runtime surface", () => {
   }
 
   assert.doesNotThrow(() => validateRequiredPayloadFiles(payload, manifest));
+  for (const required of ["openbitfun_desktop_lib.dll", "nsh/bundle.nshc", "flashgrep/flashgrep-x86_64-pc-windows-msvc.exe"]) {
+    assert.ok(REQUIRED_PAYLOAD_FILES.includes(required), required);
+  }
+  assert.ok(!REQUIRED_PAYLOAD_FILES.some((file) => file.startsWith("frontend/")), "no WebView frontend");
 
-  fs.rmSync(path.join(payload, "frontend"), { recursive: true, force: true });
+  fs.rmSync(path.join(payload, "nsh"), { recursive: true, force: true });
   assert.throws(
     () => validateRequiredPayloadFiles(payload, manifest),
-    /frontend\/dist\/index\.html/
+    /nsh\/bundle\.nshc/
   );
 });
 
-test("Cargo implementation locks are not copied into the installer", () => {
-  assert.equal(shouldCopySiblingRuntimeFile(".cargo-lock", "openbitfun-desktop.exe"), false);
-  assert.equal(
-    shouldCopySiblingRuntimeFile(".cargo-artifact-lock", "openbitfun-desktop.exe"),
-    false
-  );
-  assert.equal(
-    shouldCopySiblingRuntimeFile(".cargo-build-lock", "openbitfun-desktop.exe"),
-    false
-  );
+test("the payload is the package directory with a manifest of every file", () => {
+  const app = fs.mkdtempSync(path.join(os.tmpdir(), "openbitfun-native-package-"));
+  const files = {
+    [MAIN_APP_EXE]: "runner",
+    "openbitfun_desktop_lib.dll": "backend",
+    "openbitfun_desktop_lib.pdb": "symbols",
+    "nsh/app.json": "{}",
+    "resources/dsh-profile/package.json": "{}",
+    "flashgrep/flashgrep-x86_64-pc-windows-msvc.exe": "daemon",
+  };
+  for (const [relative, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(app, relative)), { recursive: true });
+    fs.writeFileSync(path.join(app, relative), content);
+  }
+  const payload = fs.mkdtempSync(path.join(os.tmpdir(), "openbitfun-installer-staged-"));
+  const manifest = { files: [] };
+  copyPackageWithManifest(app, payload, manifest, payload);
+  const staged = manifest.files.map((entry) => entry.path).sort();
+  assert.deepEqual(staged, Object.keys(files).filter((file) => !file.endsWith(".pdb")).sort());
+  for (const entry of manifest.files) {
+    assert.match(entry.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(entry.size, fs.statSync(path.join(payload, entry.path)).size);
+  }
+});
+
+test("Cargo implementation locks and debug files are not copied into the installer", () => {
+  for (const name of [".cargo-lock", ".cargo-artifact-lock", ".cargo-build-lock", "app.pdb", "lib.exp", "lib.lib"]) {
+    assert.equal(shouldCopyPackageFile(name), false, name);
+  }
+  assert.equal(shouldCopyPackageFile(MAIN_APP_EXE), true);
+  assert.equal(shouldCopyPackageFile("openbitfun_desktop_lib.dll"), true);
 });
 
 test("Rust and JavaScript Tauri package lines stay pinned and aligned", () => {

@@ -12,6 +12,7 @@
 import { signal } from "nsh";
 import { getConfig, setConfig } from "./api";
 import { invokeCommand } from "./bridge";
+import { isCommandUnavailable } from "./hostCommands";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
 
@@ -126,7 +127,11 @@ let loading = false;
 let stored: ToolPermissionConfig | null = null;
 let draftSequence = 0;
 
-/** Reads a stored config into the shape `set_config` is given back. */
+/**
+ * Compatibility read for a host older than `get_permission_settings`: reads
+ * the stored document the way that host's own normalizer does. A current host
+ * answers the whole page view itself.
+ */
 function normalize(value: unknown): ToolPermissionConfig {
   const input = (value ?? {}) as {
     policy?: { preset?: unknown; rules?: unknown };
@@ -260,8 +265,63 @@ export function ensurePermissions(): void {
   });
 }
 
+/** One approval model choice as `get_permission_settings` answers it. */
+interface HostApprovalModel {
+  value?: string;
+  role?: "fast" | "primary" | null;
+  modelId?: string;
+  modelName?: string | null;
+  available?: boolean;
+}
+
+/** `get_permission_settings`: the policy view plus the page's choices. */
+interface PermissionPageView extends PermissionView {
+  approvalModels?: HostApprovalModel[];
+  showPermissionModeControl?: boolean;
+}
+
+function approvalOptionsOf(rows: HostApprovalModel[] | undefined): ApprovalModelOption[] {
+  const options: ApprovalModelOption[] = [];
+  for (const row of rows ?? []) {
+    if (!row?.value) continue;
+    const name = row.modelName ?? "";
+    if (row.role) {
+      options.push({
+        value: row.value,
+        label: row.role === "fast" ? "Fast model" : "Primary model",
+        hint: row.available ? name : `Unavailable model (${row.modelId ?? row.value})`,
+        disabled: row.available !== true,
+      });
+    } else {
+      options.push({ value: row.value, label: name || row.value, hint: row.modelId ?? row.value, disabled: false });
+    }
+  }
+  const selected = approvalSettings()?.chatModelId ?? "";
+  if (selected && !options.some(entry => entry.value === selected)) {
+    options.unshift({ value: selected, label: `Unavailable model (${selected})`, hint: "", disabled: true });
+  }
+  return options;
+}
+
 export async function loadPermissions(): Promise<void> {
   await runStep(async () => {
+    try {
+      // The host reads and projects the whole page (wave 4).
+      const view = await invokeCommand<PermissionPageView>("get_permission_settings", {});
+      applyView(view);
+      permissionsSupported.set(true);
+      permissionModeControl.set(view?.showPermissionModeControl === true);
+      approvalModels.set(approvalOptionsOf(view?.approvalModels));
+      await loadDecisionModel();
+      return;
+    } catch (error) {
+      if (!isCommandUnavailable(error, "get_permission_settings")) {
+        permissionsSupported.set(false);
+        permissionMode.set(null);
+        permissionsNotice.set(errorText(error));
+        return;
+      }
+    }
     try {
       const config = normalize(await getConfig("tool_permissions", true));
       stored = config;
@@ -286,9 +346,9 @@ export async function loadPermissions(): Promise<void> {
 }
 
 /**
- * The models automatic approval can pick, in the desktop's own order: the
- * workspace's fast and primary roles first, then every configured chat model.
- * The stored value is an id or one of those two role names.
+ * Compatibility read for a host older than `get_permission_settings`: the
+ * models automatic approval can pick, in the desktop's own order (fast and
+ * primary roles first, then every configured chat model).
  */
 async function loadApprovalModels(): Promise<void> {
   try {

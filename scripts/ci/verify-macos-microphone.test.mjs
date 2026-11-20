@@ -7,7 +7,8 @@ import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
 const desktop = join(root, 'src/apps/desktop');
-const config = JSON.parse(readFileSync(join(desktop, 'tauri.conf.json'), 'utf8'));
+// The native bundle's Info.plist is written by the packaging script.
+const packageScript = readFileSync(join(root, 'scripts/package-desktop-nsh-macos.mjs'), 'utf8');
 const plist = body => `<?xml version="1.0"?><plist version="1.0"><dict>${body}</dict></plist>`;
 
 function verifyFixture(t, { entitlement = 'configured', usage = true } = {}) {
@@ -17,15 +18,16 @@ function verifyFixture(t, { entitlement = 'configured', usage = true } = {}) {
   const executable = join(app, 'Contents/MacOS/fixture');
   mkdirSync(dirname(executable), { recursive: true });
   copyFileSync('/usr/bin/true', executable);
-  const usagePlist = readFileSync(join(desktop, 'Info.plist'), 'utf8');
-  const usageBody = usage ? usagePlist.match(/<dict>([\s\S]*?)<\/dict>/)[1] : '';
+  const usageBody = usage
+    ? packageScript.match(/<key>NSMicrophoneUsageDescription<\/key><string>[^<]+<\/string>/)[0]
+    : '';
   writeFileSync(join(app, 'Contents/Info.plist'), plist(`
     <key>CFBundleIdentifier</key><string>com.openbitfun.microphone-fixture</string>
     <key>CFBundleExecutable</key><string>fixture</string>
     <key>CFBundlePackageType</key><string>APPL</string>${usageBody}`));
   const entitlementPath = join(dir, 'entitlements.plist');
   writeFileSync(entitlementPath, entitlement === 'configured'
-    ? readFileSync(join(desktop, config.bundle.macOS.entitlements), 'utf8')
+    ? readFileSync(join(desktop, 'Entitlements.plist'), 'utf8')
     : plist(entitlement === 'false'
       ? '<key>com.apple.security.device.audio-input</key><false/>' : ''));
   const sign = spawnSync('codesign', [

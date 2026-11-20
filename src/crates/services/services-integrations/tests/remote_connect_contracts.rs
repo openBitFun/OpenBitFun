@@ -805,17 +805,20 @@ fn remote_history_contract_turn(is_in_progress: bool) -> RemoteChatHistoryTurn {
                     content: "hidden text".to_string(),
                     order_index: Some(1),
                     is_subagent: true,
+                    ..Default::default()
                 },
                 RemoteChatHistoryTextItem {
                     content: "visible text".to_string(),
                     order_index: Some(1),
                     is_subagent: false,
+                    ..Default::default()
                 },
             ],
             thinking_items: vec![RemoteChatHistoryThinkingItem {
                 content: "visible thought".to_string(),
                 order_index: Some(0),
                 is_subagent: false,
+                ..Default::default()
             }],
             tool_items: vec![RemoteChatHistoryToolItem {
                 id: "tool-1".to_string(),
@@ -831,8 +834,11 @@ fn remote_history_contract_turn(is_in_progress: bool) -> RemoteChatHistoryTurn {
                 start_ms: 1_130,
                 order_index: Some(2),
                 is_subagent: false,
+                ..Default::default()
             }],
+            ..Default::default()
         }],
+        ..Default::default()
     }
 }
 

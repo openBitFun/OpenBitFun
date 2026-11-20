@@ -266,7 +266,7 @@ pub struct GetPreventSleepEnabledRequest {}
 /// owned by [`spawn_config_listener`], which applies it at startup and on every
 /// config update. Re-applying it from a getter meant reading the setting could
 /// start a thread and take an OS inhibitor — and, on Linux, block on D-Bus.
-#[tauri::command]
+// @backend-command
 pub async fn get_prevent_sleep_enabled(
     app_state: State<'_, AppState>,
     sleep_prevention: State<'_, SleepPreventionState>,
@@ -283,7 +283,7 @@ pub struct SetPreventSleepEnabledRequest {
     pub enabled: bool,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_prevent_sleep_enabled(
     app: HostHandle,
     request: SetPreventSleepEnabledRequest,

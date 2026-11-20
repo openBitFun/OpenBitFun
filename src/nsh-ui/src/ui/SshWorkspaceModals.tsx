@@ -171,6 +171,7 @@ import {
   type WorkspaceConnectionTarget,
   type WorkspaceEnvironment,
   type WorkspaceLocation,
+  remoteLinkAttemptOf,
   remoteLinkErrors,
   remoteLinkStateOf,
   retryRemoteWorkspace,
@@ -3261,7 +3262,12 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
   const state = () => remoteLinkStateOf(activeWorkspace());
   const visible = () => {
     const current = state();
-    return current === "offline" || current === "reconnecting" || current === "auth-required";
+    return (
+      current === "offline" ||
+      current === "reconnecting" ||
+      current === "auth-required" ||
+      current === "host-outdated"
+    );
   };
   const host = () => {
     const ws = activeWorkspace();
@@ -3284,8 +3290,14 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
           paddingHorizontal: props.compact ? 8 : 12,
           paddingVertical: 6,
           borderBottomWidth: 1,
-          borderColor: state() === "reconnecting" ? palette().warningBorder : palette().dangerBorder,
-          backgroundColor: state() === "reconnecting" ? palette().warningSoft : palette().dangerSoft,
+          borderColor:
+            state() === "reconnecting" || state() === "host-outdated"
+              ? palette().warningBorder
+              : palette().dangerBorder,
+          backgroundColor:
+            state() === "reconnecting" || state() === "host-outdated"
+              ? palette().warningSoft
+              : palette().dangerSoft,
         }}
       >
         <If
@@ -3304,10 +3316,17 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
             }}
           >
             {state() === "reconnecting"
-              ? tr("ssh.link.reconnecting", { host: host() })
+              ? remoteLinkAttemptOf(activeWorkspace()) > 1
+                ? tr("ssh.link.reconnectingAttempt", {
+                    host: host(),
+                    attempt: String(remoteLinkAttemptOf(activeWorkspace())),
+                  })
+                : tr("ssh.link.reconnecting", { host: host() })
               : state() === "auth-required"
                 ? tr("ssh.link.authRequired", { host: host() })
-                : tr("ssh.link.offline", { host: host() })}
+                : state() === "host-outdated"
+                  ? tr("ssh.link.hostOutdated", { host: host() })
+                  : tr("ssh.link.offline", { host: host() })}
           </Text>
           <If when={state() !== "reconnecting"}>
             <Text
@@ -3317,11 +3336,15 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
                 lineHeight: textLineHeight(11, 1.4),
               }}
             >
-              {detail() ? localizeHostError(detail()) : tr("ssh.link.offlineHint")}
+              {state() === "host-outdated"
+                ? tr("ssh.link.hostOutdatedHint")
+                : detail()
+                  ? localizeHostError(detail())
+                  : tr("ssh.link.offlineHint")}
             </Text>
           </If>
         </View>
-        <If when={state() !== "reconnecting"}>
+        <If when={state() !== "reconnecting" && state() !== "host-outdated"}>
           <Button
             label={state() === "auth-required" ? tr("ssh.link.signIn") : tr("ssh.link.reconnect")}
             accessibilityLabel="remote-link-reconnect"

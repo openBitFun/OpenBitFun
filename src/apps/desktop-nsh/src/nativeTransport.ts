@@ -6,9 +6,10 @@
 // module must be imported before the UI so nothing calls the page host first.
 
 import { Backend } from "openbitfun/native";
-import { installBackendConnection, installWindowShell } from "../../../nsh-ui/src/bridge";
+import { installBackendConnection, installWindowShell, invokeCommand, listenEvent } from "../../../nsh-ui/src/bridge";
 import { createJsonWireConnection } from "../../../nsh-ui/src/jsonWireConnection";
 import { createNshDesktopShell } from "../../../nsh-ui/src/nshDesktopShell";
+import { startNshShellRequests } from "../../../nsh-ui/src/nshShellRequests";
 import trayMark from "../assets/tray-mark.svg";
 
 /** Members the contract marks optional: a host that lacks them is refused per call, loudly. */
@@ -20,16 +21,19 @@ const optional = Backend as unknown as OptionalBackendMembers;
 
 installBackendConnection(createJsonWireConnection(Backend, { kind: "native" }));
 
-installWindowShell(
-  createNshDesktopShell({
-    trayIcon: trayMark,
-    pickDirectory:
-      typeof optional.pickDirectory === "function"
-        ? async options => {
-            const text = await optional.pickDirectory!(JSON.stringify(options));
-            const value: unknown = text ? JSON.parse(text) : null;
-            return typeof value === "string" && value ? value : null;
-          }
-        : undefined,
-  }),
-);
+const shell = createNshDesktopShell({
+  trayIcon: trayMark,
+  pickDirectory:
+    typeof optional.pickDirectory === "function"
+      ? async options => {
+          const text = await optional.pickDirectory!(JSON.stringify(options));
+          const value: unknown = text ? JSON.parse(text) : null;
+          return typeof value === "string" && value ? value : null;
+        }
+      : undefined,
+});
+
+installWindowShell(shell);
+// The backend asks this shell for window, tray, notification, clipboard,
+// login-item and lifecycle operations its commands need.
+startNshShellRequests({ shell, invokeCommand, listenEvent });

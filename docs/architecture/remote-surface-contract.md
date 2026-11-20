@@ -37,7 +37,7 @@ contracts 层模块，不执行任何操作，也不依赖运行时 crate。
                          |
         +----------------+--------------------+--------------------+
         | 编译期查表       | 编译期查表           | 生成物（JSON + TS）  |
-  Desktop peer host   CLI peer host       web-ui 控制端适配器      capability 生成器
+  Desktop peer host   CLI peer host       nsh-ui 控制端路由        capability 生成器
   策略闭包测试          verdict + HANDLED 闭包  PEER_CONTROLLER_LOCAL   tauri-command-map.json
 ```
 
@@ -82,7 +82,8 @@ controller-owned → 宿主不支持 → 执行 → 未知命令。所有线上�
 | UnknownToHost | `command '<c>' is unknown to this OpenBitFun <host> peer host version; …` |
 
 前端 `LOCAL_ONLY` 集合 = `{ControllerLocal, HostControlPlane} ∩ TauriCommand`，由生成物
-`src/web-ui/src/infrastructure/api/generated/remoteSurface.ts` 提供；宿主拒绝集合 =
+`src/nsh-ui/src/generated/peerSurface.ts`（`PEER_CONTROLLER_LOCAL_COMMANDS`，由 `src/nsh-ui/src/peerRouting.ts`
+消费）提供；已退役的 React 桌面 UI 曾使用 `src/web-ui/.../generated/remoteSurface.ts`，生成器不再产出该文件；宿主拒绝集合 =
 `{ControllerLocal, OperatorOnly}`。
 
 ## 4. 能力协商
@@ -99,14 +100,14 @@ controller-owned → 宿主不支持 → 执行 → 未知命令。所有线上�
 
 CI 必须结构性证明以下闭包，而不是依赖人工维护的计数：
 
-1. Desktop `generate_handler!` 注册集合 ≡ 注册表 `TauriCommand` 行集合（双向；
+1. Desktop `backend_commands!` 注册集合 ≡ 注册表 `TauriCommand`（历史名称，即已注册后端命令）行集合（双向；
    `remote_workspace_policy.rs` 闭包测试 + 生成器在 ubuntu 侧再次断言）。
 2. `Unaudited` 与 `SoftEmpty` 两个 baseline 双向相等：只能减少，不能增加，也不能保留已毕业项。
 3. CLI peer host：`cli_peer == Handled` 行集合 ≡ `commands::dispatch` 的实际 match 分支；
    `SoftEmpty` 行集合 ≡ `soft::` 分支（`commands/mod.rs` 闭包测试）。
 4. `dispatch_target_*` 家族在 desktop `dispatch_host.rs` 与 cli `dispatch.rs` 的 verb 表
    与注册表一致。
-5. 生成物（注册表 JSON、`remoteSurface.ts`、`tauri-command-map.json` 的
+5. 生成物（注册表 JSON、`src/nsh-ui/src/generated/peerSurface.ts`、`tauri-command-map.json` 的
    `remoteWorkspacePolicy`）digest 与编译期注册表一致：`pnpm run capabilities:check`。
 6. 已迁移的三个 surface 不得再出现手写 `LOCAL_ONLY_COMMANDS`：`pnpm run check:core-boundaries`
    （`scripts/core-boundaries/peer-command-policy.mjs`）。
@@ -115,7 +116,7 @@ CI 必须结构性证明以下闭包，而不是依赖人工维护的计数：
 
 ## 6. 新增或修改一个命令
 
-1. 在 Desktop 注册 Tauri command。
+1. 在 Desktop `src/apps/desktop/src/lib.rs` 的 `backend_commands!` 中注册命令（处理函数加 `// @backend-command`），运行 `pnpm run desktop-nsh:generate-dispatch`。
 2. 在 `remote_surface/table.rs` 按 id 排序位置加一行 `op(...)`，为每一列给出真实立场；
    `Unaudited` 不可用于新行。
 3. 若 CLI peer host 需要执行它：在 `cli/src/peer_host/commands/` 加处理分支并把
@@ -124,6 +125,11 @@ CI 必须结构性证明以下闭包，而不是依赖人工维护的计数：
 4. 运行 `pnpm run capabilities:generate` 更新生成物；前端 `LOCAL_ONLY` 自动派生。
 5. 若新增 peer 能力：在 `capabilities.rs` 加枚举变体并更新 `advertised_by`；控制端读
    生成的 `PeerHostCapabilityId`。
+
+删除一个命令：从 `backend_commands!` 移除，并把它的行改为 `retired(id, reason)`
+（`HostInvokeOnly` + `PeerStance::Retired`），旧客户端与 peer 由此得到稳定的退役原因，
+而不是未知命令错误。Tauri 桌面外壳退役时的窗口、WebView、devtools、桌面宠物窗口、
+桌面卡片与前端热更新命令都按此保留。
 
 审计一个 `Unaudited` 命令：读 handler → 修正远程行为（能路由则接入既有远程 service，
 不能则显式 `Unsupported` 错误）→ 把行改为真实立场 → 从 `UNAUDITED_BASELINE` 删除。

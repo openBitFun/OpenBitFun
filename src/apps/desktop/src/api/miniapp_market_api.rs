@@ -20,16 +20,13 @@ use openbitfun_product_domains::product_release::{
     supports_market_minimum_version, OPENBITFUN_INITIAL_RELEASE_VERSION,
 };
 use openbitfun_services_integrations::miniapp_market::{
-    submit_installed_app, validate_market_package, FavoriteAggregate, MarketBrowseRequest,
-    MarketClient, RatingAggregate, ValidatedMarketPackage,
+    validate_market_package, FavoriteAggregate, MarketBrowseRequest, MarketClient, RatingAggregate,
+    ValidatedMarketPackage,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter, Manager, Webview};
 use tokio::io::AsyncWriteExt;
-
-const MARKET_UPLOAD_PROGRESS_EVENT: &str = "miniapp-market-upload-progress";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,15 +104,6 @@ pub struct MarketSubmitInstalledRequest {
     pub screenshot_paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MarketUploadProgress {
-    submission_id: Option<String>,
-    phase: &'static str,
-    completed: u32,
-    total: u32,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketImportPackageRequest {
@@ -134,7 +122,7 @@ pub struct MarketPackageInspection {
     pub permission_diff: MiniAppPermissionDiff,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_browse(
     request: MarketBrowseRequest,
 ) -> Result<CursorPage<MarketListingSummary>, String> {
@@ -144,7 +132,7 @@ pub async fn miniapp_market_browse(
     client.browse(&request).await.map_err(market_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_get_listing(
     request: MarketSlugRequest,
 ) -> Result<MarketListingDetail, String> {
@@ -154,7 +142,7 @@ pub async fn miniapp_market_get_listing(
     client.listing(&request.slug).await.map_err(market_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_set_rating(
     request: MarketSetRatingRequest,
 ) -> Result<RatingAggregate, String> {
@@ -170,7 +158,7 @@ pub async fn miniapp_market_set_rating(
         .map_err(market_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_set_favorite(
     request: MarketSetFavoriteRequest,
 ) -> Result<FavoriteAggregate, String> {
@@ -183,7 +171,7 @@ pub async fn miniapp_market_set_favorite(
         .map_err(market_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_list_submissions() -> Result<Vec<MarketSubmission>, String> {
     let mut client = MarketClient::from_environment()
         .await
@@ -191,7 +179,7 @@ pub async fn miniapp_market_list_submissions() -> Result<Vec<MarketSubmission>, 
     client.list_submissions().await.map_err(market_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_withdraw_submission(
     request: MarketSubmissionIdRequest,
 ) -> Result<MarketSubmission, String> {
@@ -204,7 +192,7 @@ pub async fn miniapp_market_withdraw_submission(
         .map_err(market_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_installed_status(
     state: State<'_, AppState>,
     request: MarketListingIdRequest,
@@ -237,7 +225,7 @@ pub async fn miniapp_market_installed_status(
 /// is deliberately independent from the marketplace release number, so any
 /// surface that wants to name the release a user installed has to read it from
 /// the origin instead of from the app itself.
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_installed_origins(
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, InstalledMarketOrigin>, String> {
@@ -276,7 +264,7 @@ async fn load_market_origin(
         .map(|origin| (origin, local_override)))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_install(
     state: State<'_, AppState>,
     request: MarketInstallRequest,
@@ -411,7 +399,7 @@ async fn stage_downloaded_package(bytes: &[u8]) -> Result<ValidatedMarketPackage
     read_and_validate_package_file(&path).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_import_package(
     state: State<'_, AppState>,
     request: MarketImportPackageRequest,
@@ -446,7 +434,7 @@ pub async fn miniapp_market_import_package(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn miniapp_market_inspect_package(
     request: MarketPackagePathRequest,
 ) -> Result<MarketPackageInspection, String> {
@@ -460,135 +448,6 @@ pub async fn miniapp_market_inspect_package(
         permissions: package.meta.permissions,
         permission_diff,
     })
-}
-
-#[tauri::command]
-pub async fn miniapp_market_capture_window(
-    app: AppHandle,
-    webview: Webview,
-) -> Result<String, String> {
-    let window = webview.window();
-    if webview.label() != window.label() {
-        return Err("Window capture requires a top-level application WebView".into());
-    }
-    let position = window
-        .outer_position()
-        .map_err(|error| format!("Could not read the OpenBitFun window position: {error}"))?;
-    let size = window
-        .outer_size()
-        .map_err(|error| format!("Could not read the OpenBitFun window size: {error}"))?;
-    if size.width < 320 || size.height < 240 {
-        return Err(
-            "The OpenBitFun window is too small to capture a review screenshot.".to_string(),
-        );
-    }
-
-    let capture_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| format!("Could not resolve the private cache directory: {error}"))?
-        .join("miniapp-market-captures");
-    tokio::fs::create_dir_all(&capture_dir)
-        .await
-        .map_err(|error| format!("Could not create the screenshot directory: {error}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&capture_dir, std::fs::Permissions::from_mode(0o700))
-            .await
-            .map_err(|error| format!("Could not secure the screenshot directory: {error}"))?;
-    }
-    let path = capture_dir.join(format!("{}.jpg", uuid::Uuid::new_v4()));
-    let output_path = path.clone();
-
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let center_x = position.x.saturating_add((size.width / 2) as i32);
-        let center_y = position.y.saturating_add((size.height / 2) as i32);
-        let screen = screenshots::Screen::from_point(center_x, center_y)
-            .map_err(|error| format!("Could not access the current display: {error}"))?;
-        let relative_x = position.x.saturating_sub(screen.display_info.x);
-        let relative_y = position.y.saturating_sub(screen.display_info.y);
-        let captured = screen
-            .capture_area(relative_x, relative_y, size.width, size.height)
-            .map_err(|error| {
-                format!(
-                    "Window capture failed. On macOS, grant OpenBitFun Screen Recording permission: {error}"
-                )
-            })?;
-        let (width, height) = captured.dimensions();
-        let rgba = image::RgbaImage::from_raw(width, height, captured.into_raw())
-            .ok_or_else(|| "The captured window had an invalid pixel buffer.".to_string())?;
-        let image = image::DynamicImage::ImageRgba8(rgba);
-        let resized = if width > 1600 || height > 1200 {
-            image.resize(1600, 1200, image::imageops::FilterType::Lanczos3)
-        } else {
-            image
-        };
-        let file = std::fs::File::create(&output_path)
-            .map_err(|error| format!("Could not create the screenshot: {error}"))?;
-        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, 88);
-        encoder
-            .encode_image(&resized)
-            .map_err(|error| format!("Could not encode the screenshot: {error}"))
-    })
-    .await
-    .map_err(|error| format!("Screenshot capture task failed: {error}"))??;
-
-    Ok(path.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub async fn miniapp_market_submit_installed(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    request: MarketSubmitInstalledRequest,
-) -> Result<MarketSubmission, String> {
-    let installed = state
-        .miniapp_manager
-        .get(&request.app_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut client = MarketClient::from_environment()
-        .await
-        .map_err(market_error)?;
-    let mut progress = |submission_id: Option<&str>, phase: &'static str, completed, total| {
-        emit_upload_progress(&app, submission_id, phase, completed, total);
-    };
-    let submission = submit_installed_app(
-        &mut client,
-        &installed,
-        &request.draft,
-        &request.screenshot_paths,
-        &mut progress,
-    )
-    .await
-    .map_err(market_error)?;
-    remove_owned_capture_files(&app, &request.screenshot_paths).await;
-    Ok(submission)
-}
-
-async fn remove_owned_capture_files(app: &AppHandle, paths: &[String]) {
-    let Ok(capture_dir) = app
-        .path()
-        .app_cache_dir()
-        .map(|path| path.join("miniapp-market-captures"))
-    else {
-        return;
-    };
-    for value in paths {
-        let path = PathBuf::from(value);
-        if path.parent() == Some(capture_dir.as_path()) {
-            if let Err(error) = tokio::fs::remove_file(&path).await {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    log::warn!(
-                        "remove submitted MiniApp market capture {} failed: {}",
-                        path.display(),
-                        error
-                    );
-                }
-            }
-        }
-    }
 }
 
 fn source_from_package(package: &ValidatedMarketPackage) -> MiniAppSource {
@@ -689,24 +548,6 @@ fn validate_minimum_openbitfun_version(minimum: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-fn emit_upload_progress(
-    app: &AppHandle,
-    submission_id: Option<&str>,
-    phase: &'static str,
-    completed: u32,
-    total: u32,
-) {
-    let _ = app.emit(
-        MARKET_UPLOAD_PROGRESS_EVENT,
-        MarketUploadProgress {
-            submission_id: submission_id.map(str::to_string),
-            phase,
-            completed,
-            total,
-        },
-    );
 }
 
 fn market_error(error: impl Serialize + std::fmt::Display) -> String {

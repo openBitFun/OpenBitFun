@@ -9,7 +9,7 @@
 // (`windowShell.ts`), never the connection's.
 
 /** Which wire a connection uses. `dev` answers from fixtures and proves nothing. */
-export type TransportKind = "tauri" | "dev" | "native" | "websocket";
+export type TransportKind = "tauri" | "dev" | "native" | "websocket" | "mesh";
 
 /** Where a connection stands. A failed connection keeps its last error. */
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "failed";

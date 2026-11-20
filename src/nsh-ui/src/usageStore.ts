@@ -2,13 +2,21 @@
 //
 // One read-only command answers the whole dashboard, so nothing here is cached
 // beyond the last answer and nothing is derived on the host's behalf. The
-// desktop reads it twice: once for the selected range and once for a fixed
-// six-month window behind the activity heatmap. Both reads happen here, and the
-// calendar projection below only places the host's own day buckets on a grid.
+// range read answers the totals and distributions; the six-month heatmap is the
+// host's own day-keyed view model (`get_token_usage_activity`, shared with Home
+// through `usageActivity.ts`), so this page never re-keys trend buckets into days.
 
 import { signal } from "nsh";
 import { invokeCommand } from "./bridge";
+import { tr } from "./i18n";
 import { runStep } from "./state";
+import {
+  fetchUsageActivity,
+  localTimeZone,
+  UsageActivityUnavailable,
+  type UsageActivityCell,
+  type UsageActivityView,
+} from "./usageActivity";
 
 /** One aggregated row: a model, a group or an endpoint. */
 export interface UsageEntry {
@@ -49,22 +57,10 @@ export const USAGE_RANGES: ReadonlyArray<{ value: string; label: string }> = [
   { value: "all", label: "All" },
 ];
 
-/** One cell of the activity grid: a calendar day and how busy it was. */
-export interface UsageActivityDay {
-  /** `YYYY-MM-DD` of the calendar day the cell stands for. */
-  key: string;
-  tokens: number;
-  /** 0 for a day with no usage, 4 for the busiest day in the window. */
-  level: number;
-  /** False for the leading and trailing padding cells of the grid. */
-  inRange: boolean;
-}
+/** One cell of the activity grid, as the host keyed it. */
+export type UsageActivityDay = UsageActivityCell;
 
-export interface UsageActivity {
-  days: UsageActivityDay[];
-  weekCount: number;
-  totalTokens: number;
-}
+export type UsageActivity = UsageActivityView;
 
 /** The two ways the desktop groups the same usage: by model, or by group. */
 export const USAGE_DISTRIBUTIONS: ReadonlyArray<{ value: string; label: string }> = [
@@ -98,12 +94,6 @@ export const usageActivity = signal<UsageActivity | null>(null);
 export const usageActivityNotice = signal("");
 
 let loaded = false;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-/** The desktop's activity panel covers this many calendar months. */
-const ACTIVITY_MONTHS = 6;
-/** Busiest level a cell can reach, matching the five-step scale of the desktop. */
-const ACTIVITY_LEVELS = 4;
 
 function number(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -149,101 +139,6 @@ function readBuckets(raw: unknown): UsageBucket[] {
 /** A range shorter than a day is bucketed by hour, the way the desktop asks. */
 function granularityFor(range: string): string {
   return range === "last24Hours" || range === "today" ? "hour" : "day";
-}
-
-/**
- * The IANA zone the host needs to align calendar ranges and buckets. `Date`
- * carries no zone, so the resolved zone name is the only source; it is a value
- * handed to the host, not a date this surface formats.
- */
-function localTimeZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-  } catch {
-    return "";
-  }
-}
-
-/**
- * `YYYY-MM-DD` of a calendar day in `timeZone`. The host buckets by the zone it
- * is given, so grouping its buckets back into days needs the same zone; this
- * builds a key to compare, it does not format a date for a reader.
- */
-function calendarDateKey(timeZone: string): (date: Date) => string {
-  let formatter: Intl.DateTimeFormat | null = null;
-  try {
-    formatter = new Intl.DateTimeFormat("en-CA", {
-      ...(timeZone ? { timeZone } : {}),
-      calendar: "iso8601",
-      numberingSystem: "latn",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-  } catch {
-    formatter = null;
-  }
-  return date => {
-    if (!formatter) return date.toISOString().slice(0, 10);
-    const parts = formatter.formatToParts(date);
-    const read = (type: string) => parts.find(part => part.type === type)?.value ?? "";
-    return [read("year"), read("month"), read("day")].join("-");
-  };
-}
-
-/**
- * The six-month day window the heatmap covers, as UTC midnights: the same
- * calendar projection the desktop uses, so both surfaces mark the same cells.
- */
-function activityWindow(timeZone: string, now: Date) {
-  const key = calendarDateKey(timeZone);
-  const end = Date.parse(`${key(now)}T00:00:00Z`);
-  const endDate = new Date(end);
-  const startMonth = new Date(
-    Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - ACTIVITY_MONTHS, 1),
-  );
-  const lastDayOfStartMonth = new Date(
-    Date.UTC(startMonth.getUTCFullYear(), startMonth.getUTCMonth() + 1, 0),
-  ).getUTCDate();
-  startMonth.setUTCDate(Math.min(endDate.getUTCDate(), lastDayOfStartMonth) + 1);
-  return { start: startMonth.getTime(), end, key };
-}
-
-/**
- * Places one bucket per calendar day on a Monday-first week grid. The host's
- * buckets are summed, never resampled: a day the host did not report stays at
- * zero rather than being interpolated from its neighbours.
- */
-function buildActivity(
-  points: ReadonlyArray<UsageBucket>,
-  timeZone: string,
-  now: Date,
-): UsageActivity {
-  const { start, end, key } = activityWindow(timeZone, now);
-  const totals = new Map<string, number>();
-  for (const point of points) {
-    const date = new Date(point.bucket);
-    if (!Number.isFinite(date.getTime())) continue;
-    const dayKey = key(date);
-    // A cached read is already part of the input count, as on the desktop.
-    totals.set(dayKey, (totals.get(dayKey) ?? 0) + point.inputTokens + point.outputTokens);
-  }
-  const offset = (new Date(start).getUTCDay() + 6) % 7;
-  const gridStart = start - offset * DAY_MS;
-  const dayCount = (end - start) / DAY_MS + 1;
-  const weekCount = Math.ceil((dayCount + offset) / 7);
-  const days: UsageActivityDay[] = Array.from({ length: weekCount * 7 }, (_, index) => {
-    const dayKey = new Date(gridStart + index * DAY_MS).toISOString().slice(0, 10);
-    const inRange = gridStart + index * DAY_MS >= start && gridStart + index * DAY_MS <= end;
-    return { key: dayKey, inRange, tokens: inRange ? totals.get(dayKey) ?? 0 : 0, level: 0 };
-  });
-  const peak = days.reduce((most, day) => Math.max(most, day.tokens), 0);
-  for (const day of days) {
-    day.level = day.tokens > 0 && peak > 0
-      ? Math.min(ACTIVITY_LEVELS, Math.ceil((day.tokens / peak) * ACTIVITY_LEVELS))
-      : 0;
-  }
-  return { days, weekCount, totalTokens: days.reduce((sum, day) => sum + day.tokens, 0) };
 }
 
 /** Reads the statistics for the selected range. */
@@ -296,28 +191,20 @@ export async function loadUsage(force = false): Promise<void> {
         usageNotice.set(message);
       }
     }
-    // The heatmap is a second read of the command above, over a fixed six-month
-    // window. It shares that command's availability, so an unsupported host
-    // loses both; a host that answers only the range above loses the chart and
-    // says why instead of drawing an empty one.
+    // The heatmap is the host's own view model. It runs after a successful
+    // range read, so an unsupported host loses both; a host older than the
+    // activity command says so instead of drawing a grid this surface keyed.
     usageActivity.set(null);
     usageActivityNotice.set("");
     if (!rangeRead) return;
-    const now = new Date();
     try {
-      const activity = await invokeCommand<Record<string, unknown>>("get_token_usage_statistics", {
-        timeRange: "custom",
-        granularity: "day",
-        includeSubagent: true,
-        ...(timeZone ? { timeZone } : {}),
-        // One local day of slack, so the first cell is complete at every UTC
-        // offset; the calendar projection drops the extra leading bucket.
-        start: new Date(activityWindow(timeZone, now).start - DAY_MS).toISOString(),
-        end: now.toISOString(),
-      });
-      usageActivity.set(buildActivity(readBuckets(activity.trend), timeZone, now));
-    } catch {
-      usageActivityNotice.set("This host would not answer the six-month activity window.");
+      usageActivity.set(await fetchUsageActivity());
+    } catch (error) {
+      usageActivityNotice.set(
+        error instanceof UsageActivityUnavailable && error.reason === "host_outdated"
+          ? tr("usage.activityHostOutdated")
+          : "This host would not answer the six-month activity window.",
+      );
     }
   });
 }

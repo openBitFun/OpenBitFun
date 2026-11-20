@@ -111,7 +111,7 @@ pub struct GetCustomAgentDetailRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_custom_agent_detail(
     state: State<'_, AppState>,
     request: GetCustomAgentDetailRequest,
@@ -150,7 +150,7 @@ pub struct CreateCustomAgentRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_custom_agent(
     state: State<'_, AppState>,
     request: CreateCustomAgentRequest,
@@ -317,7 +317,7 @@ pub struct UpdateCustomAgentRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_custom_agent(
     state: State<'_, AppState>,
     request: UpdateCustomAgentRequest,
@@ -392,7 +392,7 @@ pub struct DeleteCustomAgentRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_custom_agent(
     state: State<'_, AppState>,
     request: DeleteCustomAgentRequest,
@@ -458,7 +458,7 @@ pub struct ReloadCustomAgentsRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reload_custom_agents(
     state: State<'_, AppState>,
     request: ReloadCustomAgentsRequest,

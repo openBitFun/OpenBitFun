@@ -150,13 +150,10 @@ test('skips when a complete stamp is newer than every input', () => {
 });
 
 test('desktop:dev does not compile the DeepSeek profile', () => {
-  const devScript = readFileSync(path.join(repoRoot, 'scripts', 'dev.cjs'), 'utf8');
-  assert.doesNotMatch(devScript, /runCommandPrefixed\('dsh-profile'/);
-  assert.doesNotMatch(devScript, /\['run', 'prepare:dsh-profile'\]/);
-  assert.match(
-    devScript,
-    /Prepare resources \(mobile-web first; then parallel: monaco, version, flashgrep, plugin-host\)/,
-  );
+  const { scripts } = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  for (const name of ['desktop:dev', 'desktop-nsh:dev', 'desktop-nsh:build', 'desktop-nsh:bundle']) {
+    assert.doesNotMatch(scripts[name], /dsh-profile/, name);
+  }
 });
 
 test('desktop clippy does not compile the DeepSeek profile', () => {
@@ -164,10 +161,3 @@ test('desktop clippy does not compile the DeepSeek profile', () => {
   assert.doesNotMatch(packageJson.scripts['lint:rs:desktop'], /prepare:dsh-profile/);
 });
 
-test('official frontend packaging still compiles the DeepSeek profile', () => {
-  const frontendBuildAll = readFileSync(
-    path.join(repoRoot, 'scripts', 'frontend-build-all.mjs'),
-    'utf8',
-  );
-  assert.match(frontendBuildAll, /prepare:dsh-profile/);
-});

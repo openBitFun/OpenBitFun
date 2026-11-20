@@ -19,7 +19,7 @@ use openbitfun_events::{
 };
 use openbitfun_services_integrations::speech::VolcengineRealtimeSpeechConfig;
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_list_models(
     state: State<'_, AppState>,
 ) -> Result<SpeechListModelsResponse, String> {
@@ -30,7 +30,7 @@ pub async fn speech_list_models(
         .map_err(|error| format!("Failed to list speech models: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_download_model(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -50,7 +50,7 @@ pub async fn speech_download_model(
     Ok(status)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_cancel_model_download(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -65,7 +65,7 @@ pub async fn speech_cancel_model_download(
     Ok(status)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_delete_model(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -80,7 +80,7 @@ pub async fn speech_delete_model(
     Ok(status)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_verify_model(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -95,7 +95,7 @@ pub async fn speech_verify_model(
     Ok(status)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_start_input_session(
     state: State<'_, AppState>,
     request: SpeechStartInputSessionRequest,
@@ -107,7 +107,7 @@ pub async fn speech_start_input_session(
         .map_err(|error| format!("Failed to start speech input session: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_append_audio_chunk(
     state: State<'_, AppState>,
     request: SpeechAppendAudioChunkRequest,
@@ -119,7 +119,7 @@ pub async fn speech_append_audio_chunk(
         .map_err(|error| format!("Failed to append speech audio chunk: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_finish_input_session(
     state: State<'_, AppState>,
     request: SpeechFinishInputSessionRequest,
@@ -131,7 +131,7 @@ pub async fn speech_finish_input_session(
         .map_err(|error| format!("Failed to transcribe speech input: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_cancel_input_session(
     state: State<'_, AppState>,
     request: SpeechCancelInputSessionRequest,
@@ -143,7 +143,7 @@ pub async fn speech_cancel_input_session(
         .map_err(|error| format!("Failed to cancel speech input session: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_start_realtime_session(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -186,7 +186,7 @@ pub async fn speech_start_realtime_session(
         .map_err(|error| format!("Failed to start realtime speech session: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_append_realtime_audio(
     state: State<'_, AppState>,
     request: SpeechAppendRealtimeAudioRequest,
@@ -198,7 +198,7 @@ pub async fn speech_append_realtime_audio(
         .map_err(|error| format!("Failed to append realtime speech audio: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_commit_realtime_audio(
     state: State<'_, AppState>,
     request: SpeechRealtimeSessionRequest,
@@ -210,7 +210,7 @@ pub async fn speech_commit_realtime_audio(
         .map_err(|error| format!("Failed to commit realtime speech audio: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_send_realtime_tool_result(
     state: State<'_, AppState>,
     request: SpeechRealtimeToolResultRequest,
@@ -222,7 +222,7 @@ pub async fn speech_send_realtime_tool_result(
         .map_err(|error| format!("Failed to send realtime speech tool result: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_speak_realtime_text(
     state: State<'_, AppState>,
     request: SpeechRealtimeSpeakRequest,
@@ -234,7 +234,7 @@ pub async fn speech_speak_realtime_text(
         .map_err(|error| format!("Failed to speak realtime progress: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_cancel_realtime_response(
     state: State<'_, AppState>,
     request: SpeechRealtimeSessionRequest,
@@ -246,7 +246,7 @@ pub async fn speech_cancel_realtime_response(
         .map_err(|error| format!("Failed to cancel realtime speech response: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_close_realtime_session(
     state: State<'_, AppState>,
     request: SpeechRealtimeSessionRequest,
@@ -258,7 +258,7 @@ pub async fn speech_close_realtime_session(
         .map_err(|error| format!("Failed to close realtime speech session: {error}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_get_realtime_config(
     state: State<'_, AppState>,
     request: SpeechGetRealtimeConfigRequest,
@@ -281,7 +281,7 @@ pub async fn speech_get_realtime_config(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn speech_save_realtime_config(
     state: State<'_, AppState>,
     request: SpeechSaveRealtimeConfigRequest,

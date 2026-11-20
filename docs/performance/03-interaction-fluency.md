@@ -1,5 +1,7 @@
 # OpenBitFun web-ui 交互流畅度(UI 响应性)审阅报告
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 - 审阅范围:`src/web-ui`(React 18 + Vite + zustand v5 + Monaco + xterm + react-virtuoso)
 - 审阅方式:架构走读(入口/状态管理/场景) → 反模式全量 Grep 扫描(渲染、事件、CSS 三条线)→ 关键交互组件精读(聊天流式管线、输入框、终端、文件树、Monaco、Markdown 渲染)。**所有条目均已打开源码核对上下文**,文中行号以当前 main 分支(48a003b73)为准。
 - 日期:2026-07-26

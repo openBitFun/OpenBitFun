@@ -10,6 +10,7 @@
     "application": true,
     "clipboard": true,
     "picker": true,
+    "speech": true,
     "statusBar": true,
     "openUrl": {
       "schemes": [

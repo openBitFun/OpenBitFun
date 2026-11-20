@@ -11,8 +11,8 @@
 | SSH / Docker 工作区 | [SSH 服务](../../src/crates/services/services-integrations/src/remote_ssh)、[工作区传输设计](../architecture/remote-workspace-transport.md) | Agent Runtime 在 OpenBitFun 宿主，工作区文件和子进程在所选 SSH / 容器目标；目标不需要安装 Agent 守护程序 |
 | 手机房间通道 | [mobile-web](../../src/mobile-web)、[RemoteCommand](../../src/crates/services/services-integrations/src/remote_connect.rs)、[Relay](../../src/crates/services/relay-service) | 手机发 HTTP，Relay 经宿主 WebSocket 桥接；二维码配对与账号设备身份是不同通道 |
 | IM bot | [共享 provider](../../src/crates/services/services-integrations/src/remote_connect/bot)、[产品路由](../../src/crates/assembly/core/src/service/remote_connect/bot) | provider 投递游标、聊天对象、设备选择、会话及交互请求各有范围；IM 平台是外部依赖 |
-| Peer Device | [设计](../architecture/peer-device-mode.md)、[前端不变量](../../src/web-ui/src/infrastructure/peer-device/README.md)、[CLI host](../../src/apps/cli/src/peer_host) | A 保持本地界面，B 拥有产品执行；切换所显示设备不等于取消 B 的任务 |
-| Dispatch | [设计](../architecture/detached-task-dispatch.md)、[CLI 目标](../../src/apps/cli/src/dispatch)、[控制端](../../src/web-ui/src/features/dispatch) | 目标拥有 job、session、worktree、worker、事件及权限邮箱；控制端是观察者 |
+| Peer Device | [设计](../architecture/peer-device-mode.md)、[前端路由](../../src/nsh-ui/src/peerRouting.ts)、[CLI host](../../src/apps/cli/src/peer_host) | A 保持本地界面，B 拥有产品执行；切换所显示设备不等于取消 B 的任务 |
+| Dispatch | [设计](../architecture/detached-task-dispatch.md)、[CLI 目标](../../src/apps/cli/src/dispatch)、[控制端](../../src/nsh-ui/src/dispatchStore.ts) | 目标拥有 job、session、worktree、worker、事件及权限邮箱；控制端是观察者 |
 | 其他传输 | [App Server](../architecture/app-server-architecture.md)、[Runtime 部署](../architecture/agent-runtime-deployment-design.md)、[Transport](../../src/crates/adapters/transport) | Server、Relay、Shared TUI、SDK、插件进程不能被当成同一个服务或同一条 wire |
 
 产品操作范围取自 [Product Operation Registry](../../src/crates/contracts/product-domains/src/generated/remote-surface-registry.json)，不得另写一份允许命令表。`LegacyUnaudited` 表示仍需审计，不能算作支持；`RemoteUnsupported`、CLI `unsupported` 要实测明确拒绝。`soft_empty` 只在注册表确实声明的展示占位范围验收，不能替实际能力伪造成功。
@@ -293,10 +293,8 @@ SSH 与账号设备 RPC 两种传输各跑一轮；目标分别为 CLI daemon �
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm --dir src/web-ui run gen:types
 pnpm --dir src/mobile-web run type-check
 pnpm run build:mobile-web
-pnpm run check:web
 pnpm run check:core-boundaries
 ```
 
@@ -314,7 +312,8 @@ cargo test --locked -p openbitfun-app-server-protocol --test legacy_wire_contrac
 ```
 
 ```bash
-pnpm --dir src/web-ui run test:run src/infrastructure/peer-device src/infrastructure/api/adapters/peer-device-adapter.test.ts src/infrastructure/api/generated/remoteSurface.test.ts src/features/dispatch src/features/ssh-remote src/features/relay-deploy src/app/components/RemoteConnectDialog src/flow_chat/services/flow-chat-manager/PeerSessionRefreshModule.test.ts src/flow_chat/session-stream src/shared/utils/remoteSessionScope.test.ts
+pnpm --dir src/mobile-web run test:relay-transport
+cd src/nsh-ui && nsh test .   # native desktop UI: peer mesh, OBP, external import, dispatch observer
 ```
 
 真实 Docker 集成测试需显式提供测试容器名（该容器允许创建及删除测试文件）：

@@ -1,7 +1,7 @@
 // Spaces (MiniApps) hub state and host IPC operations.
 
 import { computed, signal } from "nsh";
-import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { invokeCommand, invokeRawCommand, listenEvent, windowShellId } from "./bridge";
 import { tr } from "./i18n";
 import { peerScope } from "./peerState";
 import { activeWorkspace, startQuickPromptInSession } from "./state";
@@ -19,6 +19,8 @@ export interface SpaceMeta {
   updatedAt: number;
   runtimeProfile: string;
   permissions: Record<string, unknown>;
+  /** Badge ids the host derives from the manifest (wave 4); `null` on an older host. */
+  permissionBadges: string[] | null;
 }
 
 export interface SpaceSource {
@@ -93,6 +95,9 @@ function normalizeSpaceMeta(raw: Record<string, unknown>): SpaceMeta {
     updatedAt: readNum(raw, "updated_at", "updatedAt"),
     runtimeProfile: readStr(raw, "runtime_profile", "runtimeProfile") || "compatibility",
     permissions,
+    permissionBadges: Array.isArray(raw.permissionBadges)
+      ? raw.permissionBadges.filter((id): id is string => typeof id === "string")
+      : null,
   };
 }
 
@@ -138,33 +143,46 @@ function normalizeVersions(raw: unknown): SpaceVersionEntry[] {
   });
 }
 
+/**
+ * The permission badge ids of a space: the host's (`permissionBadges` on
+ * `list_miniapps`), else, for a host older than the field, the same reading of
+ * the manifest its `MiniAppPermissions::badges` does.
+ */
+export function spacePermissionBadges(space: SpaceMeta): string[] {
+  if (space.permissionBadges) return space.permissionBadges;
+  const listed = spaces().find(item => item.id === space.id)?.permissionBadges;
+  if (listed) return listed;
+  return summarizeSpacePermissions(space.permissions);
+}
+
+/** Compatibility read for an older host; ids match the backend's badge ids. */
 export function summarizeSpacePermissions(permissions: Record<string, unknown>): string[] {
   const badges: string[] = [];
   const fs = permissions.fs as { read?: unknown[]; write?: unknown[] } | undefined;
   if (fs && ((Array.isArray(fs.read) && fs.read.length > 0) || (Array.isArray(fs.write) && fs.write.length > 0))) {
-    badges.push("Filesystem");
+    badges.push("filesystem");
   }
   const shell = permissions.shell as { allow?: unknown[] } | undefined;
   if (shell && Array.isArray(shell.allow) && shell.allow.length > 0) {
-    badges.push("Shell");
+    badges.push("shell");
   }
   const net = permissions.net as { allow?: unknown[] } | undefined;
   if (net && Array.isArray(net.allow) && net.allow.length > 0) {
-    badges.push("Network");
+    badges.push("network");
   }
   const node = permissions.node as { enabled?: boolean } | undefined;
   if (node?.enabled) {
-    badges.push("Node/Bun Worker");
+    badges.push("node_worker");
   }
   const ai = permissions.ai as { enabled?: boolean } | undefined;
   if (ai?.enabled) {
-    badges.push("AI Bridge");
+    badges.push("ai_bridge");
   }
   const agent = permissions.agent as { enabled?: boolean } | undefined;
   if (agent?.enabled) {
-    badges.push("Agent Bridge");
+    badges.push("agent_bridge");
   }
-  return badges.length > 0 ? badges : ["Sandboxed UI"];
+  return badges.length > 0 ? badges : ["sandboxed_ui"];
 }
 
 export const runningWorkerSet = computed(() => new Set(runningSpaceWorkers()));
@@ -397,4 +415,58 @@ export async function createSpaceWithAgent(): Promise<void> {
   } finally {
     spaceCreating.set(false);
   }
+}
+
+// Space windows (wave 4 native)
+
+/** Spaces whose window open is in flight. */
+export const spaceOpening = signal<string | null>(null);
+
+/**
+ * Why a Space cannot open in its own window here, or "" when it can. The
+ * window is the desktop's lightweight MiniApp shell on this machine, so it is
+ * offered only by a desktop shell over its own backend: never while driving
+ * another device, in a remote workspace, or from a browser tab.
+ */
+export function spaceWindowBlockedReason(): string {
+  const shellId = windowShellId();
+  if (shellId !== "nsh-desktop" && shellId !== "host-page") return tr("spaces.openWindowBrowser");
+  if (peerScope()) return tr("spaces.openWindowPeer");
+  if ((activeWorkspace()?.workspaceKind ?? "").toLowerCase() === "remote") return tr("spaces.openWindowRemote");
+  return "";
+}
+
+/** Opens a Space in its own window (`miniapp_presentation` `open`, kind `window`). */
+export async function openSpaceWindow(appId: string): Promise<void> {
+  if (!appId || spaceOpening()) return;
+  const blocked = spaceWindowBlockedReason();
+  if (blocked) {
+    pushToast(blocked, "error");
+    return;
+  }
+  spaceOpening.set(appId);
+  spacesError.set("");
+  try {
+    const workspace = activeWorkspace();
+    await invokeCommand<unknown>("miniapp_presentation", {
+      operation: "open",
+      appId,
+      kind: "window",
+      workspacePath: workspace?.rootPath || null,
+    });
+    void refreshRunningWorkersSoon();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const text = message.startsWith("unsupported_in_native_host")
+      ? tr("spaces.openWindowUnsupported", { reason: message.replace(/^unsupported_in_native_host:\s*/, "") })
+      : tr("spaces.openWindowFailed", { error: message });
+    spacesError.set(text);
+    pushToast(text, "error");
+  } finally {
+    spaceOpening.set(null);
+  }
+}
+
+function refreshRunningWorkersSoon(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 1500)).then(() => refreshRunningWorkers());
 }

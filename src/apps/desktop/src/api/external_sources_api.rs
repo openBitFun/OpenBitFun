@@ -348,7 +348,7 @@ pub type ExpandExternalPromptCommandResponse = PromptCommandInvocationOutcome;
 pub type NativePromptCommandConflictsResponse = NativePromptCommandConflictSnapshot;
 pub type WorkspaceReferenceResponse = WorkspaceReferenceSnapshot;
 
-#[tauri::command]
+// @backend-command
 pub async fn plan_external_mcp_import_command(
     request: PlanExternalMcpImportRequest,
 ) -> ExternalSourceOperationResult<ExternalMcpImportPlanV1> {
@@ -360,7 +360,7 @@ pub async fn plan_external_mcp_import_command(
     openbitfun_core::external_mcp_import::plan_external_mcp_import(workspace).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn apply_external_mcp_import_command(
     request: ApplyExternalMcpImportRequest,
 ) -> ExternalSourceOperationResult<ExternalMcpImportApplyResultV1> {
@@ -403,7 +403,7 @@ pub(super) async fn require_local_workspace(
     Ok(Some(record.id))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_external_integration_policy_command(
     request: UpdateExternalIntegrationPolicyRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -419,7 +419,7 @@ pub async fn update_external_integration_policy_command(
         .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_external_source_snapshot(
     request: ExternalSourceSnapshotRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -435,7 +435,7 @@ pub async fn get_external_source_snapshot(
         .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_instruction_source_catalog(
     request: ExternalSourceSnapshotRequest,
 ) -> ExternalSourceOperationResult<openbitfun_core::external_sources::InstructionSourceCatalog> {
@@ -463,7 +463,7 @@ pub async fn get_instruction_source_catalog(
     Ok(openbitfun_core::external_sources::instruction_source_catalog(root.as_deref()).await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_workspace_reference_snapshot(
     state: State<'_, AppState>,
     request: WorkspaceReferenceSnapshotRequest,
@@ -506,7 +506,7 @@ fn ensure_registered_workspace_reference_kind(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reveal_external_source_location(
     request: RevealExternalSourceLocationRequest,
 ) -> ExternalSourceOperationResult<()> {
@@ -523,7 +523,7 @@ pub async fn reveal_external_source_location(
         .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_external_source_control_snapshot(
     request: ExternalSourceSnapshotRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceControlResponse> {
@@ -541,7 +541,7 @@ pub async fn get_external_source_control_snapshot(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_external_source_discovery_snapshot(
     request: ExternalSourceSnapshotRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceDiscoverySnapshotV1> {
@@ -560,7 +560,7 @@ pub async fn get_external_source_discovery_snapshot(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn apply_external_source_control_action_command(
     request: ExternalSourceControlCommandRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceControlResponse> {
@@ -575,7 +575,7 @@ pub async fn apply_external_source_control_action_command(
 
 /// External applications discovered on this host that the user has never been
 /// told about. Surfaces use it to show a low-key "something new" affordance.
-#[tauri::command]
+// @backend-command
 pub async fn get_external_ecosystem_awareness_command(
     request: ExternalEcosystemAwarenessRequest,
 ) -> ExternalSourceOperationResult<ExternalEcosystemAwarenessResponse> {
@@ -599,7 +599,7 @@ pub async fn get_external_ecosystem_awareness_command(
 ///
 /// This only clears the "new application" hint. It grants nothing, so it takes
 /// no expected preference revision and leaves approvals and policy untouched.
-#[tauri::command]
+// @backend-command
 pub async fn acknowledge_external_ecosystems_command(
     request: AcknowledgeExternalEcosystemsRequest,
 ) -> ExternalSourceOperationResult<()> {
@@ -614,7 +614,7 @@ pub async fn acknowledge_external_ecosystems_command(
         .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_source_enabled_command(
     request: SetExternalSourceEnabledRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -635,7 +635,7 @@ pub async fn set_external_source_enabled_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_source_conflict_choice_command(
     request: SetExternalSourceConflictChoiceRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -656,7 +656,7 @@ pub async fn set_external_source_conflict_choice_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_native_prompt_command_conflicts_command(
     request: NativePromptCommandConflictsRequest,
 ) -> ExternalSourceOperationResult<NativePromptCommandConflictsResponse> {
@@ -671,7 +671,7 @@ pub async fn get_native_prompt_command_conflicts_command(
         .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_native_prompt_command_conflict_choice_command(
     request: SetNativePromptCommandConflictChoiceRequest,
 ) -> ExternalSourceOperationResult<NativePromptCommandConflictsResponse> {
@@ -691,7 +691,7 @@ pub async fn set_native_prompt_command_conflict_choice_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn expand_external_prompt_command_command(
     request: ExpandExternalPromptCommandRequest,
 ) -> ExternalSourceOperationResult<ExpandExternalPromptCommandResponse> {
@@ -716,7 +716,7 @@ pub async fn expand_external_prompt_command_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_tool_target_decision_command(
     request: SetExternalToolTargetDecisionRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -738,7 +738,7 @@ pub async fn set_external_tool_target_decision_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_tool_targets_enabled_command(
     request: SetExternalToolTargetsEnabledRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -764,7 +764,7 @@ pub async fn set_external_tool_targets_enabled_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_tool_conflict_choice_command(
     request: SetExternalToolConflictChoiceRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -785,7 +785,7 @@ pub async fn set_external_tool_conflict_choice_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_subagent_activation_command(
     request: SetExternalSubagentActivationRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -808,7 +808,7 @@ pub async fn set_external_subagent_activation_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_subagents_enabled_command(
     request: SetExternalSubagentsEnabledRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -834,7 +834,7 @@ pub async fn set_external_subagents_enabled_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_subagent_model_binding_command(
     request: SetExternalSubagentModelBindingRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -856,7 +856,7 @@ pub async fn set_external_subagent_model_binding_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn choose_external_subagent_conflict_command(
     request: ChooseExternalSubagentConflictRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -879,7 +879,7 @@ pub async fn choose_external_subagent_conflict_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_mcp_server_decision_command(
     request: SetExternalMcpServerDecisionRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -902,7 +902,7 @@ pub async fn set_external_mcp_server_decision_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_external_mcp_servers_enabled_command(
     request: SetExternalMcpServersEnabledRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {
@@ -928,7 +928,7 @@ pub async fn set_external_mcp_servers_enabled_command(
     .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn choose_external_mcp_conflict_command(
     request: ChooseExternalMcpConflictRequest,
 ) -> ExternalSourceOperationResult<ExternalSourceSnapshotResponse> {

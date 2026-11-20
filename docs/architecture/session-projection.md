@@ -114,7 +114,8 @@ Seven independent writers currently produce a Session's on-screen state:
 
 None of them carries a position that the others can compare against, so every
 pair needs its own conflict rule. Those rules are the fourteen invariants in
-[`peer-device/README.md`](../../src/web-ui/src/infrastructure/peer-device/README.md),
+the retired React desktop UI's `src/web-ui/src/infrastructure/peer-device/README.md`
+(removed with that UI; see Git history),
 and they are written in terms of painted content rather than ordering:
 `snapshotDropsProjectedTurnContent` decides whether a write is safe by counting
 rounds and progress entries; `runtimeProjectionCaughtUp` decides whether a
@@ -218,57 +219,16 @@ Any state that is per-Session is reached through its stream. A feature cannot
 hold Session state that is not surface-scoped, because there is nowhere to
 put it.
 
-## Web UI selection and scene lifetime
+## Desktop UI selection and scene lifetime
 
-`FlowChatStore` owns the selected session on the active device surface.
-`ModernFlowChatStore` is its presentation projection, not a second selection
-owner. Synchronization includes an empty selection and a missing selected
-record, both on subscription and after every source change. Explicit sync from
-an async opener cannot select a different session. Shell and standalone chat
-hosts share one source subscription.
-
-`sceneStore` owns resource tabs and their navigation history. A Session tab is
-keyed by `(device surface, owning workspace)` and holds only a session reference.
-Opening another session in that workspace replaces the reference in place;
-other workspace tabs retain their references and order. The owning workspace
-is the project root even when execution runs in a worktree. Workspace ids are
-preferred; older metadata falls back to scoped local/SSH roots without changing
-persisted records. Labels show only the referenced session title; workspace
-ownership stays in the resource identity. Background title updates are scoped
-to their own tabs and never follow the currently selected session.
-
-The design system's `TabGroup` receives `labelTransitionKey = sessionId` for
-session slots. Its public `RollingText` component owns vertical replacement,
-width interpolation, interruption, reduced-motion preference, and accessibility.
-Session title edits and focusing a different workspace do not replay replacement.
-The shell does not own animation snapshots or timers.
-
-`app/services/sessionSceneLifecycle.ts`, installed for the `AppLayout` lifetime,
-provides the resource activation adapter. Tab clicks, shortcuts, history, and
-close fallback all activate the workspace and session through that adapter
-before committing navigation. Workspace activation is ordered, and superseded
-navigation cannot select a session after its history finishes loading. The
-scene store handles the tab transaction and settings-draft exit; the adapter
-uses the existing session/workspace owners for resource activation.
-
-`SceneViewport` mounts one Session presentation host for all workspace tabs.
-Tab identity and scene-host identity are separate: chrome, file/terminal
-routing, voice context, and the customization facade still address the
-`session` scene. No additional global composers or runtime subscriptions are
-mounted for background tabs.
-
-When a referenced session no longer exists, reconciliation removes its tab and
-history, including background tabs. A temporary empty selection does not remove
-other records' tabs. Closing a tab does not delete or stop a session; closing the
-final tab exposes the tabless empty surface. Device-surface changes reset the
-shell tabs without deleting either device's session container. Creating or
-opening a session establishes its record first. Loading, offline, and failed
-history records remain recoverable; absence of rendered turns is never evidence
-of removal.
-
-This is frontend view reconciliation. It does not delete persisted sessions,
-create replacement sessions, or change the runtime state machine and remote
-wire contracts.
+The React desktop UI (`src/web-ui`) that owned session selection and scene tabs
+(`FlowChatStore`, `sceneStore`, `SceneViewport`) was retired with the Tauri
+shell. Its view-reconciliation rules remain the contract for the native
+desktop UI (`src/nsh-ui`, see [`nsh-frontend.md`](nsh-frontend.md)) and every
+other surface: a missing rendered turn or a closed tab is never evidence that a
+persisted session was removed, loading/offline/failed records stay recoverable, and view
+reconciliation does not delete persisted sessions, create replacement sessions,
+or change the runtime state machine and remote wire contracts.
 
 ## Navigation activity and result receipts
 

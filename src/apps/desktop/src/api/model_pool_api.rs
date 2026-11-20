@@ -40,7 +40,7 @@ pub struct SessionModelTargetRequest {
     pub include_internal: bool,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_model_pools() -> Result<ModelPoolDocument, String> {
     let service = get_global_config_service()
         .await
@@ -53,7 +53,7 @@ pub async fn get_model_pools() -> Result<ModelPoolDocument, String> {
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn save_model_pool(request: SaveModelPoolRequest) -> Result<ModelPoolDocument, String> {
     let service = get_global_config_service()
         .await
@@ -66,7 +66,7 @@ pub async fn save_model_pool(request: SaveModelPoolRequest) -> Result<ModelPoolD
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_model_pool(request: ModelPoolRequest) -> Result<ModelPoolDocument, String> {
     let service = get_global_config_service()
         .await
@@ -79,7 +79,7 @@ pub async fn delete_model_pool(request: ModelPoolRequest) -> Result<ModelPoolDoc
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_model_pool_status(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: ModelPoolRequest,
@@ -107,7 +107,7 @@ async fn ensure_session(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_session_model_target(
     runtime: State<'_, DesktopRuntimeContext>,
     request: SessionModelTargetRequest,
@@ -127,7 +127,7 @@ pub async fn get_session_model_target(
     ))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_session_model_target(
     runtime: State<'_, DesktopRuntimeContext>,
     request: SessionModelTargetRequest,
@@ -149,7 +149,7 @@ pub struct RetryModelPoolMemberRequest {
     pub model_id: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn retry_model_pool_member(
     coordinator: State<'_, Arc<ConversationCoordinator>>,
     request: RetryModelPoolMemberRequest,

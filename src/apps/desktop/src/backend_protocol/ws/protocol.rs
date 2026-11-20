@@ -23,6 +23,19 @@ pub const OBP_PROTOCOL_VERSION: u32 = 1;
 pub(crate) const SERVER_CAPABILITIES: &[&str] =
     &["obp_v1", "resume", "credit_ack", "coalesce_text"];
 
+/// Capabilities of a connection over the account mesh (`account-device`).
+pub(crate) const MESH_SERVER_CAPABILITIES: &[&str] = &[
+    "obp_v1",
+    "resume",
+    "credit_ack",
+    "coalesce_text",
+    openbitfun_mesh_service::MESH_CAPABILITY,
+    // Same-account host verbs over the mesh (`ws::mesh_verbs`): detached
+    // dispatch targets and the IM bot `RemoteCommand` lane.
+    openbitfun_services_integrations::remote_connect::mesh_route::CAPABILITY_DISPATCH_TARGET_V1,
+    openbitfun_services_integrations::remote_connect::mesh_route::CAPABILITY_REMOTE_COMMAND_V1,
+];
+
 /// JSON-RPC: invalid JSON.
 pub(crate) const PARSE_ERROR: i64 = -32700;
 /// JSON-RPC: not a valid request object.
@@ -111,6 +124,11 @@ pub(crate) struct HelloResult {
     pub last_seq: u64,
     /// The negotiated event window (`null`: no credit flow control).
     pub credit_bytes: Option<u64>,
+    /// The Product Operation Registry's peer-host capabilities this backend
+    /// serves (what `peer_mode_ping` advertised on the legacy path), so a
+    /// controller driving it over OBP gates the same features. Additive:
+    /// clients that do not know the field ignore it.
+    pub host_capabilities: Vec<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

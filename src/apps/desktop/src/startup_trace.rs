@@ -126,7 +126,7 @@ impl DesktopStartupTrace {
         duration_ms
     }
 
-    pub fn record_tauri_command_elapsed(
+    pub fn record_command_elapsed(
         &self,
         command: impl Into<String>,
         target: Option<&str>,
@@ -136,7 +136,7 @@ impl DesktopStartupTrace {
         let command = command.into();
         self.record_event(
             "native_step_end".to_string(),
-            Some("tauri_command".to_string()),
+            Some("backend_command".to_string()),
             Some(command.clone()),
             Some(command),
             target.map(ToOwned::to_owned),
@@ -243,13 +243,13 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn records_tauri_command_with_safe_target() {
+    fn records_backend_command_with_safe_target() {
         let trace = DesktopStartupTrace::new(
             "trace-test".to_string(),
             Instant::now() - Duration::from_millis(20),
         );
 
-        trace.record_tauri_command_elapsed(
+        trace.record_command_elapsed(
             "get_config",
             Some("app.auto_update"),
             Instant::now() - Duration::from_millis(7),
@@ -258,7 +258,7 @@ mod tests {
         let snapshot = trace.snapshot();
         let event = snapshot.events.last().expect("event should be recorded");
 
-        assert_eq!(event.category.as_deref(), Some("tauri_command"));
+        assert_eq!(event.category.as_deref(), Some("backend_command"));
         assert_eq!(event.command.as_deref(), Some("get_config"));
         assert_eq!(event.target.as_deref(), Some("app.auto_update"));
         assert!(event.duration_ms.unwrap_or_default() >= 7);
@@ -275,7 +275,7 @@ mod tests {
         )
         .expect("create persisted trace");
 
-        trace.record_step("native_step_end", "native_pre_tauri", "load_config", 12);
+        trace.record_step("native_step_end", "native_bootstrap", "load_config", 12);
 
         let content = std::fs::read_to_string(path).expect("read persisted trace");
         let event: serde_json::Value =

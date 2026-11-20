@@ -13,6 +13,9 @@
 //! mutation written by an older or newer peer.
 
 pub use crate::conversion::{preview_request_url, stored_request_url};
+
+// Terminal profiles keyed by workspace id (wave 4 remote link + terminal profiles).
+pub mod terminal_profiles;
 use crate::types::{
     AIModelConfig, ModelCapability, ModelCategory, TaskModelSelection, WebSearchConfig,
     DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, MAX_CONFIGURED_OUTPUT_TOKENS_RATIO_PERCENT,
@@ -537,6 +540,79 @@ pub fn permission_settings_view(current: &Value) -> Result<Value, String> {
     }))
 }
 
+/// The permission settings page's whole read (logic batch 4): the policy view
+/// plus the choices the page offers, so a client renders it without reading
+/// `tool_permissions`, `ai.models` or `ai.default_models` itself.
+///
+/// `approvalModels` lists the approval model choices in the desktop's order:
+/// the `fast` and `primary` roles (when configured; `available` is false when
+/// the role points at a model that no longer exists), then every configured
+/// model by id. `role` is set on the two role rows; clients localize it.
+pub fn permission_page_view(
+    permissions: &Value,
+    models: &Value,
+    default_models: &Value,
+    show_permission_mode_control: &Value,
+) -> Result<Value, String> {
+    let mut view = permission_settings_view(permissions)?;
+    let configured: Vec<(String, String)> = models
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry.get("id")?.as_str()?.trim();
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let name = ["model_name", "name"]
+                        .iter()
+                        .filter_map(|key| entry.get(*key).and_then(Value::as_str))
+                        .map(str::trim)
+                        .find(|name| !name.is_empty())
+                        .unwrap_or(id);
+                    Some((id.to_string(), name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut options = Vec::new();
+    for role in ["fast", "primary"] {
+        let Some(stored) = default_models
+            .get(role)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let model = configured.iter().find(|(id, _)| id == stored);
+        options.push(json!({
+            "value": role,
+            "role": role,
+            "modelId": stored,
+            "modelName": model.map(|(_, name)| name.clone()),
+            "available": model.is_some(),
+        }));
+    }
+    for (id, name) in &configured {
+        options.push(json!({
+            "value": id,
+            "modelId": id,
+            "modelName": name,
+            "available": true,
+        }));
+    }
+    if let Some(object) = view.as_object_mut() {
+        object.insert("approvalModels".into(), Value::Array(options));
+        object.insert(
+            "showPermissionModeControl".into(),
+            Value::Bool(show_permission_mode_control.as_bool().unwrap_or(false)),
+        );
+    }
+    Ok(view)
+}
+
 pub fn set_permission_mode(current: &Value, mode: &str) -> Result<Value, String> {
     let mode =
         PermissionMode::parse(mode).ok_or_else(|| format!("Unknown permission mode '{mode}'"))?;
@@ -868,6 +944,55 @@ pub fn settings_descriptor(paths: &[String]) -> Result<Value, String> {
         "catalogDigest": catalog.digest,
         "fields": fields,
     }))
+}
+
+#[cfg(test)]
+mod permission_page_view_tests {
+    use super::*;
+
+    #[test]
+    fn page_view_lists_roles_then_models_and_tolerates_legacy_documents() {
+        let view = permission_page_view(
+            &Value::Null,
+            &json!([
+                { "id": "m1", "name": "One", "model_name": "gpt-x" },
+                { "id": "m2", "name": "Two" },
+                { "name": "no id" }
+            ]),
+            &json!({ "fast": "m2", "primary": "gone" }),
+            &Value::Null,
+        )
+        .expect("view");
+        // A missing document reads as the default policy, as the mutation views do.
+        assert_eq!(
+            view["mode"],
+            permission_settings_view(&Value::Null).unwrap()["mode"]
+        );
+        assert_eq!(view["rules"], json!([]));
+        assert_eq!(view["showPermissionModeControl"], false);
+        let options = view["approvalModels"].as_array().expect("options");
+        let values: Vec<&str> = options
+            .iter()
+            .map(|o| o["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values, vec!["fast", "primary", "m1", "m2"]);
+        assert_eq!(options[0]["modelName"], "Two");
+        assert_eq!(options[0]["available"], true);
+        assert_eq!(options[1]["available"], false);
+        assert_eq!(options[1]["modelName"], Value::Null);
+        assert_eq!(options[2]["modelName"], "gpt-x");
+
+        let full = permission_page_view(
+            &json!({ "policy": { "preset": "full_access", "rules": [] } }),
+            &Value::Null,
+            &Value::Null,
+            &json!(true),
+        )
+        .expect("view");
+        assert_eq!(full["mode"], "full_access");
+        assert_eq!(full["showPermissionModeControl"], true);
+        assert_eq!(full["approvalModels"], json!([]));
+    }
 }
 
 #[cfg(test)]

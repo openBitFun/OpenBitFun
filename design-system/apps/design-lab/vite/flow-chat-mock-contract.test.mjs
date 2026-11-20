@@ -23,10 +23,12 @@ function property(source, name) {
   return value;
 }
 
+// The production FlowChat stylesheets that remain are owned by the native MiniApp
+// shell (src/apps/miniapp-shell/styles) since the React desktop UI was retired.
 test('conversation bubble geometry and color stay aligned with production', async () => {
   const [lab, product] = await Promise.all([
     read('../src/pages/FlowChatMockPage.css'),
-    read('../../../../src/web-ui/src/flow_chat/components/modern/UserMessageItem.scss'),
+    read('../../../../src/apps/miniapp-shell/styles/user-message-item.scss'),
   ]);
   const preview = block(lab, '.flow-chat-mock__user-bubble');
   const actual = block(product, '.user-message-item');
@@ -41,11 +43,10 @@ test('conversation bubble geometry and color stay aligned with production', asyn
 });
 
 test('conversation reading column, metadata and composer follow their application layout owners', async () => {
-  const [lab, layout, input, model] = await Promise.all([
+  const [lab, layout, input] = await Promise.all([
     read('../src/pages/FlowChatMockPage.css'),
-    read('../../../../src/web-ui/src/flow_chat/_transcript-layout.scss'),
-    read('../../../../src/web-ui/src/flow_chat/components/ChatInput.scss'),
-    read('../../../../src/web-ui/src/flow_chat/components/ModelSelector.scss'),
+    read('../../../../src/apps/miniapp-shell/styles/_transcript-layout.scss'),
+    read('../../../../src/apps/miniapp-shell/styles/chat-input.scss'),
   ]);
   const column = block(layout, '@mixin reading-column');
   for (const name of ['box-sizing', 'min-width', 'width', 'max-width', 'margin-inline']) {
@@ -57,9 +58,8 @@ test('conversation reading column, metadata and composer follow their applicatio
   }
   const composer = block(lab, '.flow-chat-mock__composer');
   assert.ok(property(composer, 'inline-size').includes(property(block(input, '.openbitfun-context-drop-zone.openbitfun-chat-input-drop-zone'), 'max-width')));
-  for (const name of ['height', 'padding', 'border-radius', 'font-size', 'font-weight', 'letter-spacing', 'opacity']) {
-    assert.equal(property(block(lab, '.flow-chat-mock__model'), name), property(block(model, '&__trigger'), name), name);
-  }
+  // The model selector trigger had no owner besides the retired React desktop UI,
+  // so the mock's `.flow-chat-mock__model` is now governed only by the token rule below.
 });
 
 test('the mock surface consumes published design tokens rather than local dimensions or colors', async () => {

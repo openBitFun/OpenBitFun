@@ -14,6 +14,7 @@ own environment before running commands.
 | [relay-v1/](relay-v1/README.md) | Versioned Relay deployment |
 | [outbound-mail/](outbound-mail/README.md) | Send-only Postfix/OpenDKIM: auth integration, DNS, maintenance and rollback |
 | [model-router/](model-router/README.md) | Client-side router launcher and system prompt |
+| [easytier/](easytier/README.md) | Device mesh relay/discovery node (EasyTier) and per-account mesh credential issuer |
 
 Component source guides:
 

@@ -24,6 +24,8 @@ pub mod i18n; // I18n service
 pub(crate) mod instruction_context; // Workspace instruction file prompt helpers
 #[cfg(feature = "mcp-runtime")]
 pub mod mcp; // MCP (Model Context Protocol) system
+#[cfg(feature = "agent-runtime")]
+pub mod personal_overview; // Home overview view model (logic batch 4)
 #[cfg(feature = "remote-connect")]
 pub mod remote_connect; // Remote Connect (phone → desktop)
 #[cfg(feature = "remote-workspace")]

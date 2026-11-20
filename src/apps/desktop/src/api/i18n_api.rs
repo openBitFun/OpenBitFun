@@ -29,11 +29,7 @@ pub struct TranslateRequest {
     pub args: Option<Value>,
 }
 
-pub(crate) async fn apply_language_runtime_effects(
-    app: &HostHandle,
-    _state: &AppState,
-    language: &str,
-) -> Result<(), String> {
+pub(crate) async fn apply_language_runtime_effects(language: &str) -> Result<(), String> {
     let Some(locale_id) = LocaleId::from_str(language) else {
         return Err(format!("Unsupported language: {language}"));
     };
@@ -52,30 +48,11 @@ pub(crate) async fn apply_language_runtime_effects(
         }
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let has_workspace = _state.workspace_id.read().await.is_some();
-        let mode = if has_workspace {
-            crate::macos_menubar::MenubarMode::Workspace
-        } else {
-            crate::macos_menubar::MenubarMode::Startup
-        };
-        let edit_mode = *_state.macos_edit_menu_mode.read().await;
-        // The native host's menu bar belongs to its UI process.
-        if let Some(app) = app.as_tauri() {
-            crate::macos_menubar::set_macos_menubar_with_mode(app, language, mode, edit_mode)
-                .map_err(|error| format!("Failed to rebuild the localized menu: {error}"))?;
-        }
-    }
-
-    // The native host's tray belongs to its UI process.
-    if let Some(app) = app.as_tauri() {
-        crate::tray::rebuild_tray_menu_public(app).await;
-    }
+    // Menus and the tray belong to the UI shell, which localizes them itself.
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn i18n_get_current_language(state: State<'_, AppState>) -> Result<String, String> {
     let config_service = &state.config_service;
 
@@ -91,7 +68,7 @@ pub async fn i18n_get_current_language(state: State<'_, AppState>) -> Result<Str
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn i18n_set_language(
     _state: State<'_, AppState>,
     app: HostHandle,
@@ -116,7 +93,7 @@ pub async fn i18n_set_language(
     Ok(format!("Language switched to: {language}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn i18n_get_supported_languages() -> Result<Vec<LocaleMetadataResponse>, String> {
     Ok(LocaleMetadata::all()
         .into_iter()
@@ -130,7 +107,7 @@ pub async fn i18n_get_supported_languages() -> Result<Vec<LocaleMetadataResponse
         .collect())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn i18n_get_config(state: State<'_, AppState>) -> Result<Value, String> {
     let config_service = &state.config_service;
 
@@ -152,7 +129,7 @@ pub async fn i18n_get_config(state: State<'_, AppState>) -> Result<Value, String
     }))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn i18n_set_config(
     _state: State<'_, AppState>,
     app: HostHandle,

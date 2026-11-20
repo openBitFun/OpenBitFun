@@ -25,11 +25,19 @@ pub struct NativeHostInfo {
 
 type StateEntry = &'static (dyn Any + Send + Sync);
 
+/// A backend-internal event listener (`HostHandle::listen`): gets the JSON
+/// text of each matching event's payload, as Tauri's `Event::payload()`.
+type Listener = Arc<dyn Fn(&str) + Send + Sync>;
+type Listeners = Arc<RwLock<Vec<(String, Listener)>>>;
+
 /// The native host. Lives for the whole process.
 pub struct NativeHost {
     states: RwLock<HashMap<TypeId, StateEntry>>,
     events: Arc<EventHub>,
     info: RwLock<NativeHostInfo>,
+    shell: super::shell::ShellBridge,
+    listeners: Listeners,
+    listener_task: std::sync::Once,
 }
 
 impl NativeHost {
@@ -39,10 +47,13 @@ impl NativeHost {
             states: RwLock::new(HashMap::new()),
             events,
             info: RwLock::new(info),
+            shell: super::shell::ShellBridge::default(),
+            listeners: Arc::default(),
+            listener_task: std::sync::Once::new(),
         })
     }
 
-    /// Registers managed state. Like `tauri::Manager::manage`, the first
+    /// Registers managed state. The first
     /// value of a type wins and later ones are refused (returns `false`).
     /// Registered values live until process exit.
     pub fn manage<T: Send + Sync + 'static>(&self, value: T) -> bool {
@@ -91,9 +102,74 @@ impl NativeHost {
         Ok(())
     }
 
+    /// Calls `handler` with the payload JSON of every later event named
+    /// `event`, for backend code that reacts
+    /// to its own events (MiniApp windows relay agent and worker events).
+    /// Listeners run on one dispatcher task over the event stream, in order.
+    pub fn listen<F>(&self, event: impl Into<String>, handler: F)
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        {
+            let mut listeners = match self.listeners.write() {
+                Ok(listeners) => listeners,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            listeners.push((event.into(), Arc::new(handler)));
+        }
+        self.listener_task.call_once(|| {
+            let listeners = Arc::clone(&self.listeners);
+            let mut subscription = self.events.subscribe(None);
+            tokio::spawn(async move {
+                loop {
+                    let batch = subscription.next_batch(256).await;
+                    for event in &batch.events {
+                        let matching: Vec<Listener> = {
+                            let listeners = match listeners.read() {
+                                Ok(listeners) => listeners,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            listeners
+                                .iter()
+                                .filter(|(name, _)| *name == event.event)
+                                .map(|(_, listener)| Arc::clone(listener))
+                                .collect()
+                        };
+                        if matching.is_empty() {
+                            continue;
+                        }
+                        let payload = event.payload.to_string();
+                        for listener in matching {
+                            listener(&payload);
+                        }
+                    }
+                    if batch.closed {
+                        break;
+                    }
+                }
+            });
+        });
+    }
+
     /// The event hub this host publishes into.
     pub fn events(&self) -> &Arc<EventHub> {
         &self.events
+    }
+
+    /// The channel to the native UI shell (window, tray, notifications,
+    /// clipboard, login item, application lifecycle).
+    pub fn shell(&self) -> &super::shell::ShellBridge {
+        &self.shell
+    }
+
+    /// Asks the native UI shell to run `op`; see [`super::shell`].
+    pub async fn shell_request(
+        &self,
+        op: &str,
+        args: serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        self.shell.request(&self.events, op, args, timeout).await
     }
 
     /// Static host facts.
@@ -111,5 +187,45 @@ impl NativeHost {
             Ok(mut current) => *current = info,
             Err(poisoned) => *poisoned.into_inner() = info,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_protocol::EventHub;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn listeners_get_the_payload_json_of_matching_events_in_order() {
+        let host = NativeHost::new(
+            EventHub::new(16),
+            NativeHostInfo {
+                version: "1.0.0".into(),
+                platform: "macos".into(),
+                data_dir: String::new(),
+            },
+        );
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        host.listen("miniapp-deleted", move |payload| {
+            let _ = sender.send(payload.to_string());
+        });
+        // Give the dispatcher its subscription before publishing.
+        tokio::task::yield_now().await;
+        host.emit("other-event", serde_json::json!({"id": "x"}))
+            .unwrap();
+        host.emit("miniapp-deleted", serde_json::json!({"id": "a"}))
+            .unwrap();
+        host.emit("miniapp-deleted", serde_json::json!({"id": "b"}))
+            .unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, r#"{"id":"a"}"#);
+        assert_eq!(second, r#"{"id":"b"}"#);
     }
 }

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const assetPath = 'src/web-ui/src/flow_chat/assets/subagent-avatars';
+const assetPath = 'design-system/packages/ui/src/brand/assets/subagent-avatars';
 const assetDirectory = path.join(root, assetPath);
 const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const palette = readJson(path.join(assetDirectory, 'palette.json'));
@@ -26,15 +26,15 @@ assert.deepEqual(
 
 // The generic theme audit delegates only these exact files to this palette
 // contract. A new SVG or a neighboring stylesheet receives no exemption.
-const webUi = registry.surfaces.find(surface => surface.id === 'web-ui');
-const registeredFiles = (webUi.audit.excludePaths ?? [])
+const ui = registry.surfaces.find(surface => surface.id === 'design-system-ui');
+const registeredFiles = (ui.audit.excludePaths ?? [])
   .filter(file => file.includes('subagent-avatars'));
-assert.deepEqual(registeredFiles, expectedFiles.map(file => `src/flow_chat/assets/subagent-avatars/${file}`));
+assert.deepEqual(registeredFiles, expectedFiles.map(file => `src/brand/assets/subagent-avatars/${file}`));
 
 const catalog = fs.readFileSync(path.join(root, palette.consumer), 'utf8');
-const importedFiles = [...catalog.matchAll(/from '\.\.\/assets\/subagent-avatars\/([^']+)'/g)]
+const importedFiles = [...catalog.matchAll(/from "(?:\.\.\/)+packages\/ui\/src\/brand\/assets\/subagent-avatars\/([^"]+)"/g)]
   .map(match => match[1]);
-assert.deepEqual(importedFiles, expectedFiles, 'Runtime imports must match the approved artwork inventory.');
+assert.deepEqual(importedFiles, expectedFiles, 'Catalog imports must match the approved artwork inventory.');
 
 const allowedTags = new Set(['svg', 'title', 'rect', 'path', 'circle', 'g', 'ellipse']);
 let bytes = 0;
@@ -78,8 +78,7 @@ for (const [, tag] of hatchSource.matchAll(/<\/?([\w:-]+)\b/g)) assert.ok(allowe
 for (const part of ['egg', 'peek', 'eyes', 'lid', 'shell-left', 'shell-right']) {
   assert.ok(hatchSource.includes(`data-hatch-part="${part}"`), `The hatch rig needs ${part}.`);
 }
-const ui = registry.surfaces.find(surface => surface.id === 'design-system-ui');
 assert.deepEqual((ui.audit.excludePaths ?? []).filter(file => file.includes('subagent-egg')), ['src/brand/assets/subagent-egg.svg']);
 assert.ok(fs.readFileSync(path.join(root, hatchPalette.consumer), 'utf8').includes("../assets/subagent-egg.svg?raw"));
 
-console.log(`[subagent-avatar-assets] ok: ${expectedFiles.length} character SVGs (${bytes} bytes) and the hatch SVG, exact palettes and runtime imports verified.`);
+console.log(`[subagent-avatar-assets] ok: ${expectedFiles.length} character SVGs (${bytes} bytes) and the hatch SVG, exact palettes and catalog imports verified.`);

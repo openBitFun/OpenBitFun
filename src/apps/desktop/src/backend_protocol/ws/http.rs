@@ -1,5 +1,12 @@
 //! HTTP side of the listeners: the WebSocket upgrade at `/obp`, LAN pairing,
 //! the owner launch link, and the NSH web bundle at `/`.
+//!
+//! The mesh listener (`mesh.rs`) mounts the same routes for phones and
+//! browsers that joined the account mesh with the EasyTier app
+//! (`ListenerKind::Mesh`): they pair with a one-time QR code exactly as on
+//! the LAN and get the `paired-client` scope. An upgrade that carries the
+//! account-device handshake (`Authorization: ObpMesh …`) goes to the
+//! device-to-device path instead.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -30,15 +37,23 @@ base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ListenerKind {
-    Loopback { port: u16 },
-    Lan { port: u16 },
+    Loopback {
+        port: u16,
+    },
+    Lan {
+        port: u16,
+    },
+    /// The account-mesh listener, reached on this device's mesh virtual IP.
+    Mesh {
+        port: u16,
+    },
 }
 
 impl ListenerKind {
     fn scheme(self) -> &'static str {
         match self {
             Self::Loopback { .. } => "http",
-            Self::Lan { .. } => "https",
+            Self::Lan { .. } | Self::Mesh { .. } => "https",
         }
     }
 
@@ -46,6 +61,20 @@ impl ListenerKind {
         match self {
             Self::Loopback { port } => format!("obf_owner_{port}"),
             Self::Lan { port } => format!("obf_client_{port}"),
+            Self::Mesh { port } => format!("obf_mesh_client_{port}"),
+        }
+    }
+
+    /// Listeners where phones and browsers pair with a QR code.
+    fn pairs_clients(self) -> bool {
+        matches!(self, Self::Lan { .. } | Self::Mesh { .. })
+    }
+
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Loopback { .. } => "loopback",
+            Self::Lan { .. } => "lan",
+            Self::Mesh { .. } => "mesh",
         }
     }
 }
@@ -57,11 +86,15 @@ struct ListenerState {
 }
 
 pub(crate) fn router(server: Arc<ObpServer>, kind: ListenerKind) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/obp", get(upgrade))
         .route("/obp/session", get(session))
         .route("/obp/pair", post(pair_json))
-        .route("/pair", get(pair_browser))
+        .route("/pair", get(pair_browser));
+    if matches!(kind, ListenerKind::Mesh { .. }) {
+        router = router.route("/obp/mesh/info", get(mesh_info));
+    }
+    router
         .fallback(get(static_files))
         .layer(axum::middleware::map_response(security_headers))
         .with_state(ListenerState { server, kind })
@@ -202,7 +235,7 @@ impl ListenerState {
             ListenerKind::Loopback { .. } => {
                 secrets_equal(&secret, &self.server.owner_token()).then_some(Scope::Owner)
             }
-            ListenerKind::Lan { .. } => {
+            ListenerKind::Lan { .. } | ListenerKind::Mesh { .. } => {
                 let store = super::lock(&self.server.store);
                 store
                     .client_for_credential(&secret)
@@ -215,7 +248,7 @@ impl ListenerState {
 
     fn session_cookie(&self, secret: &str) -> HeaderValue {
         let secure = match self.kind {
-            ListenerKind::Lan { .. } => "; Secure; Max-Age=31536000",
+            ListenerKind::Lan { .. } | ListenerKind::Mesh { .. } => "; Secure; Max-Age=31536000",
             ListenerKind::Loopback { .. } => "",
         };
         let cookie = format!(
@@ -226,6 +259,29 @@ impl ListenerState {
         );
         HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static(""))
     }
+
+    /// The certificate fingerprint a pairing client pins on this listener.
+    fn fingerprint(&self) -> Option<String> {
+        match self.kind {
+            ListenerKind::Lan { .. } => super::lock(&self.server.lan_fingerprint).clone(),
+            ListenerKind::Mesh { .. } => self.server.mesh_fingerprint(),
+            ListenerKind::Loopback { .. } => None,
+        }
+    }
+}
+
+/// `/obp/mesh/info` on the mesh listener.
+async fn mesh_info(State(state): State<ListenerState>) -> Response {
+    super::mesh::mesh_info_response(&state.server)
+}
+
+/// True when an upgrade carries the account-device handshake.
+fn is_account_device_upgrade(headers: &HeaderMap) -> bool {
+    header_str(headers, header::AUTHORIZATION).is_some_and(|value| {
+        value
+            .trim_start()
+            .starts_with(openbitfun_mesh_service::handshake::AUTH_SCHEME)
+    })
 }
 
 async fn upgrade(
@@ -233,6 +289,10 @@ async fn upgrade(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    if matches!(state.kind, ListenerKind::Mesh { .. }) && is_account_device_upgrade(&headers) {
+        return super::mesh::account_device_upgrade(Arc::clone(&state.server), headers, upgrade)
+            .await;
+    }
     if let Err(response) = state.check_host(&headers) {
         return response;
     }
@@ -247,14 +307,17 @@ async fn upgrade(
                 ListenerKind::Loopback { .. } => {
                     "open this page from OpenBitFun (Devices > Open in browser) to get a session"
                 }
-                ListenerKind::Lan { .. } => {
+                ListenerKind::Lan { .. } | ListenerKind::Mesh { .. } => {
                     "pair this device by scanning the QR code in OpenBitFun Devices"
                 }
             },
         );
     };
     let server = Arc::clone(&state.server);
-    let (id, stop) = server.register_connection(scope.clone());
+    let (id, stop) = server.register_connection_via(
+        scope.clone(),
+        matches!(state.kind, ListenerKind::Mesh { .. }),
+    );
     let context = ConnectionContext {
         backend: Arc::clone(&server.backend),
         scope,
@@ -285,7 +348,7 @@ async fn session(State(state): State<ListenerState>, headers: HeaderMap) -> Resp
         "protocol": OBP_PROTOCOL_VERSION,
         "authorized": scope.is_some(),
         "scope": scope.as_ref().map(Scope::wire_name),
-        "listener": match state.kind { ListenerKind::Loopback { .. } => "loopback", ListenerKind::Lan { .. } => "lan" },
+        "listener": state.kind.wire_name(),
     }))
     .into_response();
     response
@@ -321,11 +384,11 @@ async fn pair_browser(
     headers: HeaderMap,
     Query(query): Query<PairQuery>,
 ) -> Response {
-    if !matches!(state.kind, ListenerKind::Lan { .. }) {
+    if !state.kind.pairs_clients() {
         return page(
             StatusCode::NOT_FOUND,
             "Not found",
-            "Pairing happens on the LAN address.",
+            "Pairing happens on the LAN or device-mesh address.",
         );
     }
     let Some(code) = query.code.filter(|code| !code.is_empty()) else {
@@ -340,8 +403,9 @@ async fn pair_browser(
     match issued {
         Ok(issued) => {
             log::info!(
-                "OBP client paired from a browser: client_id={}",
-                issued.client_id
+                "OBP client paired from a browser: client_id={}, listener={}",
+                issued.client_id,
+                state.kind.wire_name()
             );
             let mut response = (StatusCode::SEE_OTHER, "").into_response();
             response
@@ -372,11 +436,11 @@ async fn pair_json(
     headers: HeaderMap,
     Json(request): Json<PairRequest>,
 ) -> Response {
-    if !matches!(state.kind, ListenerKind::Lan { .. }) {
+    if !state.kind.pairs_clients() {
         return problem(
             StatusCode::NOT_FOUND,
             "not_found",
-            "pairing happens on the LAN listener",
+            "pairing happens on the LAN or device-mesh listener",
         );
     }
     if let Err(response) = state.check_origin(&headers) {
@@ -385,8 +449,12 @@ async fn pair_json(
     let issued = super::lock(&state.server.store).redeem_code(&request.code, request.name);
     match issued {
         Ok(issued) => {
-            log::info!("OBP client paired: client_id={}", issued.client_id);
-            let fingerprint = super::lock(&state.server.lan_fingerprint).clone();
+            log::info!(
+                "OBP client paired: client_id={}, listener={}",
+                issued.client_id,
+                state.kind.wire_name()
+            );
+            let fingerprint = state.fingerprint();
             Json(serde_json::json!({
                 "clientId": issued.client_id,
                 "credential": issued.credential,
@@ -491,7 +559,7 @@ async fn static_files(
                 let url = header_str(&headers, header::HOST).map(|host| {
                     let scheme = match state.kind {
                         ListenerKind::Loopback { .. } => "ws",
-                        ListenerKind::Lan { .. } => "wss",
+                        ListenerKind::Lan { .. } | ListenerKind::Mesh { .. } => "wss",
                     };
                     format!("{scheme}://{host}/obp")
                 });

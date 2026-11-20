@@ -42,11 +42,11 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const ALL_PACKAGE_INPUTS = new Set([
   'scripts/ci/classify-build-impact.mjs',
   'scripts/collect-tauri-updater-assets.mjs',
+  'scripts/desktop-package-platforms.json',
+  'scripts/desktop-release-assets.mjs',
   'scripts/generate-linux-binaries-manifest.mjs',
   'scripts/generate-tauri-latest-json.mjs',
-  'scripts/generate-version.cjs',
   'scripts/openbitfun-release-sync.sh',
-  'scripts/prepare-windows-installer-asset.mjs',
   'scripts/release-channel.mjs',
   'scripts/set-build-version.mjs',
   'scripts/sign-release-assets.sh',
@@ -56,25 +56,27 @@ const ALL_PACKAGE_INPUTS = new Set([
   'scripts/write-minisign-public-key.mjs',
 ]);
 
-// Inputs consumed by the Desktop/Tauri package producer itself. Keep this
-// separate from ALL_PACKAGE_INPUTS: these paths do not affect the standalone
-// Linux CLI/Relay archives, so selecting those producers would add cost
-// without validating the changed input.
+// Inputs consumed by the native Desktop package producers themselves. Keep
+// this separate from ALL_PACKAGE_INPUTS: these paths do not affect the
+// standalone Linux CLI/Relay archives, so selecting those producers would add
+// cost without validating the changed input.
 const DESKTOP_PACKAGE_INPUTS = collectLocalModuleInputs([
-  'scripts/desktop-tauri-build.mjs',
-  // Tauri runs this entrypoint through beforeBuildCommand rather than an
-  // import from desktop-tauri-build.mjs.
-  'scripts/frontend-build-all.mjs',
+  'scripts/desktop-nsh-package.mjs',
+  'scripts/desktop-nsh-package-common.mjs',
+  'scripts/package-desktop-nsh-macos.mjs',
+  'scripts/package-desktop-nsh-windows.mjs',
+  'scripts/package-desktop-nsh-linux.mjs',
+  'scripts/ci/desktop-release-env.mjs',
+  'scripts/ci/install-nsh.mjs',
 ]);
 
 const DESKTOP_PACKAGE_PREFIXES = [
-  'products/',
-  'resources/flashgrep/',
-  'src/apps/desktop/capabilities/',
-  'src/apps/desktop/dmg/',
+  'src/apps/desktop-nsh/',
+  'src/apps/desktop/dmg-extras/',
   'src/apps/desktop/icons/',
   'src/apps/desktop/resources/',
-  'src/apps/desktop/scripts/',
+  'src/apps/miniapp-shell/',
+  'src/nsh-ui/',
 ];
 
 // These product surfaces are validated by the frontend gate and do not need
@@ -82,8 +84,8 @@ const DESKTOP_PACKAGE_PREFIXES = [
 // as neutral below because it has no supported CI toolchain or producer here.
 const FRONTEND_ONLY_PREFIXES = [
   'design-system/',
-  'src/web-ui/',
   'src/mobile-web/',
+  'src/nsh-ui/',
 ];
 
 const FRONTEND_ONLY_INPUTS = new Set([
@@ -301,9 +303,7 @@ function isFullPackageInput(file) {
 function isDesktopPackageInput(file) {
   return DESKTOP_PACKAGE_INPUTS.has(file)
     || DESKTOP_PACKAGE_PREFIXES.some((prefix) => file.startsWith(prefix))
-    || file === 'src/apps/desktop/build.rs'
-    || file.startsWith('src/apps/desktop/tauri.')
-    || file === 'src/web-ui/package.json';
+    || file === 'src/apps/desktop/build.rs';
 }
 
 function isFrontendOnlyInput(file) {
@@ -321,6 +321,8 @@ function isWindowsPackageInput(file) {
 
 function isMacPackageInput(file) {
   return file === 'scripts/cli/package-unix.sh'
+    || file === 'scripts/ci/package-native-macos-release.sh'
+    || file === 'scripts/ci/repair-macos-stapling.sh'
     || file.startsWith('scripts/ci/setup-macos-signing.')
     || file.startsWith('scripts/ci/verify-macos-signing.')
     || file.startsWith('scripts/macos/')

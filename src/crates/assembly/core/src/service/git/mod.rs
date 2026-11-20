@@ -10,4 +10,7 @@ pub use git_service::GitService;
 pub use git_types::*;
 pub use git_utils::*;
 pub use graph::*;
+pub use openbitfun_services_integrations::git::compound;
+#[cfg(feature = "file-watch")]
+pub use openbitfun_services_integrations::git::status_watch;
 pub use openbitfun_services_integrations::git::trust;

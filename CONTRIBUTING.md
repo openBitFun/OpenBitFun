@@ -15,7 +15,7 @@ Be respectful, kind, and constructive. We welcome contributors of all background
 - Node.js 22.12+ (LTS recommended)
 - pnpm 10.15.0 via Corepack
 - Rust toolchain (install via [rustup](https://rustup.rs/))
-- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for desktop development
+- The [NSH CLI](docs/architecture/nsh-frontend.md) (`nsh` 0.6) and Rust 1.98.1 for the native desktop app (`RUSTUP_TOOLCHAIN=1.98.1`)
 
 OpenBitFun standardizes local JavaScript builds and CI on Node.js 22.12+. The GitHub
 Actions upgrades in this repository use Node.js 24-compatible action runtimes,
@@ -38,10 +38,8 @@ pnpm run check:build-prereqs -- --fix  # attempt to fix missing prerequisites
 The check detects:
 
 - Missing `node_modules` (fix: `pnpm install`)
-- Missing `src/mobile-web/dist` (fix: `pnpm run prepare:mobile-web` — the
-  openbitfun-desktop Tauri build script references this directory as a resource,
-  so `cargo check -p openbitfun-desktop` and `cargo check --workspace` fail
-  without it)
+- Missing `src/mobile-web/dist` (fix: `pnpm run prepare:mobile-web` — the native
+  desktop packages bundle it as the legacy relay mobile UI)
 - Missing sherpa-onnx prebuilt libs (the sherpa-onnx-sys build script
   downloads from GitHub at build time; if the download fails on poor
   connectivity, set `SHERPA_ONNX_LIB_DIR` to the prebuilt lib directory
@@ -56,28 +54,27 @@ pnpm install
 The pnpm workspace uses the root `pnpm-lock.yaml` as its dependency lockfile;
 do not commit `package-lock.json` files for workspace packages. The standalone
 `packages/dsh-acp` npm package and `src/apps/extension-host` Bun host retain their
-own lockfiles and preparation commands. Keep generated Tauri `gen/` directories
+own lockfiles and preparation commands. Keep generated `gen/` directories (Data Tools, installer, MiniApp shell)
 and local implementation-process notes out of Git.
 
 ### Common commands
 
 ```bash
-# Desktop (recommended for daily development)
-pnpm run desktop:dev                # full hot-reload: Vite HMR + Rust auto-rebuild & restart
+# Desktop: the native NSH app (src/apps/desktop-nsh + src/nsh-ui + the backend library)
+pnpm run desktop:dev                # build the UI bundle, backend and runner (debug), then run it
 pnpm run desktop:dev -- --isolated-data # opt into checkout-local test data
+pnpm run desktop:preview:debug      # run the last debug build without rebuilding
 pnpm run prepare:dsh-profile        # optional: compile the DeepSeek Harness bridge for local sessions
 
-# Desktop (lightweight preview, no Rust auto-rebuild)
-pnpm run desktop:preview:debug      # reuse pre-built binary + Vite HMR; Rust changes require manual restart
+# Desktop (packaged app for this OS: target/desktop-nsh/)
+pnpm run desktop:build              # release profile; desktop:build:release-fast for a faster local package
 
-# Desktop (production build)
-pnpm run desktop:build
-
-# E2E
-pnpm run e2e:test
+# UI suite and native smoke test
+pnpm run e2e:ui                     # headless NSH UI suites (cd src/nsh-ui && nsh test .)
+pnpm run e2e:smoke                  # launches the built app on a scratch profile and drives it over OBP
 ```
 
-> **`desktop:dev` vs `desktop:preview:debug`**: `desktop:dev` runs `tauri dev`, which provides **full hot-reload** — frontend changes apply instantly via Vite HMR, and Rust/backend changes trigger an incremental rebuild followed by an automatic app restart. This is the recommended workflow for active development. `desktop:preview:debug` launches a pre-built debug binary alongside a Vite dev server; frontend edits still get HMR, but **Rust-side changes are not auto-rebuilt** — you must stop and re-run the command (or use `--force-rebuild`). Use `desktop:preview:debug` when you only need to iterate on frontend code or want a faster cold-start without waiting for `tauri dev` initialization.
+> The NSH CLI (`nsh`) and `RUSTUP_TOOLCHAIN=1.98.1` are required for the native app; see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md). `desktop:dev` rebuilds before every launch; UI-only iteration can use `nsh run src/nsh-ui --target web` with hot reload.
 
 Both launchers use the installed app's data by default, including existing model
 settings, workspaces, and sessions. Use `--isolated-data` for persistent test data
@@ -89,10 +86,10 @@ compatible way to request the default mode.
 
 ### Desktop debugging tools
 
-Desktop dev builds enable the `devtools` Cargo feature. Use `F12` for native
-webview DevTools. `Cmd/Ctrl + Shift + I` toggles the OpenBitFun element inspector,
-and `Cmd/Ctrl + Shift + J` also opens native DevTools. These tools are disabled
-in end-user `release` builds.
+The desktop app is a native NSH app with no WebView DevTools. Debug the UI with
+`nsh run src/nsh-ui --target web` (browser devtools on the web target) and the
+headless suites (`cd src/nsh-ui && nsh test .`); backend logs are in the session
+log directory (Settings → Logs).
 
 ## Code Standards and Architecture Constraints
 
@@ -100,13 +97,13 @@ Use [`AGENTS.md`](AGENTS.md) as the canonical source for repository-wide rules,
 layer boundaries, and how to choose verification. In contributor-facing terms:
 
 - Logs are English-only and should stay useful, not noisy.
-- User-visible copy should use the project i18n flow; do not share Web UI
-  locale catalogs with smaller surfaces.
-- Shared core must stay platform-agnostic. Desktop/Tauri details belong in app
+- User-visible copy should use the project i18n flow; do not share the desktop
+  UI locale catalogs with smaller surfaces.
+- Shared core must stay platform-agnostic. Desktop host details belong in app
   adapters and flow through typed capability interfaces; use the production
   transport adapter when event delivery is needed.
-- Tauri commands use `snake_case` command names and structured `request`
-  payloads.
+- Backend commands use `snake_case` command names and structured `request`
+  payloads (`// @backend-command` handlers registered in `backend_commands!`).
 - Product architecture, feature-boundary, dependency-boundary, and build-speed
   work must follow `docs/architecture/product-architecture.md` and
   `docs/architecture/rust-build-dependency-boundaries.md`.
@@ -131,7 +128,7 @@ We welcome contributions beyond standard feature or bug-fix PRs. Examples includ
 | Prompts | `src/crates/assembly/agent-content/prompts/agents/` | Add or refine built-in prompts; keep selection and runtime policy in their existing owners |
 | Tools | `src/crates/assembly/core/src/agentic/tools/implementations/`, `src/crates/assembly/core/src/agentic/tools/registry.rs` | Add tool implementations and register them in the tool registry |
 | Subagents | `src/crates/assembly/core/src/agentic/agents/definitions/`, `src/crates/assembly/core/src/agentic/agents/registry/` | Add subagent definitions and register them with the owning registry |
-| Mode contributions | `src/crates/assembly/core/src/agentic/agents/definitions/`, `src/crates/assembly/agent-content/prompts/agents/`, `src/web-ui/src/locales/` | Keep mode policy, built-in prompts, and owning UI copy in sync |
+| Mode contributions | `src/crates/assembly/core/src/agentic/agents/definitions/`, `src/crates/assembly/agent-content/prompts/agents/`, `src/nsh-ui/src/locales/` | Keep mode policy, built-in prompts, and owning UI copy in sync |
 | Playbook and scenario guides | `src/shared/interactive-capabilities/catalog.json`, owning app README | Maintain the source catalog and run `pnpm run capabilities:generate`; `website/` consumes the generated catalog |
 
 ### Before you start
@@ -189,7 +186,7 @@ Common local checks:
 | Frontend runtime or UI | `pnpm run check:web`, plus the nearest focused test when behavior changed |
 | Mobile web | `pnpm --dir src/mobile-web run type-check` |
 | Rust shared runtime or services | Follow the nearest module `AGENTS.md`: one package/test target and the minimum required features |
-| Desktop/Tauri integration | `cargo check -p openbitfun-desktop` |
+| Desktop backend / native host integration | `cargo check -p openbitfun-desktop` |
 | i18n resources | `pnpm run i18n:audit` |
 | i18n contract or shared terms | `pnpm run i18n:generate && pnpm run i18n:contract:test && pnpm run i18n:audit` |
 
@@ -197,9 +194,8 @@ For UI changes, include screenshots or a short recording when helpful. If you
 cannot run a relevant check, explain why in the PR and provide a lower-risk
 manual verification path.
 
-`pnpm run check:web` combines the Web UI type-check with the Appearance
-contract, theme color, and theme visual governance gates that CI applies to
-frontend changes.
+For desktop UI changes run `cd src/nsh-ui && nsh check && nsh test .`
+(`pnpm run e2e:ui`), plus `pnpm run theme:color-audit:all` for theme or color changes.
 
 ## Security and Compliance
 

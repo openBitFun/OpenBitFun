@@ -41,7 +41,7 @@ fn project_turn(turn: DialogTurnData) -> Value {
 }
 
 pub(super) async fn snapshot(
-    app: &tauri::AppHandle,
+    app: &HostHandle,
     instance: &MiniAppInstance,
     session_id: &str,
 ) -> Result<Value, String> {

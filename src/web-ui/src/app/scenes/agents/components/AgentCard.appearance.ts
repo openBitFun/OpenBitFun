@@ -1,2 +1,0 @@
-import type { AppearanceSurfaceDescriptor } from '@/infrastructure/appearance';
-export const agentCardAppearanceDescriptor: AppearanceSurfaceDescriptor = { id: 'agent-card', componentAttribute: 'data-openbitfun-product-component', parts: [{ id: 'root' }, { id: 'header' }, { id: 'headerInfo' }, { id: 'titleRow' }, { id: 'name' }, { id: 'badges' }, { id: 'body' }, { id: 'description' }, { id: 'footer' }, { id: 'meta' }] };

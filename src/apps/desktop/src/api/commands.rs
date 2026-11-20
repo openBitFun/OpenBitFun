@@ -407,7 +407,54 @@ pub struct OpenRemoteWorkspaceRequest {
 }
 
 #[derive(Debug, Deserialize, Default)]
-pub struct CreateAssistantWorkspaceRequest {}
+#[serde(rename_all = "camelCase")]
+pub struct CreateAssistantWorkspaceRequest {
+    /// The new assistant's name, written into its `IDENTITY.md` by the backend.
+    /// Omitted (older clients), the seeded default name stays.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAssistantIdentityRequest {
+    pub workspace_id: String,
+    #[serde(flatten)]
+    pub patch: openbitfun_core::service::workspace::identity_document::IdentityFieldPatch,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAssistantIdentityResponse {
+    pub workspace: WorkspaceInfoDto,
+    /// `IDENTITY.md` as written, so an open persona editor stays in step.
+    pub content: String,
+}
+
+/// Writes identity fields and publishes `workspace-identity-changed` itself, so
+/// every client hears about the edit even though the file watcher's own refresh
+/// now finds nothing new.
+async fn write_assistant_identity(
+    state: &AppState,
+    app: &HostHandle,
+    workspace_id: &str,
+    patch: &openbitfun_core::service::workspace::identity_document::IdentityFieldPatch,
+) -> Result<String, String> {
+    let (content, changed) = state
+        .workspace_service
+        .set_assistant_identity(workspace_id, patch)
+        .await
+        .map_err(|error| format!("Failed to set assistant identity: {}", error))?;
+    if let Some(event) = changed {
+        if let Err(error) = app.emit("workspace-identity-changed", &event) {
+            warn!(
+                "Failed to emit workspace identity update: workspace_id={} error={}",
+                workspace_id, error
+            );
+        }
+    }
+    Ok(content)
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -535,12 +582,6 @@ pub struct ListAgentCompanionPetsRequest {
     pub include_external: bool,
     #[serde(default)]
     pub builtin_import_version: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoadAgentCompanionPetSpritesheetRequest {
-    pub spritesheet_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -832,14 +873,13 @@ async fn clear_active_workspace_context(
     app: &HostHandle,
     startup_trace: Option<&DesktopStartupTrace>,
 ) {
-    #[cfg(not(target_os = "macos"))]
     let _ = app;
 
     let step_started = Instant::now();
     let previous_workspace_id = state.workspace_id.write().await.take();
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.clear_active_workspace_path",
             step_started,
         );
@@ -860,7 +900,7 @@ async fn clear_active_workspace_context(
         }
         if let Some(trace) = startup_trace {
             trace.record_elapsed_step(
-                "tauri_command",
+                "backend_command",
                 "initialize_global_state.release_previous_workspace_search",
                 step_started,
             );
@@ -872,7 +912,7 @@ async fn clear_active_workspace_context(
         pool.stop_all().await;
         if let Some(trace) = startup_trace {
             trace.record_elapsed_step(
-                "tauri_command",
+                "backend_command",
                 "initialize_global_state.stop_js_worker_pool",
                 step_started,
             );
@@ -883,37 +923,10 @@ async fn clear_active_workspace_context(
     state.agent_registry.clear_custom_subagents();
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.clear_custom_subagents",
             step_started,
         );
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let step_started = Instant::now();
-        let language = state
-            .config_service
-            .get_config::<String>(Some("app.language"))
-            .await
-            .unwrap_or_else(|_| "zh-CN".to_string());
-        let edit_mode = *state.macos_edit_menu_mode.read().await;
-        // The native host's menu bar belongs to its UI process.
-        if let Some(app) = app.as_tauri() {
-            let _ = crate::macos_menubar::set_macos_menubar_with_mode(
-                app,
-                &language,
-                crate::macos_menubar::MenubarMode::Startup,
-                edit_mode,
-            );
-        }
-        if let Some(trace) = startup_trace {
-            trace.record_elapsed_step(
-                "tauri_command",
-                "initialize_global_state.set_macos_startup_menubar",
-                step_started,
-            );
-        }
     }
 }
 
@@ -923,14 +936,13 @@ async fn apply_active_workspace_context(
     workspace_info: &openbitfun_core::service::workspace::manager::WorkspaceInfo,
     startup_trace: Option<&DesktopStartupTrace>,
 ) {
-    #[cfg(not(target_os = "macos"))]
     let _ = app;
 
     let step_started = Instant::now();
     clear_active_workspace_context(state, app, startup_trace).await;
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.clear_active_workspace_context",
             step_started,
         );
@@ -940,7 +952,7 @@ async fn apply_active_workspace_context(
     *state.workspace_id.write().await = Some(workspace_info.id.clone());
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.set_active_workspace_path",
             step_started,
         );
@@ -950,37 +962,10 @@ async fn apply_active_workspace_context(
     spawn_workspace_background_warmup(state, workspace_info.clone());
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.spawn_workspace_background_warmup",
             step_started,
         );
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let step_started = Instant::now();
-        let language = state
-            .config_service
-            .get_config::<String>(Some("app.language"))
-            .await
-            .unwrap_or_else(|_| "zh-CN".to_string());
-        let edit_mode = *state.macos_edit_menu_mode.read().await;
-        // The native host's menu bar belongs to its UI process.
-        if let Some(app) = app.as_tauri() {
-            let _ = crate::macos_menubar::set_macos_menubar_with_mode(
-                app,
-                &language,
-                crate::macos_menubar::MenubarMode::Workspace,
-                edit_mode,
-            );
-        }
-        if let Some(trace) = startup_trace {
-            trace.record_elapsed_step(
-                "tauri_command",
-                "initialize_global_state.set_macos_workspace_menubar",
-                step_started,
-            );
-        }
     }
 
     // Keep global SSH registry + active connection hint aligned with the **foreground** workspace
@@ -1003,7 +988,7 @@ async fn apply_active_workspace_context(
     }
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.sync_remote_workspace_context",
             step_started,
         );
@@ -1019,7 +1004,7 @@ async fn initialize_global_state_impl(
     let step_started = Instant::now();
     let current_workspace = state.workspace_service.get_current_workspace().await;
     trace.record_elapsed_step(
-        "tauri_command",
+        "backend_command",
         "initialize_global_state.get_current_workspace",
         step_started,
     );
@@ -1028,7 +1013,7 @@ async fn initialize_global_state_impl(
         let step_started = Instant::now();
         apply_active_workspace_context(state, app, &workspace_info, Some(trace)).await;
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.apply_active_workspace_context",
             step_started,
         );
@@ -1042,7 +1027,7 @@ async fn initialize_global_state_impl(
         let step_started = Instant::now();
         clear_active_workspace_context(state, app, Some(trace)).await;
         trace.record_elapsed_step(
-            "tauri_command",
+            "backend_command",
             "initialize_global_state.clear_active_workspace_context",
             step_started,
         );
@@ -1050,38 +1035,38 @@ async fn initialize_global_state_impl(
     }
 
     trace.record_elapsed_step(
-        "tauri_command",
+        "backend_command",
         "initialize_global_state.total",
         total_started,
     );
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_available_tools(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     Ok(state.get_tool_names())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_health_status(
     state: State<'_, AppState>,
 ) -> Result<crate::api::HealthStatus, String> {
     Ok(state.get_health_status().await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_statistics(
     state: State<'_, AppState>,
 ) -> Result<crate::api::AppStatistics, String> {
     Ok(state.get_statistics().await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<bool, String> {
     let ai_client = state.ai_client.read().await;
     Ok(ai_client.is_some())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn initialize_ai(state: State<'_, AppState>) -> Result<String, String> {
     let config_service = &state.config_service;
     let global_config: openbitfun_core::service::config::GlobalConfig = config_service
@@ -1175,7 +1160,7 @@ async fn create_transient_ai_client_for_config(
     )
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn test_ai_config_connection(
     state: State<'_, AppState>,
     request: TestAIConfigConnectionRequest,
@@ -1279,7 +1264,7 @@ pub async fn test_ai_config_connection(
 
 /// Runs one real generation against an image service draft so the settings page
 /// can confirm the dialect, credentials and endpoint actually work together.
-#[tauri::command]
+// @backend-command
 pub async fn test_image_generation_service(
     request: TestImageGenerationServiceRequest,
 ) -> Result<openbitfun_core::agentic::image_generation::ImageServiceTestOutcome, String> {
@@ -1306,7 +1291,7 @@ pub async fn test_image_generation_service(
     Ok(outcome)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_ai_models_by_config(
     state: State<'_, AppState>,
     request: ListAIModelsByConfigRequest,
@@ -1323,7 +1308,7 @@ pub async fn list_ai_models_by_config(
     })
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn refresh_model_client(
     state: State<'_, AppState>,
     model_id: String,
@@ -1333,7 +1318,7 @@ pub async fn refresh_model_client(
     Ok(format!("Model '{}' has been refreshed", model_id))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let health = state.get_health_status().await;
     let stats = state.get_statistics().await;
@@ -1352,7 +1337,7 @@ pub async fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Val
     Ok(app_state)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_app_status(
     _state: State<'_, AppState>,
     _request: UpdateAppStatusRequest,
@@ -1360,7 +1345,7 @@ pub async fn update_app_status(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn open_workspace(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -1413,7 +1398,7 @@ pub async fn open_workspace(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn open_remote_workspace(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -1591,18 +1576,38 @@ pub async fn open_remote_workspace(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_assistant_workspace(
     state: State<'_, AppState>,
     app: HostHandle,
-    _request: CreateAssistantWorkspaceRequest,
+    request: CreateAssistantWorkspaceRequest,
 ) -> Result<WorkspaceInfoDto, String> {
     match state
         .workspace_service
         .create_assistant_workspace(None)
         .await
     {
-        Ok(workspace_info) => {
+        Ok(mut workspace_info) => {
+            let name = request
+                .name
+                .as_deref()
+                .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|name| !name.is_empty());
+            if let Some(name) = name {
+                let patch =
+                    openbitfun_core::service::workspace::identity_document::IdentityFieldPatch {
+                        name: Some(name),
+                        ..Default::default()
+                    };
+                write_assistant_identity(&state, &app, &workspace_info.id, &patch).await?;
+                if let Some(updated) = state
+                    .workspace_service
+                    .get_workspace(&workspace_info.id)
+                    .await
+                {
+                    workspace_info = updated;
+                }
+            }
             apply_active_workspace_context(&state, &app, &workspace_info, None).await;
 
             if let Err(e) = state
@@ -1630,7 +1635,31 @@ pub async fn create_assistant_workspace(
     }
 }
 
-#[tauri::command]
+/// Sets an assistant's identity fields (name, creature, vibe, avatar, emoji)
+/// in its `IDENTITY.md`; only the given fields change.
+// @backend-command
+pub async fn set_assistant_identity(
+    state: State<'_, AppState>,
+    app: HostHandle,
+    request: SetAssistantIdentityRequest,
+) -> Result<SetAssistantIdentityResponse, String> {
+    let workspace_id = request.workspace_id.trim();
+    if workspace_id.is_empty() {
+        return Err("workspace_id is required".to_string());
+    }
+    let content = write_assistant_identity(&state, &app, workspace_id, &request.patch).await?;
+    let workspace = state
+        .workspace_service
+        .get_workspace(workspace_id)
+        .await
+        .ok_or_else(|| format!("Workspace not found: {}", workspace_id))?;
+    Ok(SetAssistantIdentityResponse {
+        workspace: WorkspaceInfoDto::from_workspace_info(&workspace),
+        content,
+    })
+}
+
+// @backend-command
 pub async fn get_primary_assistant_workspace(
     state: State<'_, AppState>,
     _request: GetPrimaryAssistantWorkspaceRequest,
@@ -1642,7 +1671,7 @@ pub async fn get_primary_assistant_workspace(
         .map(|workspace| WorkspaceInfoDto::from_workspace_info(&workspace)))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_primary_assistant_workspace(
     state: State<'_, AppState>,
     request: SetPrimaryAssistantWorkspaceRequest,
@@ -1693,7 +1722,7 @@ fn assistant_workspace_directory_plan(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_assistant_workspace(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -1915,7 +1944,7 @@ mod assistant_workspace_delete_tests {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reset_assistant_workspace(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -1976,7 +2005,7 @@ pub async fn reset_assistant_workspace(
     Ok(WorkspaceInfoDto::from_workspace_info(&updated_workspace))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn close_workspace(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -2019,7 +2048,7 @@ pub async fn close_workspace(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_active_workspace(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -2054,7 +2083,7 @@ pub async fn set_active_workspace(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reorder_opened_workspaces(
     state: State<'_, AppState>,
     request: ReorderOpenedWorkspacesRequest,
@@ -2078,7 +2107,7 @@ pub async fn reorder_opened_workspaces(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_workspace_info(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -2123,7 +2152,7 @@ pub async fn update_workspace_info(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_current_workspace(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -2134,11 +2163,11 @@ pub async fn get_current_workspace(
         .get_current_workspace()
         .await
         .map(|info| WorkspaceInfoDto::from_workspace_info(&info)));
-    startup_trace.record_tauri_command_elapsed("get_current_workspace", None, trace_started);
+    startup_trace.record_command_elapsed("get_current_workspace", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_recent_workspaces(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -2151,7 +2180,7 @@ pub async fn get_recent_workspaces(
         .into_iter()
         .map(|info| WorkspaceInfoDto::from_workspace_info(&info))
         .collect());
-    startup_trace.record_tauri_command_elapsed("get_recent_workspaces", None, trace_started);
+    startup_trace.record_command_elapsed("get_recent_workspaces", None, trace_started);
     result
 }
 
@@ -2194,7 +2223,7 @@ async fn collect_workspace_state_snapshot(state: &State<'_, AppState>) -> Worksp
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn remove_recent_workspace(
     state: State<'_, AppState>,
     request: RemoveRecentWorkspaceRequest,
@@ -2206,7 +2235,7 @@ pub async fn remove_recent_workspace(
         .map_err(|e| format!("Failed to remove workspace from recent: {}", e))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cleanup_invalid_workspaces(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -2224,7 +2253,7 @@ pub async fn cleanup_invalid_workspaces(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn initialize_workspace_startup_state(
     state: State<'_, AppState>,
     app: HostHandle,
@@ -2234,7 +2263,7 @@ pub async fn initialize_workspace_startup_state(
     let result =
         initialize_workspace_startup_state_impl(&state, &app, &startup_trace, command_started)
             .await;
-    startup_trace.record_tauri_command_elapsed(
+    startup_trace.record_command_elapsed(
         "initialize_workspace_startup_state",
         None,
         command_started,
@@ -2296,7 +2325,7 @@ async fn initialize_workspace_startup_state_impl(
     let snapshot_started = Instant::now();
     let snapshot = collect_workspace_state_snapshot(state).await;
     startup_trace.record_elapsed_step(
-        "tauri_command",
+        "backend_command",
         "initialize_workspace_startup_state.collect_workspace_state_snapshot",
         snapshot_started,
     );
@@ -2324,7 +2353,7 @@ async fn cleanup_invalid_workspaces_impl(
     match state.workspace_service.cleanup_invalid_workspaces().await {
         Ok(local_removed_count) => {
             startup_trace.record_elapsed_step(
-                "tauri_command",
+                "backend_command",
                 format!("{trace_step_prefix}.local_workspace_cleanup"),
                 cleanup_started,
             );
@@ -2339,7 +2368,7 @@ async fn cleanup_invalid_workspaces_impl(
                 clear_active_workspace_context(state, app, None).await;
             }
             startup_trace.record_elapsed_step(
-                "tauri_command",
+                "backend_command",
                 format!("{trace_step_prefix}.apply_active_workspace_context"),
                 apply_context_started,
             );
@@ -2356,7 +2385,7 @@ async fn cleanup_invalid_workspaces_impl(
                 );
             }
             startup_trace.record_elapsed_step(
-                "tauri_command",
+                "backend_command",
                 format!("{trace_step_prefix}.sync_identity_watchers"),
                 sync_watchers_started,
             );
@@ -2366,21 +2395,21 @@ async fn cleanup_invalid_workspaces_impl(
                 removed_count
             );
             if let Some(command_name) = command_name {
-                startup_trace.record_tauri_command_elapsed(command_name, None, command_started);
+                startup_trace.record_command_elapsed(command_name, None, command_started);
             }
             Ok(removed_count)
         }
         Err(e) => {
             error!("Failed to cleanup invalid workspaces: {}", e);
             if let Some(command_name) = command_name {
-                startup_trace.record_tauri_command_elapsed(command_name, None, command_started);
+                startup_trace.record_command_elapsed(command_name, None, command_started);
             }
             Err(format!("Failed to cleanup invalid workspaces: {}", e))
         }
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_assistant_workspaces(
     state: State<'_, AppState>,
 ) -> Result<Vec<WorkspaceInfoDto>, String> {
@@ -2393,7 +2422,7 @@ pub async fn get_assistant_workspaces(
         .collect())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_opened_workspaces(
     state: State<'_, AppState>,
     startup_trace: State<'_, DesktopStartupTrace>,
@@ -2406,11 +2435,11 @@ pub async fn get_opened_workspaces(
         .into_iter()
         .map(|info| WorkspaceInfoDto::from_workspace_info(&info))
         .collect());
-    startup_trace.record_tauri_command_elapsed("get_opened_workspaces", None, trace_started);
+    startup_trace.record_command_elapsed("get_opened_workspaces", None, trace_started);
     result
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn scan_workspace_info(
     state: State<'_, AppState>,
     request: ScanWorkspaceInfoRequest,
@@ -2646,7 +2675,7 @@ async fn get_directory_children_paginated_response(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_file_tree(
     state: State<'_, AppState>,
     request: GetFileTreeRequest,
@@ -2654,7 +2683,7 @@ pub async fn get_file_tree(
     get_file_tree_response(&state, &request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn explorer_get_file_tree(
     state: State<'_, AppState>,
     request: ExplorerGetFileTreeRequest,
@@ -2662,7 +2691,7 @@ pub async fn explorer_get_file_tree(
     get_file_tree_response(&state, &request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_directory_children(
     state: State<'_, AppState>,
     request: GetDirectoryChildrenRequest,
@@ -2670,7 +2699,7 @@ pub async fn get_directory_children(
     get_directory_children_response(&state, &request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn explorer_get_children(
     state: State<'_, AppState>,
     request: ExplorerGetChildrenRequest,
@@ -2678,7 +2707,7 @@ pub async fn explorer_get_children(
     get_directory_children_response(&state, &request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_directory_children_paginated(
     state: State<'_, AppState>,
     request: GetDirectoryChildrenPaginatedRequest,
@@ -2686,7 +2715,7 @@ pub async fn get_directory_children_paginated(
     get_directory_children_paginated_response(&state, &request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn explorer_get_children_paginated(
     state: State<'_, AppState>,
     request: ExplorerGetChildrenPaginatedRequest,
@@ -2694,7 +2723,7 @@ pub async fn explorer_get_children_paginated(
     get_directory_children_paginated_response(&state, &request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn read_file_content(
     state: State<'_, AppState>,
     request: ReadFileContentRequest,
@@ -2792,48 +2821,6 @@ mod pet_package_tests {
         assert!(import_pet_request(temp.path(), request)
             .unwrap_err()
             .contains("reviewed fingerprint"));
-    }
-
-    #[test]
-    fn pet_spritesheet_read_is_confined_to_the_companion_directory() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("agent-companions");
-        let pet_dir = root.join("pet-abc");
-        std::fs::create_dir_all(&pet_dir).unwrap();
-        let spritesheet = pet_dir.join("spritesheet.webp");
-        std::fs::write(&spritesheet, [1u8, 2, 3]).unwrap();
-
-        assert_eq!(
-            read_agent_companion_pet_spritesheet(&root, &spritesheet).unwrap(),
-            vec![1, 2, 3]
-        );
-
-        let outside = temp.path().join("credentials.txt");
-        std::fs::write(&outside, b"secret").unwrap();
-        let error = read_agent_companion_pet_spritesheet(&root, &outside).unwrap_err();
-        assert!(
-            error.contains("outside the companion pet directory"),
-            "{error}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pet_spritesheet_read_rejects_a_symlinked_escape() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("agent-companions");
-        let pet_dir = root.join("pet-abc");
-        std::fs::create_dir_all(&pet_dir).unwrap();
-        let outside = temp.path().join("credentials.txt");
-        std::fs::write(&outside, b"secret").unwrap();
-        let link = pet_dir.join("spritesheet.webp");
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-
-        let error = read_agent_companion_pet_spritesheet(&root, &link).unwrap_err();
-        assert!(
-            error.contains("outside the companion pet directory"),
-            "{error}"
-        );
     }
 
     #[test]
@@ -2990,7 +2977,7 @@ fn scan_pet_package_dirs(root: &Path, source: &str) -> Vec<AgentCompanionPetPack
     pets
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_agent_companion_pets(
     state: State<'_, AppState>,
     request: Option<ListAgentCompanionPetsRequest>,
@@ -3052,78 +3039,7 @@ pub(crate) async fn list_agent_companion_pets_impl(
     })
 }
 
-/// Upper bound for a single pet spritesheet. A spritesheet is a small sprite
-/// atlas, so a larger file is not a pet package asset and must not be buffered
-/// through the IPC channel.
-const MAX_AGENT_COMPANION_SPRITESHEET_BYTES: u64 = 16 * 1024 * 1024;
-
-/// Reads a user pet spritesheet through the host.
-///
-/// The webview used to read this file with the filesystem plugin, whose scope
-/// requires a literal leading dot on unix. Every XDG directory starts with a
-/// dot, so a Linux install could never resolve a spritesheet that lives under
-/// the app data directory; the read always failed with `forbidden path`
-/// (#3370). The host performs the read instead and keeps it confined to the
-/// managed companion directory, which is the only place a user pet package can
-/// be imported to.
-#[tauri::command]
-pub async fn load_agent_companion_pet_spritesheet(
-    state: State<'_, AppState>,
-    request: LoadAgentCompanionPetSpritesheetRequest,
-) -> Result<tauri::ipc::Response, String> {
-    let packages_root = companion_user_packages_dir(&state);
-    let spritesheet_path = request.spritesheet_path;
-    let bytes = tokio::task::spawn_blocking(move || {
-        read_agent_companion_pet_spritesheet(&packages_root, Path::new(&spritesheet_path))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    Ok(tauri::ipc::Response::new(bytes))
-}
-
-fn read_agent_companion_pet_spritesheet(
-    packages_root: &Path,
-    spritesheet_path: &Path,
-) -> Result<Vec<u8>, String> {
-    let root = packages_root.canonicalize().map_err(|error| {
-        format!(
-            "Companion pet directory is unavailable ({}): {}",
-            packages_root.display(),
-            error
-        )
-    })?;
-    let requested = spritesheet_path.canonicalize().map_err(|error| {
-        format!(
-            "Failed to resolve {}: {}",
-            spritesheet_path.display(),
-            error
-        )
-    })?;
-    if !requested.starts_with(&root) {
-        return Err(format!(
-            "Refused to read {} outside the companion pet directory",
-            spritesheet_path.display()
-        ));
-    }
-    let metadata = std::fs::metadata(&requested)
-        .map_err(|error| format!("Failed to read {}: {}", requested.display(), error))?;
-    if !metadata.is_file() {
-        return Err(format!(
-            "Not a companion pet spritesheet file: {}",
-            requested.display()
-        ));
-    }
-    if metadata.len() > MAX_AGENT_COMPANION_SPRITESHEET_BYTES {
-        return Err(format!(
-            "Companion pet spritesheet is too large: {} bytes",
-            metadata.len()
-        ));
-    }
-    std::fs::read(&requested)
-        .map_err(|error| format!("Failed to read {}: {}", requested.display(), error))
-}
-
-#[tauri::command]
+// @backend-command
 pub async fn import_agent_companion_pet_package(
     state: State<'_, AppState>,
     request: ImportAgentCompanionPetPackageRequest,
@@ -3180,7 +3096,7 @@ pub(crate) async fn import_agent_companion_pet_package_impl(
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_agent_companion_pet_package(
     state: State<'_, AppState>,
     request: DeleteAgentCompanionPetPackageRequest,
@@ -3224,7 +3140,7 @@ pub(crate) async fn delete_agent_companion_pet_package_impl(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn write_file_content(
     state: State<'_, AppState>,
     request: WriteFileContentRequest,
@@ -3265,7 +3181,7 @@ pub async fn write_file_content(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reset_workspace_persona_files(
     state: State<'_, AppState>,
     request: ResetWorkspacePersonaFilesRequest,
@@ -3328,7 +3244,7 @@ pub async fn reset_workspace_persona_files(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn check_path_exists(
     state: State<'_, AppState>,
     request: CheckPathExistsRequest,
@@ -3342,7 +3258,7 @@ pub async fn check_path_exists(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_file_metadata(
     state: State<'_, AppState>,
     request: GetFileMetadataRequest,
@@ -3358,7 +3274,7 @@ pub async fn get_file_metadata(
 
 /// Returns SHA-256 hex (lowercase) of file bytes after the same normalization as the web editor
 /// external-sync check, so the UI can compare with a local hash without transferring file contents.
-#[tauri::command]
+// @backend-command
 pub async fn get_file_editor_sync_hash(
     state: State<'_, AppState>,
     request: GetFileMetadataRequest,
@@ -3407,7 +3323,7 @@ pub async fn get_file_editor_sync_hash(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn rename_file(
     state: State<'_, AppState>,
     request: RenameFileRequest,
@@ -3426,7 +3342,7 @@ pub async fn rename_file(
 ///
 /// Both endpoints are controller-side: there is no remote copy primitive behind this command, so a
 /// remote workspace path is refused rather than served from a same-looking controller path.
-#[tauri::command]
+// @backend-command
 pub async fn export_local_file_to_path(request: ExportLocalFileRequest) -> Result<(), String> {
     for (role, path) in [
         ("source", request.source_path.as_str()),
@@ -3510,7 +3426,7 @@ pub async fn export_local_file_to_path(request: ExportLocalFileRequest) -> Resul
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_file(
     state: State<'_, AppState>,
     request: DeleteFileRequest,
@@ -3524,7 +3440,7 @@ pub async fn delete_file(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_directory(
     state: State<'_, AppState>,
     request: DeleteDirectoryRequest,
@@ -3540,7 +3456,7 @@ pub async fn delete_directory(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_file(
     state: State<'_, AppState>,
     request: CreateFileRequest,
@@ -3554,7 +3470,7 @@ pub async fn create_file(
     .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_directory(
     state: State<'_, AppState>,
     request: CreateDirectoryRequest,
@@ -3589,7 +3505,7 @@ pub struct DecompressPathRequest {
 /// Compress a local file or directory into a `.zip` archive placed in the same
 /// parent directory. For remote workspaces, delegates to SSH command execution
 /// (tries `zip`, falls back to `tar`).
-#[tauri::command]
+// @backend-command
 pub async fn compress_path(
     state: State<'_, AppState>,
     request: CompressPathRequest,
@@ -3889,7 +3805,7 @@ fn add_file_to_zip(
 /// Supported formats: `.zip`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
 /// `.tar.xz`/`.txz`, `.tar.zst`/`.tzst`, `.tar`.
 /// For remote workspaces, delegates to SSH.
-#[tauri::command]
+// @backend-command
 pub async fn decompress_path(
     state: State<'_, AppState>,
     request: DecompressPathRequest,
@@ -4776,7 +4692,7 @@ pub struct ListDirectoryFilesRequest {
     pub extensions: Option<Vec<String>>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_directory_files(
     state: State<'_, AppState>,
     request: ListDirectoryFilesRequest,
@@ -4856,7 +4772,7 @@ pub async fn list_directory_files(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reveal_in_explorer(
     state: State<'_, AppState>,
     request: RevealInExplorerRequest,
@@ -4896,9 +4812,13 @@ pub(crate) fn reveal_local_path_in_explorer(
                 .map_err(|e| format!("Failed to open explorer: {}", e))?;
         } else {
             // Explorer does not use standard argv quoting for /select: Command
-            // quotes the entire switch + path when a filename contains spaces.
-            // Use Shell item IDs instead so the path is never a command line.
-            tauri_plugin_opener::reveal_item_in_dir(path)
+            // would quote the entire switch + path when a filename contains
+            // spaces. Pass the switch raw with only the path quoted (Windows
+            // paths cannot contain `"`).
+            use std::os::windows::process::CommandExt as _;
+            openbitfun_core::util::process_manager::create_command("explorer")
+                .raw_arg(format!("/select,\"{}\"", path_str.replace('/', "\\")))
+                .spawn()
                 .map_err(|e| format!("Failed to reveal file in explorer: {}", e))?;
         }
     }
@@ -4971,7 +4891,7 @@ pub(crate) fn reveal_local_path_in_explorer(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_files(
     state: State<'_, AppState>,
     mut request: SearchFilesRequest,
@@ -5157,7 +5077,7 @@ pub async fn search_files(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_filenames(
     state: State<'_, AppState>,
     mut request: SearchFilenamesRequest,
@@ -5254,7 +5174,7 @@ pub async fn search_filenames(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn search_file_contents(
     state: State<'_, AppState>,
     mut request: SearchFileContentsRequest,
@@ -5366,7 +5286,7 @@ pub async fn search_file_contents(
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_search_filenames_stream(
     app_handle: HostHandle,
     state: State<'_, AppState>,
@@ -5525,7 +5445,7 @@ pub async fn start_search_filenames_stream(
     .unwrap_or_else(|_| serde_json::json!({ "searchId": "", "limit": limit })))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_search_file_contents_stream(
     app_handle: HostHandle,
     state: State<'_, AppState>,
@@ -5742,7 +5662,7 @@ pub async fn start_search_file_contents_stream(
     .unwrap_or_else(|_| serde_json::json!({ "searchId": "", "limit": limit })))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_search(
     state: State<'_, AppState>,
     request: CancelSearchRequest,
@@ -5755,12 +5675,12 @@ pub async fn cancel_search(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_global_config_status() -> Result<bool, String> {
     Ok(openbitfun_core::service::config::GlobalConfigManager::is_initialized())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_model_configs(
     state: State<'_, AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
@@ -5787,7 +5707,7 @@ pub async fn get_model_configs(
 /// The models.dev bodies never travel: they describe the public models.dev
 /// catalog, which every host refreshes for itself, and only Model Settings reads
 /// them — through `get_local_models_dev_catalogs`, which stays on this machine.
-#[tauri::command]
+// @backend-command
 pub async fn get_ai_model_catalog() -> Result<openbitfun_core::AIModelCatalog, String> {
     openbitfun_core::get_remote_model_catalog().await
 }
@@ -5795,31 +5715,31 @@ pub async fn get_ai_model_catalog() -> Result<openbitfun_core::AIModelCatalog, S
 /// This machine's own models.dev projections, for a controller rendering the
 /// Model Settings surface while a peer is selected. Declared controller-local in
 /// the Product Operation Registry, so it never reaches a peer host.
-#[tauri::command]
+// @backend-command
 pub async fn get_local_models_dev_catalogs(
 ) -> Result<openbitfun_core::LocalModelsDevCatalogs, String> {
     openbitfun_core::get_local_models_dev_catalogs().await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn project_ai_model_reasoning_catalog(
     request: openbitfun_core_types::ReasoningCatalogProjectionRequest,
 ) -> openbitfun_core_types::ReasoningCatalogProjection {
     openbitfun_core::project_ai_model_reasoning_catalog(request).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_models_dev_catalog_status() -> openbitfun_core_types::ModelsDevCatalogStatus {
     openbitfun_core::get_models_dev_catalog_status().await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn refresh_models_dev_catalog_now(
 ) -> Result<openbitfun_core_types::ModelsDevRefreshResult, String> {
     openbitfun_core::refresh_models_dev_catalog_now().await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reveal_models_dev_cache_directory() -> Result<(), String> {
     let status = openbitfun_core::get_models_dev_catalog_status().await;
     let cache_path = std::path::PathBuf::from(&status.cache_path);
@@ -5840,7 +5760,7 @@ pub struct IdeControlResultRequest {
     pub timestamp: i64,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn report_ide_control_result(request: IdeControlResultRequest) -> Result<(), String> {
     if !request.success {
         if let Some(error) = &request.error {
@@ -5897,7 +5817,7 @@ async fn file_watch_target(
     Ok((path, None))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_file_watch(
     state: State<'_, AppState>,
     request: Option<WorkspaceFileWatchRequest>,
@@ -5908,7 +5828,7 @@ pub async fn start_file_watch(
     file_watch::start_file_watch(path, scoped_recursive.or(recursive)).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn stop_file_watch(
     state: State<'_, AppState>,
     request: Option<WorkspaceFileWatchRequest>,
@@ -5918,7 +5838,7 @@ pub async fn stop_file_watch(
     file_watch::stop_file_watch(path).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_watched_paths() -> Result<Vec<String>, String> {
     file_watch::get_watched_paths().await
 }
@@ -5926,14 +5846,14 @@ pub async fn get_watched_paths() -> Result<Vec<String>, String> {
 /// Whether filesystem changes still reach product surfaces, and why not.
 /// `LocalOnly`: the watcher is a host-side resource and is not used for remote
 /// workspaces, which do their own remote IO.
-#[tauri::command]
+// @backend-command
 pub async fn get_file_watch_status() -> Result<file_watch::FileWatchStatus, String> {
     Ok(file_watch::get_file_watch_status())
 }
 
 /// Re-registers every watched root on a fresh native watcher so a surface can
 /// recover from a backend failure after the user fixes its cause.
-#[tauri::command]
+// @backend-command
 pub async fn retry_file_watch() -> Result<(), String> {
     file_watch::retry_file_watch().await
 }
@@ -6006,13 +5926,13 @@ async fn configured_ai_proxy(
         .then_some(global_config.ai.proxy))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_subscription_accounts(
 ) -> Result<Vec<openbitfun_core::infrastructure::subscription_auth::SubscriptionAccount>, String> {
     Ok(openbitfun_core::infrastructure::subscription_auth::list_accounts().await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_subscription_account_instances() -> Result<
     Vec<openbitfun_core::infrastructure::subscription_auth::SubscriptionAccountInstance>,
     String,
@@ -6022,7 +5942,7 @@ pub async fn list_subscription_account_instances() -> Result<
         .map_err(|error| format!("Failed to list subscription account instances: {error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_subscription_account_login(
     state: State<'_, AppState>,
     request: SubscriptionAccountLoginRequest,
@@ -6042,7 +5962,7 @@ pub async fn start_subscription_account_login(
     .map_err(|error| format!("Failed to start subscription account login: {error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_subscription_account_quota(
     state: State<'_, AppState>,
     request: SubscriptionAccountQuotaRequest,
@@ -6121,7 +6041,7 @@ pub async fn get_subscription_account_quota(
     .map_err(|error| format!("Failed to read subscription account quota: {error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn logout_subscription_account_instance(
     request: SubscriptionAccountInstanceRequest,
 ) -> Result<openbitfun_core::infrastructure::subscription_auth::SubscriptionLogoutResult, String> {
@@ -6133,7 +6053,7 @@ pub async fn logout_subscription_account_instance(
     .map_err(|error| format!("Failed to logout subscription account instance: {error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_subscription_account_enabled(
     request: SubscriptionAccountEnabledRequest,
 ) -> Result<openbitfun_core::infrastructure::subscription_auth::SubscriptionAccountInstance, String>
@@ -6147,7 +6067,7 @@ pub async fn set_subscription_account_enabled(
     .map_err(|error| format!("Failed to set subscription account eligibility: {error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn refresh_subscription_account_instance(
     state: State<'_, AppState>,
     request: SubscriptionAccountInstanceRequest,
@@ -6166,7 +6086,7 @@ pub async fn refresh_subscription_account_instance(
     .map_err(|error| format!("Failed to refresh subscription account instance: {error:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn start_subscription_login(
     state: State<'_, AppState>,
     request: SubscriptionLoginRequest,
@@ -6186,7 +6106,7 @@ pub async fn start_subscription_login(
     .map_err(|e| format!("Failed to start subscription login: {e:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_subscription_login_status(
     request: SubscriptionLoginRequest,
 ) -> Result<openbitfun_core::infrastructure::subscription_auth::LoginSessionSnapshot, String> {
@@ -6198,7 +6118,7 @@ pub async fn get_subscription_login_status(
     .map_err(|e| format!("Failed to get subscription login status: {e:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn cancel_subscription_login(request: SubscriptionLoginRequest) -> Result<(), String> {
     openbitfun_core::infrastructure::subscription_auth::cancel_login(
         request.provider,
@@ -6208,7 +6128,7 @@ pub async fn cancel_subscription_login(request: SubscriptionLoginRequest) -> Res
     .map_err(|e| format!("Failed to cancel subscription login: {e:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn logout_subscription_account(
     request: SubscriptionProviderRequest,
 ) -> Result<openbitfun_core::infrastructure::subscription_auth::SubscriptionLogoutResult, String> {
@@ -6217,7 +6137,7 @@ pub async fn logout_subscription_account(
         .map_err(|e| format!("Failed to logout subscription account: {e:#}"))
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn refresh_subscription_account(
     state: State<'_, AppState>,
     request: SubscriptionProviderRequest,
@@ -6401,7 +6321,7 @@ mod remote_guard_tests {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn workspace_file_upload(
     request: openbitfun_core::service::filesystem::upload::WorkspaceUploadRequest,
 ) -> Result<serde_json::Value, String> {
@@ -6466,7 +6386,7 @@ mod quota_request_compatibility_tests {
     }
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_workspace_icon(
     state: State<'_, AppState>,
     request: openbitfun_core::service::workspace::WorkspaceIconRequest,
@@ -6477,7 +6397,7 @@ pub async fn get_workspace_icon(
         .await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn set_workspace_icon(
     state: State<'_, AppState>,
     request: openbitfun_core::service::workspace::SetWorkspaceIconRequest,
@@ -6486,7 +6406,7 @@ pub async fn set_workspace_icon(
 }
 
 /// Detect Magpie on the selected inference host without running inference.
-#[tauri::command]
+// @backend-command
 pub async fn probe_magpie_gateway(
     state: State<'_, AppState>,
     request: openbitfun_core_types::magpie::MagpieProbeRequest,

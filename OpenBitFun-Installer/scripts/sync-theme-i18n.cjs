@@ -2,7 +2,8 @@ const fs = require("fs");
 const path = require("path");
 
 const INSTALLER_ROOT = path.resolve(__dirname, "..");
-const PROJECT_ROOT = path.resolve(INSTALLER_ROOT, "..");
+// Installer-owned source strings (moved from the retired React desktop UI locale catalogs).
+const SOURCES_DIR = path.join(INSTALLER_ROOT, "src", "i18n", "sources");
 
 const THEME_IDS = [
   "openbitfun-dark",
@@ -25,15 +26,16 @@ function writeJson(filePath, data) {
 }
 
 function extractThemeNames(source, sourceLabel) {
-  // Theme preset names live under settings/application.json → appearance.presets (formerly theme.json → theme.presets).
-  const presets = source?.appearance?.presets;
+  // Theme preset names live under themeNames (formerly the desktop UI's
+  // settings/application.json -> appearance.presets.<id>.name).
+  const presets = source?.themeNames;
   if (!presets || typeof presets !== "object") {
-    throw new Error(`Invalid appearance.presets in ${sourceLabel}`);
+    throw new Error(`Invalid themeNames in ${sourceLabel}`);
   }
 
   const result = {};
   for (const themeId of THEME_IDS) {
-    const name = presets?.[themeId]?.name;
+    const name = presets?.[themeId];
     if (typeof name !== "string" || name.trim() === "") {
       throw new Error(`Missing theme name for '${themeId}' in ${sourceLabel}`);
     }
@@ -55,26 +57,8 @@ function injectThemeNames(target, themeNames) {
 }
 
 function main() {
-  const sourceEnPath = path.join(
-    PROJECT_ROOT,
-    "src",
-    "web-ui",
-    "src",
-    "locales",
-    "en-US",
-    "settings",
-    "application.json"
-  );
-  const sourceZhPath = path.join(
-    PROJECT_ROOT,
-    "src",
-    "web-ui",
-    "src",
-    "locales",
-    "zh-CN",
-    "settings",
-    "application.json"
-  );
+  const sourceEnPath = path.join(SOURCES_DIR, "en-US.json");
+  const sourceZhPath = path.join(SOURCES_DIR, "zh-CN.json");
 
   const targetEnPath = path.join(
     INSTALLER_ROOT,
@@ -102,7 +86,7 @@ function main() {
   writeJson(targetEnPath, injectThemeNames(targetEn, enThemeNames));
   writeJson(targetZhPath, injectThemeNames(targetZh, zhThemeNames));
 
-  console.log("[sync-theme-i18n] Synced installer theme names from web-ui locales.");
+  console.log("[sync-theme-i18n] Synced installer theme names from src/i18n/sources.");
 }
 
 main();

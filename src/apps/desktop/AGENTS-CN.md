@@ -8,20 +8,30 @@
 
 ## 这里最重要的内容
 
-`src/apps/desktop` 是 Tauri 宿主 / 集成层。
+`src/apps/desktop` 是桌面端后端库（`openbitfun_desktop_lib`）。原生 NSH 桌面应用
+（`src/apps/desktop-nsh`）通过 `src/backend_protocol/ffi.rs` 的 C ABI 在进程内加载它；浏览器、
+手机和同账号的其他设备通过 OBP（`src/backend_protocol/ws`、`src/mesh`）访问同一个
+`BackendService`。这里没有 Tauri 运行时、窗口或 WebView：Tauri 桌面外壳已退役
+（`docs/architecture/unified-client-architecture.md`）。本 crate 只构建 `cdylib` + `rlib`，
+runner 可执行文件位于 `src/apps/desktop-nsh/native`。
 
 主要区域：
 
-- `src/api/`：Tauri commands
-- `src/api/peer_host_invoke.rs`：Peer Device Mode host-invoke bridge 与 control attach；
-  允许/拒绝与能力来自 Product Operation Registry（`openbitfun_product_domains::remote_surface`），
-  不再有本地表
-- `src/api/remote_workspace_policy.rs`：证明每个已注册 Tauri 命令在注册表中恰有一行的闭包测试
-- `src/lib.rs`、`src/main.rs`：应用启动与装配
+- `src/api/`：后端命令（`// @backend-command` 处理函数）
+- `src/backend_protocol/`：协议服务、生成的分发器（`dispatch_generated.rs`）、宿主适配器
+  （`native_commands/`）、OBP 监听器
+- `src/host/`：宿主 shim（`State`、`HostHandle`、`NativeHost`）以及到 UI 进程的 shell 通道（`host/shell.rs`）
+- `src/native_host.rs`：后端启动与优雅退出
+- `src/native_browser.rs`：基于 shell 网页视图、面向智能体的内置浏览器
+- `src/miniapp_desktop/`、`src/miniapp_web_host.rs`：MiniApp 窗口（`openbitfun-miniapp-shell`
+  sidecar）与智能体 MiniApp 自动化
+- `src/api/peer_host_invoke.rs`：面向旧版 peer 的 relay HostInvoke 宿主；允许/拒绝与能力来自
+  Product Operation Registry（`openbitfun_product_domains::remote_surface`），不再有本地表
+- `src/api/remote_workspace_policy.rs`：证明每个已注册命令在注册表中恰有一行的闭包测试
+- `src/update_maintenance/`：已验证原生更新包的 macOS 应用包替换
 - `src/computer_use/`：操作系统相关自动化支持
 
 Peer Device Mode 的所有权和边界见 `docs/architecture/peer-device-mode.md`。
-前端防回归清单见 `src/web-ui/src/infrastructure/peer-device/README.md`。
 
 OpenBitFun 账号身份（GitHub 或邮箱验证码登录）统一由 `account_identity_api.rs` 提供；Relay 设备注册和生命周期位于
 `src/api/remote_connect_api.rs`。设置留在所属设备，不再提供云端/本地同步选择。
@@ -33,79 +43,68 @@ crate；`src/crates/assembly/core` 只保留产品装配与兼容桥接。
 
 ## 本模块规则
 
-- 桌面端专属集成留在这里，不要下沉到共享 core
-- 窗口 lifecycle 行为（包括 close/minimize-to-tray 默认值）属于桌面端 surface；修改时必须保留用户已保存偏好。
-- `window_state_support` 负责主窗口布局校验，并沿用旧 `.window-state.json` 格式原子保存。
-  不要同时注册 window-state 插件，其退出时写入的缓存可能覆盖修复结果。
-- 命令及其辅助函数使用 `crate::host::State` 与 `crate::host::HostHandle`，不要使用
-  `tauri::State` / `tauri::AppHandle`，以便进程内 native host（`native_host.rs`、
-  `backend_protocol/`，供 `src/apps/desktop-nsh` 使用）无需 Tauri 即可执行。只有确实需要
-  Tauri 窗口的命令才保留 `tauri::AppHandle`/`Webview`/`WebviewWindow`，native 分发器对其返回
-  `unsupported_in_native_host: <command>`。共享辅助函数里的 Tauri 专属操作通过
-  `HostHandle::tauri(..)?`（显式报错）或 `as_tauri()`（菜单栏、托盘等由 native UI 负责的宿主装饰）完成。
-  新增或修改已注册命令后运行 `pnpm run desktop-nsh:generate-dispatch`。
+- 桌面端专属集成留在这里，不要下沉到共享 core。
+- 窗口 lifecycle 行为（包括 close/minimize-to-tray 默认值）属于 NSH 外壳负责的桌面端 surface；
+  修改时必须保留用户已保存偏好。
+- 命令及其辅助函数使用 `crate::host::State` 与 `crate::host::HostHandle`。新命令在 `src/lib.rs`
+  的 `backend_commands!` 中注册，在 `fn` 前一行加 `// @backend-command` 标记，保持旧客户端发送的
+  `{ request }` / camelCase 参数形状，运行 `pnpm run desktop-nsh:generate-dispatch`，并在
+  Product Operation Registry（`src/crates/contracts/product-domains/src/remote_surface/table.rs`）
+  添加一行，然后运行 `pnpm run capabilities:generate`。生成器会拒绝 Tauri 参数类型。
+- 直接作用于宿主或其 UI shell、而非类型化参数的命令，写成
+  `src/backend_protocol/native_commands/` 中的宿主适配器
+  （`fn <command>(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_>`），并以
+  `backend_protocol::native_commands::<command>` 注册。窗口、托盘、通知、剪贴板、登录项与应用
+  生命周期操作经由 shell 通道（`host://shell-request`，由 shell 以 `host_shell_respond` 应答）；
+  没有 shell 提供该操作时明确报错。
+- 删除命令：从 `backend_commands!` 移除，并把注册表行替换为带原因的 `retired(...)`。分发器随后
+  对旧客户端返回 `unsupported_in_native_host: <command> (retired: <reason>)`。
+- 原生更新器读取清单中的 `<os>-<arch>-nsh` 条目，并使用独立的 `app-updates-nsh` 缓存。发布清单
+  也把旧的 `darwin-<arch>` 键指向同一个原生包，让已安装的 Tauri 版本升级到原生应用；应用包为此保留
+  指向 runner 的 `Contents/MacOS/openbitfun-desktop` 链接（`scripts/package-desktop-nsh-macos.mjs`）。
+  聚焦检查：`cargo test -p openbitfun-desktop --lib -- host::shell backend_protocol::native_commands`。
 
 ## 命令
 
-以下命令用于桌面开发循环；验证命令只在下方“验证”章节维护。
-
 ```bash
-pnpm run desktop:dev
-pnpm run desktop:preview:debug
-pnpm run prepare:dsh-profile   # 可选：本地 DeepSeek Harness 会话
+pnpm run desktop:dev              # 构建（debug）并运行原生应用（scripts/desktop-nsh-dev.mjs）
+pnpm run desktop:preview:debug    # 不重新构建，运行上一次 debug 构建
+pnpm run desktop-nsh:build        # UI bundle + 后端库 + runner
+pnpm run desktop-nsh:package:mac  # target/desktop-nsh/OpenBitFun.app（另有 :windows、:linux）
+pnpm run prepare:dsh-profile      # 可选：本地 DeepSeek Harness 会话
 ```
 
-## 快速构建
+`desktop:dev --isolated-data` 把设置、工作区和会话放在本仓库的 `.openbitfun/desktop-dev/`
+（`OPENBITFUN_USER_ROOT`/`OPENBITFUN_HOME`）；默认使用已安装应用的数据。NSH crate 需要
+`RUSTUP_TOOLCHAIN=1.98.1`（rustc >= 1.97）。
 
-| 命令 | 使用场景 |
-|---|---|
-| `pnpm run desktop:build:fast` | Debug 构建，不打包；手动测试时编译最快 |
-| `pnpm run desktop:build:release-fast` | 类 Release 构建，降低 LTO；需要 release 行为但无法等待完整 LTO 时使用 |
-| `pnpm run desktop:build:nsis:fast` | Windows 安装器，使用 `release-fast` profile；快速验证安装器 |
+Data Tools 独立运行；桌面开发启动器不会构建、启动或监管它，请使用 `src/apps/data-tools`
+自己的开发和发布入口。
 
-需要完整断点调试信息时设置 `CARGO_PROFILE_DEV_DEBUG=2`。默认 dev profile 保留行号信息，
-同时减少 PDB 体积。
-
-## Target 缓存 GC
-
-`desktop:dev`（退出时）、`desktop:preview:debug`（关闭时）以及 `desktop:build*` 会裁剪过期的 `target/<profile>` 缓存代际。`incremental` 每个 crate/session 保留最新项；GC 根据 Cargo fingerprint JSON 区分 lib、test、bin、build-script 等构建单元，每个单元保留最新代际，并保留 Cargo 管理的 `invoked.timestamp` 在最近 24 小时内刷新过的全部代际，随后删除失去 fingerprint 的 `deps` 文件和 `build` 目录。忙碌检测只检查所选 profile 的 Cargo 锁文件，因此其他 worktree 的编译不会再阻止清理。手动执行：`pnpm run target:gc -- --profile debug`。禁用：`OPENBITFUN_TARGET_GC=0`；演练：`OPENBITFUN_TARGET_GC_DRY_RUN=1`；可用 `OPENBITFUN_TARGET_GC_MIN_AGE_HOURS` 调整安全窗口。
-
-`release-fast` profile（`Cargo.toml`）：继承 `release`，但关闭 LTO、`codegen-units` 提高到 16、启用增量编译。编译速度显著提升，代价是二进制体积增大和边际运行时性能下降。
-
-## DevTools feature（模型规则）
-
-`devtools` Cargo feature 用于桌面端 UI/UX 调试。添加或修改调试相关代码时：
-
-- 所有调试专用 API 和 command 必须用 `#[cfg(any(debug_assertions, feature = "devtools"))]` 保护
-- 在 `#[cfg(not(any(debug_assertions, feature = "devtools")))]` 下提供 no-op stub，确保 command 始终可以注册到 `invoke_handler`
-- 该 feature 通过 `--features devtools` 在 `dev` 构建和 `release-fast` profile 构建中自动启用
-- 面向最终用户的 `release` profile 构建中永不启用
+`release-fast` profile（`Cargo.toml`）：继承 `release`，但关闭 LTO、`codegen-units` 提高到 16、
+启用增量编译。编译速度显著提升，代价是二进制体积和少量运行时性能。
 
 ## 验证
+
+```bash
+cargo check -p openbitfun-desktop
+cargo test -p openbitfun-desktop --lib
+pnpm run desktop-nsh:check-dispatch
+node --test scripts/generate-desktop-native-dispatch.test.mjs
+```
+
+打包后原生应用的冒烟测试（隔离数据目录启动、经 loopback OBP owner 连接驱动、退出）是
+`pnpm run e2e:smoke`，见 `tests/e2e/AGENTS.md`。UI 测试套件是 `pnpm run e2e:ui`。
 
 验证 ACP 取消请求兼容性时，运行
 `cargo test --locked -p openbitfun-desktop --no-default-features --lib acp_cancel_request`，
 覆盖旧请求反序列化与往返，以及可选的 Turn 绑定字段。
-ACP 队列恢复的原生验收脚本见 `tests/e2e/AGENTS.md`。
 
-```bash
-cargo check -p openbitfun-desktop && cargo test -p openbitfun-desktop
-```
+已暂存更新包的缓存与签名行为使用 `cargo test -p openbitfun-desktop --lib api::update_api::tests`；
+内置浏览器目标关联与导航结果使用
+`cargo test -p openbitfun-desktop --lib api::browser_api::tests native_browser`。修改浏览器或
+更新器命令注册后，还要运行 `cargo test -p openbitfun-desktop --lib remote_workspace_policy`。
 
-窗口布局恢复、旧状态兼容和快照保存使用：
-
-```bash
-cargo test -p openbitfun-desktop --lib window_state_support::tests
-pnpm --dir src/web-ui run test:run src/app/startup/startupPerformanceContract.test.ts
-```
-
-macOS 浏览器空 URL 和原生导航失败使用
-[`third_party/wry/OPENBITFUN-PATCH.md`](../../../third_party/wry/OPENBITFUN-PATCH.md)
-中的 `wkwebview_url` 原生回归测试，并运行下方 Desktop 构建。测试覆盖原生 URL
-读取、页面加载回调、导航失败和手动导航恢复，不覆盖远程主机。panic hook 返回不代表捕获了 panic，日志不能宣称恢复成功。
-
-如果改动影响启动、WebDriver、browser/computer-use 或打包行为，还需要运行：
-
-```bash
-cargo build -p openbitfun-desktop
-```
+其余聚焦测试（ACP、token 用量、Relay 路由、账号身份、Pages、快照、技能、宠物包、搜索、
+配额、HTML 预览、LaTeX、上下文估算、macOS ComputerUse 往返）与英文版 [AGENTS.md](AGENTS.md)
+的“Verification”章节一致。

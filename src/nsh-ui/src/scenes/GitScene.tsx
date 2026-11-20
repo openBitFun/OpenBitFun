@@ -67,7 +67,8 @@ import {
   type GitBranchRow,
   type GitCommitRow,
   type GitTab,
-  holdGitStatusPoll,
+  holdGitStatusWatch,
+  gitLiveNotice,
   branchFilter,
   checkedGitPaths,
   setCheckedGitPaths,
@@ -2927,13 +2928,14 @@ export function GitScene(props: GitSceneProps = {}) {
     // Only the workspace and the device re-run this; the probe's own state does not.
     untracked(() => void syncGitWorkspace(ws));
   });
-  // Live status while the scene is on screen: the host watcher feeds disk
-  // changes, the poll catches what the watcher cannot see (remote workspaces).
+  // Live status while the scene is on screen: the host publishes every status
+  // change (`git://status-changed`); the explorer watch it registers feeds the
+  // working-tree side. Nothing here polls.
   effect(() => {
     if (!activeWorkspace()) return;
     untracked(() => ensureWorkspaceWatch());
   });
-  cleanup(holdGitStatusPoll());
+  cleanup(holdGitStatusWatch());
 
   return (
     <View
@@ -3050,6 +3052,17 @@ export function GitScene(props: GitSceneProps = {}) {
               onDismiss={() => gitError.set("")}
             />
           </View>
+        </View>
+      </If>
+
+      <If when={Boolean(gitLiveNotice()) && gitRepoState() === "trusted"}>
+        <View style={{ paddingHorizontal: props.compact ? 8 : 14, paddingTop: 8 }}>
+          <InlineBanner
+            tone="info"
+            message={gitLiveNotice()}
+            actionLabel={tr("git.refreshRepo")}
+            onAction={() => void refreshGitWorkbench()}
+          />
         </View>
       </If>
 

@@ -314,6 +314,6 @@ Magpie 仅作为候选、故障切换和回归案例的参考，不照搬其网�
 - 工厂、回合、工具和跨协议 mock：[Core 指南](../../src/crates/assembly/core/AGENTS.md)、[执行指南](../../src/crates/assembly/core/src/agentic/execution/AGENTS.md)。
 - 配置与旧格式：[配置契约指南](../../src/crates/contracts/config-contracts/AGENTS.md)。
 - 路由状态与用量：[Services Core 指南](../../src/crates/services/services-core/AGENTS.md)。
-- 设置与产品入口：[设置指南](../../src/web-ui/src/app/scenes/settings/AGENTS.md)、[Desktop 指南](../../src/apps/desktop/AGENTS.md)；Peer 另遵循[设备作用域约束](../../src/web-ui/src/infrastructure/peer-device/README.md)。
+- 设置与产品入口：原生桌面界面 [NSH UI 指南](../../src/nsh-ui/AGENTS.md)、[Desktop 指南](../../src/apps/desktop/AGENTS.md)；Peer 另遵循[Peer Device 设计](peer-device-mode.md)中的设备作用域约束。
 
 完成判据是多账号、多渠道、多服务商的完整应用 mock 闭环及上述必要回归，不是新增模块数量或测试总数。实现后的报告必须单列尚未覆盖的真实服务商、物理远程和旧应用环境；实现进度不替代对应环境的验收证据。

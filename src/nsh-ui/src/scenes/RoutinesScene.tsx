@@ -26,7 +26,9 @@ import {
   loadRoutines,
   openCreateRoutineDraft,
   openEditRoutineDraft,
-  parseCronExpression,
+  draftSchedulePreview,
+  routineIssueText,
+  routinePreviewUnavailable,
   requestDeleteRoutine,
   routineDraft,
   routineFilter,
@@ -159,41 +161,42 @@ function runStatusLabel(status: string | null | undefined): string {
   return status || tr("routines.statusIdle");
 }
 
-function inlineEveryPreview(minutesRaw: string): { valid: boolean; text: string } {
-  const trimmed = minutesRaw.trim();
-  if (!trimmed) return { valid: false, text: tr("routines.everyEmptyHint") };
-  const mins = Number(trimmed);
-  if (!Number.isFinite(mins) || mins <= 0) {
-    return { valid: false, text: tr("routines.everyInvalidHint") };
+/**
+ * The editor's schedule line. Validity and run times come from the host's
+ * scheduler (`preview_cron_occurrences`); only an empty field is told apart here.
+ */
+function schedulePreviewLine(kind: RoutineScheduleKind): { valid: boolean; text: string } {
+  const draft = routineDraft();
+  if (kind === "every" && !draft.everyMinutes.trim()) return { valid: false, text: tr("routines.everyEmptyHint") };
+  if (kind === "cron" && !draft.cronExpr.trim()) return { valid: false, text: tr("routines.cronEmptyHint") };
+  if (kind === "at" && !draft.atIso.trim()) return { valid: false, text: tr("routines.atEmptyHint") };
+  const preview = draftSchedulePreview();
+  if (preview.state === "unavailable") return { valid: false, text: tr("routines.previewNeedsHostUpdate") };
+  if (preview.state === "idle" || preview.state === "loading") {
+    return { valid: true, text: tr("routines.previewChecking") };
   }
-  const summary = formatScheduleSummary({ kind: "every", everyMs: Math.round(mins * 60_000) });
-  return { valid: true, text: tr("routines.schedulePreview", { summary }) };
-}
-
-function inlineCronPreview(exprRaw: string, tzRaw: string): { valid: boolean; text: string } {
-  const expr = exprRaw.trim();
-  if (!expr) return { valid: false, text: tr("routines.cronEmptyHint") };
-  const parsed = parseCronExpression(expr);
-  if (!parsed) {
-    return { valid: false, text: tr("routines.cronInvalidHint") };
+  if (preview.state === "invalid") {
+    return { valid: false, text: routineIssueText(preview.issueCode, localizeHostError(preview.issueMessage)) };
   }
-  const tz = tzRaw.trim();
+  const runs = preview.occurrences;
+  if (kind === "at") {
+    return runs.length > 0
+      ? { valid: true, text: tr("routines.runsOnceAt", { time: formatTimestamp(runs[0]) }) }
+      : { valid: true, text: tr("routines.previewNoRuns") };
+  }
+  const head =
+    kind === "every"
+      ? tr("routines.schedulePreview", {
+          summary: formatScheduleSummary({ kind: "every", everyMs: Math.round(Number(draft.everyMinutes.trim()) * 60_000) }),
+        })
+      : draft.cronTz.trim()
+        ? tr("routines.cronValidWithTz", { expr: draft.cronExpr.trim(), tz: draft.cronTz.trim() })
+        : tr("routines.cronValidHostTz", { expr: draft.cronExpr.trim() });
+  if (runs.length === 0) return { valid: true, text: head };
   return {
     valid: true,
-    text: tz
-      ? tr("routines.cronValidWithTz", { expr, tz })
-      : tr("routines.cronValidHostTz", { expr }),
+    text: `${head} ${tr("routines.previewNextRuns", { times: runs.map(ms => formatTimestamp(ms)).join(", ") })}`,
   };
-}
-
-function inlineAtPreview(isoRaw: string): { valid: boolean; text: string } {
-  const trimmed = isoRaw.trim();
-  if (!trimmed) return { valid: false, text: tr("routines.atEmptyHint") };
-  const ms = Date.parse(trimmed);
-  if (!Number.isFinite(ms)) {
-    return { valid: false, text: tr("routines.atInvalidHint") };
-  }
-  return { valid: true, text: tr("routines.runsOnceAt", { time: formatTimestamp(ms) }) };
 }
 
 // --- Presentation-only state (no business logic): a name filter over the host's list, and
@@ -483,6 +486,20 @@ function DueSection() {
       title={tr("routines.polish.dueSection")}
       accessibilityLabel="routines-due-section"
     >
+      <If when={routinePreviewUnavailable()}>
+        <Text
+          accessibilityLabel="routines-preview-unavailable"
+          style={{
+            paddingHorizontal: 4,
+            paddingBottom: 6,
+            color: palette().warning,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.4),
+          }}
+        >
+          {tr("routines.previewNeedsHostUpdate")}
+        </Text>
+      </If>
       <If
         when={dueNext24Hours().length > 0}
         else={
@@ -799,9 +816,9 @@ function CalendarBlock() {
 }
 
 function RoutineEditorModal() {
-  const everyCheck = () => inlineEveryPreview(routineDraft().everyMinutes);
-  const cronCheck = () => inlineCronPreview(routineDraft().cronExpr, routineDraft().cronTz);
-  const atCheck = () => inlineAtPreview(routineDraft().atIso);
+  const everyCheck = () => schedulePreviewLine("every");
+  const cronCheck = () => schedulePreviewLine("cron");
+  const atCheck = () => schedulePreviewLine("at");
 
   return (
     <ModalDialog

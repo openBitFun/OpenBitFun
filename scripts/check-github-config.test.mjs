@@ -21,10 +21,8 @@ import { bunCacheTarget } from './ci/bun-cache-target.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scriptPath = path.join(repoRoot, 'scripts/check-github-config.mjs');
-const requireFromWebUi = createRequire(
-  path.join(repoRoot, 'src/web-ui/package.json'),
-);
-const yaml = requireFromWebUi('yaml');
+const requireFromRoot = createRequire(path.join(repoRoot, 'package.json'));
+const yaml = requireFromRoot('yaml');
 
 function createRepo({ workflow, nodeVersionFile }) {
   const root = mkdtempSync(path.join(tmpdir(), 'openbitfun-github-config-'));
@@ -741,8 +739,6 @@ test('gates fast checks and PR packaging behind one fail-closed build decision',
   for (const stepName of [
     'Verify committed release metadata',
     'Build plugin Host resources',
-    'Generate web API bindings',
-    'Build web UI',
     'Build mobile web',
     'Project a Nightly version',
     'Verify projected release metadata',
@@ -753,9 +749,15 @@ test('gates fast checks and PR packaging behind one fail-closed build decision',
       `${stepName} must run for code changes and skip documentation-only changes`,
     );
   }
+  // The React desktop UI is retired: the desktop UI is the NSH frontend,
+  // checked by its own job below.
   for (const stepName of [
     'Verify Installer i18n projection',
     'Verify Installer Tauri package alignment',
+    'Generate web API bindings',
+    'Lint web UI',
+    'Run web UI tests',
+    'Build web UI',
   ]) {
     assert.equal(
       frontendJob.steps.find((step) => step.name === stepName),
@@ -864,6 +866,20 @@ test('gates fast checks and PR packaging behind one fail-closed build decision',
   assert.equal(verify?.shell, 'pwsh');
   assert.match(verify?.run ?? '', /successful impact-selected producer jobs/i);
   assert.match(verify?.run ?? '', /successful Rust build and runtime jobs/i);
+
+  const nshUiJob = workflow.jobs['nsh-ui'];
+  assert.equal(nshUiJob.needs, 'build-impact');
+  assert.match(nshUiJob.if, /!cancelled\(\)/);
+  assert.match(nshUiJob.if, /frontend_required != 'false'/);
+  const nshUiRuns = nshUiJob.steps.map((step) => [step.run, step['working-directory']]);
+  assert.deepEqual(nshUiRuns.filter(([run]) => run), [
+    ['node scripts/ci/install-nsh.mjs', undefined],
+    ['node scripts/generate-desktop-native-dispatch.mjs --check', undefined],
+    ['nsh check', 'src/nsh-ui'],
+    ['nsh test .', 'src/nsh-ui'],
+  ]);
+  assert.ok(nshUiJob.steps.every((step) => step['continue-on-error'] === undefined && step.if === undefined),
+    'the native desktop UI gate must stay blocking');
 
   const dshJob = workflow.jobs['dsh-profile-windows'];
   assert.equal(dshJob.needs, 'build-impact');
@@ -974,11 +990,8 @@ test('nightly validates generated inputs and projected lockfiles before packagin
   const committedMetadataIndex = steps.findIndex(
     (step) => step.name === 'Verify committed Cargo metadata',
   );
-  const generationIndex = steps.findIndex(
-    (step) => step.name === 'Generate web API bindings',
-  );
-  const typeCheckIndex = steps.findIndex(
-    (step) => step.name === 'Type-check web UI',
+  const nshIndex = steps.findIndex(
+    (step) => step.name === 'Install NSH CLI',
   );
   const patchIndex = steps.findIndex(
     (step) => step.name === 'Patch nightly version',
@@ -1030,29 +1043,27 @@ test('nightly validates generated inputs and projected lockfiles before packagin
   assert.equal(rustCache?.with?.['cache-on-failure'], restoreOnlyOnPr);
   const upload = steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
   const verifyOutputs = steps.find((step) => step.name === 'Verify package outputs');
-  assert.match(verifyOutputs?.run ?? '', /openbitfun-installer\.exe/);
-  assert.match(verifyOutputs?.run ?? '', /\*\.AppImage/);
+  // Every producer emits the native package its publishing caller collects.
+  assert.match(verifyOutputs?.run ?? '', /OpenBitFun-nsh_\*-linux\.tar\.gz/);
+  assert.match(verifyOutputs?.run ?? '', /OpenBitFun-nsh_\*-windows\.zip/);
+  assert.match(verifyOutputs?.run ?? '', /OpenBitFun-nsh_\*\.app\.tar\.gz/);
+  assert.match(verifyOutputs?.run ?? '', /dmg\/\*\.dmg/);
+  assert.doesNotMatch(verifyOutputs?.run ?? '', /AppImage|openbitfun-installer\.exe|\.deb|\.rpm/);
+  assert.equal(steps[nshIndex]?.run, 'node scripts/ci/install-nsh.mjs');
+  assert.ok(steps.every((step) => !String(step.run ?? '').includes('src/web-ui')),
+    'nightly must not build the retired React desktop UI');
   assert.ok(steps.indexOf(verifyOutputs) < steps.indexOf(upload));
   assert.equal(upload?.if, '${{ inputs.upload_artifacts }}');
 
   assert.notEqual(committedMetadataIndex, -1);
   assert.notEqual(installerI18nIndex, -1);
   assert.notEqual(tauriAlignmentIndex, -1);
-  assert.notEqual(generationIndex, -1);
-  assert.notEqual(typeCheckIndex, -1);
-  assert.equal(
-    steps[generationIndex].run,
-    'pnpm --dir src/web-ui run gen:types',
-  );
-  assert.ok(
-    generationIndex < typeCheckIndex,
-    'nightly must generate web API bindings before type-checking the web UI',
-  );
+  assert.notEqual(nshIndex, -1);
   assert.ok(
     committedMetadataIndex < patchIndex &&
       installerI18nIndex < patchIndex &&
       tauriAlignmentIndex < patchIndex &&
-      typeCheckIndex < patchIndex &&
+      nshIndex < buildIndex &&
       patchIndex < metadataIndex &&
       metadataIndex < buildIndex,
     'nightly must verify the projected lockfile before nested locked build hooks run',
@@ -1408,22 +1419,32 @@ test('nightly publishes and verifies the Relay image in the current repository o
   );
 });
 
-test('passes the verification key when signing the versioned Windows installer', () => {
+test('passes the verification key wherever desktop release assets are signed', () => {
   const workflow = yaml.parse(
     readFileSync(
       path.join(repoRoot, '.github/workflows/desktop-package.yml'),
       'utf8',
     ),
   );
-  const signingStep = workflow.jobs['upload-release-assets'].steps.find(
-    (step) => step.name === 'Sign versioned Windows installer',
-  );
-
-  assert.equal(
-    signingStep?.env?.OPENBITFUN_SIGNING_PUBKEY,
-    '${{ secrets.TAURI_UPDATER_PUBKEY }}',
-    'release signatures must be self-verified with the configured public key',
-  );
+  const signingSteps = [
+    workflow.jobs['upload-release-assets'].steps.find((step) => step.name === 'Sign installer packages'),
+    workflow.jobs.package.steps.find((step) => step.name === 'Sign, notarize and archive macOS release'),
+  ];
+  for (const signingStep of signingSteps) {
+    assert.equal(
+      signingStep?.env?.OPENBITFUN_SIGNING_PUBKEY,
+      '${{ secrets.TAURI_UPDATER_PUBKEY }}',
+      'release signatures must be self-verified with the configured public key',
+    );
+    assert.equal(signingStep?.env?.OPENBITFUN_SIGNING_KEY, '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}');
+  }
+  // Installed Tauri builds and the native app trust the same key: the package
+  // must compile it into the backend, and publishing builds require it.
+  assert.equal(workflow.jobs.package.env.TAURI_UPDATER_PUBKEY, '${{ secrets.TAURI_UPDATER_PUBKEY }}');
+  const releaseEnv = workflow.jobs.package.steps.findIndex((step) => step.name === 'Resolve release channel build environment');
+  const build = workflow.jobs.package.steps.findIndex((step) => step.name === 'Build desktop app');
+  assert.equal(workflow.jobs.package.steps[releaseEnv].run, 'node scripts/ci/desktop-release-env.mjs');
+  assert.ok(releaseEnv >= 0 && releaseEnv < build);
 });
 
 test('stages unique release asset names before publishing', () => {
@@ -1578,15 +1599,11 @@ test('Desktop packaging keeps beta identity explicit and stable-safe', () => {
     (step) => step.name === 'Publish beta channel manifest',
   );
   assert.ok(verifyIndexPublished >= 0 && verifyIndexPublished < promoteIndex);
-  const requiredManual = 'windows-x86_64,darwin-aarch64,darwin-x86_64';
-  assert.match(
-    uploadSteps.find((step) => step.name === 'Verify updater manifest').run,
-    new RegExp(`--required-manual-platforms "${requiredManual}"`),
-  );
-  assert.match(
-    uploadSteps[verifyIndexPublished].run,
-    new RegExp(`--required-manual-platforms "${requiredManual}"`),
-  );
+  for (const step of [uploadSteps.find((entry) => entry.name === 'Verify updater manifest'), uploadSteps[verifyIndexPublished]]) {
+    assert.ok(step.run.includes('--required-manual-platforms "${REQUIRED_MANUAL_PLATFORMS}"'));
+    assert.ok(step.run.includes('--bridge-platforms "${BRIDGE_UPDATER_PLATFORMS}"'));
+    assert.ok(step.run.includes('--forbidden-platform-prefixes "${FORBIDDEN_UPDATER_PLATFORM_PREFIXES}"'));
+  }
   assert.doesNotMatch(workflow.jobs['linux-binaries'].if, /release_channel/);
   assert.equal(
     uploadSteps.find((step) => step.name === 'Stage release assets').if,
@@ -1736,9 +1753,11 @@ test('Desktop release and nightly package Linux on Ubuntu 22.04 and verify befor
 test('Desktop recovery selects one platform and cannot publish an incomplete release', (t) => {
   const workflow = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/desktop-package.yml'), 'utf8'));
   const step = workflow.jobs.prepare.steps.find((entry) => entry.name === 'Select Desktop package platforms');
-  const windows = workflow.jobs.package.steps.find((entry) => entry.name === 'Build and sign custom Windows installer');
-  assert.match(windows.run, /git show '\$\{\{ github\.workflow_sha \}\}:scripts\/windows\/stage-desktop-runtime\.mjs'/);
-  assert.ok(windows.run.indexOf('node $stagingScript') < windows.run.indexOf('pnpm run installer:build:only'));
+  const windows = workflow.jobs.package.steps.find((entry) => entry.name === 'Sign and archive Windows package');
+  assert.equal(windows.if, "runner.os == 'Windows'");
+  // Authenticode signs the files the archive is rebuilt around.
+  assert.ok(windows.run.indexOf('sign-windows.ps1') < windows.run.indexOf('Compress-Archive'));
+  assert.match(windows.run, /OpenBitFun-nsh_\$\{env:RELEASE_VERSION\}_x64-windows\.zip/);
   const root = mkdtempSync(path.join(tmpdir(), 'openbitfun-platform-recovery-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const target of ['all', 'macos-arm64', 'macos-x64', 'windows-x64', 'unknown']) {
@@ -1759,8 +1778,7 @@ test('Desktop recovery selects one platform and cannot publish an incomplete rel
       for (const platform of matrix) {
         assert.ok(platform.os && platform.target && platform.build_command);
       }
-      if (target === 'macos-arm64') assert.equal(matrix[0].build_command, 'pnpm run desktop:build:arm64');
-      if (target === 'macos-x64') assert.equal(matrix[0].build_command, 'pnpm run desktop:build:x86_64');
+      if (target.startsWith('macos-')) assert.equal(matrix[0].build_command, 'pnpm run desktop:package:mac');
     }
   }
   for (const [target, relay, runs, success] of [
@@ -1854,7 +1872,7 @@ test('Mac recovery architecture command accepts a real Mach-O executable', { ski
   const root = mkdtempSync(path.join(tmpdir(), 'openbitfun-recovery-architecture-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const target = process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
-  const executable = path.join(root, 'target', target, 'release/bundle/macos/OpenBitFun.app/Contents/MacOS/openbitfun-desktop');
+  const executable = path.join(root, 'target', target, 'release/bundle/macos/OpenBitFun.app/Contents/MacOS/OpenBitFun');
   mkdirSync(path.dirname(executable), { recursive: true });
   symlinkSync(process.execPath, executable);
   const result = spawnSync('bash', ['-c', `set -euo pipefail\n${script}`], {
@@ -1868,6 +1886,7 @@ test('Mac ticket repair repacks both distributions and fails closed on unrelated
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bundle = path.join(root, 'target/x86_64-apple-darwin/release/bundle');
   const app = path.join(bundle, 'macos/OpenBitFun.app');
+  const updater = path.join(bundle, 'macos/OpenBitFun-nsh_1.0.6_x86_64.app.tar.gz');
   const dmg = path.join(bundle, 'dmg/OpenBitFun_1.0.6_x64.dmg');
   mkdirSync(path.join(root, 'bin'));
   mkdirSync(path.join(root, 'scripts'));
@@ -1926,8 +1945,8 @@ test('Mac ticket repair repacks both distributions and fails closed on unrelated
     rmSync(path.join(app, 'Contents/stapled-fixture'), { force: true });
     rmSync(`${dmg}.notary-submission.json`, { force: true });
     writeFileSync(dmg, 'original dmg');
-    writeFileSync(`${app}.tar.gz`, 'original updater');
-    writeFileSync(`${app}.tar.gz.sig`, Buffer.from('original signature').toString('base64'));
+    writeFileSync(`${updater}`, 'original updater');
+    writeFileSync(`${updater}.sig`, Buffer.from('original signature').toString('base64'));
     writeFileSync(path.join(root, 'calls'), '');
   }
   function execute(overrides = {}) {
@@ -1953,8 +1972,8 @@ test('Mac ticket repair repacks both distributions and fails closed on unrelated
   assert.equal(repaired.status, 0, repaired.stderr);
   assert.equal(readFileSync(dmg, 'utf8'), 'stapled');
   assert.equal(existsSync(`${dmg}.sig`), false);
-  assert.equal(Buffer.from(readFileSync(`${app}.tar.gz.sig`, 'utf8'), 'base64').toString(), 'signed');
-  const contents = spawnSync('tar', ['-tzf', `${app}.tar.gz`], { encoding: 'utf8', windowsHide: true });
+  assert.equal(Buffer.from(readFileSync(`${updater}.sig`, 'utf8'), 'base64').toString(), 'signed');
+  const contents = spawnSync('tar', ['-tzf', `${updater}`], { encoding: 'utf8', windowsHide: true });
   assert.equal(contents.status, 0, contents.stderr);
   assert.match(contents.stdout, /OpenBitFun.app\/Contents\/stapled-fixture/);
   assert.equal(readFileSync(path.join(root, 'calls'), 'utf8').match(/stapler staple/g)?.length, 1);
@@ -1963,7 +1982,7 @@ test('Mac ticket repair repacks both distributions and fails closed on unrelated
   reset();
   assert.equal(execute({ MOUNT_VALIDATION_NETWORK_FAILURES: '99' }).status, 68);
   assert.equal(readFileSync(dmg, 'utf8'), 'original dmg');
-  assert.equal(readFileSync(`${app}.tar.gz`, 'utf8'), 'original updater');
+  assert.equal(readFileSync(`${updater}`, 'utf8'), 'original updater');
   assert.equal(readFileSync(path.join(root, 'mounted-attempts'), 'utf8').trim(), '3');
 });
 
@@ -2107,27 +2126,50 @@ test('Relay image rebuild resolves the release tag instead of the newer workflow
   }
 });
 
-test('Desktop finalization selects the Windows updater format from the release source', {
-  skip: process.platform === 'win32',
-}, () => {
+test('Desktop finalization publishes the native bridge and no Windows or Linux updater keys', () => {
   const workflow = yaml.parse(readFileSync(path.join(repoRoot, '.github/workflows/desktop-package.yml'), 'utf8'));
-  const step = workflow.jobs['upload-release-assets'].steps.find((entry) => entry.name === 'Collect updater assets');
-  assert.equal(step.env.RELEASE_SOURCE, '${{ needs.prepare.outputs.checkout_ref }}');
-  for (const [ref, grepStatus, modern] of [['old-tag', '1', false], ['new-tag', '0', true], ['unknown', '128', false]]) {
-    const result = spawnSync('bash', ['-c', `
-      git() {
-        [[ "$*" == "grep -q OPENBITFUN_MAINTENANCE_V1 $RELEASE_SOURCE -- OpenBitFun-Installer/src-tauri/src/installer/commands.rs" ]] || return 128
-        return "$GREP_STATUS"
-      }
-      node() { printf '%s\n' "$@"; }
-      ${step.run.replaceAll('${{ needs.prepare.outputs.version }}', '1.0.10')}
-    `], {
-      cwd: repoRoot, encoding: 'utf8', windowsHide: true,
-      env: { ...process.env, RELEASE_SOURCE: ref, GREP_STATUS: grepStatus, REQUIRED_UPDATER_PLATFORMS: 'windows-x86_64' },
-    });
-    assert.equal(result.status, grepStatus === '128' ? 1 : 0, result.stderr);
-    assert.equal(result.stdout.includes('--windows-installer-dir\nrelease-manual-assets\n'), modern);
+  const job = workflow.jobs['upload-release-assets'];
+  // `darwin-<arch>-nsh` is the native updater; `darwin-<arch>` carries the same
+  // archive to installed Tauri builds. Windows and Linux ship manual packages.
+  assert.equal(job.env.REQUIRED_UPDATER_PLATFORMS, 'darwin-aarch64-nsh,darwin-x86_64-nsh,darwin-aarch64,darwin-x86_64');
+  assert.equal(job.env.BRIDGE_UPDATER_PLATFORMS, 'darwin-aarch64,darwin-x86_64');
+  assert.equal(job.env.FORBIDDEN_UPDATER_PLATFORM_PREFIXES, 'windows-,linux-');
+  assert.equal(job.env.REQUIRED_MANUAL_PLATFORMS, 'darwin-aarch64,darwin-x86_64,windows-x86_64,linux-x86_64,linux-aarch64');
+  const step = (name) => job.steps.find((entry) => entry.name === name);
+  assert.match(step('Collect updater assets').run, /--required-platforms darwin-aarch64-nsh,darwin-x86_64-nsh/);
+  assert.doesNotMatch(JSON.stringify(job.steps), /prepare-windows-installer-asset|release-manual-assets|windows-installer-dir/);
+  const sign = step('Sign installer packages').run;
+  for (const pattern of ["'*.dmg'", "'OpenBitFun-nsh_*-windows.zip'", "'OpenBitFun-nsh_*-linux.tar.gz'"]) {
+    assert.ok(sign.includes(pattern), pattern);
   }
+  const generate = step('Generate updater manifest').run;
+  assert.ok(generate.includes('--installer-assets-dir release-assets'));
+  assert.ok(generate.includes('--required-manual-platforms "${REQUIRED_MANUAL_PLATFORMS}"'));
+  const order = ['Collect updater assets', 'Sign installer packages', 'Generate updater manifest', 'Verify updater manifest', 'Stage release assets']
+    .map((name) => job.steps.indexOf(step(name)));
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  const stage = step('Stage release assets').run;
+  for (const pattern of ['release-assets/**/OpenBitFun-nsh_*-windows.zip.sig', 'release-assets/**/OpenBitFun-nsh_*-linux.tar.gz.sig', 'release-assets/**/*.dmg.sig']) {
+    assert.ok(stage.includes(pattern), pattern);
+  }
+  // The macOS package job leaves the canonical bundle layout verification,
+  // recovery and publication read.
+  const packageSteps = workflow.jobs.package.steps;
+  const macRelease = packageSteps.find((entry) => entry.name === 'Sign, notarize and archive macOS release');
+  assert.equal(macRelease.if, "runner.os == 'macOS'");
+  assert.equal(macRelease.env.OPENBITFUN_REQUIRE_LEGACY_BRIDGE, '${{ needs.prepare.outputs.upload_to_release }}');
+  assert.match(macRelease.run, /scripts\/ci\/package-native-macos-release\.sh "\$\{\{ matrix\.platform\.target \}\}" "\$\{\{ needs\.prepare\.outputs\.version \}\}"/);
+  const indexOf = (name) => packageSteps.findIndex((entry) => entry.name === name);
+  assert.ok(indexOf('Build desktop app') < indexOf('Sign, notarize and archive macOS release'));
+  assert.ok(indexOf('Sign, notarize and archive macOS release') < indexOf('Smoke-test the native app'));
+  assert.ok(indexOf('Smoke-test the native app') < indexOf('Verify Apple signature and notarization'));
+  assert.match(packageSteps[indexOf('Smoke-test the native app')].run, /^node tests\/e2e\/native\/smoke\.mjs --app /);
+  assert.ok(indexOf('Install NSH CLI') < indexOf('Build desktop app'));
+  const uploadPaths = packageSteps.find((entry) => entry.name === 'Upload bundles').with.path;
+  for (const pattern of ['target/*/release/bundle', 'target/desktop-nsh/OpenBitFun-nsh_*-windows.zip', 'target/desktop-nsh/OpenBitFun-nsh_*-linux.tar.gz']) {
+    assert.ok(uploadPaths.includes(pattern), pattern);
+  }
+  assert.doesNotMatch(JSON.stringify(packageSteps), /desktop-tauri-build|installer:build|makensis|AppImage/);
 });
 
 test('CLI dispatches only to a configured Homebrew tap or the historical token-only destination', {

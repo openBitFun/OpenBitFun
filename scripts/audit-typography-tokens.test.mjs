@@ -44,25 +44,7 @@ test('rejects raw CSS sizes, weights, line heights, tracking, and font stacks', 
   assert.equal(codes.filter(code => code === 'raw-css-typography').length, 5);
 });
 
-test('accepts only build-owned font faces and stacks in Web font profiles', () => {
-  const issues = auditTypographyText(`
-    @font-face {
-      font-family: "OpenBitFun HarmonyOS Sans";
-      font-weight: 500;
-    }
-    @layer openbitfun.tokens.system {
-      :where([data-openbitfun-design-system-root]) {
-        --openbitfun-font-family-sans: "OpenBitFun HarmonyOS Sans", system-ui, sans-serif;
-        --openbitfun-font-family-control: "OpenBitFun HarmonyOS Sans", system-ui, sans-serif;
-        --openbitfun-font-family-mono: "Fira Code", monospace;
-      }
-    }
-  `, 'src/web-ui/src/font-profiles/harmony-bundled.css');
-
-  assert.deepEqual(issues, []);
-});
-
-test('rejects unrelated raw typography inside Web font profiles', () => {
+test('rejects raw font stacks and private typography tokens in product stylesheets', () => {
   const codes = codesFor(`
     .bad {
       font-family: Inter, sans-serif;
@@ -70,7 +52,7 @@ test('rejects unrelated raw typography inside Web font profiles', () => {
       font-weight: 650;
       --feature-font-family: Inter, sans-serif;
     }
-  `, 'src/web-ui/src/font-profiles/harmony-bundled.css');
+  `, 'src/mobile-web/src/styles/fonts.css');
 
   assert.equal(codes.filter(code => code === 'raw-css-typography').length, 3);
   assert.equal(codes.filter(code => code === 'raw-private-typography-token').length, 1);
@@ -119,27 +101,27 @@ test('requires semantic roles in the complete component library and every React 
     1,
   );
 
-  const webUiCodes = codesFor(`
+  const productCodes = codesFor(`
     .label {
       font-size: var(--openbitfun-font-size-xs);
       line-height: var(--openbitfun-line-height-tight);
     }
-  `, 'src/web-ui/src/app/components/LegacyLabel.scss');
+  `, 'src/mobile-web/src/styles/LegacyPair.scss');
 
   assert.equal(
-    webUiCodes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
+    productCodes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
     2,
   );
 
-  const webUiIndirectCodes = codesFor(`
+  const productIndirectCodes = codesFor(`
     .title {
       --local-title-font: var(--openbitfun-font-family-sans);
       min-height: calc(var(--openbitfun-font-size-sm) * var(--openbitfun-line-height-base));
     }
-  `, 'src/web-ui/src/app/components/LegacyTitle.scss');
+  `, 'src/mobile-web/src/styles/LegacyTitle.scss');
 
   assert.equal(
-    webUiIndirectCodes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
+    productIndirectCodes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
     3,
   );
 
@@ -180,7 +162,7 @@ test('requires semantic roles in product frontend inline styles and embedded CSS
   const codes = codesFor(`
     const style = { fontSize: 'var(--openbitfun-font-size-sm)' };
     const shell = \`<style>.title { font-weight: var(--openbitfun-font-weight-semibold); }</style>\`;
-  `, 'src/web-ui/src/fixture.tsx');
+  `, 'src/mobile-web/src/fixture.tsx');
 
   assert.equal(
     codes.filter(code => code === 'foundation-typography-in-semantic-consumer').length,
@@ -190,7 +172,7 @@ test('requires semantic roles in product frontend inline styles and embedded CSS
   const semanticIssues = auditTypographyText(`
     const style = { fontSize: 'var(--openbitfun-type-label-md-font-size)' };
     const shell = \`<style>.title { font-weight: var(--openbitfun-type-heading-card-font-weight); }</style>\`;
-  `, 'src/web-ui/src/fixture.tsx');
+  `, 'src/mobile-web/src/fixture.tsx');
 
   assert.deepEqual(semanticIssues, []);
 
@@ -259,29 +241,6 @@ test('does not mistake token-editor labels or schema property maps for typograph
   `, 'fixture.ts');
 
   assert.deepEqual(issues, []);
-});
-
-test('limits the AppearanceStyle typography ban to that interface block', () => {
-  const path = 'src/web-ui/src/infrastructure/appearance/types/index.ts';
-  const valid = auditTypographyFileContractText(`
-    export interface AppearanceStyle {
-      backgroundColor?: string;
-    }
-
-    export interface MonacoAppearanceTokenRule {
-      fontStyle?: string;
-    }
-  `, path);
-  assert.deepEqual(valid, []);
-
-  const invalid = auditTypographyFileContractText(`
-    export interface AppearanceStyle {
-      fontStyle?: string;
-    }
-  `, path);
-  assert.deepEqual(invalid.map(issue => issue.code), [
-    'appearance-style-typography-reintroduced',
-  ]);
 });
 
 test('rejects a backend FlowChat font snapshot', () => {

@@ -29,12 +29,10 @@ import {
   createSession,
   deletePersistedSession,
   forkSession,
-  getCurrentWorkspace,
-  getOpenedWorkspaces,
-  getRecentWorkspaces,
+  getWorkspaceNavigator,
   interruptDialogTurn,
+  getSessionTranscriptView,
   listSessions,
-  loadSessionTurns,
   normalizeSessionSummary,
   openWorkspace,
   openWorkspaceById,
@@ -50,6 +48,9 @@ import {
   updateSessionMode,
   updateWorkspaceInfo,
   type SessionSummary,
+  type SessionTranscriptView,
+  type RunningTurnSnapshot,
+  type TranscriptTurnView,
   type WorkspaceRecord,
 } from "./api";
 
@@ -63,6 +64,7 @@ export type SceneId =
   | "files"
   | "git"
   | "terminal"
+  | "browser"
   | "spaces"
   | "devices"
   | "settings";
@@ -252,7 +254,13 @@ export const activeWorkspaceId = signal<string | null>(null);
 export const sessions = signal<SessionSummary[]>([]);
 export const sessionTotal = signal(0);
 export const activeSessionId = signal<string | null>(null);
-export const sessionTurns = signal<unknown[]>([]);
+/** The open session's turns, as the host's transcript view projects them. */
+export const sessionTurns = signal<TranscriptTurnView[]>([]);
+/**
+ * Why the transcript cannot be shown (the host predates the transcript view);
+ * empty otherwise. There is no client-side projection to fall back to.
+ */
+export const transcriptNotice = signal("");
 /** True from selecting a session until its first `load_session_turns` answer lands. */
 export const turnsLoading = signal(false);
 export const busy = signal(false);
@@ -309,6 +317,32 @@ export function onStreamCleared(handler: () => void): () => void {
   return () => {
     streamClearedHandlers.delete(handler);
   };
+}
+
+const runningTurnHandlers = new Set<(sessionId: string, snapshot: RunningTurnSnapshot) => void>();
+
+/**
+ * Called when a transcript read reports a turn running in the open session, so
+ * the live layer can put it on screen even though this surface did not see it
+ * start (a client that connected, reopened the session, or lost events mid-turn).
+ */
+export function onRunningTurnSnapshot(
+  handler: (sessionId: string, snapshot: RunningTurnSnapshot) => void,
+): () => void {
+  runningTurnHandlers.add(handler);
+  return () => {
+    runningTurnHandlers.delete(handler);
+  };
+}
+
+function notifyRunningTurn(sessionId: string, snapshot: RunningTurnSnapshot): void {
+  for (const handler of [...runningTurnHandlers]) {
+    try {
+      handler(sessionId, snapshot);
+    } catch (error) {
+      console.warn(`Failed to hydrate the running turn: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }
 
 export type SessionSwitchPhase = "leave" | "enter" | "reset";
@@ -440,46 +474,53 @@ export const recentWorkspaces = signal<WorkspaceRecord[]>([]);
 /** False until the first workspace read answered, so the sidebar can say "loading". */
 export const workspacesLoaded = signal(false);
 
-function uniqueWorkspaces(list: ReadonlyArray<WorkspaceRecord | null | undefined>): WorkspaceRecord[] {
-  const out: WorkspaceRecord[] = [];
-  for (const record of list) {
-    if (!record?.id || out.some(item => item.id === record.id)) continue;
-    out.push(record);
-  }
-  return out;
-}
+/**
+ * Set when the host is older than `get_workspace_navigator`: the sidebar says
+ * the host needs an update instead of merging opened and recent lists here.
+ */
+export const workspaceNavigatorOutdated = signal(false);
 
 /**
- * Reads the opened and recent lists. The selection follows the host: a surface
- * that has no selection (startup, a device change) takes the workspace the host
- * reports as current, then the first opened one; only when nothing is open at
- * all and `autoOpenRecent` is set does it reopen the most recent workspace.
+ * Reads the host's workspace navigator. The host deduplicates the opened and
+ * recent lists and decides the selection: this surface's own while it is still
+ * opened, else the host's current workspace, else the first opened one (made
+ * active on the host); with nothing opened, `autoOpenRecent` reopens the
+ * workspace the host names.
  */
 export async function loadWorkspaces(options?: { autoOpenRecent?: boolean }): Promise<void> {
   let reopen: WorkspaceRecord | null = null;
   await runStep(async () => {
     try {
-      const [openedRaw, recentRaw, current] = await Promise.all([
-        getOpenedWorkspaces(),
-        getRecentWorkspaces().catch(() => [] as WorkspaceRecord[]),
-        getCurrentWorkspace().catch(() => null),
-      ]);
-      const opened = uniqueWorkspaces(Array.isArray(openedRaw) ? openedRaw : []);
-      const openedIds = new Set(opened.map(item => item.id));
-      const recent = uniqueWorkspaces(Array.isArray(recentRaw) ? recentRaw : []).filter(
-        item => !openedIds.has(item.id),
-      );
+      let view;
+      try {
+        view = await getWorkspaceNavigator(activeWorkspaceId());
+      } catch (error) {
+        if (!isMissingCommand(error, "get_workspace_navigator")) throw error;
+        workspaceNavigatorOutdated.set(true);
+        workspaces.set([]);
+        recentWorkspaces.set([]);
+        throw new Error(tr("viewModels.workspaceNavigatorOutdated"));
+      }
+      workspaceNavigatorOutdated.set(false);
+      const opened = Array.isArray(view?.opened) ? view.opened : [];
+      const recent = Array.isArray(view?.recent) ? view.recent : [];
       workspaces.set(opened);
       recentWorkspaces.set(recent);
-      const selected = activeWorkspaceId();
-      if (selected && openedIds.has(selected)) return;
-      if (current?.id && openedIds.has(current.id)) {
-        selectWorkspace(current.id, { syncHost: false });
-      } else if (opened.length > 0) {
-        selectWorkspace(opened[0].id);
-      } else {
-        if (selected) clearWorkspaceSelection();
-        if (options?.autoOpenRecent && recent.length > 0) reopen = recent[0];
+      const selectedId = view?.selectedId ?? null;
+      switch (view?.selection) {
+        case "kept":
+          return;
+        case "host_current":
+          if (selectedId) selectWorkspace(selectedId, { syncHost: false });
+          return;
+        case "first_opened":
+          if (selectedId) selectWorkspace(selectedId);
+          return;
+        default:
+          if (activeWorkspaceId()) clearWorkspaceSelection();
+          if (options?.autoOpenRecent && view?.reopenCandidateId) {
+            reopen = recent.find(item => item.id === view.reopenCandidateId) ?? null;
+          }
       }
     } finally {
       workspacesLoaded.set(true);
@@ -782,25 +823,67 @@ export async function loadEarlierTurns(): Promise<void> {
   await loadTurns(sessionId, { silent: true });
 }
 
+/** What the last view read returned, so the next one asks only for what changed. */
+let transcriptCursor: { sessionId: string; limit: number; cursor: string } | null = null;
+
+/**
+ * Re-reads the open session's transcript view. With the cursor of the previous
+ * read the host answers only the turns after the last settled one (`after`);
+ * anything it cannot vouch for comes back whole (`full`). A host without the
+ * view gets `transcriptNotice` instead of a client-side projection.
+ */
 export async function loadTurns(
   sessionId: string,
   options?: { silent?: boolean },
-): Promise<unknown[] | null> {
+): Promise<TranscriptTurnView[] | null> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return null;
-  let loaded: unknown[] | null = null;
+  let loaded: TranscriptTurnView[] | null = null;
   await runStep(
     async () => {
-      let turns: unknown[] | null = null;
+      const limit = turnWindowOf(sessionId);
+      const held = sessionTurns();
+      const cursor =
+        transcriptCursor &&
+        transcriptCursor.sessionId === sessionId &&
+        transcriptCursor.limit === limit &&
+        activeSessionId() === sessionId &&
+        held.length > 0
+          ? transcriptCursor.cursor
+          : undefined;
+      let view: SessionTranscriptView | null = null;
       try {
-        turns = await loadSessionTurns(sessionId, workspaceId, turnWindowOf(sessionId));
+        view = await getSessionTranscriptView(sessionId, workspaceId, limit, cursor);
+        if (view.mode === "after" && !held.some(turn => turn.turnIndex === view!.keptThroughIndex)) {
+          // The turns this surface holds are not the ones the cursor named.
+          view = await getSessionTranscriptView(sessionId, workspaceId, limit);
+        }
+      } catch (error) {
+        if (isMissingCommand(error, "get_session_transcript_view")) {
+          if (activeSessionId() === sessionId) {
+            transcriptCursor = null;
+            transcriptNotice.set(tr("sessions.transcriptHostOutdated"));
+            sessionTurns.set([]);
+          }
+          loaded = [];
+          return;
+        }
+        throw error;
       } finally {
         if (activeSessionId() === sessionId) turnsLoading.set(false);
       }
-      if (activeSessionId() !== sessionId) return;
-      const list = Array.isArray(turns) ? turns : [];
+      if (activeSessionId() !== sessionId || !view) return;
+      const list =
+        view.mode === "after"
+          ? [...held.filter(turn => turn.turnIndex <= (view.keptThroughIndex ?? -1)), ...view.turns]
+          : Array.isArray(view.turns)
+            ? view.turns
+            : [];
+      transcriptCursor = view.cursor ? { sessionId, limit, cursor: view.cursor } : null;
+      transcriptNotice.set("");
       sessionTurns.set(list);
       reconcilePendingTurnWithPersisted(sessionId, list);
+      if (view.runningTurn?.activeTurnId) notifyRunningTurn(sessionId, view.runningTurn);
       loaded = list;
     },
     options?.silent ? { trackBusy: false, clearError: false } : undefined,
@@ -874,15 +957,11 @@ export function clearPendingTurn(sessionId?: string): void {
   }
 }
 
-function reconcilePendingTurnWithPersisted(sessionId: string, turns: unknown[]): void {
+function reconcilePendingTurnWithPersisted(sessionId: string, turns: TranscriptTurnView[]): void {
   const pending = pendingTurnState();
   if (!pending || pending.sessionId !== sessionId) return;
   if (pending.turnId) {
-    const matched = turns.some(entry => {
-      if (!entry || typeof entry !== "object") return false;
-      const rec = entry as Record<string, unknown>;
-      return rec.turnId === pending.turnId || rec.turn_id === pending.turnId || rec.id === pending.turnId;
-    });
+    const matched = turns.some(turn => turn.turnId === pending.turnId);
     if (matched) {
       clearPendingTurn(sessionId);
     }
@@ -892,10 +971,7 @@ function reconcilePendingTurnWithPersisted(sessionId: string, turns: unknown[]):
   // `dialog-turn-started` before persisting), clear once a new turn with the
   // matching user prompt lands on disk.
   if (turns.length > pending.baselineTurnCount) {
-    const newest = turns[turns.length - 1];
-    const rec = newest && typeof newest === "object" ? (newest as Record<string, unknown>) : null;
-    const userMsg = (rec?.userMessage ?? rec?.user_message) as Record<string, unknown> | undefined;
-    const content = typeof userMsg?.content === "string" ? userMsg.content.trim() : "";
+    const content = (turns[turns.length - 1]?.user?.text ?? "").trim();
     if (!content || content === pending.userText) {
       clearPendingTurn(sessionId);
     }
@@ -1222,11 +1298,8 @@ function lineageSessionIdOf(result: unknown): string {
   return typeof id === "string" ? id : "";
 }
 
-function persistedTurnIdOf(turn: unknown): string {
-  if (!turn || typeof turn !== "object") return "";
-  const record = turn as Record<string, unknown>;
-  const id = record.turnId ?? record.turn_id ?? record.id;
-  return typeof id === "string" ? id : "";
+function persistedTurnIdOf(turn: TranscriptTurnView | undefined): string {
+  return turn?.turnId ?? "";
 }
 
 /**

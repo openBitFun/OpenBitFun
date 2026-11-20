@@ -22,6 +22,73 @@ its tag automatically. Release creation and editing use GitHub CLI without
 `--target`: sending `target_commitish` for workflow-changing commits can require
 `workflows:write`, even for an existing tag. Asset upload precedes publication.
 
+## Native desktop packages and the upgrade from Tauri
+
+The desktop ships only as the native NSH app (`src/apps/desktop-nsh`, backend
+library `libopenbitfun_desktop_lib`). `Desktop Package` builds each platform with
+`pnpm run desktop:package:{mac,windows,linux}` (the `desktop-nsh:package:*`
+scripts) after installing the pinned NSH CLI (`scripts/ci/install-nsh.mjs`). The
+release channel endpoints and the minisign release key are compiled into the
+backend (`scripts/ci/desktop-release-env.mjs`). Each release publishes:
+
+| Platform | Release assets | In-app update |
+|---|---|---|
+| macOS arm64 / x64 | `OpenBitFun_<version>_<aarch64\|x64>.dmg` (+ `.sig`); `OpenBitFun-nsh_<version>_<aarch64\|x86_64>.app.tar.gz` (+ `.sig`) | yes, from the `.app.tar.gz` |
+| Windows x64 | `OpenBitFun-nsh_<version>_x64-windows.zip` (+ `.sig`) | not yet: manual download |
+| Linux x64 / arm64 | `OpenBitFun-nsh_<version>_<x86_64\|aarch64>-linux.tar.gz` (+ `.sig`) | not yet: manual download |
+
+`scripts/ci/package-native-macos-release.sh` signs the app with Developer ID
+(hardened runtime, timestamp), notarizes and staples it, builds the DMG and the
+updater archive, and signs the archive with the release key; Apple verification
+then notarizes and staples the DMG. Windows signs `openbitfun-desktop.exe` (the
+NSH runner, named like the Tauri executable it replaces), the backend DLL, the
+MiniApp shell and the bundled Flashgrep daemon with Authenticode before the zip is
+rebuilt. No NSIS installer, deb, rpm or AppImage is produced. The custom Windows
+Installer (`OpenBitFun-Installer`, `pnpm --dir OpenBitFun-Installer run
+installer:build`) installs this native package directory, but the release does
+not build or publish it yet.
+
+Every package carries what the backend resolves next to its executable
+(`Contents/Resources` on macOS): the pinned Flashgrep workspace search daemon of
+the target (`flashgrep/flashgrep-<triple>`, `resources/flashgrep/VERSION.json`),
+the DeepSeek Harness profile (`resources/dsh-profile`, compiled by
+`scripts/prepare-dsh-profile.mjs`; `OPENBITFUN_SKIP_DSH_PROFILE=1` opts out
+deliberately), the extension Host, the worker host and the web/mobile UI bundles.
+`--product-config <product.jsonc>` packages a branded product definition: name,
+bundle identifier / NSH app id (`nsh/app.json`), legacy executable name, icons and
+the backend's compile-time data namespace come from the definition
+(`docs/architecture/product-customization-blueprint.md`). Release CI packages the
+default product only.
+
+`latest-v1.json` keys:
+
+- `platforms["darwin-<arch>-nsh"]`: the native archive and signature, read by the
+  native app's updater.
+- `platforms["darwin-<arch>"]`: the same archive and signature. Installed Tauri
+  builds read this key; their macOS installer accepts a gzip tar with one `.app`
+  holding `Contents/MacOS/openbitfun-desktop` and `Contents/Info.plist`. The
+  native bundle carries `openbitfun-desktop` as a link to its runner, so the old
+  installer replaces the Tauri app with the native app and restarts into it (an
+  old launch-at-login entry also starts it). Same bundle identifier
+  (`com.openbitfun.desktop`), same data directories, same minisign key. Release
+  collection rejects an archive without that link or the native UI bundle.
+- No `windows-*` or `linux-*` key. The manifest has one `version`, so pointing
+  those keys at an older Tauri package would make installed Tauri apps reinstall
+  it in a loop. Without a key, their update check reports that no package
+  exists for the platform. Windows and Linux users install the native package
+  manually; release notes should say so.
+- `manual_installers` lists the DMGs, the Windows zip and both Linux tarballs;
+  the mirror and the website `downloads.json` offer them. Each `downloads.json`
+  entry also carries `fileName`, `format` (`dmg`, `zip`, `tar.gz`, ...) and `kind`:
+  `installer`, or `archive` for the Windows zip and Linux tarball, which are
+  extracted and started in place from `entry` (`OpenBitFun/openbitfun-desktop.exe`,
+  `OpenBitFun/openbitfun-nsh`).
+- Release notes come from `scripts/release-notes/<version>.md`; upgrade notes
+  (behavior changes users must act on) go first.
+
+`verify-tauri-latest-json.mjs --bridge-platforms ... --forbidden-platform-prefixes
+windows-,linux-` enforces this layout before and after publication.
+
 ## Release infrastructure after the repository transfer
 
 The official repository is `openBitFun/OpenBitFun` (GitHub repository ID
@@ -40,8 +107,7 @@ Deploy the updated mirror script from the official checkout before the first
 release in the organization namespace. The mirror synchronizes Desktop and CLI
 downloads independently of the Relay image descriptor.
 Finalizing trusted Actions artifacts from before the transfer can also reuse
-their original signed descriptor and the Windows updater format built by the
-original source. The standalone Relay deploy script tries the
+their original signed descriptor. The standalone Relay deploy script tries the
 organization package first and can retry the same tag or digest in the old
 namespace. For a default `latest` request it resolves the current GitHub release
 tag before retrying the old namespace.
@@ -63,9 +129,9 @@ update feed. `all`, the default, retains the complete release gate.
 
 Recovery runs have a separate concurrency group per target, so they can
 finish alongside an existing full matrix without cancelling it. Build source
-still resolves to the original tag SHA. macOS signature verification and Windows
-resource staging use the pinned workflow revision, allowing packaging fixes to
-apply without moving that tag.
+still resolves to the original tag SHA. macOS signature verification uses the
+pinned workflow revision, allowing verification fixes to apply without moving
+that tag.
 After recovery, dispatch the same workflow with `target_platform=all`, the
 original tag/channel, `upload_to_release=true`, and `artifact_run_ids` containing
 the original and recovery run IDs separated by commas. This skips all builders
@@ -98,7 +164,7 @@ producer with successful build, failed Apple verification, and a successfully
 retained, unexpired recovery archive. A recovery that fails Apple verification
 again can be resumed from its own checkpoint, retaining a matching DMG receipt.
 
-When the bundler reports Accepted but leaves the application without a stapled
+When notarization reports Accepted but leaves the application without a stapled
 ticket, recovery explicitly staples and validates it, then rebuilds both the
 DMG and updater around that app. It verifies the original updater signature and
 Developer ID before repair, signs the replacement DMG and updater, and runs the
@@ -187,7 +253,7 @@ Public beta assets are stored on the immutable version tag. After every asset
 and signature is verified, the workflow updates only the `latest-v1.json` asset on
 the `channel-v1-beta` pre-release. Beta Desktop builds read that pointer and fall
 back to `https://openbitfun.com/release/beta/latest-v1.json`.
-Beta releases include Desktop and Installer assets, Linux CLI and Relay Server
+Beta releases include the native Desktop packages, Linux CLI and Relay Server
 archives for x86_64 and aarch64, and a multi-platform Relay image for linux/amd64
 and linux/arm64. Release publication requires every producer to succeed. Archives
 include checksums and signatures; `linux-binaries-v1.json` and the signed
@@ -265,6 +331,8 @@ Before merging the version bump to `main`:
 - Verify the publishing repository has the updater signing key, Windows
   Authenticode credentials, Apple signing/notarization credentials, and GHCR
   publishing access required by `desktop-package.yml`.
+- Run the native smoke test (`pnpm run e2e:smoke:packaged` after
+  `pnpm run desktop:package:mac`) and the headless UI suite (`pnpm run e2e:ui`).
 - Exercise an upgrade from `1.0.0-beta` with existing settings and sessions,
   and from a numbered beta through the beta feed. Exercise remote workspace,
   remote control, Peer Device Mode, and Detached Dispatch with supported older
@@ -274,19 +342,21 @@ Before merging the version bump to `main`:
 Delivery is complete only after the workflow and published assets are verified:
 
 - `v1.0.0` is published with `prerelease=false` and is GitHub Latest.
-- Desktop packages exist for Windows x64, macOS arm64/x64, and Linux arm64/x64;
-  the custom Windows installer, updater artifacts, and signatures are present.
+- Native desktop packages exist for Windows x64, macOS arm64/x64, and Linux
+  arm64/x64; the DMGs, the macOS updater archives, and every signature are present.
 - Linux CLI/Relay archives, checksums, signatures, `linux-binaries-v1.json`,
   and the signed `relay-image.json` are downloadable. The multi-platform Relay
   image is anonymously pullable.
-- `latest-v1.json` reports `1.0.0` and references downloadable signed artifacts.
+- `latest-v1.json` reports the version, carries identical `darwin-<arch>` and
+  `darwin-<arch>-nsh` entries and no `windows-*`/`linux-*` keys, and references
+  downloadable signed artifacts.
   Legacy `latest.json` and `linux-binaries.json` still report `0.2.19`.
 - Verify the mirror and eligible beta pointer after synchronization, then
   smoke-test installation and update using the published downloads.
 
 For release workflow and channel-isolation changes, run
 `pnpm run check:github-config` and
-`node --test scripts/relay/package-contract.test.mjs scripts/tauri-release-manifest.test.mjs`.
+`node --test scripts/relay/package-contract.test.mjs scripts/tauri-release-manifest.test.mjs scripts/ci/native-release-tooling.test.mjs`.
 These checks exercise release conditions, image tag selection, Beta manifest
 generation, and asset collection with fixtures; they do not build or publish packages.
 

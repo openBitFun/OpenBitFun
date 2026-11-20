@@ -42,10 +42,6 @@ Jump into agents, apps, skills, and devices from Home, press ⌘K / Ctrl+K to se
   - Customize pinned items and ordering in the left sidebar, plus pin favorite Mini App shortcuts
   - 说明：左侧边栏默认精简保留「首页」与「任务看板」，避免视觉拥挤；你可以随时把「智能体」「助理」「小应用」「技能」「发现技能」「洞察」或已安装的 Mini App 固定到侧边栏并调整上下顺序。
   - Why & how: The sidebar starts clean with Home and Task Board pinned by default; pin Agents, Assistants, Mini Apps, Skills, Discover Skills, Insights, or individual Mini Apps and reorder them anytime.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口
-  - Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime
-  - 说明：点击侧边栏左下角齿轮菜单中的「悬浮窗模式」，主窗口会收起为小巧的桌面悬浮条，方便你在阅读网页、文档或调试其他软件时随手提问，需要看代码时一键展开回完整工作台。
-  - Why & how: Choose Floating window mode from the bottom-left gear menu to collapse OpenBitFun into a compact floating bar while working in other apps, then expand back to the full workbench in one click.
 
 ## 怎么用 / How to use it
 

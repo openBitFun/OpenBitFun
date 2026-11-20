@@ -39,9 +39,27 @@ Product surfaces call optional worker activity an **Additional check**
 separate mode, fixed domain, or reviewer team. This document uses *focused
 check* only as the internal execution term.
 
-The current implementation has four layers:
+> **Frontend status.** The React desktop UI (`src/web-ui`) that implemented Review
+> launch, target resolution, manifest building, queue-state projection, report
+> rendering and the action bar has been retired. Launch now belongs to the host:
+> `launch_review` (`src/apps/desktop/src/api/review_launch_api.rs`) resolves the
+> workspace changes with Git, and `deep_review::launch_plan` in `agent-runtime`
+> builds the classified target, target evidence, run manifest and prompt, then the
+> host creates and starts the child (`CodeReview` for ordinary Review of at most 80
+> files, `DeepReview` with a deep L3 manifest for strict Review). The native UI
+> (`src/nsh-ui`) offers it from the session "…" menu ("Review changes…": mode,
+> file scope from a dry run, focus) and from `/review`, `/review strict …` and
+> `/DeepReview …` in the composer, and opens the child session. Not ported yet:
+> the managed packet plan for ordinary targets over 80 files (refused with the file
+> list so the user can narrow the scope or choose Strict), explicit Git range and
+> pull request targets, fix follow-up, the parent-session summary marker, the
+> queue-state projection and the action bar. Remote workspaces are refused
+> (`review_remote_workspace_unsupported`). The `src/web-ui/...` paths below name
+> the last React implementation in Git history; they are not live files.
 
-- Frontend launch and UI orchestration in `src/web-ui`.
+The implementation has four layers:
+
+- Frontend launch and UI orchestration (retired `src/web-ui`; see the status note above).
 - Platform adapter commands in `src/apps/desktop/src/api/agentic_api.rs`.
 - Provider-neutral policy, admission, queue, retry, diagnostics, and report transforms in `src/crates/execution/agent-runtime/src/deep_review`.
 - Agent definitions, tool integration, event emission, diagnostics logging, and session-metadata IO in `src/crates/assembly/core/src/agentic`.
@@ -50,7 +68,7 @@ The launch adapter is currently desktop-only. Browser/server surfaces hide every
 
 Review strength follows explicit intent instead of a risk-score threshold table. An ordinary target of at most 80 prepared files launches one read-only `CodeReview` child. A larger or provider-truncated target remains ordinary L1 Review but uses an internal managed manifest so bounded workers can cover deterministic file batches without blocking launch. Only explicit strict intent changes review strength. L0 completion checks and Verify evidence remain outside this production contract until the separate Verify exploration defines a trustworthy evidence source.
 
-The backend does not resolve the review target or build the launch manifest. The frontend resolves and validates bounded target evidence before launch. Strict Review builds one deep L3 manifest; managed large Review builds one bounded L1 execution manifest. Each manifest is reused unchanged for execution, and neither path requires routine consent.
+For workspace targets the host resolves the review target and builds the launch manifest (`launch_review`); the retired React launcher did this in the frontend, and its Git range and pull request paths have no host owner yet. Strict Review builds one deep L3 manifest; managed large Review builds one bounded L1 execution manifest. Each manifest is reused unchanged for execution, and neither path requires routine consent.
 
 ## Runtime Roles
 

@@ -2,12 +2,23 @@
  * OpenBitFun Installer build script.
  *
  * Steps:
- * 1. Build OpenBitFun main app (optional).
- * 2. Prepare installer payload from built app binaries.
- * 3. Build installer app (Tauri).
+ * 1. Package the native OpenBitFun desktop app for Windows (optional):
+ *    `scripts/package-desktop-nsh-windows.mjs`, which writes the package
+ *    directory `target/desktop-nsh/windows/OpenBitFun/` and, next to it,
+ *    `OpenBitFun.package.json` (the profile, target and product it was built for).
+ * 2. Stage that directory as the installer payload, with a manifest of every file.
+ * 3. Build the installer app (Tauri), which embeds the payload.
+ *
+ * The package directory is the native layout the installer installs as is:
+ *   openbitfun-desktop.exe         the NSH runner, under the product's legacy
+ *                                  executable name (shortcuts, uninstall entry,
+ *                                  earlier installs keep pointing at it)
+ *   openbitfun_desktop_lib.dll     the backend, loaded in-process
+ *   nsh\                           the UI bundle
+ *   resources\, flashgrep\, nsh-web\, mobile-web\, bin\   what the backend resolves
  *
  * Usage:
- *   node scripts/build-installer.cjs [--skip-app-build] [--dev] [--mode fast|release] [--app-exe path]
+ *   node scripts/build-installer.cjs [--skip-app-build] [--dev] [--mode fast|release] [--app-dir path]
  *   node scripts/build-installer.cjs --fast   # same as --mode fast
  */
 
@@ -19,6 +30,8 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const OPENBITFUN_ROOT = path.resolve(ROOT, "..");
 const PAYLOAD_DIR = path.join(ROOT, "src-tauri", "payload");
+const MAIN_APP_EXE = "openbitfun-desktop.exe";
+const DEFAULT_APP_DIR = path.join("target", "desktop-nsh", "windows", "OpenBitFun");
 
 const rawArgs = process.argv.slice(2);
 const skipAppBuild = rawArgs.includes("--skip-app-build");
@@ -27,8 +40,10 @@ const showHelp = rawArgs.includes("--help") || rawArgs.includes("-h");
 const STRICT_PAYLOAD_VALIDATION = !isDev;
 const MIN_APP_EXE_BYTES = 5 * 1024 * 1024;
 const REQUIRED_PAYLOAD_FILES = [
-  "openbitfun-desktop.exe",
-  "frontend/dist/index.html",
+  MAIN_APP_EXE,
+  "openbitfun_desktop_lib.dll",
+  "nsh/bundle.nshc",
+  "nsh/app.json",
   "mobile-web/dist/index.html",
   "resources/ext-host/extension-host.js",
   "resources/worker_host.js",
@@ -69,7 +84,7 @@ function error(msg) {
 function run(cmd, cwd = ROOT) {
   log(`> ${cmd}`);
   try {
-    execSync(cmd, { cwd, stdio: "inherit" });
+    execSync(cmd, { cwd, stdio: "inherit", windowsHide: true });
   } catch (_e) {
     error(`Command failed: ${cmd}`);
   }
@@ -85,9 +100,11 @@ Usage:
 Options:
   --mode <fast|release>  Build mode (default: release)
   --fast                 Alias for --mode fast
-  --skip-app-build       Skip building main OpenBitFun app
-  --app-exe <path>       Exact desktop executable to package. Required when the
-                         desired build is outside the active Cargo target dir.
+  --skip-app-build       Skip packaging the native OpenBitFun app
+  --app-dir <path>       Native Windows package directory to install (default:
+                         ${DEFAULT_APP_DIR}). Also OPENBITFUN_INSTALLER_APP_DIR.
+  --app-exe <path>       Older spelling: the package's ${MAIN_APP_EXE}; its
+                         directory is the package.
   --dev                  Run installer with tauri dev instead of tauri build
                          and allow placeholder payload fallback
   --help, -h             Show this help
@@ -95,11 +112,12 @@ Options:
   process.exit(0);
 }
 
+function getExpectedAppProfile(mode) {
+  return mode === "fast" ? "release-fast" : "release";
+}
+
 function getMainAppBuildCommand(mode) {
-  if (mode === "fast") {
-    return "pnpm run desktop:build:release-fast";
-  }
-  return "pnpm run desktop:build:exe";
+  return `pnpm run desktop-nsh:package:windows -- --profile ${getExpectedAppProfile(mode)}`;
 }
 
 function getInstallerBuildCommand(mode, devMode) {
@@ -132,66 +150,82 @@ function writeFileWithManifest(src, dest, manifest, payloadRoot) {
   });
 }
 
-function copyDirRecursiveWithManifest(srcDir, destDir, manifest, payloadRoot) {
-  fs.mkdirSync(destDir, { recursive: true });
-  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
-    const src = path.join(srcDir, entry.name);
-    const dest = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      copyDirRecursiveWithManifest(src, dest, manifest, payloadRoot);
-      continue;
-    }
-    writeFileWithManifest(src, dest, manifest, payloadRoot);
-  }
-}
-
-function shouldCopySiblingRuntimeFile(fileName, appExeBaseName) {
-  if (fileName === appExeBaseName) return false;
+/** Debug and linker leftovers that never belong in an installed app. */
+function shouldCopyPackageFile(fileName) {
   if (fileName.startsWith(".cargo-")) return false;
-
   const lower = fileName.toLowerCase();
-  if (
+  return !(
     lower.endsWith(".pdb") ||
     lower.endsWith(".d") ||
     lower.endsWith(".exp") ||
     lower.endsWith(".lib") ||
     lower.endsWith(".ilk")
-  ) {
-    return false;
+  );
+}
+
+function copyPackageWithManifest(srcDir, destDir, manifest, payloadRoot) {
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyPackageWithManifest(src, dest, manifest, payloadRoot);
+    } else if (entry.isFile() && shouldCopyPackageFile(entry.name)) {
+      writeFileWithManifest(src, dest, manifest, payloadRoot);
+    }
   }
-
-  return true;
 }
 
-function getExpectedAppProfile(mode) {
-  return mode === "fast" ? "release-fast" : "release";
-}
-
-function resolveCargoTargetDir(env = process.env) {
-  const configured = env.CARGO_TARGET_DIR;
-  if (!configured) return path.join(OPENBITFUN_ROOT, "target");
+function resolveFromRoot(configured) {
   return path.isAbsolute(configured)
     ? path.normalize(configured)
     : path.resolve(OPENBITFUN_ROOT, configured);
 }
 
-function resolveAppExePath(mode, args = rawArgs, env = process.env) {
-  const configured = getArgValue(args, "--app-exe") || env.OPENBITFUN_INSTALLER_APP_EXE;
-  if (configured) {
-    return path.isAbsolute(configured)
-      ? path.normalize(configured)
-      : path.resolve(OPENBITFUN_ROOT, configured);
-  }
-
-  return path.join(
-    resolveCargoTargetDir(env),
-    getExpectedAppProfile(mode),
-    "openbitfun-desktop.exe"
-  );
+/**
+ * The native Windows package directory to install: `--app-dir`,
+ * OPENBITFUN_INSTALLER_APP_DIR, the directory of an older `--app-exe` /
+ * OPENBITFUN_INSTALLER_APP_EXE, or the packaging script's output.
+ */
+function resolveAppDir(args = rawArgs, env = process.env) {
+  const dir = getArgValue(args, "--app-dir") || env.OPENBITFUN_INSTALLER_APP_DIR;
+  if (dir) return resolveFromRoot(dir);
+  const exe = getArgValue(args, "--app-exe") || env.OPENBITFUN_INSTALLER_APP_EXE;
+  if (exe) return path.dirname(resolveFromRoot(exe));
+  return resolveFromRoot(DEFAULT_APP_DIR);
 }
 
-function getPayloadSourceExeName(appExePath) {
-  return path.basename(appExePath);
+/** `<package dir>.package.json`, written by the packaging script. */
+function readPackageInfo(appDir) {
+  const infoPath = `${appDir}.package.json`;
+  if (!fs.existsSync(infoPath)) return null;
+  return JSON.parse(fs.readFileSync(infoPath, "utf8"));
+}
+
+/**
+ * A strict (release) payload is exactly the requested profile, built for an
+ * x86_64 Windows target, with the runner under the installer's executable name.
+ */
+function validatePackageInfo(info, mode) {
+  const expected = getExpectedAppProfile(mode);
+  if (!info) {
+    throw new Error(
+      "The package directory has no <dir>.package.json; package it with " +
+        `\`${getMainAppBuildCommand(mode)}\`.`
+    );
+  }
+  if (info.profile !== expected) {
+    throw new Error(`The package was built with the ${info.profile} profile, not ${expected}.`);
+  }
+  if (info.executable !== MAIN_APP_EXE) {
+    throw new Error(
+      `The package's executable is ${info.executable}; the installer installs ${MAIN_APP_EXE} ` +
+        "(a product with another binaryName needs its own installer build)."
+    );
+  }
+  if (info.target && !/^x86_64-pc-windows-/.test(info.target)) {
+    throw new Error(`The package targets ${info.target}; the installer ships x86_64 Windows.`);
+  }
 }
 
 function validateRequiredPayloadFiles(payloadDir, manifest) {
@@ -216,140 +250,79 @@ function main() {
     error(`Invalid mode "${buildMode}". Supported: fast, release`);
   }
 
-log(`Build mode: ${buildMode}`);
-if (isDev) {
-  log("Installer run mode: dev");
-} else {
-  log("Installer run mode: release (strict payload validation)");
-}
+  log(`Build mode: ${buildMode}`);
+  log(isDev ? "Installer run mode: dev" : "Installer run mode: release (strict payload validation)");
 
-// Step 1: Build main OpenBitFun app.
-if (!skipAppBuild) {
-  log("Step 1: Building OpenBitFun main application...");
-  run(getMainAppBuildCommand(buildMode), OPENBITFUN_ROOT);
-} else {
-  log("Step 1: Skipped (--skip-app-build)");
-}
+  // Step 1: Package the native OpenBitFun app.
+  if (!skipAppBuild) {
+    log("Step 1: Packaging the native OpenBitFun application...");
+    run(getMainAppBuildCommand(buildMode), OPENBITFUN_ROOT);
+  } else {
+    log("Step 1: Skipped (--skip-app-build)");
+  }
 
-// Step 2: Prepare payload.
-log("Step 2: Preparing installer payload...");
+  // Step 2: Prepare payload.
+  log("Step 2: Preparing installer payload...");
+  const appDir = resolveAppDir();
+  const appExePath = path.join(appDir, MAIN_APP_EXE);
+  const available = fs.existsSync(appExePath);
 
-  const expectedAppExePath = resolveAppExePath(buildMode);
-  const appExePath = fs.existsSync(expectedAppExePath) ? expectedAppExePath : null;
-
-  if (!appExePath && STRICT_PAYLOAD_VALIDATION) {
+  if (!available && STRICT_PAYLOAD_VALIDATION) {
     error(
-      `Could not find the exact ${getExpectedAppProfile(buildMode)} OpenBitFun executable at ${expectedAppExePath}. ` +
-        "Build that profile first, set OPENBITFUN_INSTALLER_APP_EXE, or pass --app-exe."
+      `Could not find the native Windows package at ${appDir} (${MAIN_APP_EXE}). ` +
+        `Run \`${getMainAppBuildCommand(buildMode)}\`, set OPENBITFUN_INSTALLER_APP_DIR, or pass --app-dir.`
     );
   }
 
-if (appExePath) {
-  ensureCleanDir(PAYLOAD_DIR);
-
-  const manifest = {
-    generatedAt: new Date().toISOString(),
-    mode: buildMode,
-    sourceExe: getPayloadSourceExeName(appExePath),
-    files: [],
-  };
-
-  const destExe = path.join(PAYLOAD_DIR, "openbitfun-desktop.exe");
-  writeFileWithManifest(appExePath, destExe, manifest, PAYLOAD_DIR);
-  log(`Copied: ${appExePath} -> ${destExe}`);
-
-  const exeSize = fs.statSync(destExe).size;
-  if (STRICT_PAYLOAD_VALIDATION && exeSize < MIN_APP_EXE_BYTES) {
-    error(
-      `openbitfun-desktop.exe in payload is unexpectedly small (${exeSize} bytes). Refusing to continue.`
-    );
-  }
-
-  const releaseDir = path.dirname(appExePath);
-  const appExeBaseName = path.basename(appExePath);
-  const siblingFiles = fs
-    .readdirSync(releaseDir, { withFileTypes: true })
-    .filter((e) => e.isFile())
-    .map((e) => e.name)
-    .filter((file) => shouldCopySiblingRuntimeFile(file, appExeBaseName));
-
-  for (const file of siblingFiles) {
-    const src = path.join(releaseDir, file);
-    const dest = path.join(PAYLOAD_DIR, file);
-    writeFileWithManifest(src, dest, manifest, PAYLOAD_DIR);
-    log(`Copied runtime file: ${file}`);
-  }
-
-  // Keep installer payload aligned with the desktop app's runtime lookup paths.
-  // `mobile-web` may be emitted as a sibling directory in no-bundle builds.
-  const runtimeDirs = [
-    "resources",
-    "locales",
-    "swiftshader",
-    "mobile-web",
-    "frontend",
-    "flashgrep",
-  ];
-  for (const dirName of runtimeDirs) {
-    const srcDir = path.join(releaseDir, dirName);
-    if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
-      continue;
+  if (available) {
+    const info = readPackageInfo(appDir);
+    if (STRICT_PAYLOAD_VALIDATION) {
+      try {
+        validatePackageInfo(info, buildMode);
+      } catch (validationError) {
+        error(validationError.message);
+      }
     }
-    const destDir = path.join(PAYLOAD_DIR, dirName);
-    copyDirRecursiveWithManifest(srcDir, destDir, manifest, PAYLOAD_DIR);
-    log(`Copied runtime directory: ${dirName}`);
-  }
+    ensureCleanDir(PAYLOAD_DIR);
 
-  if (STRICT_PAYLOAD_VALIDATION) {
-    try {
-      validateRequiredPayloadFiles(PAYLOAD_DIR, manifest);
-    } catch (validationError) {
-      error(validationError.message);
+    const manifest = {
+      generatedAt: new Date().toISOString(),
+      mode: buildMode,
+      sourceExe: MAIN_APP_EXE,
+      files: [],
+    };
+    copyPackageWithManifest(appDir, PAYLOAD_DIR, manifest, PAYLOAD_DIR);
+    log(`Copied ${manifest.files.length} files from ${appDir}`);
+
+    const exeSize = fs.statSync(path.join(PAYLOAD_DIR, MAIN_APP_EXE)).size;
+    if (STRICT_PAYLOAD_VALIDATION && exeSize < MIN_APP_EXE_BYTES) {
+      error(`${MAIN_APP_EXE} in payload is unexpectedly small (${exeSize} bytes). Refusing to continue.`);
     }
+
+    if (STRICT_PAYLOAD_VALIDATION) {
+      try {
+        validateRequiredPayloadFiles(PAYLOAD_DIR, manifest);
+      } catch (validationError) {
+        error(validationError.message);
+      }
+    }
+
+    const manifestPath = path.join(PAYLOAD_DIR, "payload-manifest.json");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    log(`Wrote payload manifest: ${manifestPath}`);
+  } else {
+    log("No native package found. Payload directory will be empty (dev-only fallback).");
+    ensureCleanDir(PAYLOAD_DIR);
   }
 
-  const manifestPath = path.join(PAYLOAD_DIR, "payload-manifest.json");
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  log(`Wrote payload manifest: ${manifestPath}`);
+  // Step 3: Build installer.
+  log("Step 3: Building installer...");
+  run(getInstallerBuildCommand(buildMode, isDev));
 
-  if (STRICT_PAYLOAD_VALIDATION && manifest.files.length === 0) {
-    error("Payload manifest has no files. Refusing to build installer.");
-  }
-} else {
-  log("No app executable found. Payload directory will be empty (dev-only fallback).");
-  ensureCleanDir(PAYLOAD_DIR);
-}
-
-// Step 3: Build installer.
-log("Step 3: Building installer...");
-run(getInstallerBuildCommand(buildMode, isDev));
-
-const installerTargetProfile = isDev
-  ? "debug"
-  : buildMode === "fast"
-    ? "release-fast"
-    : "release";
-log("Installer build complete.");
-if (isDev) {
-  log(
-    `Output directory: ${path.join(
-      ROOT,
-      "src-tauri",
-      "target",
-      installerTargetProfile
-    )}`
-  );
-} else {
-  log(
-    `Output: ${path.join(
-      ROOT,
-      "src-tauri",
-      "target",
-      installerTargetProfile,
-      "openbitfun-installer.exe"
-    )}`
-  );
-}
+  const installerTargetProfile = isDev ? "debug" : getExpectedAppProfile(buildMode);
+  log("Installer build complete.");
+  const outputDir = path.join(ROOT, "src-tauri", "target", installerTargetProfile);
+  log(isDev ? `Output directory: ${outputDir}` : `Output: ${path.join(outputDir, "openbitfun-installer.exe")}`);
 }
 
 if (require.main === module) {
@@ -357,11 +330,13 @@ if (require.main === module) {
 }
 
 module.exports = {
+  MAIN_APP_EXE,
   REQUIRED_PAYLOAD_FILES,
+  copyPackageWithManifest,
   getExpectedAppProfile,
-  getPayloadSourceExeName,
-  resolveAppExePath,
-  resolveCargoTargetDir,
-  shouldCopySiblingRuntimeFile,
+  getMainAppBuildCommand,
+  resolveAppDir,
+  shouldCopyPackageFile,
+  validatePackageInfo,
   validateRequiredPayloadFiles,
 };

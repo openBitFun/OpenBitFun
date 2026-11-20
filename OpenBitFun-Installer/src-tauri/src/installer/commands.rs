@@ -392,9 +392,14 @@ fn snapshot_integrations(path: &Path, tx: &mut Transaction, machine: bool) -> Re
 
 const MIN_WINDOWS_APP_EXE_BYTES: u64 = 5 * 1024 * 1024;
 const PAYLOAD_MANIFEST_FILE: &str = "payload-manifest.json";
-const REQUIRED_PAYLOAD_FILES: [&str; 6] = [
+/// The native desktop package (`scripts/package-desktop-nsh-windows.mjs`): the
+/// NSH runner as `MAIN_APP_EXE`, the backend library it loads, the UI bundle
+/// and the resources the backend resolves next to the executable.
+const REQUIRED_PAYLOAD_FILES: [&str; 8] = [
     MAIN_APP_EXE,
-    "frontend/dist/index.html",
+    "openbitfun_desktop_lib.dll",
+    "nsh/bundle.nshc",
+    "nsh/app.json",
     "mobile-web/dist/index.html",
     "resources/ext-host/extension-host.js",
     "resources/worker_host.js",

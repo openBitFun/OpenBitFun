@@ -25,9 +25,18 @@ pub(super) fn arg<T: DeserializeOwned>(
     })
 }
 
-/// The arm of a command the native host cannot run.
+/// The answer for a command this backend does not register. A command the
+/// Product Operation Registry retired (for example the Tauri shell's window,
+/// WebView and devtools commands) names its retirement reason, so an older
+/// client learns the command is gone rather than misspelled.
 pub(super) fn unsupported(command: &str) -> Result<Value, String> {
-    Err(unsupported_in_native_host(command))
+    match openbitfun_product_domains::remote_surface::retired_reason(command) {
+        Some(reason) => Err(format!(
+            "{} (retired: {reason})",
+            unsupported_in_native_host(command)
+        )),
+        None => Err(unsupported_in_native_host(command)),
+    }
 }
 
 fn error_text<E: Serialize>(error: E) -> String {
@@ -43,7 +52,7 @@ fn ok_value<T: Serialize>(value: T) -> Result<Value, String> {
         .map_err(|error| format!("failed to serialize command response: {error}"))
 }
 
-// Autoref specialization (the same technique `tauri::ipc` uses) lets the
+// Autoref specialization (the technique Tauri's IPC layer used) lets the
 // generated code finish any return type without naming it: a `Result`
 // resolves to `ResultTag`, every other serializable value to `ValueTag`.
 

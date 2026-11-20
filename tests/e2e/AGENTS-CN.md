@@ -8,71 +8,46 @@
 
 ## 这里最重要的内容
 
-这里是桌面端 E2E 测试，使用 WebDriverIO 和 OpenBitFun 内置 WebDriver。
+原生 NSH 桌面应用的端到端覆盖分两层：
 
-根据 `E2E-TESTING-GUIDE.md`：
+- **UI 层**：`src/nsh-ui` 中的无头 NSH 测试（`nsh test .`）。它在模拟宿主上渲染真实的
+  TSX 应用，负责 UI 行为；规则见 [`src/nsh-ui/AGENTS.md`](../../src/nsh-ui/AGENTS.md)。
+- **原生冒烟测试**（`native/smoke.mjs`）：在隔离的临时配置中启动真实运行器
+  （`openbitfun-nsh` + `libopenbitfun_desktop_lib`），通过回环 OBP owner 连接
+  （`ws://127.0.0.1:<port>/obp`，`Authorization: Bearer <owner token>`，JSON-RPC 2.0，
+  先 `hello` 再 `call`）驱动后端，检查经 NSH shell 的 `host://shell-request` 往返，
+  最后通过 `quit_app` 退出并要求退出码为 0。
 
-- L0：smoke tests
-- L1：functional tests
-- L2：已规划，但尚未实现
+驱动 Tauri WebView 的 WebDriverIO 套件已随 Tauri 宿主一同退役。
 
-核心规则：
+规则：
 
-1. 测试真实用户工作流
-2. 使用 `data-testid` 作为稳定选择器
-3. 遵循 Page Object Model
-4. 保持测试独立且幂等
+1. 纯 Node >= 22，无 npm 依赖；本目录不是 pnpm workspace 成员。
+2. 不得触碰真实配置：保持 `OPENBITFUN_E2E_STORAGE_GUARD=1`、`OPENBITFUN_E2E_USER_ROOT`、
+   `OPENBITFUN_E2E_HOME`、`OPENBITFUN_E2E_LOG_DIR`、隔离的 `HOME`（NSH UI 存储）和空闲的
+   `OPENBITFUN_OBP_PORT`；断言 owner token 与 `hello.backend.dataDir` 位于临时根目录内。
+3. 子进程设置 `windowsHide: true`；失败时结束应用并输出日志末尾。
+4. 命令取自 `src/apps/desktop/src/backend_protocol/dispatch_generated.rs`，并在处理函数中
+   确认请求结构；断言结果结构，而不只是成功与否。
 
 ## 命令
 
 ```bash
-cargo build -p openbitfun-desktop
-pnpm --dir tests/e2e install
-pnpm --dir tests/e2e run test:l0
-pnpm --dir tests/e2e run test:l0:all
-pnpm --dir tests/e2e run test:l1
-pnpm --dir tests/e2e exec wdio run ./config/wdio.conf.ts --spec "./specs/<file>.spec.ts"
+pnpm run desktop-nsh:build            # debug 运行器 + 后端 + NSH 包
+pnpm run e2e:smoke                    # release-fast 构建（默认）
+pnpm run e2e:smoke:debug              # target/debug 构建
+pnpm run e2e:smoke:packaged           # target/desktop-nsh/OpenBitFun.app（macOS）或打包目录
+node tests/e2e/native/smoke.mjs --help
+pnpm run e2e:ui                       # cd src/nsh-ui && nsh test .（nsh 需在 PATH 中：$HOME/.nsh/bin）
 ```
 
 ## 验证
 
-优先运行最窄的相关 spec，必要时再扩大范围。
+针对改动的构建运行冒烟测试。运行器、后端库和 NSH 包必须来自同一版本：较旧的部分会以
+`unsupported_in_native_host` 明确失败。
 
-验证 ACP 队列恢复时，先完成 Desktop 和生产前端构建，再运行
-`node tests/e2e/scripts/run-acp-queue-recovery.mjs`。该 macOS 原生脚本使用隔离配置、
-真实 stdio 连接的可控 ACP 子进程、产品控件及只读单例诊断，覆盖后台刷新恢复、
-会话切换、运行中元数据读取和实时更新、模型变更快照、ACP 立即发送队列提升、
-延迟取消、提交去重、协议报错和子进程退出重连。ACP 立即发送将消息移到队首、
-等待当前请求结束后执行，不向外部 Agent 注入原生 steering。在输出的临时目录保留
-`acp-queue-recovery.json`、事件日志及截图；前端、二进制和字体配置覆盖参数与其他
-原生负载脚本一致。该测试仅覆盖本地 Desktop，不证明真实模型服务或四种远程场景。
+CI：`ci.yml` 中的 `Native Desktop UI` 运行 `nsh check` 和 `nsh test .`；`desktop-package.yml`
+与 `nightly-artifacts.yml` 的 macOS 打包任务用发布布局的 `OpenBitFun.app`（`--app`）运行冒烟测试。
 
-静态/流式长会话性能矩阵的负载与指标定义见 [README.zh-CN.md](README.zh-CN.md)。
-构建桌面端和生产前端后运行 `pnpm --dir tests/e2e run test:perf:long-session`，
-隔离测试首次打开、重复切换、双向连续滚轮输入及轮次栏远距离跳转。
-指标计算和本地 SSE 模型的验证命令为
-`pnpm --dir tests/e2e run test:perf:long-session:contract`。
-`--scenario multi-tool` 为每个历史轮次生成 26 个模型回合和固定 100 次工具调用记录，
-Read、Edit、Write、ExecCommand 各 25 次；上述契约测试同时验证生成文件及旧模板兼容性。
-保留失败证据，仅比较负载与桌面构建类型相同的结果，测量时不要并行构建。
-RAF 不等于合成帧率；此测试只覆盖本地桌面，不覆盖四种远程场景。
-
-验证主会话与 BTW 同时流式、分别滚动时，运行
-`node tests/e2e/scripts/run-long-session-performance.mjs --suite btw-scroll --scenario multi-tool --repeats 2`。
-用例从 200 轮、每轮 100 次工具调用的主会话通过真实 `/btw` 创建临时侧会话，
-两路响应均预填 512 段文本，再测试主会话流式区、历史区和 BTW 流式区的双向滚动。
-侧会话是新建临时会话，并非另一份持久化的 200 轮历史。每个阶段要求两路输出均推进，
-后续输出保持阅读锚点，两栏 DOM 窗口有界，返回最新能够看到最后一段文本。
-普通验收运行与 CDP 诊断运行分开比较。
-
-验证内置 WebDriver 的滚动、聚焦与外层布局时，先构建 Desktop 和当前前端资源，再运行：
-
-```bash
-node tests/e2e/scripts/run-interaction-scroll.mjs
-```
-
-该脚本使用真实产品控件、独立的打包前端快照、临时应用存储和私有 WebView 存储，检查点击、
-指针与滚轮动作、元素截图、输入清空与填写、屏外控件定位和超大元素点击坐标。证据 `result.json`
-保存在输出的临时目录；不使用 Mock 页面，也不代表远程场景或其他平台已经验证。
-并行构建时，可用 `OPENBITFUN_E2E_FRONTEND_DIR` 指向含 `frontend-revision.json` 的已完成构建快照。
-脚本也复制可执行文件；默认 exe 被开发实例锁定时，可用 `OPENBITFUN_E2E_DESKTOP_BINARY` 指向新链接的产物。
+冒烟测试只覆盖本地。不覆盖远程工作区、远程控制（mobile web、IM 机器人）、Peer Device
+Mode、Detached Dispatch、LAN 或 mesh 监听器，也不覆盖真实模型服务。

@@ -14,7 +14,7 @@ fn unavailable() -> String {
 }
 
 /// The listeners, pairings and connections.
-#[tauri::command]
+// @backend-command
 pub async fn obp_get_status() -> Result<ObpStatus, String> {
     Ok(match global_server() {
         Some(server) => server.status(),
@@ -29,7 +29,7 @@ pub struct ObpSetLanEnabledRequest {
 }
 
 /// Turns the LAN listener on or off (persisted).
-#[tauri::command]
+// @backend-command
 pub async fn obp_set_lan_enabled(request: ObpSetLanEnabledRequest) -> Result<ObpStatus, String> {
     let server = global_server().ok_or_else(unavailable)?;
     server.set_lan_enabled(request.enabled).await?;
@@ -41,13 +41,41 @@ pub async fn obp_set_lan_enabled(request: ObpSetLanEnabledRequest) -> Result<Obp
 pub struct ObpCreatePairingRequest {
     /// What the desktop lists the new client as (default "Phone or browser").
     pub name: Option<String>,
+    /// Where the phone reaches this device: `lan` (default; same network) or
+    /// `mesh` (anywhere, after joining the account mesh with the EasyTier app).
+    pub via: Option<String>,
 }
 
-/// A one-time pairing QR for the LAN listener (valid for five minutes).
-#[tauri::command]
+/// A one-time pairing QR for the LAN listener, or for the device-mesh
+/// listener with `via: "mesh"` (valid for five minutes).
+// @backend-command
 pub async fn obp_create_pairing(request: ObpCreatePairingRequest) -> Result<PairingOffer, String> {
     let server = global_server().ok_or_else(unavailable)?;
-    server.create_pairing(request.name)
+    match request.via.as_deref().map(str::trim).unwrap_or("lan") {
+        "" | "lan" => server.create_pairing(request.name),
+        "mesh" => {
+            let status = crate::mesh::global()
+                .map(|runtime| runtime.status())
+                .ok_or_else(|| {
+                    "mesh_unavailable: this host does not run the device mesh; use the native desktop app"
+                        .to_string()
+                })?;
+            let virtual_ip = status.virtual_ip.ok_or_else(|| {
+                format!(
+                    "mesh_unavailable: the device mesh is not connected ({:?}){}",
+                    status.state,
+                    status
+                        .reason
+                        .map(|reason| format!("; {reason}"))
+                        .unwrap_or_default()
+                )
+            })?;
+            server.create_mesh_pairing(request.name, &virtual_ip)
+        }
+        other => Err(format!(
+            "unsupported pairing route '{other}'; expected \"lan\" or \"mesh\""
+        )),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,7 +85,7 @@ pub struct ObpRevokePairedClientRequest {
 }
 
 /// Revokes a paired client and closes its open connections.
-#[tauri::command]
+// @backend-command
 pub async fn obp_revoke_paired_client(
     request: ObpRevokePairedClientRequest,
 ) -> Result<ObpStatus, String> {

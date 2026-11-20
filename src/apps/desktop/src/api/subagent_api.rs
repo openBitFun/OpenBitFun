@@ -91,11 +91,21 @@ fn reject_external_subagent_mutation(
     Ok(())
 }
 
-#[tauri::command]
+/// A subagent row with the capability flags the backend decides (logic batch 4).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentListItem {
+    #[serde(flatten)]
+    pub info: AgentInfo,
+    #[serde(flatten)]
+    pub mutability: openbitfun_core::agentic::agents::AgentMutability,
+}
+
+// @backend-command
 pub async fn list_subagents(
     state: State<'_, AppState>,
     request: ListSubagentsRequest,
-) -> Result<Vec<AgentInfo>, String> {
+) -> Result<Vec<SubagentListItem>, String> {
     let (workspace, external_sources_supported) = query_workspace_from_request(
         &state,
         request.workspace_id.as_deref(),
@@ -116,7 +126,7 @@ pub async fn list_subagents(
         })
         .await;
 
-    let result = match request.source {
+    let result: Vec<AgentInfo> = match request.source {
         Some(source) => list
             .into_iter()
             .filter(|a| a.subagent_source == Some(source))
@@ -124,10 +134,17 @@ pub async fn list_subagents(
         None => list,
     };
 
-    Ok(result)
+    let local_workspace = external_sources_supported;
+    Ok(result
+        .into_iter()
+        .map(|info| SubagentListItem {
+            mutability: info.source.mutability(local_workspace),
+            info,
+        })
+        .collect())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_visible_subagents(
     state: State<'_, AppState>,
     request: ListVisibleSubagentsRequest,
@@ -153,7 +170,7 @@ pub async fn list_visible_subagents(
         .await)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_manageable_subagents(
     state: State<'_, AppState>,
     request: ListManageableSubagentsRequest,
@@ -189,7 +206,7 @@ pub struct GetSubagentDetailRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn get_subagent_detail(
     state: State<'_, AppState>,
     request: GetSubagentDetailRequest,
@@ -218,7 +235,7 @@ pub struct DeleteSubagentRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn delete_subagent(
     state: State<'_, AppState>,
     request: DeleteSubagentRequest,
@@ -268,7 +285,7 @@ pub struct UpdateSubagentRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_subagent(
     state: State<'_, AppState>,
     request: UpdateSubagentRequest,
@@ -372,7 +389,7 @@ fn validate_agent_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn create_subagent(
     state: State<'_, AppState>,
     request: CreateSubagentRequest,
@@ -480,7 +497,7 @@ pub struct ReloadSubagentsRequest {
     pub workspace_path: Option<String>,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn reload_subagents(
     state: State<'_, AppState>,
     request: ReloadSubagentsRequest,
@@ -499,7 +516,7 @@ pub async fn reload_subagents(
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_agent_tool_names(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let names: Vec<String> = state
         .tool_registry
@@ -531,7 +548,7 @@ pub struct UpdateSubagentConfigResponse {
     pub model_updated: bool,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn update_subagent_config(
     state: State<'_, AppState>,
     request: UpdateSubagentConfigRequest,

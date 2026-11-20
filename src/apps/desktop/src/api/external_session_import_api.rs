@@ -14,14 +14,14 @@ pub struct ListRemovedExternalSessionsRequest {
     pub ecosystem_id: String,
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn list_removed_external_sessions(
     request: ListRemovedExternalSessionsRequest,
 ) -> ExternalSourceOperationResult<Vec<RemovedExternalSession>> {
     list_removed(&request.ecosystem_id).await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn restore_removed_external_session(
     request: RestoreRemovedExternalSessionRequest,
 ) -> ExternalSourceOperationResult<()> {

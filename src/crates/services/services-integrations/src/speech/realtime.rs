@@ -619,10 +619,9 @@ fn session_create_payload(
             // cannot be expressed as an Agent task. A new Voice tool requires
             // coordinated changes in all of these places:
             // 1. its provider schema below;
-            // 2. `VoiceFunctionCommand`, `parseFunctionCall`, and
-            //    `handleFunctionCall` in
-            //    `src/web-ui/src/flow_chat/components/voice/useRealtimeVoiceCall.ts`;
-            // 3. focused Rust payload-contract and Web UI dispatch tests.
+            // 2. the desktop UI's voice-call function dispatch (the retired React UI
+            //    owned it; the native UI has no voice call yet);
+            // 3. focused Rust payload-contract and frontend dispatch tests.
             // Workspace execution capabilities belong in the normal Agent tool
             // registry and become available to delegated tasks without being
             // copied into this list.

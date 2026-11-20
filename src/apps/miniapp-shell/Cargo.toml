@@ -24,6 +24,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 image = { workspace = true, features = ["png"] }
+# Keep Tauri's transitive time/brotli resolution on the known-good releases
+# (see the workspace pins). The shell is the shipping Tauri user.
+time = { workspace = true }
+brotli-decompressor = { workspace = true }
+alloc-no-stdlib = { workspace = true }
+alloc-stdlib = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }

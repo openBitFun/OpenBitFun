@@ -58,6 +58,72 @@ pub struct MiniAppPermissions {
     pub host: Option<HostPermissions>,
 }
 
+impl MiniAppPermissions {
+    /// Stable badge ids for what this manifest grants, in display order
+    /// (logic batch 4): `filesystem`, `shell`, `network`, `node_worker`,
+    /// `ai_bridge`, `agent_bridge`, or `sandboxed_ui` when it grants none.
+    /// Clients localize the ids instead of reading the manifest themselves.
+    pub fn badges(&self) -> Vec<&'static str> {
+        fn non_empty(list: &Option<Vec<String>>) -> bool {
+            list.as_ref().is_some_and(|items| !items.is_empty())
+        }
+        let mut badges = Vec::new();
+        if self
+            .fs
+            .as_ref()
+            .is_some_and(|fs| non_empty(&fs.read) || non_empty(&fs.write))
+        {
+            badges.push("filesystem");
+        }
+        if self
+            .shell
+            .as_ref()
+            .is_some_and(|shell| non_empty(&shell.allow))
+        {
+            badges.push("shell");
+        }
+        if self.net.as_ref().is_some_and(|net| non_empty(&net.allow)) {
+            badges.push("network");
+        }
+        if self.node.as_ref().is_some_and(|node| node.enabled) {
+            badges.push("node_worker");
+        }
+        if self.ai.as_ref().is_some_and(|ai| ai.enabled) {
+            badges.push("ai_bridge");
+        }
+        if self.agent.as_ref().is_some_and(|agent| agent.enabled) {
+            badges.push("agent_bridge");
+        }
+        if badges.is_empty() {
+            badges.push("sandboxed_ui");
+        }
+        badges
+    }
+}
+
+#[cfg(test)]
+mod permission_badge_tests {
+    use super::*;
+
+    #[test]
+    fn badges_follow_the_manifest() {
+        assert_eq!(MiniAppPermissions::default().badges(), vec!["sandboxed_ui"]);
+        let permissions: MiniAppPermissions = serde_json::from_value(serde_json::json!({
+            "fs": { "read": ["{workspace}"] },
+            "shell": { "allow": [] },
+            "net": { "allow": ["*"] },
+            "node": {},
+            "ai": { "enabled": false },
+            "agent": { "enabled": true }
+        }))
+        .expect("legacy manifest");
+        assert_eq!(
+            permissions.badges(),
+            vec!["filesystem", "network", "node_worker", "agent_bridge"]
+        );
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsPermissions {
     /// Path scopes: "{appdata}", "{workspace}", "{home}", or absolute paths.

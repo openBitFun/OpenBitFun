@@ -9,7 +9,8 @@ use crate::infrastructure::PathManager;
 use crate::service::config::types::AIModelConfig;
 use anyhow::Result;
 use openbitfun_services_core::token_usage::{
-    TokenUsageStatisticsRequest, UsageGranularity, UsageStatistics, UsageStatisticsFilter,
+    TokenUsageActivity, TokenUsageActivityRequest, TokenUsageStatisticsRequest, UsageGranularity,
+    UsageStatistics, UsageStatisticsFilter,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -178,6 +179,18 @@ impl TokenUsageService {
         let resolved = request.resolve().map_err(anyhow::Error::msg)?;
         self.get_statistics(resolved.query, resolved.granularity, resolved.filter)
             .await
+    }
+
+    /// The calendar heatmap both Home and the Usage page draw: days keyed in the
+    /// request's zone, shades and streaks computed here.
+    pub async fn get_activity(
+        &self,
+        request: TokenUsageActivityRequest,
+    ) -> Result<TokenUsageActivity> {
+        self.inner
+            .get_activity(request)
+            .await
+            .map_err(anyhow::Error::msg)
     }
 
     pub async fn clear_model_stats(&self, model_id: &str) -> Result<()> {

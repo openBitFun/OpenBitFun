@@ -53,7 +53,7 @@ import {
   gitListOpen,
   gitStatus,
   hasUnsavedEdit,
-  holdFilesStatusPoll,
+  holdFilesStatusWatch,
   ensureWorkspaceWatch,
   isDirtyPath,
   joinPath,
@@ -2979,13 +2979,13 @@ export function FilesScene(props: { compact?: boolean } = {}) {
     editValue.set(edit?.value ?? "");
   });
 
-  // Live updates: the host watcher for this root, and the Git decoration poll
-  // while this scene is on screen.
+  // Live updates: the host watcher for this root, and the Git decorations the
+  // host pushes while this scene is on screen.
   effect(() => {
     if (!activeWorkspace()) return;
     untracked(() => ensureWorkspaceWatch());
   });
-  cleanup(holdFilesStatusPoll());
+  cleanup(holdFilesStatusWatch());
 
   keymap.bind("mod+s", () => {
     if (hasUnsavedEdit()) void saveEditedFile();

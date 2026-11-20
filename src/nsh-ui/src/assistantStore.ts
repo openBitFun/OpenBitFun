@@ -8,9 +8,10 @@
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
 import { tr } from "./i18n";
-import { setIdentityField, setIdentityName, type IdentityField } from "./identityDocument";
+import { isCommandUnavailable } from "./hostCommands";
 
-export { setIdentityField, setIdentityName, yamlScalar, type IdentityField } from "./identityDocument";
+/** The `IDENTITY.md` frontmatter fields the page edits; the host rewrites the document. */
+export type IdentityField = "name" | "avatar" | "emoji";
 import { formatTimestamp } from "./format";
 import { peerScope } from "./peerState";
 import { listSessions, setActiveWorkspace, type SessionSummary } from "./api";
@@ -386,39 +387,25 @@ export async function createAssistant(customName = newAssistantNameInput()): Pro
   assistantsError.set("");
   assistantsNotice.set("");
   try {
+    const trimmedName = customName.replace(/\s+/g, " ").trim();
+    // The host writes the name into the new assistant's IDENTITY.md.
     const created = asRecord(
-      await invokeCommand<Record<string, unknown>>("create_assistant_workspace", {}),
+      await invokeCommand<Record<string, unknown>>(
+        "create_assistant_workspace",
+        trimmedName ? { name: trimmedName } : {},
+      ),
     );
     const createdId = readString(created, ["id", "workspaceId", "workspace_id"]) || undefined;
-    const createdRoot = readString(created, ["rootPath", "root_path"]);
-    const trimmedName = customName.replace(/\s+/g, " ").trim();
-    if (trimmedName && createdId && createdRoot) {
-      // The host seeds IDENTITY.md with a frontmatter document (name, creature,
-      // vibe, avatar, emoji) and a body. Only the `name:` field is the user's
-      // choice here, so read the seeded file and rewrite that one field.
-      const identityPath = joinPersonaFilePath(createdRoot, "IDENTITY.md");
-      let seeded = "";
-      try {
-        const content = await invokeCommand<string>("read_file_content", {
-          workspaceId: createdId,
-          workspacePath: createdRoot,
-          filePath: identityPath,
-        });
-        seeded = typeof content === "string" ? content : "";
-      } catch (error) {
-        if (!isMissingFileError(error)) throw error;
-      }
-      await invokeCommand<unknown>("write_file_content", {
-        workspaceId: createdId,
-        workspacePath: createdRoot,
-        filePath: identityPath,
-        content: setIdentityName(seeded, trimmedName),
-      });
-    }
+    const createdName = readString(asRecord(created.identity), ["name"]);
+    // An older host ignores `name` and keeps the seeded default: say so instead of
+    // rewriting its IDENTITY.md from here.
+    const nameIgnored = Boolean(trimmedName && createdId && createdName !== trimmedName);
     newAssistantModalOpen.set(false);
     newAssistantNameInput.set("");
     await loadAssistants(createdId);
-    assistantsNotice.set(tr("assistants.store.created"));
+    assistantsNotice.set(
+      nameIgnored ? tr("assistants.store.nameNeedsHostUpdate") : tr("assistants.store.created"),
+    );
     // The desktop opens the new assistant's page, so its identity is set next.
     if (createdId) openAssistantConfig(createdId);
   } catch (error) {
@@ -677,48 +664,36 @@ export function saveIdentityFields(
     ),
   );
   const run = identityWriteQueue.then(async () => {
-    if (!assistant.rootPath) {
-      identitySaveStatus.set("error");
-      identitySaveError.set(tr("assistants.store.noRootPath"));
-      return;
-    }
     identitySaveStatus.set("saving");
     identitySaveError.set("");
-    const filePath = joinPersonaFilePath(assistant.rootPath, "IDENTITY.md");
     try {
-      let current = "";
-      try {
-        const content = await invokeCommand<string>("read_file_content", {
+      // The host rewrites only these fields of IDENTITY.md, keeping the rest and
+      // the body, and tells every client through `workspace-identity-changed`.
+      const result = asRecord(
+        await invokeCommand<Record<string, unknown>>("set_assistant_identity", {
           workspaceId: assistant.id,
-          workspacePath: assistant.rootPath,
-          filePath,
-        });
-        current = typeof content === "string" ? content : "";
-      } catch (error) {
-        if (!isMissingFileError(error)) throw error;
-      }
-      let next = current;
-      for (const field of ["name", "avatar", "emoji"] as const) {
-        const value = patch[field];
-        if (value !== undefined) next = setIdentityField(next, field, value);
-      }
-      if (next !== current) {
-        await invokeCommand<unknown>("write_file_content", {
-          workspaceId: assistant.id,
-          workspacePath: assistant.rootPath,
-          filePath,
-          content: next,
-        });
-      }
+          ...patch,
+        }),
+      );
+      const next = typeof result.content === "string" ? result.content : null;
       identitySaveStatus.set("saved");
       // The persona editor shows IDENTITY.md too; keep it in step when it is clean.
-      if (activePersonaFile() === "IDENTITY.md" && !personaDirty() && selectedAssistantId() === assistant.id) {
+      if (
+        next !== null &&
+        activePersonaFile() === "IDENTITY.md" &&
+        !personaDirty() &&
+        selectedAssistantId() === assistant.id
+      ) {
         personaDraft.set(next);
         personaOriginal.set(next);
       }
     } catch (error) {
       identitySaveStatus.set("error");
-      identitySaveError.set(errorMessage(error));
+      identitySaveError.set(
+        isCommandUnavailable(error, "set_assistant_identity")
+          ? tr("assistants.store.identityNeedsHostUpdate")
+          : errorMessage(error),
+      );
       void loadAssistants(assistant.id);
     }
   });

@@ -25,8 +25,8 @@ PPT Live 同时是 OpenBitFun **Agentic MiniApp** 的样板间：它自己**没�
   → agent 按文件协议写 project.json / slides/*.html，PPT Live 渐进式读文件上屏
 ```
 
-涉及的 `app.chat.*` API（`bridge_builder.rs` 生成，宿主端在
-`web-ui/src/app/scenes/miniapps/hooks/useMiniAppBridge.ts`，需要
+涉及的 `app.chat.*` API（`bridge_builder.rs` 生成，宿主端在 MiniApp Shell
+`src/apps/miniapp-shell/src/shell.html`，需要
 `permissions.agent.enabled = true`）：
 
 | API | 作用 |
@@ -126,8 +126,8 @@ ppt-live/
 ### ⚠ 重要：`pnpm run desktop:dev` 不会构建 PPT Live 的 JS
 
 PPT Live 的 JS 是**预构建的静态资源**，通过 Rust 的 `include_str!` 在编译时
-直接嵌入到二进制中。`desktop:dev` 只提供 web-ui 前端的 Vite HMR 和 Rust 代码的
-自动重新编译，**不会运行 `build-openbitfun.mjs`**。
+直接嵌入到二进制中。`desktop:dev` 只重新构建桌面界面和 Rust 代码，
+**不会运行 `build-openbitfun.mjs`**。
 
 修改 PPT Live 的 JS 源码后，必须**手动**运行构建脚本。
 

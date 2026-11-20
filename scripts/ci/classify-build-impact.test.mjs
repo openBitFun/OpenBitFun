@@ -101,8 +101,12 @@ test('maps representative changes to the smallest predictive validation', () => 
       }),
     },
     {
-      paths: ['src/web-ui/src/example.ts'],
-      result: expected({ rustRequired: false, reason: 'frontend-only' }),
+      paths: ['src/nsh-ui/src/scenes/HomeScene.tsx'],
+      result: expected({
+        rustRequired: false,
+        desktopPlatforms: allPlatforms,
+        reason: 'platform-package-input',
+      }),
     },
     {
       paths: ['src/mobile-web/src/App.tsx'],
@@ -147,10 +151,19 @@ test('maps representative changes to the smallest predictive validation', () => 
       }),
     },
     {
+      paths: ['scripts/ci/package-native-macos-release.sh'],
+      result: expected({
+        rustRequired: true,
+        desktopPlatforms: ['macos-arm64', 'macos-x64'],
+        reason: 'platform-package-input',
+      }),
+    },
+    {
       paths: ['scripts/ci/verify-linux-desktop-package.sh'],
       result: expected({
         rustRequired: true,
         desktopPlatforms: ['linux-x64', 'linux-arm64'],
+        linuxBinariesRequired: true,
         reason: 'platform-package-input',
       }),
     },
@@ -164,12 +177,14 @@ test('maps representative changes to the smallest predictive validation', () => 
       }),
     },
     ...[
-      'scripts/prepare-flashgrep-resource.mjs',
-      'resources/flashgrep/VERSION.json',
-      'src/apps/desktop/scripts/post-install-icons.sh',
-      'src/apps/desktop/dmg/background.png',
-      'scripts/product-customization/projections.mjs',
-      'products/openbitfun/product.jsonc',
+      'scripts/package-desktop-nsh-linux.mjs',
+      'scripts/desktop-nsh-package-common.mjs',
+      'scripts/prepare-miniapp-shell.mjs',
+      'scripts/fetch-easytier.mjs',
+      'scripts/ci/install-nsh.mjs',
+      'src/apps/desktop-nsh/nsh.json',
+      'src/apps/desktop/icons/openbitfun-app-icon.icns',
+      'src/apps/desktop/dmg-extras/If app is damaged read this.txt',
     ].map((desktopInput) => ({
       paths: [desktopInput],
       result: expected({

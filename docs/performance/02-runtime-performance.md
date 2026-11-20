@@ -1,5 +1,7 @@
 # OpenBitFun 运行时性能审阅报告(02)
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 - 审阅日期:2026-07-26
 - 审阅维度:执行性能(运行时)—— Rust 后端热点路径 / 前端 React 高频路径 / Tauri IPC 层
 - 方法:Grep 系统性扫描典型反模式(clone 密集区、async 中同步 IO、`Regex::new` 非静态、`block_on`、`JSON.parse(JSON.stringify)`、`setInterval`、`structuredClone`、未节流事件监听、高频 `invoke`/`emit`),对每个可疑点精读上下文并论证调用频率后才收录;所有明显但经确认无害的候选项在文末"误报排除记录"中留档,避免后续重复审查。

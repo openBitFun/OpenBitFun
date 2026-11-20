@@ -4,6 +4,7 @@ import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { formatMonthYear, formatTimestamp } from "./format";
 import { tr } from "./i18n";
+import { isCommandUnavailable } from "./hostCommands";
 import { peerScope, peerSupports } from "./peerState";
 import { activeWorkspace, activeWorkspaceId, workspaces } from "./state";
 import { pushToast } from "./ui/overlays";
@@ -334,214 +335,219 @@ export function routineTargetLabel(job: CronJobRecord): string {
   return `${wsName} / ${job.target.launch.agentType || "Standard"}`;
 }
 
-// --- Cron field parser for calendar & 24h occurrence projection ---
+// --- Run previews: the host's scheduler answers, this surface only lays them out ---
+//
+// Cron parsing used to live here and disagreed with the scheduler (aliases,
+// day-of-week numbering, the host's zone). `preview_cron_occurrences` answers
+// from the scheduler's own code, so the editor, the calendar and "due in the
+// next 24 hours" show what the host will run. A host without the command gets
+// an explicit "update the host" notice and only the run it reports itself
+// (`state.nextRunAtMs`); nothing is derived here.
 
-const CRON_MONTH_MAP: Record<string, number> = {
-  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
-  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
-};
+interface HostOccurrencePreview {
+  valid?: boolean;
+  issue?: { field?: string; code?: string; message?: string } | null;
+  occurrences?: number[];
+  truncated?: boolean;
+}
 
-const CRON_DOW_MAP: Record<string, number> = {
-  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
-};
+interface HostJobOccurrencePreview extends HostOccurrencePreview {
+  jobId?: string;
+}
 
-function expandCronAlias(expr: string): string {
-  const trimmed = expr.trim();
-  switch (trimmed.toLowerCase()) {
-    case "@yearly":
-    case "@annually":
-      return "0 0 1 1 *";
-    case "@monthly":
-      return "0 0 1 * *";
-    case "@weekly":
-      return "0 0 * * 0";
-    case "@daily":
-    case "@midnight":
-      return "0 0 * * *";
-    case "@hourly":
-      return "0 * * * *";
-    default:
-      return trimmed;
+interface HostPreviewResponse {
+  schedule?: HostOccurrencePreview | null;
+  jobs?: HostJobOccurrencePreview[];
+}
+
+/** Host run times per job id for the calendar month on screen. */
+export const monthOccurrences = signal<Record<string, number[]>>({});
+/** Host run times per job id for the next 24 hours. */
+export const dueOccurrences = signal<Record<string, number[]>>({});
+/** The host (or peer) has no `preview_cron_occurrences`: previews need a host update. */
+export const routinePreviewUnavailable = signal(false);
+
+export type DraftPreviewState = "idle" | "loading" | "valid" | "invalid" | "unavailable";
+export interface DraftSchedulePreview {
+  state: DraftPreviewState;
+  occurrences: number[];
+  /** The scheduler's issue code (`invalid_cron`, `interval_positive`, ...). */
+  issueCode: string;
+  issueMessage: string;
+}
+export const draftSchedulePreview = signal<DraftSchedulePreview>({
+  state: "idle",
+  occurrences: [],
+  issueCode: "",
+  issueMessage: "",
+});
+
+function isPreviewUnavailable(error: unknown, command: string): boolean {
+  return isCommandUnavailable(error, command);
+}
+
+function occurrencesByJob(response: HostPreviewResponse | null | undefined): Record<string, number[]> {
+  const byJob: Record<string, number[]> = {};
+  for (const row of response?.jobs ?? []) {
+    if (!row?.jobId) continue;
+    byJob[row.jobId] = (row.occurrences ?? []).filter(ms => typeof ms === "number" && Number.isFinite(ms));
   }
+  return byJob;
 }
 
-function parseCronToken(
-  token: string,
-  min: number,
-  max: number,
-  names?: Record<string, number>,
-): number | null {
-  const lower = token.trim().toLowerCase();
-  if (names && lower in names) return names[lower];
-  if (!/^\d+$/.test(lower)) return null;
-  let num = Number(lower);
-  if (max === 6 && num === 7) num = 0;
-  if (num < min || num > max) return null;
-  return num;
-}
-
-function parseCronField(
-  field: string,
-  min: number,
-  max: number,
-  names?: Record<string, number>,
-): { values: Set<number>; wildcard: boolean } | null {
-  const trimmed = field.trim();
-  if (!trimmed) return null;
-  const wildcard = trimmed === "*";
-  const values = new Set<number>();
-  for (const part of trimmed.split(",")) {
-    const slashParts = part.trim().split("/");
-    if (slashParts.length > 2) return null;
-    const rangePart = slashParts[0].trim();
-    const step = slashParts.length === 2 ? Number(slashParts[1].trim()) : 1;
-    if (!Number.isInteger(step) || step <= 0) return null;
-
-    let start = min;
-    let end = max;
-    if (rangePart !== "*") {
-      if (rangePart.includes("-")) {
-        const bounds = rangePart.split("-");
-        if (bounds.length !== 2) return null;
-        const a = parseCronToken(bounds[0], min, max, names);
-        const b = parseCronToken(bounds[1], min, max, names);
-        if (a === null || b === null || a > b) return null;
-        start = a;
-        end = b;
-      } else {
-        const single = parseCronToken(rangePart, min, max, names);
-        if (single === null) return null;
-        start = single;
-        end = slashParts.length === 2 ? max : single;
-      }
-    }
-    for (let v = start; v <= end; v += step) {
-      values.add(v);
-    }
+/** Only the run the host reported itself, for a host without previews. */
+function reportedRunsIn(startMs: number, endMs: number): Record<string, number[]> {
+  const byJob: Record<string, number[]> = {};
+  for (const job of routines()) {
+    const next = job.state.nextRunAtMs;
+    if (job.enabled && typeof next === "number" && next >= startMs && next <= endMs) byJob[job.id] = [next];
   }
-  return values.size > 0 ? { values, wildcard } : null;
+  return byJob;
 }
 
-export function parseCronExpression(expr: string): {
-  minutes: number[];
-  hours: number[];
-  doms: Set<number>;
-  domWildcard: boolean;
-  months: Set<number>;
-  dows: Set<number>;
-  dowWildcard: boolean;
-} | null {
-  const expanded = expandCronAlias(expr);
-  const parts = expanded.split(/\s+/).filter(Boolean);
-  // Support 5-field (m h dom mon dow) or 6-field (sec m h dom mon dow)
-  const fields = parts.length === 6 ? parts.slice(1) : parts;
-  if (fields.length !== 5) return null;
-  const minField = parseCronField(fields[0], 0, 59);
-  const hourField = parseCronField(fields[1], 0, 23);
-  const domField = parseCronField(fields[2], 1, 31);
-  const monField = parseCronField(fields[3], 1, 12, CRON_MONTH_MAP);
-  const dowField = parseCronField(fields[4], 0, 6, CRON_DOW_MAP);
-  if (!minField || !hourField || !domField || !monField || !dowField) return null;
+function calendarWindow(): { startMs: number; endMs: number } {
+  const year = calendarYear();
+  const month = calendarMonth();
   return {
-    minutes: [...minField.values].sort((a, b) => a - b),
-    hours: [...hourField.values].sort((a, b) => a - b),
-    doms: domField.values,
-    domWildcard: domField.wildcard,
-    months: monField.values,
-    dows: dowField.values,
-    dowWildcard: dowField.wildcard,
+    startMs: new Date(year, month, 1, 0, 0, 0, 0).getTime(),
+    endMs: new Date(year, month + 1, 0, 23, 59, 59, 999).getTime(),
   };
 }
 
-export function expandRoutineOccurrences(
-  job: CronJobRecord,
-  rangeStartMs: number,
-  rangeEndMs: number,
-  maxCount = 96,
-): number[] {
-  const hits: number[] = [];
-  const push = (ms: number) => {
-    if (ms >= rangeStartMs && ms <= rangeEndMs && !hits.includes(ms)) {
-      hits.push(ms);
-    }
-  };
+let occurrenceTicket = 0;
 
-  if (job.state.nextRunAtMs) {
-    push(job.state.nextRunAtMs);
+/** Re-reads the host's run times for the calendar month and the next 24 hours. */
+export async function refreshRoutineOccurrences(): Promise<void> {
+  const ticket = ++occurrenceTicket;
+  const month = calendarWindow();
+  const now = Date.now();
+  const dayEnd = now + 24 * 60 * 60 * 1000;
+  if (routinePreviewUnavailable()) {
+    monthOccurrences.set(reportedRunsIn(month.startMs, month.endMs));
+    dueOccurrences.set(reportedRunsIn(now, dayEnd));
+    return;
   }
-
-  const schedule = job.schedule;
-  if (schedule.kind === "at") {
-    const ms = Date.parse(schedule.at);
-    if (Number.isFinite(ms)) push(ms);
-    return hits.sort((a, b) => a - b);
+  try {
+    const [monthResponse, dueResponse] = await Promise.all([
+      invokeCommand<HostPreviewResponse>("preview_cron_occurrences", {
+        fromMs: month.startMs,
+        toMs: month.endMs,
+        count: 96,
+      }),
+      invokeCommand<HostPreviewResponse>("preview_cron_occurrences", {
+        fromMs: now,
+        toMs: dayEnd,
+        count: 4,
+      }),
+    ]);
+    if (ticket !== occurrenceTicket) return;
+    monthOccurrences.set(occurrencesByJob(monthResponse));
+    dueOccurrences.set(occurrencesByJob(dueResponse));
+  } catch (error) {
+    if (ticket !== occurrenceTicket) return;
+    if (isPreviewUnavailable(error, "preview_cron_occurrences")) {
+      routinePreviewUnavailable.set(true);
+      monthOccurrences.set(reportedRunsIn(month.startMs, month.endMs));
+      dueOccurrences.set(reportedRunsIn(now, dayEnd));
+      return;
+    }
+    console.warn(`Failed to preview routine runs: ${error instanceof Error ? error.message : String(error)}`);
+    monthOccurrences.set({});
+    dueOccurrences.set({});
   }
+}
 
-  if (schedule.kind === "every") {
-    const step = Math.max(60_000, schedule.everyMs);
-    const anchor = schedule.anchorMs ?? job.state.nextRunAtMs ?? job.createdAtMs ?? rangeStartMs;
-    let cursor = anchor;
-    if (cursor < rangeStartMs) {
-      const k = Math.ceil((rangeStartMs - cursor) / step);
-      cursor += k * step;
-    } else if (cursor > rangeEndMs) {
-      const k = Math.ceil((cursor - rangeEndMs) / step);
-      cursor -= k * step;
-    }
-    while (cursor >= rangeStartMs && cursor - step >= rangeStartMs) {
-      cursor -= step;
-    }
-    while (cursor <= rangeEndMs && hits.length < maxCount) {
-      push(cursor);
-      cursor += step;
-    }
-    return hits.sort((a, b) => a - b);
+/** The schedule the draft describes, as the host's `CronSchedule`. Input conversion only. */
+export function draftSchedule(draft: RoutineDraft): CronSchedule {
+  if (draft.scheduleKind === "every") {
+    const mins = Number(draft.everyMinutes.trim());
+    return { kind: "every", everyMs: Number.isFinite(mins) && mins > 0 ? Math.round(mins * 60_000) : 0 };
   }
-
-  const parsed = parseCronExpression(schedule.expr);
-  if (!parsed) return hits.sort((a, b) => a - b);
-
-  // Cap minute slots per day to keep dense crons like "* * * * *" fast in UI projection.
-  const dayCursor = new Date(rangeStartMs);
-  dayCursor.setHours(0, 0, 0, 0);
-  const endDay = new Date(rangeEndMs);
-  endDay.setHours(23, 59, 59, 999);
-
-  while (dayCursor.getTime() <= endDay.getTime() && hits.length < maxCount) {
-    const month = dayCursor.getMonth() + 1;
-    const dom = dayCursor.getDate();
-    const dow = dayCursor.getDay();
-    if (parsed.months.has(month)) {
-      const domOk = parsed.doms.has(dom);
-      const dowOk = parsed.dows.has(dow);
-      const dayMatches =
-        parsed.domWildcard && parsed.dowWildcard
-          ? true
-          : parsed.domWildcard
-            ? dowOk
-            : parsed.dowWildcard
-              ? domOk
-              : domOk || dowOk;
-
-      if (dayMatches) {
-        const y = dayCursor.getFullYear();
-        const m = dayCursor.getMonth();
-        for (const hour of parsed.hours) {
-          for (const minute of parsed.minutes) {
-            const slotMs = new Date(y, m, dom, hour, minute, 0, 0).getTime();
-            if (slotMs >= rangeStartMs && slotMs <= rangeEndMs) {
-              push(slotMs);
-              if (hits.length >= maxCount) break;
-            }
-          }
-          if (hits.length >= maxCount) break;
-        }
-      }
-    }
-    dayCursor.setDate(dayCursor.getDate() + 1);
+  if (draft.scheduleKind === "cron") {
+    const tz = draft.cronTz.trim();
+    return { kind: "cron", expr: draft.cronExpr.trim(), ...(tz ? { tz } : {}) };
   }
+  return { kind: "at", at: draft.atIso.trim() };
+}
 
-  return hits.sort((a, b) => a - b);
+/** The editor's localized sentence for a scheduler issue code. */
+export function routineIssueText(code: string, fallback: string): string {
+  switch (code) {
+    case "name_required":
+      return tr("routines.store.nameRequired");
+    case "payload_required":
+      return tr("routines.store.promptRequired");
+    case "interval_positive":
+      return tr("routines.store.intervalPositive");
+    case "invalid_cron":
+      return tr("routines.store.cronInvalid");
+    case "invalid_timezone":
+      return tr("routines.issueInvalidTimezone");
+    case "invalid_timestamp":
+      return tr("routines.store.timestampInvalid");
+    case "no_future_run":
+      return tr("routines.issueNoFutureRun");
+    default:
+      return fallback;
+  }
+}
+
+let draftPreviewTicket = 0;
+let draftPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Asks the host to preview the draft's next runs (debounced while typing). */
+export function scheduleDraftPreview(delayMs = 250): void {
+  if (draftPreviewTimer) clearTimeout(draftPreviewTimer);
+  if (routinePreviewUnavailable()) {
+    draftSchedulePreview.set({ state: "unavailable", occurrences: [], issueCode: "", issueMessage: "" });
+    return;
+  }
+  draftSchedulePreview.update(prev => ({ ...prev, state: "loading" }));
+  draftPreviewTimer = setTimeout(() => {
+    draftPreviewTimer = null;
+    void refreshDraftPreview();
+  }, delayMs);
+}
+
+export async function refreshDraftPreview(): Promise<void> {
+  const ticket = ++draftPreviewTicket;
+  const schedule = draftSchedule(routineDraft());
+  try {
+    const response = await invokeCommand<HostPreviewResponse>("preview_cron_occurrences", {
+      schedule,
+      count: 3,
+    });
+    if (ticket !== draftPreviewTicket) return;
+    const preview = response?.schedule;
+    if (preview?.valid) {
+      draftSchedulePreview.set({
+        state: "valid",
+        occurrences: preview.occurrences ?? [],
+        issueCode: "",
+        issueMessage: "",
+      });
+    } else {
+      draftSchedulePreview.set({
+        state: "invalid",
+        occurrences: [],
+        issueCode: preview?.issue?.code ?? "",
+        issueMessage: preview?.issue?.message ?? "",
+      });
+    }
+  } catch (error) {
+    if (ticket !== draftPreviewTicket) return;
+    if (isPreviewUnavailable(error, "preview_cron_occurrences")) {
+      routinePreviewUnavailable.set(true);
+      draftSchedulePreview.set({ state: "unavailable", occurrences: [], issueCode: "", issueMessage: "" });
+      return;
+    }
+    draftSchedulePreview.set({
+      state: "invalid",
+      occurrences: [],
+      issueCode: "",
+      issueMessage: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 export const filteredRoutines = computed<CronJobRecord[]>(() => {
@@ -555,14 +561,12 @@ export const filteredRoutines = computed<CronJobRecord[]>(() => {
 export const activeRoutineCount = computed(() => routines().filter(job => job.enabled).length);
 
 export const dueNext24Hours = computed<RoutineOccurrence[]>(() => {
-  const now = Date.now();
-  const end = now + 24 * 60 * 60 * 1000;
+  const byJob = dueOccurrences();
   const items: RoutineOccurrence[] = [];
   for (const job of routines()) {
     if (!job.enabled) continue;
-    const nextTimes = expandRoutineOccurrences(job, now, end, 4);
-    if (nextTimes.length === 0) continue;
-    const nextAt = nextTimes[0];
+    const nextAt = byJob[job.id]?.[0];
+    if (typeof nextAt !== "number") continue;
     items.push({
       job,
       atMs: nextAt,
@@ -574,18 +578,11 @@ export const dueNext24Hours = computed<RoutineOccurrence[]>(() => {
 });
 
 const monthOccurrencesByDay = computed<Record<string, RoutineOccurrence[]>>(() => {
-  const year = calendarYear();
-  const month = calendarMonth();
-  const start = new Date(year, month, 1, 0, 0, 0, 0);
-  const end = new Date(year, month + 1, 0, 23, 59, 59, 999);
-  const startMs = start.getTime();
-  const endMs = end.getTime();
+  const byJob = monthOccurrences();
   const byDay: Record<string, RoutineOccurrence[]> = {};
-
   for (const job of routines()) {
     if (!job.enabled) continue;
-    const times = expandRoutineOccurrences(job, startMs, endMs, 96);
-    for (const atMs of times) {
+    for (const atMs of byJob[job.id] ?? []) {
       const dayKey = dateKeyOf(new Date(atMs));
       const list = byDay[dayKey] ?? [];
       list.push({
@@ -640,6 +637,7 @@ export function stepCalendarMonth(delta: number): void {
   const next = new Date(calendarYear(), calendarMonth() + delta, 1);
   calendarYear.set(next.getFullYear());
   calendarMonth.set(next.getMonth());
+  void refreshRoutineOccurrences();
 }
 
 export function jumpCalendarToday(): void {
@@ -647,6 +645,7 @@ export function jumpCalendarToday(): void {
   calendarYear.set(today.getFullYear());
   calendarMonth.set(today.getMonth());
   selectedCalendarDay.set(dateKeyOf(today));
+  void refreshRoutineOccurrences();
 }
 
 export function selectCalendarDay(dayKey: string): void {
@@ -659,6 +658,8 @@ export function ensureCronHostReady(): void {
   const scopeKey = peerScope()?.deviceId ?? "local";
   if (cronHostReadySignaledFor === scopeKey) return;
   cronHostReadySignaledFor = scopeKey;
+  // Another host may have the preview command; ask it again.
+  routinePreviewUnavailable.set(false);
   void invokeRawCommand<unknown>("notify_cron_host_ready", {}).catch(() => undefined);
 }
 
@@ -675,6 +676,7 @@ export async function loadRoutines(): Promise<void> {
     const raw = await invokeCommand<Array<Record<string, unknown>>>("list_cron_jobs", {});
     const list = (Array.isArray(raw) ? raw : []).map(item => normalizeJob(item ?? {}));
     routines.set(list);
+    void refreshRoutineOccurrences();
   } catch (error) {
     routinesError.set(error instanceof Error ? error.message : String(error));
   } finally {
@@ -699,6 +701,7 @@ export async function toggleRoutineEnabled(job: CronJobRecord): Promise<void> {
     if (updated && typeof updated === "object" && (updated.id || updated.jobId)) {
       const normalized = normalizeJob(updated);
       routines.update(list => list.map(row => (row.id === job.id ? normalized : row)));
+      void refreshRoutineOccurrences();
     } else {
       await loadRoutines();
     }
@@ -719,6 +722,7 @@ export function openCreateRoutineDraft(): void {
   routinesNotice.set("");
   routineDraft.set(makeEmptyDraft());
   editorOpen.set(true);
+  scheduleDraftPreview(0);
 }
 
 export function openEditRoutineDraft(job: CronJobRecord): void {
@@ -769,10 +773,20 @@ export function openEditRoutineDraft(job: CronJobRecord): void {
     preservedTarget: job.target.kind === "session" ? job.target : null,
   });
   editorOpen.set(true);
+  scheduleDraftPreview(0);
 }
+
+const SCHEDULE_DRAFT_FIELDS: ReadonlyArray<keyof RoutineDraft> = [
+  "scheduleKind",
+  "everyMinutes",
+  "cronExpr",
+  "cronTz",
+  "atIso",
+];
 
 export function updateRoutineDraft(patch: Partial<RoutineDraft>): void {
   routineDraft.update(current => ({ ...current, ...patch }));
+  if (SCHEDULE_DRAFT_FIELDS.some(field => field in patch)) scheduleDraftPreview();
 }
 
 export function closeRoutineEditor(): void {
@@ -784,38 +798,25 @@ export async function saveRoutineDraft(): Promise<void> {
   const draft = routineDraft();
   const name = draft.name.trim();
   const text = draft.prompt.trim();
-  if (!name) {
-    routineFormError.set(tr("routines.store.nameRequired"));
-    return;
-  }
-  if (!text) {
-    routineFormError.set(tr("routines.store.promptRequired"));
-    return;
-  }
+  const schedule = draftSchedule(draft);
 
-  let schedule: CronSchedule;
-  if (draft.scheduleKind === "every") {
-    const mins = Number(draft.everyMinutes.trim());
-    if (!Number.isFinite(mins) || mins <= 0) {
-      routineFormError.set(tr("routines.store.intervalPositive"));
+  // The scheduler's own rules decide; a host without the check still refuses
+  // an invalid job in create/update, whose error is shown as it comes.
+  try {
+    const verdict = await invokeCommand<{
+      valid?: boolean;
+      issues?: Array<{ code?: string; message?: string }>;
+    }>("validate_cron_job_draft", { name, payload: { text }, schedule });
+    const issue = verdict?.valid === false ? verdict.issues?.[0] : undefined;
+    if (issue) {
+      routineFormError.set(routineIssueText(issue.code ?? "", issue.message ?? ""));
       return;
     }
-    schedule = { kind: "every", everyMs: Math.round(mins * 60_000) };
-  } else if (draft.scheduleKind === "cron") {
-    const expr = draft.cronExpr.trim();
-    if (!parseCronExpression(expr)) {
-      routineFormError.set(tr("routines.store.cronInvalid"));
+  } catch (error) {
+    if (!isCommandUnavailable(error, "validate_cron_job_draft")) {
+      routineFormError.set(error instanceof Error ? error.message : String(error));
       return;
     }
-    const tz = draft.cronTz.trim();
-    schedule = { kind: "cron", expr, ...(tz ? { tz } : {}) };
-  } else {
-    const at = draft.atIso.trim();
-    if (!at || !Number.isFinite(Date.parse(at))) {
-      routineFormError.set(tr("routines.store.timestampInvalid"));
-      return;
-    }
-    schedule = { kind: "at", at };
   }
 
   const wsRecord =
@@ -881,6 +882,7 @@ export async function saveRoutineDraft(): Promise<void> {
         routines.update(list =>
           list.map(row => (row.id === draft.editingJobId ? normalized : row)),
         );
+        void refreshRoutineOccurrences();
       } else {
         await loadRoutines();
       }
@@ -899,6 +901,7 @@ export async function saveRoutineDraft(): Promise<void> {
       if (created && typeof created === "object" && (created.id || created.jobId)) {
         const normalized = normalizeJob(created);
         routines.update(list => [normalized, ...list]);
+        void refreshRoutineOccurrences();
       } else {
         await loadRoutines();
       }

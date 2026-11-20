@@ -5,6 +5,13 @@ description: Create or update an importable OpenBitFun visual skin from referenc
 
 # Create an OpenBitFun visual skin
 
+> **Status: legacy.** Visual skins were rendered by the React desktop UI
+> (`src/web-ui`), which has been retired. The current native desktop client does
+> not load visual skins, and `scripts/visual-skin.mjs` reports this explicitly
+> unless `--project` points at a checkout of an older release that still contains
+> the contract. Tell the user this limitation before authoring anything; do not
+> claim a skin will apply to the current desktop app.
+
 Create `skin.json` and local assets for the existing product. Keep two questions
 separate: **what the package can change** and **which design method to use**.
 The contract determines importable fields. A template suggests one way to use

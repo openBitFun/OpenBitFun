@@ -252,7 +252,6 @@ const ignoredPaths = Object.freeze([
   /(^|\/)build\//,
   /(^|\/)coverage\//,
   /^docs\/superpowers\//,
-  /^src\/web-ui\/public\/monaco-editor\//,
 ]);
 
 export function normalizeRepositoryPath(file) {

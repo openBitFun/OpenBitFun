@@ -1,18 +1,17 @@
 {
   "version": 1,
-  "description": "No-growth baseline for i18n governance candidates. Lower counts when shared-term or l10n debt is removed; do not raise without review. Agent identity unification removes duplicate labels; agents.Minimal and agents.Standard only inventory existing reasoning, review, and Markdown-preview homonyms.",
+  "description": "No-growth baseline for i18n governance candidates. Lower counts when shared-term or l10n debt is removed; do not raise without review. The web-ui surface was removed with the retired React desktop UI (src/web-ui).",
   "budgets": {
     "confirmedUnusedKeys": {
       "maxTotal": 0
     },
     "sharedTermDuplicates": {
-      "maxTotal": 153,
+      "maxTotal": 15,
       "bySurface": {
         "core": 15,
         "installer": 0,
         "mobile-web": 0,
-        "relay-static-homepage": 0,
-        "web-ui": 138
+        "relay-static-homepage": 0
       },
       "bySharedKey": {
         "agents.claw": 0,
@@ -21,26 +20,26 @@
         "agents.default": 0,
         "connectionMethods.openbitfunServer": 0,
         "connectionMethods.lan": 0,
-        "features.codeAgent": 1,
+        "features.codeAgent": 0,
         "features.deepReview": 0,
         "features.remoteControl": 0,
         "features.settings": 0,
-        "features.workspace": 2,
-        "modes.assistant": 1,
-        "modes.expert": 2,
+        "features.workspace": 0,
+        "modes.assistant": 0,
+        "modes.expert": 0,
         "modes.review": 0,
         "product.name": 0,
-        "statuses.cancelled": 24,
-        "statuses.done": 19,
-        "statuses.failed": 32,
-        "statuses.loading": 5,
-        "statuses.running": 6,
-        "tools.edit": 33,
-        "tools.explore": 2,
-        "tools.search": 10,
-        "tools.shell": 7,
-        "agents.Minimal": 3,
-        "agents.Standard": 6
+        "statuses.cancelled": 3,
+        "statuses.done": 2,
+        "statuses.failed": 3,
+        "statuses.loading": 2,
+        "statuses.running": 0,
+        "tools.edit": 3,
+        "tools.explore": 0,
+        "tools.search": 2,
+        "tools.shell": 0,
+        "agents.Minimal": 0,
+        "agents.Standard": 0
       }
     },
     "l10nQualityCandidates": {
@@ -49,8 +48,7 @@
         "core": 0,
         "installer": 0,
         "mobile-web": 0,
-        "relay-static-homepage": 0,
-        "web-ui": 0
+        "relay-static-homepage": 0
       }
     }
   }

@@ -1,0 +1,31 @@
+[package]
+name = "openbitfun-mesh-service"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "OpenBitFun device mesh: EasyTier sidecar supervision, status, and account-device handshake proofs"
+
+[lib]
+name = "openbitfun_mesh_service"
+path = "src/lib.rs"
+
+[dependencies]
+# Hidden (no console window) child processes for the easytier-core sidecar
+# and easytier-cli status probes.
+openbitfun-services-core = { path = "../services-core", features = ["process-runtime"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+log = { workspace = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

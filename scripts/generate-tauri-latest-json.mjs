@@ -1,6 +1,26 @@
 #!/usr/bin/env node
+// Writes the desktop release manifest `latest-v1.json` (read by the native
+// app's updater, by installed Tauri builds and by the download mirror).
+//
+// Key layout (see `desktop-release-assets.mjs`):
+//   platforms["darwin-<arch>-nsh"]  the native updater archive + signature
+//   platforms["darwin-<arch>"]      the SAME archive + signature: the bridge an
+//                                   installed Tauri build updates through
+//   no windows-* / linux-* platform keys (no native in-place updater yet)
+//   manual_installers["darwin-<arch>"]    the DMG
+//   manual_installers["windows-x86_64"]   the native Windows zip
+//   manual_installers["linux-<arch>"]     the native Linux tarball
+//
+// Usage: generate-tauri-latest-json.mjs --assets-dir <collected updater dir>
+//          --version <v> --tag <tag> --repo <owner/name> --out <file>
+//          [--installer-assets-dir <dir>] [--required-platforms <keys>]
+//          [--required-manual-platforms <keys>] [--notes-file <file>]
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
+import {
+  classifyDesktopReleaseAsset,
+  legacyBridgePlatform,
+} from './desktop-release-assets.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const assetsDir = requireArg(args, 'assets-dir');
@@ -9,7 +29,7 @@ const tag = requireArg(args, 'tag');
 const repo = requireArg(args, 'repo');
 const out = requireArg(args, 'out');
 const requiredPlatforms = parseListArg(args['required-platforms'] || '');
-const manualAssetsDir = args['manual-assets-dir'];
+const requiredManualPlatforms = parseListArg(args['required-manual-platforms'] || '');
 const installerAssetsDir = args['installer-assets-dir'];
 const notesFile = args['notes-file'];
 
@@ -18,32 +38,36 @@ if (!existsSync(assetsDir)) {
 }
 
 const platforms = {};
-for (const sigPath of walkFiles(assetsDir).filter((file) => file.endsWith('.sig'))) {
-  const bundlePath = sigPath.slice(0, -'.sig'.length);
-  if (!existsSync(bundlePath) || !isUpdaterBundle(bundlePath)) {
+for (const file of walkFiles(assetsDir)) {
+  const asset = classifyDesktopReleaseAsset(file);
+  if (asset.kind === 'tauri-updater') {
+    fail(`Tauri updater artifact in a native desktop release: ${file}`);
+  }
+  if (asset.kind !== 'native-updater') {
     continue;
   }
-
-  const platform = inferPlatform(bundlePath);
-  if (!platform) {
-    console.warn(`[latest-json] Skipping updater artifact with unknown platform: ${bundlePath}`);
-    continue;
+  if (asset.version !== version) {
+    fail(`Updater archive ${basename(file)} is for version ${asset.version}, not ${version}`);
   }
-
-  if (platforms[platform]) {
-    console.warn(`[latest-json] Replacing duplicate ${platform} artifact: ${bundlePath}`);
+  const sigPath = `${file}.sig`;
+  if (!existsSync(sigPath)) {
+    fail(`Native updater archive is not signed: ${file}`);
   }
-
-  const assetName = basename(bundlePath);
-  platforms[platform] = {
+  if (platforms[asset.platform]) {
+    fail(`Duplicate ${asset.platform} updater archive: ${file}`);
+  }
+  const entry = {
     signature: readFileSync(sigPath, 'utf8').trim(),
-    url: `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`,
+    url: releaseUrl(basename(file)),
   };
+  platforms[asset.platform] = entry;
+  // The bridge: an installed Tauri build reads `darwin-<arch>` and installs the
+  // same signed native archive (same key, same bundle identifier).
+  platforms[legacyBridgePlatform(asset.arch)] = { ...entry };
 }
 
-const platformNames = Object.keys(platforms);
-if (platformNames.length === 0) {
-  fail('No signed updater artifacts were found. Expected .AppImage.sig, .app.tar.gz.sig, .tar.gz.sig, .zip.sig, .exe.sig, .deb.sig, or .rpm.sig files.');
+if (Object.keys(platforms).length === 0) {
+  fail('No signed native updater archives were found. Expected OpenBitFun-nsh_<version>_<arch>.app.tar.gz with its .sig.');
 }
 
 const missingPlatforms = requiredPlatforms.filter((platform) => !platforms[platform]);
@@ -55,58 +79,58 @@ const manifest = {
   version,
   notes: notesFile && existsSync(notesFile) ? readFileSync(notesFile, 'utf8').trim() : '',
   pub_date: new Date().toISOString(),
-  platforms,
+  platforms: Object.fromEntries(Object.entries(platforms).sort(([a], [b]) => a.localeCompare(b))),
 };
 
+// What a person downloads and installs by hand: the macOS DMG (the updater
+// archive unpacks into a bare .app wherever downloads land) and the Windows
+// and Linux native packages. Declaring them lets the website and the mirror
+// offer them instead of deriving filenames themselves.
 const manualInstallers = {};
-
-if (manualAssetsDir) {
-  addManualInstaller('windows-x86_64', join(manualAssetsDir, `OpenBitFun_${version}_windows-x86_64-installer.exe`));
+if (installerAssetsDir) {
+  if (!existsSync(installerAssetsDir)) {
+    fail(`Installer assets directory does not exist: ${installerAssetsDir}`);
+  }
+  for (const file of walkFiles(installerAssetsDir)) {
+    const asset = classifyDesktopReleaseAsset(file);
+    if (asset.kind !== 'manual' || asset.version !== version) {
+      continue;
+    }
+    if (manualInstallers[asset.platform]) {
+      fail(`Duplicate ${asset.platform} manual installer: ${file}`);
+    }
+    const signaturePath = `${file}.sig`;
+    if (!existsSync(signaturePath)) {
+      fail(`Missing signed manual installer pair: ${file} and ${signaturePath}`);
+    }
+    const url = releaseUrl(basename(file));
+    manualInstallers[asset.platform] = { url, signature_url: `${url}.sig` };
+  }
 }
 
-// The macOS updater artifact is a .app.tar.gz: an update payload with no
-// installer UI, which a browser unpacks into a bare .app wherever downloads
-// land. The signed .dmg published beside it is the thing a person installs.
-// Declaring it here is what lets the website and the mirror offer it instead of
-// deriving the filename themselves and silently missing a rename.
-if (installerAssetsDir) {
-  const dmgPaths = new Map(
-    walkFiles(installerAssetsDir)
-      .filter((file) => file.endsWith('.dmg'))
-      .map((file) => [basename(file), file])
-  );
-  for (const [platform, arch] of [['darwin-aarch64', 'aarch64'], ['darwin-x86_64', 'x64']]) {
-    const installerName = `OpenBitFun_${version}_${arch}.dmg`;
-    const installerPath = dmgPaths.get(installerName);
-    if (!installerPath) {
-      fail(`Missing macOS installer ${installerName} under ${installerAssetsDir}`);
-    }
-    addManualInstaller(platform, installerPath);
-  }
+const missingManual = requiredManualPlatforms.filter((platform) => !manualInstallers[platform]);
+if (missingManual.length > 0) {
+  fail(`Missing required manual installers: ${missingManual.join(', ')}`);
 }
 
 if (Object.keys(manualInstallers).length > 0) {
-  manifest.manual_installers = manualInstallers;
-}
-
-function addManualInstaller(platform, installerPath) {
-  const signaturePath = `${installerPath}.sig`;
-  if (!existsSync(installerPath) || !existsSync(signaturePath)) {
-    fail(`Missing signed manual installer pair: ${installerPath} and ${signaturePath}`);
-  }
-  const assetName = basename(installerPath);
-  const assetUrl = `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`;
-  manualInstallers[platform] = {
-    url: assetUrl,
-    signature_url: `${assetUrl}.sig`,
-  };
+  manifest.manual_installers = Object.fromEntries(
+    Object.entries(manualInstallers).sort(([a], [b]) => a.localeCompare(b)),
+  );
 }
 
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 console.log(`[latest-json] Wrote ${out}`);
-for (const platform of Object.keys(platforms).sort()) {
-  console.log(`[latest-json] ${platform}: ${platforms[platform].url}`);
+for (const platform of Object.keys(manifest.platforms)) {
+  console.log(`[latest-json] ${platform}: ${manifest.platforms[platform].url}`);
+}
+for (const platform of Object.keys(manualInstallers).sort()) {
+  console.log(`[latest-json] manual ${platform}: ${manualInstallers[platform].url}`);
+}
+
+function releaseUrl(assetName) {
+  return `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`;
 }
 
 function parseArgs(rawArgs) {
@@ -153,65 +177,6 @@ function walkFiles(dir) {
     }
   }
   return files;
-}
-
-function isUpdaterBundle(file) {
-  const lower = file.toLowerCase();
-  return (
-    lower.endsWith('.appimage') ||
-    lower.endsWith('.app.tar.gz') ||
-    lower.endsWith('.tar.gz') ||
-    lower.endsWith('.zip') ||
-    lower.endsWith('.exe') ||
-    lower.endsWith('.deb') ||
-    lower.endsWith('.rpm')
-  );
-}
-
-function inferPlatform(file) {
-  const lower = file.replace(/\\/g, '/').toLowerCase();
-  const arch = inferArch(lower);
-  if (!arch) {
-    return null;
-  }
-
-  if (lower.endsWith('.zip')) {
-    return `windows-${arch}`;
-  }
-  if (lower.includes('-setup.exe') || lower.includes('_setup.exe') || lower.endsWith('setup.exe')) {
-    return `windows-${arch}`;
-  }
-  if (lower.endsWith('.appimage')) {
-    return `linux-${arch}`;
-  }
-  if (lower.includes('.appimage.tar.gz')) {
-    return `linux-${arch}`;
-  }
-  if (lower.endsWith('.deb')) {
-    // Bundle-type key: tauri-plugin-updater installs a deb payload via dpkg only
-    // when the running install is itself a deb, so these clients must receive a
-    // dedicated `linux-<arch>-deb` entry instead of the AppImage the bare key
-    // serves.
-    return `linux-${arch}-deb`;
-  }
-  if (lower.endsWith('.rpm')) {
-    return `linux-${arch}-rpm`;
-  }
-  if (lower.includes('.app.tar.gz')) {
-    return `darwin-${arch}`;
-  }
-
-  return null;
-}
-
-function inferArch(name) {
-  if (/(^|[\\/_.-])(x86_64|x64|amd64)([\\/_.-]|$)/.test(name)) {
-    return 'x86_64';
-  }
-  if (/(^|[\\/_.-])(aarch64|arm64)([\\/_.-]|$)/.test(name)) {
-    return 'aarch64';
-  }
-  return null;
 }
 
 function fail(message) {

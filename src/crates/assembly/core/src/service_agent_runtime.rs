@@ -1023,46 +1023,107 @@ fn remote_chat_messages_from_turns(
     let projected_turns = turns
         .iter()
         .filter(|turn| turn.kind.is_model_visible())
-        .map(|turn| remote_chat_history_turn_from_core_turn(turn, read_image_pixels))
+        .map(|turn| remote_chat_history_turn_from_core_turn(turn, Some(read_image_pixels)))
         .collect::<Vec<_>>();
     build_remote_chat_messages(projected_turns)
 }
 
+/// The typed transcript view of persisted turns (logic batch 4), the same
+/// projection `remote_chat_messages_from_turns` derives mobile history from.
+/// Attachments travel as recorded (no file reads, no re-encode); the turns are
+/// the window the caller loaded, oldest first.
+#[cfg(feature = "remote-connect")]
+pub fn session_transcript_view_from_turns(
+    session_id: &str,
+    turns: &[DialogTurnData],
+    cursor: Option<&str>,
+    has_earlier: bool,
+) -> openbitfun_services_integrations::remote_connect::SessionTranscriptView {
+    use openbitfun_services_integrations::remote_connect::{
+        build_transcript_view, session_transcript_view,
+    };
+    let projected_turns = turns
+        .iter()
+        .filter(|turn| turn.kind.is_transcript_visible())
+        .map(|turn| remote_chat_history_turn_from_core_turn(turn, None))
+        .collect::<Vec<_>>();
+    session_transcript_view(
+        session_id,
+        build_transcript_view(projected_turns),
+        cursor,
+        has_earlier,
+    )
+}
+
+/// `read_image_pixels` is `Some` for mobile history (attachments become
+/// thumbnails); `None` keeps them as recorded for the transcript view.
 #[cfg(feature = "remote-connect")]
 fn remote_chat_history_turn_from_core_turn(
     turn: &DialogTurnData,
-    read_image_pixels: &dyn Fn(&str) -> Option<Vec<u8>>,
+    read_image_pixels: Option<&dyn Fn(&str) -> Option<Vec<u8>>>,
 ) -> RemoteChatHistoryTurn {
+    use crate::service::session::types::{DialogTurnKind, DialogTurnRecoveryStatus};
+    use openbitfun_services_integrations::remote_connect::{
+        remote_chat_user_display_text, transcript_user_images, TranscriptTokenUsage,
+        TranscriptTurnRecovery,
+    };
     let prompt_visible_content =
         crate::agentic::core::strip_prompt_markup(&turn.user_message.content);
-    let user_projection = project_remote_chat_user(
-        turn.user_message.metadata.as_ref(),
-        &prompt_visible_content,
-        read_image_pixels,
-    );
+    let (user_display_content, user_images, user_image_refs) = match read_image_pixels {
+        Some(read_image_pixels) => {
+            let projection = project_remote_chat_user(
+                turn.user_message.metadata.as_ref(),
+                &prompt_visible_content,
+                read_image_pixels,
+            );
+            (projection.content, projection.images, Vec::new())
+        }
+        None => (
+            remote_chat_user_display_text(
+                turn.user_message.metadata.as_ref(),
+                &prompt_visible_content,
+            ),
+            Vec::new(),
+            transcript_user_images(turn.user_message.metadata.as_ref()),
+        ),
+    };
 
     let rounds = turn
         .model_rounds
         .iter()
         .map(|round| RemoteChatHistoryRound {
+            id: round.id.clone(),
             start_time_ms: round.start_time,
             end_time_ms: round.end_time,
+            duration_ms: round.duration_ms,
+            effective_model_name: round.effective_model_name.clone(),
             text_items: round
                 .text_items
                 .iter()
                 .map(|item| RemoteChatHistoryTextItem {
+                    id: item.id.clone(),
                     content: item.content.clone(),
                     order_index: item.order_index,
                     is_subagent: item.is_subagent_item.unwrap_or(false),
+                    parent_task_tool_id: item.parent_task_tool_id.clone(),
                 })
                 .collect(),
             thinking_items: round
                 .thinking_items
                 .iter()
                 .map(|item| RemoteChatHistoryThinkingItem {
+                    id: item.id.clone(),
                     content: item.content.clone(),
                     order_index: item.order_index,
                     is_subagent: item.is_subagent_item.unwrap_or(false),
+                    parent_task_tool_id: item.parent_task_tool_id.clone(),
+                    reasoning_kind: item.reasoning_kind.map(|kind| {
+                        match kind {
+                            openbitfun_core_types::ReasoningContentKind::Reasoning => "reasoning",
+                            openbitfun_core_types::ReasoningContentKind::Summary => "summary",
+                        }
+                        .to_string()
+                    }),
                 })
                 .collect(),
             tool_items: round
@@ -1080,11 +1141,27 @@ fn remote_chat_history_turn_from_core_turn(
                         .as_ref()
                         .map(|result| result.result.clone()),
                     has_result: item.tool_result.is_some(),
+                    success: item.tool_result.as_ref().map(|result| result.success),
+                    error: item
+                        .tool_result
+                        .as_ref()
+                        .and_then(|result| result.error.clone())
+                        .filter(|error| !error.is_empty()),
+                    result_for_assistant: item
+                        .tool_result
+                        .as_ref()
+                        .and_then(|result| result.result_for_assistant.clone())
+                        .filter(|text| !text.is_empty()),
                     status: item.status.clone(),
-                    duration_ms: item.duration_ms,
+                    duration_ms: item.duration_ms.or_else(|| {
+                        item.tool_result
+                            .as_ref()
+                            .and_then(|result| result.duration_ms)
+                    }),
                     start_ms: item.start_time,
                     order_index: item.order_index,
                     is_subagent: item.is_subagent_item.unwrap_or(false),
+                    parent_task_tool_id: item.parent_task_tool_id.clone(),
                 })
                 .collect(),
         })
@@ -1100,9 +1177,15 @@ fn remote_chat_history_turn_from_core_turn(
         turn_id: turn.turn_id.clone(),
         turn_index: turn.turn_index,
         user_message_id: turn.user_message.id.clone(),
-        user_display_content: user_projection.content,
+        kind: match turn.kind {
+            DialogTurnKind::UserDialog => None,
+            DialogTurnKind::ManualCompaction => Some("manual_compaction".to_string()),
+            DialogTurnKind::LocalCommand => Some("local_command".to_string()),
+        },
+        user_display_content,
         user_timestamp_ms: turn.user_message.timestamp,
-        user_images: user_projection.images,
+        user_images,
+        user_image_refs,
         is_in_progress: turn.status == TurnStatus::InProgress,
         status: match &turn.status {
             TurnStatus::InProgress => "active",
@@ -1112,6 +1195,28 @@ fn remote_chat_history_turn_from_core_turn(
         }
         .to_string(),
         error: turn.error.clone(),
+        error_detail: turn
+            .error_detail
+            .as_ref()
+            .and_then(|detail| serde_json::to_value(detail).ok()),
+        duration_ms: turn.duration_ms,
+        token_usage: turn.token_usage.as_ref().map(|usage| TranscriptTokenUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cached_tokens: usage.cached_tokens,
+            total_tokens: usage.total_tokens,
+        }),
+        recovery: turn
+            .recovery
+            .as_ref()
+            .map(|recovery| TranscriptTurnRecovery {
+                status: match recovery.status {
+                    DialogTurnRecoveryStatus::Interrupted => "interrupted",
+                    DialogTurnRecoveryStatus::Recovering => "recovering",
+                }
+                .to_string(),
+                execution_generation: recovery.execution_generation,
+            }),
         start_time_ms: turn.start_time,
         rounds,
     }
@@ -5231,6 +5336,73 @@ mod tests {
 
         session.kind = SessionKind::EphemeralChild;
         assert!(!session_uses_shared_mode_default(&session));
+    }
+
+    #[test]
+    fn transcript_view_projects_the_same_turn_mobile_history_reads() {
+        let turn = remote_history_test_turn(
+            TurnStatus::Completed,
+            Some(serde_json::json!({
+                "original_text": "original question",
+                "images": [{"name": "shot.png", "image_path": "/tmp/shot.png"}]
+            })),
+        );
+        let messages = remote_chat_messages_from_turns(&[turn.clone()], &no_host_image_pixels);
+        let view = crate::session_transcript_view_from_turns("s", &[turn], None, false);
+        assert_eq!(view.mode, "full");
+        let projected = &view.turns[0];
+        assert!(projected.settled);
+        assert_eq!(projected.user.text, messages[0].content);
+        // The view keeps the recorded attachment instead of a mobile thumbnail.
+        assert_eq!(
+            projected.user.images[0].image_path.as_deref(),
+            Some("/tmp/shot.png")
+        );
+        assert_eq!(
+            view.cursor
+                .as_deref()
+                .map(|cursor| cursor.starts_with("tv1:0:")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn transcript_view_reads_turns_persisted_before_the_view_existed() {
+        // A record written by an older build: snake_case aliases, no reasoning
+        // kind, no recovery, an in-progress status and a legacy tool result.
+        let legacy: DialogTurnData = serde_json::from_value(serde_json::json!({
+            "turn_id": "turn-old",
+            "turn_index": 3,
+            "session_id": "s",
+            "timestamp": 1_000,
+            "user_message": {"id": "u", "content": "hello", "timestamp": 1_000},
+            "model_rounds": [{
+                "id": "r", "turn_id": "turn-old", "round_index": 0, "timestamp": 1_000,
+                "text_items": [{"id": "t", "content": "hi there", "is_streaming": false, "timestamp": 1_000, "order_index": 1}],
+                "thinking_items": [{"id": "k", "content": "hmm", "is_streaming": false, "is_collapsed": true, "timestamp": 1_000, "order_index": 0}],
+                "tool_items": [{
+                    "id": "tool", "tool_name": "Read", "start_time": 1_000, "order_index": 2,
+                    "tool_call": {"id": "c", "input": {"file_path": "a.rs"}},
+                    "tool_result": {"result": "ok", "success": false, "error": "denied", "duration_ms": 7}
+                }],
+                "start_time": 1_000, "status": "completed"
+            }],
+            "start_time": 1_000,
+            "status": "inprogress"
+        }))
+        .unwrap();
+        let view = crate::session_transcript_view_from_turns("s", &[legacy], None, false);
+        let turn = &view.turns[0];
+        assert!(!turn.settled);
+        assert_eq!(turn.status, "active");
+        assert_eq!(turn.turn_index, 3);
+        assert!(view.cursor.is_none());
+        let kinds = serde_json::to_value(&turn.items).unwrap();
+        assert_eq!(kinds[0]["kind"], "thinking");
+        assert_eq!(kinds[1]["kind"], "text");
+        assert_eq!(kinds[2]["tool"]["success"], false);
+        assert_eq!(kinds[2]["tool"]["error"], "denied");
+        assert_eq!(kinds[2]["tool"]["durationMs"], 7);
     }
 
     #[test]

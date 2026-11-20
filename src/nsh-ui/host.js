@@ -1215,6 +1215,51 @@ function toSavedAuthType(auth) {
   return { type: "Password" };
 }
 
+/** The dev host's day-keyed activity grid (UTC days), shaped like `get_token_usage_activity`. */
+function devUsageActivity(nowMs) {
+  const today = Date.UTC(new Date(nowMs).getUTCFullYear(), new Date(nowMs).getUTCMonth(), new Date(nowMs).getUTCDate());
+  const start = today - 182 * DAY_MS;
+  const offset = (new Date(start).getUTCDay() + 6) % 7;
+  const gridStart = start - offset * DAY_MS;
+  const weekCount = Math.ceil(((today - start) / DAY_MS + 1 + offset) / 7);
+  const totals = new Map();
+  for (const point of buildCustomUsageTrend(nowMs)) {
+    const day = point.bucket.slice(0, 10);
+    totals.set(day, (totals.get(day) || 0) + point.inputTokens + point.outputTokens);
+  }
+  const days = [];
+  for (let index = 0; index < weekCount * 7; index += 1) {
+    const time = gridStart + index * DAY_MS;
+    const date = new Date(time);
+    const key = date.toISOString().slice(0, 10);
+    const inRange = time >= start && time <= today;
+    days.push({ date: key, month: date.getUTCMonth() + 1, dayOfMonth: date.getUTCDate(), tokens: inRange ? totals.get(key) || 0 : 0, level: 0, inRange });
+  }
+  const peak = days.reduce((max, day) => Math.max(max, day.tokens), 0);
+  for (const day of days) day.level = day.tokens > 0 && peak > 0 ? Math.min(4, Math.max(1, Math.ceil((day.tokens / peak) * 4))) : 0;
+  const monthHeaders = [];
+  days.forEach((day, index) => {
+    if (day.inRange && day.dayOfMonth === 1 && Math.floor(index / 7) + 3 <= weekCount) {
+      monthHeaders.push({ weekIndex: Math.floor(index / 7), month: day.month });
+    }
+  });
+  const active = days.filter(day => day.inRange && day.tokens > 0);
+  return {
+    timeZone: "UTC",
+    months: 6,
+    startDate: new Date(start).toISOString().slice(0, 10),
+    endDate: new Date(today).toISOString().slice(0, 10),
+    weekCount,
+    days,
+    monthHeaders,
+    totalTokens: days.reduce((sum, day) => sum + day.tokens, 0),
+    peakTokens: peak,
+    activeDays: active.length,
+    longestStreak: 0,
+    currentStreak: 0,
+  };
+}
+
 function buildCustomUsageTrend(nowMs) {
   const points = [];
   for (let offset = 175; offset >= 0; offset -= 1) {
@@ -1316,6 +1361,66 @@ const devMiniApps = [
   },
 ];
 let runningMiniAppWorkers = ["space-focus-timer"];
+
+// miniapp market (wave 5): the dev catalogue, origins and submissions.
+const devMarketOwner = { githubId: 1, login: "openbitfun", avatarUrl: "" };
+const devMarketListings = [
+  {
+    listingId: "lst-standup",
+    slug: "standup-board",
+    name: "Standup Board",
+    description: "A daily standup board that reads yesterday's commits and drafts your update.",
+    icon: "layout-grid",
+    category: "productivity",
+    tags: ["team", "git"],
+    owner: devMarketOwner,
+    latestRelease: 3,
+    minOpenBitFunVersion: "1.0.0",
+    permissions: { fs: { read: ["{workspace}"] }, ai: { enabled: true } },
+    screenshotUrls: [],
+    ratingAverage: 4.6,
+    ratingCount: 18,
+    favoriteCount: 42,
+    downloadCount: 1280,
+    publishedAt: 1760000000000,
+    changelog: "Groups commits by author and links pull requests.",
+    license: { spdxExpression: "MIT" },
+    repositoryUrl: "https://github.com/openbitfun/standup-board",
+    releases: [
+      { releaseId: "rel-standup-3", listingId: "lst-standup", releaseNumber: 3, minOpenBitFunVersion: "1.0.0", changelog: "", packageSha256: "a3", packageSize: 1024, reviewBundleHash: "", permissions: {}, publishedAt: 1760000000000, yanked: false },
+      { releaseId: "rel-standup-2", listingId: "lst-standup", releaseNumber: 2, minOpenBitFunVersion: "1.0.0", changelog: "", packageSha256: "a2", packageSize: 1024, reviewBundleHash: "", permissions: {}, publishedAt: 1750000000000, yanked: false },
+    ],
+  },
+  {
+    listingId: "lst-weather",
+    slug: "weather-glance",
+    name: "Weather Glance",
+    description: "Today's forecast for the cities you care about.",
+    icon: "globe",
+    category: "utilities",
+    tags: ["weather"],
+    owner: devMarketOwner,
+    latestRelease: 1,
+    minOpenBitFunVersion: "1.0.0",
+    permissions: { net: { allow: ["api.open-meteo.com"] } },
+    screenshotUrls: [],
+    ratingAverage: 4.1,
+    ratingCount: 7,
+    favoriteCount: 12,
+    downloadCount: 310,
+    publishedAt: 1758000000000,
+    changelog: "First release.",
+    license: { spdxExpression: "Apache-2.0" },
+    releases: [
+      { releaseId: "rel-weather-1", listingId: "lst-weather", releaseNumber: 1, minOpenBitFunVersion: "1.0.0", changelog: "", packageSha256: "b1", packageSize: 900, reviewBundleHash: "", permissions: {}, publishedAt: 1758000000000, yanked: false },
+    ],
+  },
+];
+const devMarketOrigins = {};
+const devMarketSubmissions = [
+  { submissionId: "sub-1", slug: "focus-timer", name: "Focus Timer", icon: "box", releaseNumber: 2, status: "submitted", createdAt: 1761000000000, updatedAt: 1761000000000 },
+  { submissionId: "sub-2", slug: "regex-lab", name: "Regex Lab", icon: "regex", releaseNumber: 1, status: "rejected", rejectionReason: "The package asks for shell access it does not use.", createdAt: 1759000000000, updatedAt: 1759500000000 },
+];
 
 // Remote Connect & Messaging Bots state
 let remoteFormState = {
@@ -1477,6 +1582,10 @@ const devInsightsReports = [
 let insightsSeq = 2;
 let devSessionSeq = 10;
 let devTerminalSeq = 1;
+const devTerminalProfiles = {};
+function devTerminalProfilesAnswer(workspaceId) {
+  return { workspaceId, profiles: devTerminalProfiles[workspaceId] || [], maxProfiles: 20 };
+}
 const devTerminalBuffers = {};
 
 const DEV_FIXTURES = {
@@ -1582,6 +1691,66 @@ const DEV_FIXTURES = {
   load_session_turns: args => {
     const req = payloadOf(args);
     return DEV_SESSION_TURNS[req.session_id] || [];
+  },
+  // transcript view (wave 4): the dev host projects its fixture turns the way
+  // the backend's transcript view does (full window, no cursor).
+  get_session_transcript_view: args => {
+    const req = payloadOf(args);
+    const sessionId = req.session_id || req.sessionId;
+    const turns = (DEV_SESSION_TURNS[sessionId] || []).map((turn, position) => {
+      const items = [];
+      let durationMs = 0;
+      let model;
+      (turn.modelRounds || []).forEach((round, roundIndex) => {
+        if (round.effectiveModelName) model = round.effectiveModelName;
+        if (typeof round.durationMs === "number") durationMs += round.durationMs;
+        const ordered = [];
+        let seq = 0;
+        for (const item of round.thinkingItems || []) {
+          if (item.content) ordered.push({ order: item.orderIndex, seq: seq++, item: { kind: "thinking", id: item.id, roundIndex, text: item.content } });
+        }
+        for (const item of round.textItems || []) {
+          if (item.content) ordered.push({ order: item.orderIndex, seq: seq++, item: { kind: "text", id: item.id, roundIndex, text: item.content } });
+        }
+        for (const item of round.toolItems || []) {
+          const result = item.toolResult || {};
+          ordered.push({
+            order: item.orderIndex,
+            seq: seq++,
+            item: {
+              kind: "tool",
+              roundIndex,
+              tool: {
+                id: item.id,
+                name: item.toolName,
+                input: (item.toolCall || {}).input ?? null,
+                status: item.status || (item.toolResult ? "completed" : "running"),
+                ...(typeof result.success === "boolean" ? { success: result.success } : {}),
+                ...(result.result !== undefined ? { result: result.result } : {}),
+                ...(typeof item.durationMs === "number" ? { durationMs: item.durationMs } : {}),
+                startMs: item.startTime || 0,
+              },
+            },
+          });
+        }
+        ordered.sort((left, right) => (left.order ?? 1e9) - (right.order ?? 1e9) || left.seq - right.seq);
+        for (const entry of ordered) items.push(entry.item);
+      });
+      return {
+        turnId: turn.turnId || turn.id,
+        turnIndex: typeof turn.turnIndex === "number" ? turn.turnIndex : position,
+        kind: "user_dialog",
+        status: "done",
+        settled: true,
+        user: { id: turn.userMessage.id, text: turn.userMessage.content, timestampMs: turn.userMessage.timestamp || 0 },
+        items,
+        ...(model ? { effectiveModel: model } : {}),
+        ...(durationMs ? { durationMs } : {}),
+        startTimeMs: turn.timestamp || 0,
+        assistantTimestampMs: turn.timestamp || 0,
+      };
+    });
+    return { sessionId, mode: "full", turns, hasEarlier: false };
   },
   create_session: args => {
     const req = payloadOf(args);
@@ -2033,13 +2202,15 @@ const DEV_FIXTURES = {
   // Assistants & Persona Studio
   get_assistant_workspaces: () => [...devAssistants],
   get_primary_assistant_workspace: () => devAssistants.find(a => a.id === primaryAssistantId) || null,
-  create_assistant_workspace: () => {
+  create_assistant_workspace: args => {
     const num = assistantSeq++;
     const slug = `assistant-${num}`;
     const rootPath = `/workspace/assistants/${slug}`;
+    const requestedName = String(payloadOf(args).name || "").trim();
     const created = {
       id: `dev-assistant-${num}`,
-      name: `Assistant ${num}`,
+      name: requestedName || `Assistant ${num}`,
+      identity: { name: requestedName || `Assistant ${num}` },
       rootPath,
       workspaceType: "normal",
       workspaceKind: "assistant",
@@ -2058,6 +2229,27 @@ const DEV_FIXTURES = {
     devFileContents[`${rootPath}/SOUL.md`] = defaultPersonaContent("SOUL.md", created.name);
     devFileContents[`${rootPath}/USER.md`] = defaultPersonaContent("USER.md", created.name);
     return created;
+  },
+  // assistant identity (wave 4): the host rewrites only the given IDENTITY.md fields.
+  set_assistant_identity: args => {
+    const req = payloadOf(args);
+    const assistant = devAssistants.find(a => a.id === req.workspaceId);
+    if (!assistant) throw new Error(`Workspace not found: ${req.workspaceId}`);
+    const path = `${assistant.rootPath}/IDENTITY.md`;
+    let content = devFileContents[path] || "---\n---\n";
+    const identity = { ...(assistant.identity || {}) };
+    for (const field of ["name", "creature", "vibe", "avatar", "emoji"]) {
+      if (typeof req[field] !== "string") continue;
+      const value = req[field].replace(/\s+/g, " ").trim();
+      const line = value ? `${field}: ${JSON.stringify(value)}` : `${field}:`;
+      const pattern = new RegExp(`^${field}\\s*:.*$`, "m");
+      content = pattern.test(content) ? content.replace(pattern, line) : content.replace(/\n---\n/, `\n${line}\n---\n`);
+      identity[field] = value || undefined;
+    }
+    devFileContents[path] = content;
+    assistant.identity = identity;
+    if (identity.name) assistant.name = identity.name;
+    return { workspace: { ...assistant }, content };
   },
   set_primary_assistant_workspace: args => {
     const req = payloadOf(args);
@@ -2340,6 +2532,35 @@ const DEV_FIXTURES = {
 
   // Routines / Scheduled Cron Jobs
   notify_cron_host_ready: () => null,
+  // routines + assistant (wave 4): dev stand-ins for the host scheduler's answers.
+  validate_cron_job_draft: args => {
+    const req = payloadOf(args);
+    const issues = [];
+    if (!String(req.name || "").trim()) issues.push({ field: "name", code: "name_required", message: "name" });
+    if (!String((req.payload || {}).text || "").trim()) {
+      issues.push({ field: "payload", code: "payload_required", message: "payload" });
+    }
+    return { valid: issues.length === 0, issues };
+  },
+  preview_cron_occurrences: args => {
+    const req = payloadOf(args);
+    const from = Number(req.fromMs || Date.now());
+    const to = Number(req.toMs || from + 7 * 24 * HOUR_MS);
+    const count = Number(req.count || 96);
+    const runsOf = schedule => {
+      const step = schedule && schedule.kind === "every" ? Math.max(60_000, Number(schedule.everyMs) || 0) : 24 * HOUR_MS;
+      const runs = [];
+      for (let at = from + step; at <= to && runs.length < count; at += step) runs.push(at);
+      return runs;
+    };
+    const jobs = req.schedule && !req.jobIds
+      ? []
+      : devCronJobs.filter(job => job.enabled).map(job => ({ jobId: job.id, valid: true, occurrences: runsOf(job.schedule), truncated: false }));
+    return {
+      ...(req.schedule ? { schedule: { valid: true, occurrences: runsOf(req.schedule).slice(0, 3), truncated: false } } : {}),
+      jobs,
+    };
+  },
   list_cron_jobs: () => devCronJobs.map(j => ({ ...j, state: { ...j.state } })),
   create_cron_job: args => {
     const req = payloadOf(args);
@@ -2526,6 +2747,47 @@ const DEV_FIXTURES = {
   git_pull: () => {
     devGitStatus.behind = 0;
     return { success: true, message: "Already up to date." };
+  },
+  // git liveness (wave 4): the dev host has no watcher; the lease answers the
+  // status now and nothing is pushed later.
+  git_watch_status: args => {
+    const req = payloadOf(args);
+    return {
+      workspaceId: req.workspaceId || "",
+      repositoryPath: req.repositoryPath || "",
+      revision: 0,
+      status: DEV_FIXTURES.git_get_status(),
+      mode: "watch",
+      event: "git://status-changed",
+    };
+  },
+  git_unwatch_status: () => true,
+  git_discard_files: args => {
+    const req = payloadOf(args);
+    const files = Array.isArray(req.files) ? req.files : [];
+    for (const filePath of files) {
+      const untracked = devGitStatus.untracked.indexOf(filePath);
+      if (untracked >= 0) {
+        if (!req.includeUntracked) {
+          throw new Error(`Refusing to delete untracked files without includeUntracked: ${filePath}`);
+        }
+        devGitStatus.untracked.splice(untracked, 1);
+      }
+      devGitStatus.staged = devGitStatus.staged.filter(f => f.path !== filePath);
+      devGitStatus.unstaged = devGitStatus.unstaged.filter(f => f.path !== filePath);
+      devGitStatus.conflicts = devGitStatus.conflicts.filter(path => path !== filePath);
+    }
+    return { success: true, data: { restore: files } };
+  },
+  git_commit_and_checkout: args => {
+    const req = payloadOf(args);
+    if (devGitStatus.conflicts.length > 0) {
+      throw new Error("Resolve the merge conflicts in the working copy before switching branches.");
+    }
+    devGitStatus.staged = [];
+    devGitStatus.unstaged = devGitStatus.unstaged.filter(f => !(req.files || []).includes(f.path));
+    devGitStatus.current_branch = req.targetBranch || devGitStatus.current_branch;
+    return { success: true, data: { committed: true, branch: req.targetBranch } };
   },
   quick_commit_message: () => ({
     title: "feat(nsh): update studio workspace components",
@@ -2721,6 +2983,118 @@ const DEV_FIXTURES = {
     return null;
   },
 
+  // miniapp market (wave 5): a small catalogue so Spaces > Market is live in a
+  // plain browser. The install answers the host's permission refusal first.
+  miniapp_market_browse: args => {
+    const req = payloadOf(args);
+    const query = String(req.query || "").toLowerCase();
+    const category = String(req.category || "all");
+    const items = devMarketListings
+      .filter(item => category === "all" || item.category === category)
+      .filter(item => !query || `${item.name} ${item.description}`.toLowerCase().includes(query))
+      .map(({ releases: _releases, changelog: _changelog, license: _license, ...summary }) => summary);
+    return { items };
+  },
+  miniapp_market_get_listing: args => {
+    const req = payloadOf(args);
+    const found = devMarketListings.find(item => item.slug === req.slug);
+    if (!found) throw new Error(JSON.stringify({ code: "not_found", message: "Listing not found." }));
+    return found;
+  },
+  miniapp_market_installed_status: args => {
+    const req = payloadOf(args);
+    const appId = Object.keys(devMarketOrigins).find(id => devMarketOrigins[id].listingId === req.listingId);
+    if (!appId) return null;
+    return { appId, appVersion: 1, permissions: {}, origin: devMarketOrigins[appId], localOverride: false };
+  },
+  miniapp_market_installed_origins: () => ({ ...devMarketOrigins }),
+  miniapp_market_set_favorite: args => {
+    const req = payloadOf(args);
+    const found = devMarketListings.find(item => item.slug === req.slug);
+    if (!found) throw new Error("Listing not found.");
+    if (Boolean(req.enabled) !== Boolean(found.isFavorited)) found.favoriteCount += req.enabled ? 1 : -1;
+    found.isFavorited = Boolean(req.enabled);
+    return { count: found.favoriteCount, isFavorited: found.isFavorited };
+  },
+  miniapp_market_set_rating: args => {
+    const req = payloadOf(args);
+    const found = devMarketListings.find(item => item.slug === req.slug);
+    if (!found) throw new Error("Listing not found.");
+    if (found.myRating == null && req.value != null) found.ratingCount += 1;
+    found.myRating = req.value == null ? undefined : req.value;
+    return { average: found.ratingAverage, count: found.ratingCount, myRating: found.myRating ?? null };
+  },
+  miniapp_market_list_submissions: () => devMarketSubmissions.map(item => ({ ...item })),
+  miniapp_market_withdraw_submission: args => {
+    const req = payloadOf(args);
+    const found = devMarketSubmissions.find(item => item.submissionId === req.submissionId);
+    if (!found) throw new Error("Submission not found.");
+    found.status = "withdrawn";
+    return { ...found };
+  },
+  miniapp_market_install: args => {
+    const req = payloadOf(args);
+    const found = devMarketListings.find(item => item.slug === req.slug);
+    if (!found) throw new Error("Listing not found.");
+    if ((found.permissions.net?.allow?.length || 0) > 0 && !req.confirmPermissions) {
+      throw new Error(`Permission confirmation required: net.allow:${found.permissions.net.allow.join(",")}`);
+    }
+    const appId = req.existingAppId || `market-${found.slug}`;
+    const release = found.releases[0];
+    devMarketOrigins[appId] = {
+      listingId: found.listingId,
+      releaseId: release.releaseId,
+      releaseNumber: release.releaseNumber,
+      packageSha256: release.packageSha256,
+    };
+    const app = {
+      id: appId,
+      name: found.name,
+      description: found.description,
+      icon: found.icon,
+      category: found.category,
+      tags: found.tags,
+      version: 1,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      permissions: found.permissions,
+      runtime_profile: "compatibility",
+      source: { html: "<div>Market Space</div>", css: "", ui_js: "", worker_js: "" },
+    };
+    if (!devMiniApps.some(item => item.id === appId)) devMiniApps.push(app);
+    return { app, origin: devMarketOrigins[appId], updated: Boolean(req.existingAppId), permissionDiff: { added: [], expanded: [] } };
+  },
+  miniapp_market_inspect_package: args => {
+    const req = payloadOf(args);
+    if (!String(req.path || "").toLowerCase().endsWith(".bfminiapp")) throw new Error("Select a .bfminiapp package.");
+    return {
+      name: "Imported Space",
+      description: "A Space from a local package.",
+      packageSha256: "9f2c4a7d1e0b3c5a9f2c4a7d1e0b3c5a",
+      permissions: {},
+      permissionDiff: { added: [], expanded: [] },
+    };
+  },
+  miniapp_market_import_package: args => {
+    const req = payloadOf(args);
+    const app = {
+      id: `imported-${devMiniApps.length + 1}`,
+      name: "Imported Space",
+      description: `Imported from ${req.path}`,
+      icon: "box",
+      category: "other",
+      tags: [],
+      version: 1,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      permissions: {},
+      runtime_profile: "compatibility",
+      source: { html: "<div>Imported</div>", css: "", ui_js: "", worker_js: "" },
+    };
+    devMiniApps.push(app);
+    return app;
+  },
+
   // Workbench (round 4): disk identity, the file watcher, the terminal list and
   // commit inspection, so the scenes are live in a plain browser too.
   get_file_metadata: args => {
@@ -2747,6 +3121,45 @@ const DEV_FIXTURES = {
   ],
 
   // Terminal
+  // remote link + terminal profiles (wave 4): profiles kept per workspace id, as the host does.
+  get_terminal_profiles: args => devTerminalProfilesAnswer(payloadOf(args).workspaceId),
+  upsert_terminal_profile: args => {
+    const req = payloadOf(args);
+    const rows = devTerminalProfiles[req.workspaceId] || [];
+    const profile = req.profile || {};
+    const name = String(profile.name || "").trim();
+    if (!name) throw new Error("terminal_profile_name_required: a profile needs a name");
+    if (rows.some(row => row.name === name && row.id !== profile.id)) {
+      throw new Error(`terminal_profile_name_taken: a profile named ${name} already exists`);
+    }
+    const id = profile.id || `tp_dev_${devTerminalSeq++}`;
+    const row = {
+      id,
+      name,
+      shellId: String(profile.shellId || ""),
+      shellType: String(profile.shellType || ""),
+      startupCommand: String(profile.startupCommand || "").trim(),
+    };
+    devTerminalProfiles[req.workspaceId] = profile.id ? rows.map(r => (r.id === id ? row : r)) : [...rows, row];
+    return { ...devTerminalProfilesAnswer(req.workspaceId), id };
+  },
+  delete_terminal_profile: args => {
+    const req = payloadOf(args);
+    devTerminalProfiles[req.workspaceId] = (devTerminalProfiles[req.workspaceId] || []).filter(r => r.id !== req.profileId);
+    return devTerminalProfilesAnswer(req.workspaceId);
+  },
+  import_terminal_profiles: args => {
+    const req = payloadOf(args);
+    const rows = devTerminalProfiles[req.workspaceId] || [];
+    let imported = 0;
+    for (const p of req.profiles || []) {
+      if (!p.name || rows.some(r => r.name === p.name)) continue;
+      rows.push({ ...p, id: p.id || `tp_dev_${devTerminalSeq++}` });
+      imported += 1;
+    }
+    devTerminalProfiles[req.workspaceId] = rows;
+    return { ...devTerminalProfilesAnswer(req.workspaceId), imported, skipped: (req.profiles || []).length - imported };
+  },
   terminal_get_shells: () => [
     { id: "zsh", name: "Zsh", shellType: "Zsh", path: "/bin/zsh", version: "5.9", available: true },
     { id: "bash", name: "Bash", shellType: "Bash", path: "/bin/bash", version: "5.2", available: true },
@@ -2777,9 +3190,10 @@ const DEV_FIXTURES = {
     if (!devAccountLoggedIn) {
       throw new Error("not logged in");
     }
+    // The host merges its live relay presence into the directory rows.
     return [
-      { deviceId: "dev-device-mac", deviceName: "studio-mac", platform: "macos", alias: "Studio" },
-      { deviceId: "dev-device-remote", deviceName: "build-host", platform: "linux" },
+      { deviceId: "dev-device-mac", deviceName: "studio-mac", platform: "macos", alias: "Studio", online: true, presence: "live", is_local: true },
+      { deviceId: "dev-device-remote", deviceName: "build-host", platform: "linux", online: false, presence: "offline", is_local: false },
     ];
   },
   account_online_devices: () => {
@@ -2996,6 +3410,74 @@ const DEV_FIXTURES = {
       byEndpoint: [{ key: "chat", name: "/v1/chat/completions", requests: 42, tokens: 124500 }],
       trend,
       granularity: req.granularity || "day",
+    };
+  },
+  // view models (wave 4): dev answers shaped like the backend view models.
+  get_token_usage_activity: () => devUsageActivity(Date.now()),
+  get_workspace_navigator: args => {
+    const req = payloadOf(args);
+    const opened = devWorkspaces.slice();
+    const openedIds = new Set(opened.map(w => w.id));
+    const recent = [...devWorkspaces, ...devRecentOnlyWorkspaces].filter(
+      (w, index, list) => !openedIds.has(w.id) && list.findIndex(other => other.id === w.id) === index,
+    );
+    const selected = typeof req.selectedId === "string" ? req.selectedId : "";
+    if (selected && openedIds.has(selected)) return { opened, recent, selectedId: selected, selection: "kept" };
+    if (activeWorkspaceId && openedIds.has(activeWorkspaceId)) {
+      return { opened, recent, selectedId: activeWorkspaceId, selection: "host_current" };
+    }
+    if (opened.length > 0) return { opened, recent, selectedId: opened[0].id, selection: "first_opened" };
+    return { opened, recent, selectedId: null, selection: "none", ...(recent[0] ? { reopenCandidateId: recent[0].id } : {}) };
+  },
+  get_personal_overview: () => {
+    const ready = value => ({ status: "ready", value });
+    const now = Date.now();
+    const jobs = DEV_FIXTURES.list_cron_jobs();
+    const skills = DEV_FIXTURES.get_skill_configs({});
+    const skillList = Array.isArray(skills) ? skills : Array.isArray(skills && skills.skills) ? skills.skills : [];
+    const running = new Set(DEV_FIXTURES.miniapp_worker_list_running());
+    const spaces = DEV_FIXTURES.list_miniapps().map(app => ({
+      id: app.id,
+      name: app.name || app.id,
+      description: app.description || "",
+      icon: app.icon || "shapes",
+      running: running.has(app.id),
+    }));
+    const usage = DEV_FIXTURES.get_token_usage_statistics({ request: { timeRange: "custom", granularity: "day" } });
+    return {
+      assistants: ready({ count: DEV_FIXTURES.get_assistant_workspaces().length }),
+      skills: ready({
+        count: skillList.length,
+        enabled: skillList.filter(skill => skill.enabled !== false && skill.disabled !== true).length,
+      }),
+      routines: ready({
+        count: jobs.length,
+        enabled: jobs.filter(job => job.enabled !== false).length,
+        dueSoon: jobs
+          .filter(job => job.enabled !== false && job.state && typeof job.state.nextRunAtMs === "number")
+          .filter(job => job.state.nextRunAtMs >= now - 3600000 && job.state.nextRunAtMs <= now + DAY_MS)
+          .sort((a, b) => a.state.nextRunAtMs - b.state.nextRunAtMs)
+          .map(job => ({
+            id: job.id,
+            name: job.name || job.id,
+            nextRunAtMs: job.state.nextRunAtMs,
+            lastRunStatus: job.state.lastRunStatus,
+            schedule: job.schedule,
+          })),
+      }),
+      spaces: ready({ count: spaces.length, running: spaces.filter(item => item.running).length, items: spaces }),
+      ssh: ready({ connections: DEV_FIXTURES.ssh_list_saved_connections() }),
+      usage: ready({
+        days: 30,
+        totalTokens: usage.totalTokens,
+        totalRequests: usage.totalRequests,
+        inputTokens: usage.totalInputTokens,
+        outputTokens: usage.totalOutputTokens,
+        cachedTokens: usage.totalCachedTokens,
+        failedRequests: usage.failedRequests,
+        topModelName: usage.byModel[0] ? usage.byModel[0].name : "",
+      }),
+      activity: ready(devUsageActivity(now)),
     };
   },
   get_local_models_dev_catalogs: () => ({
@@ -3245,6 +3727,14 @@ const DEV_FIXTURES = {
     const req = payloadOf(args);
     return devSshConnectedIds.has(String(req.connectionId || ""));
   },
+  // remote link + terminal profiles (wave 4): the dev host reports links as up.
+  remote_workspace_ensure_connected: args => {
+    const req = payloadOf(args);
+    const connectionId = String(req.connectionId || "");
+    devSshConnectedIds.add(connectionId);
+    return { link: { connectionId, state: "connected", revision: Date.now() }, activated: false };
+  },
+  remote_workspace_link_states: () => [],
   ssh_get_server_info: args => {
     const req = payloadOf(args);
     const saved = devSshConnections.find(c => c.id === req.connectionId);
@@ -3686,6 +4176,19 @@ export async function createHost(player) {
         const key = textChunkKeyOf(payload);
         const last = pendingTextChunks[pendingTextChunks.length - 1];
         if (last && last.key === key && last.field === field && last.payload.isThinkingEnd !== true) {
+          // Same as src/textChunkCoalescer.ts: the merged chunk keeps its newest
+          // delivery cursor and the cursor span of every part it merged.
+          if (typeof payload.__openbitfunRuntimeEventCursor === "number") {
+            const before = String(last.payload[field]).length;
+            const spans = Array.isArray(last.payload.__openbitfunChunkSpans)
+              ? last.payload.__openbitfunChunkSpans
+              : typeof last.payload.__openbitfunRuntimeEventCursor === "number"
+                ? [[last.payload.__openbitfunRuntimeEventCursor, before]]
+                : [];
+            spans.push([payload.__openbitfunRuntimeEventCursor, before + String(payload[field]).length]);
+            last.payload.__openbitfunChunkSpans = spans;
+            last.payload.__openbitfunRuntimeEventCursor = payload.__openbitfunRuntimeEventCursor;
+          }
           last.payload[field] += payload[field];
           if (payload.isThinkingEnd === true) {
             last.payload.isThinkingEnd = true;

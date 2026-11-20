@@ -105,7 +105,7 @@ Claude Code 的声明式安全子集已由同级 adapter 接入并在 Product As
 | `assembly/external-sources` | 与 provider 无关的一次性版本切换、隔离降级、同名冲突目录和版本敏感选择 | 注册具体 adapter、按生态分支或解释生态文件 |
 | `assembly/core` | 注册 adapter、按工作区协调刷新、定义偏好 schema/路径并通过服务原语持久化、连接 watcher 与产品入口 | 实现文件锁/原子写、复制 OpenCode parser、按生态分支能力行为 |
 | `apps/cli` | 将可用外部 Command 以原生 `/command` 显示在 TUI 菜单并接入输入分发；来源标签及内部 candidate id 处理同名候选 | 解析 OpenCode 文件、注册假工具或公开生态限定命令 |
-| `apps/desktop` / `web-ui` | 统一来源摘要、刷新、抑制/恢复和非阻塞反馈 | 持有 adapter、直接读取用户目录、通过 IPC 传输模板正文 |
+| `apps/desktop` / `nsh-ui` | 统一来源摘要、刷新、抑制/恢复和非阻塞反馈 | 持有 adapter、直接读取用户目录、通过 IPC 传输模板正文 |
 
 ### 3.3 生命周期与失败语义
 

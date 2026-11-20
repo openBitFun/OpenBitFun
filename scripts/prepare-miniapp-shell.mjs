@@ -59,7 +59,9 @@ export function prepareMiniAppShell({
     }
     return binary;
   });
-  const sidecarDir = join(root, 'src/apps/desktop/gen/miniapp-shell');
+  // The per-target copy (universal binaries are merged here), kept under the
+  // build output rather than in the source tree.
+  const sidecarDir = join(targetDir, 'miniapp-shell', 'staged');
   mkdirSync(sidecarDir, { recursive: true });
   const sidecarBase = join(sidecarDir, SHELL_NAME);
   const sidecar = `${sidecarBase}-${triple}${extension}`;
@@ -69,8 +71,8 @@ export function prepareMiniAppShell({
     copyFileSync(binaries[0], sidecar);
   }
   chmodSync(sidecar, statSync(sidecar).mode | 0o111);
-  // Tauri bundles externalBin alongside the host. Raw dev/no-bundle builds
-  // require the same sibling layout, including custom target/profile folders.
+  // The native runner launches the shell from its own directory; raw builds use
+  // the same sibling layout, including custom target/profile folders.
   const stage = join(targetDir, ...(target ? [target] : []), profile, name);
   mkdirSync(dirname(stage), { recursive: true });
   copyFileSync(sidecar, stage);

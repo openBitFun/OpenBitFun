@@ -144,7 +144,7 @@ Get the Windows, macOS, or Linux package from the [official download page](https
 use the [OpenBitFun Data Tools](src/apps/data-tools/README.md), currently available
 for stable releases 0.2.17–0.2.19.
 
-To run from source, install [Node.js](https://nodejs.org/) 22.12+, [pnpm](https://pnpm.io/) 10.15.0, the [Rust toolchain](https://rustup.rs/), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Clone the repository, then run:
+To run from source, install [Node.js](https://nodejs.org/) 22.12+, [pnpm](https://pnpm.io/) 10.15.0, the [Rust toolchain](https://rustup.rs/) (1.98.1 for the native desktop app), and the NSH CLI (`nsh` 0.6, see [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)). Clone the repository, then run:
 
 ```bash
 pnpm install

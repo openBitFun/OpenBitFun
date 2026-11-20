@@ -29,7 +29,6 @@ pub(super) const UNAUDITED_BASELINE: &[&str] = &[
     "control_background_command",
     "control_deep_review_queue",
     "create_acp_flow_session",
-    "create_assistant_workspace",
     "create_cron_job",
     "create_custom_agent",
     "create_miniapp",
@@ -151,7 +150,6 @@ pub(super) const UNAUDITED_BASELINE: &[&str] = &[
     "miniapp_install_deps",
     "miniapp_permission_diff_for_draft",
     "miniapp_recompile",
-    "miniapp_render_slide_page",
     "miniapp_runtime_status",
     "miniapp_set_draft_permissions",
     "miniapp_sync_draft_from_fs",
@@ -227,7 +225,6 @@ pub(super) const UNAUDITED_BASELINE: &[&str] = &[
     "upload_image_contexts",
     "validate_config",
     "validate_skill_path",
-    "webdriver_bridge_result",
 ];
 
 /// Commands the CLI peer host answers with an empty or no-op success because

@@ -1,19 +1,33 @@
-import { before, after, test } from 'node:test';
+import { before, after, test as nodeTest } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, rm, symlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { loadProduct, buildDirectory, validateInput, initDirectory, lintAuthoring, compositionReview } from './visual-skin.mjs';
+import { loadProduct, buildDirectory, validateInput, initDirectory, lintAuthoring, compositionReview, findProject, CONTRACT_UNAVAILABLE } from './visual-skin.mjs';
 
 const script = fileURLToPath(new URL('./visual-skin.mjs', import.meta.url));
 const example = resolve(dirname(script), '../examples/aurora-paper');
+// The product contract lived in the retired React desktop UI; these round trips only
+// run against a checkout that still has it. Otherwise the tool must fail explicitly.
+const contractAvailable = Boolean(findProject(process.cwd()) ?? findProject(dirname(script)));
+const skip = contractAvailable ? false : 'visual-skin product contract retired with src/web-ui';
+const test = (name, fn) => nodeTest(name, { skip }, fn);
+
+nodeTest('reports an explicit unsupported state when the product contract is unavailable', { skip: contractAvailable }, async () => {
+  await assert.rejects(loadProduct(), error => error.message === CONTRACT_UNAVAILABLE);
+  let failure;
+  try { execFileSync(process.execPath, [script, 'contract'], { cwd: tmpdir(), stdio: 'pipe' }); } catch (error) { failure = error; }
+  assert.ok(failure, 'the CLI must exit non-zero');
+  assert.match(String(failure.stderr), /retired React desktop UI/);
+});
 let product;
 let scratch;
 let sequence = 0;
 
 before(async () => {
+  if (!contractAvailable) return;
   product = await loadProduct();
   scratch = await mkdtemp(join(tmpdir(), 'openbitfun-skin-authoring-'));
 });

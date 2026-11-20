@@ -480,6 +480,38 @@ pub(crate) async fn load_session_turns(
     serde_json::to_value(turns).map_err(|e| format!("serialize turns: {e}"))
 }
 
+/// Logic batch 4: the typed transcript view, the same projection the desktop
+/// host answers (`openbitfun_core::session_transcript_view_from_turns`).
+pub(crate) async fn get_session_transcript_view(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = request_value(args);
+    let session_id = validated_session_id(request)?;
+    let workspace_path = resolved_session_storage_path(state, request).await?;
+    let limit = request
+        .get("limit")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .filter(|value| *value > 0);
+    let turns = state
+        .compatibility
+        .load_persisted_session_turns(&workspace_path, &session_id, limit)
+        .await
+        .map_err(|e| format!("Failed to load session transcript: {e}"))?;
+    let has_earlier = limit.is_some_and(|limit| {
+        turns.len() >= limit && turns.first().is_some_and(|turn| turn.turn_index > 0)
+    });
+    let cursor = optional_string(request, "cursor");
+    let view = openbitfun_core::session_transcript_view_from_turns(
+        &session_id,
+        &turns,
+        cursor.as_deref(),
+        has_earlier,
+    );
+    serde_json::to_value(view).map_err(|e| format!("serialize transcript view: {e}"))
+}
+
 pub(crate) async fn load_session_turn_window(
     state: &PeerHostState,
     args: &Value,

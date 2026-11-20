@@ -936,6 +936,27 @@ impl DesktopSessionApplication {
         Some(backfill)
     }
 
+    /// The runtime journal's projection of the Turn a session is running now,
+    /// for a client that attaches mid-turn (transcript view hydration).
+    ///
+    /// An ACP prompt owned by this host answers from its execution snapshot,
+    /// the same authority `restore_session_view` uses; `None` when nothing is
+    /// running here, so a pre-restart record is never revived as live.
+    /// The `bool` says the projection came from ACP.
+    pub(crate) fn running_turn_projection(
+        &self,
+        session_id: &str,
+    ) -> Option<(SessionEventProjectionSnapshot, bool)> {
+        if self.host_effects.supports_acp_projection() {
+            if let Some(acp) = self.host_effects.acp_execution_snapshot(session_id) {
+                return acp.running.then_some((acp.projection, true));
+            }
+        }
+        self.agent_runtime
+            .session_event_projection_snapshot(session_id)
+            .map(|snapshot| (snapshot, false))
+    }
+
     pub(crate) fn has_acp_execution(&self, session_id: &str) -> bool {
         self.host_effects
             .acp_execution_snapshot(session_id)

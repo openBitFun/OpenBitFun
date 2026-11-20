@@ -15,7 +15,7 @@
 - Node.js 22.12+（建议 LTS 版本）
 - pnpm 10.15.0（建议通过 Corepack 使用）
 - Rust toolchain（通过 rustup 安装）
-- 桌面端开发需准备 Tauri 依赖
+- 原生桌面应用需准备 [NSH CLI](docs/architecture/nsh-frontend.md)（`nsh` 0.6）和 Rust 1.98.1（`RUSTUP_TOOLCHAIN=1.98.1`）
 
 OpenBitFun 将本地 JavaScript 构建和 CI 统一到 Node.js 22.12+。仓库里的
 GitHub Actions 升级使用的是兼容 Node.js 24 的 action runtime，但项目脚本
@@ -53,27 +53,26 @@ pnpm install
 pnpm 工作区统一使用根目录的 `pnpm-lock.yaml`，不要为工作区包提交
 `package-lock.json`。独立的 `packages/dsh-acp` npm 包与
 `src/apps/extension-host` Bun 宿主保留各自的锁文件和准备命令。
-Tauri 生成的 `gen/` 目录以及本地实施过程记录不进入 Git。
+生成的 `gen/` 目录（Data Tools、安装器、MiniApp shell）以及本地实施过程记录不进入 Git。
 
 ### 常用命令
 
 ```bash
-# Desktop（日常开发推荐）
-pnpm run desktop:dev                # 完整热更新：Vite HMR + Rust 自动重编译并重启
+# Desktop：原生 NSH 应用（src/apps/desktop-nsh + src/nsh-ui + 后端库）
+pnpm run desktop:dev                # 构建 UI 包、后端和运行器（debug）后启动
 pnpm run desktop:dev -- --isolated-data # 显式使用当前仓库的独立测试数据
+pnpm run desktop:preview:debug      # 不重新构建，直接运行上次的 debug 构建
 pnpm run prepare:dsh-profile        # 可选：编译 DeepSeek Harness 桥，供本地会话使用
 
-# Desktop（轻量预览，无 Rust 自动重编译）
-pnpm run desktop:preview:debug      # 复用预构建二进制 + Vite HMR；Rust 改动需手动重启
+# Desktop（当前系统的打包应用：target/desktop-nsh/）
+pnpm run desktop:build              # release profile；本地快速打包用 desktop:build:release-fast
 
-# Desktop（生产构建）
-pnpm run desktop:build
-
-# E2E
-pnpm run e2e:test
+# UI 测试与原生冒烟测试
+pnpm run e2e:ui                     # 无界面 NSH UI 测试（cd src/nsh-ui && nsh test .）
+pnpm run e2e:smoke                  # 在临时配置下启动已构建的应用，并通过 OBP 驱动
 ```
 
-> **`desktop:dev` 与 `desktop:preview:debug` 的区别**：`desktop:dev` 运行 `tauri dev`，提供**完整热更新** — 前端改动通过 Vite HMR 即时生效，Rust/后端改动会触发增量重编译并自动重启应用，是日常开发的首选方式。`desktop:preview:debug` 启动预构建的 debug 二进制和 Vite dev server；前端编辑仍可 HMR，但 **Rust 侧改动不会自动重编译** — 需要手动停止并重新运行命令（或使用 `--force-rebuild`）。适合仅需迭代前端代码、或希望跳过 `tauri dev` 初始化以更快冷启动的场景。
+> 原生应用需要 NSH CLI（`nsh`）和 `RUSTUP_TOOLCHAIN=1.98.1`，详见 [`docs/architecture/nsh-frontend.md`](docs/architecture/nsh-frontend.md)。`desktop:dev` 每次启动前都会重新构建；只迭代界面时可用 `nsh run src/nsh-ui --target web` 获得热更新。
 
 两种启动器默认使用安装版的日常数据，包括已有模型设置、工作区和会话。
 需要独立测试数据时，显式添加 `--isolated-data`，数据保存在当前仓库的
@@ -84,18 +83,18 @@ pnpm run e2e:test
 
 ### 桌面端调试工具
 
-桌面端 dev 构建会启用 `devtools` Cargo feature。`F12` 打开原生 webview
-DevTools；`Cmd/Ctrl + Shift + I` 切换 OpenBitFun 元素检查器，`Cmd/Ctrl + Shift + J`
-也可以打开原生 DevTools。面向最终用户的 `release` 构建不会启用这些工具。
+桌面端是原生 NSH 应用，没有 WebView DevTools。调试界面可用
+`nsh run src/nsh-ui --target web`（web target 下使用浏览器开发者工具）和无头测试
+（`cd src/nsh-ui && nsh test .`）；后端日志位于会话日志目录（设置 → 日志）。
 
 ## 代码规范与架构约束
 
 仓库级规则、分层边界和验证选择方式以 [`AGENTS-CN.md`](AGENTS-CN.md) 为准。面向贡献者只需把握：
 
 - 日志只使用英文，并保持必要、可读。
-- 用户可见文案走项目 i18n 流程；不要把 Web UI locale catalog 共享给较小产品形态。
-- shared core 必须保持平台无关；Desktop/Tauri 细节属于 app adapter，并通过类型化能力接口回流；需要事件投递时使用已有生产 transport adapter。
-- Tauri command 使用 `snake_case` 命令名和结构化 `request` 参数。
+- 用户可见文案走项目 i18n 流程；不要把桌面 UI 的 locale catalog 共享给较小产品形态。
+- shared core 必须保持平台无关；桌面宿主细节属于 app adapter，并通过类型化能力接口回流；需要事件投递时使用已有生产 transport adapter。
+- 后端命令使用 `snake_case` 命令名和结构化 `request` 参数（以 `// @backend-command` 标记，并在 `backend_commands!` 中注册）。
 - core 拆解、feature 边界、依赖边界和构建提速重构必须遵循
   `docs/architecture/product-architecture.md` 和
   `docs/architecture/rust-build-dependency-boundaries.md`。
@@ -120,7 +119,7 @@ DevTools；`Cmd/Ctrl + Shift + I` 切换 OpenBitFun 元素检查器，`Cmd/Ctrl 
 | Prompts | `src/crates/assembly/agent-content/prompts/agents/` | 新增或优化内置提示词；选择逻辑与运行时策略仍由现有模块负责 |
 | Tools | `src/crates/assembly/core/src/agentic/tools/implementations/`、`src/crates/assembly/core/src/agentic/tools/registry.rs` | 新增工具实现，并在工具注册表中注册 |
 | Subagents | `src/crates/assembly/core/src/agentic/agents/definitions/`、`src/crates/assembly/core/src/agentic/agents/registry/` | 新增子代理定义，并在所属注册表中注册 |
-| 模式贡献 | `src/crates/assembly/core/src/agentic/agents/definitions/`、`src/crates/assembly/agent-content/prompts/agents/`、`src/web-ui/src/locales/` | 同步模式策略、内置提示词及所属界面文案 |
+| 模式贡献 | `src/crates/assembly/core/src/agentic/agents/definitions/`、`src/crates/assembly/agent-content/prompts/agents/`、`src/nsh-ui/src/locales/` | 同步模式策略、内置提示词及所属界面文案 |
 | Playbook 与场景指南 | `src/shared/interactive-capabilities/catalog.json`、所属应用 README | 维护源目录并运行 `pnpm run capabilities:generate`；`website/` 消费生成的目录 |
 
 ### 开始前
@@ -174,14 +173,14 @@ Repository Object Sizes 检查会拒绝超过 5 MiB 的 Git 文件对象，包�
 | 前端运行时或 UI | `pnpm run check:web`；行为变化时再加最近的 focused test |
 | Mobile web | `pnpm --dir src/mobile-web run type-check` |
 | Rust 共享 runtime 或 services | 遵循最近模块的 `AGENTS.md`，选择单个包/测试目标和最小所需 feature |
-| Desktop/Tauri 集成 | `cargo check -p openbitfun-desktop` |
+| 桌面后端 / 原生宿主集成 | `cargo check -p openbitfun-desktop` |
 | i18n 资源 | `pnpm run i18n:audit` |
 | i18n 契约或共享术语 | `pnpm run i18n:generate && pnpm run i18n:contract:test && pnpm run i18n:audit` |
 
 UI 改动在有帮助时附截图或短录屏。无法运行相关检查时，在 PR 中说明原因，并提供风险更低的手动验证路径。
 
-`pnpm run check:web` 会组合执行 Web UI 类型检查，以及 CI 针对前端改动运行的 Appearance contract、
-主题颜色和主题视觉治理门禁。
+桌面 UI 改动运行 `cd src/nsh-ui && nsh check && nsh test .`（`pnpm run e2e:ui`），主题或颜色改动另运行
+`pnpm run theme:color-audit:all`。
 
 ## 安全与合规
 

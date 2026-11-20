@@ -129,7 +129,7 @@ pub struct BrowserControlBrowsersResponse {
 }
 
 /// List selectable browsers for CDP browser control.
-#[tauri::command]
+// @backend-command
 pub async fn browser_control_list_browsers() -> Result<BrowserControlBrowsersResponse, String> {
     let browsers = [
         ("default", "Default browser", true),
@@ -194,7 +194,7 @@ pub struct BrowserControlStatusResponse {
 }
 
 /// Check CDP browser control status.
-#[tauri::command]
+// @backend-command
 pub async fn browser_control_get_status(
     request: BrowserControlStatusRequest,
 ) -> Result<BrowserControlStatusResponse, String> {
@@ -498,7 +498,7 @@ async fn complete_launch(
 }
 
 /// Launch the user's default browser with CDP debug port.
-#[tauri::command]
+// @backend-command
 pub async fn browser_control_launch(
     request: BrowserControlLaunchRequest,
 ) -> Result<BrowserControlLaunchResponse, String> {
@@ -532,7 +532,7 @@ pub async fn browser_control_launch(
 /// Open the selected browser's persistent guarded-CDP setting and wait for the
 /// user-owned consent toggle. Once enabled, immediately request and retain the
 /// real-profile connection so the Settings action is one continuous flow.
-#[tauri::command]
+// @backend-command
 pub async fn browser_control_enable_default_cdp(
     request: BrowserControlLaunchRequest,
 ) -> Result<BrowserControlLaunchResponse, String> {
@@ -573,7 +573,7 @@ pub async fn browser_control_enable_default_cdp(
 }
 
 /// Restart the user's default browser with CDP debug port enabled.
-#[tauri::command]
+// @backend-command
 pub async fn browser_control_restart_with_cdp(
     request: BrowserControlLaunchRequest,
 ) -> Result<BrowserControlLaunchResponse, String> {
@@ -600,7 +600,7 @@ pub struct BrowserControlDisconnectResponse {
 
 /// Detach OpenBitFun from the selected browser without closing browser tabs or
 /// changing the browser-owned Remote debugging preference.
-#[tauri::command]
+// @backend-command
 pub async fn browser_control_disconnect(
     request: BrowserControlLaunchRequest,
 ) -> Result<BrowserControlDisconnectResponse, String> {

@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { createBackend, createDeviceBackend } from "./support";
+import { composePersonalOverview, createBackend, createDeviceBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -30,6 +30,24 @@ function wrapBackend(
       });
       if (handled !== undefined) {
         return handled;
+      }
+      // The host composes Home's overview from its own section owners; this fake
+      // host composes it from the section commands the test overrides.
+      if (action === "get_personal_overview") {
+        // A host older than the command refuses it before any section runs.
+        const own = originalInvoke(data) as { ok?: boolean };
+        if (!own?.ok) return own;
+        const self = base.handlers["openbitfun.invoke"];
+        const value = composePersonalOverview((command, request, raw) => {
+          const reply = self(raw ? { action: command, raw: request } : { action: command, request }) as {
+            ok?: boolean;
+            value?: unknown;
+            error?: string;
+          };
+          if (!reply?.ok) throw new Error(reply?.error ?? `${command} failed`);
+          return reply.value;
+        });
+        return { ok: true, value, transport: "dev" };
       }
       return originalInvoke(data);
     } catch (error) {
@@ -184,15 +202,16 @@ test("home displays ecosystem counts, 5-metric bar, 6-month heatmap, spaces, ssh
   expect(texts).toContain("42");
   expect(texts).toContain("run_command");
 
-  const usageCall = recorded.find(
-    c => c.action === "get_token_usage_statistics" && c.payload.timeRange === "last30Days",
-  );
-  expect(usageCall).toBeDefined();
-  expect(usageCall?.raw).toBe(false);
-  expect(usageCall?.payload.granularity).toBe("day");
+  // One overview read: the host counts, filters and keys every section.
+  const overviewCall = recorded.find(c => c.action === "get_personal_overview");
+  expect(overviewCall).toBeDefined();
+  expect(overviewCall?.raw).toBe(false);
+  expect(typeof overviewCall?.payload.timeZone).toBe("string");
+  expect(overviewCall?.payload.activityMonths).toBe(6);
+  // The heatmap is the host's day-keyed grid, never trend buckets keyed here.
   expect(
-    recorded.some(c => c.action === "get_token_usage_statistics" && c.payload.timeRange === "custom"),
-  ).toBe(true);
+    recorded.some(c => c.action === "get_token_usage_statistics" && c.payload.timeRange === "last30Days"),
+  ).toBe(false);
 
   // Home Workspace & SSH shortcuts open the real Tauri workspace / SSH modals.
   await app.press("home-new-workspace");
@@ -709,6 +728,26 @@ test("home and assistants handle peer device mode boundaries and degrade loudly 
         command?: string;
         args?: Record<string, unknown>;
       };
+      if (env.command === "get_personal_overview") {
+        // The peer composes its own overview; two owners refuse on that host.
+        return {
+          ok: true,
+          value: JSON.stringify({
+            resp: "host_invoke_result",
+            ok: true,
+            value: {
+              assistants: { status: "failed", error: "device-linux does not implement get_assistant_workspaces" },
+              skills: { status: "failed", error: "device-linux does not implement get_skill_configs" },
+              routines: { status: "ready", value: { count: 1, enabled: 1, dueSoon: [] } },
+              spaces: { status: "unsupported", error: "Spaces is not available on this host" },
+              ssh: { status: "ready", value: { connections: [] } },
+              usage: { status: "failed", error: "token_usage_statistics_unsupported" },
+              activity: { status: "failed", error: "token_usage_statistics_unsupported" },
+            },
+          }),
+          transport: "dev",
+        };
+      }
       if (env.command === "list_cron_jobs") {
         return {
           ok: true,
@@ -870,7 +909,7 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
     "---\nname: Claw\ncreature: Fox\nvibe: Calm\navatar:\nemoji: \"🦊\"\n---\n\n# Who I am\n\nSeeded persona body.\n";
   const files: Record<string, string> = {};
 
-  const { recorded } = wrapBackend(base, action => {
+  const { recorded } = wrapBackend(base, (action, payload) => {
     if (action === "get_assistant_workspaces") {
       return { ok: true, value: assistantList, transport: "dev" };
     }
@@ -878,13 +917,19 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
       return { ok: true, value: null, transport: "dev" };
     }
     if (action === "create_assistant_workspace") {
+      // The host names the new assistant itself (wave 4); this fixture stands in
+      // for its IDENTITY.md rewrite.
+      const name = String(payload.name ?? "");
       const created = {
         id: "asst-9",
-        name: "Claw",
+        name: name || "Claw",
         rootPath: "/tmp/assistants/asst-9",
         workspaceKind: "assistant",
+        identity: { name: name || "Claw" },
       };
-      files["/tmp/assistants/asst-9/IDENTITY.md"] = seeded;
+      files["/tmp/assistants/asst-9/IDENTITY.md"] = name
+        ? seeded.replace("name: Claw\n", `name: ${JSON.stringify(name)}\n`)
+        : seeded;
       assistantList = [...assistantList, created];
       return { ok: true, value: created, transport: "dev" };
     }
@@ -921,9 +966,11 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
   expect(files["/tmp/assistants/asst-9/IDENTITY.md"]).toBe(
     "---\nname: \"Nova: Night Owl\"\ncreature: Fox\nvibe: Calm\navatar:\nemoji: \"🦊\"\n---\n\n# Who I am\n\nSeeded persona body.\n",
   );
-  // The seeded file is read before it is written; nothing replaces the body.
-  const reads = recorded.filter(c => c.action === "create_assistant_workspace");
-  expect(reads.length).toBe(1);
+  // The name travels with the create call; this surface no longer rewrites the file.
+  const creates = recorded.filter(c => c.action === "create_assistant_workspace");
+  expect(creates.length).toBe(1);
+  expect(creates[0]?.payload).toMatchObject({ name: "Nova: Night Owl" });
+  expect(recorded.some(c => c.action === "write_file_content")).toBe(false);
 });
 
 test("home insights take the day range and model the desktop offers and reveal the HTML report", async () => {
@@ -1058,4 +1105,55 @@ test("home and assistants switch to the compact single-column layout at phone wi
   await app.press("assistants-back");
   await app.waitFor("assistant-card-asst-1");
   expect(recorded.some(c => c.action === "get_assistant_workspaces")).toBe(true);
+});
+
+// view models (wave 4)
+
+test("home asks for a host update when the host is older than the overview view model", async () => {
+  const base = createBackend({ personalOverview: false });
+  const { recorded } = wrapBackend(base, action => {
+    if (action === "account_status") {
+      return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
+    }
+    if (action === "account_github_info" || action === "get_latest_insights") {
+      return { ok: true, value: action === "get_latest_insights" ? [] : null, transport: "dev" };
+    }
+    return undefined;
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.press("Home");
+  await app.waitFor("Personal Agent Studio");
+  await app.waitFor("Update OpenBitFun on this host to see its overview.");
+  // No client copy of the eight section reads runs against an older host.
+  for (const command of ["get_assistant_workspaces", "list_cron_jobs", "get_token_usage_statistics"]) {
+    expect(recorded.some(call => call.action === command)).toBe(false);
+  }
+});
+
+test("the workspace navigator selection comes from the host projection", async () => {
+  const base = createBackend({
+    openedWorkspaces: [
+      { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+      { id: "workspace-3", name: "Docs", rootPath: "/docs", workspaceKind: "local" },
+    ],
+    currentWorkspaceId: "workspace-3",
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.waitFor("Docs");
+  const reads = base.calls.filter(call => call.action === "get_workspace_navigator");
+  expect(reads.length).toBeGreaterThan(0);
+  // The host's current workspace is selected without a client merge of three lists.
+  expect(base.calls.some(call => call.action === "get_opened_workspaces")).toBe(false);
+  expect(base.calls.some(call => call.action === "get_current_workspace")).toBe(false);
+  // The selection was the host's own, so no switch was sent back.
+  expect(base.calls.some(call => call.action === "set_active_workspace")).toBe(false);
+});
+
+test("an older host without the workspace navigator says so instead of merging lists here", async () => {
+  const base = createBackend({ workspaceNavigator: false });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.waitFor(
+    "Update OpenBitFun on this host to list its workspaces; it is too old to answer the workspace navigator.",
+  );
+  expect(base.calls.some(call => call.action === "get_opened_workspaces")).toBe(false);
 });

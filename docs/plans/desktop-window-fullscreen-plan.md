@@ -64,7 +64,8 @@ Risk: Medium. The code path is narrow, but platform fullscreen behavior differs 
   - macOS: `Control+Command+F`.
 - [x] Add locale error copy for fullscreen failure. Risk: Low.
 - [x] Add pure tests for shortcut detection. Risk: Low.
-- [x] Verify. Risk: Low.
+- [x] Verify. Risk: Low. (Historical record: the `lint:web`, `type-check:web` and
+  `src/web-ui` test commands were retired with the React desktop UI.)
   - `pnpm run lint:web`
   - `pnpm run type-check:web`
   - `pnpm --dir src/web-ui run test:run`

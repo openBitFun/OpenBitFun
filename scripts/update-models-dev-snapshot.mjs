@@ -305,21 +305,23 @@ function validateReleaseDelivery() {
   assert.match(notice, /models-dev\.LICENSE\.txt/);
   assert.match(notice, /models-dev\.provenance\.json/);
 
-  for (const configName of ['tauri.conf.json', 'tauri.dev.conf.json']) {
-    const tauriConfig = readJson(join(ROOT, 'src', 'apps', 'desktop', configName));
-    const resources = tauriConfig.bundle?.resources || {};
-    assert.equal(resources['../../../THIRD_PARTY_NOTICES.md'], 'THIRD_PARTY_NOTICES.md',
-      `${configName} must bundle THIRD_PARTY_NOTICES.md`);
-    assert.equal(
-      resources['../../crates/services/services-integrations/assets/models-dev.LICENSE.txt'],
-      'third-party/models.dev/LICENSE.txt',
-      `${configName} must bundle the models.dev license`,
-    );
-    assert.equal(
-      resources['../../crates/services/services-integrations/assets/models-dev.provenance.json'],
-      'third-party/models.dev/provenance.json',
-      `${configName} must bundle models.dev provenance`,
-    );
+  // The native desktop packages of all three platforms ship the notices
+  // through the shared resource list in desktop-nsh-package-common.mjs.
+  for (const platform of ['macos', 'windows', 'linux']) {
+    const packageScript = join(ROOT, 'scripts', `package-desktop-nsh-${platform}.mjs`);
+    assert.match(readFileSync(packageScript, 'utf8'), /backendResources\(\{/,
+      `${packageScript} must copy the shared backend resources`);
+  }
+  for (const packageScript of [
+    join(ROOT, 'scripts', 'desktop-nsh-package-common.mjs'),
+  ]) {
+    const content = readFileSync(packageScript, 'utf8');
+    assert.match(content, /"THIRD_PARTY_NOTICES\.md"\)?, "(?:Resources\/)?THIRD_PARTY_NOTICES\.md"/,
+      `${packageScript} must bundle THIRD_PARTY_NOTICES.md`);
+    assert.match(content, /models-dev\.LICENSE\.txt"\), "(?:Resources\/)?third-party\/models\.dev\/LICENSE\.txt"/,
+      `${packageScript} must bundle the models.dev license`);
+    assert.match(content, /models-dev\.provenance\.json"\), "(?:Resources\/)?third-party\/models\.dev\/provenance\.json"/,
+      `${packageScript} must bundle models.dev provenance`);
   }
 
   for (const packageScript of [

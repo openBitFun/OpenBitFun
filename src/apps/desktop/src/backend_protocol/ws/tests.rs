@@ -336,7 +336,7 @@ async fn loopback_requires_the_owner_token_a_local_host_and_the_same_origin() {
     harness.server.shutdown();
 }
 
-fn tls_connector() -> tokio_tungstenite::Connector {
+pub(super) fn tls_connector() -> tokio_tungstenite::Connector {
     #[derive(Debug)]
     struct AcceptAny;
     impl rustls::client::danger::ServerCertVerifier for AcceptAny {

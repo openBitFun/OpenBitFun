@@ -7,24 +7,11 @@ const require = createRequire(import.meta.url);
 const root = process.cwd();
 const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'locales.json');
 const hardcodedBaselinePath = path.join(root, 'scripts', 'i18n-hardcoded-baseline.json');
-const literalFallbackBaselinePath = path.join(root, 'scripts', 'i18n-literal-fallback-baseline.json');
 const localeFormatBaselinePath = path.join(root, 'scripts', 'i18n-locale-format-baseline.json');
 const dynamicKeyAllowlistPath = path.join(root, 'scripts', 'i18n-dynamic-key-allowlist.json');
 const l10nIdenticalAllowlistPath = path.join(root, 'scripts', 'i18n-l10n-identical-allowlist.json');
 const governanceBaselinePath = path.join(root, 'scripts', 'i18n-governance-baseline.json');
 const sharedTermsDir = path.join(root, 'src', 'shared', 'i18n', 'resources', 'shared');
-const webLocalesDir = path.join(root, 'src', 'web-ui', 'src', 'locales');
-const namespaceRegistryPath = path.join(
-  root,
-  'src',
-  'web-ui',
-  'src',
-  'infrastructure',
-  'i18n',
-  'presets',
-  'namespaceRegistry.ts',
-);
-const webSourceDir = path.join(root, 'src', 'web-ui', 'src');
 const mobileWebSourceDir = path.join(root, 'src', 'mobile-web', 'src');
 const mobileWebMessagesPath = path.join(mobileWebSourceDir, 'i18n', 'messages.ts');
 const installerSourceDir = path.join(root, 'OpenBitFun-Installer', 'src');
@@ -32,13 +19,12 @@ const installerLocalesDir = path.join(installerSourceDir, 'i18n', 'locales');
 const coreLocalesDir = path.join(root, 'src', 'crates', 'assembly', 'core', 'locales');
 const relayHomepageDir = path.join(root, 'src', 'apps', 'relay-server', 'static', 'homepage');
 const relayHomepageI18nPath = path.join(relayHomepageDir, 'i18n.json');
-const supportedLocales = fs
-  .readdirSync(webLocalesDir, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => entry.name)
-  .sort();
-const baselineLocale = supportedLocales.includes('en-US') ? 'en-US' : supportedLocales[0];
 const localeContract = readJsonFile(contractPath);
+// Shared terms (src/shared/i18n/resources/shared/<locale>/terms.json) are the
+// only namespaced JSON resources left after the React desktop UI was retired.
+const supportedLocales = localeContract.locales.map((locale) => locale.id).sort();
+const baselineLocale = supportedLocales.includes('en-US') ? 'en-US' : supportedLocales[0];
+const SHARED_NAMESPACES = ['shared'];
 
 let errorCount = 0;
 let warningCount = 0;
@@ -51,7 +37,6 @@ const reportCategories = [
   'sharedTermDuplicates',
   'sameTextLocaleInventory',
   'l10nQualityCandidates',
-  'literalDefaultValueFallbacks',
   'localeFormatCandidates',
 ];
 const governanceReport = {
@@ -70,7 +55,6 @@ const governanceReport = {
   sharedTermDuplicates: [],
   sameTextLocaleInventory: [],
   l10nQualityCandidates: [],
-  literalDefaultValueFallbacks: [],
   localeFormatCandidates: [],
 };
 
@@ -151,34 +135,6 @@ function listFiles(dir, predicate) {
 
 function readJsonFile(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
-}
-
-function listLocaleNamespaces(locale) {
-  const localeDir = path.join(webLocalesDir, locale);
-  const namespaces = listFiles(localeDir, (file) => file.endsWith('.json'))
-    .map((file) => toPosixPath(path.relative(localeDir, file)).replace(/\.json$/, ''))
-    .sort();
-  if (fs.existsSync(path.join(sharedTermsDir, locale, 'terms.json'))) {
-    namespaces.push('shared');
-  }
-  return namespaces.sort();
-}
-
-function readRegistryNamespaces() {
-  const source = fs.readFileSync(namespaceRegistryPath, 'utf8');
-  const match = source.match(/ALL_NAMESPACES\s*=\s*\[([\s\S]*?)\]\s*as const/);
-  if (!match) {
-    reportError(`Could not parse ALL_NAMESPACES from ${namespaceRegistryPath}`);
-    return [];
-  }
-
-  return Array.from(match[1].matchAll(/['"]([^'"]+)['"]/g))
-    .map((item) => item[1])
-    .sort();
-}
-
-function readRegistryLocales() {
-  return [...localeContract.surfaceOrders['web-ui']].sort();
 }
 
 function flattenKeys(value, prefix = '') {
@@ -392,10 +348,6 @@ function finalizeGovernanceReport() {
       byNamespace: countEntriesBy(governanceReport.l10nQualityCandidates, 'namespace', { emptyLabel: '<none>' }),
       bySurface: countEntriesBy(governanceReport.l10nQualityCandidates, 'surface', { includeKeys: governanceSurfaceIds }),
     },
-    literalDefaultValueFallbacks: {
-      byFile: countEntriesBy(governanceReport.literalDefaultValueFallbacks, 'file'),
-      byNamespace: countEntriesBy(governanceReport.literalDefaultValueFallbacks, 'namespace', { emptyLabel: '<none>' }),
-    },
     localeFormatCandidates: {
       byFile: countEntriesBy(governanceReport.localeFormatCandidates, 'file'),
       bySurface: countEntriesBy(governanceReport.localeFormatCandidates, 'surface', { includeKeys: localeFormatSurfaceIds }),
@@ -425,10 +377,8 @@ function reportPlaceholderParity(surface, locale, key, expected, actual) {
   );
 }
 
-function readJsonKeys(locale, namespace) {
-  const file = namespace === 'shared'
-    ? path.join(sharedTermsDir, locale, 'terms.json')
-    : path.join(webLocalesDir, locale, `${namespace}.json`);
+function readJsonKeys(locale) {
+  const file = path.join(sharedTermsDir, locale, 'terms.json');
   try {
     return flattenKeys(readJsonFile(file));
   } catch (error) {
@@ -437,10 +387,8 @@ function readJsonKeys(locale, namespace) {
   }
 }
 
-function readJsonEntries(locale, namespace) {
-  const file = namespace === 'shared'
-    ? path.join(sharedTermsDir, locale, 'terms.json')
-    : path.join(webLocalesDir, locale, `${namespace}.json`);
+function readJsonEntries(locale) {
+  const file = path.join(sharedTermsDir, locale, 'terms.json');
   try {
     return new Map(flattenStringEntries(readJsonFile(file)));
   } catch (error) {
@@ -607,45 +555,6 @@ function diffSets(left, right) {
   return left.filter((item) => !rightSet.has(item));
 }
 
-function auditNamespaceCoverage() {
-  const registryLocales = readRegistryLocales();
-  for (const locale of supportedLocales.filter((item) => !registryLocales.includes(item))) {
-    reportError(`${locale} locale directory exists but is not in the web-ui i18n contract surface order`);
-  }
-  for (const locale of registryLocales.filter((item) => !supportedLocales.includes(item))) {
-    reportError(`web-ui i18n contract surface order includes ${locale} but no matching locale directory exists`);
-  }
-
-  const registryNamespaces = readRegistryNamespaces();
-  const registrySet = new Set(registryNamespaces);
-
-  for (const locale of supportedLocales) {
-    const localeNamespaces = listLocaleNamespaces(locale);
-    const missingFromRegistry = localeNamespaces.filter((item) => !registrySet.has(item));
-    const missingFromLocale = registryNamespaces.filter((item) => !localeNamespaces.includes(item));
-
-    for (const namespace of missingFromRegistry) {
-      reportError(`${locale} namespace "${namespace}" exists on disk but is not in ALL_NAMESPACES`);
-    }
-    for (const namespace of missingFromLocale) {
-      reportError(`ALL_NAMESPACES includes "${namespace}" but ${locale} has no matching JSON file`);
-    }
-  }
-
-  const baselineNamespaces = listLocaleNamespaces(baselineLocale);
-  for (const locale of supportedLocales.filter((item) => item !== baselineLocale)) {
-    const localeNamespaces = listLocaleNamespaces(locale);
-    for (const namespace of diffSets(baselineNamespaces, localeNamespaces)) {
-      reportError(`${locale} is missing namespace "${namespace}"`);
-    }
-    for (const namespace of diffSets(localeNamespaces, baselineNamespaces)) {
-      reportError(`${locale} has extra namespace "${namespace}"`);
-    }
-  }
-
-  return registryNamespaces;
-}
-
 function auditSurfaceResourceRoots() {
   const localeById = new Map(localeContract.locales.map((locale) => [locale.id, locale]));
   for (const [surface, config] of Object.entries(localeContract.surfaces ?? {})) {
@@ -656,12 +565,7 @@ function auditSurfaceResourceRoots() {
     }
 
     for (const localeId of localeContract.surfaceOrders?.[surface] ?? []) {
-      if (surface === 'web-ui') {
-        const localeDir = path.join(resourceRoot, localeId);
-        if (!fs.existsSync(localeDir)) {
-          reportError(`${surface} is missing ${localeId} locale directory`);
-        }
-      } else if (surface === 'installer') {
+      if (surface === 'installer') {
         const installerLocale = localeById.get(localeId)?.installer?.uiCode;
         if (!installerLocale || !fs.existsSync(path.join(resourceRoot, `${installerLocale}.json`))) {
           reportError(`${surface} is missing ${localeId} resource JSON`);
@@ -732,29 +636,31 @@ function auditSharedTermsCoverage() {
 }
 
 function auditMobileWebBoundary() {
+  // No surface imports another surface's locale catalog: mobile-web owns its
+  // messages and must not reach into the desktop UI (src/nsh-ui) catalogs.
   const sourceFiles = listFiles(
     mobileWebSourceDir,
     (file) => file.endsWith('.ts') || file.endsWith('.tsx'),
   );
   const forbiddenPatterns = [
-    /src[/\\]web-ui[/\\]src[/\\]locales/,
-    /src[/\\]web-ui[/\\]src[/\\]infrastructure[/\\]i18n/,
-    /\.\.[/\\]\.\.[/\\]web-ui[/\\]/,
+    /src[/\\]nsh-ui[/\\]src[/\\]locales/,
+    /src[/\\]nsh-ui[/\\]src[/\\]i18n/,
+    /\.\.[/\\]\.\.[/\\]nsh-ui[/\\]/,
   ];
 
   for (const file of sourceFiles) {
     const text = fs.readFileSync(file, 'utf8');
     if (forbiddenPatterns.some((pattern) => pattern.test(text))) {
-      reportError(`${toPosixPath(path.relative(root, file))} imports or references web-ui i18n resources`);
+      reportError(`${toPosixPath(path.relative(root, file))} imports or references desktop UI (src/nsh-ui) i18n resources`);
     }
   }
 }
 
 function auditKeyParity(namespaces) {
   for (const namespace of namespaces) {
-    const baselineKeys = readJsonKeys(baselineLocale, namespace);
+    const baselineKeys = readJsonKeys(baselineLocale);
     for (const locale of supportedLocales.filter((item) => item !== baselineLocale)) {
-      const localeKeys = readJsonKeys(locale, namespace);
+      const localeKeys = readJsonKeys(locale);
       const missing = diffSets(baselineKeys, localeKeys);
       const extra = diffSets(localeKeys, baselineKeys);
 
@@ -768,9 +674,9 @@ function auditKeyParity(namespaces) {
   }
 }
 
-function auditWebI18nextPlaceholderParity(namespaces) {
+function auditSharedTermPlaceholderParity(namespaces) {
   for (const namespace of namespaces) {
-    const baselineEntries = readJsonEntries(baselineLocale, namespace);
+    const baselineEntries = readJsonEntries(baselineLocale);
     const baselinePlaceholders = new Map(
       Array.from(baselineEntries.entries()).map(([key, value]) => [
         key,
@@ -779,11 +685,11 @@ function auditWebI18nextPlaceholderParity(namespaces) {
     );
 
     for (const locale of supportedLocales.filter((item) => item !== baselineLocale)) {
-      const localeEntries = readJsonEntries(locale, namespace);
+      const localeEntries = readJsonEntries(locale);
       for (const [key, expected] of baselinePlaceholders.entries()) {
         if (!localeEntries.has(key)) continue;
         const actual = extractI18nextPlaceholders(localeEntries.get(key));
-        reportPlaceholderParity(`web-ui ${namespace}`, locale, key, expected, actual);
+        reportPlaceholderParity(namespace, locale, key, expected, actual);
       }
     }
   }
@@ -1063,15 +969,12 @@ function collectI18nResourceEntries(namespaces) {
 
   for (const locale of supportedLocales) {
     for (const namespace of namespaces) {
-      const surface = namespace === 'shared' ? 'shared' : 'web-ui';
-      const file = namespace === 'shared'
-        ? `src/shared/i18n/resources/shared/${locale}/terms.json`
-        : `src/web-ui/src/locales/${locale}/${namespace}.json`;
-      for (const [key, value] of readJsonEntries(locale, namespace)) {
+      const file = `src/shared/i18n/resources/shared/${locale}/terms.json`;
+      for (const [key, value] of readJsonEntries(locale)) {
         pushResourceEntry(entries, {
-          surface,
+          surface: 'shared',
           locale,
-          namespace: namespace === 'shared' ? 'shared' : namespace,
+          namespace,
           key,
           value,
           file,
@@ -1704,18 +1607,6 @@ function auditI18nGovernanceReport(namespaces) {
   auditGovernanceBaseline();
 }
 
-function shouldSkipSourceScan(file) {
-  const normalized = toPosixPath(path.relative(root, file));
-  return (
-    normalized.includes('/locales/') ||
-    normalized.endsWith('/generatedLocaleContract.ts') ||
-    normalized.endsWith('.test.ts') ||
-    normalized.endsWith('.test.tsx') ||
-    normalized.endsWith('.spec.ts') ||
-    normalized.endsWith('.spec.tsx')
-  );
-}
-
 function shouldSkipMobileWebSourceScan(file) {
   const normalized = toPosixPath(path.relative(root, file));
   return (
@@ -1738,373 +1629,6 @@ function shouldSkipInstallerSourceScan(file) {
     normalized.endsWith('.spec.ts') ||
     normalized.endsWith('.spec.tsx')
   );
-}
-
-function auditSourceText() {
-  const sourceFiles = listFiles(
-    webSourceDir,
-    (file) => (file.endsWith('.ts') || file.endsWith('.tsx')) && !shouldSkipSourceScan(file),
-  );
-
-  const fallbackFindings = [];
-  const fallbackPattern = /\bt\s*\(\s*(['"`])(?:\\.|(?!\1).)+\1\s*,\s*(['"`])/g;
-
-  for (const file of sourceFiles) {
-    const text = fs.readFileSync(file, 'utf8');
-    const lines = text.split(/\r?\n/);
-    lines.forEach((line, index) => {
-      if (fallbackPattern.test(line)) {
-        fallbackFindings.push(`${toPosixPath(path.relative(root, file))}:${index + 1}`);
-      }
-      fallbackPattern.lastIndex = 0;
-    });
-  }
-
-  if (fallbackFindings.length > 0) {
-    reportError(`Found ${fallbackFindings.length} t(key, "literal fallback") candidate(s). First entries: ${fallbackFindings.slice(0, 12).join(', ')}`);
-  }
-}
-
-function lineNumberAt(text, index) {
-  return text.slice(0, index).split(/\r?\n/).length;
-}
-
-function createAuditSourceFile(file, text) {
-  const ts = auditTypeScript;
-  return ts.createSourceFile(
-    file,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-}
-
-function staticStringLiteral(ts, expression) {
-  const value = unwrapTsExpression(ts, expression);
-  if (!value) return null;
-  if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) {
-    return value.text;
-  }
-  return null;
-}
-
-function staticStringArrayLiteral(ts, expression) {
-  const value = unwrapTsExpression(ts, expression);
-  if (!value || !ts.isArrayLiteralExpression(value)) return null;
-
-  const values = [];
-  for (const element of value.elements) {
-    const literal = staticStringLiteral(ts, element);
-    if (!literal) return null;
-    values.push(literal);
-  }
-  return values.length > 0 ? values : null;
-}
-
-function isI18nServiceGetTCall(ts, expression) {
-  return (
-    ts.isCallExpression(expression) &&
-    ts.isPropertyAccessExpression(expression.expression) &&
-    expression.expression.name.text === 'getT' &&
-    ts.isIdentifier(expression.expression.expression) &&
-    expression.expression.expression.text === 'i18nService'
-  );
-}
-
-function isI18nServiceTCall(ts, expression) {
-  return (
-    ts.isPropertyAccessExpression(expression) &&
-    expression.name.text === 't' &&
-    ts.isIdentifier(expression.expression) &&
-    expression.expression.text === 'i18nService'
-  );
-}
-
-function isI18nHookCall(ts, expression) {
-  return (
-    ts.isCallExpression(expression) &&
-    ts.isIdentifier(expression.expression) &&
-    (expression.expression.text === 'useI18n' || expression.expression.text === 'useTranslation')
-  );
-}
-
-function collectWebUiTranslationCallFacts() {
-  const ts = auditTypeScript;
-  const sourceFiles = listFiles(
-    webSourceDir,
-    (file) => (file.endsWith('.ts') || file.endsWith('.tsx')) && !shouldSkipSourceScan(file),
-  );
-  const output = [];
-
-  for (const file of sourceFiles) {
-    const text = fs.readFileSync(file, 'utf8');
-    const sourceFile = createAuditSourceFile(file, text);
-    const hookNamespaceByTranslator = new Map();
-    const hookNamespaceListByTranslator = new Map();
-    const fullKeyTranslatorNames = new Set();
-
-    function rememberHookTranslator(node) {
-      if (!ts.isVariableDeclaration(node) || !node.initializer || !isI18nHookCall(ts, node.initializer)) {
-        return;
-      }
-
-      const namespace = staticStringLiteral(ts, node.initializer.arguments[0]);
-      const namespaces = namespace ? null : staticStringArrayLiteral(ts, node.initializer.arguments[0]);
-      if (!namespace && !namespaces) return;
-
-      function rememberLocalName(localName) {
-        if (!localName) return;
-        if (namespace) {
-          hookNamespaceByTranslator.set(localName, namespace);
-        } else {
-          hookNamespaceListByTranslator.set(localName, namespaces);
-        }
-      }
-
-      if (ts.isObjectBindingPattern(node.name)) {
-        for (const element of node.name.elements) {
-          const propertyName = element.propertyName ? propertyNameToString(ts, element.propertyName) : propertyNameToString(ts, element.name);
-          const localName = propertyNameToString(ts, element.name);
-          if (propertyName === 't' && localName) {
-            rememberLocalName(localName);
-          }
-        }
-      } else if (ts.isArrayBindingPattern(node.name)) {
-        const first = node.name.elements[0];
-        if (first && ts.isBindingElement(first) && ts.isIdentifier(first.name)) {
-          rememberLocalName(first.name.text);
-        }
-      }
-    }
-
-    function rememberGetTTranslator(node) {
-      if (
-        ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.initializer &&
-        isI18nServiceGetTCall(ts, node.initializer)
-      ) {
-        fullKeyTranslatorNames.add(node.name.text);
-      }
-    }
-
-    function recordTranslationCall(node) {
-      if (!ts.isCallExpression(node)) return;
-
-      const key = staticStringLiteral(ts, node.arguments[0]);
-      if (!key) return;
-
-      let fullKey = null;
-      let kind = 'full';
-      if (isI18nServiceTCall(ts, node.expression) || isI18nServiceGetTCall(ts, node.expression)) {
-        if (!key.includes(':')) return;
-        fullKey = key;
-      } else if (ts.isIdentifier(node.expression) && fullKeyTranslatorNames.has(node.expression.text)) {
-        if (!key.includes(':')) return;
-        fullKey = key;
-      } else if (ts.isIdentifier(node.expression) && hookNamespaceByTranslator.has(node.expression.text)) {
-        const namespace = hookNamespaceByTranslator.get(node.expression.text);
-        fullKey = key.includes(':') ? key : `${namespace}:${key}`;
-        kind = key.includes(':') ? 'hook-full' : 'hook-relative';
-      } else if (ts.isIdentifier(node.expression) && hookNamespaceListByTranslator.has(node.expression.text)) {
-        const namespaces = hookNamespaceListByTranslator.get(node.expression.text);
-        fullKey = key.includes(':') ? key : `${namespaces[0]}:${key}`;
-        kind = key.includes(':') ? 'hook-full-array' : 'hook-relative-array';
-      }
-
-      if (!fullKey) return;
-
-      output.push({
-        key: fullKey,
-        kind,
-        options: node.arguments[1],
-        location: `${toPosixPath(path.relative(root, file))}:${lineNumberAt(text, node.getStart(sourceFile))}`,
-        file: toPosixPath(path.relative(root, file)),
-        sourceFile,
-      });
-    }
-
-    function visit(node) {
-      rememberHookTranslator(node);
-      rememberGetTTranslator(node);
-      recordTranslationCall(node);
-      ts.forEachChild(node, visit);
-    }
-
-    visit(sourceFile);
-  }
-
-  return output;
-}
-
-function collectWebUiStaticTranslationKeys() {
-  return collectWebUiTranslationCallFacts().map(({ key, kind, location }) => ({ key, kind, location }));
-}
-
-function buildWebUiKeySet(namespaces) {
-  const keys = new Set();
-  for (const namespace of namespaces) {
-    for (const key of readJsonKeys(baselineLocale, namespace)) {
-      keys.add(`${namespace}:${key}`);
-    }
-  }
-  return keys;
-}
-
-function auditWebUiStaticTranslationKeys(namespaces) {
-  const knownKeys = buildWebUiKeySet(namespaces);
-  const missing = collectWebUiStaticTranslationKeys()
-    .filter(({ key }) => !knownKeys.has(key));
-
-  if (missing.length > 0) {
-    const relativeCount = missing.filter(({ kind }) => kind === 'hook-relative').length;
-    reportError(
-      `Found ${missing.length} unknown static Web UI i18n key(s), including ${relativeCount} relative static Web UI i18n key(s). First entries: ${
-        missing.slice(0, 12).map(({ key, location }) => `${location} ${key}`).join(', ')
-      }`,
-    );
-  }
-}
-
-function isLiteralFallbackInitializer(ts, initializer) {
-  const value = unwrapTsExpression(ts, initializer);
-  if (!value) return false;
-  if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) || ts.isTemplateExpression(value)) {
-    return true;
-  }
-  if (ts.isArrayLiteralExpression(value)) {
-    return value.elements.some((element) => (
-      ts.isStringLiteral(element) ||
-      ts.isNoSubstitutionTemplateLiteral(element) ||
-      ts.isTemplateExpression(element)
-    ));
-  }
-  if (ts.isBinaryExpression(value)) {
-    return (
-      isLiteralFallbackInitializer(ts, value.left) ||
-      isLiteralFallbackInitializer(ts, value.right)
-    );
-  }
-  return false;
-}
-
-function collectWebUiLiteralFallbackFindings() {
-  const ts = auditTypeScript;
-  const findings = [];
-
-  for (const call of collectWebUiTranslationCallFacts()) {
-    const options = unwrapTsExpression(ts, call.options);
-    if (!options || !ts.isObjectLiteralExpression(options)) continue;
-
-    for (const property of options.properties) {
-      if (!ts.isPropertyAssignment(property)) continue;
-      if (propertyNameToString(ts, property.name) !== 'defaultValue') continue;
-      if (!isLiteralFallbackInitializer(ts, property.initializer)) continue;
-
-      const [namespace, ...keyParts] = call.key.split(':');
-      findings.push({
-        file: call.file,
-        location: call.location,
-        namespace: keyParts.length > 0 ? namespace : null,
-        key: call.key,
-      });
-    }
-  }
-
-  return findings;
-}
-
-function auditWebUiLiteralFallbackBudget() {
-  if (!fs.existsSync(literalFallbackBaselinePath)) {
-    reportError('Missing scripts/i18n-literal-fallback-baseline.json');
-    return;
-  }
-
-  const baseline = readJsonFile(literalFallbackBaselinePath);
-  const budgetByFile = new Map(
-    (baseline.budgets ?? []).map((entry) => [entry.path, entry]),
-  );
-  const findingsByFile = new Map();
-
-  for (const finding of collectWebUiLiteralFallbackFindings()) {
-    governanceReport.literalDefaultValueFallbacks.push({
-      surface: 'web-ui',
-      namespace: finding.namespace,
-      key: finding.key,
-      file: finding.file,
-      location: finding.location,
-      reason: 'literal-i18next-defaultValue',
-    });
-    findingsByFile.set(finding.file, [...(findingsByFile.get(finding.file) ?? []), finding]);
-  }
-
-  for (const [file, findings] of findingsByFile.entries()) {
-    const budget = budgetByFile.get(file);
-    if (!budget) {
-      reportError(
-        `${file} has ${findings.length} literal i18next defaultValue fallback(s) but is missing from scripts/i18n-literal-fallback-baseline.json. First entries: ${
-          findings.slice(0, 8).map((finding) => `${finding.location} ${finding.key}`).join(', ')
-        }`,
-      );
-      continue;
-    }
-
-    const actualCountByKey = new Map();
-    for (const finding of findings) {
-      actualCountByKey.set(finding.key, (actualCountByKey.get(finding.key) ?? 0) + 1);
-    }
-
-    if (Array.isArray(budget.literalDefaultValues) || isPlainObject(budget.literalDefaultValues)) {
-      const allowedCountByKey = new Map(
-        Array.isArray(budget.literalDefaultValues)
-          ? budget.literalDefaultValues.map((entry) => [entry.key, entry.count])
-          : Object.entries(budget.literalDefaultValues),
-      );
-
-      for (const [key, count] of actualCountByKey.entries()) {
-        const allowed = allowedCountByKey.get(key);
-        if (typeof allowed !== 'number') {
-          reportError(`${file} has unbudgeted literal i18next defaultValue fallback for "${key}"`);
-        } else if (count > allowed) {
-          reportError(`${file} has ${count} literal i18next defaultValue fallback(s) for "${key}", budget is ${allowed}`);
-        } else if (count < allowed) {
-          reportError(`${file} has ${count} literal i18next defaultValue fallback(s) for "${key}", below baseline ${allowed}; lower scripts/i18n-literal-fallback-baseline.json.`);
-        }
-      }
-
-      for (const [key, allowed] of allowedCountByKey.entries()) {
-        if (allowed > 0 && !actualCountByKey.has(key)) {
-          reportError(`${file} no longer has a literal i18next defaultValue fallback for "${key}"; lower scripts/i18n-literal-fallback-baseline.json.`);
-        }
-      }
-    } else if (typeof budget.maxLiteralDefaultValues === 'number') {
-      if (findings.length > budget.maxLiteralDefaultValues) {
-        reportError(
-          `${file} has ${findings.length} literal i18next defaultValue fallback(s), budget is ${budget.maxLiteralDefaultValues}. First entries: ${
-            findings.slice(0, 8).map((finding) => `${finding.location} ${finding.key}`).join(', ')
-          }`,
-        );
-      } else if (findings.length < budget.maxLiteralDefaultValues) {
-        reportError(
-          `${file} has ${findings.length} literal i18next defaultValue fallback(s), below baseline ${budget.maxLiteralDefaultValues}; lower scripts/i18n-literal-fallback-baseline.json.`,
-        );
-      }
-    } else {
-      reportError(`${file} has an invalid literal fallback baseline entry`);
-    }
-  }
-
-  for (const [file, budget] of budgetByFile.entries()) {
-    const hasBudgetedFindings = Array.isArray(budget.literalDefaultValues) || isPlainObject(budget.literalDefaultValues)
-      ? Object.keys(budget.literalDefaultValues).length > 0
-      : budget.maxLiteralDefaultValues > 0;
-    if (hasBudgetedFindings && !findingsByFile.has(file)) {
-      reportError(
-        `${file} no longer has literal i18next defaultValue fallback(s); remove it from scripts/i18n-literal-fallback-baseline.json.`,
-      );
-    }
-  }
 }
 
 function countCjkSourceLines(scanRoot, predicate) {
@@ -2130,7 +1654,6 @@ function shouldSkipLocaleFormatSourceScan(file) {
   return (
     // Surface i18n owners are the only approved locations for direct Intl usage;
     // product code must call their exported formatting helpers instead.
-    normalized === 'src/web-ui/src/infrastructure/i18n/core/I18nService.ts' ||
     normalized === 'src/mobile-web/src/i18n/I18nProvider.tsx' ||
     normalized.endsWith('/generatedLocaleContract.ts') ||
     normalized.endsWith('.test.ts') ||
@@ -2142,15 +1665,6 @@ function shouldSkipLocaleFormatSourceScan(file) {
 
 function createLocaleFormatScanSpecs() {
   return [
-    {
-      surface: 'web-ui',
-      root: webSourceDir,
-      predicate: (file) => (
-        (file.endsWith('.ts') || file.endsWith('.tsx')) &&
-        !shouldSkipSourceScan(file) &&
-        !shouldSkipLocaleFormatSourceScan(file)
-      ),
-    },
     {
       surface: 'mobile-web',
       root: mobileWebSourceDir,
@@ -2267,11 +1781,6 @@ function auditHardcodedSourceBudgets() {
   // owned locale resources; do not raise them for new user-facing text.
   const specs = [
     {
-      id: 'web-ui-source',
-      root: webSourceDir,
-      predicate: (file) => (file.endsWith('.ts') || file.endsWith('.tsx')) && !shouldSkipSourceScan(file),
-    },
-    {
       id: 'mobile-web-source',
       root: mobileWebSourceDir,
       predicate: (file) => (file.endsWith('.ts') || file.endsWith('.tsx')) && !shouldSkipMobileWebSourceScan(file),
@@ -2309,13 +1818,11 @@ auditSharedTermsCoverage();
 auditSurfaceResourceRoots();
 auditMobileWebBoundary();
 
-const namespaces = auditNamespaceCoverage();
+const namespaces = SHARED_NAMESPACES;
 auditKeyParity(namespaces);
-auditWebI18nextPlaceholderParity(namespaces);
+auditSharedTermPlaceholderParity(namespaces);
 auditTypeScript = loadTypeScriptForAudit();
 if (auditTypeScript) {
-  auditWebUiStaticTranslationKeys(namespaces);
-  auditWebUiLiteralFallbackBudget();
   auditMobileWebMessageParity();
   auditMobileWebPlaceholderParity();
 }
@@ -2323,7 +1830,6 @@ auditInstallerKeyParity();
 auditInstallerPlaceholderParity();
 auditCoreFluentParity();
 auditRelayStaticHomepageResources();
-auditSourceText();
 auditLocaleFormatUsageBudget();
 auditHardcodedSourceBudgets();
 auditI18nGovernanceReport(namespaces);

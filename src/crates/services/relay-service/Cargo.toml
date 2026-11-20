@@ -30,6 +30,8 @@ dashmap = "6"
 rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
+# Mesh credential derivation (HMAC-SHA256 over the verified account id).
+hmac = "0.12"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"

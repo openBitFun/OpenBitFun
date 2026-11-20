@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -95,4 +95,60 @@ test('product and data identities reject display names and path fragments', () =
     () => resolveProductDefinition({ rootDir: ROOT, productConfig: config, member: 'cli' }),
     (error) => error instanceof ProductDefinitionError && error.code === 'invalid_stable_id',
   );
+});
+
+function acmeWithIcons(icons, { iconFiles = ['app.icns', 'app.ico', 'app.png'] } = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'openbitfun-product-icons-'));
+  cpSync(join(ROOT, 'products', 'fixtures', 'acme', 'locales'), join(directory, 'locales'), {
+    recursive: true,
+  });
+  mkdirSync(join(directory, 'icons'));
+  const sources = { 'app.icns': 'icns', 'app.ico': 'ico', 'app.png': 'png' };
+  for (const name of iconFiles) {
+    cpSync(join(ROOT, 'src', 'apps', 'desktop', 'icons', `openbitfun-app-icon.${sources[name]}`), join(directory, 'icons', name));
+  }
+  const source = readFileSync(ACME, 'utf8').replace(
+    '"bundleId": "com.acme.desktop"',
+    `"bundleId": "com.acme.desktop",\n      "icons": ${JSON.stringify(icons)}`,
+  );
+  const config = join(directory, 'product.jsonc');
+  writeFileSync(config, source, 'utf8');
+  return { directory, config };
+}
+
+const ACME_ICONS = { macos: './icons/app.icns', windows: './icons/app.ico', linux: './icons/app.png' };
+
+test('desktop icons resolve to owned files and enter the assembly digest', () => {
+  const { directory, config } = acmeWithIcons(ACME_ICONS);
+  const withIcons = resolveProductDefinition({ rootDir: ROOT, productConfig: config, member: 'desktop' });
+  const without = resolveProductDefinition({ rootDir: ROOT, productConfig: ACME, member: 'desktop' });
+  assert.equal(withIcons.desktopIcons.macos, realpathSync.native(join(directory, 'icons', 'app.icns')));
+  assert.equal(withIcons.desktopIcons.windows, realpathSync.native(join(directory, 'icons', 'app.ico')));
+  assert.equal(withIcons.desktopIcons.linux, realpathSync.native(join(directory, 'icons', 'app.png')));
+  assert.match(withIcons.assembly.iconDigest, /^[a-f0-9]{64}$/);
+  assert.equal(without.desktopIcons, null);
+  assert.equal(without.assembly.iconDigest, undefined);
+  assert.notEqual(withIcons.assembly.assemblyDigest, without.assembly.assemblyDigest);
+  // The CLI member ships no desktop icons.
+  const cli = resolveProductDefinition({ rootDir: ROOT, productConfig: config, member: 'cli' });
+  assert.equal(cli.desktopIcons, null);
+  assert.equal(cli.assembly.iconDigest, undefined);
+});
+
+test('desktop icons are complete, typed and stay inside the definition directory', () => {
+  const cases = [
+    [{ macos: './icons/app.icns', windows: './icons/app.ico' }, 'missing_required_field'],
+    [{ ...ACME_ICONS, ios: './icons/app.png' }, 'unknown_field'],
+    [{ ...ACME_ICONS, macos: './icons/app.png' }, 'invalid_resource_type'],
+    [{ ...ACME_ICONS, linux: '../outside.png' }, 'resource_path_escape'],
+    [{ ...ACME_ICONS, windows: './icons/missing.ico' }, 'resource_not_found'],
+  ];
+  for (const [icons, code] of cases) {
+    const { config } = acmeWithIcons(icons);
+    assert.throws(
+      () => resolveProductDefinition({ rootDir: ROOT, productConfig: config, member: 'desktop' }),
+      (error) => error instanceof ProductDefinitionError && error.code === code,
+      code,
+    );
+  }
 });

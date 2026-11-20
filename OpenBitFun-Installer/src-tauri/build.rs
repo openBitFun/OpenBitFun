@@ -5,9 +5,14 @@ use std::path::{Path, PathBuf};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-const REQUIRED_PAYLOAD_FILES: [&str; 6] = [
+// The native desktop package (`scripts/package-desktop-nsh-windows.mjs`): the
+// NSH runner under the legacy executable name, the backend library, the UI
+// bundle and the resources the backend looks up next to the executable.
+const REQUIRED_PAYLOAD_FILES: [&str; 8] = [
     "openbitfun-desktop.exe",
-    "frontend/dist/index.html",
+    "openbitfun_desktop_lib.dll",
+    "nsh/bundle.nshc",
+    "nsh/app.json",
     "mobile-web/dist/index.html",
     "resources/ext-host/extension-host.js",
     "resources/worker_host.js",

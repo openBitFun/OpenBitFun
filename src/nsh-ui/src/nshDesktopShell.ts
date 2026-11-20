@@ -152,8 +152,9 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
   return {
     id: "nsh-desktop",
     nativeDragRegions: true,
-    // The updater commands drive Tauri's updater, which this host does not run.
-    inAppUpdates: false,
+    // The native backend runs the app's own update channel for this bundle
+    // (`backend_protocol/native_commands/update.rs`).
+    inAppUpdates: true,
     menuShortcutIds: MENU_SHORTCUT_IDS,
     async probe(sink: WindowChromeSink) {
       sink.setNative(isAvailable);

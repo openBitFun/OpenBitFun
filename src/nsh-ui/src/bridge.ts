@@ -17,7 +17,14 @@ import {
   type TransportKind,
 } from "./backendConnection";
 import { createHostPageConnection } from "./hostPageConnection";
-import { DROP_EVENT, decodePeerReply, peerRouteFor, scopeEventToSurface } from "./peerRouting";
+import {
+  DROP_EVENT,
+  decodePeerReply,
+  isOwnerOnlyEvent,
+  peerRouteFor,
+  scopeEventToSurface,
+  staysOnController,
+} from "./peerRouting";
 import { peerScope } from "./peerState";
 import { createTextChunkCoalescer, TEXT_CHUNK_EVENT } from "./textChunkCoalescer";
 import {
@@ -76,11 +83,53 @@ export function installBackendConnection(connection: BackendConnection): void {
   void connection.ready().catch(() => undefined);
 }
 
+// ── Peer Device Mode over OBP (mesh) ─────────────────────────────────────────
+//
+// While a mesh peer is driven, its backend is a second connection: registry
+// `Proxied` commands and every non-owner event go there, `ControllerLocal`
+// commands and owner-only events stay on `activeConnection`.
+
+const peerConnection = signal<BackendConnection | null>(null);
+let stopPeerEvents: (() => void) | null = null;
+
+/** The connection to the driven mesh peer's backend, or `null`. */
+export function activePeerConnection(): BackendConnection | null {
+  return peerConnection();
+}
+
+/**
+ * Makes `connection` the data backend for every `Proxied` command and event
+ * (`null` returns this surface to this machine's backend). The caller sets the
+ * peer scope in the same step.
+ */
+export function installPeerConnection(connection: BackendConnection | null): void {
+  if (peerConnection() === connection) return;
+  stopPeerEvents?.();
+  stopPeerEvents = null;
+  peerTextChunks.clear();
+  peerConnection.set(connection);
+  if (connection && channelOpen) stopPeerEvents = connection.subscribe(deliverPeerBatch);
+}
+
+/** True while this surface's data backend is a mesh peer. */
+function drivingMeshPeer(): boolean {
+  return peerConnection() !== null && peerScope()?.transport === "mesh";
+}
+
 async function runCommand<T>(
   action: string,
   args: Record<string, unknown> | undefined,
   positional: boolean,
 ): Promise<T> {
+  const peer = peerConnection();
+  if (peer && peerScope()?.transport === "mesh" && !staysOnController(action)) {
+    try {
+      return (await peer.invoke(action, args, { positional })) as T;
+    } catch (error) {
+      if (errorMessageOf(error)) throw error;
+      throw new Error(`${action} failed on the peer`);
+    }
+  }
   const connection = activeConnection();
   // backend-owned: Peer Device Mode is a routing decision the UI still makes (`peerRouting.ts`).
   const route = peerRouteFor(peerScope(), action, args, positional);
@@ -129,7 +178,25 @@ export function invokeRawCommand<T>(action: string, params?: Record<string, unkn
   return runCommand<T>(action, params ?? undefined, true);
 }
 
+function deliverToListeners(event: string, payload: unknown): void {
+  const listeners = eventListeners.get(event);
+  if (!listeners) return;
+  for (const listener of [...listeners]) {
+    try {
+      listener(payload);
+    } catch (error) {
+      console.error(`event listener failed for ${event}`, error);
+    }
+  }
+}
+
 function dispatchEvent(event: string, payload: unknown, peerDeviceId?: string): void {
+  if (drivingMeshPeer()) {
+    // This machine's backend keeps only what belongs to its owner; the peer's
+    // stream carries the product state the surface renders.
+    if (isOwnerOnlyEvent(event)) deliverToListeners(event, payload);
+    return;
+  }
   const listeners = eventListeners.get(event);
   if (!listeners) return;
   // backend-owned: local and peer streams are told apart by the source tag.
@@ -161,11 +228,25 @@ function deliverBatch(batch: readonly BackendEvent[]): void {
   }
 }
 
+/** A mesh peer's events: never owner-only (its backend withholds them), never tagged. */
+function dispatchPeerEvent(event: string, payload: unknown): void {
+  if (!drivingMeshPeer() || isOwnerOnlyEvent(event)) return;
+  deliverToListeners(event, payload);
+}
+
+const peerTextChunks = createTextChunkCoalescer(dispatchPeerEvent);
+
+function deliverPeerBatch(batch: readonly BackendEvent[]): void {
+  for (const item of batch) peerTextChunks.push(item.event, item.payload);
+}
+
 /** Opens the single backend event channel. Safe to call more than once. */
 export function openHostEventChannel(): void {
   if (channelOpen) return;
   channelOpen = true;
   stopEvents = activeConnection().subscribe(deliverBatch);
+  const peer = peerConnection();
+  if (peer && !stopPeerEvents) stopPeerEvents = peer.subscribe(deliverPeerBatch);
 }
 
 /** Subscribes one backend event; the returned function unsubscribes. */
@@ -264,6 +345,11 @@ export function initWindowChrome(): Promise<void> {
 }
 
 /** The title bar regions are declared on views (`desktop={{ windowDrag }}`), not started on press. */
+/** Which shell draws this UI (`host-page`, `nsh-desktop` or `browser`). */
+export function windowShellId(): WindowShell["id"] {
+  return shell.id;
+}
+
 export function usesNativeDragRegions(): boolean {
   return shell.nativeDragRegions;
 }

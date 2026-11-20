@@ -50,6 +50,29 @@ function textChunkKeyOf(payload: Record<string, unknown>): string {
   ].join("\u0000");
 }
 
+const RUNTIME_CURSOR_KEY = "__openbitfunRuntimeEventCursor";
+const CHUNK_SPANS_KEY = "__openbitfunChunkSpans";
+
+/**
+ * A merged chunk carries the delivery cursor of its newest part, and
+ * `__openbitfunChunkSpans` (`[cursor, end offset]` per part) so a surface that
+ * replayed a running-turn snapshot up to some cursor keeps only the text past it.
+ * Chunks without a cursor (older hosts, fixtures) merge exactly as before.
+ */
+function noteMergedCursor(target: Record<string, unknown>, record: Record<string, unknown>, field: TextField): void {
+  const next = record[RUNTIME_CURSOR_KEY];
+  if (typeof next !== "number") return;
+  const before = String(target[field]).length;
+  const spans = Array.isArray(target[CHUNK_SPANS_KEY])
+    ? (target[CHUNK_SPANS_KEY] as Array<[number, number]>)
+    : typeof target[RUNTIME_CURSOR_KEY] === "number"
+      ? [[target[RUNTIME_CURSOR_KEY] as number, before] as [number, number]]
+      : [];
+  spans.push([next, before + String(record[field]).length]);
+  target[CHUNK_SPANS_KEY] = spans;
+  target[RUNTIME_CURSOR_KEY] = next;
+}
+
 export function createTextChunkCoalescer(
   emit: (event: string, payload: unknown) => void,
 ): TextChunkCoalescer {
@@ -94,6 +117,7 @@ export function createTextChunkCoalescer(
         const key = textChunkKeyOf(record);
         const last = pending[pending.length - 1];
         if (last && last.key === key && last.field === field && last.payload.isThinkingEnd !== true) {
+          noteMergedCursor(last.payload, record, field);
           last.payload[field] = String(last.payload[field]) + String(record[field]);
           if (record.isThinkingEnd === true) {
             last.payload.isThinkingEnd = true;

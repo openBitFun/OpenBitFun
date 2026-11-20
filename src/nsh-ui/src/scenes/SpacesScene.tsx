@@ -31,15 +31,34 @@ import {
   spacesInitialLoad,
   stopSpaceWorker,
   subscribeSpaceEvents,
-  summarizeSpacePermissions,
+  spacePermissionBadges,
   type SpaceMeta,
   type SpaceSourceTab,
+  openSpaceWindow,
+  spaceOpening,
+  spaceWindowBlockedReason,
 } from "../spacesStore";
 import { fontMono, palette, radii, textLineHeight, textSize } from "../theme";
-import { Icon, type IconName } from "../ui/icons";
+import { Icon } from "../ui/icons";
 import { createEditorStyles, inferCodeLanguage } from "../ui/markdown";
 import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
 import { ModalDialog, type DropdownMenuItem } from "../ui/overlays";
+import {
+  MiniAppMarketView,
+  MiniAppSubmissionsView,
+  PackageImportModal,
+  spaceIconName,
+} from "../ui/MiniAppMarket";
+import {
+  enterMarket,
+  loadMarketOrigins,
+  loadSubmissions,
+  marketOrigins,
+  openPackageImport,
+  packageImportBlockedReason,
+  spacesView,
+  type SpacesView,
+} from "../miniAppMarketStore";
 import {
   Button,
   ConfigSection,
@@ -95,15 +114,16 @@ function spacePromptStarters(): ReadonlyArray<{ id: string; label: string; promp
   ];
 }
 
-function localizePermission(raw: string): string {
-  if (raw === "Filesystem") return tr("spaces.permFilesystem");
-  if (raw === "Shell") return tr("spaces.permShell");
-  if (raw === "Network") return tr("spaces.permNetwork");
-  if (raw === "Node/Bun Worker") return tr("spaces.permNodeWorker");
-  if (raw === "AI Bridge") return tr("spaces.permAiBridge");
-  if (raw === "Agent Bridge") return tr("spaces.permAgentBridge");
-  if (raw === "Sandboxed UI") return tr("spaces.permSandboxedUi");
-  return raw;
+/** The label of a host permission badge id. */
+function localizePermission(id: string): string {
+  if (id === "filesystem") return tr("spaces.permFilesystem");
+  if (id === "shell") return tr("spaces.permShell");
+  if (id === "network") return tr("spaces.permNetwork");
+  if (id === "node_worker") return tr("spaces.permNodeWorker");
+  if (id === "ai_bridge") return tr("spaces.permAiBridge");
+  if (id === "agent_bridge") return tr("spaces.permAgentBridge");
+  if (id === "sandboxed_ui") return tr("spaces.permSandboxedUi");
+  return id;
 }
 
 const CARD_PERMISSION_CAP = 3;
@@ -121,41 +141,7 @@ function sourceLineCount(code: string): number {
   return code.split(/\r?\n/).length;
 }
 
-/**
- * Manifest icon names the desktop's miniAppIcons map knows (kebab-case lucide
- * names), projected onto glyphs this surface draws. Unknown names fall back
- * to the package glyph, as the desktop falls back to lucide's Box.
- */
-const SPACE_ICON_MAP: Readonly<Record<string, IconName>> = {
-  "app-window": "layers",
-  aperture: "compass",
-  bot: "bot",
-  box: "package",
-  code: "code",
-  database: "database",
-  "file-text": "file-text",
-  "git-pull-request": "git-pull-request",
-  globe: "globe",
-  "grid-3x3": "layout-grid",
-  image: "image",
-  "layout-grid": "layout-grid",
-  presentation: "monitor",
-  regex: "hash",
-  rocket: "zap",
-  settings: "settings",
-  sparkles: "sparkles",
-  terminal: "terminal",
-  workflow: "network",
-  wrench: "wrench",
-};
-
-export function spaceIconName(icon: string): IconName {
-  const key = icon
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-    .toLowerCase();
-  return SPACE_ICON_MAP[key] ?? "package";
-}
+export { spaceIconName };
 
 /** A quiet inline list: "Permissions  Filesystem · Network". Each item is its own text. */
 function QuietList(props: { label: string; items: ReadonlyArray<string>; overflow?: string }) {
@@ -202,8 +188,49 @@ function QuietList(props: { label: string; items: ReadonlyArray<string>; overflo
   );
 }
 
+/** The release a Space was installed from, when the host reports a market origin for it. */
+function spaceMarketRelease(appId: string): number | null {
+  for (const origin of Object.values(marketOrigins())) {
+    if (origin.appId === appId) return origin.releaseNumber;
+  }
+  return null;
+}
+
+function spaceMetaLine(space: SpaceMeta): string {
+  const parts = [space.category, `v${space.version}`, space.runtimeProfile];
+  const release = spaceMarketRelease(space.id);
+  if (release !== null) parts.push(tr("market.fromMarket", { release }));
+  return parts.join(" · ");
+}
+
+function viewTabs(): ReadonlyArray<SegmentedTabOption<SpacesView>> {
+  return [
+    { value: "library", label: tr("market.viewLibrary"), accessibilityLabel: "spaces-view-library" },
+    { value: "market", label: tr("market.viewMarket"), accessibilityLabel: "spaces-view-market" },
+    { value: "submissions", label: tr("market.viewSubmissions"), accessibilityLabel: "spaces-view-submissions" },
+  ];
+}
+
+function refreshCurrentView(): void {
+  const view = spacesView();
+  if (view === "market") enterMarket();
+  else if (view === "submissions") void loadSubmissions();
+  else {
+    void loadSpaces();
+    void loadMarketOrigins();
+  }
+}
+
 function spaceMenuItems(space: SpaceMeta, running: boolean): DropdownMenuItem[] {
   return [
+    {
+      id: "open-window",
+      label: tr("spaces.openWindow"),
+      icon: "external-link",
+      disabled: Boolean(spaceWindowBlockedReason()) || spaceOpening() !== null,
+      accessibilityLabel: `space-menu-open-${space.id}`,
+      onSelect: () => void openSpaceWindow(space.id),
+    },
     {
       id: "inspect",
       label: tr("spaces.inspectSource"),
@@ -239,7 +266,7 @@ function SpaceCard(props: { space: () => SpaceMeta }) {
   const isRunning = () => runningWorkerSet().has(props.space().id);
   const isSelected = () => selectedSpaceId() === props.space().id;
   const permissionLine = () => {
-    const all = summarizeSpacePermissions(props.space().permissions).map(localizePermission);
+    const all = spacePermissionBadges(props.space()).map(localizePermission);
     const shown = all.slice(0, CARD_PERMISSION_CAP).join(" · ");
     const overflow = all.length - CARD_PERMISSION_CAP;
     return overflow > 0 ? `${shown} +${overflow}` : shown;
@@ -309,7 +336,7 @@ function SpaceCard(props: { space: () => SpaceMeta }) {
             textOverflow: "ellipsis",
           }}
         >
-          {`${props.space().category} · v${props.space().version} · ${props.space().runtimeProfile}`}
+          {spaceMetaLine(props.space())}
         </Text>
         <Text
           style={{
@@ -423,6 +450,20 @@ function SpaceInspectorModal() {
               accessibilityLabel="space-inspector-close"
               onPress={() => closeSpaceInspector()}
             />
+            <If when={Boolean(selectedSpaceId()) && !spaceWindowBlockedReason()}>
+              <Button
+                label={tr("spaces.openWindow")}
+                variant="primary"
+                size="md"
+                leadingIcon="external-link"
+                disabled={spaceOpening() !== null}
+                accessibilityLabel="space-inspector-open"
+                onPress={() => {
+                  const id = selectedSpaceId();
+                  if (id) void openSpaceWindow(id);
+                }}
+              />
+            </If>
           </View>
         </View>
       }
@@ -503,7 +544,7 @@ function SpaceInspectorModal() {
               <View style={{ gap: 6 }}>
                 <QuietList
                   label={tr("spaces.polish.permissions")}
-                  items={summarizeSpacePermissions(detail().permissions).map(localizePermission)}
+                  items={spacePermissionBadges(detail()).map(localizePermission)}
                 />
                 <If when={detail().tags.length > 0}>
                   <QuietList
@@ -701,9 +742,10 @@ function CreateSpaceSection() {
   );
 }
 
-/** Running a Space needs the MiniApp runner, which this surface does not have yet: say so plainly. */
+/** Where a Space cannot open in its own window, say why plainly. */
 function RunUnsupportedNote() {
   return (
+    <If when={spaceWindowBlockedReason()}>
     <View
       accessibilityLabel="spaces-run-unsupported"
       style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 4 }}
@@ -729,10 +771,11 @@ function RunUnsupportedNote() {
             lineHeight: textLineHeight(13, 1.5),
           }}
         >
-          {tr("spaces.runUnsupportedBody")}
+          {spaceWindowBlockedReason()}
         </Text>
       </View>
     </View>
+    </If>
   );
 }
 
@@ -747,6 +790,16 @@ export function SpacesScene() {
     const scopeKey = peerScope()?.deviceId ?? "local";
     void scopeKey;
     void loadSpaces();
+    void loadMarketOrigins();
+  });
+  // Each view reads its own host state when it is shown (and again when the
+  // driven device changes), so a hidden view costs nothing.
+  effect(() => {
+    const scopeKey = peerScope()?.deviceId ?? "local";
+    void scopeKey;
+    const view = spacesView();
+    if (view === "market") enterMarket();
+    else if (view === "submissions") void loadSubmissions();
   });
   const unsubscribe = subscribeSpaceEvents();
   cleanup(() => unsubscribe());
@@ -771,9 +824,17 @@ export function SpacesScene() {
                 accessibilityLabel="spaces-refresh"
                 tooltip={tr("spaces.refreshTooltip")}
                 disabled={spacesBusy()}
-                onPress={() => void loadSpaces()}
+                onPress={() => refreshCurrentView()}
               />
             </View>
+          }
+          extra={
+            <SegmentedTabs
+              size="sm"
+              options={viewTabs()}
+              value={spacesView()}
+              onChange={next => spacesView.set(next)}
+            />
           }
         />
         <StudioBody>
@@ -791,22 +852,41 @@ export function SpacesScene() {
             {notice => <InlineBanner tone="warning" message={notice()} />}
           </If>
 
+          <If when={spacesView() === "market"}>
+            <MiniAppMarketView />
+          </If>
+          <If when={spacesView() === "submissions"}>
+            <MiniAppSubmissionsView />
+          </If>
+          <If when={spacesView() === "library"}>
           <CreateSpaceSection />
 
           <StudioSection
             title={tr("spaces.polish.installedSection")}
             accessibilityLabel="spaces-installed-section"
             trailing={
-              <Text
-                style={{
-                  color: palette().textSecondary,
-                  fontSize: textSize(13),
-                  fontVariant: ["tabular-nums"],
-                  lineHeight: textLineHeight(13, 1.35),
-                }}
-              >
-                {installedSummary()}
-              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Text
+                  style={{
+                    color: palette().textSecondary,
+                    fontSize: textSize(13),
+                    fontVariant: ["tabular-nums"],
+                    lineHeight: textLineHeight(13, 1.35),
+                  }}
+                >
+                  {installedSummary()}
+                </Text>
+                <Button
+                  label={tr("market.import.open")}
+                  variant="ghost"
+                  size="sm"
+                  leadingIcon="upload"
+                  disabled={Boolean(packageImportBlockedReason())}
+                  tooltip={packageImportBlockedReason() || undefined}
+                  accessibilityLabel="spaces-import-package"
+                  onPress={() => openPackageImport()}
+                />
+              </View>
             }
           >
             <If when={spaces().length === 0 && spacesBusy() && spacesInitialLoad()}>
@@ -829,10 +909,12 @@ export function SpacesScene() {
           </StudioSection>
 
           <RunUnsupportedNote />
+          </If>
         </StudioBody>
       </Scroll>
 
       <SpaceInspectorModal />
+      <PackageImportModal />
     </View>
   );
 }

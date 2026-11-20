@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "b18e476cf2b8f36360fc1fc9edc5dcf20454aaf4d51bf2fde4193e2c56b21dd4",
-  "count": 234,
+  "catalogDigest": "17a124b388ec4662d540fd802d1c6d90cd54bc65c1b1616ccbe806aab60289ff",
+  "count": 220,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 6,
-    "unstructuredInteraction": 196,
-    "visualSelection": 28
+    "unstructuredInteraction": 184,
+    "visualSelection": 26
   },
   "entries": [
     {
@@ -23,7 +23,8 @@
         "sceneId": "personal-overview"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/personal-overview/PersonalOverviewScene.tsx#PersonalOverviewScene"
+        "source:src/nsh-ui/src/homeStore.ts#PersonalOverview",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"home.activityHeatmapTitle\""
       ]
     },
     {
@@ -39,8 +40,7 @@
         "sceneId": "personal-overview"
       },
       "evidence": [
-        "source:src/web-ui/src/app/global-search/globalSearchStore.ts#openGlobalSearch",
-        "source:src/web-ui/src/app/global-search/productActionCatalog.ts#PRODUCT_ACTION_CATALOG"
+        "source:src/nsh-ui/src/globalSearchStore.ts#export function openGlobalSearch"
       ]
     },
     {
@@ -56,8 +56,7 @@
         "sceneId": "personal-overview"
       },
       "evidence": [
-        "source:src/web-ui/src/app/workbench/WorkbenchLayout.tsx#WorkbenchLayout",
-        "source:src/web-ui/src/shared/constants/shortcuts.ts#CANVAS_SHORTCUTS"
+        "source:src/nsh-ui/src/state.ts#WorkbenchLayout"
       ]
     },
     {
@@ -73,24 +72,7 @@
         "sceneId": "personal-overview"
       },
       "evidence": [
-        "source:src/web-ui/src/app/navigation/sidebarContributions.ts#sidebarRegistry",
-        "source:src/web-ui/src/app/navigation/sidebarPreferences.ts#DEFAULT_SIDEBAR_PINS"
-      ]
-    },
-    {
-      "capabilityId": "feature.home-search",
-      "itemId": "floating-window",
-      "titleZh": "一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口",
-      "titleEn": "Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「一键切换到轻量「悬浮窗模式」，在其他应用上方随时发起对话或恢复主窗口」涉及本机桌面窗口形态与屏幕位置切换，需由你在左下角菜单中手动开启或点恢复按钮回到主窗口。",
-      "reasonEn": "“Switch into compact Floating window mode to chat alongside other desktop apps and restore the main window anytime” changes the local desktop window geometry and focus, so you trigger it from the bottom-left menu and restore the full window when ready.",
-      "presentationTarget": {
-        "kind": "scene",
-        "sceneId": "personal-overview"
-      },
-      "evidence": [
-        "source:src/web-ui/src/app/components/NavPanel/components/PersistentFooterActions.tsx#enableToolbarMode"
+        "source:src/crates/contracts/config-contracts/src/types.rs#pub sidebar: SidebarConfig"
       ]
     },
     {
@@ -154,8 +136,8 @@
         "sceneId": "session"
       },
       "evidence": [
-        "source:src/web-ui/src/flow_chat/components/ChatContextPicker.tsx#ChatContextPicker",
-        "source:src/web-ui/src/flow_chat/utils/slashCommand.ts#matchesSlashCommand"
+        "source:src/nsh-ui/src/mentionStore.ts#@",
+        "source:src/nsh-ui/src/scenes/SessionsScene.tsx#parseSlashCommand"
       ]
     },
     {
@@ -171,9 +153,7 @@
         "sceneId": "session"
       },
       "evidence": [
-        "command:get_chat_mcp_catalog",
-        "source:src/web-ui/src/flow_chat/components/ChatContextPicker.tsx#onSelectMcp",
-        "source:src/web-ui/src/flow_chat/components/ChatInput.tsx#selectContextMcp"
+        "command:get_chat_mcp_catalog"
       ]
     },
     {
@@ -189,7 +169,7 @@
         "sceneId": "session"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/flow-chat.json#selection.annotate"
+        "source:src/crates/assembly/core/src/agentic/coordination/coordinator.rs#build_btw_user_input"
       ]
     },
     {
@@ -437,7 +417,6 @@
         "actionId": "surface.agents.open"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/agents/components/AgentCapabilityTooltip.tsx#AgentCapabilityTooltip",
         "command:get_available_tools",
         "command:get_tool_info",
         "command:get_readonly_tools_info",
@@ -461,11 +440,8 @@
       },
       "evidence": [
         "command:list_agent_tool_names",
-        "source:src/web-ui/src/app/scenes/agents/components/ToolGroupPicker.tsx#ToolGroupPicker",
-        "source:src/web-ui/src/app/scenes/agents/components/SkillGroupPicker.tsx#SkillGroupPicker",
         "command:set_agent_profile_config",
-        "command:reset_agent_profile_config",
-        "source:src/web-ui/src/app/scenes/agents/hooks/useAgentsList.ts#useAgentsList"
+        "command:reset_agent_profile_config"
       ]
     },
     {
@@ -482,8 +458,8 @@
       },
       "evidence": [
         "command:create_assistant_workspace",
-        "command:get_assistant_workspaces",
-        "source:src/web-ui/src/app/scenes/profile/views/NurseryGallery.tsx#NurseryGallery"
+        "command:set_assistant_identity",
+        "command:get_assistant_workspaces"
       ]
     },
     {
@@ -500,9 +476,7 @@
       },
       "evidence": [
         "command:close_workspace",
-        "command:open_workspace",
-        "source:src/web-ui/src/app/components/NavPanel/sections/workspaces/WorkspaceItem.tsx#handleCloseWorkspace",
-        "source:src/web-ui/src/app/scenes/profile/views/NurseryGallery.tsx#handleOpenAssistant"
+        "command:open_workspace"
       ]
     },
     {
@@ -537,8 +511,7 @@
         "sceneId": "assistant"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#updateIdentityField",
-        "source:src/web-ui/src/app/scenes/profile/views/AssistantAvatarPicker.tsx#ASSISTANT_AVATAR_PRESETS"
+        "source:src/nsh-ui/src/assistantStore.ts#ASSISTANT_AVATAR_PRESETS"
       ]
     },
     {
@@ -554,7 +527,6 @@
         "sceneId": "assistant"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#PERSONA_DOC_FILES",
         "command:read_file_content",
         "command:write_file_content"
       ]
@@ -572,8 +544,7 @@
         "sceneId": "assistant"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/profile/views/AssistantQuickInput.tsx#handleSend",
-        "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#SessionsSection"
+        "source:src/nsh-ui/src/assistantStore.ts#sessions"
       ]
     },
     {
@@ -589,7 +560,7 @@
         "sceneId": "assistant"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/profile/views/AssistantConfigPage.tsx#ScheduledJobsView"
+        "source:src/nsh-ui/src/routinesStore.ts#CronJobTarget"
       ]
     },
     {
@@ -605,8 +576,7 @@
         "actionId": "project.open"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/project-resources/ProjectResourcesScene.tsx#ProjectResourcesScene",
-        "source:src/web-ui/src/app/scenes/project-resources/ProjectDefaultsSection.tsx#ProjectDefaultsSection"
+        "source:src/crates/contracts/config-contracts/src/types.rs#pub project_defaults:"
       ]
     },
     {
@@ -625,7 +595,8 @@
         "command:close_workspace",
         "command:set_active_workspace",
         "command:reorder_opened_workspaces",
-        "command:get_opened_workspaces"
+        "command:get_opened_workspaces",
+        "command:get_workspace_navigator"
       ]
     },
     {
@@ -661,8 +632,7 @@
       "evidence": [
         "command:scan_workspace_info",
         "command:update_workspace_info",
-        "command:reset_workspace_persona_files",
-        "source:src/web-ui/src/app/scenes/project-resources/ProjectDirectoriesSection.tsx#ProjectDirectoriesSection"
+        "command:reset_workspace_persona_files"
       ]
     },
     {
@@ -810,9 +780,8 @@
         "actionId": "surface.files.open"
       },
       "evidence": [
-        "source:src/web-ui/src/tools/editor/components/MarkdownEditor.tsx#MarkdownEditor",
-        "source:src/web-ui/src/tools/editor/components/LatexEditor.tsx#LatexEditor",
-        "source:src/web-ui/src/tools/editor/pdf-review/PdfReviewEditor.tsx#PdfReviewEditor"
+        "source:src/nsh-ui/src/scenes/FilesScene.tsx#markdown",
+        "source:src/apps/desktop/src/api/latex_api.rs#LatexEngine"
       ]
     },
     {
@@ -834,22 +803,6 @@
     },
     {
       "capabilityId": "feature.files-editor",
-      "itemId": "language-actions",
-      "titleZh": "仅在当前语言提供器实际支持时显示格式化、定义与类型跳转、引用、重命名、快速修复和符号导航",
-      "titleEn": "Show formatting, definition and type navigation, references, rename, quick fixes, and symbol navigation only when supported by the active language provider",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「仅在当前语言提供器实际支持时显示格式化、定义与类型跳转、引用、重命名、快速修复和符号导航」与你在编辑器中聚焦的文件类型和光标所在符号位置绑定，可在代码编辑器右键菜单或快捷键中直接调用。",
-      "reasonEn": "“Show formatting, definition and type navigation, references, rename, quick fixes, and symbol navigation only when supported by the active language provider” depends on the focused file type and cursor symbol in the code editor, surfaced through context menus and breadcrumbs.",
-      "presentationTarget": {
-        "kind": "action",
-        "actionId": "surface.files.open"
-      },
-      "evidence": [
-        "source:src/web-ui/src/shared/context-menu-system/providers/EditorMenuProvider.ts#supportsEditorAction"
-      ]
-    },
-    {
-      "capabilityId": "feature.files-editor",
       "itemId": "attachments",
       "titleZh": "在本地桌面会话中直接粘贴剪贴板截图，或把本机文件与文件夹拖进聊天框",
       "titleEn": "Paste clipboard images or drag local files and folders straight into Desktop sessions",
@@ -863,13 +816,7 @@
       "evidence": [
         "command:get_clipboard_files",
         "command:get_clipboard_image",
-        "command:resolve_browser_dropped_file_paths",
-        "command:set_file_drop_preview_target",
-        "command:upload_image_contexts",
-        "source:src/web-ui/src/flow_chat/utils/externalFileIntake.ts#buildExternalFileContexts",
-        "source:src/web-ui/src/flow_chat/utils/externalFileIntake.test.ts#buildExternalFileContexts",
-        "source:src/web-ui/src/infrastructure/files/resolveBrowserDroppedFilePaths.ts#resolveBrowserDroppedFilePaths",
-        "source:src/web-ui/src/infrastructure/files/useLocalFileDrop.ts#useLocalFileDrop"
+        "command:upload_image_contexts"
       ]
     },
     {
@@ -919,8 +866,7 @@
         "actionId": "surface.terminal.open"
       },
       "evidence": [
-        "command:terminal_get_shells",
-        "source:src/web-ui/src/locales/zh-CN/settings/application.json#terminal.controls.autoDetect"
+        "command:terminal_get_shells"
       ]
     },
     {
@@ -1236,8 +1182,7 @@
       },
       "evidence": [
         "command:computer_use_control_status",
-        "command:computer_use_control_preview",
-        "source:src/web-ui/src/app/components/ComputerUseControlCard.tsx#ComputerUseControlCard"
+        "command:computer_use_control_preview"
       ]
     },
     {
@@ -1424,7 +1369,7 @@
         "actionId": "surface.skills.open"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/skills.json#list.item.shadowedDetail"
+        "source:src/nsh-ui/src/skillsCatalogStore.ts#shadowed"
       ]
     },
     {
@@ -1444,7 +1389,6 @@
         "command:miniapp_market_get_listing",
         "command:miniapp_market_install",
         "command:miniapp_market_installed_status",
-        "command:miniapp_market_capture_window",
         "command:miniapp_market_import_package",
         "command:miniapp_market_inspect_package"
       ]
@@ -1603,8 +1547,8 @@
     {
       "capabilityId": "feature.miniapps",
       "itemId": "publishing",
-      "titleZh": "查看我的市场投稿审核进度、撤回发布申请与预览展示页",
-      "titleEn": "Track your Market submissions, withdraw pending releases, and render showcase slides",
+      "titleZh": "查看我的市场投稿审核进度、撤回发布申请",
+      "titleEn": "Track your Market submissions and withdraw pending releases",
       "reasonCode": "visualSelection",
       "reasonZh": "智能体已能提交完成的 Mini App；撤回、审核队列和幻灯片渲染仍依赖账户权限或当前界面状态，因此保留准确入口而不扩大工具承诺。",
       "reasonEn": "The Agent can submit a completed Mini App; withdrawal, review queues, and slide rendering still depend on account permissions or live UI state, so the contract keeps an exact entry without overstating tool support.",
@@ -1614,8 +1558,7 @@
       },
       "evidence": [
         "command:miniapp_market_withdraw_submission",
-        "command:miniapp_market_list_submissions",
-        "command:miniapp_render_slide_page"
+        "command:miniapp_market_list_submissions"
       ]
     },
     {
@@ -1631,7 +1574,7 @@
         "actionId": "surface.todos.open"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/todos/TodosScene.tsx#TodoCalendar"
+        "source:src/nsh-ui/src/scenes/RoutinesScene.tsx#calendar"
       ]
     },
     {
@@ -1647,7 +1590,7 @@
         "actionId": "surface.todos.open"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/todos/todoOccurrences.ts#occurrence"
+        "source:src/nsh-ui/src/routinesStore.ts#occurrence"
       ]
     },
     {
@@ -1663,7 +1606,7 @@
         "actionId": "surface.todos.open"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/todos/components/TodoEditor.tsx#agent"
+        "source:src/nsh-ui/src/scenes/RoutinesScene.tsx#workspace"
       ]
     },
     {
@@ -1679,7 +1622,7 @@
         "actionId": "surface.todos.open"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/todos/components/TodoEditor.tsx#target"
+        "source:src/nsh-ui/src/routinesStore.ts#remoteSshHost"
       ]
     },
     {
@@ -1777,7 +1720,9 @@
         "actionId": "surface.insights.open"
       },
       "evidence": [
-        "command:get_token_usage_statistics"
+        "command:get_token_usage_statistics",
+        "command:get_token_usage_activity",
+        "command:get_personal_overview"
       ]
     },
     {
@@ -1793,7 +1738,7 @@
         "actionId": "surface.insights.open"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/my-agent/InsightsScene.tsx#InsightsScene"
+        "source:src/nsh-ui/src/homeStore.ts#Insights"
       ]
     },
     {
@@ -1812,8 +1757,7 @@
         "command:get_external_ecosystem_awareness_command",
         "command:get_external_source_snapshot",
         "command:get_instruction_source_catalog",
-        "command:get_external_source_discovery_snapshot",
-        "source:src/web-ui/src/app/scenes/ecosystem-compatibility/ExternalDiscoveryToggle.tsx#ExternalDiscoveryToggle"
+        "command:get_external_source_discovery_snapshot"
       ]
     },
     {
@@ -1830,9 +1774,7 @@
       },
       "evidence": [
         "command:list_removed_external_sessions",
-        "command:restore_removed_external_session",
-        "source:src/web-ui/src/app/scenes/ecosystem-compatibility/RemovedExternalSessions.tsx#RemovedExternalSessions",
-        "source:src/web-ui/src/app/scenes/ecosystem-compatibility/ExternalAgentSessions.tsx#ExternalAgentSessions"
+        "command:restore_removed_external_session"
       ]
     },
     {
@@ -1849,9 +1791,7 @@
       },
       "evidence": [
         "command:list_removed_external_sessions",
-        "command:restore_removed_external_session",
-        "source:src/web-ui/src/app/scenes/ecosystem-compatibility/RemovedExternalSessions.tsx#RemovedExternalSessions",
-        "source:src/web-ui/src/app/scenes/ecosystem-compatibility/ExternalAgentSessions.tsx#ExternalAgentSessions"
+        "command:restore_removed_external_session"
       ]
     },
     {
@@ -2125,7 +2065,9 @@
       "evidence": [
         "command:ssh_is_connected",
         "command:ssh_disconnect",
-        "command:ssh_disconnect_all"
+        "command:ssh_disconnect_all",
+        "command:remote_workspace_ensure_connected",
+        "command:remote_workspace_link_states"
       ]
     },
     {
@@ -2187,8 +2129,8 @@
       "titleZh": "在手机或浏览器中打开同一界面，扫码配对并随时撤销",
       "titleEn": "Open the same UI on a phone or browser, pair by QR, and revoke at any time",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在手机或浏览器中打开同一界面」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
-      "reasonEn": "\"Open the same UI on a phone or browser\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you.",
+      "reasonZh": "「在手机或浏览器中打开同一界面，扫码配对并随时撤销」涉及在屏幕上展示配对二维码供手机扫描并打开本机浏览器；智能体会为你直接打开「设备」中的「在手机或浏览器中打开」卡片。",
+      "reasonEn": "\"Open the same UI on a phone or browser, pair by QR, and revoke at any time\" involves showing a pairing QR code for a phone to scan and opening this computer's browser; the Agent opens the Open on phone or browser card in Devices directly for you.",
       "presentationTarget": {
         "kind": "event",
         "eventName": "openbitfun:open-remote-connect"
@@ -2479,8 +2421,6 @@
         "pageId": "application.voice"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#composer.language.label",
-        "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.microphone.label",
         "command:save_cloud_speech_config"
       ]
     },
@@ -2497,7 +2437,7 @@
         "pageId": "application.voice"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.recognition.start"
+        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#recognition"
       ]
     },
     {
@@ -2513,65 +2453,7 @@
         "pageId": "application.voice"
       },
       "evidence": [
-        "command:speech_finish_input_session",
-        "source:src/web-ui/src/flow_chat/components/voice/useComposerVoiceInput.ts#result.text.trim()"
-      ]
-    },
-    {
-      "capabilityId": "feature.desktop-pet",
-      "itemId": "desktop-window",
-      "titleZh": "显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面",
-      "titleEn": "Show, hide, and resize the companion window, and return quickly to the main window",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「显示、隐藏与自由缩放独立桌面伙伴窗口，并可一键唤回主界面」涉及你在桌面上直接拖拽缩放悬浮窗尺寸或点击唤回主窗口；智能体可帮你开关伙伴并打开「宠物与助手」设置页。",
-      "reasonEn": "\"Show, hide, and resize the companion window, and return quickly to the main window\" involves visual window placement, resizing, and clicking on your desktop; the Agent can toggle the companion or open Pet & assistant settings for you.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet"
-      },
-      "evidence": [
-        "command:show_agent_companion_desktop_pet",
-        "command:hide_agent_companion_desktop_pet",
-        "command:resize_agent_companion_desktop_pet",
-        "command:show_main_window"
-      ]
-    },
-    {
-      "capabilityId": "feature.desktop-cards",
-      "itemId": "desktop-pinning",
-      "titleZh": "在卡片菜单、首页卡片列表或设置里将卡片固定到 Windows 桌面图标层",
-      "titleEn": "Pin cards to the Windows desktop layer from the card menu, Home list, or Settings",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「在卡片菜单、首页卡片列表或设置里将卡片固定到 Windows 桌面图标层」会将卡片放入 Windows Explorer 桌面层（位于桌面图标之上、应用窗口之下，需 Explorer 可用且 DPI 上下文一致）；这项显示偏好由你在卡片菜单、首页卡片列表或设置页手动切换，智能体可为你直接打开对应管理入口。",
-      "reasonEn": "\"Pin cards to the Windows desktop layer from the card menu, Home list, or Settings\" places the card into the Windows Explorer desktop layer (above desktop icons and behind app windows while Explorer is available with a matching DPI context); you toggle this display preference in the card menu, Home list, or Settings while the Agent opens the exact entry.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      },
-      "evidence": [
-        "command:desktop_card_set_always_on_top",
-        "source:src/apps/desktop/src/desktop_cards/desktop_layer.rs#SHELLDLL_DefView",
-        "source:src/web-ui/src/app/scenes/personal-overview/OverviewDesktopCardsSection.tsx#desktopCards.pin",
-        "source:src/web-ui/src/app/scenes/settings/pages/application/DesktopCardsSettingsSection.tsx#desktop-card-pin-row"
-      ]
-    },
-    {
-      "capabilityId": "feature.desktop-cards",
-      "itemId": "drag-restore",
-      "titleZh": "自由拖拽摆放并拉伸卡片边缘调整尺寸，关闭重启 OpenBitFun 后自动按原样恢复",
-      "titleEn": "Drag and resize cards freely on screen, with positions and sizes restored on relaunch",
-      "reasonCode": "visualSelection",
-      "reasonZh": "卡片位置由用户在桌面上直接拖动决定，没有可以代替视觉摆放的结构化命令；智能体只说明操作方式，摆放保留给用户。",
-      "reasonEn": "Card positions are chosen by dragging directly on the desktop, and no structured command can replace that visual placement; the Agent explains the interaction and leaves placement to the user.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      },
-      "evidence": [
-        "source:src/web-ui/src/app/components/DesktopCard/DesktopCardWindow.tsx#startDesktopCardWindowDrag",
-        "source:src/apps/desktop/src/desktop_cards/store.rs#cards.json"
+        "command:speech_finish_input_session"
       ]
     },
     {
@@ -2587,7 +2469,8 @@
         "pageId": "application.general"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/LanguageSettingsSection.tsx#LanguageSettingsSection"
+        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#writeAppLanguage",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.language.title\""
       ]
     },
     {
@@ -2613,22 +2496,6 @@
     },
     {
       "capabilityId": "setting.application.appearance",
-      "itemId": "visual-skins",
-      "titleZh": "导入、预览、启用或停用自定义视觉皮肤包（支持动态视频背景）",
-      "titleEn": "Import, preview, activate, or deactivate custom visual skin packs (including video backdrops)",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“导入、预览、启用或停用自定义视觉皮肤包（支持动态视频背景）”需要选择本地皮肤包文件并在界面中肉眼确认预览效果；智能体会打开外观页对应区域由你挑选与启用。",
-      "reasonEn": "“Import, preview, activate, or deactivate custom visual skin packs (including video backdrops)” requires picking a local skin package file and visually reviewing its live preview; the Agent opens Appearance settings so you can preview and activate it.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.appearance"
-      },
-      "evidence": [
-        "source:src/web-ui/src/infrastructure/config/components/VisualSkinConfigSection.tsx#VisualSkinConfigSection"
-      ]
-    },
-    {
-      "capabilityId": "setting.application.appearance",
       "itemId": "ui-font-size",
       "titleZh": "调整全局界面字号档位，或按 12–20 px 自定义像素大小并实时预览",
       "titleEn": "Adjust global UI font-size presets or set a custom 12–20 px size with live preview",
@@ -2640,7 +2507,8 @@
         "pageId": "application.appearance"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/application.json#appearance.fontSize.uiSizeLabel"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.appearance.textSize\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.appearance.fontCustom\""
       ]
     },
     {
@@ -2657,7 +2525,7 @@
         "sectionId": "sidebar-navigation"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/SidebarSettingsSection.tsx#SidebarSettingsSection"
+        "source:src/crates/contracts/config-contracts/src/types.rs#pub sidebar: SidebarConfig"
       ]
     },
     {
@@ -2673,23 +2541,8 @@
         "pageId": "application.appearance"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/FlowChatWidthSettingsSection.tsx#FlowChatWidthSettingsSection"
-      ]
-    },
-    {
-      "capabilityId": "setting.application.appearance",
-      "itemId": "session-panel-layout",
-      "titleZh": "在“并排”与“覆盖”之间切换会话侧边面板展示模式",
-      "titleEn": "Switch the session side-panel display mode between Side by side and Overlay",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“在“并排”与“覆盖”之间切换会话侧边面板展示模式”需要结合当前窗口宽度体验分栏与浮层效果；智能体会打开外观页会话侧边面板配置项。",
-      "reasonEn": "“Switch the session side-panel display mode between Side by side and Overlay” is easiest to judge visually against your current window width; the Agent opens the Session Panel section in Appearance settings.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.appearance"
-      },
-      "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/SessionPanelSettingsSection.tsx#SessionPanelSettingsSection"
+        "source:src/nsh-ui/src/contentWidthStore.ts#DEFAULT_CONTENT_WIDTH",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.appearance.contentWidth\""
       ]
     },
     {
@@ -2706,26 +2559,8 @@
         "sectionId": "voice-call"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/RealtimeVoiceSettingsSection.tsx#RealtimeVoiceSettingsSection",
         "command:speech_get_realtime_config",
         "command:speech_save_realtime_config"
-      ]
-    },
-    {
-      "capabilityId": "setting.application.pet",
-      "itemId": "desktop-cards-pinning",
-      "titleZh": "将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）",
-      "titleEn": "Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“将单张桌面小卡片固定到 Windows 桌面图标层（含当前隐藏的卡片）”需要按当前机器已有的具体卡片列表逐张选择；智能体会直达“宠物与助手 → 桌面小卡片”区域供你勾选。",
-      "reasonEn": "“Pin individual desktop cards to the Windows desktop icon layer (including hidden cards)” depends on the live list of cards on this computer; the Agent opens Pet & assistant → Desktop Cards so you can toggle each card.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.pet",
-        "sectionId": "desktop-cards"
-      },
-      "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/DesktopCardsSettingsSection.tsx#desktop-card-pin-row"
       ]
     },
     {
@@ -2743,8 +2578,7 @@
       "evidence": [
         "command:speech_download_model",
         "command:speech_verify_model",
-        "command:speech_delete_model",
-        "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#model.repair"
+        "command:speech_delete_model"
       ]
     },
     {
@@ -2760,8 +2594,8 @@
         "pageId": "application.voice"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.microphone.label",
-        "source:src/web-ui/src/locales/zh-CN/settings/voice-input.json#diagnostics.recognition.start"
+        "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.voice_input.microphone_device_id\"",
+        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#recognition"
       ]
     },
     {
@@ -2778,24 +2612,8 @@
         "sectionId": "message-sending"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/MessageSendingSettingsSection.tsx#SEND_DURING_TURN_CONFIG_PATH"
-      ]
-    },
-    {
-      "capabilityId": "setting.application.input",
-      "itemId": "btw-close-confirmation",
-      "titleZh": "开启或关闭侧问（/btw）面板关闭前的丢弃确认提示",
-      "titleEn": "Enable or disable the confirmation prompt before closing a /btw side conversation",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“开启或关闭侧问（/btw）面板关闭前的丢弃确认提示”保存在当前界面的交互偏好中，智能体会为你打开“会话与记忆 → 侧问”中的确认开关。",
-      "reasonEn": "“Enable or disable the confirmation prompt before closing a /btw side conversation” is stored as a client UI interaction preference; the Agent opens Session & Memory → Side questions for you.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.voice",
-        "sectionId": "btw-close-confirmation"
-      },
-      "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/BtwSettingsSection.tsx#BtwSettingsSection"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"sessions.steer\"",
+        "source:src/crates/assembly/core/src/agentic/session_policy.rs#send_during_turn"
       ]
     },
     {
@@ -2811,7 +2629,8 @@
         "pageId": "application.shortcuts"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#lists every known shortcut"
+        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#settings.shortcuts.title",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.shortcuts.defaults\""
       ]
     },
     {
@@ -2827,8 +2646,8 @@
         "pageId": "application.shortcuts"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#buildFinalConflictMap",
-        "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#buildStoredKeybindings({})"
+        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#keybindings",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.shortcuts.overridesStoredOne\""
       ]
     },
     {
@@ -2845,9 +2664,7 @@
       },
       "evidence": [
         "command:get_model_configs",
-        "command:refresh_model_client",
-        "source:src/web-ui/src/locales/zh-CN/settings/models.json#providerSelection.customTitle",
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/MagpieSourceSection.tsx#MagpieSourceSection"
+        "command:refresh_model_client"
       ]
     },
     {
@@ -2863,8 +2680,7 @@
         "pageId": "ai.models"
       },
       "evidence": [
-        "command:test_ai_config_connection",
-        "source:src/web-ui/src/locales/zh-CN/settings/models.json#providerSelection.fetchModels"
+        "command:test_ai_config_connection"
       ]
     },
     {
@@ -2901,9 +2717,9 @@
         "pageId": "ai.models"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#core.primary.label",
-        "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#core.economy.label",
-        "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#optional.capabilities.image_generation.label"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.defaultModels.primary\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.defaultModels.economy\"",
+        "source:src/nsh-ui/src/modelSettingsStore.ts#image_generation"
       ]
     },
     {
@@ -2935,10 +2751,7 @@
         "pageId": "ai.models"
       },
       "evidence": [
-        "command:get_model_routing_status",
-        "source:src/web-ui/src/infrastructure/config/components/ModelRouterSettings.tsx#ModelRouterSettings",
-        "source:src/web-ui/src/flow_chat/components/NativeModelSelectionPanel.tsx#onRoutingSettings",
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#settings-smart-mode-configure"
+        "command:get_model_routing_status"
       ]
     },
     {
@@ -2960,7 +2773,6 @@
         "command:get_model_pool_status",
         "command:get_session_model_target",
         "command:update_session_model_target",
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelPoolsSection.tsx#ModelPoolsSection",
         "command:retry_model_pool_member"
       ]
     },
@@ -2996,7 +2808,8 @@
         "pageId": "ai.models"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/default-model.json#sections.proxy"
+        "source:src/nsh-ui/src/settingsStore.ts#\"ai.proxy.url\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.proxyEnabled\""
       ]
     },
     {
@@ -3012,9 +2825,8 @@
         "pageId": "ai.models"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#custom_headers",
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#custom_request_body",
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#skip_ssl_verify"
+        "source:src/nsh-ui/src/modelSettingsStore.ts#custom_headers",
+        "source:src/nsh-ui/src/modelSettingsStore.ts#skip_ssl_verify"
       ]
     },
     {
@@ -3048,8 +2860,8 @@
         "pageId": "ai.permissions"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#PermissionsSettingsPage",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.mode"
+        "source:src/nsh-ui/src/permissionPolicyStore.ts#auto_approve_ask",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.modeAsk\""
       ]
     },
     {
@@ -3065,8 +2877,8 @@
         "pageId": "ai.permissions"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#autoApprove",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.autoApprove"
+        "source:src/nsh-ui/src/permissionPolicyStore.ts#ai.decision_model",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.decisionModel\""
       ]
     },
     {
@@ -3082,8 +2894,8 @@
         "pageId": "ai.permissions"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#approvalTimeout",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.approvalTimeout"
+        "source:src/nsh-ui/src/permissionPolicyStore.ts#timeout_ms",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.whenFails\""
       ]
     },
     {
@@ -3099,8 +2911,8 @@
         "pageId": "ai.permissions"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#GlobalPermissionRulesDialog",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.globalRules"
+        "source:src/nsh-ui/src/permissionPolicyStore.ts#upsert_permission_rule",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.globalRulesTitle\""
       ]
     },
     {
@@ -3116,8 +2928,8 @@
         "pageId": "ai.permissions"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/PermissionsSettingsPage.tsx#SHOW_PERMISSION_MODE_CONTROL_CONFIG_PATH",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.showInChatInput"
+        "source:src/nsh-ui/src/permissionPolicyStore.ts#app.flow_chat.show_permission_mode_control",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.composerSwitchOn\""
       ]
     },
     {
@@ -3133,7 +2945,7 @@
         "pageId": "ai.memory"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.extractModel.label"
+        "source:src/nsh-ui/src/settingsStore.ts#\"memories.extract_model\""
       ]
     },
     {
@@ -3149,7 +2961,7 @@
         "pageId": "ai.memory"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/memory.json#fields.consolidationModel.label"
+        "source:src/nsh-ui/src/settingsStore.ts#\"memories.consolidation_model\""
       ]
     },
     {
@@ -3167,25 +2979,7 @@
       "evidence": [
         "command:get_memory_paths",
         "command:reset_memory",
-        "source:src/web-ui/src/locales/zh-CN/settings/memory.json#actions.resetSettings",
         "command:reset_config"
-      ]
-    },
-    {
-      "capabilityId": "setting.workspace.session",
-      "itemId": "default-agent-harness",
-      "titleZh": "设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式",
-      "titleEn": "Set Default agent execution mode: follow the last chat input selection or fix a default mode",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“设置默认智能体执行模式：跟随聊天输入框上一次选择，或固定默认模式”由“会话与记忆”设置页中的关联控件共同管理，目前没有单一结构化命令静默替代；智能体会直接打开该入口供你选择。",
-      "reasonEn": "“Set Default agent execution mode: follow the last chat input selection or fix a default mode” is managed by linked controls on the Sessions & Memory settings page; the Agent opens the exact section so you can pick visibly.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "workspace.session"
-      },
-      "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/DefaultHarnessSection.tsx#DefaultHarnessSection",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#defaultHarness.title"
       ]
     },
     {
@@ -3201,7 +2995,8 @@
         "pageId": "workspace.session"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/models.json#sessionTitle.model.label"
+        "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.enable_session_title_generation\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.sessionTitleGeneration\""
       ]
     },
     {
@@ -3251,7 +3046,7 @@
         "pageId": "workspace.worktrees"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/development/WorkspaceSearchSection.tsx#enable_workspace_search"
+        "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.enable_workspace_search\""
       ]
     },
     {
@@ -3267,7 +3062,7 @@
         "pageId": "workspace.worktrees"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/development/GitCommitSettingsSection.tsx#enable_git_commit_coauthor"
+        "source:src/nsh-ui/src/settingsStore.ts#\"app.ai_experience.enable_git_commit_coauthor\""
       ]
     },
     {
@@ -3283,7 +3078,8 @@
         "pageId": "workspace.worktrees"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/worktrees.json#settings.isolation.title"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"git.tabWorktrees\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.worktreeRoot\""
       ]
     },
     {
@@ -3300,8 +3096,6 @@
       },
       "evidence": [
         "command:worktree_remove",
-        "source:src/web-ui/src/locales/zh-CN/worktrees.json#management.sessions.restoreTitle",
-        "source:src/web-ui/src/locales/zh-CN/worktrees.json#management.delete.forceTitle",
         "command:git_remove_worktree"
       ]
     },
@@ -3319,8 +3113,7 @@
         "viewId": "advanced"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/ExecutionSettingsPage.tsx#user_question_timeout_secs",
-        "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.userQuestionTimeout"
+        "source:src/nsh-ui/src/settingsStore.ts#\"ai.user_question_timeout_secs\""
       ]
     },
     {
@@ -3337,8 +3130,7 @@
         "viewId": "advanced"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/ai/ExecutionSettingsPage.tsx#subagentDefaultModel",
-        "source:src/web-ui/src/locales/zh-CN/settings/agentic-tools.json#config.subagentDefaultModel"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"agents.modelOverride\""
       ]
     },
     {
@@ -3355,8 +3147,7 @@
         "viewId": "advanced"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/review-capacity.json#capacity.maxParallelReviewers.label",
-        "source:src/web-ui/src/locales/zh-CN/settings/review-capacity.json#capacity.maxQueueWaitSeconds.label"
+        "source:src/crates/contracts/config-contracts/src/types.rs#max_parallel_reviewers"
       ]
     },
     {
@@ -3373,7 +3164,6 @@
         "viewId": "common"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.mode",
         "command:update_session_permission_mode"
       ]
     },
@@ -3392,8 +3182,7 @@
       },
       "evidence": [
         "command:get_project_permission_rules",
-        "command:save_project_permission_rules",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#permissionPolicy.globalRules"
+        "command:save_project_permission_rules"
       ]
     },
     {
@@ -3452,22 +3241,6 @@
     },
     {
       "capabilityId": "setting.tools.desktop-control",
-      "itemId": "external-control",
-      "titleZh": "为本机集成授权工作区",
-      "titleEn": "Authorize workspaces for local integrations",
-      "reasonCode": "visualSelection",
-      "reasonZh": "用户需要在桌面设置中选择此集成可以访问的工作区，并复制仅在创建时显示一次的令牌。",
-      "reasonEn": "In Desktop settings, the user chooses which workspaces the integration can access and copies the token while it is visible at creation.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "tools.desktop-control"
-      },
-      "evidence": [
-        "command:desktop_external_control"
-      ]
-    },
-    {
-      "capabilityId": "setting.tools.desktop-control",
       "itemId": "permissions",
       "titleZh": "查看“允许桌面控制”开关及“辅助功能”、“屏幕录制”系统授权状态并完成授权",
       "titleEn": "Inspect Allow desktop control plus Accessibility and Screen Recording grants and authorize in OS settings",
@@ -3480,8 +3253,7 @@
       },
       "evidence": [
         "command:computer_use_get_status",
-        "command:computer_use_request_permissions",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#computerUse.sectionTitle"
+        "command:computer_use_request_permissions"
       ]
     },
     {
@@ -3497,8 +3269,8 @@
         "pageId": "tools.desktop-control"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/tools/DeviceControlSettingsPage.tsx#DeviceControlSettingsPage",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#computerUse.sectionDescription"
+        "source:src/nsh-ui/src/settingsStore.ts#\"ai.computer_use_enabled\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.computerUse\""
       ]
     },
     {
@@ -3514,8 +3286,8 @@
         "pageId": "tools.desktop-control"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/tools/BrowserLinkSettingsSection.tsx#BrowserLinkSettingsSection",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#browserLinks.defaultTarget"
+        "source:src/nsh-ui/src/settingsStore.ts#\"ai.browser_control_preferred_browser\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.field.preferredBrowser\""
       ]
     },
     {
@@ -3533,8 +3305,7 @@
       "evidence": [
         "command:browser_control_get_status",
         "command:browser_control_list_browsers",
-        "command:browser_control_enable_default_cdp",
-        "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#browserControl.sectionTitle"
+        "command:browser_control_enable_default_cdp"
       ]
     },
     {
@@ -3551,8 +3322,8 @@
         "viewId": "quick-actions"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#quickActions.defaults.commit.label",
-        "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#quickActions.defaults.createPr.label"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.quickActions.title\"",
+        "source:src/crates/contracts/config-contracts/src/types.rs#pub quick_actions: Vec<AiExperienceQuickAction>"
       ]
     },
     {
@@ -3569,8 +3340,8 @@
         "viewId": "quick-actions"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#sections.custom.title",
-        "source:src/web-ui/src/locales/zh-CN/settings/quick-actions.json#modal.promptField"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.quickActions.newTitle\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.quickActions.promptPlaceholder\""
       ]
     },
     {
@@ -3640,7 +3411,8 @@
         "pageId": "tools.webSearch"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#providers"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.provider\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.providerTavily\""
       ]
     },
     {
@@ -3658,8 +3430,7 @@
       "evidence": [
         "command:get_web_search_credential_status",
         "command:save_web_search_credential",
-        "command:clear_web_search_credential",
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#sections.credential.description"
+        "command:clear_web_search_credential"
       ]
     },
     {
@@ -3675,9 +3446,9 @@
         "pageId": "tools.webSearch"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#fields.endpoint",
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#fields.authMode",
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#fields.headerName"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.endpoint\"",
+        "source:src/nsh-ui/src/webSearchStore.ts#authMode",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.headerName\""
       ]
     },
     {
@@ -3693,9 +3464,7 @@
         "pageId": "tools.webSearch"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#protocol.request.description",
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#protocol.success.description",
-        "source:src/web-ui/src/locales/zh-CN/settings/web-search.json#protocol.notes.transportLimits"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.webSearch.providerHttp\""
       ]
     },
     {
@@ -3781,7 +3550,8 @@
         "viewId": "local"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/acp-agents.json#presets.codex.description"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.title\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.installCli\""
       ]
     },
     {
@@ -3836,7 +3606,8 @@
         "viewId": "ssh"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/acp-agents.json#remote.refreshDetection"
+        "source:src/nsh-ui/src/acpStore.ts#remote",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.acp.probing\""
       ]
     },
     {
@@ -3923,7 +3694,8 @@
         "pageId": "data.usage"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/pages/data/UsageStatisticsSettingsPage.tsx#UsageActivityHeatmap"
+        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#HEATMAP_HEIGHT",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.activityHeading\""
       ]
     },
     {
@@ -3939,7 +3711,8 @@
         "pageId": "data.usage"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#timeRange.last24Hours"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.range24h\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.rangeMonth\""
       ]
     },
     {
@@ -3955,7 +3728,8 @@
         "pageId": "data.usage"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#granularity.hour"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byHour\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byDay\""
       ]
     },
     {
@@ -3971,8 +3745,8 @@
         "pageId": "data.usage"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#summary.requests",
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#summary.cacheHitRate"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.requests\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.cacheHitRate\""
       ]
     },
     {
@@ -3988,8 +3762,8 @@
         "pageId": "data.usage"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#distributions.byModel",
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#distributions.byEndpoint"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byModel\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.byEndpoint\""
       ]
     },
     {
@@ -4005,7 +3779,7 @@
         "pageId": "data.usage"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#filter.kind.provider"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.usage.filterRows\""
       ]
     },
     {
@@ -4021,25 +3795,7 @@
         "pageId": "data.usage"
       },
       "evidence": [
-        "command:get_token_usage_statistics",
-        "source:src/web-ui/src/locales/zh-CN/settings/usage.json#trend.legend.cacheRead"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.storage",
-      "itemId": "clean",
-      "titleZh": "预览并清理会话文件快照",
-      "titleEn": "Preview and clean up session file snapshots",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“预览并清理会话文件快照”会永久移除所选会话的文件回退记录，请在存储空间页面核对并确认。",
-      "reasonEn": "“Preview and clean up session file snapshots” opens Storage so you can review the affected sessions before permanently removing their file rollback history.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.storage"
-      },
-      "evidence": [
-        "command:inspect_snapshot_storage",
-        "command:clean_snapshot_storage"
+        "command:get_token_usage_statistics"
       ]
     },
     {
@@ -4140,7 +3896,8 @@
         "pageId": "data.diagnostics"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.actions.openFolder"
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.logs.openFolder\"",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.logs.title\""
       ]
     },
     {
@@ -4178,44 +3935,7 @@
         "pageId": "data.diagnostics"
       },
       "evidence": [
-        "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.previousCrash.title",
-        "source:src/web-ui/src/locales/zh-CN/settings/application.json#logging.startupRecovery.title",
         "command:get_startup_native_trace"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.diagnostics",
-      "itemId": "devtools",
-      "titleZh": "仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器",
-      "titleEn": "Development builds only: check desktop DevTools availability and open or close them",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“仅开发构建：检查桌面窗口 DevTools 可用状态并打开或关闭调试器”仅在开发构建宿主中开放交互调试窗口；智能体不会在常规生产环境中误触该入口。",
-      "reasonEn": "“Development builds only: check desktop DevTools availability and open or close them” is available only inside development host builds for interactive window inspection; standard release builds keep it disabled.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.diagnostics"
-      },
-      "evidence": [
-        "command:debug_devtools_available",
-        "command:debug_open_devtools",
-        "command:debug_close_devtools"
-      ]
-    },
-    {
-      "capabilityId": "setting.data.diagnostics",
-      "itemId": "element-inspector",
-      "titleZh": "仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息",
-      "titleEn": "Development builds only: inspect main-window UI elements and report the selected element",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“仅开发构建：启用主窗口界面元素拾取器并回传选中组件信息”需要开发者在开发构建主窗口中用鼠标点选目标元素；智能体将交互保留在可见界面。",
-      "reasonEn": "“Development builds only: inspect main-window UI elements and report the selected element” requires clicking a target element directly inside a development-build main window; the Agent keeps the interaction visible.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "data.diagnostics"
-      },
-      "evidence": [
-        "command:debug_element_picked",
-        "source:src/web-ui/src/infrastructure/debug/mainWindowInspector.ts#debug_element_picked"
       ]
     }
   ]

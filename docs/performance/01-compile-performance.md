@@ -1,5 +1,7 @@
 # OpenBitFun 编译与依赖治理计划
 
+> 历史记录：本文涉及已退役的 React 桌面界面（`src/web-ui`）与 Tauri 桌面宿主。文中的 `src/web-ui` 路径以及 `build:web`、`check:web`、`gen:types`、`copy-monaco`、`motion:audit` 等命令已随之移除，仅作为历史证据保留，不再可执行。当前桌面端架构见 [unified-client-architecture.md](../architecture/unified-client-architecture.md)。
+
 > 最近核实：2026-08-14
 >
 > 实现复核基线：`gcwing/main@76f8b89e2`

@@ -18,6 +18,7 @@ pub mod host_stream;
 pub mod host_stream_subscriber;
 pub mod html_preview;
 mod lan;
+pub mod mesh_route;
 pub mod message_encoding;
 mod model_write_fence;
 mod page_upload;
@@ -32,10 +33,12 @@ pub mod routing_lease;
 pub mod rpc_execution;
 pub mod session_records;
 pub mod session_store;
+pub mod transcript_view;
 
 pub use chat_projection::{
     agent_input_attachment_from_remote_image_context, no_host_image_pixels,
-    project_remote_chat_user, RemoteChatUserProjection,
+    project_remote_chat_user, remote_chat_user_display_text, transcript_user_images,
+    RemoteChatUserProjection,
 };
 pub use device::DeviceIdentity;
 pub use encryption::{decrypt_from_base64, encrypt_to_base64, KeyPair};
@@ -79,6 +82,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+pub use transcript_view::{
+    build_transcript_view, chat_messages_from_transcript, session_transcript_view,
+    SessionTranscriptView, TranscriptImage, TranscriptItemView, TranscriptTokenUsage,
+    TranscriptToolView, TranscriptTurnRecovery, TranscriptTurnView, TranscriptUserMessage,
+};
 
 fn deserialize_present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -2498,273 +2506,95 @@ pub struct ChatMessageItem {
     pub is_subagent: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// One persisted turn, as the transcript projection reads it. Hosts build it
+/// from their own turn records; [`transcript_view`] projects it once for every
+/// client.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RemoteChatHistoryTurn {
     pub background_delivery: Option<openbitfun_core_types::background_delivery::BackgroundDelivery>,
     pub turn_id: String,
     pub turn_index: usize,
+    /// `user_dialog` (the default) or `manual_compaction`.
+    pub kind: Option<String>,
     pub user_message_id: String,
     pub user_display_content: String,
     pub user_timestamp_ms: u64,
+    /// Mobile thumbnails, when the caller re-encoded attachments.
     pub user_images: Vec<ChatImageAttachment>,
+    /// Attachments as recorded (inline pixels and/or the host path), used by the
+    /// transcript view in preference to `user_images`.
+    pub user_image_refs: Vec<transcript_view::TranscriptImage>,
     pub is_in_progress: bool,
     pub status: String,
     pub error: Option<String>,
+    pub error_detail: Option<serde_json::Value>,
+    pub duration_ms: Option<u64>,
+    pub token_usage: Option<transcript_view::TranscriptTokenUsage>,
+    pub recovery: Option<transcript_view::TranscriptTurnRecovery>,
     pub start_time_ms: u64,
     pub rounds: Vec<RemoteChatHistoryRound>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RemoteChatHistoryRound {
+    pub id: String,
     pub start_time_ms: u64,
     pub end_time_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub effective_model_name: Option<String>,
     pub text_items: Vec<RemoteChatHistoryTextItem>,
     pub thinking_items: Vec<RemoteChatHistoryThinkingItem>,
     pub tool_items: Vec<RemoteChatHistoryToolItem>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RemoteChatHistoryTextItem {
+    pub id: String,
     pub content: String,
     pub order_index: Option<usize>,
     pub is_subagent: bool,
+    pub parent_task_tool_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RemoteChatHistoryThinkingItem {
+    pub id: String,
     pub content: String,
     pub order_index: Option<usize>,
     pub is_subagent: bool,
+    pub parent_task_tool_id: Option<String>,
+    /// `reasoning` or `summary`, when the provider said.
+    pub reasoning_kind: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RemoteChatHistoryToolItem {
     pub id: String,
     pub name: String,
     pub call: RemoteChatHistoryToolCall,
     pub result: Option<serde_json::Value>,
     pub has_result: bool,
+    pub success: Option<bool>,
+    pub error: Option<String>,
+    pub result_for_assistant: Option<String>,
     pub status: Option<String>,
     pub duration_ms: Option<u64>,
     pub start_ms: u64,
     pub order_index: Option<usize>,
     pub is_subagent: bool,
+    pub parent_task_tool_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RemoteChatHistoryToolCall {
     pub id: String,
     pub input: serde_json::Value,
 }
 
+/// The mobile/bot `ChatMessage` history, derived from the shared transcript
+/// view so remote clients and the desktop read one projection.
 pub fn build_remote_chat_messages(turns: Vec<RemoteChatHistoryTurn>) -> Vec<ChatMessage> {
-    let mut result = Vec::new();
-
-    for turn in turns {
-        let delivery_metadata = turn
-            .background_delivery
-            .as_ref()
-            .map(|delivery| serde_json::json!({"backgroundDelivery":delivery}));
-        result.push(ChatMessage {
-            id: turn.user_message_id,
-            role: "user".to_string(),
-            content: turn.user_display_content,
-            timestamp: (turn.user_timestamp_ms / 1000).to_string(),
-            metadata: delivery_metadata.clone(),
-            turn_id: Some(turn.turn_id.clone()),
-            turn_index: Some(turn.turn_index),
-            status: turn
-                .background_delivery
-                .as_ref()
-                .map(|_| turn.status.clone()),
-            error: None,
-            tools: None,
-            thinking: None,
-            items: None,
-            images: if turn.user_images.is_empty() {
-                None
-            } else {
-                Some(turn.user_images)
-            },
-        });
-
-        struct OrderedEntry {
-            order_index: Option<usize>,
-            sequence: usize,
-            round_idx: usize,
-            item: ChatMessageItem,
-        }
-
-        let mut ordered = Vec::new();
-        let mut tools_flat = Vec::new();
-        let mut thinking_parts = Vec::new();
-        let mut text_parts = Vec::new();
-        let mut sequence = 0usize;
-        let assistant_ts = turn
-            .rounds
-            .last()
-            .map(|round| round.end_time_ms.unwrap_or(round.start_time_ms))
-            .unwrap_or(turn.start_time_ms);
-
-        for (round_idx, round) in turn.rounds.into_iter().enumerate() {
-            for item in round.thinking_items {
-                if item.is_subagent || item.content.is_empty() {
-                    continue;
-                }
-                thinking_parts.push(item.content.clone());
-                ordered.push(OrderedEntry {
-                    order_index: item.order_index,
-                    sequence,
-                    round_idx,
-                    item: ChatMessageItem {
-                        item_type: "thinking".to_string(),
-                        steering_id: None,
-                        round_index: None,
-                        content: Some(item.content.clone()),
-                        tool: None,
-                        is_subagent: None,
-                    },
-                });
-                sequence += 1;
-            }
-
-            for item in round.text_items {
-                if item.is_subagent || item.content.is_empty() {
-                    continue;
-                }
-                text_parts.push(item.content.clone());
-                ordered.push(OrderedEntry {
-                    order_index: item.order_index,
-                    sequence,
-                    round_idx,
-                    item: ChatMessageItem {
-                        item_type: "text".to_string(),
-                        steering_id: None,
-                        round_index: None,
-                        content: Some(item.content.clone()),
-                        tool: None,
-                        is_subagent: None,
-                    },
-                });
-                sequence += 1;
-            }
-
-            for item in round.tool_items {
-                if item.is_subagent {
-                    continue;
-                }
-                let status = item.status.as_deref().unwrap_or(if item.has_result {
-                    "completed"
-                } else {
-                    "running"
-                });
-                let tool_status = RemoteToolStatus {
-                    id: item.id,
-                    name: item.name.clone(),
-                    status: status.to_string(),
-                    duration_ms: item.duration_ms,
-                    start_ms: Some(item.start_ms),
-                    input_preview: make_slim_tool_params(&item.call.input),
-                    tool_input: if matches!(
-                        item.name.as_str(),
-                        "AskUserQuestion"
-                            | "Task"
-                            | "AgentSpawn"
-                            | "AgentFork"
-                            | "AgentSendInput"
-                            | "AgentControl"
-                            | "TodoWrite"
-                    ) {
-                        Some(item.call.input.clone())
-                    } else {
-                        None
-                    },
-                    plan: project_remote_plan_tool(
-                        &item.name,
-                        Some(&item.call.input),
-                        item.result.as_ref(),
-                    ),
-                };
-                tools_flat.push(tool_status.clone());
-                ordered.push(OrderedEntry {
-                    order_index: item.order_index,
-                    sequence,
-                    round_idx,
-                    item: ChatMessageItem {
-                        item_type: "tool".to_string(),
-                        steering_id: None,
-                        round_index: None,
-                        content: None,
-                        tool: Some(tool_status),
-                        is_subagent: None,
-                    },
-                });
-                sequence += 1;
-            }
-        }
-
-        ordered.sort_by(|a, b| {
-            let round_cmp = a.round_idx.cmp(&b.round_idx);
-            if round_cmp != std::cmp::Ordering::Equal {
-                return round_cmp;
-            }
-            match (a.order_index, b.order_index) {
-                (Some(a_idx), Some(b_idx)) => a_idx.cmp(&b_idx),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.sequence.cmp(&b.sequence),
-            }
-        });
-
-        let items: Vec<ChatMessageItem> = ordered.into_iter().map(|entry| entry.item).collect();
-
-        // A turn is persisted as soon as it starts, before the assistant has
-        // produced any content. That durable turn shell is not an assistant
-        // message: while the turn is running, its live state is carried by
-        // `active_turn`. Materializing the empty shell here would expose the
-        // same turn through both history and live state and make clients render
-        // two pending replies.
-        let has_assistant_message = text_parts
-            .iter()
-            .chain(thinking_parts.iter())
-            .any(|content| !content.trim().is_empty())
-            || !tools_flat.is_empty()
-            || turn
-                .error
-                .as_deref()
-                .is_some_and(|error| !error.trim().is_empty());
-        if !has_assistant_message {
-            continue;
-        }
-
-        result.push(ChatMessage {
-            id: format!("{}_assistant", turn.turn_id),
-            role: "assistant".to_string(),
-            content: text_parts.join("\n\n"),
-            timestamp: (assistant_ts / 1000).to_string(),
-            metadata: delivery_metadata,
-            turn_id: Some(turn.turn_id),
-            // Rollback targets user turns only, so the assistant projection
-            // deliberately carries no storage index.
-            turn_index: None,
-            status: Some(turn.status),
-            error: turn.error,
-            tools: if tools_flat.is_empty() {
-                None
-            } else {
-                Some(tools_flat)
-            },
-            thinking: if thinking_parts.is_empty() {
-                None
-            } else {
-                Some(thinking_parts.join("\n\n"))
-            },
-            items: if items.is_empty() { None } else { Some(items) },
-            images: None,
-        });
-    }
-
-    result
+    transcript_view::chat_messages_from_transcript(transcript_view::build_transcript_view(turns))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

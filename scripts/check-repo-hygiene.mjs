@@ -84,7 +84,6 @@ const ignoredContentPaths = [
   /(^|\/)dist\//,
   /(^|\/)target\//,
   /(^|\/)src\/apps\/relay-server\/static\/assets\//,
-  /(^|\/)src\/web-ui\/public\/monaco-editor\//,
   /(^|\/)src\/mobile-web\/dist\//,
   /(^|\/).*package-lock\.json$/,
   /(^|\/)pnpm-lock\.yaml$/,

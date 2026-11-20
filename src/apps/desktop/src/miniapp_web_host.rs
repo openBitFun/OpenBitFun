@@ -1,13 +1,13 @@
 //! Desktop adapter for the platform-agnostic MiniApp Web surface port.
 //!
 //! The Agent drives a MiniApp through BrowserUse-style actions, but the DOM
-//! lives inside the product window: only the Web UI can read the frame, walk the
+//! lives inside the product window: only the UI can read the frame, walk the
 //! document, and dispatch input events. This adapter therefore owns transport
 //! only — request correlation, surface readiness, and timeouts — while the
 //! product-domain contract, session registry, target handles, and method
 //! whitelist stay in `openbitfun_core::agentic::tools::miniapp_surface`.
 //!
-//! It never lets the Agent reach host paths, Tauri commands, or arbitrary
+//! It never lets the Agent reach host paths, host commands, or arbitrary
 //! JavaScript: only the whitelisted surface methods cross this boundary.
 
 use std::collections::HashMap;
@@ -81,7 +81,7 @@ async fn dispatch_surface_request(
 ) -> Result<Value, String> {
     if !SURFACE_READY.load(Ordering::Acquire) {
         return Err(format!(
-            "{}: the Web UI MiniApp surface listener is not attached",
+            "{}: the UI MiniApp surface listener is not attached",
             MiniAppWebErrorCode::SurfaceUnavailable.as_str()
         ));
     }
@@ -145,7 +145,7 @@ async fn receive_surface_result(
             // One slow action does not detach the listener. Readiness follows
             // explicit surface lifecycle reports, so a timeout remains retryable.
             Err(format!(
-                "{}: the Web UI MiniApp surface did not {purpose} in time",
+                "{}: the UI MiniApp surface did not {purpose} in time",
                 MiniAppWebErrorCode::Timeout.as_str()
             ))
         }
@@ -275,7 +275,7 @@ async fn relay_to_window(
 enum Presentation {
     /// The app's own window, identified by the instance it registered.
     Window(AgentWindow),
-    /// The in-product tab, which the Web UI owns and mounts.
+    /// The in-product tab, which the UI owns and mounts.
     Tab,
 }
 
@@ -285,18 +285,15 @@ enum Presentation {
 /// lives in the product window and can be read, clicked, and captured, while the
 /// app's own installed window is a separate process that can only answer the
 /// agent bridge it was compiled with. The adapter therefore picks the transport
-/// per request — the window when one is live, otherwise the Web UI — and refuses
+/// per request — the window when one is live, otherwise the UI — and refuses
 /// the actions the chosen transport cannot perform instead of pretending.
 struct DesktopMiniAppWebHost {
-    app: tauri::AppHandle,
+    app: crate::host::HostHandle,
 }
 
 impl DesktopMiniAppWebHost {
     fn miniapps(&self) -> Option<crate::host::State<'_, DesktopMiniApps>> {
-        use tauri::Manager;
-        self.app
-            .try_state::<DesktopMiniApps>()
-            .map(crate::host::State::from)
+        self.app.try_state::<DesktopMiniApps>()
     }
 
     /// Reject an unknown app before involving the UI, and tell the surface which
@@ -390,7 +387,7 @@ impl DesktopMiniAppWebHost {
         }
     }
 
-    /// Ask the Web UI for the in-product surface and adopt the host-owned facts.
+    /// Ask the UI for the in-product surface and adopt the host-owned facts.
     async fn open_tab_surface(
         &self,
         app_id: &str,
@@ -534,7 +531,7 @@ impl MiniAppWebHost for DesktopMiniAppWebHost {
 /// The host keeps the app handle only to reach the MiniApp window registry: a
 /// MiniApp the user opened from its installed shortcut is presented by another
 /// process, and that registry is the one place that knows it exists.
-pub(crate) fn install(app: tauri::AppHandle) {
+pub(crate) fn install(app: crate::host::HostHandle) {
     set_miniapp_web_host(std::sync::Arc::new(DesktopMiniAppWebHost { app }));
 }
 
@@ -544,14 +541,14 @@ pub(crate) struct MiniAppWebSurfaceReadyRequest {
     ready: bool,
 }
 
-/// Attach or detach the Web UI MiniApp surface listener.
-#[tauri::command]
+/// Attach or detach the UI MiniApp surface listener.
+// @backend-command
 pub(crate) fn mark_miniapp_web_surface_ready(request: Option<MiniAppWebSurfaceReadyRequest>) {
     let ready = request.map(|request| request.ready).unwrap_or(false);
     SURFACE_READY.store(ready, Ordering::Release);
     if !ready {
         fail_pending(&format!(
-            "{}: the Web UI MiniApp surface detached",
+            "{}: the UI MiniApp surface detached",
             MiniAppWebErrorCode::SurfaceUnavailable.as_str()
         ));
     }
@@ -569,7 +566,7 @@ pub(crate) struct ReportMiniAppWebResultRequest {
 }
 
 /// Return a MiniApp surface result to the waiting Agent call.
-#[tauri::command]
+// @backend-command
 pub(crate) async fn report_miniapp_web_result(
     request: ReportMiniAppWebResultRequest,
 ) -> Result<(), String> {

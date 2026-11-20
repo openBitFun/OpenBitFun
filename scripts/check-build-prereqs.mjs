@@ -12,9 +12,8 @@
  *   without content, and nested tools fail with a confusing "Cannot find
  *   module .../bin/<tool>" error, for example
  *   ".../design-system/packages/ui/node_modules/typescript/bin/tsc"
- * - src/mobile-web/dist missing → cargo check -p openbitfun-desktop and
- *   cargo check --workspace fail with "resource path '../../mobile-web/dist'
- *   doesn't exist" in the openbitfun-desktop build script
+ * - src/mobile-web/dist missing → native desktop packages ship without the
+ *   legacy relay mobile UI that older OpenBitFun-Mobile clients load
  * - OpenCode extension Host dist missing → Desktop, CLI, and app-server
  *   builds cannot bundle or launch the Bun plugin Host resources
  * - sherpa-onnx prebuilt libs missing → sherpa-onnx-sys build script attempts
@@ -140,12 +139,12 @@ function runChecks(rootDir) {
     });
   }
 
-  // --- Check 3: mobile-web dist (required by openbitfun-desktop build script) ---
+  // --- Check 3: mobile-web dist (bundled by the native desktop packages) ---
   if (!existsSync(join(rootDir, 'src', 'mobile-web', 'dist', 'index.html'))) {
     errors.push({
       name: 'mobile-web dist',
       message:
-        "src/mobile-web/dist is missing. The openbitfun-desktop Tauri build script references '../../mobile-web/dist' as a resource, so 'cargo check -p openbitfun-desktop' and 'cargo check --workspace' will fail with \"resource path doesn't exist\".",
+        "src/mobile-web/dist is missing. The native desktop packages bundle it as the legacy relay mobile UI for older OpenBitFun-Mobile clients; a package built without it serves only the relay-hosted mobile web.",
       fix: ['pnpm', 'run', 'prepare:mobile-web'],
     });
   }

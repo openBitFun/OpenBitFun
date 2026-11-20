@@ -18,6 +18,7 @@ OS/network capabilities.
 | `legacy-migration` | Offline retired-product discovery, locking, consistent SQLite snapshots, staging, journal recovery, and owner-adapter orchestration | [AGENTS.md](legacy-migration/AGENTS.md) |
 | `miniapp-market-service` | Concrete SQLite, artifact storage, GitHub OAuth, package validation, and HTTP behavior for the MiniApp market | [README.md](miniapp-market-service/README.md) |
 | `relay-service` | Reusable Remote Connect relay state, storage, and HTTP/WebSocket routes shared by standalone and embedded hosts | [AGENTS.md](relay-service/AGENTS.md) |
+| `mesh` (`openbitfun-mesh-service`) | Device mesh: EasyTier `easytier-core` sidecar supervision (no TUN, hidden child process), status from `easytier-cli`, the mesh credential wire shape, and account-device handshake proofs | [AGENTS.md](mesh/AGENTS.md) |
 | `page-function-runtime` | Embedded JS Page Function runtime (rquickjs) for OpenBitFun Pages | [AGENTS.md](page-function-runtime/AGENTS.md) |
 | `terminal` | PTY, shell integration, and terminal session infrastructure | [AGENTS.md](terminal/AGENTS.md) |
 

@@ -1,7 +1,12 @@
 #![recursion_limit = "256"]
 #![allow(non_snake_case)]
-//! OpenBitFun Desktop - Tauri-based desktop application with TransportAdapter architecture
+//! OpenBitFun desktop backend library: the product backend the native NSH
+//! desktop app (`src/apps/desktop-nsh`) loads in-process through the C ABI in
+//! [`backend_protocol::ffi`], and that browsers, phones and other account
+//! devices reach over OBP ([`backend_protocol::ws`], [`mesh`]).
 //!
+//! The reqwest HTTP/2 and MCP transport type graph exceeds rustc's default
+//! trait-evaluation recursion budget when desktop tasks require `Send`.
 //! The reqwest HTTP/2 and MCP transport type graph exceeds rustc's default
 //! trait-evaluation recursion budget when desktop tasks require `Send`.
 //!
@@ -23,45 +28,22 @@
 pub mod api;
 pub mod appearance;
 pub mod backend_protocol;
-mod builtin_browser_host;
 pub mod computer_use;
 pub mod crash_diagnostics;
-pub mod desktop_cards;
 mod embedded_relay_host;
-mod external_control;
-mod figure_verifier;
 mod frontend_asset_cache;
-pub mod frontend_workbench;
-#[cfg(target_os = "linux")]
-mod linux_browser_layout;
 pub mod host;
 pub mod logging;
-pub mod macos_menubar;
-#[cfg(target_os = "macos")]
-mod macos_window_chrome;
-#[cfg(target_os = "macos")]
-mod macos_window_close;
-#[cfg(target_os = "macos")]
-mod macos_window_resize;
+pub mod mesh;
 mod miniapp_desktop;
 mod miniapp_web_host;
+mod native_browser;
 pub mod native_host;
-
-// Keep one macro expansion: on macOS it emits a process-wide Info.plist symbol.
-fn desktop_context() -> tauri::Context<tauri::Wry> {
-    tauri::generate_context!()
-}
 mod openbitfun_control_host;
 pub mod runtime;
 pub mod sleep_prevention;
 pub mod startup_trace;
-pub mod tray;
 mod update_maintenance;
-mod webview_recovery;
-mod window_material;
-mod window_state_support;
-#[cfg(target_os = "windows")]
-mod window_webview_geometry;
 
 use crate::host::{HostHandle, HostTransportAdapter};
 use openbitfun_agent_runtime::sdk::{attach_session_event_cursor, SessionEventJournal};
@@ -76,15 +58,12 @@ use openbitfun_core::service::session_projection_store::{
 use openbitfun_core::util::{elapsed_ms, TimingCollector};
 use openbitfun_events::AgenticEvent;
 use openbitfun_transport::TransportAdapter;
-use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, OnceLock,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
-use tauri::Manager;
 
 // Re-export API
 pub use api::*;
@@ -127,6 +106,27 @@ pub(crate) fn ensure_rustls_crypto_provider() {
     openbitfun_core::service::remote_connect::ensure_rustls_crypto_provider();
 }
 
+const CRON_DESKTOP_START_FALLBACK_DELAY: Duration = Duration::from_secs(120);
+const BROWSER_WEBVIEW_PAGE_LOAD_EVENT: &str = "browser-webview-page-load";
+
+/// Brings the main window forward (a MiniApp shell's "show the main window",
+/// or a MiniApp tab request): the UI shell owns the window.
+fn handle_secondary_launch_host(app: &HostHandle) {
+    let host = Arc::clone(app.native());
+    tokio::spawn(async move {
+        if let Err(error) = host
+            .shell_request(
+                "window.show",
+                serde_json::Value::Null,
+                host::shell::SHELL_REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            log::warn!("Failed to show the native main window: {}", error);
+        }
+    });
+}
+
 /// Agentic Coordinator state
 #[derive(Clone)]
 pub struct CoordinatorState {
@@ -139,338 +139,34 @@ pub struct SchedulerState {
     pub scheduler: Arc<openbitfun_core::agentic::coordination::DialogScheduler>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WebdriverBridgeResultRequest {
-    payload: serde_json::Value,
-}
-
-#[cfg(target_os = "macos")]
-static MAIN_WINDOW_HIDDEN_ON_MACOS: AtomicBool = AtomicBool::new(false);
-
-#[cfg(target_os = "macos")]
-static MAIN_WINDOW_CLOSE_PENDING_ON_MACOS: AtomicBool = AtomicBool::new(false);
-
-const MAIN_WINDOW_CLOSE_REQUESTED_EVENT: &str = "openbitfun_main_window_close_requested";
-const BROWSER_WEBVIEW_PAGE_LOAD_EVENT: &str = "browser-webview-page-load";
-
-#[cfg(target_os = "windows")]
-fn show_fatal_startup_error(message: &str) {
-    use windows::core::PCWSTR;
-    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-
-    let title = "OpenBitFun startup error"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let message = message
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    unsafe {
-        let _ = MessageBoxW(
-            None,
-            PCWSTR(message.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONERROR,
-        );
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn show_fatal_startup_error(message: &str) {
-    eprintln!("OpenBitFun startup error: {message}");
-}
-const CRON_DESKTOP_START_FALLBACK_DELAY: Duration = Duration::from_secs(120);
-pub(crate) const MAIN_WINDOW_DEFAULT_WIDTH: f64 = 1200.0;
-pub(crate) const MAIN_WINDOW_DEFAULT_HEIGHT: f64 = 800.0;
-pub(crate) const MAIN_WINDOW_MIN_WIDTH: f64 = 800.0;
-pub(crate) const MAIN_WINDOW_MIN_HEIGHT: f64 = 600.0;
-
-// Toolbar mode temporarily morphs the main window into a compact floating
-// surface. Its geometry must never replace the normal main-window geometry
-// restored on the next process start.
-static MAIN_WINDOW_USES_TRANSIENT_GEOMETRY: AtomicBool = AtomicBool::new(false);
-
-#[cfg(target_os = "macos")]
-const MAIN_WINDOW_CLOSE_FALLBACK_HIDE_MS: u64 = 2_500;
-
-// ─── Close-button behavior ────────────────────────────────────────────────────
-// The close-button behavior is owned by the frontend; the Rust window-event
-// handler only emits a notification event and the frontend decides what to do.
-// No per-platform caching needed here.
-
-#[cfg(target_os = "macos")]
-pub(crate) fn mark_main_window_hidden_on_macos(hidden: bool) {
-    MAIN_WINDOW_HIDDEN_ON_MACOS.store(hidden, Ordering::SeqCst);
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn cancel_main_window_close_request_on_macos(app: &tauri::AppHandle) {
-    MAIN_WINDOW_CLOSE_PENDING_ON_MACOS.store(false, Ordering::SeqCst);
-    if let Err(error) = app.run_on_main_thread(macos_window_chrome::cancel_pending_hide) {
-        log::warn!("Failed to cancel deferred macOS main-window hide: {error}");
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn begin_main_window_close_request_on_macos() -> bool {
-    MAIN_WINDOW_CLOSE_PENDING_ON_MACOS
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-}
-
-#[cfg(target_os = "macos")]
-fn take_main_window_close_request_on_macos() -> bool {
-    MAIN_WINDOW_CLOSE_PENDING_ON_MACOS
-        .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-}
-
-#[cfg(target_os = "macos")]
-async fn hide_main_window_on_macos(
-    app: &tauri::AppHandle,
-    reason: &'static str,
-) -> Result<(), String> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        // Claim on the AppKit thread so a reopen can cancel an enqueued hide.
-        let result = if take_main_window_close_request_on_macos() {
-            macos_window_chrome::request_hide(reason)
-        } else {
-            Ok(())
-        };
-        let _ = sender.send(result);
-    })
-    .map_err(|error| format!("Failed to schedule main-window hide: {error}"))?;
-    receiver
-        .await
-        .map_err(|error| format!("Main-window hide was canceled: {error}"))?
-}
-
-#[cfg(target_os = "macos")]
-fn show_main_window_on_macos(app: &tauri::AppHandle, reason: &str) {
-    cancel_main_window_close_request_on_macos(app);
-
-    let Some(main_window) = app.get_window("main") else {
-        handle_secondary_launch(app);
-        return;
-    };
-
-    let _ = main_window.unminimize();
-    if let Err(error) = main_window.show() {
-        mark_main_window_hidden_on_macos(false);
-        log::warn!(
-            "Failed to show main window on macOS reopen event: reason={}, error={}",
-            reason,
-            error
-        );
-        return;
-    }
-
-    mark_main_window_hidden_on_macos(false);
-    if let Err(error) = main_window.set_focus() {
-        log::warn!(
-            "Failed to focus main window on macOS reopen event: reason={}, error={}",
-            reason,
-            error
-        );
-    }
-}
-
-#[tauri::command]
-async fn hide_main_window_after_close_request(app: tauri::AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        hide_main_window_on_macos(&app, "frontend_ack").await?;
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-    }
-
-    Ok(())
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn show_main_window_for_secondary_launch(
-    app: &tauri::AppHandle,
-    attempt: &str,
-) -> Result<(), String> {
-    if app.get_window("main").is_none() {
-        #[cfg(target_os = "macos")]
-        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-        let trace = app.state::<DesktopStartupTrace>();
-        appearance::create_main_window(
-            app,
-            trace.trace_id(),
-            &trace,
-            None,
-            Arc::clone(
-                app.state::<Arc<frontend_workbench::FrontendWorkbenchManager>>()
-                    .inner(),
-            ),
-        );
-    }
-    let Some(main_window) = app.get_window("main") else {
-        return Err("main window not found".to_string());
-    };
-
-    #[cfg(target_os = "macos")]
-    {
-        cancel_main_window_close_request_on_macos(app);
-        mark_main_window_hidden_on_macos(false);
-    }
-
-    main_window
-        .unminimize()
-        .map_err(|error| format!("failed to unminimize main window: {}", error))?;
-    if let Err(error) = window_state_support::repair_for_activation(&main_window) {
-        log::warn!(
-            "Failed to repair main window geometry from secondary launch: {}",
-            error
-        );
-    }
-    main_window
-        .show()
-        .map_err(|error| format!("failed to show main window: {}", error))?;
-    main_window
-        .set_focus()
-        .map_err(|error| format!("failed to focus main window: {}", error))?;
-
-    log::info!(
-        "Main window shown from secondary launch: attempt={}",
-        attempt
-    );
-    Ok(())
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn handle_secondary_launch(app: &tauri::AppHandle) {
-    if let Err(error) = show_main_window_for_secondary_launch(app, "immediate") {
-        log::warn!(
-            "Failed to show main window from secondary launch immediately: {}",
-            error
-        );
-
-        let app_handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            if let Err(error) = show_main_window_for_secondary_launch(&app_handle, "retry") {
-                log::warn!(
-                    "Failed to show main window from secondary launch retry: {}",
-                    error
-                );
-            }
-        });
-    }
-}
-
 pub(crate) fn e2e_storage_guard_enabled() -> bool {
     std::env::var("OPENBITFUN_E2E_STORAGE_GUARD")
         .ok()
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
-fn persist_main_window_state(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
-    window_state_support::save(app, reason)
-}
-
-pub(crate) fn save_main_window_state(app: &tauri::AppHandle, reason: &str) {
-    if MAIN_WINDOW_USES_TRANSIENT_GEOMETRY.load(Ordering::SeqCst) {
-        log::debug!(
-            "Skipped saving transient main window geometry: reason={}",
-            reason
-        );
-        return;
-    }
-
-    if let Err(error) = persist_main_window_state(app, reason) {
-        log::warn!(
-            "Failed to save main window state: reason={}, error={}",
-            reason,
-            error
-        );
-    }
-}
-
-pub(crate) fn set_main_window_transient_geometry(
-    app: &tauri::AppHandle,
-    transient: bool,
-) -> Result<(), String> {
-    if transient {
-        if MAIN_WINDOW_USES_TRANSIENT_GEOMETRY.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        // Capture the latest normal bounds before toolbar mode starts resizing
-        // the shared native window.
-        persist_main_window_state(app, "transient_geometry_enter_capture").map_err(|error| {
-            format!(
-                "Failed to save main window state before transient geometry: {}",
-                error
-            )
-        })?;
-        MAIN_WINDOW_USES_TRANSIENT_GEOMETRY.store(true, Ordering::SeqCst);
-        return Ok(());
-    }
-
-    MAIN_WINDOW_USES_TRANSIENT_GEOMETRY.store(false, Ordering::SeqCst);
-    persist_main_window_state(app, "transient_geometry_exit_persist").map_err(|error| {
-        format!(
-            "Failed to save restored main window state after transient geometry: {}",
-            error
-        )
-    })
-}
-
-pub(crate) fn restore_main_window_state(window: &tauri::WebviewWindow) -> bool {
-    window_state_support::restore(window)
-}
-
-#[tauri::command]
-async fn webdriver_bridge_result(request: WebdriverBridgeResultRequest) -> Result<(), String> {
-    log::debug!("webdriver_bridge_result command invoked");
-    openbitfun_webdriver::handle_bridge_result(request.payload)
-}
-
-#[tauri::command]
+// @backend-command
 fn get_startup_native_trace(
     state: crate::host::State<'_, DesktopStartupTrace>,
 ) -> DesktopStartupTraceSnapshot {
     state.snapshot()
 }
 
-/// A startup step failed before any host UI exists.
+/// A startup step failed before the backend could serve any client.
 pub(crate) struct StartupFailure {
-    /// User-facing explanation.
+    /// User-facing explanation (the runner shows it; `Backend.ready()` rejects with it).
     pub(crate) message: String,
-    /// Whether the Tauri host shows it in a fatal-error dialog (older
-    /// failures only logged and exited; the transition release keeps that).
-    pub(crate) show_dialog: bool,
 }
 
 impl StartupFailure {
-    fn fatal(message: String) -> Self {
-        Self {
-            message,
-            show_dialog: true,
-        }
-    }
-
-    fn logged(message: String) -> Self {
-        Self {
-            message,
-            show_dialog: false,
-        }
+    fn new(message: String) -> Self {
+        Self { message }
     }
 }
 
-/// The host-independent backend: everything `run()` prepared before it
-/// built the Tauri application, shared with the native host.
+/// The bootstrapped backend core, before host wiring (`native_host`).
 pub(crate) struct BackendCore {
     pub(crate) startup_started: Instant,
-    pub(crate) startup_trace_id: String,
     pub(crate) startup_timings: TimingCollector,
     pub(crate) log_config: logging::LogConfig,
     pub(crate) session_log_dir: PathBuf,
@@ -489,7 +185,6 @@ pub(crate) struct BackendCore {
     pub(crate) scheduler_state: SchedulerState,
     pub(crate) terminal_state: api::terminal_api::TerminalState,
     pub(crate) path_manager: Arc<openbitfun_core::infrastructure::PathManager>,
-    pub(crate) frontend_workbench: Arc<frontend_workbench::FrontendWorkbenchManager>,
 }
 
 /// Isolates authentication storage for guarded E2E profiles. Must run before
@@ -577,7 +272,7 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
         openbitfun_core::agentic::system::DeliveryProfile::Desktop,
     ) {
         log::error!("Failed to select Desktop agent profile: {}", error);
-        return Err(StartupFailure::fatal(format!(
+        return Err(StartupFailure::new(format!(
             "OpenBitFun could not select its Desktop agent profile and cannot continue.\n\n{error}\n\nSee early-startup.log for details."
         )));
     }
@@ -585,7 +280,7 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
     let step_started = Instant::now();
     if let Err(e) = openbitfun_core::service::config::initialize_global_config().await {
         log::error!("Failed to initialize global config service: {}", e);
-        return Err(StartupFailure::fatal(format!(
+        return Err(StartupFailure::new(format!(
             "OpenBitFun could not initialize its configuration and cannot continue.\n\n{e}\n\nSee early-startup.log for details."
         )));
     }
@@ -601,7 +296,7 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
         }
     }
     startup_timings.record_elapsed("initialize_global_config", step_started);
-    startup_trace.record_elapsed_step("native_pre_tauri", "initialize_global_config", step_started);
+    startup_trace.record_elapsed_step("native_bootstrap", "initialize_global_config", step_started);
 
     let step_started = Instant::now();
     match openbitfun_core::plugin_host::initialize_configured_plugin_host_with_log_file(
@@ -623,7 +318,7 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
         }
     }
     startup_timings.record_elapsed("initialize_plugin_host", step_started);
-    startup_trace.record_elapsed_step("native_pre_tauri", "initialize_plugin_host", step_started);
+    startup_trace.record_elapsed_step("native_bootstrap", "initialize_plugin_host", step_started);
 
     // The three steps below only depend on the global config service (initialized
     // above) and write to disjoint global singletons, so they can run concurrently:
@@ -672,13 +367,13 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
     startup_timings.push_duration("initialize_global_i18n_service", i18n_duration_ms);
     startup_trace.record_step(
         "native_step_end",
-        "native_pre_tauri",
+        "native_bootstrap",
         "initialize_global_i18n_service",
         i18n_duration_ms,
     );
     startup_trace.record_step(
         "native_step_end",
-        "native_pre_tauri",
+        "native_bootstrap",
         "resolve_runtime_log_level",
         log_level_duration_ms,
     );
@@ -688,13 +383,13 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
     );
     startup_trace.record_step(
         "native_step_end",
-        "native_pre_tauri",
+        "native_bootstrap",
         "initialize_global_ai_client_factory",
         ai_factory_duration_ms,
     );
     if let Err(e) = ai_factory_result {
         log::error!("Failed to initialize global AIClientFactory: {}", e);
-        return Err(StartupFailure::logged(format!(
+        return Err(StartupFailure::new(format!(
             "Failed to initialize global AIClientFactory: {e}"
         )));
     }
@@ -705,36 +400,36 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
             Ok(state) => state,
             Err(e) => {
                 log::error!("Failed to initialize agentic system: {}", e);
-                return Err(StartupFailure::logged(format!(
+                return Err(StartupFailure::new(format!(
                     "Failed to initialize agentic system: {e}"
                 )));
             }
         };
     startup_timings.record_elapsed("init_agentic_system", step_started);
-    startup_trace.record_elapsed_step("native_pre_tauri", "init_agentic_system", step_started);
+    startup_trace.record_elapsed_step("native_bootstrap", "init_agentic_system", step_started);
 
     let step_started = Instant::now();
     if let Err(e) = init_function_agents(ai_client_factory.clone()).await {
         log::error!("Failed to initialize function agents: {}", e);
-        return Err(StartupFailure::logged(format!(
+        return Err(StartupFailure::new(format!(
             "Failed to initialize function agents: {e}"
         )));
     }
     startup_timings.record_elapsed("init_function_agents", step_started);
-    startup_trace.record_elapsed_step("native_pre_tauri", "init_function_agents", step_started);
+    startup_trace.record_elapsed_step("native_bootstrap", "init_function_agents", step_started);
 
     let step_started = Instant::now();
     let workspace_search_enabled =
         openbitfun_core::service::search::workspace_search_feature_enabled().await;
     startup_trace.record_elapsed_step(
-        "native_pre_tauri",
+        "native_bootstrap",
         "workspace_search_feature_enabled",
         step_started,
     );
     let step_started = Instant::now();
     let startup_flashgrep_path = configure_workspace_search_daemon_env();
     startup_trace.record_elapsed_step(
-        "native_pre_tauri",
+        "native_bootstrap",
         "configure_workspace_search_daemon_env",
         step_started,
     );
@@ -744,14 +439,14 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
         Ok(state) => state,
         Err(e) => {
             log::error!("Failed to initialize AppState: {}", e);
-            return Err(StartupFailure::fatal(format!(
+            return Err(StartupFailure::new(format!(
                 "OpenBitFun could not initialize its application state and cannot continue.\n\n{e}\n\nSee {} for details.",
                 logging::early_startup_log_path(&session_log_dir).display()
             )));
         }
     };
     startup_timings.record_elapsed("initialize_app_state", step_started);
-    startup_trace.record_elapsed_step("native_pre_tauri", "initialize_app_state", step_started);
+    startup_trace.record_elapsed_step("native_bootstrap", "initialize_app_state", step_started);
 
     // A Turn that is still executing exists nowhere durable but this log: the
     // persisted Session record stores a running Turn as idle so a restart never
@@ -779,14 +474,14 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
         Ok(runtime) => runtime,
         Err(error) => {
             log::error!("Failed to initialize Desktop Agent Runtime: {}", error);
-            return Err(StartupFailure::logged(format!(
+            return Err(StartupFailure::new(format!(
                 "Failed to initialize Desktop Agent Runtime: {error}"
             )));
         }
     };
     startup_timings.record_elapsed("initialize_desktop_agent_runtime", step_started);
     startup_trace.record_elapsed_step(
-        "native_pre_tauri",
+        "native_bootstrap",
         "initialize_desktop_agent_runtime",
         step_started,
     );
@@ -802,13 +497,9 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
     let terminal_state = api::terminal_api::TerminalState::new();
 
     let path_manager = get_path_manager_arc();
-    let frontend_workbench = Arc::new(frontend_workbench::FrontendWorkbenchManager::new(
-        &path_manager.user_data_dir(),
-    ));
 
     Ok(BackendCore {
         startup_started,
-        startup_trace_id,
         startup_timings,
         log_config,
         session_log_dir,
@@ -827,1390 +518,770 @@ pub(crate) async fn bootstrap_backend_core() -> Result<BackendCore, StartupFailu
         scheduler_state,
         terminal_state,
         path_manager,
-        frontend_workbench,
     })
 }
 
-/// Tauri application entry point
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub async fn run() {
-    // E2E profiles must isolate authentication as well as ordinary config.
-    // Use the existing encrypted fixture vault on every platform, before any
-    // account discovery or background refresh can touch the normal profile.
-    if apply_e2e_storage_guard().is_err() {
-        return;
-    }
-    match miniapp_desktop::launch_manifest() {
-        Ok(Some(manifest)) => {
-            if let Err(error) = miniapp_desktop::run_shell(manifest) {
-                show_fatal_startup_error(&error);
-            }
-            return;
-        }
-        Err(error) => {
-            show_fatal_startup_error(&error);
-            return;
-        }
-        Ok(None) => {}
-    }
-    let miniapp_background = std::env::args_os().any(|arg| arg == "--miniapp-background");
-    let miniapp_host_channel = miniapp_desktop::host_channel();
-    let _miniapp_host_owner =
-        match miniapp_desktop::claim_host(miniapp_background, miniapp_host_channel).await {
-            Ok(Some(owner)) => owner,
-            Ok(None) => return,
-            Err(error) => {
-                show_fatal_startup_error(&error);
-                return;
-            }
-        };
-    let BackendCore {
-        startup_started,
-        startup_trace_id,
-        startup_timings,
-        log_config,
-        session_log_dir,
-        startup_trace,
-        startup_log_level,
-        coordinator,
-        scheduler,
-        event_queue,
-        event_router,
-        workspace_search_enabled,
-        startup_flashgrep_path,
-        app_state,
-        session_event_journal,
-        desktop_runtime,
-        coordinator_state,
-        scheduler_state,
-        terminal_state,
-        path_manager,
-        frontend_workbench,
-    } = match bootstrap_backend_core().await {
-        Ok(core) => core,
-        Err(failure) => {
-            if failure.show_dialog {
-                show_fatal_startup_error(&failure.message);
-            }
-            return;
-        }
-    };
-    let log_targets = logging::build_log_targets(&log_config);
-
-    let mut controller_dir = path_manager.user_data_dir().join("external-control");
-    if !miniapp_host_channel.is_default() {
-        controller_dir.push("development");
-    }
-    let mut builder = tauri::Builder::default();
-    let frontend_protocol_manager = Arc::clone(&frontend_workbench);
-    // The synchronous registration runs the handler inline on the WebView
-    // callback (the main thread on macOS and Windows). Every lazy chunk read,
-    // path canonicalization and revision lookup would then stall the UI, so the
-    // asset is resolved on the blocking pool and answered asynchronously.
-    builder = builder.register_asynchronous_uri_scheme_protocol(
-        frontend_workbench::FRONTEND_PROTOCOL_SCHEME,
-        move |_context, request, responder| {
-            let manager = Arc::clone(&frontend_protocol_manager);
-            tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(manager.protocol_response(request));
-            });
-        },
-    );
-
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    {
-        // The isolated embedded-WebDriver app must be able to run alongside a
-        // developer's normal OpenBitFun instance. Its storage root and automation
-        // port are already test-scoped, so joining the product single-instance
-        // group would make the E2E child exit before WebDriver can attach.
-        if !logging::is_embedded_webdriver_mode()
-            && std::env::var_os("OPENBITFUN_USER_ROOT").is_none()
-            && miniapp_host_channel.is_default()
-        {
-            builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-                log::info!(
-                    "Existing OpenBitFun Desktop instance received launch request: args_count={}, cwd={}",
-                    args.len(),
-                    cwd
-                );
-                if !args.iter().any(|arg| arg == "--miniapp-background") {
-                    handle_secondary_launch(app);
-                }
-            }));
-        }
-    }
-
-    let app = builder
-        .plugin(logging::build_log_command_plugin())
-        .plugin(logging::build_log_handoff_plugin(log_targets))
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        // The webview's own clipboard API raises a WebView2 permission prompt on
-        // first read; product clipboard paths go through this plugin instead.
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .app_name("OpenBitFun")
-                .build(),
-        )
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        // The desktop owns validated snapshots and atomic writes. Do not install
-        // window-state: its exit hook can overwrite repairs with stale cached data.
-        .manage(window_state_support::MainWindowState::default())
-        .manage(app_state)
-        .manage(miniapp_desktop::DesktopMiniApps::new(miniapp_host_channel))
-        .manage(sleep_prevention::SleepPreventionState::default())
-        .manage(desktop_runtime)
-        .manage(external_control::DesktopController::new(controller_dir))
-        .manage(coordinator_state)
-        .manage(scheduler_state)
-        .manage(path_manager)
-        .manage(coordinator)
-        .manage(scheduler)
-        .manage(terminal_state)
-        .manage(Arc::clone(&frontend_workbench))
-        .manage(startup_trace.clone())
-        .on_page_load(|webview, payload| {
-            let label = webview.label();
-            // A reload discards the page's HostInvoke bridge listener without
-            // running its cleanup; until the new page registers again, Peer
-            // requests must be refused as not executed instead of timing out.
-            if label == "main"
-                && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
-            {
-                api::peer_host_invoke::set_peer_host_bridge_ready(false);
-            }
-            if label.starts_with("embedded-browser-view-")
-                || label.starts_with("embedded-browser-panel-view-")
-            {
-                let event = match payload.event() {
-                    tauri::webview::PageLoadEvent::Started => "started",
-                    tauri::webview::PageLoadEvent::Finished => "finished",
-                };
-                let url = payload.url().to_string();
-                api::browser_api::update_browser_target_page_load(label, event, &url);
-                openbitfun_core::agentic::tools::browser_control::builtin_browser::publish_builtin_browser_page_load(
-                    label,
-                    event,
-                    &url,
-                );
-                let _ = webview.emit_to(
-                    "main",
-                    BROWSER_WEBVIEW_PAGE_LOAD_EVENT,
-                    serde_json::json!({
-                        "label": label,
-                        "event": event,
-                        "url": url,
-                    }),
-                );
-            }
-        })
-        .setup(move |app| {
-            let setup_started = Instant::now();
-            figure_verifier::install(app.handle().clone());
-            startup_trace.record_phase("tauri_setup_start", "native_setup");
-            #[cfg(target_os = "macos")]
-            {
-                app.on_menu_event(|app, event| {
-                    let event_name =
-                        crate::macos_menubar::menu_event_name_for_id(event.id().as_ref());
-
-                    if let Some(event_name) = event_name {
-                        let _ = app.emit(event_name, ());
-                    }
-                });
-            }
-
-            let step_started = Instant::now();
-            logging::register_runtime_log_state(startup_log_level, session_log_dir.clone());
-            crash_diagnostics::log_previous_unexpected_exit_if_any();
-            startup_trace.record_elapsed_step(
-                "native_setup",
-                "register_runtime_log_state_and_crash_diagnostics",
-                step_started,
-            );
-            startup_trace.record_logging_ready_and_stop_persistence();
-
-            let bundled_frontend = if cfg!(debug_assertions) {
-                let development_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../..")
-                    .join("dist");
-                #[cfg(debug_assertions)]
-                let development_dist = if std::env::var("OPENBITFUN_E2E_STORAGE_GUARD").as_deref() == Ok("1")
-                    && std::env::var("OPENBITFUN_E2E_PACKAGED_FRONTEND").as_deref() == Ok("1")
-                {
-                    std::env::var_os("OPENBITFUN_E2E_FRONTEND_DIR").map(PathBuf::from).unwrap_or(development_dist)
-                } else { development_dist };
-                development_dist
-                    .join("index.html")
-                    .is_file()
-                    .then_some(development_dist)
-            } else {
-                app.path()
-                    .resolve("frontend/dist", tauri::path::BaseDirectory::Resource)
-                    .ok()
-                    .filter(|path| path.join("index.html").is_file())
-            };
-            if let Some(bundled_frontend) = bundled_frontend {
-                if let Err(error) =
-                    frontend_workbench.initialize(app.handle(), &bundled_frontend)
-                {
-                    log::error!(
-                        "Failed to initialize the external frontend workbench: path={}, error={}",
-                        bundled_frontend.display(),
-                        error
-                    );
-                }
-            } else {
-                log::warn!(
-                    "External frontend bundle is unavailable; Creative frontend editing will remain disabled"
-                );
-            }
-
-            // Installation scope and registration belong to the installer.
-            // Development and portable launches must not rewrite installed paths.
-            for step in startup_timings.steps() {
-                log::debug!(
-                    "Desktop startup step completed: step={}, duration_ms={}",
-                    step.name,
-                    step.duration_ms
-                );
-            }
-
-            if workspace_search_enabled {
-                let step_started = Instant::now();
-                let flashgrep_path = startup_flashgrep_path.clone().or_else(|| {
-                    let binary_names =
-                        openbitfun_core::service::search::workspace_search_daemon_binary_names();
-                    for binary_name in binary_names {
-                        let primary = format!("flashgrep/{}", binary_name);
-                        if let Ok(path) = app
-                            .path()
-                            .resolve(&primary, tauri::path::BaseDirectory::Resource)
-                        {
-                            if path.exists() {
-                                return Some(path);
-                            }
-                        }
-                    }
-
-                    if let Ok(resource_dir) = app.path().resource_dir() {
-                        for binary_name in binary_names {
-                            for candidate in [
-                                resource_dir.join("flashgrep").join(binary_name),
-                                resource_dir.join("resources").join("flashgrep").join(binary_name),
-                                resource_dir.join(binary_name),
-                            ] {
-                                if candidate.exists() {
-                                    return Some(candidate);
-                                }
-                            }
-                        }
-                    }
-
-                    None
-                });
-                if let Some(path) = flashgrep_path {
-                    std::env::set_var("FLASHGREP_DAEMON_BIN", &path);
-                    log::info!(
-                        "Workspace search daemon startup check passed: path={}",
-                        path.display()
-                    );
-                } else {
-                    log::warn!(
-                        "Workspace search daemon startup check failed: {}",
-                        openbitfun_core::service::search::workspace_search_daemon_missing_hint()
-                    );
-                }
-                startup_trace.record_elapsed_step(
-                    "native_setup",
-                    "resolve_workspace_search_daemon",
-                    step_started,
-                );
-            }
-
-            // Register bundled mobile-web resource path for remote connect.
-            // tauri.conf.json maps "../../mobile-web/dist" -> "mobile-web/dist",
-            // so the primary candidate is "mobile-web/dist". Additional fallbacks
-            // handle legacy or non-standard bundle layouts.
-            {
-                let step_started = Instant::now();
-                let candidates = ["mobile-web/dist", "mobile-web", "dist"];
-                let mut found = false;
-                for candidate in &candidates {
-                    if let Ok(p) = app
-                        .path()
-                        .resolve(candidate, tauri::path::BaseDirectory::Resource)
-                    {
-                        if p.join("index.html").exists() {
-                            log::info!("Found bundled mobile-web at: {}", p.display());
-                            api::remote_connect_api::set_mobile_web_resource_path(p);
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if !found {
-                    // Last resort: scan the resource root for any index.html
-                    if let Ok(res_dir) = app.path().resource_dir() {
-                        for sub in &["mobile-web/dist", "mobile-web", "dist", ""] {
-                            let p = if sub.is_empty() {
-                                res_dir.clone()
-                            } else {
-                                res_dir.join(sub)
-                            };
-                            if p.join("index.html").exists() {
-                                log::info!(
-                                    "Found mobile-web via resource root scan: {}",
-                                    p.display()
-                                );
-                                api::remote_connect_api::set_mobile_web_resource_path(p);
-                                break;
-                            }
-                        }
-                    }
-                }
-                startup_trace.record_elapsed_step(
-                    "native_setup",
-                    "resolve_mobile_web_resource",
-                    step_started,
-                );
-            }
-
-            let app_handle = app.handle().clone();
-            let workspace_startup_bootstrap_snapshot = {
-                let app_state: crate::host::State<'_, api::app_state::AppState> =
-                    app.state::<api::app_state::AppState>().into();
-                let startup_trace_state: crate::host::State<'_, startup_trace::DesktopStartupTrace> =
-                    app.state::<startup_trace::DesktopStartupTrace>().into();
-                let host_handle = HostHandle::Tauri(app_handle.clone());
-                // Cap how long a slow-disk workspace snapshot may delay window creation;
-                // on timeout the frontend falls back to the existing
-                // `initialize_workspace_startup_state` command path.
-                const WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT: std::time::Duration =
-                    std::time::Duration::from_secs(4);
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        match tokio::time::timeout(
-                            WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT,
-                            prepare_workspace_startup_bootstrap_snapshot(
-                                &app_state,
-                                &host_handle,
-                                &startup_trace_state,
-                            ),
-                        )
-                        .await
-                        {
-                            Ok(snapshot) => snapshot,
-                            Err(_) => {
-                                log::warn!(
-                                    "Workspace startup bootstrap snapshot timed out after {:?}; frontend will fall back to the initialize_workspace_startup_state command",
-                                    WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT
-                                );
-                                None
-                            }
-                        }
-                    })
-                })
-                .and_then(|snapshot| {
-                    serde_json::to_value(snapshot)
-                        .map_err(|error| {
-                            log::warn!(
-                                "Failed to serialize workspace startup bootstrap snapshot, frontend will fall back to startup command: {}",
-                                error
-                            );
-                            error
-                        })
-                        .ok()
-                })
-            };
-            let window_started = Instant::now();
-            startup_trace.record_phase("main_window_create_start", "native_window");
-            if !miniapp_background {
-                appearance::create_main_window(
-                &app_handle,
-                &startup_trace_id,
-                &startup_trace,
-                workspace_startup_bootstrap_snapshot,
-                Arc::clone(&frontend_workbench),
-            );
-            } else {
-                #[cfg(target_os = "macos")]
-                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            }
-            miniapp_desktop::install(&app_handle).map_err(std::io::Error::other)?;
-            let window_duration_ms = elapsed_ms(window_started);
-            startup_trace.record_step(
-                "native_step_end",
-                "native_window",
-                "create_main_window",
-                window_duration_ms,
-            );
-            log::debug!(
-                "Desktop startup step completed: step=create_main_window, duration_ms={}",
-                window_duration_ms
-            );
-            let webdriver_started = Instant::now();
-            openbitfun_webdriver::maybe_start(app_handle.clone());
-            builtin_browser_host::install(app_handle.clone());
-            openbitfun_control_host::install(HostHandle::Tauri(app_handle.clone()));
-            miniapp_web_host::install(app_handle.clone());
-            if !miniapp_background {
-                if let Err(error) = desktop_cards::install(&app_handle) {
-                    log::warn!("Desktop cards unavailable: {}", error);
-                }
-            }
-            startup_trace.record_elapsed_step(
-                "native_setup",
-                "maybe_start_webdriver",
-                webdriver_started,
-            );
-            let window_phase_duration_ms = elapsed_ms(setup_started);
-            let since_process_start_ms = elapsed_ms(startup_started);
-            startup_trace.record_step(
-                "native_step_end",
-                "native_setup",
-                "tauri_setup_until_main_window_created",
-                window_phase_duration_ms,
-            );
-            startup_trace.record_phase("tauri_setup_window_phase_end", "native_setup");
-            log::debug!(
-                "Desktop startup timing: phase=tauri_setup_until_main_window_created, duration_ms={}, since_process_start_ms={}",
-                window_phase_duration_ms,
-                since_process_start_ms
-            );
-
-            #[cfg(target_os = "macos")]
-            {
-                let app_handle_for_menu = app.handle().clone();
-                let app_state: tauri::State<'_, api::app_state::AppState> = app.state();
-                let config_service = app_state.config_service.clone();
-                let workspace_id = app_state.workspace_id.clone();
-                let macos_edit_menu_mode = app_state.macos_edit_menu_mode.clone();
-
-                tokio::spawn(async move {
-                    let language = config_service
-                        .get_config::<String>(Some("app.language"))
-                        .await
-                        .unwrap_or_else(|_| "zh-CN".to_string());
-
-                    let has_workspace = workspace_id.read().await.is_some();
-                    let mode = if has_workspace {
-                        crate::macos_menubar::MenubarMode::Workspace
-                    } else {
-                        crate::macos_menubar::MenubarMode::Startup
-                    };
-                    let edit_mode = *macos_edit_menu_mode.read().await;
-
-                    let _ = crate::macos_menubar::set_macos_menubar_with_mode(
-                        &app_handle_for_menu,
-                        &language,
-                        mode,
-                        edit_mode,
-                    );
-                });
-            }
-
-            start_backend_services(
-                HostHandle::Tauri(app_handle.clone()),
-                event_queue,
-                event_router,
-                session_event_journal.clone(),
-                startup_log_level,
-                &startup_trace,
-            );
-
-            let step_started = Instant::now();
-            startup_trace.record_elapsed_step("native_setup", "setup_tray_deferred", step_started);
-
-            let setup_duration_ms = elapsed_ms(setup_started);
-            let since_process_start_ms = elapsed_ms(startup_started);
-            startup_trace.record_step(
-                "native_step_end",
-                "native_setup",
-                "tauri_setup",
-                setup_duration_ms,
-            );
-            startup_trace.record_phase("tauri_setup_end", "native_setup");
-            log::debug!(
-                "Desktop startup timing: phase=tauri_setup, duration_ms={}, since_process_start_ms={}",
-                setup_duration_ms,
-                since_process_start_ms
-            );
-            log::info!("OpenBitFun Desktop started successfully");
-            Ok(())
-        })
-        .on_window_event({
-            move |window, event| {
-                #[cfg(target_os = "windows")]
-                window_webview_geometry::handle_event(window, event);
-                if window.label().starts_with(desktop_cards::DESKTOP_CARD_WINDOW_PREFIX) {
-                    desktop_cards::handle_window_event(window, event);
-                    return;
-                }
-                if window.label() == "main"
-                    && !MAIN_WINDOW_USES_TRANSIENT_GEOMETRY.load(Ordering::SeqCst)
-                    && matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_))
-                {
-                    window_state_support::remember_normal(window);
-                }
-                if window.label() == "main"
-                    && matches!(event, tauri::WindowEvent::CloseRequested { .. })
-                {
-                    save_main_window_state(window.app_handle(), "close_requested");
-                }
-
-                if let tauri::WindowEvent::CloseRequested { api: _api, .. } = event {
-                    if window.label() == "main" {
-                        if window.app_handle().state::<miniapp_desktop::DesktopMiniApps>().instances.snapshot().instances.iter().any(|instance|
-                            instance.primary_view.iter().chain(instance.pending_view.iter()).any(|view| view.kind == openbitfun_product_domains::miniapp::instances::MiniAppViewKind::Window)) {
-                            _api.prevent_close();
-                            let _ = window.hide();
-                            return;
-                        }
-                        #[cfg(target_os = "macos")]
-                        {
-                            _api.prevent_close();
-                            if !begin_main_window_close_request_on_macos() {
-                                return;
-                            }
-
-                            if let Err(error) = window.emit(MAIN_WINDOW_CLOSE_REQUESTED_EVENT, ()) {
-                                log::warn!(
-                                    "Failed to emit macOS main window close request event: {}",
-                                    error
-                                );
-                            }
-
-                            let app_handle = window.app_handle().clone();
-                            tauri::async_runtime::spawn(async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(
-                                    MAIN_WINDOW_CLOSE_FALLBACK_HIDE_MS,
-                                ))
-                                .await;
-
-                                if let Err(error) =
-                                    hide_main_window_on_macos(&app_handle, "frontend_timeout").await
-                                {
-                                    log::warn!(
-                                        "macOS close fallback hide failed after frontend timeout: {}",
-                                        error
-                                    );
-                                }
-                            });
-                        }
-                    }
-                }
-
-                #[cfg(not(target_os = "macos"))]
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    if window.label() == "main" {
-                        // Prevent the OS from closing the window; let the frontend
-                        // decide whether to minimize to tray, show a dialog, or quit.
-                        api.prevent_close();
-                        if let Err(error) = window.emit(MAIN_WINDOW_CLOSE_REQUESTED_EVENT, ()) {
-                            log::warn!(
-                                "Failed to emit main window close request event: {}",
-                                error
-                            );
-                        }
-                    }
-                }
-            }
-        })
-        .invoke_handler(tauri::generate_handler![
-            api::miniapp_api::miniapp_presentation,
-            api::miniapp_api::miniapp_shell_call,
-            appearance::show_main_window,
-            frontend_workbench::frontend_update_candidate_ready,
-            frontend_workbench::frontend_update_candidate_failed,
-            frontend_workbench::get_frontend_update_status,
-            frontend_workbench::confirm_frontend_update,
-            frontend_workbench::rollback_frontend_update,
-            hide_main_window_after_close_request,
-            api::agentic_api::create_session,
-            api::agentic_api::update_session_mode,
-            api::agentic_api::update_session_model,
-            // Turn and session policy (wave 3 session).
-            api::session_policy_api::submit_user_message,
-            api::session_policy_api::get_session_mode_catalog,
-            api::session_policy_api::list_session_commands,
-            api::session_policy_api::execute_session_command,
-            api::session_policy_api::stop_dialog_turn,
-            api::session_policy_api::mark_session_seen,
-            api::agentic_api::get_model_routing_status,
-            api::model_pool_api::get_model_pools,
-            api::model_pool_api::retry_model_pool_member,
-            api::model_pool_api::save_model_pool,
-            api::model_pool_api::delete_model_pool,
-            api::model_pool_api::get_model_pool_status,
-            api::model_pool_api::get_session_model_target,
-            api::model_pool_api::update_session_model_target,
-            api::agentic_api::update_session_permission_mode,
-            api::agentic_api::update_active_turn_permission_mode,
-            api::agentic_api::get_session_permission_mode,
-            api::agentic_api::reload_session_context,
-            api::agentic_api::update_session_title,
-            api::agentic_api::ensure_coordinator_session,
-            api::agentic_api::ensure_control_conversation,
-            api::agentic_api::create_control_conversation,
-            api::agentic_api::record_voice_exchange,
-            api::agentic_api::start_dialog_turn,
-            api::agentic_api::compact_session,
-            api::agentic_api::activate_session_goal,
-            api::agentic_api::get_session_thread_goal,
-            api::agentic_api::clear_session_thread_goal,
-            api::agentic_api::set_session_thread_goal_status,
-            api::agentic_api::update_session_thread_goal_objective,
-            api::agentic_api::ensure_assistant_bootstrap,
-            api::agentic_api::run_init_agents_md,
-            api::agentic_api::cancel_dialog_turn,
-            api::agentic_api::interrupt_dialog_turn,
-            api::agentic_api::recover_interrupted_dialog_turn,
-            api::agentic_api::steer_dialog_turn,
-            api::agentic_api::manage_dialog_queue,
-            api::agentic_api::control_deep_review_queue,
-            api::agentic_api::cancel_session,
-            api::agentic_api::set_subagent_timeout,
-            api::agentic_api::control_background_command,
-            api::agentic_api::send_background_command_input,
-            api::agentic_api::read_background_command_output,
-            api::agentic_api::list_background_command_activities,
-            api::agentic_api::delete_session,
-            api::agentic_api::restore_session,
-            api::agentic_api::restore_session_view,
-            api::agentic_api::load_session_event_backfill,
-            api::agentic_api::load_session_turn_window,
-            api::agentic_api::load_session_trajectory,
-            api::agentic_api::restore_session_with_turns,
-            api::agentic_api::reset_memory,
-            api::agentic_api::get_memory_paths,
-            api::agentic_api::set_session_memory_mode,
-            webdriver_bridge_result,
-            get_startup_native_trace,
-            api::agentic_api::list_sessions,
-            api::agentic_api::get_session_interaction_mailbox,
-            external_control::desktop_external_control,
-            api::agentic_api::list_pending_permission_requests,
-            api::agentic_api::subscribe_permission_requests,
-            api::agentic_api::respond_permission,
-            api::agentic_api::respond_permission_batch,
-            api::agentic_api::list_project_permission_grants,
-            api::agentic_api::remove_project_permission_grant,
-            api::agentic_api::clear_project_permission_grants,
-            api::agentic_api::list_project_permission_audit,
-            api::agentic_api::get_project_permission_rules,
-            api::agentic_api::save_project_permission_rules,
-            api::agentic_api::cancel_tool,
-            api::agentic_api::generate_session_title,
-            api::agentic_api::get_available_modes,
-            api::agentic_api::get_default_review_team_definition,
-            api::btw_api::btw_ask_stream,
-            api::btw_api::btw_cancel,
-            api::editor_ai_api::editor_ai_stream,
-            api::editor_ai_api::editor_ai_cancel,
-            get_external_hook_catalog,
-            get_external_hook_import_snapshot,
-            plan_external_hook_import_command,
-            apply_external_hook_import_command,
-            mutate_external_hook_import_command,
-            get_external_source_snapshot,
-            get_instruction_source_catalog,
-            get_workspace_reference_snapshot,
-            plan_external_mcp_import_command,
-            apply_external_mcp_import_command,
-            reveal_external_source_location,
-            get_external_source_control_snapshot,
-            get_external_source_discovery_snapshot,
-            list_removed_external_sessions,
-            restore_removed_external_session,
-            apply_external_source_control_action_command,
-            get_external_ecosystem_awareness_command,
-            acknowledge_external_ecosystems_command,
-            update_external_integration_policy_command,
-            set_external_source_enabled_command,
-            set_external_source_conflict_choice_command,
-            get_native_prompt_command_conflicts_command,
-            set_native_prompt_command_conflict_choice_command,
-            expand_external_prompt_command_command,
-            set_external_tool_target_decision_command,
-            set_external_tool_targets_enabled_command,
-            set_external_tool_conflict_choice_command,
-            set_external_subagent_activation_command,
-            set_external_subagents_enabled_command,
-            set_external_subagent_model_binding_command,
-            choose_external_subagent_conflict_command,
-            set_external_mcp_server_decision_command,
-            set_external_mcp_servers_enabled_command,
-            choose_external_mcp_conflict_command,
-            api::context_upload_api::upload_image_contexts,
-            get_all_tools_info,
-            get_chat_mcp_catalog,
-            get_readonly_tools_info,
-            get_tool_info,
-            validate_tool_input,
-            execute_tool,
-            submit_user_answers,
-            start_user_question_interaction,
-            initialize_workspace_startup_state,
-            get_available_tools,
-            report_ide_control_result,
-            openbitfun_control_host::mark_openbitfun_control_surface_ready,
-            openbitfun_control_host::mark_openbitfun_control_surface_unready,
-            openbitfun_control_host::product_control_invoke,
-            openbitfun_control_host::report_openbitfun_control_result,
-            miniapp_web_host::mark_miniapp_web_surface_ready,
-            miniapp_web_host::report_miniapp_web_result,
-            get_health_status,
-            get_statistics,
-            test_ai_connection,
-            test_ai_config_connection,
-            test_image_generation_service,
-            list_ai_models_by_config,
-            probe_magpie_gateway,
-            list_subscription_accounts,
-            list_subscription_account_instances,
-            get_subscription_account_quota,
-            start_subscription_account_login,
-            logout_subscription_account_instance,
-            set_subscription_account_enabled,
-            refresh_subscription_account_instance,
-            start_subscription_login,
-            get_subscription_login_status,
-            cancel_subscription_login,
-            logout_subscription_account,
-            refresh_subscription_account,
-            initialize_ai,
-            refresh_model_client,
-            get_app_state,
-            update_app_status,
-            update_workspace_info,
-            get_workspace_icon,
-            set_workspace_icon,
-            appearance::show_agent_companion_desktop_pet,
-            appearance::hide_agent_companion_desktop_pet,
-            appearance::resize_agent_companion_desktop_pet,
-            desktop_cards::commands::desktop_card_list,
-            desktop_cards::commands::desktop_card_get,
-            desktop_cards::commands::desktop_card_set_visible,
-            desktop_cards::commands::desktop_card_delete,
-            desktop_cards::commands::desktop_card_refresh,
-            desktop_cards::commands::desktop_card_set_checklist_item,
-            desktop_cards::commands::desktop_card_set_always_on_top,
-            list_agent_companion_pets,
-            load_agent_companion_pet_spritesheet,
-            import_agent_companion_pet_package,
-            delete_agent_companion_pet_package,
-            read_file_content,
-            write_file_content,
-            workspace_file_upload,
-            reset_workspace_persona_files,
-            check_path_exists,
-            get_file_metadata,
-            get_file_editor_sync_hash,
-            rename_file,
-            export_local_file_to_path,
-            api::local_file_download::local_file_download,
-            reveal_in_explorer,
-            get_file_tree,
-            explorer_get_file_tree,
-            get_directory_children,
-            explorer_get_children,
-            get_directory_children_paginated,
-            explorer_get_children_paginated,
-            search_files,
-            search_filenames,
-            search_file_contents,
-            search_get_repo_status,
-            search_build_index,
-            search_rebuild_index,
-            start_search_filenames_stream,
-            start_search_file_contents_stream,
-            cancel_search,
-            delete_file,
-            delete_directory,
-            create_file,
-            create_directory,
-            compress_path,
-            decompress_path,
-            list_directory_files,
-            start_file_watch,
-            stop_file_watch,
-            get_watched_paths,
-            get_file_watch_status,
-            retry_file_watch,
-            get_clipboard_files,
-            get_clipboard_image,
-            write_clipboard_image,
-            api::browser_file_drop_api::resolve_browser_dropped_file_paths,
-            api::file_drop_preview_api::set_file_drop_preview_target,
-            paste_files,
-            get_config,
-            get_configs,
-            computer_use_get_status,
-            computer_use_control_status,
-            computer_use_control_stop,
-            computer_use_control_preview,
-            computer_use_request_permissions,
-            computer_use_request_permission,
-            computer_use_share_targets,
-            computer_use_share_observe,
-            computer_use_share_input,
-            computer_use_share_start,
-            computer_use_share_control,
-            computer_use_share_request,
-            computer_use_share_grants,
-            computer_use_share_forget_grant,
-            computer_use_open_system_settings,
-            set_config,
-            // Typed settings mutations (wave 3 config).
-            api::settings_mutation_api::ai_model_upsert,
-            api::settings_mutation_api::ai_model_delete,
-            api::settings_mutation_api::resolve_ai_model_request_url,
-            api::settings_mutation_api::set_task_model,
-            api::settings_mutation_api::set_permission_mode,
-            api::settings_mutation_api::upsert_permission_rule,
-            api::settings_mutation_api::delete_permission_rule,
-            api::settings_mutation_api::set_approval_settings,
-            api::settings_mutation_api::set_web_search_provider,
-            api::settings_mutation_api::get_settings_schema,
-            set_acp_client_permission_mode,
-            save_cloud_speech_config,
-            get_web_search_credential_status,
-            save_web_search_credential,
-            clear_web_search_credential,
-            get_decision_model_credential_status,
-            save_decision_model_credential,
-            clear_decision_model_credential,
-            reset_config,
-            export_config,
-            import_config,
-            validate_config,
-            reload_config,
-            get_global_config_health,
-            get_runtime_logging_info,
-            export_diagnostics_bundle,
-            append_flow_chat_diagnostics,
-            get_runtime_capabilities,
-            speech_list_models,
-            speech_download_model,
-            speech_cancel_model_download,
-            speech_delete_model,
-            speech_verify_model,
-            speech_start_input_session,
-            speech_append_audio_chunk,
-            speech_finish_input_session,
-            speech_cancel_input_session,
-            speech_start_realtime_session,
-            speech_append_realtime_audio,
-            speech_commit_realtime_audio,
-            speech_send_realtime_tool_result,
-            speech_speak_realtime_text,
-            speech_cancel_realtime_response,
-            speech_close_realtime_session,
-            speech_get_realtime_config,
-            speech_save_realtime_config,
-            get_agent_profile_configs,
-            get_agent_profile_config,
-            set_agent_profile_config,
-            reset_agent_profile_config,
-            list_subagents,
-            list_visible_subagents,
-            list_manageable_subagents,
-            get_custom_agent_detail,
-            create_custom_agent,
-            update_custom_agent,
-            delete_custom_agent,
-            reload_custom_agents,
-            get_subagent_detail,
-            delete_subagent,
-            create_subagent,
-            update_subagent,
-            reload_subagents,
-            list_agent_tool_names,
-            update_subagent_config,
-            get_skill_configs,
-            get_global_skill_settings,
-            get_mode_skill_configs,
-            list_skill_market,
-            search_skill_market,
-            download_skill_market,
-            set_global_skill_disabled,
-            set_mode_skill_disabled,
-            replace_mode_skill_selection,
-            reset_mode_skill_selection,
-            validate_skill_path,
-            add_skill,
-            delete_skill,
-            git_is_repository,
-            git_get_repository_trust,
-            git_trust_repository,
-            git_get_repository_basic,
-            git_resolve_revision,
-            git_get_repository,
-            review_platform_get_workspace_snapshot,
-            review_platform_get_workspace_context,
-            review_platform_get_pull_request_detail,
-            review_platform_get_pull_request_review_target,
-            review_platform_get_issue,
-            review_platform_get_pull_request_review_target_by_identity,
-            review_platform_get_pull_request_detail_page,
-            review_platform_get_pull_request_ci_log,
-            review_platform_update_auth_token,
-            review_platform_clear_auth_token,
-            git_get_status,
-            git_get_tracked_change_count,
-            git_get_branches,
-            git_get_enhanced_branches,
-            git_get_commits,
-            git_add_files,
-            git_commit,
-            git_push,
-            git_pull,
-            git_checkout_branch,
-            git_create_branch,
-            git_delete_branch,
-            git_get_diff,
-            git_get_changed_files,
-            git_reset_files,
-            git_reset_to_commit,
-            git_get_file_content,
-            git_get_graph,
-            git_cherry_pick,
-            git_cherry_pick_abort,
-            git_cherry_pick_continue,
-            git_list_worktrees,
-            git_add_worktree,
-            git_remove_worktree,
-            api::worktree_api::worktree_list,
-            api::worktree_api::worktree_list_projects,
-            api::worktree_api::worktree_create,
-            api::worktree_api::worktree_create_branch,
-            api::worktree_api::worktree_promote,
-            api::worktree_api::worktree_remove,
-            api::worktree_api::worktree_recreate,
-            api::worktree_api::worktree_bind_session,
-            generate_commit_message,
-            quick_commit_message,
-            save_git_repo_history,
-            load_git_repo_history,
-            preview_commit_message,
-            compute_diff,
-            apply_patch,
-            save_merged_diff_content,
-            rollback_session,
-            rollback_session_to_turn,
-            accept_session,
-            accept_file,
-            reject_file,
-            get_session_files,
-            get_session_turns,
-            get_turn_files,
-            get_file_diff,
-            get_operation_diff,
-            get_session_file_diff_stats,
-            get_operation_summary,
-            get_session_operations,
-            accept_operation,
-            reject_operation,
-            get_session_stats,
-            get_snapshot_system_stats,
-            get_snapshot_sessions,
-            check_git_isolation,
-            get_file_change_history,
-            inspect_snapshot_storage,
-            clean_snapshot_storage,
-            get_all_modified_files,
-            get_baseline_snapshot_diff,
-            // Session persistence API
-            reveal_session_storage_directory,
-            list_persisted_sessions,
-            search_session_content,
-            search_referenceable_sessions,
-            list_persisted_sessions_page,
-            get_session_lineage,
-            load_session_turns,
-            get_session_usage_report,
-            save_session_turn,
-            save_session_metadata,
-            export_session_transcript,
-            delete_persisted_session,
-            touch_session_activity,
-            load_persisted_session_metadata,
-            fork_session,
-            copy_session,
-            archive_session,
-            unarchive_session,
-            archive_all_sessions,
-            list_archived_sessions,
-            delete_all_archived_sessions,
-            initialize_mcp_servers,
-            api::mcp_api::initialize_mcp_servers_non_destructive,
-            get_mcp_servers,
-            api::mcp_api::list_mcp_resources,
-            api::mcp_api::read_mcp_resource,
-            api::mcp_api::list_mcp_prompts,
-            api::mcp_api::get_mcp_prompt,
-            start_mcp_server,
-            stop_mcp_server,
-            restart_mcp_server,
-            get_mcp_server_status,
-            load_mcp_json_config,
-            save_mcp_json_config,
-            get_mcp_tool_ui_uri,
-            fetch_mcp_app_resource,
-            send_mcp_app_message,
-            submit_mcp_interaction_response,
-            update_mcp_remote_auth,
-            clear_mcp_remote_auth,
-            api::mcp_api::delete_mcp_server,
-            api::mcp_api::start_mcp_remote_oauth,
-            api::mcp_api::get_mcp_remote_oauth_session,
-            api::mcp_api::cancel_mcp_remote_oauth,
-            initialize_acp_clients,
-            get_acp_clients,
-            probe_acp_client_requirements,
-            predownload_acp_client_adapter,
-            install_acp_client_cli,
-            stop_acp_client,
-            load_acp_json_config,
-            save_acp_json_config,
-            submit_acp_permission_response,
-            create_acp_flow_session,
-            start_acp_dialog_turn,
-            cancel_acp_dialog_turn,
-            get_acp_session_options,
-            get_acp_session_commands,
-            set_acp_session_model,
-            set_acp_session_config_option,
-            get_global_config_status,
-            get_model_configs,
-            get_ai_model_catalog,
-            get_local_models_dev_catalogs,
-            project_ai_model_reasoning_catalog,
-            get_models_dev_catalog_status,
-            refresh_models_dev_catalog_now,
-            reveal_models_dev_cache_directory,
-            get_recent_workspaces,
-            remove_recent_workspace,
-            cleanup_invalid_workspaces,
-            get_opened_workspaces,
-            get_assistant_workspaces,
-            open_workspace,
-            open_remote_workspace,
-            create_assistant_workspace,
-            get_primary_assistant_workspace,
-            set_primary_assistant_workspace,
-            delete_assistant_workspace,
-            reset_assistant_workspace,
-            close_workspace,
-            set_active_workspace,
-            reorder_opened_workspaces,
-            get_current_workspace,
-            scan_workspace_info,
-            list_cron_jobs,
-            create_cron_job,
-            update_cron_job,
-            delete_cron_job,
-            notify_cron_host_ready,
-            api::config_api::canonicalize_agent_profile_configs,
-            api::terminal_api::terminal_get_shells,
-            api::terminal_api::terminal_create,
-            api::terminal_api::terminal_get,
-            api::terminal_api::terminal_list,
-            api::terminal_api::terminal_close,
-            api::terminal_api::terminal_write,
-            api::terminal_api::terminal_resize,
-            api::terminal_api::terminal_signal,
-            api::terminal_api::terminal_ack,
-            api::terminal_api::terminal_execute,
-            api::terminal_api::terminal_send_command,
-            api::terminal_api::terminal_has_shell_integration,
-            api::terminal_api::terminal_shutdown_all,
-            api::terminal_api::terminal_get_history,
-            get_system_info,
-            get_app_version,
-            check_for_updates,
-            install_update,
-            api::update_api::download_update,
-            api::update_api::cancel_app_update_download,
-            api::update_api::get_pending_update,
-            api::update_api::install_pending_update,
-            api::system_api::open_html_file_in_browser,
-            restart_app,
-            send_system_notification,
-            api::system_api::quit_app,
-            api::system_api::minimize_to_tray,
-            api::system_api::initialize_tray_after_startup,
-            api::system_api::set_tray_unread_count,
-            api::system_api::startup_window_control,
-            api::system_api::set_main_window_transient_geometry,
-            api::system_api::toggle_main_window_fullscreen,
-            sleep_prevention::get_prevent_sleep_enabled,
-            sleep_prevention::set_prevent_sleep_enabled,
-            check_command_exists,
-            check_commands_exist,
-            run_system_command,
-            set_macos_edit_menu_mode,
-            i18n_get_current_language,
-            i18n_set_language,
-            i18n_get_supported_languages,
-            i18n_get_config,
-            i18n_set_config,
-            // Remote Connect
-            api::remote_connect_api::remote_connect_get_device_info,
-            api::remote_connect_api::remote_connect_get_lan_ip,
-            api::remote_connect_api::remote_connect_get_lan_network_info,
-            api::remote_connect_api::remote_connect_get_methods,
-            api::remote_connect_api::remote_connect_start,
-            api::remote_connect_api::remote_connect_stop,
-            api::remote_connect_api::remote_connect_stop_bot,
-            api::remote_connect_api::remote_connect_status,
-            api::remote_connect_api::remote_connect_get_form_state,
-            api::remote_connect_api::remote_connect_set_allowed,
-            api::remote_connect_api::remote_connect_set_form_state,
-            api::remote_connect_api::remote_connect_configure_bot,
-            api::remote_connect_api::remote_connect_weixin_qr_start,
-            api::remote_connect_api::remote_connect_weixin_qr_poll,
-            api::remote_connect_api::remote_connect_get_bot_verbose_mode,
-            api::remote_connect_api::remote_connect_set_bot_verbose_mode,
-            // Account API
-            api::account_identity_api::account_github_start,
-            api::account_identity_api::account_github_poll,
-            api::account_identity_api::account_github_info,
-            api::remote_connect_api::account_login,
-            api::remote_connect_api::account_status,
-            api::remote_connect_api::account_logout,
-            api::remote_connect_api::account_connect_devices,
-            api::remote_connect_api::account_online_devices,
-            api::remote_connect_api::account_execute_on_device,
-            api::remote_connect_api::account_get_credential_hint,
-            api::remote_connect_api::account_token_expired,
-            api::remote_connect_api::account_list_devices,
-            api::remote_connect_api::account_update_device_alias,
-            api::remote_connect_api::account_relay_capabilities,
-            api::remote_connect_api::account_delete_device,
-            api::remote_connect_api::account_device_rpc,
-            api::remote_connect_api::account_subscribe_session,
-            api::remote_connect_api::account_unsubscribe_session,
-            api::remote_connect_api::account_load_older_session,
-            // OpenBitFun Page API
-            api::pages_api::page_publish,
-            api::pages_api::page_save_version,
-            api::pages_api::page_list,
-            api::pages_api::page_list_versions,
-            api::pages_api::page_create_open_link,
-            api::pages_api::page_deploy,
-            api::pages_api::page_delete_version,
-            api::pages_api::page_update,
-            api::pages_api::page_unpublish,
-            api::pages_api::page_delete,
-            api::peer_host_invoke::peer_host_invoke_complete,
-            api::peer_host_invoke::peer_host_bridge_ready,
-            api::peer_host_invoke::peer_control_attach,
-            api::peer_host_invoke::peer_control_detach,
-            api::peer_host_invoke::peer_mode_ping,
-            api::peer_host_invoke::peer_controller_set_active,
-            // MiniApp API
-            api::miniapp_api::list_miniapps,
-            api::miniapp_api::get_miniapp,
-            api::miniapp_api::create_miniapp,
-            api::miniapp_api::update_miniapp,
-            api::miniapp_api::delete_miniapp,
-            api::miniapp_api::get_miniapp_versions,
-            api::miniapp_api::rollback_miniapp,
-            api::miniapp_api::get_miniapp_storage,
-            api::miniapp_api::set_miniapp_storage,
-            api::miniapp_api::grant_miniapp_workspace,
-            api::miniapp_api::grant_miniapp_path,
-            api::miniapp_api::miniapp_runtime_status,
-            api::miniapp_api::miniapp_worker_call,
-            api::miniapp_api::miniapp_host_call,
-            api::miniapp_api::miniapp_worker_stop,
-            api::miniapp_api::miniapp_worker_list_running,
-            api::miniapp_api::miniapp_install_deps,
-            api::miniapp_api::miniapp_recompile,
-            api::miniapp_api::miniapp_dialog_message,
-            api::miniapp_api::miniapp_import_from_path,
-            api::miniapp_api::miniapp_sync_from_fs,
-            api::miniapp_api::miniapp_create_draft,
-            api::miniapp_api::miniapp_get_draft,
-            api::miniapp_api::miniapp_sync_draft_from_fs,
-            api::miniapp_api::miniapp_set_draft_permissions,
-            api::miniapp_api::miniapp_permission_diff_for_draft,
-            api::miniapp_api::miniapp_apply_draft,
-            api::miniapp_api::miniapp_discard_draft,
-            api::miniapp_api::get_miniapp_draft_storage,
-            api::miniapp_api::set_miniapp_draft_storage,
-            api::miniapp_api::miniapp_draft_worker_call,
-            api::miniapp_api::miniapp_draft_host_call,
-            api::miniapp_api::miniapp_draft_worker_stop,
-            api::miniapp_api::miniapp_get_customization_metadata,
-            api::miniapp_api::miniapp_decline_builtin_update,
-            api::miniapp_market_api::miniapp_market_browse,
-            api::market_image_api::market_image_load,
-            api::miniapp_market_api::miniapp_market_get_listing,
-            api::miniapp_market_api::miniapp_market_capture_window,
-            api::miniapp_market_api::miniapp_market_set_rating,
-            api::miniapp_market_api::miniapp_market_set_favorite,
-            api::miniapp_market_api::miniapp_market_list_submissions,
-            api::miniapp_market_api::miniapp_market_withdraw_submission,
-            api::miniapp_market_api::miniapp_market_installed_status,
-            api::miniapp_market_api::miniapp_market_installed_origins,
-            api::miniapp_market_api::miniapp_market_install,
-            api::miniapp_market_api::miniapp_market_import_package,
-            api::miniapp_market_api::miniapp_market_inspect_package,
-            api::miniapp_market_api::miniapp_market_submit_installed,
-            api::miniapp_api::miniapp_ai_complete,
-            api::miniapp_api::miniapp_ai_chat,
-            api::miniapp_api::miniapp_ai_cancel,
-            api::miniapp_api::miniapp_ai_list_models,
-            api::miniapp_agent_api::miniapp_agent_ensure_session,
-            api::miniapp_agent_api::miniapp_agent_run,
-            api::miniapp_agent_api::miniapp_agent_cancel,
-            api::miniapp_agent_api::miniapp_agent_turn_text,
-            api::miniapp_agent_api::miniapp_agent_cancel_stale_runs,
-            api::miniapp_export_api::miniapp_render_slide_page,
-            // Browser API (embedded webview)
-            api::browser_api::browser_webview_eval,
-            api::browser_api::browser_webview_create,
-            api::browser_api::browser_webview_navigate,
-            api::browser_api::browser_webview_reload,
-            api::browser_api::browser_webview_set_bounds,
-            api::browser_api::browser_webview_capture_preview,
-            api::browser_api::browser_webview_set_agent_target_state,
-            api::browser_api::browser_get_url,
-            api::html_preview_api::html_preview_create,
-            api::html_preview_api::html_preview_read_resource,
-            api::html_preview_api::html_preview_release,
-            api::latex_api::compile_workspace_latex,
-            // Browser Control API (CDP-based user browser control)
-            api::browser_control_api::browser_control_list_browsers,
-            api::browser_control_api::browser_control_get_status,
-            api::browser_control_api::browser_control_launch,
-            api::browser_control_api::browser_control_enable_default_cdp,
-            api::browser_control_api::browser_control_restart_with_cdp,
-            api::browser_control_api::browser_control_disconnect,
-            // Insights API
-            api::insights_api::generate_insights,
-            api::insights_api::get_latest_insights,
-            api::insights_api::load_insights_report,
-            api::insights_api::has_insights_data,
-            api::insights_api::cancel_insights_generation,
-            // Token usage statistics API
-            api::token_usage_api::get_token_usage_statistics,
-            // SSH Remote API
-            api::ssh_api::ssh_list_saved_connections,
-            api::ssh_api::ssh_save_connection,
-            api::ssh_api::ssh_delete_connection,
-            api::ssh_api::ssh_has_stored_password,
-            api::ssh_api::ssh_connect,
-            api::ssh_api::ssh_test_connection,
-            api::ssh_api::ssh_list_docker_containers,
-            api::ssh_api::ssh_list_wsl_distributions,
-            api::ssh_api::ssh_disconnect,
-            api::ssh_api::ssh_disconnect_all,
-            api::ssh_api::ssh_is_connected,
-            api::ssh_api::ssh_get_server_info,
-            api::ssh_api::ssh_get_config,
-            api::ssh_api::ssh_list_config_hosts,
-            api::ssh_api::remote_read_file,
-            api::ssh_api::remote_write_file,
-            api::ssh_api::remote_exists,
-            api::ssh_api::remote_read_dir,
-            api::ssh_api::remote_get_tree,
-            api::ssh_api::remote_create_dir,
-            api::ssh_api::remote_remove,
-            api::ssh_api::remote_rename,
-            api::ssh_api::remote_download_to_local_path,
-            api::ssh_api::remote_upload_from_local_path,
-            api::ssh_api::cancel_transfer,
-            api::ssh_api::remote_execute,
-            api::ssh_api::remote_open_workspace,
-            api::ssh_api::remote_close_workspace,
-            api::ssh_api::remote_remove_workspace,
-            api::ssh_api::remote_get_workspace_info,
-            // Remote port forwarding (local `-L` mappings, user-driven)
-            api::ssh_api::ssh_start_port_forward,
-            api::ssh_api::ssh_stop_port_forward,
-            api::ssh_api::ssh_list_port_forwards,
-            api::ssh_api::ssh_list_remote_listening_ports,
-            // Detached task dispatch (controller-side SSH transport)
-            api::dispatch_api::dispatch_list_targets,
-            api::dispatch_api::dispatch_probe_target,
-            api::dispatch_api::dispatch_sync_model_config,
-            api::dispatch_api::dispatch_submit,
-            api::dispatch_api::dispatch_status,
-            api::dispatch_api::dispatch_cancel,
-            api::dispatch_api::dispatch_sync_result,
-            api::dispatch_api::dispatch_list_jobs,
-            api::dispatch_api::dispatch_answer,
-            api::dispatch_api::dispatch_append,
-            api::dispatch_api::dispatch_continue,
-            api::dispatch_api::dispatch_query,
-            api::dispatch_api::dispatch_load_transcript,
-            api::dispatch_api::dispatch_save_transcript,
-            // Relay self-deploy API
-            // Debug API (no-op stubs in release builds)
-            api::debug_api::debug_devtools_available,
-            api::debug_api::debug_element_picked,
-            api::debug_api::debug_open_devtools,
-            api::debug_api::debug_close_devtools,
-            // Backend protocol listener for browsers and phones (OBP over WebSocket)
-            backend_protocol::ws::obp_get_status,
-            backend_protocol::ws::obp_set_lan_enabled,
-            backend_protocol::ws::obp_create_pairing,
-            backend_protocol::ws::obp_revoke_paired_client,
-        ])
-        .build(desktop_context());
-
-    match app {
-        Ok(app) => {
-            app.run(|app_handle, event| match event {
-                tauri::RunEvent::ExitRequested { api, code, .. } => {
-                    if code.is_none()
-                        && (app_handle.get_window("main").is_none()
-                            || app_handle
-                                .state::<miniapp_desktop::DesktopMiniApps>()
-                                .instances
-                                .snapshot()
-                                .instances
-                                .iter()
-                                .any(|instance| instance.primary_view.is_some()))
-                    {
-                        api.prevent_exit();
-                        return;
-                    }
-                    if !PROCESS_EXIT_CLEANUP_COMPLETE.load(Ordering::Acquire) {
-                        api.prevent_exit();
-                        request_desktop_exit(app_handle, code.unwrap_or(0), "tauri_exit_requested");
-                    }
-                }
-                tauri::RunEvent::Exit => {
-                    perform_process_exit_cleanup_emergency();
-                }
-                #[cfg(target_os = "macos")]
-                tauri::RunEvent::Reopen {
-                    has_visible_windows,
-                    ..
-                } => {
-                    let reason = if has_visible_windows {
-                        "dock_reopen_with_visible_aux_window"
-                    } else {
-                        "dock_reopen_no_visible_windows"
-                    };
-                    show_main_window_on_macos(app_handle, reason);
-                }
-                _ => {}
-            });
-        }
-        Err(e) => {
-            log::error!("Error while running tauri application: {}", e);
-        }
-    }
+/// The registered backend commands: the product command vocabulary every
+/// client calls by name (`BackendService::dispatch`). Each entry is a typed
+/// handler marked `// @backend-command` or a host adapter under
+/// `backend_protocol::native_commands`. After adding, removing or renaming
+/// one, run `pnpm run desktop-nsh:generate-dispatch` and keep one Product
+/// Operation Registry row per command
+/// (`src/crates/contracts/product-domains/src/remote_surface/table.rs`).
+macro_rules! backend_commands {
+    ($($command:path),* $(,)?) => {};
 }
+
+backend_commands![
+    backend_protocol::native_commands::miniapp_presentation,
+    api::miniapp_api::miniapp_shell_call,
+    miniapp_web_host::mark_miniapp_web_surface_ready,
+    miniapp_web_host::report_miniapp_web_result,
+    backend_protocol::native_commands::show_main_window,
+    backend_protocol::native_commands::hide_main_window_after_close_request,
+    api::agentic_api::create_session,
+    api::agentic_api::update_session_mode,
+    api::agentic_api::update_session_model,
+    // Turn and session policy (wave 3 session).
+    api::session_policy_api::submit_user_message,
+    api::session_policy_api::get_session_mode_catalog,
+    api::session_policy_api::list_session_commands,
+    api::session_policy_api::execute_session_command,
+    api::session_policy_api::stop_dialog_turn,
+    api::session_policy_api::mark_session_seen,
+    // Logic batch 4: typed transcript view.
+    api::transcript_view_api::get_session_transcript_view,
+    api::agentic_api::get_model_routing_status,
+    api::model_pool_api::get_model_pools,
+    api::model_pool_api::retry_model_pool_member,
+    api::model_pool_api::save_model_pool,
+    api::model_pool_api::delete_model_pool,
+    api::model_pool_api::get_model_pool_status,
+    api::model_pool_api::get_session_model_target,
+    api::model_pool_api::update_session_model_target,
+    api::agentic_api::update_session_permission_mode,
+    api::agentic_api::update_active_turn_permission_mode,
+    api::agentic_api::get_session_permission_mode,
+    api::agentic_api::reload_session_context,
+    api::agentic_api::update_session_title,
+    api::agentic_api::ensure_coordinator_session,
+    api::agentic_api::ensure_control_conversation,
+    api::agentic_api::create_control_conversation,
+    api::agentic_api::record_voice_exchange,
+    api::agentic_api::start_dialog_turn,
+    api::agentic_api::compact_session,
+    api::agentic_api::activate_session_goal,
+    api::agentic_api::get_session_thread_goal,
+    api::agentic_api::clear_session_thread_goal,
+    api::agentic_api::set_session_thread_goal_status,
+    api::agentic_api::update_session_thread_goal_objective,
+    api::agentic_api::ensure_assistant_bootstrap,
+    api::agentic_api::run_init_agents_md,
+    api::agentic_api::cancel_dialog_turn,
+    api::agentic_api::interrupt_dialog_turn,
+    api::agentic_api::recover_interrupted_dialog_turn,
+    api::agentic_api::steer_dialog_turn,
+    api::agentic_api::manage_dialog_queue,
+    api::agentic_api::control_deep_review_queue,
+    api::agentic_api::cancel_session,
+    api::agentic_api::set_subagent_timeout,
+    api::agentic_api::control_background_command,
+    api::agentic_api::send_background_command_input,
+    api::agentic_api::read_background_command_output,
+    api::agentic_api::list_background_command_activities,
+    api::agentic_api::delete_session,
+    api::agentic_api::restore_session,
+    api::agentic_api::restore_session_view,
+    api::agentic_api::load_session_event_backfill,
+    api::agentic_api::load_session_turn_window,
+    api::agentic_api::load_session_trajectory,
+    api::agentic_api::restore_session_with_turns,
+    api::agentic_api::reset_memory,
+    api::agentic_api::get_memory_paths,
+    api::agentic_api::set_session_memory_mode,
+    get_startup_native_trace,
+    api::agentic_api::list_sessions,
+    api::agentic_api::get_session_interaction_mailbox,
+    api::agentic_api::list_pending_permission_requests,
+    api::agentic_api::subscribe_permission_requests,
+    api::agentic_api::respond_permission,
+    api::agentic_api::respond_permission_batch,
+    api::agentic_api::list_project_permission_grants,
+    api::agentic_api::remove_project_permission_grant,
+    api::agentic_api::clear_project_permission_grants,
+    api::agentic_api::list_project_permission_audit,
+    api::agentic_api::get_project_permission_rules,
+    api::agentic_api::save_project_permission_rules,
+    api::agentic_api::cancel_tool,
+    api::agentic_api::generate_session_title,
+    api::agentic_api::get_available_modes,
+    api::agentic_api::get_default_review_team_definition,
+    api::review_launch_api::launch_review,
+    api::btw_api::btw_ask_stream,
+    api::btw_api::btw_cancel,
+    api::editor_ai_api::editor_ai_stream,
+    api::editor_ai_api::editor_ai_cancel,
+    get_external_hook_catalog,
+    get_external_hook_import_snapshot,
+    plan_external_hook_import_command,
+    apply_external_hook_import_command,
+    mutate_external_hook_import_command,
+    get_external_source_snapshot,
+    get_instruction_source_catalog,
+    get_workspace_reference_snapshot,
+    plan_external_mcp_import_command,
+    apply_external_mcp_import_command,
+    reveal_external_source_location,
+    get_external_source_control_snapshot,
+    get_external_source_discovery_snapshot,
+    list_removed_external_sessions,
+    restore_removed_external_session,
+    apply_external_source_control_action_command,
+    get_external_ecosystem_awareness_command,
+    acknowledge_external_ecosystems_command,
+    update_external_integration_policy_command,
+    set_external_source_enabled_command,
+    set_external_source_conflict_choice_command,
+    get_native_prompt_command_conflicts_command,
+    set_native_prompt_command_conflict_choice_command,
+    expand_external_prompt_command_command,
+    set_external_tool_target_decision_command,
+    set_external_tool_targets_enabled_command,
+    set_external_tool_conflict_choice_command,
+    set_external_subagent_activation_command,
+    set_external_subagents_enabled_command,
+    set_external_subagent_model_binding_command,
+    choose_external_subagent_conflict_command,
+    set_external_mcp_server_decision_command,
+    set_external_mcp_servers_enabled_command,
+    choose_external_mcp_conflict_command,
+    api::context_upload_api::upload_image_contexts,
+    get_all_tools_info,
+    get_chat_mcp_catalog,
+    get_readonly_tools_info,
+    get_tool_info,
+    validate_tool_input,
+    execute_tool,
+    submit_user_answers,
+    start_user_question_interaction,
+    initialize_workspace_startup_state,
+    get_available_tools,
+    report_ide_control_result,
+    openbitfun_control_host::mark_openbitfun_control_surface_ready,
+    openbitfun_control_host::mark_openbitfun_control_surface_unready,
+    openbitfun_control_host::product_control_invoke,
+    openbitfun_control_host::report_openbitfun_control_result,
+    get_health_status,
+    get_statistics,
+    test_ai_connection,
+    test_ai_config_connection,
+    test_image_generation_service,
+    list_ai_models_by_config,
+    probe_magpie_gateway,
+    list_subscription_accounts,
+    list_subscription_account_instances,
+    get_subscription_account_quota,
+    start_subscription_account_login,
+    logout_subscription_account_instance,
+    set_subscription_account_enabled,
+    refresh_subscription_account_instance,
+    start_subscription_login,
+    get_subscription_login_status,
+    cancel_subscription_login,
+    logout_subscription_account,
+    refresh_subscription_account,
+    initialize_ai,
+    refresh_model_client,
+    get_app_state,
+    update_app_status,
+    update_workspace_info,
+    get_workspace_icon,
+    set_workspace_icon,
+    list_agent_companion_pets,
+    import_agent_companion_pet_package,
+    delete_agent_companion_pet_package,
+    read_file_content,
+    write_file_content,
+    workspace_file_upload,
+    reset_workspace_persona_files,
+    check_path_exists,
+    get_file_metadata,
+    get_file_editor_sync_hash,
+    rename_file,
+    export_local_file_to_path,
+    reveal_in_explorer,
+    get_file_tree,
+    explorer_get_file_tree,
+    get_directory_children,
+    explorer_get_children,
+    get_directory_children_paginated,
+    explorer_get_children_paginated,
+    search_files,
+    search_filenames,
+    search_file_contents,
+    search_get_repo_status,
+    search_build_index,
+    search_rebuild_index,
+    start_search_filenames_stream,
+    start_search_file_contents_stream,
+    cancel_search,
+    delete_file,
+    delete_directory,
+    create_file,
+    create_directory,
+    compress_path,
+    decompress_path,
+    list_directory_files,
+    start_file_watch,
+    stop_file_watch,
+    get_watched_paths,
+    get_file_watch_status,
+    retry_file_watch,
+    backend_protocol::native_commands::get_clipboard_files,
+    backend_protocol::native_commands::get_clipboard_image,
+    backend_protocol::native_commands::write_clipboard_image,
+    paste_files,
+    get_config,
+    get_configs,
+    computer_use_get_status,
+    computer_use_control_status,
+    computer_use_control_stop,
+    computer_use_control_preview,
+    computer_use_request_permissions,
+    computer_use_request_permission,
+    computer_use_share_targets,
+    computer_use_share_observe,
+    computer_use_share_input,
+    computer_use_share_start,
+    computer_use_share_control,
+    computer_use_share_request,
+    computer_use_share_grants,
+    computer_use_share_forget_grant,
+    computer_use_open_system_settings,
+    set_config,
+    // Typed settings mutations (wave 3 config).
+    api::settings_mutation_api::ai_model_upsert,
+    api::settings_mutation_api::ai_model_delete,
+    api::settings_mutation_api::resolve_ai_model_request_url,
+    api::settings_mutation_api::set_task_model,
+    api::settings_mutation_api::set_permission_mode,
+    api::settings_mutation_api::upsert_permission_rule,
+    api::settings_mutation_api::delete_permission_rule,
+    api::settings_mutation_api::set_approval_settings,
+    api::settings_mutation_api::set_web_search_provider,
+    api::settings_mutation_api::get_settings_schema,
+    // permission page view (wave 4)
+    api::settings_mutation_api::get_permission_settings,
+    set_acp_client_permission_mode,
+    save_cloud_speech_config,
+    get_web_search_credential_status,
+    save_web_search_credential,
+    clear_web_search_credential,
+    get_decision_model_credential_status,
+    save_decision_model_credential,
+    clear_decision_model_credential,
+    reset_config,
+    export_config,
+    import_config,
+    validate_config,
+    reload_config,
+    get_global_config_health,
+    get_runtime_logging_info,
+    export_diagnostics_bundle,
+    append_flow_chat_diagnostics,
+    get_runtime_capabilities,
+    speech_list_models,
+    speech_download_model,
+    speech_cancel_model_download,
+    speech_delete_model,
+    speech_verify_model,
+    speech_start_input_session,
+    speech_append_audio_chunk,
+    speech_finish_input_session,
+    speech_cancel_input_session,
+    speech_start_realtime_session,
+    speech_append_realtime_audio,
+    speech_commit_realtime_audio,
+    speech_send_realtime_tool_result,
+    speech_speak_realtime_text,
+    speech_cancel_realtime_response,
+    speech_close_realtime_session,
+    speech_get_realtime_config,
+    speech_save_realtime_config,
+    get_agent_profile_configs,
+    get_agent_profile_config,
+    set_agent_profile_config,
+    reset_agent_profile_config,
+    list_subagents,
+    list_visible_subagents,
+    list_manageable_subagents,
+    get_custom_agent_detail,
+    create_custom_agent,
+    update_custom_agent,
+    delete_custom_agent,
+    reload_custom_agents,
+    get_subagent_detail,
+    delete_subagent,
+    create_subagent,
+    update_subagent,
+    reload_subagents,
+    list_agent_tool_names,
+    update_subagent_config,
+    get_skill_configs,
+    get_global_skill_settings,
+    get_mode_skill_configs,
+    list_skill_market,
+    search_skill_market,
+    download_skill_market,
+    set_global_skill_disabled,
+    set_mode_skill_disabled,
+    replace_mode_skill_selection,
+    reset_mode_skill_selection,
+    validate_skill_path,
+    add_skill,
+    delete_skill,
+    git_is_repository,
+    git_get_repository_trust,
+    git_trust_repository,
+    git_get_repository_basic,
+    git_resolve_revision,
+    git_get_repository,
+    review_platform_get_workspace_snapshot,
+    review_platform_get_workspace_context,
+    review_platform_get_pull_request_detail,
+    review_platform_get_pull_request_review_target,
+    review_platform_get_issue,
+    review_platform_get_pull_request_review_target_by_identity,
+    review_platform_get_pull_request_detail_page,
+    review_platform_get_pull_request_ci_log,
+    review_platform_update_auth_token,
+    review_platform_clear_auth_token,
+    git_get_status,
+    git_get_tracked_change_count,
+    git_get_branches,
+    git_get_enhanced_branches,
+    git_get_commits,
+    git_add_files,
+    git_commit,
+    git_push,
+    git_pull,
+    git_checkout_branch,
+    git_create_branch,
+    git_delete_branch,
+    git_get_diff,
+    git_get_changed_files,
+    git_reset_files,
+    git_reset_to_commit,
+    git_get_file_content,
+    git_get_graph,
+    git_cherry_pick,
+    git_cherry_pick_abort,
+    git_cherry_pick_continue,
+    git_list_worktrees,
+    git_add_worktree,
+    git_remove_worktree,
+    // git liveness (wave 4)
+    git_discard_files,
+    git_commit_and_checkout,
+    git_watch_status,
+    git_unwatch_status,
+    api::worktree_api::worktree_list,
+    api::worktree_api::worktree_list_projects,
+    api::worktree_api::worktree_create,
+    api::worktree_api::worktree_create_branch,
+    api::worktree_api::worktree_promote,
+    api::worktree_api::worktree_remove,
+    api::worktree_api::worktree_recreate,
+    api::worktree_api::worktree_bind_session,
+    generate_commit_message,
+    quick_commit_message,
+    save_git_repo_history,
+    load_git_repo_history,
+    preview_commit_message,
+    compute_diff,
+    apply_patch,
+    save_merged_diff_content,
+    rollback_session,
+    rollback_session_to_turn,
+    accept_session,
+    accept_file,
+    reject_file,
+    get_session_files,
+    get_session_turns,
+    get_turn_files,
+    get_file_diff,
+    get_operation_diff,
+    get_session_file_diff_stats,
+    get_operation_summary,
+    get_session_operations,
+    accept_operation,
+    reject_operation,
+    get_session_stats,
+    get_snapshot_system_stats,
+    get_snapshot_sessions,
+    check_git_isolation,
+    get_file_change_history,
+    inspect_snapshot_storage,
+    clean_snapshot_storage,
+    get_all_modified_files,
+    get_baseline_snapshot_diff,
+    // Session persistence API
+    reveal_session_storage_directory,
+    list_persisted_sessions,
+    search_session_content,
+    search_referenceable_sessions,
+    list_persisted_sessions_page,
+    get_session_lineage,
+    load_session_turns,
+    get_session_usage_report,
+    save_session_turn,
+    save_session_metadata,
+    export_session_transcript,
+    delete_persisted_session,
+    touch_session_activity,
+    load_persisted_session_metadata,
+    fork_session,
+    copy_session,
+    archive_session,
+    unarchive_session,
+    archive_all_sessions,
+    list_archived_sessions,
+    delete_all_archived_sessions,
+    initialize_mcp_servers,
+    api::mcp_api::initialize_mcp_servers_non_destructive,
+    get_mcp_servers,
+    api::mcp_api::list_mcp_resources,
+    api::mcp_api::read_mcp_resource,
+    api::mcp_api::list_mcp_prompts,
+    api::mcp_api::get_mcp_prompt,
+    start_mcp_server,
+    stop_mcp_server,
+    restart_mcp_server,
+    get_mcp_server_status,
+    load_mcp_json_config,
+    save_mcp_json_config,
+    get_mcp_tool_ui_uri,
+    fetch_mcp_app_resource,
+    send_mcp_app_message,
+    submit_mcp_interaction_response,
+    update_mcp_remote_auth,
+    clear_mcp_remote_auth,
+    api::mcp_api::delete_mcp_server,
+    api::mcp_api::start_mcp_remote_oauth,
+    api::mcp_api::get_mcp_remote_oauth_session,
+    api::mcp_api::cancel_mcp_remote_oauth,
+    initialize_acp_clients,
+    get_acp_clients,
+    probe_acp_client_requirements,
+    predownload_acp_client_adapter,
+    install_acp_client_cli,
+    stop_acp_client,
+    load_acp_json_config,
+    save_acp_json_config,
+    submit_acp_permission_response,
+    create_acp_flow_session,
+    start_acp_dialog_turn,
+    cancel_acp_dialog_turn,
+    get_acp_session_options,
+    get_acp_session_commands,
+    set_acp_session_model,
+    set_acp_session_config_option,
+    get_global_config_status,
+    get_model_configs,
+    get_ai_model_catalog,
+    get_local_models_dev_catalogs,
+    project_ai_model_reasoning_catalog,
+    get_models_dev_catalog_status,
+    refresh_models_dev_catalog_now,
+    reveal_models_dev_cache_directory,
+    get_recent_workspaces,
+    remove_recent_workspace,
+    cleanup_invalid_workspaces,
+    get_opened_workspaces,
+    get_assistant_workspaces,
+    open_workspace,
+    open_remote_workspace,
+    create_assistant_workspace,
+    get_primary_assistant_workspace,
+    // assistant identity (wave 4)
+    set_assistant_identity,
+    set_primary_assistant_workspace,
+    delete_assistant_workspace,
+    reset_assistant_workspace,
+    close_workspace,
+    set_active_workspace,
+    reorder_opened_workspaces,
+    get_current_workspace,
+    scan_workspace_info,
+    list_cron_jobs,
+    create_cron_job,
+    update_cron_job,
+    delete_cron_job,
+    notify_cron_host_ready,
+    // routines (wave 4)
+    api::cron_api::validate_cron_job_draft,
+    api::cron_api::preview_cron_occurrences,
+    api::config_api::canonicalize_agent_profile_configs,
+    api::terminal_api::terminal_get_shells,
+    api::terminal_api::terminal_create,
+    api::terminal_api::terminal_get,
+    api::terminal_api::terminal_list,
+    api::terminal_api::terminal_close,
+    api::terminal_api::terminal_write,
+    api::terminal_api::terminal_resize,
+    api::terminal_api::terminal_signal,
+    api::terminal_api::terminal_ack,
+    api::terminal_api::terminal_execute,
+    api::terminal_api::terminal_send_command,
+    api::terminal_api::terminal_has_shell_integration,
+    api::terminal_api::terminal_shutdown_all,
+    api::terminal_api::terminal_get_history,
+    get_system_info,
+    get_app_version,
+    backend_protocol::native_commands::check_for_updates,
+    backend_protocol::native_commands::install_update,
+    backend_protocol::native_commands::download_update,
+    api::update_api::cancel_app_update_download,
+    backend_protocol::native_commands::get_pending_update,
+    backend_protocol::native_commands::install_pending_update,
+    backend_protocol::native_commands::open_html_file_in_browser,
+    backend_protocol::native_commands::restart_app,
+    backend_protocol::native_commands::send_system_notification,
+    backend_protocol::native_commands::quit_app,
+    backend_protocol::native_commands::minimize_to_tray,
+    backend_protocol::native_commands::initialize_tray_after_startup,
+    backend_protocol::native_commands::set_tray_unread_count,
+    backend_protocol::native_commands::toggle_main_window_fullscreen,
+    // Native desktop shell channel (wave 4 native).
+    api::native_shell_api::host_shell_attach,
+    api::native_shell_api::host_shell_respond,
+    sleep_prevention::get_prevent_sleep_enabled,
+    sleep_prevention::set_prevent_sleep_enabled,
+    check_command_exists,
+    check_commands_exist,
+    run_system_command,
+    i18n_get_current_language,
+    i18n_set_language,
+    i18n_get_supported_languages,
+    i18n_get_config,
+    i18n_set_config,
+    // Remote Connect
+    api::remote_connect_api::remote_connect_get_device_info,
+    api::remote_connect_api::remote_connect_get_lan_ip,
+    api::remote_connect_api::remote_connect_get_lan_network_info,
+    api::remote_connect_api::remote_connect_get_methods,
+    api::remote_connect_api::remote_connect_start,
+    api::remote_connect_api::remote_connect_stop,
+    api::remote_connect_api::remote_connect_stop_bot,
+    api::remote_connect_api::remote_connect_status,
+    api::remote_connect_api::remote_connect_get_form_state,
+    api::remote_connect_api::remote_connect_set_allowed,
+    api::remote_connect_api::remote_connect_set_form_state,
+    api::remote_connect_api::remote_connect_configure_bot,
+    api::remote_connect_api::remote_connect_weixin_qr_start,
+    api::remote_connect_api::remote_connect_weixin_qr_poll,
+    api::remote_connect_api::remote_connect_get_bot_verbose_mode,
+    api::remote_connect_api::remote_connect_set_bot_verbose_mode,
+    // Account API
+    api::account_identity_api::account_github_start,
+    api::account_identity_api::account_github_poll,
+    api::account_identity_api::account_github_info,
+    api::remote_connect_api::account_login,
+    api::remote_connect_api::account_status,
+    api::remote_connect_api::account_logout,
+    api::remote_connect_api::account_connect_devices,
+    api::remote_connect_api::account_online_devices,
+    api::remote_connect_api::account_execute_on_device,
+    api::remote_connect_api::account_get_credential_hint,
+    api::remote_connect_api::account_token_expired,
+    api::remote_connect_api::account_list_devices,
+    api::remote_connect_api::account_update_device_alias,
+    api::remote_connect_api::account_relay_capabilities,
+    api::remote_connect_api::account_delete_device,
+    api::remote_connect_api::account_device_rpc,
+    api::remote_connect_api::account_subscribe_session,
+    api::remote_connect_api::account_unsubscribe_session,
+    api::remote_connect_api::account_load_older_session,
+    // OpenBitFun Page API
+    api::pages_api::page_publish,
+    api::pages_api::page_save_version,
+    api::pages_api::page_list,
+    api::pages_api::page_list_versions,
+    api::pages_api::page_create_open_link,
+    api::pages_api::page_deploy,
+    api::pages_api::page_delete_version,
+    api::pages_api::page_update,
+    api::pages_api::page_unpublish,
+    api::pages_api::page_delete,
+    api::peer_host_invoke::peer_host_invoke_complete,
+    api::peer_host_invoke::peer_host_bridge_ready,
+    api::peer_host_invoke::peer_control_attach,
+    api::peer_host_invoke::peer_control_detach,
+    api::peer_host_invoke::peer_mode_ping,
+    api::peer_host_invoke::peer_controller_set_active,
+    // MiniApp API
+    api::miniapp_api::list_miniapps,
+    api::miniapp_api::get_miniapp,
+    api::miniapp_api::create_miniapp,
+    api::miniapp_api::update_miniapp,
+    api::miniapp_api::delete_miniapp,
+    api::miniapp_api::get_miniapp_versions,
+    api::miniapp_api::rollback_miniapp,
+    api::miniapp_api::get_miniapp_storage,
+    api::miniapp_api::set_miniapp_storage,
+    api::miniapp_api::grant_miniapp_workspace,
+    api::miniapp_api::grant_miniapp_path,
+    api::miniapp_api::miniapp_runtime_status,
+    api::miniapp_api::miniapp_worker_call,
+    api::miniapp_api::miniapp_host_call,
+    api::miniapp_api::miniapp_worker_stop,
+    api::miniapp_api::miniapp_worker_list_running,
+    api::miniapp_api::miniapp_install_deps,
+    api::miniapp_api::miniapp_recompile,
+    api::miniapp_api::miniapp_dialog_message,
+    api::miniapp_api::miniapp_import_from_path,
+    api::miniapp_api::miniapp_sync_from_fs,
+    api::miniapp_api::miniapp_create_draft,
+    api::miniapp_api::miniapp_get_draft,
+    api::miniapp_api::miniapp_sync_draft_from_fs,
+    api::miniapp_api::miniapp_set_draft_permissions,
+    api::miniapp_api::miniapp_permission_diff_for_draft,
+    api::miniapp_api::miniapp_apply_draft,
+    api::miniapp_api::miniapp_discard_draft,
+    api::miniapp_api::get_miniapp_draft_storage,
+    api::miniapp_api::set_miniapp_draft_storage,
+    api::miniapp_api::miniapp_draft_worker_call,
+    api::miniapp_api::miniapp_draft_host_call,
+    api::miniapp_api::miniapp_draft_worker_stop,
+    api::miniapp_api::miniapp_get_customization_metadata,
+    api::miniapp_api::miniapp_decline_builtin_update,
+    api::miniapp_market_api::miniapp_market_browse,
+    api::miniapp_market_api::miniapp_market_get_listing,
+    api::miniapp_market_api::miniapp_market_set_rating,
+    api::miniapp_market_api::miniapp_market_set_favorite,
+    api::miniapp_market_api::miniapp_market_list_submissions,
+    api::miniapp_market_api::miniapp_market_withdraw_submission,
+    api::miniapp_market_api::miniapp_market_installed_status,
+    api::miniapp_market_api::miniapp_market_installed_origins,
+    api::miniapp_market_api::miniapp_market_install,
+    api::miniapp_market_api::miniapp_market_import_package,
+    api::miniapp_market_api::miniapp_market_inspect_package,
+    api::miniapp_api::miniapp_ai_complete,
+    api::miniapp_api::miniapp_ai_chat,
+    api::miniapp_api::miniapp_ai_cancel,
+    api::miniapp_api::miniapp_ai_list_models,
+    api::miniapp_agent_api::miniapp_agent_ensure_session,
+    api::miniapp_agent_api::miniapp_agent_run,
+    api::miniapp_agent_api::miniapp_agent_cancel,
+    api::miniapp_agent_api::miniapp_agent_turn_text,
+    api::miniapp_agent_api::miniapp_agent_cancel_stale_runs,
+    // Browser API (embedded webview)
+    backend_protocol::native_commands::browser_webview_eval,
+    backend_protocol::native_commands::browser_webview_create,
+    backend_protocol::native_commands::browser_webview_navigate,
+    backend_protocol::native_commands::browser_webview_reload,
+    backend_protocol::native_commands::browser_webview_set_bounds,
+    backend_protocol::native_commands::browser_webview_capture_preview,
+    api::browser_api::browser_webview_set_agent_target_state,
+    backend_protocol::native_commands::browser_get_url,
+    api::browser_api::browser_webview_report_page_load,
+    api::html_preview_api::html_preview_create,
+    api::html_preview_api::html_preview_read_resource,
+    api::html_preview_api::html_preview_release,
+    api::latex_api::compile_workspace_latex,
+    // Browser Control API (CDP-based user browser control)
+    api::browser_control_api::browser_control_list_browsers,
+    api::browser_control_api::browser_control_get_status,
+    api::browser_control_api::browser_control_launch,
+    api::browser_control_api::browser_control_enable_default_cdp,
+    api::browser_control_api::browser_control_restart_with_cdp,
+    api::browser_control_api::browser_control_disconnect,
+    // Insights API
+    api::insights_api::generate_insights,
+    api::insights_api::get_latest_insights,
+    api::insights_api::load_insights_report,
+    api::insights_api::has_insights_data,
+    api::insights_api::cancel_insights_generation,
+    // Token usage statistics API
+    api::token_usage_api::get_token_usage_statistics,
+    // View models (wave 4)
+    api::token_usage_api::get_token_usage_activity,
+    api::view_model_api::get_workspace_navigator,
+    api::view_model_api::get_personal_overview,
+    // SSH Remote API
+    api::ssh_api::ssh_list_saved_connections,
+    api::ssh_api::ssh_save_connection,
+    api::ssh_api::ssh_delete_connection,
+    api::ssh_api::ssh_has_stored_password,
+    api::ssh_api::ssh_connect,
+    api::ssh_api::ssh_test_connection,
+    api::ssh_api::ssh_list_docker_containers,
+    api::ssh_api::ssh_list_wsl_distributions,
+    api::ssh_api::ssh_disconnect,
+    api::ssh_api::ssh_disconnect_all,
+    api::ssh_api::ssh_is_connected,
+    api::ssh_api::ssh_get_server_info,
+    api::ssh_api::ssh_get_config,
+    api::ssh_api::ssh_list_config_hosts,
+    api::ssh_api::remote_read_file,
+    api::ssh_api::remote_write_file,
+    api::ssh_api::remote_exists,
+    api::ssh_api::remote_read_dir,
+    api::ssh_api::remote_get_tree,
+    api::ssh_api::remote_create_dir,
+    api::ssh_api::remote_remove,
+    api::ssh_api::remote_rename,
+    api::ssh_api::remote_download_to_local_path,
+    api::ssh_api::remote_upload_from_local_path,
+    api::ssh_api::cancel_transfer,
+    api::ssh_api::remote_execute,
+    api::ssh_api::remote_open_workspace,
+    api::ssh_api::remote_close_workspace,
+    api::ssh_api::remote_remove_workspace,
+    api::ssh_api::remote_get_workspace_info,
+    // remote link + terminal profiles (wave 4)
+    api::ssh_api::remote_workspace_ensure_connected,
+    api::ssh_api::remote_workspace_link_states,
+    api::terminal_profiles_api::get_terminal_profiles,
+    api::terminal_profiles_api::upsert_terminal_profile,
+    api::terminal_profiles_api::delete_terminal_profile,
+    api::terminal_profiles_api::import_terminal_profiles,
+    // Remote port forwarding (local `-L` mappings, user-driven)
+    api::ssh_api::ssh_start_port_forward,
+    api::ssh_api::ssh_stop_port_forward,
+    api::ssh_api::ssh_list_port_forwards,
+    api::ssh_api::ssh_list_remote_listening_ports,
+    // Detached task dispatch (controller-side SSH transport)
+    api::dispatch_api::dispatch_list_targets,
+    api::dispatch_api::dispatch_probe_target,
+    api::dispatch_api::dispatch_sync_model_config,
+    api::dispatch_api::dispatch_submit,
+    api::dispatch_api::dispatch_status,
+    api::dispatch_api::dispatch_cancel,
+    api::dispatch_api::dispatch_sync_result,
+    api::dispatch_api::dispatch_list_jobs,
+    api::dispatch_api::dispatch_answer,
+    api::dispatch_api::dispatch_append,
+    api::dispatch_api::dispatch_continue,
+    api::dispatch_api::dispatch_query,
+    api::dispatch_api::dispatch_load_transcript,
+    api::dispatch_api::dispatch_save_transcript,
+    // Relay self-deploy API
+    // Backend protocol listener for browsers and phones (OBP over WebSocket)
+    backend_protocol::ws::obp_get_status,
+    backend_protocol::ws::obp_set_lan_enabled,
+    backend_protocol::ws::obp_create_pairing,
+    backend_protocol::ws::obp_revoke_paired_client,
+    // Device mesh (EasyTier sidecar; OBP to other account devices)
+    mesh::mesh_api::mesh_status,
+    mesh::mesh_api::mesh_list_devices,
+    // Peer Device Mode over OBP on the mesh (controller side)
+    mesh::peer_link::peer_link_connect,
+    mesh::peer_link::peer_link_call,
+    mesh::peer_link::peer_link_events,
+    mesh::peer_link::peer_link_disconnect,
+    mesh::mesh_api::mesh_phone_join_info,
+];
 
 /// Starts the backend services every host runs once its managed state is
 /// registered: agentic event delivery, remote connect, browser control
@@ -2548,15 +1619,7 @@ fn setup_panic_hook() {
 
 static PROCESS_EXIT_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 static PROCESS_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
-static DESKTOP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static PROCESS_EXIT_CLEANUP_NOTIFY: OnceLock<tokio::sync::Notify> = OnceLock::new();
-
-/// Whether a graceful desktop exit has started; background recovery must not
-/// recreate windows while the app is shutting down.
-pub(crate) fn desktop_exit_in_progress() -> bool {
-    DESKTOP_EXIT_REQUESTED.load(Ordering::Acquire)
-        || PROCESS_EXIT_CLEANUP_STARTED.load(Ordering::Acquire)
-}
 
 pub(crate) async fn perform_process_exit_cleanup() -> bool {
     let notify = PROCESS_EXIT_CLEANUP_NOTIFY.get_or_init(tokio::sync::Notify::new);
@@ -2592,24 +1655,6 @@ pub(crate) async fn perform_process_exit_cleanup() -> bool {
     notify.notify_waiters();
     log::info!("Desktop process graceful shutdown completed");
     true
-}
-
-pub(crate) fn request_desktop_exit(app: &tauri::AppHandle, exit_code: i32, reason: &'static str) {
-    if DESKTOP_EXIT_REQUESTED.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    save_main_window_state(app, reason);
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        perform_process_exit_cleanup().await;
-        crash_diagnostics::mark_clean_shutdown(reason);
-        log::info!(
-            "Desktop exit authorized after graceful shutdown: reason={}, exit_code={}",
-            reason,
-            exit_code
-        );
-        app.exit(exit_code);
-    });
 }
 
 pub(crate) fn perform_process_exit_cleanup_emergency() -> bool {
@@ -2951,6 +1996,9 @@ fn init_services(app_handle: HostHandle, default_log_level: log::LevelFilter) {
         service::snapshot::initialize_snapshot_event_emitter(emitter.clone());
 
         openbitfun_core::service::initialize_file_watch_service(emitter.clone());
+        // Live Git status (`git://status-changed`) for leased repositories.
+        openbitfun_core::service::git::status_watch::get_global_git_status_monitor()
+            .set_emitter(emitter.clone());
 
         if let Err(e) = workspace_identity_watch_service
             .set_event_emitter(emitter.clone())

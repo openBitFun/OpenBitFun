@@ -324,7 +324,7 @@ pub(crate) fn attached_route_controllers(route: RelayRoute) -> Vec<String> {
 }
 
 /// Complete a bridged invoke from the peer webview.
-#[tauri::command]
+// @backend-command
 pub async fn peer_host_invoke_complete(
     id: String,
     ok: bool,
@@ -350,7 +350,7 @@ pub struct PeerHostBridgeReadyRequest {
 }
 
 /// The webview reports that its HostInvoke bridge listener is (un)registered.
-#[tauri::command]
+// @backend-command
 pub async fn peer_host_bridge_ready(request: PeerHostBridgeReadyRequest) -> Result<(), String> {
     set_peer_host_bridge_ready(request.ready);
     log::info!(
@@ -367,7 +367,7 @@ fn is_route_controller_attached(route: RelayRoute, device_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn peer_control_attach(controller_device_id: String) -> Result<(), String> {
     if controller_device_id.trim().is_empty() {
         return Err("controller_device_id is required".to_string());
@@ -376,13 +376,13 @@ pub async fn peer_control_attach(controller_device_id: String) -> Result<(), Str
     Ok(())
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn peer_control_detach(controller_device_id: String) -> Result<(), String> {
     let request_ids = detach_controller(&controller_device_id);
     fail_closed_permission_requests(request_ids, "Last Peer controller detached").await
 }
 
-#[tauri::command]
+// @backend-command
 pub async fn peer_mode_ping() -> Result<Value, String> {
     Ok(peer_mode_ping_value(None))
 }
@@ -430,7 +430,7 @@ fn peer_mode_ping_value(caller_attached: Option<bool>) -> Value {
 }
 
 /// Mark this process as a Peer Mode controller so cloud pull does not rewrite local settings.
-#[tauri::command]
+// @backend-command
 pub async fn peer_controller_set_active(active: bool) -> Result<(), String> {
     set_peer_controller_active(active);
     Ok(())
@@ -961,11 +961,16 @@ mod tests {
     }
 
     #[test]
-    fn frontend_update_decisions_stay_with_the_controller_window() {
-        assert!(is_local_only_command("frontend_update_candidate_ready"));
-        assert!(is_local_only_command("get_frontend_update_status"));
-        assert!(is_local_only_command("confirm_frontend_update"));
-        assert!(is_local_only_command("rollback_frontend_update"));
+    fn retired_frontend_update_commands_answer_as_tombstones() {
+        for command in [
+            "frontend_update_candidate_ready",
+            "get_frontend_update_status",
+            "confirm_frontend_update",
+            "rollback_frontend_update",
+        ] {
+            assert!(is_retired_command(command), "{command}");
+            assert!(!is_local_only_command(command), "{command}");
+        }
     }
 
     #[test]

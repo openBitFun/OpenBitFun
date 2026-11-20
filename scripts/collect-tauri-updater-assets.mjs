@@ -1,16 +1,35 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs';
+// Collects the signed in-app updater archives of the native desktop app into
+// one flat directory for the release manifest (`generate-tauri-latest-json.mjs`).
+//
+// The desktop ships only as the native NSH app. Its in-app update package is the
+// macOS archive `OpenBitFun-nsh_<version>_<arch>.app.tar.gz` plus its minisign
+// `.sig` (`scripts/ci/package-native-macos-release.sh`). Windows and Linux have no
+// in-place updater yet: their native packages are manual downloads, never
+// updater artifacts. A Tauri updater artifact (AppImage, deb, rpm, NSIS setup,
+// Tauri `.app.tar.gz`) in the inputs fails the collection: a native release must
+// not publish a Tauri package under a newer version (the old app would reinstall
+// it in a loop). Each archive must hold one `OpenBitFun.app` that both updaters
+// accept (`missingUpdaterArchiveEntries`).
+//
+// Usage: collect-tauri-updater-assets.mjs --assets-dir <dir> --version <v> --out-dir <dir>
+//          [--required-platforms darwin-aarch64-nsh,darwin-x86_64-nsh]
+import { execFileSync } from 'child_process';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import { basename, join } from 'path';
+import {
+  classifyDesktopReleaseAsset,
+  missingUpdaterArchiveEntries,
+  nativeUpdaterArchiveName,
+} from './desktop-release-assets.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const assetsDir = requireArg(args, 'assets-dir');
 const version = requireArg(args, 'version');
 const outDir = requireArg(args, 'out-dir');
-const windowsInstallerDir = args['windows-installer-dir'];
 
 const requiredPlatforms = parseListArg(
-  args['required-platforms'] ||
-    'windows-x86_64,darwin-x86_64,darwin-aarch64,linux-x86_64,linux-aarch64'
+  args['required-platforms'] || 'darwin-aarch64-nsh,darwin-x86_64-nsh'
 );
 
 if (!existsSync(assetsDir)) {
@@ -21,65 +40,46 @@ rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
 const collected = {};
-for (const sigPath of walkFiles(assetsDir).filter((file) => file.endsWith('.sig'))) {
-  const bundlePath = sigPath.slice(0, -'.sig'.length);
-  if (!existsSync(bundlePath) || !isUpdaterBundle(bundlePath)) {
+for (const file of walkFiles(assetsDir)) {
+  const asset = classifyDesktopReleaseAsset(file);
+  if (asset.kind === 'tauri-updater') {
+    fail(`Tauri updater artifact in a native desktop release: ${file}`);
+  }
+  if (asset.kind !== 'native-updater') {
     continue;
   }
-
-  const platform = inferPlatform(bundlePath);
-  if (windowsInstallerDir && platform?.startsWith('windows-')) continue;
-  if (!platform) {
-    console.warn(`[collect-updater] Skipping artifact with unknown platform: ${bundlePath}`);
-    continue;
+  if (asset.version !== version) {
+    fail(`Updater archive ${basename(file)} is for version ${asset.version}, not ${version}`);
   }
-
+  const sigPath = `${file}.sig`;
+  if (!existsSync(sigPath)) {
+    fail(`Native updater archive is not signed: ${file}`);
+  }
+  const entries = execFileSync('tar', ['-tzf', file], {
+    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+  }).split('\n');
+  const missingEntries = missingUpdaterArchiveEntries(entries);
+  if (missingEntries.length > 0) {
+    fail(`${basename(file)} cannot update both the native app and installed Tauri builds: ${missingEntries.join('; ')}`);
+  }
+  const platform = asset.platform;
   if (collected[platform]) {
-    fail(
-      `Duplicate updater artifact for ${platform}: ${bundlePath} conflicts with ${collected[platform].source}`
-    );
+    fail(`Duplicate updater artifact for ${platform}: ${file} conflicts with ${collected[platform].source}`);
   }
 
-  const outputName = updaterOutputName(bundlePath, version, platform);
-  const outputPath = join(outDir, outputName);
-  const outputSigPath = `${outputPath}.sig`;
-  copyFileSync(bundlePath, outputPath);
-  copyFileSync(sigPath, outputSigPath);
-
-  collected[platform] = {
-    source: bundlePath,
-    output: outputPath,
-    signature: outputSigPath,
-  };
+  const outputPath = join(outDir, nativeUpdaterArchiveName(version, asset.arch));
+  copyFileSync(file, outputPath);
+  // Copied byte for byte: the minisign signature covers the archive bytes,
+  // not its name.
+  copyFileSync(sigPath, `${outputPath}.sig`);
+  collected[platform] = { source: file, output: outputPath };
   console.log(`[collect-updater] ${platform}: ${basename(outputPath)}`);
-}
-
-if (windowsInstallerDir) {
-  const candidates = walkFiles(windowsInstallerDir).filter(file => file.endsWith('_windows-x86_64-installer.exe'));
-  if (candidates.length !== 1) fail('Expected exactly one signed transactional Windows installer');
-  const source = candidates[0];
-  if (!existsSync(`${source}.sig`)) fail('Transactional Windows updater signature is missing');
-  if (!readFileSync(source).includes(Buffer.from('OPENBITFUN_MAINTENANCE_V1'))) {
-    fail('Windows installer does not support the native maintenance protocol');
-  }
-  const output = join(outDir, updaterOutputName(source, version, 'windows-x86_64'));
-  copyFileSync(source, output);
-  copyFileSync(`${source}.sig`, `${output}.sig`);
-  collected['windows-x86_64'] = { source, output, signature: `${output}.sig` };
 }
 
 const missing = requiredPlatforms.filter((platform) => !collected[platform]);
 if (missing.length > 0) {
   const found = Object.keys(collected).sort();
-  const signedArtifacts = walkFiles(assetsDir)
-    .filter((file) => file.endsWith('.sig'))
-    .map((file) => file.replace(/\\/g, '/'))
-    .sort();
   console.error(`[collect-updater] Found platforms: ${found.length > 0 ? found.join(', ') : '(none)'}`);
-  console.error('[collect-updater] Signed artifacts found:');
-  for (const artifact of signedArtifacts) {
-    console.error(`[collect-updater]   ${artifact}`);
-  }
   fail(`Missing required updater platforms: ${missing.join(', ')}`);
 }
 
@@ -129,90 +129,6 @@ function walkFiles(dir) {
     }
   }
   return files;
-}
-
-function isUpdaterBundle(file) {
-  const lower = file.toLowerCase();
-  return (
-    lower.endsWith('.appimage') ||
-    lower.endsWith('.app.tar.gz') ||
-    lower.endsWith('.tar.gz') ||
-    lower.endsWith('.zip') ||
-    lower.endsWith('.exe') ||
-    lower.endsWith('.deb') ||
-    lower.endsWith('.rpm')
-  );
-}
-
-function updaterOutputName(file, version, platform) {
-  const lower = file.toLowerCase();
-  if (lower.endsWith('.app.tar.gz')) {
-    return `OpenBitFun_${version}_${platform}.app.tar.gz`;
-  }
-  if (lower.endsWith('.appimage')) {
-    return `OpenBitFun_${version}_${platform}.AppImage`;
-  }
-  if (lower.endsWith('.zip')) {
-    return `OpenBitFun_${version}_${platform}.zip`;
-  }
-  if (lower.endsWith('.exe')) {
-    return `OpenBitFun_${version}_${platform}-setup.exe`;
-  }
-  if (lower.endsWith('.deb')) {
-    // The bundle-type platform key is part of the name, so the renamed copy
-    // never collides with the raw bundler deb staged from release-assets.
-    return `OpenBitFun_${version}_${platform}.deb`;
-  }
-  if (lower.endsWith('.rpm')) {
-    return `OpenBitFun_${version}_${platform}.rpm`;
-  }
-  if (lower.endsWith('.tar.gz')) {
-    return `OpenBitFun_${version}_${platform}.tar.gz`;
-  }
-  fail(`Unsupported updater artifact extension: ${file}`);
-}
-
-function inferPlatform(file) {
-  const lower = file.replace(/\\/g, '/').toLowerCase();
-  const arch = inferArch(lower);
-  if (!arch) {
-    return null;
-  }
-
-  if (lower.endsWith('.zip') || lower.includes('setup.exe')) {
-    return `windows-${arch}`;
-  }
-  if (lower.endsWith('.appimage')) {
-    return `linux-${arch}`;
-  }
-  if (lower.includes('.appimage.tar.gz')) {
-    return `linux-${arch}`;
-  }
-  if (lower.endsWith('.deb')) {
-    // Bundle-type key: tauri-plugin-updater installs a deb payload via dpkg only
-    // when the running install is itself a deb, so these clients must receive a
-    // dedicated `linux-<arch>-deb` entry instead of the AppImage the bare key
-    // serves.
-    return `linux-${arch}-deb`;
-  }
-  if (lower.endsWith('.rpm')) {
-    return `linux-${arch}-rpm`;
-  }
-  if (lower.includes('.app.tar.gz')) {
-    return `darwin-${arch}`;
-  }
-
-  return null;
-}
-
-function inferArch(name) {
-  if (/(^|[\\/_.-])(x86_64|x64|amd64)([\\/_.-]|$)/.test(name)) {
-    return 'x86_64';
-  }
-  if (/(^|[\\/_.-])(aarch64|arm64)([\\/_.-]|$)/.test(name)) {
-    return 'aarch64';
-  }
-  return null;
 }
 
 function fail(message) {

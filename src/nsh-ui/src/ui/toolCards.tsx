@@ -17,6 +17,7 @@ import { DiffView } from "nsh/base";
 import {
   basename,
   commandOf,
+  toolCallOf,
   diffOf,
   exploreCounts,
   formatDuration,
@@ -810,6 +811,120 @@ function subagentSessionOf(call: ToolCallView): string {
   return record ? firstStringOf(record, ["session_id", "sessionId", "subagent_session_id", "subagentSessionId"]) : "";
 }
 
+/** How many subagent steps a Task card lists before "Show all". */
+const SUBAGENT_STEP_PREVIEW = 8;
+const subagentStepsOpen = signal<Record<string, boolean>>({});
+
+/** One row per thing the subagent did, in the host's order: its tool calls and its answer text. */
+interface SubagentStepRow {
+  key: string;
+  icon: IconName;
+  title: string;
+  target: string;
+  state: ToolRunState;
+}
+
+function subagentStepRows(call: ToolCallView): SubagentStepRow[] {
+  const items = call.subagentItems ?? [];
+  const rows: SubagentStepRow[] = [];
+  items.forEach((item, index) => {
+    if (item.kind === "tool") {
+      const step = toolCallOf(item.tool);
+      const kind = toolKindOf(step);
+      const state = persistedToolState(step);
+      rows.push({
+        key: `tool:${item.tool.id || index}`,
+        icon: ICON_BY_KIND[kind],
+        title: toolTitleOf(step, state, kind),
+        target: toolTargetOf(step, kind),
+        state,
+      });
+    } else if (item.kind === "text" && item.text.trim()) {
+      rows.push({
+        key: `text:${item.id || index}`,
+        icon: "chat",
+        title: tr("chat.tool.task.stepReply"),
+        target: item.text.replace(/\s+/g, " ").trim(),
+        state: "completed",
+      });
+    }
+  });
+  return rows;
+}
+
+/** The subagent's steps under a Task card, read from the transcript view's nested items. */
+function SubagentSteps(props: { call: ToolCallView; cardId: string }) {
+  const rows = computed(() => subagentStepRows(props.call));
+  const showAll = computed(() => subagentStepsOpen()[props.cardId] === true);
+  const visible = computed(() => (showAll() ? rows() : rows().slice(-SUBAGENT_STEP_PREVIEW)));
+  const hidden = computed(() => Math.max(0, rows().length - visible().length));
+  return (
+    <View style={{ gap: 2 }} accessibilityLabel={`subagent-steps-${props.cardId}`}>
+      <SectionLabel label={formatPlural(rows().length, "chat.tool.task.stepsOne", "chat.tool.task.stepsOther")} />
+      <If when={hidden() > 0}>
+        <View
+          role="button"
+          accessibilityLabel={`subagent-steps-all-${props.cardId}`}
+          onPress={() => {
+            animateLayout();
+            subagentStepsOpen.update(current => ({ ...current, [props.cardId]: true }));
+          }}
+          style={{ paddingVertical: 3, paddingHorizontal: 6, borderRadius: radii.xs, cursor: "pointer", alignSelf: "flex-start" }}
+          hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+        >
+          <Text style={{ color: palette().accent, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
+            {tr("chat.tool.task.showEarlier", { count: hidden() })}
+          </Text>
+        </View>
+      </If>
+      <Each of={visible()} key={row => row.key}>
+        {row => (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 24, paddingHorizontal: 6 }}>
+            <Icon
+              name={row().icon}
+              size={14}
+              color={
+                row().state === "failed"
+                  ? palette().danger
+                  : row().state === "running"
+                    ? palette().accent
+                    : palette().textMuted
+              }
+            />
+            <Text
+              style={{
+                flexShrink: 0,
+                maxWidth: "45%",
+                color: row().state === "failed" ? palette().danger : palette().textSecondary,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
+                fontWeight: "500",
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {row().title}
+            </Text>
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                color: palette().textMuted,
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {row().target}
+            </Text>
+          </View>
+        )}
+      </Each>
+    </View>
+  );
+}
+
 function imageSourceOf(call: ToolCallView): string {
   const scan = (value: unknown, depth: number): string => {
     if (depth > 3) return "";
@@ -918,6 +1033,9 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
           </Text>
         )}
       </If>
+      <If when={kind === "task" && (props.call.subagentItems?.length ?? 0) > 0}>
+        <SubagentSteps call={props.call} cardId={props.cardId} />
+      </If>
       <If when={kind === "task" ? subagentSessionOf(props.call) : ""}>
         {sessionId => (
           <SmallButton
@@ -961,7 +1079,9 @@ function hasBody(call: ToolCallView, kind: ToolKind): boolean {
   if (kind === "edit") return diffOf(call.input) !== null;
   if (kind === "write") return Boolean(writeContentOf(call));
   if (kind === "exec") return Boolean(execCommandOf(call));
-  if (kind === "task") return Boolean(firstStringOf(inputRecord(call), ["prompt"]) || subagentSessionOf(call));
+  if (kind === "task") {
+    return Boolean(firstStringOf(inputRecord(call), ["prompt"]) || subagentSessionOf(call) || call.subagentItems?.length);
+  }
   if (kind === "mcp" || kind === "generic" || kind === "question") return Boolean(argumentsTextOf(call));
   return false;
 }

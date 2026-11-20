@@ -17,7 +17,12 @@ const ROOT_FIELDS = new Set([
 ]);
 const MEMBERS_FIELDS = new Set(['desktop', 'cli']);
 const COMMON_MEMBER_FIELDS = new Set(['displayNameKey', 'binaryName']);
-const BUNDLED_MEMBER_FIELDS = new Set([...COMMON_MEMBER_FIELDS, 'bundleId']);
+const BUNDLED_MEMBER_FIELDS = new Set([...COMMON_MEMBER_FIELDS, 'bundleId', 'icons']);
+// The native desktop packages' application icons (`scripts/desktop-nsh-package-common.mjs`):
+// the macOS bundle icon, the Windows window/executable icon and the Linux
+// desktop-entry icon. Declared together, so no platform silently ships another
+// product's icon.
+const DESKTOP_ICON_FORMATS = { macos: '.icns', windows: '.ico', linux: '.png' };
 
 export class ProductDefinitionError extends Error {
   constructor(code, message, action) {
@@ -189,6 +194,40 @@ function ownedLocaleFile(localeRoot, locale) {
   return canonical;
 }
 
+function ownedResourceFile(definitionDir, declaredPath, owner) {
+  const lexical = resolve(definitionDir, requiredString(declaredPath, owner));
+  if (!inside(definitionDir, lexical)) {
+    fail('resource_path_escape', `${owner} escapes the product definition directory.`, `Keep ${owner} beside the definition.`);
+  }
+  let canonical;
+  try {
+    canonical = realpathSync.native(lexical);
+  } catch {
+    fail('resource_not_found', `${owner} does not exist: ${lexical}`, `Add the file or correct ${owner}.`);
+  }
+  if (!inside(definitionDir, canonical)) {
+    fail('resource_path_escape', `${owner} resolves outside the product definition directory.`, 'Remove the escaping link.');
+  }
+  if (!statSync(canonical).isFile()) fail('invalid_resource_type', `${owner} is not a file.`, `Point ${owner} to a file.`);
+  return canonical;
+}
+
+function desktopIcons(definitionDir, raw) {
+  if (raw === undefined) return null;
+  const owner = 'members.desktop.icons';
+  const icons = requireObject(raw, owner);
+  rejectUnknownFields(icons, new Set(Object.keys(DESKTOP_ICON_FORMATS)), owner);
+  const result = {};
+  for (const [platform, extension] of Object.entries(DESKTOP_ICON_FORMATS)) {
+    const path = ownedResourceFile(definitionDir, icons[platform], `${owner}.${platform}`);
+    if (!path.toLowerCase().endsWith(extension)) {
+      fail('invalid_resource_type', `${owner}.${platform} must be a ${extension} file.`, `Point ${owner}.${platform} to a ${extension} icon.`);
+    }
+    result[platform] = path;
+  }
+  return result;
+}
+
 function validateMember(raw, member) {
   const owner = `members.${member}`;
   const value = requireObject(raw, owner);
@@ -273,6 +312,7 @@ export function resolveProductDefinition({ rootDir, productConfig, member }) {
     ],
   );
   const selected = normalizedMembers[member];
+  const icons = member === 'desktop' ? desktopIcons(definitionDir, members.desktop.icons) : null;
   const assemblyContent = {
     schemaVersion: 1,
     sourceDigest: sha256(sourceBytes),
@@ -286,6 +326,12 @@ export function resolveProductDefinition({ rootDir, productConfig, member }) {
     fallbackLocale: locales.fallbackLocale,
   };
   if (selected.bundleId) assemblyContent.bundleId = selected.bundleId;
+  // The icons change the packaged product, so their bytes are part of the digest.
+  if (icons) {
+    assemblyContent.iconDigest = sha256(canonicalJson(Object.fromEntries(
+      Object.entries(icons).map(([platform, path]) => [platform, sha256(readFileSync(path))]),
+    )));
+  }
   const assembly = { ...assemblyContent, assemblyDigest: sha256(canonicalJson(assemblyContent)) };
   return {
     rootDir: canonicalRoot,
@@ -294,6 +340,7 @@ export function resolveProductDefinition({ rootDir, productConfig, member }) {
       Object.entries(locales.resources).map(([locale, terms]) => [locale, terms[selected.displayNameKey]]),
     ),
     assembly,
+    desktopIcons: icons,
     outputDir: join(canonicalRoot, 'target', 'product-assembly', assembly.assemblyDigest, member),
     isDefaultProduct: sourcePath === defaultPath,
   };

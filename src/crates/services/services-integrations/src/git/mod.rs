@@ -4,12 +4,15 @@
 //! legacy public path.
 
 pub mod args;
+pub mod compound;
 pub mod error;
 pub mod graph;
 mod managed_worktree;
 pub mod name_status;
 mod runtime_port;
 pub mod service;
+#[cfg(feature = "file-watch")]
+pub mod status_watch;
 pub mod text;
 pub mod trust;
 pub mod types;
@@ -17,6 +20,7 @@ pub mod utils;
 pub mod worktree;
 
 pub use args::{build_git_changed_files_args, build_git_diff_args};
+pub use compound::{GitCommandRunner, GitCommitAndCheckoutParams, GitPushPlan, LocalGitRunner};
 pub use error::GitError;
 pub use graph::{build_git_graph, build_git_graph_for_branch};
 pub use name_status::parse_name_status_output;
