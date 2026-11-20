@@ -297,6 +297,56 @@ async fn current_context_estimate_remote_subagent_uses_cached_rules_without_loca
 }
 
 #[tokio::test]
+async fn current_context_estimate_uses_the_model_window_with_legacy_session_limits() {
+    use crate::agentic::core::Session;
+    use openbitfun_core_types::UsageContextEstimateRequest;
+
+    let root = tempfile::tempdir().unwrap();
+    crate::service::workspace::legacy_compat::register_local_fixture_blocking(root.path());
+    let mut config = context_estimate_ai_config();
+    config.models[1].context_window = Some(1_048_576);
+    config.models[1].max_tokens = Some(384_000);
+    TEST_MODEL_RESOLUTION_AI_CONFIG
+        .scope(config, async {
+            let (coordinator, manager) = test_persistent_coordinator();
+            for (saved_window, model, expected_window) in [
+                (128_128, "child-model", 1_048_576),
+                (1_048_576, "parent-model", 64_000),
+            ] {
+                let session = Session::new(
+                    "Saved session".into(),
+                    "Standard".into(),
+                    SessionConfig {
+                        workspace_path: Some(root.path().to_string_lossy().into_owned()),
+                        model_id: Some(model.into()),
+                        max_context_tokens: saved_window,
+                        ..Default::default()
+                    },
+                );
+                manager
+                    .persistence_manager()
+                    .save_session(root.path(), &session)
+                    .await
+                    .unwrap();
+                let inputs = manager
+                    .read_context_estimate_inputs(root.path(), &session.session_id)
+                    .await
+                    .unwrap();
+                assert_eq!(inputs.session.config.max_context_tokens, saved_window);
+                let estimate = coordinator
+                    .estimate_session_context(inputs, &UsageContextEstimateRequest::default())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    estimate.composition.unwrap().context_window,
+                    Some(expected_window)
+                );
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn current_context_estimate_keeps_external_and_internal_worker_contexts_unsupported() {
     use crate::agentic::tools::ToolRuntimeRestrictions;
     use crate::agentic::WorkspaceBinding;

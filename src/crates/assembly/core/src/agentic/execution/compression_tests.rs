@@ -125,8 +125,7 @@ async fn apply_prefetch(
     let pressure = ExecutionEngine::estimate_auto_compression_pressure(
         messages,
         None,
-        128_000,
-        ExecutionEngine::compression_trigger_budget(128_000, None),
+        CompressionTriggerBudget::for_model(128_000, None),
         0,
     );
     engine
@@ -136,7 +135,6 @@ async fn apply_prefetch(
             "auto",
             messages.to_vec(),
             pressure,
-            128_000,
             server.client(),
             &ModelRequestContext::default(),
             &None,
@@ -579,8 +577,7 @@ async fn compression_failure_preserves_context_and_success_count() {
     let pressure = ExecutionEngine::estimate_auto_compression_pressure(
         &messages,
         None,
-        128_000,
-        ExecutionEngine::compression_trigger_budget(128_000, None),
+        CompressionTriggerBudget::for_model(128_000, None),
         0,
     );
     let error = engine
@@ -590,7 +587,6 @@ async fn compression_failure_preserves_context_and_success_count() {
             "auto",
             messages,
             pressure,
-            128_000,
             server.client(),
             &ModelRequestContext::default(),
             &None,

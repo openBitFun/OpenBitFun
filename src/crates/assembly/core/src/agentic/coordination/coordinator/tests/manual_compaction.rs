@@ -113,7 +113,7 @@ fn manual_compaction_transcript_restores_user_and_tool_payload() {
         ConversationCoordinator::build_manual_compaction_round_completed(
             &turn.turn_id,
             &outcome,
-            128_000,
+            Some(128_000),
         ),
     ];
     turn.status = TurnStatus::Completed;
@@ -177,7 +177,7 @@ fn manual_compaction_failure_round_preserves_runtime_identity_and_error() {
         "compact-turn",
         "compression-runtime".to_string(),
         "summary request failed",
-        128_000,
+        Some(128_000),
     );
 
     assert_eq!(round.tool_items.len(), 1);
@@ -227,7 +227,6 @@ async fn manual_compaction_cancelled_before_setup_preserves_context_and_settles_
         session_manager.clone(),
         coordinator.execution_engine.clone(),
         coordinator.event_queue.clone(),
-        session,
         original,
         session_id.clone(),
         turn_id.clone(),
@@ -322,7 +321,7 @@ async fn applied_manual_compaction_emits_failed_terminal_when_turn_persistence_f
             summary_source: "model".to_string(),
             applied: true,
         },
-        128_000,
+        Some(128_000),
     )
     .await;
 

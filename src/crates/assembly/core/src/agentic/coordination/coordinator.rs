@@ -2185,7 +2185,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
     fn build_manual_compaction_round_completed(
         turn_id: &str,
         outcome: &ContextCompactionOutcome,
-        context_window: usize,
+        context_window: Option<usize>,
     ) -> crate::service::session::ModelRoundData {
         use crate::service::session::{ModelRoundData, ToolCallData, ToolItemData, ToolResultData};
 
@@ -2274,7 +2274,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         turn_id: &str,
         compression_id: String,
         error: &str,
-        context_window: usize,
+        context_window: Option<usize>,
     ) -> crate::service::session::ModelRoundData {
         use crate::service::session::{ModelRoundData, ToolCallData, ToolItemData, ToolResultData};
 
@@ -6279,7 +6279,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 session_manager,
                 execution_engine,
                 event_queue,
-                session,
                 context_messages,
                 session_id_for_task,
                 turn_id_for_task,
@@ -6308,7 +6307,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         session_id: &str,
         turn_id: &str,
         outcome: &ContextCompactionOutcome,
-        context_window: usize,
+        context_window: Option<usize>,
     ) -> OpenBitFunResult<()> {
         let model_round =
             Self::build_manual_compaction_round_completed(turn_id, outcome, context_window);
@@ -6388,7 +6387,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         session_manager: Arc<SessionManager>,
         execution_engine: Arc<ExecutionEngine>,
         event_queue: Arc<EventQueue>,
-        session: Session,
         context_messages: Vec<Message>,
         session_id: String,
         turn_id: String,
@@ -6401,17 +6399,17 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         commit_gate: Arc<ManualCompactionCommitGate>,
     ) -> OpenBitFunResult<()> {
         let compression_id = format!("compression_{}", uuid::Uuid::new_v4());
-        let mut context_window = session.config.max_context_tokens;
+        let mut context_window = None;
         // Preparation and compaction embed the full model/tool-catalog future.
         // Keep that state on the heap instead of duplicating it through this
         // task and its callers: even a pre-cancelled turn must enter the poll
         // stack frame before it can observe cancellation.
         let result = Box::pin(async {
-            let (manual_execution_context, resolved_context_window) =
+            let manual_execution_context =
                 prepare_compression_cancellable(&cancellation_token, async {
                     let manual_workspace_services =
                         Self::build_workspace_services(&manual_workspace).await?;
-                    let manual_execution_context = ExecutionContext {
+                    Ok(ExecutionContext {
                         session_id: session_id.clone(),
                         dialog_turn_id: turn_id.clone(),
                         turn_index,
@@ -6432,30 +6430,9 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                         round_injection: None,
                         emit_lifecycle_events: false,
                         recover_partial_on_cancel: false,
-                    };
-                    let session_max_tokens = session.config.max_context_tokens;
-
-                    // Unify context_window: min(model capability, session config)
-                    let model_context_window =
-                        match crate::infrastructure::ai::get_global_ai_client_factory().await {
-                            Ok(factory) => {
-                                let model_id =
-                                    session.config.model_id.as_deref().unwrap_or("default");
-                                match factory.get_client_resolved(model_id).await {
-                                    Ok(client) => Some(client.config.context_window as usize),
-                                    Err(_) => None,
-                                }
-                            }
-                            Err(_) => None,
-                        };
-                    let context_window = match model_context_window {
-                        Some(mcw) => mcw.min(session_max_tokens),
-                        None => session_max_tokens,
-                    };
-                    Ok((manual_execution_context, context_window))
+                    })
                 })
                 .await?;
-            context_window = resolved_context_window;
             execution_engine
                 .compact_session_context(
                     session_id.clone(),
@@ -6466,6 +6443,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     "manual",
                     cancellation_token,
                     commit_gate,
+                    &mut context_window,
                 )
                 .await
         })
@@ -7534,10 +7512,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         // Create execution context (pass full config and resource IDs)
         let mut context_vars = std::collections::HashMap::new();
         context_vars.insert(
-            "max_context_tokens".to_string(),
-            session.config.max_context_tokens.to_string(),
-        );
-        context_vars.insert(
             "enable_tools".to_string(),
             session.config.enable_tools.to_string(),
         );
@@ -8116,10 +8090,6 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 .is_transient_session(&request.session_id),
         );
         let mut context_vars = HashMap::new();
-        context_vars.insert(
-            "max_context_tokens".to_string(),
-            session.config.max_context_tokens.to_string(),
-        );
         context_vars.insert(
             "enable_tools".to_string(),
             session.config.enable_tools.to_string(),
@@ -11131,8 +11101,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         let session_id = session.session_id.clone();
         let _execution_lease =
             execution_lease.unwrap_or_else(|| self.register_session_execution(&session_id));
-        // Sync context window from AI config so subagents with large-context
-        // models are not prematurely capped at SessionConfig::default()'s 128128.
+        // Keep the legacy session window snapshot aligned with the subagent model.
         if let Err(error) = self
             .session_manager
             .refresh_session_context_window(&session_id)

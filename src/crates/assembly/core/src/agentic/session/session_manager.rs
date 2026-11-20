@@ -5111,13 +5111,8 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Sync session context window from AI config without requiring an explicit model_id.
-    ///
-    /// Subagent sessions created via `build_session_config_for_workspace` use
-    /// `SessionConfig::default()` which hardcodes `max_context_tokens: 128128`.
-    /// This method reloads the AI config and updates `max_context_tokens` to the
-    /// model's actual configured `context_window`, so subagents with large-context
-    /// models are not prematurely capped.
+    /// Refresh the legacy session window snapshot for existing session consumers.
+    /// Request budgets are resolved independently from the active model or pool.
     pub async fn refresh_session_context_window(&self, session_id: &str) -> OpenBitFunResult<()> {
         let config = self
             .get_session(session_id)

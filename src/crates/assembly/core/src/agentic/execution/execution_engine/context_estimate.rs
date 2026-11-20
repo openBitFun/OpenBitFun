@@ -60,7 +60,7 @@ impl ExecutionEngine {
                     "Model configuration is unavailable for context inspection",
                 )
             })?;
-        let (model_id, pool_window) =
+        let (model_id, pool_budget) =
             if session.config.model_binding_policy == SessionModelBindingPolicy::Pool {
                 let pool_id = session.config.model_pool_id.as_deref().ok_or_else(|| {
                     OpenBitFunError::validation("Pool session has no pool selection")
@@ -76,15 +76,7 @@ impl ExecutionEngine {
                         ImageInputRequirement::None,
                     )
                     .await?;
-                (
-                    id,
-                    Some(
-                        self.model_pools
-                            .context_budget(pool_id)
-                            .await?
-                            .context_window as usize,
-                    ),
-                )
+                (id, Some(self.model_pools.context_budget(pool_id).await?))
             } else {
                 let (id, _) = self
                     .resolve_model_id_for_turn(
@@ -118,9 +110,8 @@ impl ExecutionEngine {
             &model_config.format,
             supports_images,
         );
-        let context_window = pool_window.unwrap_or(
-            (model_config.context_window as usize).min(session.config.max_context_tokens),
-        );
+        let context_window =
+            CompressionTriggerBudget::for_request(&model_config, pool_budget).context_window;
         let policy = registry
             .get_agent_tool_policy(&session.agent_type, workspace.workspace_id.as_deref())
             .await;

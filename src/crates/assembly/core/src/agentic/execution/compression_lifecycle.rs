@@ -59,7 +59,6 @@ impl ExecutionEngine {
         trigger: &str,
         runtime_messages: Vec<Message>,
         before_pressure: TokenPressureSnapshot,
-        context_window: usize,
         ai_client: Arc<crate::infrastructure::ai::AIClient>,
         model_request_context: &ModelRequestContext,
         tool_definitions: &Option<Vec<ToolDefinition>>,
@@ -76,6 +75,8 @@ impl ExecutionEngine {
             .ok_or_else(|| {
                 OpenBitFunError::NotFound(format!("Session not found: {}", session_id))
             })?;
+
+        let context_window = before_pressure.context_window;
 
         // Record start time
         let start_time = std::time::Instant::now();
@@ -276,11 +277,7 @@ impl ExecutionEngine {
                                 let pressure = Self::estimate_auto_compression_pressure(
                                     &preview,
                                     tool_definitions.as_deref(),
-                                    context_window,
-                                    Self::compression_trigger_budget(
-                                        context_window,
-                                        ai_client.config.max_tokens,
-                                    ),
+                                    before_pressure.trigger_budget(),
                                     Self::prepended_reminder_tokens_for_pressure(
                                         &prepended_prompt_reminders.ordered_reminders(),
                                     ),
@@ -375,12 +372,7 @@ impl ExecutionEngine {
                 let after_pressure = Self::estimate_auto_compression_pressure(
                     &new_messages,
                     tool_definitions.as_deref(),
-                    context_window,
-                    CompressionTriggerBudget {
-                        input_limit: before_pressure.input_limit,
-                        output_reserve_tokens: before_pressure.output_reserve_tokens,
-                        safety_reserve_tokens: before_pressure.safety_reserve_tokens,
-                    },
+                    before_pressure.trigger_budget(),
                     prepended_reminder_tokens,
                 );
                 let compressed_tokens = after_pressure.total_tokens;
