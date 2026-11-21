@@ -1,13 +1,14 @@
 import { CapsulePreview } from "../preview/CapsulePreview";
 import { ColorPickerPreview } from "../preview/ColorPickerPreview";
-import { Fragment, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ComponentOverview } from "../preview/ComponentOverview";
 import { getComponentPresentation, getInitialPreviewState, hasComponentOverview } from "../preview/componentPresentation";
 import { previewEn } from "../i18n/previewMessages";
-import { MobileConversationExample, MobileDisclosureExample, MobileFloatingActionsExample, MobileScrimExample, NavigationExample } from "../preview/LiveComponentExamples";
+import { MobileConversationExample, MobileDisclosureExample, MobileFloatingActionsExample, MobileScrimExample, NavigationExample, PhoneScreenPreview } from "../preview/LiveComponentExamples";
 import { BrandPreview, brandCodeSample } from "../preview/BrandPreview";
 import { VoiceCallPreview } from "../components/VoiceCallPreview";
 import { Clipboard, List } from "lucide-react";
+import { editableTokenCatalog } from "../token-editor/catalog";
 import {
   ActionCard,
   ActionItem,
@@ -29,6 +30,7 @@ import {
   ComposerDivider,
   ComposerToolbar,
   ConfirmDialog,
+  DesignSystemProvider,
   Dialog,
   DialogBody,
   DialogClose,
@@ -128,6 +130,14 @@ import {
   MobileSegmentedControl,
   MobileSelect,
   MobileSheet,
+  MobileSidebar,
+  MobileSidebarChildRow,
+  MobileSidebarEntryRow,
+  MobileSidebarHeader,
+  MobileSidebarSectionLabel,
+  MobileSidebarSessionRow,
+  MobileSidebarToolsFooter,
+  MobileSidebarWorkspaceRow,
   MobileStatus,
   MobileStepper,
   MobileSwitch,
@@ -367,6 +377,21 @@ function NumberInputPreview({ state }: { state: string }) {
   );
 }
 
+function TokenChip({ name }: { name: string }) {
+  const entry = editableTokenCatalog.find(token => token.name === name);
+  const cssVar = entry?.cssVariable ?? name;
+  const values = entry?.values ?? {};
+  const firstValue = Object.values(values)[0] ?? "";
+  const description = entry?.description;
+  return (
+    <div className="component-token-chip" title={description ?? cssVar}>
+      <code className="component-token-chip-name">{name}</code>
+      <code className="component-token-chip-var">{cssVar}</code>
+      {firstValue && <span className="component-token-chip-value">{firstValue}</span>}
+    </div>
+  );
+}
+
 function SearchFieldStatePreview({ state }: { state: string }) {
   const { t } = useI18n();
   const [value, setValue] = useState(state === "default" ? "" : "OpenBitFun");
@@ -484,6 +509,10 @@ export function ComponentDetailPage({
   const [composerShowToolbar, setComposerShowToolbar] = useState(true);
   const flowChatPreview = getFlowChatPreviewDefinition(component.name);
   const isFlowChatComponent = Boolean(flowChatPreview);
+  const isMobileCategory = component.category === "mobile";
+  /* Mobile specimens render inside a phone-screen frame; sheets and scrims resolve their overlay
+     portal into the screen instead of the page, so a demo sheet slides over the phone. */
+  const phoneScreenRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const pending = overlayOpen && previewState === "pending";
@@ -1069,6 +1098,97 @@ export function ComponentDetailPage({
       );
     }
 
+    if (component.name === "MobileSidebar") {
+      return (
+        <MobileSidebar
+          className="lab-mobile-sidebar-preview"
+          footer={<MobileSidebarToolsFooter leading={t("scenes.mobile.sidebar.tools")} onSettingsClick={() => undefined} onToolsClick={() => undefined} settingsLabel={t("scenes.mobile.sidebar.settings")} />}
+          header={<MobileSidebarHeader brand={t("scenes.mobile.sidebar.brand")} trailing={<MobileIconButton aria-label={t("scenes.mobile.sidebar.search")} icon={<Icon name="search" aria-hidden="true" />} />} />}
+        >
+          <MobileSidebarSectionLabel>{t("scenes.mobile.sidebar.workspace")}</MobileSidebarSectionLabel>
+          <MobileSidebarWorkspaceRow expanded={state === "expanded"} label={t("scenes.mobile.sidebar.workspace1")} onExpandChange={() => undefined}>
+            <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childRemote")} />
+            <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childLocal")} />
+          </MobileSidebarWorkspaceRow>
+          <MobileSidebarSectionLabel>{t("scenes.mobile.sidebar.recent")}</MobileSidebarSectionLabel>
+          <MobileSidebarSessionRow label={t("scenes.mobile.sidebar.session1")} status="running" time="2m" />
+        </MobileSidebar>
+      );
+    }
+
+    if (component.name === "MobileSidebarChildRow") {
+      return <MobileSidebarChildRow data-openbitfun-preview-state={state === "hover" || state === "focus-visible" ? state : undefined} label={t("scenes.mobile.sidebar.childRemote")} selected={state === "selected"} />;
+    }
+
+    if (component.name === "MobileSidebarEntryRow") {
+      return <MobileSidebarEntryRow data-openbitfun-preview-state={state === "hover" || state === "focus-visible" ? state : undefined} icon={<Icon name="session" aria-hidden="true" />} label={t("scenes.mobile.sidebar.assistant")} />;
+    }
+
+    if (component.name === "MobileSidebarHeader") {
+      return (
+        <MobileSidebarHeader
+          brand={t("scenes.mobile.sidebar.brand")}
+          trailing={(
+            <>
+              <MobileIconButton aria-label={t("scenes.mobile.sidebar.search")} icon={<Icon name="search" aria-hidden="true" />} />
+              <MobileIconButton aria-label={t("scenes.mobile.sidebar.collapse")} icon={<Icon name="sidebar-left" aria-hidden="true" />} />
+            </>
+          )}
+        />
+      );
+    }
+
+    if (component.name === "MobileSidebarSectionLabel") {
+      return (
+        <MobileSidebarSectionLabel
+          action={state === "default" ? (
+            <button type="button" aria-label={t("scenes.mobile.sidebar.addWorkspace")}>
+              <Icon name="plus" aria-hidden="true" />
+            </button>
+          ) : undefined}
+        >
+          {t("scenes.mobile.sidebar.workspace")}
+        </MobileSidebarSectionLabel>
+      );
+    }
+
+    if (component.name === "MobileSidebarSessionRow") {
+      return (
+        <MobileSidebarSessionRow
+          data-openbitfun-preview-state={state === "hover" || state === "focus-visible" ? state : undefined}
+          label={t("scenes.mobile.sidebar.session1")}
+          selected={state === "selected"}
+          status={state === "error" ? "error" : "running"}
+          time={state === "hover" ? "2m" : undefined}
+        />
+      );
+    }
+
+    if (component.name === "MobileSidebarToolsFooter") {
+      return (
+        <MobileSidebarToolsFooter
+          leading={t("scenes.mobile.sidebar.tools")}
+          onSettingsClick={() => undefined}
+          onToolsClick={() => undefined}
+          settingsLabel={t("scenes.mobile.sidebar.settings")}
+        />
+      );
+    }
+
+    if (component.name === "MobileSidebarWorkspaceRow") {
+      return (
+        <MobileSidebarWorkspaceRow
+          data-openbitfun-preview-state={state === "hover" || state === "focus-visible" ? state : undefined}
+          expanded={state === "expanded" || state === "collapsed" ? state === "expanded" : true}
+          label={t("scenes.mobile.sidebar.workspace1")}
+          onExpandChange={() => undefined}
+        >
+          <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childRemote")} />
+          <MobileSidebarChildRow label={t("scenes.mobile.sidebar.childLocal")} />
+        </MobileSidebarWorkspaceRow>
+      );
+    }
+
     if (component.name === "MobileAvatar") {
       const avatarStatus = state === "online" || state === "away" || state === "busy" || state === "offline" ? state : undefined;
       return (
@@ -1220,7 +1340,7 @@ export function ComponentDetailPage({
       return <MobilePageHeader actions={<MobileIconButton appearance="plain" aria-label={t("components.preview.more")} icon={<Icon name="more" aria-hidden="true" />} size="sm" />} centered={state === "centered"} leading={<MobileIconButton appearance="plain" aria-label={t("components.preview.close")} icon={<Icon name="chevron-left" aria-hidden="true" />} size="sm" />} subtitle={state === "with-subtitle" ? t("components.preview.fieldDescription") : undefined} title={t("components.preview.session")} />;
     }
 
-    if (component.name === "MobileScrim") return <MobileScrimExample key={state} state={state} />;
+    if (component.name === "MobileScrim") return <MobileScrimExample className="lab-mobile-scrim" key={state} state={state} />;
 
     if (component.name === "MobileSection") {
       return <MobileSection action={state === "with-action" ? <MobileButton appearance="plain" size="sm">{t("components.preview.more")}</MobileButton> : undefined} description={state === "content-only" ? undefined : t("components.preview.fieldDescription")} title={state === "content-only" ? undefined : t("components.preview.appearance")}><MobileCard>{t("components.preview.cardDescription")}</MobileCard></MobileSection>;
@@ -2323,7 +2443,7 @@ export function ComponentDetailPage({
   const Page = embedded ? "section" : "main";
 
   return (
-    <Page className={embedded ? "design-library-detail" : "lab-page lab-page--component-detail"} aria-labelledby="component-detail-title">
+    <Page className={embedded ? "design-library-detail openbitfun-reveal" : "lab-page lab-page--component-detail openbitfun-reveal"} aria-labelledby="component-detail-title">
       {!embedded && <nav className="component-breadcrumb" aria-label={t("detail.breadcrumbLabel")}>
         <Button onClick={onBack} variant="text" size="sm">
           {t(isFlowChatComponent ? "detail.backFlowChat" : "detail.back")}
@@ -2381,7 +2501,17 @@ export function ComponentDetailPage({
                 {component.name === "ChatComposer" && <p>{t("design.contextAfter")}</p>}
               </div>
               <div className="design-selected-component" data-component-name={component.name}>
-                {component.name === "IconButton" ? renderIconButtonPreview(previewState, iconButtonVariant, true) : renderPreview(previewState, variant, true)}
+                {isMobileCategory ? (
+                  <PhoneScreenPreview withThread={component.name === "MobileMessage" || component.name === "MobileComposer" || component.name === "MobileFloatingActions"}>
+                    {/* The provider routes the kit's overlay portal into the screen, so a demo
+                        sheet slides over the phone instead of the Lab. ThemeRoot draws the theme. */}
+                    <DesignSystemProvider portalHost={() => phoneScreenRef.current}>
+                      <ThemeRoot colorScheme={colorScheme} contrast={contrast} density={density} tokenOverrides={tokenOverrides}>
+                        <div ref={phoneScreenRef} className="design-phone-portal-host">{renderPreview(previewState, variant, true)}</div>
+                      </ThemeRoot>
+                    </DesignSystemProvider>
+                  </PhoneScreenPreview>
+                ) : component.name === "IconButton" ? renderIconButtonPreview(previewState, iconButtonVariant, true) : renderPreview(previewState, variant, true)}
               </div>
               <div className="design-preview-context-after" hidden={!isFlowChatComponent || previewMode !== "conversation" || component.name === "ChatComposer"}><p>{t("design.contextAfter")}</p></div>
               {previewState === "hidden" && <p className="design-hidden-preview">{t("preview.hidden")}</p>}
@@ -2427,7 +2557,7 @@ export function ComponentDetailPage({
               </div>
               </ReferenceDisclosure>
           <ReferenceDisclosure label={t("detail.ownedTokens")}>
-          <div className="design-component-tokens"><div className="component-inspector-token-list">{component.tokens.map(token => <code key={token}>{token}</code>)}</div>
+          <div className="design-component-tokens"><div className="component-inspector-token-list">{component.tokens.map(token => <TokenChip key={token} name={token} />)}</div>
             <Button variant="text" onClick={() => onInspectTokens(component.name)} trailingIcon={<Icon name="arrow-right" />}>{t("detail.openWorkbench")}</Button>
           </div>
           </ReferenceDisclosure>

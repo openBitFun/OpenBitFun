@@ -858,7 +858,7 @@
       "itemHeight": { "$value": "30px" },
       "itemPaddingInline": { "$value": "{space.2}" },
       "itemGap": { "$value": "{space.2}" },
-      "itemRadius": { "$value": "{radius.base}" },
+      "itemRadius": { "$value": "{radius.md}" },
       "itemIconSize": { "$value": "14px" },
       "scrollbarGap": { "$value": "2px" },
       "footerHeight": { "$value": "40px" },
@@ -916,7 +916,7 @@
       "itemHeight": { "$value": "30px" },
       "itemPaddingInline": { "$value": "{space.2}" },
       "itemGap": { "$value": "{space.2}" },
-      "itemRadius": { "$value": "{radius.base}" },
+      "itemRadius": { "$value": "{radius.md}" },
       "itemIconSize": { "$value": "14px" },
       "scrollbarGap": { "$value": "2px" }
     },
@@ -1035,14 +1035,15 @@
     "duration": {
       "$type": "duration",
       "instant": { "$value": "80ms" },
-      "fast": { "$value": "140ms" },
-      "base": { "$value": "220ms" },
+      "fast": { "$value": "160ms" },
+      "base": { "$value": "240ms" },
       "normal": { "$value": "{motion.duration.base}" },
       "contentSwap": {
         "$value": "320ms",
         "$description": "Coordinated single-line content replacement and intrinsic-width changes."
       },
-      "slow": { "$value": "420ms" },
+      "slow": { "$value": "320ms" },
+      "exit": { "$value": "{motion.duration.fast}" },
       "lazy": { "$value": "1s" },
       "loop": { "$value": "720ms" }
     },

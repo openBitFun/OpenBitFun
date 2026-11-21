@@ -14,7 +14,7 @@
   .root[data-openbitfun-preview-state="focus-within"] .control { border-color: var(--openbitfun-color-field-border-focus); box-shadow: 0 0 0 var(--openbitfun-focus-width) var(--openbitfun-color-focus-ring); }
 
   .button { display: grid; inline-size: 44px; block-size: 44px; flex: 0 0 44px; margin: 0; padding: 0; border: 0; border-radius: var(--openbitfun-radius-md); place-items: center; color: var(--openbitfun-color-content-secondary); background: transparent; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; transition: background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard); }
-  .button > svg { inline-size: 18px; block-size: 18px; }
+  .button > svg { inline-size: var(--openbitfun-control-icon-size-md); block-size: var(--openbitfun-control-icon-size-md); }
   @media (hover: hover) and (pointer: fine) {
     .button:is(:hover, [data-openbitfun-preview-state="hover"]):not(:disabled),
     .root[data-openbitfun-preview-state="hover"] .button:not(:disabled) { background: var(--openbitfun-color-action-neutral-surface-hover); }

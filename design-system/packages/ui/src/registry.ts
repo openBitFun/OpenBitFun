@@ -71,6 +71,14 @@ import { mobileScrimMeta } from "./mobile/MobileScrim/MobileScrim.meta";
 import { mobileSegmentedControlMeta } from "./mobile/MobileSegmentedControl/MobileSegmentedControl.meta";
 import { mobileSelectMeta } from "./mobile/MobileSelect/MobileSelect.meta";
 import { mobileSheetMeta } from "./mobile/MobileSheet/MobileSheet.meta";
+import { mobileSidebarMeta } from "./mobile/MobileSidebar/MobileSidebar.meta";
+import { mobileSidebarChildRowMeta } from "./mobile/MobileSidebarChildRow/MobileSidebarChildRow.meta";
+import { mobileSidebarEntryRowMeta } from "./mobile/MobileSidebarEntryRow/MobileSidebarEntryRow.meta";
+import { mobileSidebarHeaderMeta } from "./mobile/MobileSidebarHeader/MobileSidebarHeader.meta";
+import { mobileSidebarSectionLabelMeta } from "./mobile/MobileSidebarSectionLabel/MobileSidebarSectionLabel.meta";
+import { mobileSidebarSessionRowMeta } from "./mobile/MobileSidebarSessionRow/MobileSidebarSessionRow.meta";
+import { mobileSidebarToolsFooterMeta } from "./mobile/MobileSidebarToolsFooter/MobileSidebarToolsFooter.meta";
+import { mobileSidebarWorkspaceRowMeta } from "./mobile/MobileSidebarWorkspaceRow/MobileSidebarWorkspaceRow.meta";
 import { mobileStatusMeta } from "./mobile/MobileStatus/MobileStatus.meta";
 import { mobileStepperMeta } from "./mobile/MobileStepper/MobileStepper.meta";
 import { mobileSwitchMeta } from "./mobile/MobileSwitch/MobileSwitch.meta";
@@ -205,6 +213,14 @@ export const componentRegistry = [
   mobileSegmentedControlMeta,
   mobileSelectMeta,
   mobileSheetMeta,
+  mobileSidebarMeta,
+  mobileSidebarChildRowMeta,
+  mobileSidebarEntryRowMeta,
+  mobileSidebarHeaderMeta,
+  mobileSidebarSectionLabelMeta,
+  mobileSidebarSessionRowMeta,
+  mobileSidebarToolsFooterMeta,
+  mobileSidebarWorkspaceRowMeta,
   mobileStatusMeta,
   mobileStepperMeta,
   mobileSwitchMeta,

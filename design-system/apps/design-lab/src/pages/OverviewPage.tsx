@@ -76,15 +76,8 @@ export function OverviewPage({ onNavigate, colorScheme, contrast, density, token
       setHatch("ready");
       return;
     }
-    let timer = 0;
-    let incubating = true;
     setHatch("incubating");
-    const step = () => {
-      incubating = !incubating;
-      setHatch(incubating ? "incubating" : "ready");
-      timer = window.setTimeout(step, incubating ? 1800 : 3600);
-    };
-    timer = window.setTimeout(step, 1800);
+    const timer = window.setTimeout(() => setHatch("ready"), 1800);
     return () => window.clearTimeout(timer);
   }, [hatchPlaying]);
 
@@ -102,7 +95,7 @@ export function OverviewPage({ onNavigate, colorScheme, contrast, density, token
   ];
 
   return (
-    <main className="lab-page lab-page--overview design-home" id="overview">
+    <main className="lab-page lab-page--overview design-home openbitfun-reveal" id="overview">
       <section className="design-home-hero" aria-labelledby="design-home-title">
         <div className="design-home-emblem" aria-hidden="true">
           <SubagentHatch className="design-home-character" phase={hatch} active={hatchPlaying}>

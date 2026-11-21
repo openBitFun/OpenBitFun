@@ -65,9 +65,9 @@
   .slot {
     display: grid;
     box-sizing: border-box;
-    inline-size: 20px;
-    block-size: 20px;
-    flex: 0 0 20px;
+    inline-size: var(--openbitfun-control-icon-size-md);
+    block-size: var(--openbitfun-control-icon-size-md);
+    flex: 0 0 var(--openbitfun-control-icon-size-md);
     place-items: center;
     color: var(--openbitfun-color-content-secondary);
   }

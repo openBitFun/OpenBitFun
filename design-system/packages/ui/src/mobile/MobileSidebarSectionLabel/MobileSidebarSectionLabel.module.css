@@ -1,0 +1,54 @@
+@layer openbitfun.components {
+  .root {
+    display: flex;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-inline-size: 0;
+    block-size: 28px;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--openbitfun-space-2);
+    padding: 0 var(--openbitfun-space-2);
+    background: var(--openbitfun-color-sidebar-bg);
+    color: var(--openbitfun-color-sidebar-subtle);
+  }
+
+  .label {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--openbitfun-type-label-xs-font-size);
+    font-weight: var(--openbitfun-type-label-xs-font-weight);
+    line-height: var(--openbitfun-type-label-xs-line-height);
+    letter-spacing: 0.02em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .action {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .action :where(button, [role="button"]) {
+    inline-size: 16px;
+    block-size: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .action :where(button, [role="button"]):hover {
+      background: var(--openbitfun-color-sidebar-hover);
+      color: var(--openbitfun-color-sidebar-ink);
+    }
+  }
+}

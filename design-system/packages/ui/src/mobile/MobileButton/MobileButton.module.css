@@ -38,10 +38,10 @@
   .root:focus-visible { outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring); outline-offset: var(--openbitfun-focus-offset); }
   .root:disabled { color: var(--openbitfun-color-action-neutral-content-disabled); cursor: not-allowed; box-shadow: none; }
   .root[data-appearance="primary"]:disabled { background: var(--openbitfun-color-accent-disabled); }
-  .slot, .spinner { display: inline-grid; inline-size: 20px; block-size: 20px; flex: 0 0 20px; place-items: center; }
+  .slot, .spinner { display: inline-grid; inline-size: var(--openbitfun-control-icon-size-md); block-size: var(--openbitfun-control-icon-size-md); flex: 0 0 var(--openbitfun-control-icon-size-md); place-items: center; }
   .slot > :where(svg, img) { inline-size: 100%; block-size: 100%; }
   .spinner { border: 2px solid currentColor; border-inline-end-color: transparent; border-radius: var(--openbitfun-radius-pill); animation: openbitfun-mobile-button-spin var(--openbitfun-motion-duration-loop) linear infinite; }
-  .label { display: contents; }
+  .label { color: inherit; }
   @keyframes openbitfun-mobile-button-spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .root { transition: none; } .spinner { animation: none; } }
   @media (forced-colors: active) { .root { border-color: ButtonText; } .root:focus-visible { outline-color: Highlight; } }

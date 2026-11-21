@@ -35,6 +35,7 @@ import { ComponentsPage } from "./pages/ComponentsPage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
 import { ResourcesPage } from "./pages/ResourcesPage";
 import { PatternsPage } from "./pages/PatternsPage";
+import { MobilePatternsPage } from "./pages/MobilePatternsPage";
 import { FlowChatMockPage } from "./pages/FlowChatMockPage";
 import { ColorsPage } from "./pages/ColorsPage";
 import { SubagentIpPage } from "./pages/SubagentIpPage";
@@ -64,6 +65,7 @@ type LabRoute =
   | { page: "mobile" }
   | { page: "brand" }
   | { page: "patterns" }
+  | { page: "mobile-patterns" }
   | { page: "flow-chat" }
   | { page: "flow-chat-mock" }
   | { page: "colors" }
@@ -122,14 +124,19 @@ function parseRoute(hash: string): LabRoute {
     return { page: "getting-started" };
   }
   if (route === "components") {
+    // The default component of this route: Web surface or Mobile surface (the rail's two tabs).
     return { page: "components" };
   }
   if (route === "brand" || route.startsWith("brand/")) return { page: "brand" };
   if (route === "mobile") {
+    // Same library page, mobile surface: the rail highlights the Mobile tab.
     return { page: "mobile" };
   }
   if (route === "patterns") {
     return { page: "patterns" };
+  }
+  if (route === "mobile-patterns") {
+    return { page: "mobile-patterns" };
   }
   if (route === "flow-chat") {
     return { page: "flow-chat" };
@@ -263,6 +270,13 @@ export function App() {
       keywords: `patterns recipes settings navigation search device ${t("nav.patterns")}`,
       label: t("nav.patterns"),
       route: { page: "patterns" },
+    },
+    {
+      detail: t("scenes.mobile.label"),
+      icon: Smartphone,
+      keywords: `mobile patterns scenes phone handheld chat sidebar settings pairing ${t("nav.patterns")}`,
+      label: `${t("nav.patterns")} · ${t("design.mobile")}`,
+      route: { page: "mobile-patterns" },
     },
     {
       detail: t("search.flowChatDetail", { count: flowChatComponents.length }),
@@ -593,6 +607,15 @@ export function App() {
 
           {route.page === "patterns" && (
             <PatternsPage
+              colorScheme={colorScheme}
+              contrast={contrast}
+              density={density}
+              tokenOverrides={tokenOverrides}
+            />
+          )}
+
+          {route.page === "mobile-patterns" && (
+            <MobilePatternsPage
               colorScheme={colorScheme}
               contrast={contrast}
               density={density}

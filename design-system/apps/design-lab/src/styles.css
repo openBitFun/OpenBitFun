@@ -3282,6 +3282,33 @@ body,
   line-height: var(--openbitfun-type-flow-support-line-height);
 }
 
+/* Token chips: name → CSS variable → resolved value, so a reader can trace a component's
+   style back to the token without leaving the detail page. */
+.component-token-chip {
+  display: grid;
+  gap: var(--openbitfun-space-1);
+  padding: var(--openbitfun-space-2);
+  border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);
+  border-radius: var(--openbitfun-radius-md);
+  background: var(--openbitfun-color-surface-tertiary);
+}
+
+.component-token-chip-name {
+  color: var(--openbitfun-color-content-primary);
+  font-size: var(--openbitfun-type-code-sm-font-size);
+  font-weight: var(--openbitfun-type-label-selected-font-weight);
+}
+
+.component-token-chip-var {
+  color: var(--openbitfun-color-content-secondary);
+  font-size: var(--openbitfun-type-code-sm-font-size);
+}
+
+.component-token-chip-value {
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-label-sm-font-size);
+}
+
 .component-inspector-action {
   min-height: 36px;
   padding: var(--openbitfun-space-2) var(--openbitfun-space-3);

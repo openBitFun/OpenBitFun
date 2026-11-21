@@ -1,0 +1,61 @@
+@layer openbitfun.components {
+  .root {
+    display: flex;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-inline-size: 0;
+    block-size: 36px;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    margin: 0;
+    padding: 0 var(--openbitfun-space-2);
+    border: 0;
+    border-radius: var(--openbitfun-radius-sm);
+    background: transparent;
+    color: var(--openbitfun-color-sidebar-muted);
+    font-size: var(--openbitfun-type-body-md-font-size);
+    font-weight: var(--openbitfun-type-body-md-font-weight);
+    line-height: var(--openbitfun-type-body-md-line-height);
+    text-align: start;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .root:hover {
+      background: var(--openbitfun-color-sidebar-hover);
+      color: var(--openbitfun-color-sidebar-ink);
+    }
+  }
+
+  .root:focus-visible {
+    outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+    outline-offset: var(--openbitfun-focus-offset);
+  }
+
+  .icon {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Mascot artwork renders as an 18px image; compact glyphs as 16px SVG. */
+  .icon > :where(svg, img) {
+    inline-size: 18px;
+    block-size: 18px;
+    display: block;
+  }
+
+  .label {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

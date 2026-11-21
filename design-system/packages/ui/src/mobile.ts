@@ -121,6 +121,39 @@ export {
   type MobileSheetProps,
 } from "./mobile/MobileSheet";
 export {
+  MobileSidebar,
+  type MobileSidebarProps,
+} from "./mobile/MobileSidebar";
+export {
+  MobileSidebarChildRow,
+  type MobileSidebarChildRowProps,
+} from "./mobile/MobileSidebarChildRow";
+export {
+  MobileSidebarEntryRow,
+  type MobileSidebarEntryRowProps,
+} from "./mobile/MobileSidebarEntryRow";
+export {
+  MobileSidebarHeader,
+  type MobileSidebarHeaderProps,
+} from "./mobile/MobileSidebarHeader";
+export {
+  MobileSidebarSectionLabel,
+  type MobileSidebarSectionLabelProps,
+} from "./mobile/MobileSidebarSectionLabel";
+export {
+  MobileSidebarSessionRow,
+  type MobileSidebarSessionRowProps,
+  type MobileSidebarSessionStatus,
+} from "./mobile/MobileSidebarSessionRow";
+export {
+  MobileSidebarToolsFooter,
+  type MobileSidebarToolsFooterProps,
+} from "./mobile/MobileSidebarToolsFooter";
+export {
+  MobileSidebarWorkspaceRow,
+  type MobileSidebarWorkspaceRowProps,
+} from "./mobile/MobileSidebarWorkspaceRow";
+export {
   MobileStatus,
   type MobileStatusProps,
   type MobileStatusTone,

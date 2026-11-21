@@ -1,0 +1,38 @@
+@layer openbitfun.components {
+  .root {
+    display: flex;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-inline-size: 0;
+    block-size: 56px;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    padding: 0 var(--openbitfun-space-3);
+    background: var(--openbitfun-color-sidebar-bg);
+    color: var(--openbitfun-color-sidebar-ink);
+  }
+
+  .brand {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--openbitfun-type-title-sm-font-size);
+    font-weight: var(--openbitfun-type-title-sm-font-weight);
+    line-height: var(--openbitfun-type-title-sm-line-height);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .trailing {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--openbitfun-space-1);
+  }
+
+  /* Icon buttons passed as `trailing` render at 32×32, mirroring the native sidebar header. */
+  .trailing :where(button, [role="button"]) {
+    inline-size: 32px;
+    block-size: 32px;
+  }
+}

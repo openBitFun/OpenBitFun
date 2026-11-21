@@ -3,7 +3,7 @@
   .root:focus-within { outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring); outline-offset: var(--openbitfun-focus-offset); }
   .root[aria-disabled="true"] { color: var(--openbitfun-color-action-neutral-content-disabled); cursor: not-allowed; box-shadow: none; }
   .input { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .slot, .spinner { display: grid; inline-size: 20px; block-size: 20px; flex: 0 0 20px; place-items: center; }
+  .slot, .spinner { display: grid; inline-size: var(--openbitfun-control-icon-size-md); block-size: var(--openbitfun-control-icon-size-md); flex: 0 0 var(--openbitfun-control-icon-size-md); place-items: center; }
   .slot > :where(svg, img) { inline-size: 100%; block-size: 100%; }
   .spinner { border: 2px solid currentColor; border-inline-end-color: transparent; border-radius: var(--openbitfun-radius-pill); animation: openbitfun-mobile-file-button-spin var(--openbitfun-motion-duration-loop) linear infinite; }
   @keyframes openbitfun-mobile-file-button-spin { to { transform: rotate(360deg); } }

@@ -20,7 +20,7 @@
 
   .value { min-inline-size: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .value[data-placeholder="true"] { color: var(--openbitfun-color-content-muted); }
-  .chevron { inline-size: 18px; block-size: 18px; flex: 0 0 18px; color: var(--openbitfun-color-content-secondary); }
+  .chevron { inline-size: var(--openbitfun-control-icon-size-md); block-size: var(--openbitfun-control-icon-size-md); flex: 0 0 var(--openbitfun-control-icon-size-md); color: var(--openbitfun-color-content-secondary); }
 
   @media (prefers-reduced-motion: reduce) { .field { transition: none; } }
   @media (forced-colors: active) { .root[data-appearance="surface"] .field { border-color: ButtonText; } .field:focus-visible { outline-color: Highlight; } }

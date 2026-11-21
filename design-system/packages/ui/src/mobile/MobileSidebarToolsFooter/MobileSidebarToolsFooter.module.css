@@ -1,0 +1,97 @@
+@layer openbitfun.components {
+  .root {
+    display: flex;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-inline-size: 0;
+    min-block-size: 48px;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    padding: var(--openbitfun-space-2);
+    border-top: 0.5px solid var(--openbitfun-color-sidebar-line);
+    background: var(--openbitfun-color-sidebar-bg);
+  }
+
+  .toolPill {
+    display: flex;
+    box-sizing: border-box;
+    min-inline-size: 88px;
+    block-size: 36px;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    margin: 0;
+    padding: 0 var(--openbitfun-space-2);
+    border: 0.5px solid transparent;
+    border-radius: var(--openbitfun-radius-md);
+    background: transparent;
+    color: var(--openbitfun-color-sidebar-muted);
+    font-size: var(--openbitfun-type-body-md-font-size);
+    font-weight: var(--openbitfun-type-body-md-font-weight);
+    line-height: var(--openbitfun-type-body-md-line-height);
+    text-align: start;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      border-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+
+  .toolPill:focus-visible,
+  .settingsButton:focus-visible {
+    outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+    outline-offset: var(--openbitfun-focus-offset);
+  }
+
+  .toolPillIcon {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .toolPillLabel {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
+
+  .settingsButton {
+    display: flex;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    inline-size: 32px;
+    block-size: 32px;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 0;
+    border: 0.5px solid transparent;
+    border-radius: var(--openbitfun-radius-md);
+    background: transparent;
+    color: var(--openbitfun-color-sidebar-muted);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      border-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .toolPill:hover,
+    .settingsButton:hover {
+      border-color: var(--openbitfun-color-sidebar-line);
+      background: var(--openbitfun-color-sidebar-hover);
+      color: var(--openbitfun-color-sidebar-ink);
+    }
+  }
+}

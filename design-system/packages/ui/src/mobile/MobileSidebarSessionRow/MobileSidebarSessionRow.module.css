@@ -1,0 +1,80 @@
+@layer openbitfun.components {
+  .root {
+    display: flex;
+    box-sizing: border-box;
+    inline-size: 100%;
+    min-inline-size: 0;
+    block-size: 40px;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    margin: 0;
+    padding: 0 var(--openbitfun-space-2);
+    border: 0;
+    border-radius: var(--openbitfun-radius-sm);
+    background: transparent;
+    color: var(--openbitfun-color-sidebar-deep);
+    font-size: var(--openbitfun-type-body-lg-font-size);
+    font-weight: var(--openbitfun-type-body-lg-font-weight);
+    line-height: var(--openbitfun-type-body-lg-line-height);
+    text-align: start;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+      color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .root:hover {
+      background: var(--openbitfun-color-sidebar-hover);
+      color: var(--openbitfun-color-sidebar-ink);
+    }
+
+    .root:hover .time {
+      opacity: 0.6;
+    }
+  }
+
+  .root[data-selected="true"] {
+    background: var(--openbitfun-color-sidebar-selection);
+  }
+
+  .root:focus-visible {
+    outline: var(--openbitfun-focus-width) solid var(--openbitfun-color-focus-ring);
+    outline-offset: var(--openbitfun-focus-offset);
+  }
+
+  .label {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .statusDot {
+    flex: 0 0 auto;
+    inline-size: 6px;
+    block-size: 6px;
+    border-radius: 50%;
+  }
+
+  .statusDot[data-status="running"] {
+    background: var(--openbitfun-color-status-success-emphasis);
+  }
+
+  .statusDot[data-status="error"] {
+    background: var(--openbitfun-color-status-danger-emphasis);
+  }
+
+  .time {
+    flex: 0 0 auto;
+    color: var(--openbitfun-color-sidebar-subtle);
+    font-size: var(--openbitfun-type-label-xs-font-size);
+    font-weight: var(--openbitfun-type-label-xs-font-weight);
+    line-height: var(--openbitfun-type-label-xs-line-height);
+    opacity: 0;
+    transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+}

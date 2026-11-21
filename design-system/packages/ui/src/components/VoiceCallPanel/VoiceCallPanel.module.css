@@ -232,8 +232,8 @@
     opacity: 1;
   }
 
-  .controls { transition: padding 480ms cubic-bezier(0.22, 1, 0.36, 1); }
-  .controls .control { transition: inline-size 480ms, block-size 480ms, flex-basis 480ms; }
+  .controls { transition: padding var(--openbitfun-motion-duration-slow) var(--openbitfun-motion-easing-smooth); }
+  .controls .control { transition: inline-size var(--openbitfun-motion-duration-slow), block-size var(--openbitfun-motion-duration-slow), flex-basis var(--openbitfun-motion-duration-slow); }
   .compactControls { padding: var(--openbitfun-space-2); gap: var(--openbitfun-space-2); }
   .compactControls .control {
     inline-size: 32px;

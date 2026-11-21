@@ -5,5 +5,6 @@
   .root[data-disabled="true"] { color: var(--openbitfun-color-content-disabled); }
   .input { box-sizing: border-box; inline-size: 100%; min-inline-size: 0; min-block-size: 62px; resize: none; margin: 0; padding: 0; border: 0; outline: 0; color: inherit; background: transparent; caret-color: var(--openbitfun-color-accent-default); font: inherit; font-size: var(--openbitfun-type-body-md-font-size); line-height: var(--openbitfun-type-body-md-line-height); }
   .input::placeholder { color: var(--openbitfun-color-content-muted); opacity: 1; }
-  .slot { display: grid; inline-size: 20px; block-size: 20px; flex: 0 0 20px; place-items: center; }
+  .slot { display: grid; inline-size: var(--openbitfun-control-icon-size-md); block-size: var(--openbitfun-control-icon-size-md); flex: 0 0 var(--openbitfun-control-icon-size-md); place-items: center; }
+  .slot > :where(svg, img) { inline-size: 100%; block-size: 100%; }
 }

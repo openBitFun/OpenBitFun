@@ -8,7 +8,7 @@
    Horizontal gaps stay where the grid puts them: widening the columns' gutters would change the
    composition, not the breathing room. Air is inherited, so the footer reads the same variable. */
 .lab-page.design-home {
-  --_lab-home-air: 2;
+  --_lab-home-air: 1.25;
 
   display: flex;
   flex-direction: column;

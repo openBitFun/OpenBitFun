@@ -1,5 +1,6 @@
 import "./styles/layers.css";
 import "./styles/scrollbars.css";
+import "./styles/reveal.css";
 
 export { VoiceCallPanel, type VoiceCallPanelProps, type VoiceCallLabels, type VoiceCallPhase } from "./components/VoiceCallPanel";
 export { VoiceCallTranscript, VoiceCallControls, VoiceCallIdentity, type VoiceTranscriptEntry, type VoiceCallTranscriptProps, type VoiceCallControlsProps, type VoiceCallIdentityProps } from "./components/VoiceCallPanel";

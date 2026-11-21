@@ -66,6 +66,18 @@
         "$value": "rgba(255, 255, 255, 0.06)"
       }
     },
+    "sidebar": {
+      "$description": "Fluid Functionalism mobile sidebar surface and ink ramps.",
+      "bg": { "$type": "color", "$value": "{ref.color.neutral.950}" },
+      "raised": { "$type": "color", "$value": "{ref.color.neutral.900}" },
+      "line": { "$type": "color", "$value": "{color.border.subtle}" },
+      "hover": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.0} 6%, transparent)" },
+      "selection": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.0} 10%, transparent)" },
+      "ink": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.0} 91%, transparent)" },
+      "deep": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.0} 82%, transparent)" },
+      "muted": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.0} 69%, transparent)" },
+      "subtle": { "$type": "color", "$value": "color-mix(in srgb, {ref.color.neutral.0} 52%, transparent)" }
+    },
     "overlay": {
       "scrim": {
         "$description": "Backdrop veil behind blocking modal surfaces.",

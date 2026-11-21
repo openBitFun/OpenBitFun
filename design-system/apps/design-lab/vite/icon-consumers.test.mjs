@@ -32,7 +32,7 @@ test("Lab navigation, theme resources and export actions consume the shared icon
 test("the website has three primary destinations and a unified public catalog", async () => {
   const source = relative => readFile(new URL(`../src/${relative}`, import.meta.url), "utf8");
   const [app, navigation, catalog, index, directory] = await Promise.all([source("App.tsx"), source("components/LabNavigation.tsx"), source("pages/ComponentsPage.tsx"), source("components/LabComponentIndex.tsx"), source("componentNavigation.ts")]);
-  assert.match(navigation, /\["components", "foundations", "brand"\]/);
+  assert.match(navigation, /\["components", "mobile", "foundations", "brand"\]/);
   assert.match(app, /category=\{libraryCategory\(route\.page\)\}/);
   assert.match(directory, /page === "mobile" \? "mobile" : page === "flow-chat" \? "flow-chat" : undefined/);
   assert.match(index, /const catalogComponents = componentRegistry\.filter/);

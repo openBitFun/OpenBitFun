@@ -1,0 +1,14 @@
+.design-mobile-scenes {
+  display: grid;
+  gap: var(--openbitfun-space-6);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  margin-top: var(--openbitfun-space-6);
+}
+
+.design-mobile-scenes .design-phone-frame {
+  padding: 0;
+}
+
+.design-mobile-scenes .design-phone-screen {
+  max-block-size: 70vh;
+}

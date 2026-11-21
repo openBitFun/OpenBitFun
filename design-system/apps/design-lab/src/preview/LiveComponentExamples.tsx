@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Icon, SegmentedControl, TabGroup, type TabGroupSize } from "@openbitfun/ui";
 import { MobileButton, MobileComposer, MobileDisclosure, MobileFloatingActions, MobileIconButton, MobileMessage, MobileScrim, MobileSegmentedControl } from "@openbitfun/ui/mobile";
 import { useI18n } from "../i18n";
@@ -67,12 +67,44 @@ export function MobileFloatingActionsExample({ state }: { state: string }) {
   </div>;
 }
 
-export function MobileScrimExample({ state }: { state: string }) {
+export function MobileScrimExample({ className, state }: { className?: string; state: string }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(state !== "hidden");
   return <section className="design-scrim-example">
     <MobileButton onClick={() => setOpen(true)}>{t("preview.scrim")}</MobileButton>
     <p>{t("preview.scrimHint")}</p>
-    <MobileScrim aria-label={t("components.preview.close")} onClick={() => setOpen(false)} visible={open} />
+    <MobileScrim aria-label={t("components.preview.close")} className={className} onClick={() => setOpen(false)} visible={open} />
   </section>;
+}
+
+/* Mobile detail previews render inside the shared phone-screen frame (see ComponentDetailPage).
+   The scrim specimen keeps its own page-sized stage, because a scrim that only covers a preview
+   card is the same object the card already draws. */
+/* Mobile phone-screen previews. Every Mobile* detail preview is rendered inside the same chrome:
+   a portrait device frame whose content column is the mobile reading width (390px) the components
+   are authored for, with a faux status bar and a gesture bar so touch anatomy is visible without a
+   real device. Sheets keep their overlay inside the screen instead of the page portal, so a demo
+   sheet slides over the phone, not over the Lab. */
+/* Mobile phone-screen previews. Every Mobile* detail preview renders inside the same chrome:
+   a portrait device frame whose content column is the 390px mobile reading width the components
+   are authored for, with a faux status bar and a gesture bar so touch anatomy is visible without
+   a real device. Sheets keep their overlay inside the screen (the page scopes their portal host
+   to the screen), so a demo sheet slides over the phone, not over the Lab. */
+export function PhoneScreenPreview({ children, withThread = false }: {
+  children: ReactNode;
+  /** Faux conversation messages behind the specimen, for chat-surface components. */
+  withThread?: boolean;
+}) {
+  const { t } = useI18n();
+  return <div className="design-phone-frame">
+    <div className="design-phone-screen">
+      <div className="design-phone-status" aria-hidden="true"><span>9:41</span><span>●●●</span></div>
+      {withThread && <div className="design-phone-thread">
+        <MobileMessage roleType="user">{t("design.contextUser")}</MobileMessage>
+        <MobileMessage roleType="assistant">{t("design.contextAssistant")}</MobileMessage>
+      </div>}
+      <div className="design-phone-body">{children}</div>
+      <div className="design-phone-gesture" aria-hidden="true" />
+    </div>
+  </div>;
 }
