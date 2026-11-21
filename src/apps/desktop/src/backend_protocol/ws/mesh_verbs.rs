@@ -39,8 +39,17 @@ pub(crate) const CAPABILITIES: &[&str] = &[
 /// this host's fleet runs (it then serves the owner verbs).
 pub(crate) fn capabilities() -> Vec<&'static str> {
     let mut capabilities = CAPABILITIES.to_vec();
-    if crate::fleet::current().is_some() {
+    if let Some(host) = crate::fleet::current() {
         capabilities.push(openbitfun_product_domains::fleet::FLEET_V1_CAPABILITY);
+        // The account replica's verbs (`fleet::replica`), once attached.
+        if host.replica_sync().is_some() {
+            capabilities.push(openbitfun_obp::fleet::replica::ACCOUNT_REPLICA_V1_CAPABILITY);
+            // Super Agent history (`fleet::superagent_archive`): the replica
+            // declares it and serves the cloud agent its collections only.
+            capabilities.push(
+                openbitfun_product_domains::superagent::archive::SUPERAGENT_ARCHIVE_CAPABILITY,
+            );
+        }
     }
     capabilities
 }

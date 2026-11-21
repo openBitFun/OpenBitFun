@@ -29,7 +29,7 @@ export function prepareCliWebUi(plan, { spawn = spawnSync, write = writeUiBundle
     return null;
   }
   rmSync(plan.webUiOutPath, { recursive: true, force: true });
-  const built = spawn('nsh', ['package', 'src/nsh-ui', '--target', 'web', '-o', plan.webUiOutPath], {
+  const built = spawn('nsh', ['package', 'src/nsh-ui/WebApp.tsx', '--target', 'web', '-o', plan.webUiOutPath], {
     cwd: ROOT,
     stdio: 'inherit',
     windowsHide: true,

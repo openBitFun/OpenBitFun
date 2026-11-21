@@ -83,6 +83,18 @@ import {
   studioCompact,
   trackStudioWidth,
 } from "../ui/studio";
+import { CardsSection } from "../ui/cardView"; // wave22-p3
+import { cardsDeviceForLibrary } from "../desktopCardsStore"; // wave22-p3
+import { ElsewhereList, SpacePage } from "../ui/miniAppFrame"; // wave22-p4
+import {
+  accountCatalog,
+  closeSpacePage,
+  loadAccountCatalog,
+  openSpace,
+  openSpacePage,
+  spaceOpenBlockedReason,
+  spacesElsewhere,
+} from "../spaceViewStore"; // wave22-p4
 
 function sourceTabs(): ReadonlyArray<SegmentedTabOption<SpaceSourceTab>> {
   return [
@@ -204,7 +216,8 @@ function spaceMetaLine(space: SpaceMeta): string {
 
 function viewTabs(): ReadonlyArray<SegmentedTabOption<SpacesView>> {
   return [
-    { value: "library", label: tr("market.viewLibrary"), accessibilityLabel: "spaces-view-library" },
+    { value: "library", label: tr("spaces.p4.apps"), accessibilityLabel: "spaces-view-library" },
+    { value: "cards", label: tr("spaces.p4.cards"), accessibilityLabel: "spaces-view-cards" },
     { value: "market", label: tr("market.viewMarket"), accessibilityLabel: "spaces-view-market" },
     { value: "submissions", label: tr("market.viewSubmissions"), accessibilityLabel: "spaces-view-submissions" },
   ];
@@ -214,14 +227,46 @@ function refreshCurrentView(): void {
   const view = spacesView();
   if (view === "market") enterMarket();
   else if (view === "submissions") void loadSubmissions();
-  else {
+  else if (view === "library") {
     void loadSpaces();
     void loadMarketOrigins();
+    void loadAccountCatalog();
   }
+}
+
+/** Opens a Space inside the app on the device in context, with its placements. */
+function openInstalledSpace(item: SpaceMeta): void {
+  const catalogApp = accountCatalog()?.apps.find(app => app.appId === item.id);
+  openSpacePage({
+    appId: item.id,
+    name: item.name,
+    devices: catalogApp?.devices.map(device => device.deviceId),
+    needsDevice: catalogApp?.needsDevice,
+  });
+}
+
+function openElsewhereSpace(appId: string, deviceId: string): void {
+  const app = spacesElsewhere().find(item => item.appId === appId);
+  if (!app) return;
+  openSpacePage({
+    appId,
+    name: app.name,
+    deviceId,
+    devices: app.devices.map(device => device.deviceId),
+    needsDevice: app.needsDevice,
+  });
 }
 
 function spaceMenuItems(space: SpaceMeta, running: boolean): DropdownMenuItem[] {
   return [
+    {
+      id: "open",
+      label: tr("spaces.p4.open"),
+      icon: "layout-grid",
+      disabled: Boolean(spaceOpenBlockedReason()),
+      accessibilityLabel: `space-menu-open-inline-${space.id}`,
+      onSelect: () => openInstalledSpace(space),
+    },
     {
       id: "open-window",
       label: tr("spaces.openWindow"),
@@ -285,8 +330,8 @@ function SpaceCard(props: { space: () => SpaceMeta }) {
     >
       <View
         role="button"
-        accessibilityLabel={`space-inspect-${props.space().id}`}
-        onPress={() => void inspectSpace(props.space().id)}
+        accessibilityLabel={`space-open-${props.space().id}`}
+        onPress={() => openInstalledSpace(props.space())}
         style={{
           minHeight: 132,
           padding: 16,
@@ -741,43 +786,6 @@ function CreateSpaceSection() {
   );
 }
 
-/** Where a Space cannot open in its own window, say why plainly. */
-function RunUnsupportedNote() {
-  return (
-    <If when={spaceWindowBlockedReason()}>
-    <View
-      accessibilityLabel="spaces-run-unsupported"
-      style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 4 }}
-    >
-      <View style={{ paddingTop: 2 }}>
-        <Icon name="info" size={14} color={palette().textMuted} />
-      </View>
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text
-          style={{
-            color: palette().textSecondary,
-            fontSize: textSize(13),
-            fontWeight: "600",
-            lineHeight: textLineHeight(13, 1.4),
-          }}
-        >
-          {tr("spaces.runUnsupportedTitle")}
-        </Text>
-        <Text
-          style={{
-            color: palette().textMuted,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.5),
-          }}
-        >
-          {spaceWindowBlockedReason()}
-        </Text>
-      </View>
-    </View>
-    </If>
-  );
-}
-
 function installedSummary(): string {
   const installed = tr("spaces.installedCount", { count: formatCount(spaces().length) });
   const running = runningSpaceWorkers().length;
@@ -812,6 +820,7 @@ export function SpacesScene(props: { embedded?: boolean }) {
     void scopeKey;
     void loadSpaces();
     void loadMarketOrigins();
+    void loadAccountCatalog(); // wave22-p4
   });
   // Each view reads its own host state when it is shown (and again when the
   // driven device changes), so a hidden view costs nothing.
@@ -825,12 +834,25 @@ export function SpacesScene(props: { embedded?: boolean }) {
   });
   const unsubscribe = subscribeSpaceEvents();
   cleanup(() => unsubscribe());
+  // wave22-p4: a Space page belongs to the device it opened on.
+  let openedFor = deviceContext();
+  effect(() => {
+    const device = deviceContext();
+    if (device !== openedFor) {
+      openedFor = device;
+      if (openSpace()?.deviceId && openSpace()?.deviceId !== device) closeSpacePage();
+    }
+  });
 
   return (
     <View
       onLayout={trackStudioWidth}
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
     >
+      <If when={openSpace()}>
+        <SpacePage permissionLabel={localizePermission} />
+      </If>
+      <If when={!openSpace()}>
       <Scroll style={{ flex: 1, minHeight: 0 }}>
         <If
           when={props.embedded}
@@ -862,6 +884,10 @@ export function SpacesScene(props: { embedded?: boolean }) {
           </If>
           <If when={spacesView() === "submissions"}>
             <MiniAppSubmissionsView />
+          </If>
+          {/* wave22-p3 cards, under Library › Spaces › Cards (wave22-p4). */}
+          <If when={spacesView() === "cards"}>
+            <CardsSection deviceId={cardsDeviceForLibrary()} />
           </If>
           <If when={spacesView() === "library"}>
           <CreateSpaceSection />
@@ -911,10 +937,17 @@ export function SpacesScene(props: { embedded?: boolean }) {
             </If>
           </StudioSection>
 
-          <RunUnsupportedNote />
+          {/* wave22-p4: the account's Spaces that live on other devices. */}
+          <If when={spacesElsewhere().length > 0}>
+            <StudioSection title={tr("spaces.p4.elsewhereTitle")} accessibilityLabel="spaces-elsewhere-section">
+              <ElsewhereList apps={spacesElsewhere()} onOpen={openElsewhereSpace} />
+            </StudioSection>
+          </If>
+          {/* wave22-p4: Spaces open inside the app everywhere; only "Open in window" is desktop-only. */}
           </If>
         </StudioBody>
       </Scroll>
+      </If>
 
       <SpaceInspectorModal />
       <PackageImportModal />

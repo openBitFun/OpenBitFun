@@ -11,8 +11,97 @@ import {
   type ModelCatalogEntry,
   type ReasoningCatalogProjection,
 } from "./api";
+import { entryDeviceId, fleetActive, invokeCommand, listenEvent } from "./bridge";
+import { FLEET_INDEX_CHANGED_EVENT } from "./fleetTypes";
 import { loadModels as loadStoredModels, storedModels, type StoredModel } from "./modelSettingsStore";
-import { activeSessionId, activeWorkspaceId, onWorkspaceChanged, runStep, sessions } from "./state";
+import { activeSessionId, activeWorkspaceId, deviceOfSession, onWorkspaceChanged, runStep, sessions } from "./state";
+
+// ── The account-wide catalog (`fleet_models`) ─────────────────────────────────
+// Every device's models, grouped by device, as the entry projects them: the
+// device that runs the session first, each device's state, which rows can be
+// picked, and the reference to store. Nothing is ordered or gated here.
+
+/** One configured model of a device (`FleetModel`). */
+export interface FleetModel {
+  modelId: string;
+  displayName: string;
+  provider: string;
+  modelName?: string;
+  capabilities?: string[];
+  contextWindow?: number;
+  primary?: boolean;
+}
+
+/** One row of the picker (`FleetModelChoice`). */
+export interface FleetModelChoice extends FleetModel {
+  /** What `update_session_model` stores (plain for this device, `fleet:<device>/<model>` otherwise). */
+  modelRef: string;
+  selectable: boolean;
+}
+
+/** One device's group (`FleetModelsDevice`). */
+export interface FleetModelsDevice {
+  deviceId: string;
+  name: string;
+  hostKind?: string;
+  state?: string;
+  online: boolean;
+  isThisDevice: boolean;
+  /** `device_offline`, `device_requires_update`, `no_model`; absent when its models can be picked. */
+  unavailableReason?: string;
+  models: FleetModelChoice[];
+}
+
+/** The groups the entry answered for the open session, or `null` (no fleet, older host): the local list. */
+export const fleetModelGroups = signal<FleetModelsDevice[] | null>(null);
+
+/** The device that runs the open session, when it is not the entry itself (`fleet_models {deviceId}`). */
+function catalogDeviceId(): string | undefined {
+  const owner = deviceOfSession(activeSessionId());
+  return owner && owner !== entryDeviceId() ? owner : undefined;
+}
+
+let fleetModelsTicket = 0;
+let fleetModelsFollowing = false;
+
+/**
+ * Reads `fleet_models` for the open session. A host that does not answer it
+ * (signed out, no fleet, an older build) keeps the local-only list.
+ */
+export async function refreshFleetModels(): Promise<void> {
+  const ticket = ++fleetModelsTicket;
+  if (!fleetActive()) {
+    fleetModelGroups.set(null);
+    return;
+  }
+  if (!fleetModelsFollowing) {
+    fleetModelsFollowing = true;
+    listenEvent(FLEET_INDEX_CHANGED_EVENT, () => {
+      if (fleetModelGroups() !== null) void refreshFleetModels();
+    });
+  }
+  const deviceId = catalogDeviceId();
+  try {
+    const answer = await invokeCommand<{ devices?: FleetModelsDevice[] }>(
+      "fleet_models",
+      deviceId ? { deviceId } : {},
+    );
+    if (ticket !== fleetModelsTicket) return;
+    fleetModelGroups.set(Array.isArray(answer?.devices) && answer.devices.length > 0 ? answer.devices : null);
+  } catch {
+    if (ticket === fleetModelsTicket) fleetModelGroups.set(null);
+  }
+}
+
+/** The catalog row and its device for a stored reference, when the catalog lists it. */
+export function fleetChoiceOf(ref: string | null | undefined): { device: FleetModelsDevice; choice: FleetModelChoice } | null {
+  if (!ref) return null;
+  for (const device of fleetModelGroups() ?? []) {
+    const choice = device.models.find(model => model.modelRef === ref);
+    if (choice) return { device, choice };
+  }
+  return null;
+}
 
 export interface ModelOption {
   /** Wire value sent to `update_session_model` (config ID on real Rust hosts). */
@@ -99,7 +188,11 @@ export const activeModelLabel = computed<string>(() => {
   const id = activeModelId();
   if (!id) return "default model";
   const match = findOption(id);
-  return match ? match.label : id;
+  if (match) return match.label;
+  // Another device's model: its name and the device it lives on.
+  const remote = fleetChoiceOf(id);
+  if (remote && !remote.device.isThisDevice) return `${remote.choice.displayName || remote.choice.modelId} · ${remote.device.name}`;
+  return remote ? remote.choice.displayName || id : id;
 });
 
 /** What the picker offers: a model that cannot chat is not a choice here. */
@@ -116,6 +209,7 @@ function projectionToChoices(projection: ReasoningCatalogProjection | null | und
 
 /** Loads the catalog once per workspace; the composer asks on mount. */
 export function ensureModelsLoaded(): void {
+  void refreshFleetModels();
   if (models().length) return;
   // A host without a catalog leaves the composer on its default model instead of
   // showing a failure banner for a picker the user did not ask for.
@@ -366,6 +460,7 @@ onWorkspaceChanged(() => {
   defaultModels.set({});
   defaultModelId.set(null);
   sessionModels.set({});
+  fleetModelGroups.set(null);
   modelPickerOpen.set(false);
   // Presets belong to a model and a session belongs to a workspace, so neither
   // reading survives that change.

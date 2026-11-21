@@ -74,6 +74,8 @@ fn presence_merges_the_device_network_with_the_directory() {
     let cloud = dialed.iter().find(|p| p.device_id == "cloud-abc").unwrap();
     assert!(cloud.online && cloud.mesh && cloud.unsupported.is_none());
     assert_eq!(cloud.route, None);
+    // A node registered under the legacy default name reads as "Super Agent".
+    assert_eq!(cloud.name, "Super Agent");
 
     let desk = by_id("desk-mesh").unwrap();
     assert_eq!(desk.name, "Studio");

@@ -9,4 +9,5 @@
 // and the UI's `App.tsx` mounts itself.
 
 import "./src/nativeController";
+import "./src/documentRenderers";
 import "../../nsh-ui/App";

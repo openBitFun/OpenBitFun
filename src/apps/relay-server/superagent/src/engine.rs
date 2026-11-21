@@ -5,8 +5,14 @@
 //! `fleet_wait`, and finishing. Which device does the work, how work fans
 //! out and how results compare is the model's decision through the tools.
 //! The one answer that does not come from the model is the infrastructure
-//! fact that no device can run the model now: the turn parks on holder
-//! availability and says so.
+//! fact that no device can run the model now: the turn ends at once with a
+//! notice naming the devices and what to do (it never waits on a device;
+//! queued jobs for offline devices are unaffected).
+//!
+//! A conversation runs on Auto (the backend picks the holder: the last one,
+//! then a desktop, then the lowest latency, with that device's primary
+//! model) or on the device and model the user picked
+//! (`Conversation::pinned_holder` + `model_id`).
 //!
 //! Every step is persisted before the next one starts, so a restart resumes
 //! a turn where it stopped. Dispatches are written ahead to the ledger with
@@ -17,10 +23,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Weak};
 
 use openbitfun_product_domains::superagent::{
-    self as contract, project_job_card, project_job_state, rank_model_holders, wait_satisfied,
-    HolderChoice, JobCardFacts, JobPendingPrompt, JobStateFacts, LedgerJobPhase,
-    ModelHolderCandidate, RuntimeFacts, SuperagentJobState, SuperagentTool, SuperagentToolCall,
-    TargetJobState, SUPERAGENT_CARD_CHANGED_EVENT, SUPERAGENT_TURN_DELTA_EVENT,
+    self as contract, no_holder_notice, pinned_model_holder, project_job_card, project_job_state,
+    rank_model_holders, wait_satisfied, HolderChoice, JobCardFacts, JobPendingPrompt,
+    JobStateFacts, LedgerJobPhase, ModelHolderCandidate, RuntimeFacts, SuperagentJobState,
+    SuperagentTool, SuperagentToolCall, TargetJobState, SUPERAGENT_CARD_CHANGED_EVENT,
+    SUPERAGENT_TURN_DELTA_EVENT,
 };
 use serde_json::{json, Value};
 use tokio::sync::{Notify, Semaphore};
@@ -74,15 +81,15 @@ impl Default for EngineConfig {
     }
 }
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "You are OpenBitFun, the user's agent for all of their devices. \
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are Super Agent, the OpenBitFun agent for all of the user's devices. \
 The user's desktops and command-line hosts are runtimes that do the real work: you plan, hand work to them with \
 fleet_dispatch, follow it with fleet_wait and fleet_job_status, read results with fleet_job_result, and report back. \
 Look at the runtimes with fleet_list_runtimes before you choose one. Fan out to several runtimes when it helps and \
 compare their results yourself. Permission prompts of a job are answered by the user on their devices, never by you. \
 Read a job transcript only when the user asks for it.";
 
-/// The no-holder notice (the one answer that is not the model's).
-pub const NO_HOLDER_NOTICE: &str = "No device is online; this request will start when one is.";
+/// The no-holder card (the one answer that is not the model's); its text
+/// is `policy::no_holder_notice`.
 pub const NO_HOLDER_CARD: &str = "no_holder";
 
 /// Accounts that need the watcher (live jobs or unfinished turns).
@@ -145,6 +152,7 @@ impl Engine {
         clock: Arc<dyn Clock>,
         config: EngineConfig,
     ) -> Arc<Self> {
+        slots.set_clock(Arc::clone(&clock));
         let watch = slots
             .store()
             .account(WATCH_ACCOUNT, true)
@@ -206,7 +214,10 @@ impl Engine {
     }
 
     fn needs_watch(state: &SlotState) -> bool {
-        state.ledger.has_live_jobs()
+        // History waiting for a device is watched too (`archive`).
+        !state.outbox.is_empty()
+            || state.legacy_pending
+            || state.ledger.has_live_jobs()
             || state
                 .conversations
                 .values()
@@ -338,13 +349,56 @@ impl Engine {
     // Frontend entry points
     // ------------------------------------------------------------------
 
-    /// `superagent_send`: exactly once per `clientMessageId`.
+    /// `superagent_send` keeping the conversation's model choice.
     pub async fn send(
         &self,
         slot: &Arc<Slot>,
         conversation_id: Option<&str>,
         message: &str,
         client_message_id: &str,
+    ) -> Result<Value, String> {
+        self.send_with_model(slot, conversation_id, message, client_message_id, None)
+            .await
+    }
+
+    /// `superagent_set_model`: the conversation's model choice (`None`:
+    /// Auto). It applies from the next model round.
+    pub async fn set_model(
+        &self,
+        slot: &Arc<Slot>,
+        conversation_id: &str,
+        pick: Option<contract::SuperagentModelPick>,
+    ) -> Result<(), String> {
+        self.ensure_conversation(slot, conversation_id).await?;
+        let now = self.now();
+        let mut state = slot.state.lock().await;
+        let conversation = slot
+            .conversation(&mut state, conversation_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not_found: no such conversation".to_string())?;
+        if conversation.model_pick() == pick {
+            return Ok(());
+        }
+        conversation.set_model_pick(pick);
+        conversation.updated_ms = now;
+        let snapshot = conversation.clone();
+        slot.save_conversation(&mut state, conversation_id)
+            .map_err(|e| e.to_string())?;
+        drop(state);
+        self.publish_turn(slot, &snapshot, None);
+        Ok(())
+    }
+
+    /// `superagent_send`: exactly once per `clientMessageId`. `model`
+    /// (`Some`) sets the conversation's model choice first (`Some(None)`:
+    /// Auto); a new conversation starts with it.
+    pub async fn send_with_model(
+        &self,
+        slot: &Arc<Slot>,
+        conversation_id: Option<&str>,
+        message: &str,
+        client_message_id: &str,
+        model: Option<Option<contract::SuperagentModelPick>>,
     ) -> Result<Value, String> {
         if message.trim().is_empty() {
             return Err("invalid_request: the message is empty".into());
@@ -355,12 +409,15 @@ impl Engine {
         if client_message_id.is_empty() || client_message_id.len() > 128 {
             return Err("invalid_request: clientMessageId is required".into());
         }
+        // A conversation that left the working set comes back from the
+        // devices first.
+        if let Some(id) = conversation_id {
+            self.ensure_conversation(slot, id).await?;
+        }
         let now = self.now();
         let mut state = slot.state.lock().await;
         if !state.meta.enabled {
-            return Err(
-                "superagent_disabled: the OpenBitFun agent is turned off for this account".into(),
-            );
+            return Err("superagent_disabled: Super Agent is turned off for this account".into());
         }
         let id = match conversation_id {
             Some(id) => id.to_string(),
@@ -403,6 +460,9 @@ impl Engine {
         if conversation.active_turn().is_some() {
             return Err("turn_in_progress: wait for the current turn or cancel it".into());
         }
+        if let Some(pick) = model {
+            conversation.set_model_pick(pick);
+        }
         let message_id = new_id("m");
         let turn = Turn {
             id: new_id("t"),
@@ -430,6 +490,8 @@ impl Engine {
         let snapshot = conversation.clone();
         slot.save_conversation(&mut state, &id)
             .map_err(|e| e.to_string())?;
+        // A new conversation may push an idle one out of the working set.
+        crate::archive::enforce_working_set(slot, &mut state, now);
         self.update_watch(slot, &state);
         drop(state);
         self.publish_turn(slot, &snapshot, None);
@@ -588,71 +650,17 @@ impl Engine {
             .collect()
     }
 
-    async fn holder_candidates(&self, account_id: &str) -> Vec<ModelHolderCandidate> {
+    pub async fn holder_candidates(&self, account_id: &str) -> Vec<ModelHolderCandidate> {
         match self.rpc.devices(account_id).await {
             Ok(devices) => devices
-                .into_iter()
-                .map(|device| ModelHolderCandidate {
-                    device_id: device.facts.device_id,
-                    host_kind: device.facts.host_kind,
-                    online: device.facts.online,
-                    model_configured: device.facts.model_configured,
-                    host_capabilities: device.facts.host_capabilities,
-                    latency_ms: device.facts.latency_ms,
-                })
+                .iter()
+                .map(DeviceSnapshot::holder_candidate)
                 .collect(),
             Err(error) => {
                 log::warn!("Superagent device list failed: {}", error);
                 Vec::new()
             }
         }
-    }
-
-    async fn park(
-        &self,
-        slot: &Arc<Slot>,
-        conversation_id: &str,
-        wait: Wait,
-        deadline_ms: Option<u64>,
-        card: Option<Message>,
-    ) -> Result<(), String> {
-        let now = self.now();
-        let mut state = slot.state.lock().await;
-        let Some(conversation) = slot
-            .conversation(&mut state, conversation_id)
-            .map_err(|e| e.to_string())?
-        else {
-            return Ok(());
-        };
-        let Some(turn) = conversation
-            .turn
-            .as_mut()
-            .filter(|turn| !turn.step.is_finished())
-        else {
-            return Ok(());
-        };
-        turn.step = Step::Parked {
-            wait,
-            since_ms: now,
-            deadline_ms,
-        };
-        turn.updated_ms = now;
-        if let Some(card) = card {
-            let duplicate = conversation.messages.last().is_some_and(|last| {
-                last.role == Role::Card && last.card.get("kind") == card.card.get("kind")
-            });
-            if !duplicate {
-                conversation.messages.push(card);
-            }
-        }
-        conversation.updated_ms = now;
-        let snapshot = conversation.clone();
-        slot.save_conversation(&mut state, conversation_id)
-            .map_err(|e| e.to_string())?;
-        self.update_watch(slot, &state);
-        drop(state);
-        self.publish_turn(slot, &snapshot, None);
-        Ok(())
     }
 
     async fn finish(
@@ -732,9 +740,8 @@ impl Engine {
             .await?;
             return Ok(false);
         }
-        let (messages, pinned, last_holder) = {
+        let (messages, pick, last_holder) = {
             let mut state = slot.state.lock().await;
-            let pinned = state.meta.pinned_holder.clone();
             let Some(conversation) = slot
                 .conversation(&mut state, conversation_id)
                 .map_err(|e| e.to_string())?
@@ -743,29 +750,54 @@ impl Engine {
             };
             (
                 Self::model_messages(conversation),
-                pinned,
+                conversation.model_pick(),
                 conversation.last_holder.clone(),
             )
         };
         let candidates = self.holder_candidates(&slot.account_id).await;
-        let ranked = match rank_model_holders(
-            &candidates,
-            pinned.as_deref(),
-            last_holder.as_deref(),
-            &turn.lost_holders,
-        ) {
+        let choice = match pick.as_ref() {
+            // That device and that model, never another one; a pinned
+            // holder lost this round is not retried elsewhere.
+            Some(pick) if turn.lost_holders.contains(&pick.device_id) => HolderChoice::NoHolder {
+                reason: contract::model_reason::PINNED_HOLDER_OFFLINE.to_string(),
+            },
+            Some(pick) => pinned_model_holder(&candidates, pick),
+            None => rank_model_holders(&candidates, last_holder.as_deref(), &turn.lost_holders),
+        };
+        let ranked = match choice {
             HolderChoice::Chosen { ranked } => ranked,
             HolderChoice::NoHolder { .. } => {
-                let card = self.card_message(NO_HOLDER_CARD, NO_HOLDER_NOTICE, json!({}));
-                self.park(slot, conversation_id, Wait::Holder, None, Some(card))
-                    .await?;
+                // No model round waits on a device: the turn ends now with
+                // what failed and what to do.
+                let notice = no_holder_notice(&candidates, pick.as_ref());
+                let card = self.card_message(
+                    NO_HOLDER_CARD,
+                    &notice.text,
+                    json!({
+                        "reason": notice.reason,
+                        "offline": notice.offline,
+                        "noModel": notice.no_model,
+                        "requiresUpdate": notice.requires_update,
+                    }),
+                );
+                self.finish(
+                    slot,
+                    conversation_id,
+                    &turn.id,
+                    Step::Failed {
+                        reason: notice.reason.clone(),
+                    },
+                    Some(card),
+                )
+                .await?;
                 return Ok(false);
             }
         };
         let holder = ranked[0].clone();
         let request = ModelRequest {
             request_id: format!("{}-r{}", turn.id, turn.rounds),
-            model: None,
+            // Auto runs the holder's primary model.
+            model: pick.map(|pick| pick.model_id),
             system: self.config.system_prompt.clone(),
             messages,
             tools: Self::tool_definitions(),
@@ -1247,13 +1279,17 @@ impl Engine {
         {
             return;
         }
-        let submitter = facts_by_id(devices, &job.device_id).is_some_and(|device| {
-            has(
-                &device.facts.dispatch_capabilities,
-                contract::JOB_SUBMITTER_CAPABILITY,
-            )
-        });
-        let outcome = self.submit_once(slot, &job, submitter).await;
+        let advertises = |capability: &str| {
+            facts_by_id(devices, &job.device_id)
+                .is_some_and(|device| has(&device.facts.dispatch_capabilities, capability))
+        };
+        let fields = wire::SubmitFields {
+            submitter: advertises(contract::JOB_SUBMITTER_CAPABILITY),
+            // A worker question lands in the job's mailbox, where the user
+            // (Inbox) or the agent (`fleet_job_answer`) answers it.
+            user_questions: advertises(contract::USER_QUESTION_MAILBOX_CAPABILITY),
+        };
+        let outcome = self.submit_once(slot, &job, fields).await;
         let now = self.now();
         let mut state = slot.state.lock().await;
         if let Some(record) = state.ledger.jobs.get_mut(job_id) {
@@ -1307,7 +1343,7 @@ impl Engine {
         &self,
         slot: &Arc<Slot>,
         job: &JobRecord,
-        submitter: bool,
+        fields: wire::SubmitFields,
     ) -> SubmitOutcome {
         let account = &slot.account_id;
         // A submit that was sent before with an unknown outcome: the target
@@ -1403,7 +1439,7 @@ impl Engine {
         let Some(provisioned) = provisioned else {
             return SubmitOutcome::Pending("the source is still being prepared".into());
         };
-        let args = wire::submit_args(job, &provisioned.workspace_path, submitter);
+        let args = wire::submit_args(job, &provisioned.workspace_path, fields);
         match self
             .rpc
             .call(account, &job.device_id, "dispatch_target_submit", args)
@@ -1525,6 +1561,13 @@ impl Engine {
                 continue;
             };
             let mut prompt_changed = false;
+            // The device answered: the job is not lost (persisted at most
+            // once a day when nothing else changed).
+            let seen_stale = status.is_some()
+                && now.saturating_sub(record.status_seen_ms) >= 24 * 60 * 60 * 1000;
+            if status.is_some() {
+                record.status_seen_ms = now;
+            }
             if let Some(status) = &status {
                 record.target_state = status.state;
                 record.status_cursor = status.cursor.max(record.status_cursor);
@@ -1565,6 +1608,8 @@ impl Engine {
                 let _ = slot.save_ledger(&mut state);
                 drop(state);
                 self.publish_card(slot, &record, Some(&devices));
+            } else if seen_stale {
+                let _ = slot.save_ledger(&mut state);
             }
         }
         changed
@@ -1886,13 +1931,12 @@ impl Engine {
     /// device decides whether it accepts answers from the cloud agent; the
     /// card records `answeredBy: superagent`.
     async fn job_answer(&self, slot: &Arc<Slot>, input: contract::JobAnswerInput) -> Value {
-        let (job, _) = match self.job_on_device(slot, &input.job_id).await {
+        let (job, devices) = match self.job_on_device(slot, &input.job_id).await {
             Ok(found) => found,
             Err(error) => return error,
         };
         let Some(decision) = input.decision else {
-            // Worker questions need the device's question mailbox (phase S2).
-            return tool_error(contract::reason::CAPABILITY_MISSING, "question_mailbox");
+            return self.job_answer_question(slot, &job, &devices, input).await;
         };
         let reply = match decision {
             contract::AnswerDecision::Once => "once",
@@ -1923,6 +1967,77 @@ impl Engine {
                         prompt_id: input.prompt_id.clone(),
                         answered_by: contract::ANSWERED_BY_SUPERAGENT.to_string(),
                         decision: Some(reply.to_string()),
+                        at_ms: Some(now),
+                    });
+                    if record
+                        .pending_prompt
+                        .as_ref()
+                        .is_some_and(|p| p.request_id == input.prompt_id)
+                    {
+                        record.pending_prompt = None;
+                    }
+                    record.updated_ms = now;
+                    let record = record.clone();
+                    let _ = slot.save_ledger(&mut state);
+                    drop(state);
+                    self.publish_card(slot, &record, None);
+                }
+                self.refresh_jobs(slot, &[input.job_id.clone()]).await;
+                json!({ "jobId": input.job_id, "promptId": input.prompt_id, "answered": true, "answer": answer })
+            }
+            Err(error) => tool_error("device_error", error.message()),
+        }
+    }
+
+    /// A worker question (`user_question_mailbox_v1`): the answers go to the
+    /// job's question mailbox on its device, which resumes the job.
+    async fn job_answer_question(
+        &self,
+        slot: &Arc<Slot>,
+        job: &JobRecord,
+        devices: &[DeviceSnapshot],
+        input: contract::JobAnswerInput,
+    ) -> Value {
+        if !facts_by_id(devices, &job.device_id).is_some_and(|d| {
+            has(
+                &d.facts.dispatch_capabilities,
+                contract::USER_QUESTION_MAILBOX_CAPABILITY,
+            )
+        }) {
+            return tool_error(
+                contract::reason::CAPABILITY_MISSING,
+                contract::USER_QUESTION_MAILBOX_CAPABILITY,
+            );
+        }
+        let Some(answers) = input.answers.as_deref().filter(|a| !a.is_empty()) else {
+            return tool_error(
+                "invalid_input",
+                "answer a question with `answers`, a permission with `decision`",
+            );
+        };
+        let args = wire::question_answer_args(
+            &input.job_id,
+            &input.prompt_id,
+            wire::question_answers(answers),
+        );
+        match self
+            .rpc
+            .call(
+                &slot.account_id,
+                &job.device_id,
+                "dispatch_target_answer",
+                args,
+            )
+            .await
+        {
+            Ok(answer) => {
+                let now = self.now();
+                let mut state = slot.state.lock().await;
+                if let Some(record) = state.ledger.jobs.get_mut(&input.job_id) {
+                    record.last_answer = Some(contract::JobAnswerNote {
+                        prompt_id: input.prompt_id.clone(),
+                        answered_by: contract::ANSWERED_BY_SUPERAGENT.to_string(),
+                        decision: Some("answered".to_string()),
                         at_ms: Some(now),
                     });
                     if record
@@ -2029,8 +2144,49 @@ impl Engine {
             self.refresh_jobs(slot, &live).await;
         }
         self.resume_parked(slot).await;
+        // History to the devices, then the time-to-live pass (`archive`).
+        crate::archive::pump(self, slot, false).await;
+        self.sweep_slot(slot, false).await;
         let state = slot.state.lock().await;
         self.update_watch(slot, &state);
+    }
+
+    /// The time-to-live pass of one account (at most every ten minutes
+    /// unless `force`): finished jobs after 7 days, live jobs silent for 30
+    /// days marked lost, the conversation working set, the outbox bounds.
+    pub async fn sweep_slot(&self, slot: &Arc<Slot>, force: bool) {
+        let now = self.now();
+        let mut state = slot.state.lock().await;
+        if !force && state.outbox.next_sweep_ms > now {
+            return;
+        }
+        state.outbox.next_sweep_ms = now + 10 * 60 * 1000;
+        let (lost, dropped) = state.ledger.expire(now);
+        if !lost.is_empty() || dropped > 0 {
+            log::info!(
+                "Superagent ledger time to live: lost={}, dropped={}",
+                lost.len(),
+                dropped
+            );
+            let _ = slot.save_ledger(&mut state);
+        }
+        crate::archive::enforce_working_set(slot, &mut state, now);
+        slot.save_outbox(&mut state, now);
+        let lost_jobs: Vec<JobRecord> = lost
+            .iter()
+            .filter_map(|id| state.ledger.jobs.get(id).cloned())
+            .collect();
+        drop(state);
+        for job in &lost_jobs {
+            self.publish_card(slot, job, None);
+        }
+        slot.prune_device_facts(None).await;
+    }
+
+    /// Brings a conversation that left the working set back from the
+    /// account's devices before a command acts on it (`archive::resume`).
+    pub async fn ensure_conversation(&self, slot: &Arc<Slot>, id: &str) -> Result<bool, String> {
+        crate::archive::resume(self, slot, id).await
     }
 
     async fn resume_parked(&self, slot: &Arc<Slot>) {
@@ -2052,13 +2208,9 @@ impl Engine {
         };
         for (conversation_id, wait, deadline) in parked {
             let resume = match &wait {
-                Wait::Holder => {
-                    let candidates = self.holder_candidates(&slot.account_id).await;
-                    matches!(
-                        rank_model_holders(&candidates, None, None, &[]),
-                        HolderChoice::Chosen { .. }
-                    )
-                }
+                // A turn parked on holder availability by an earlier build:
+                // the next model round runs now, or ends with the notice.
+                Wait::Holder => true,
                 Wait::Jobs {
                     job_ids,
                     until,
@@ -2297,7 +2449,7 @@ pub fn tool_description(tool: SuperagentTool) -> &'static str {
         SuperagentTool::FleetJobTranscript => "A job's transcript. Only when the user asks for it; the user sees that you read it.",
         SuperagentTool::FleetJobMessage => "Send a job a message: steer its running turn, or start a follow-up turn of a finished job.",
         SuperagentTool::FleetJobCancel => "Cancel a job.",
-        SuperagentTool::FleetJobAnswer => "Answer a job's waiting prompt yourself (allow once, always, or reject with feedback) so the job keeps going. Leave it for the user when the decision is theirs.",
-        SuperagentTool::FleetPublishBranch => "Push a finished job's result branch from its device to a remote (never forced, only dispatch branches).",
+        SuperagentTool::FleetJobAnswer => "Answer a job's waiting prompt yourself so the job keeps going: a permission with `decision` (allow once, always, or reject with feedback), or a worker question (tool AskUserQuestion) with `answers`, one per question: `questionId` is the question's index from its summary, `answer` the chosen option label (labels joined by `;` for a multi-select question). Leave it for the user when the decision is theirs.",
+        SuperagentTool::FleetPublishBranch => "Push a finished job's result branch from its device to its workspace's remote (never forced, only dispatch branches); the answer says what was pushed. A job imported from another device's job has no remote there: publish the source job instead.",
     }
 }

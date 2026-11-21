@@ -14,7 +14,21 @@ use crate::fleet::{FleetActionGate, FleetHostKind};
 /// Device id prefix of the per-account cloud node (`cloud-<hash(accountId)>`).
 pub const CLOUD_DEVICE_ID_PREFIX: &str = "cloud-";
 /// Display name of the cloud node.
-pub const CLOUD_DEVICE_DISPLAY_NAME: &str = "OpenBitFun";
+pub const CLOUD_DEVICE_DISPLAY_NAME: &str = "Super Agent";
+/// The display name cloud nodes registered with before it was "Super Agent";
+/// a directory row still carrying it reads as [`CLOUD_DEVICE_DISPLAY_NAME`].
+pub const LEGACY_CLOUD_DEVICE_DISPLAY_NAME: &str = "OpenBitFun";
+
+/// The name a cloud node's directory row is shown with: empty and the
+/// legacy default read as [`CLOUD_DEVICE_DISPLAY_NAME`].
+pub fn cloud_node_display_name(registered: &str) -> &str {
+    let trimmed = registered.trim();
+    if trimmed.is_empty() || trimmed == LEGACY_CLOUD_DEVICE_DISPLAY_NAME {
+        CLOUD_DEVICE_DISPLAY_NAME
+    } else {
+        registered
+    }
+}
 /// Account-directory kind of the cloud node's key. Older clients never treat
 /// a row of this kind as a host.
 pub const CLOUD_AGENT_DIRECTORY_KIND: &str = "cloud_agent";
@@ -33,6 +47,9 @@ pub const STATUS_SUMMARY_ONLY_CAPABILITY: &str = "status_summary_only_v1";
 pub const JOB_SUBMITTER_CAPABILITY: &str = "job_submitter_v1";
 pub const WORKSPACE_PEER_IMPORT_CAPABILITY: &str = "workspace_peer_import_v1";
 pub const WORKSPACE_PUBLISH_CAPABILITY: &str = "workspace_publish_v1";
+/// A job's `AskUserQuestion` waits in the target's question mailbox
+/// (answered through `fleet_job_answer {answers}` or the Inbox).
+pub const USER_QUESTION_MAILBOX_CAPABILITY: &str = "user_question_mailbox_v1";
 pub const DETACHED_WORKER_CAPABILITY: &str = "detached_worker";
 
 /// The submitter tag the cloud node puts on every job it submits.
@@ -353,6 +370,95 @@ pub struct ModelHolderCandidate {
     pub host_capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u32>,
+    /// The device's display name (the no-holder notice names devices).
+    #[serde(deserialize_with = "null_default")]
+    pub name: String,
+    /// The device's configured models (its fleet digest catalog, or the
+    /// probe's model ids); empty when unknown.
+    #[serde(deserialize_with = "null_default")]
+    pub models: Vec<crate::fleet::FleetModel>,
+}
+
+/// Why no model round can start now (`no_holder` card facts).
+pub mod model_reason {
+    /// A conversation picked a device that is offline.
+    pub const PINNED_HOLDER_OFFLINE: &str = "pinned_holder_offline";
+    /// A conversation picked a model its device no longer has (or the
+    /// device cannot relay rounds).
+    pub const PINNED_MODEL_MISSING: &str = "pinned_model_missing";
+}
+
+/// A conversation's model choice: absent is Auto (the backend picks the
+/// holder: the last one, then a desktop, then the lowest latency, with that
+/// device's primary model); present is that device and that model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SuperagentModelPick {
+    #[serde(deserialize_with = "null_default")]
+    pub device_id: String,
+    #[serde(deserialize_with = "null_default")]
+    pub model_id: String,
+}
+
+/// The conversation's model as frontends show it (`model` of
+/// `superagent_get_conversation`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SuperagentModelSelection {
+    /// `auto` or `pinned`.
+    #[serde(deserialize_with = "null_default")]
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    /// Why the pick cannot run now (`device_offline`, `pinned_model_missing`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+}
+
+/// One device's group in the Super Agent model picker (`models` of
+/// `superagent_status`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SuperagentModelDevice {
+    #[serde(deserialize_with = "null_default")]
+    pub device_id: String,
+    #[serde(deserialize_with = "null_default")]
+    pub name: String,
+    #[serde(deserialize_with = "null_default")]
+    pub host_kind: FleetHostKind,
+    #[serde(deserialize_with = "null_default")]
+    pub online: bool,
+    /// Why this device's models cannot be picked now; absent when they can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub models: Vec<crate::fleet::FleetModel>,
+}
+
+/// The answer when no device can run the round: the turn ends at once with
+/// it (it never parks on model availability).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NoHolderNotice {
+    /// `no_holder`, `pinned_holder_offline` or `pinned_model_missing`.
+    #[serde(deserialize_with = "null_default")]
+    pub reason: String,
+    /// Device names, by why they cannot hold the round.
+    #[serde(deserialize_with = "null_default")]
+    pub offline: Vec<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub no_model: Vec<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub requires_update: Vec<String>,
+    /// The English sentence (what failed and what to do).
+    #[serde(deserialize_with = "null_default")]
+    pub text: String,
 }
 
 /// The holder choice for one model round.
@@ -361,7 +467,7 @@ pub struct ModelHolderCandidate {
 pub enum HolderChoice {
     /// `ranked[0]` holds the round; the rest are the retry order.
     Chosen { ranked: Vec<String> },
-    /// Nobody can; the turn parks on holder availability.
+    /// Nobody can; the turn ends with a [`NoHolderNotice`].
     NoHolder { reason: String },
 }
 

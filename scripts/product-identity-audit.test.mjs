@@ -353,6 +353,7 @@ test('normalizes Windows separators and skips dependency and generated output ro
     'target/debug/generated.rs',
     'src/nsh-ui/dist/index.js',
     'docs/superpowers/archive.md',
+    'src/nsh-ui/assets/vendor/mermaid-10.9.1/mermaid.min.js',
   ]) {
     assert.equal(shouldAuditPath(file), false, file);
     assert.equal(shouldAuditContent(file), false, file);

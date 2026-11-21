@@ -298,6 +298,9 @@ desktop target delegates to its installed CLI.
 | `query_result_summary_v1` | `query` kind `resultSummary`: state, branch, base and head commits, commit count, uncommitted changes, `git diff --numstat` of the job worktree (50 files listed, the rest counted), timing, last error, and the job's last reply bounded to 16 KiB. Never file contents or event payloads |
 | `status_summary_only_v1` | `status {summaryOnly: true}`: state and pending prompt summaries without the event log |
 | `job_submitter_v1` | `submit {submitter}` (1-32 bytes of `[a-z0-9_-]`; the cloud controller sends `cloud`), and `list {submitter}` filters by it |
+| `workspace_peer_import_v1` | Provision-source `source {kind: "job", jobId, sourceDeviceId, head?, branch?, baseCommit?}`: the job starts from another account device's job result (see "Peer branch import"). Advertised by the target's *host*, not by the runner |
+| `workspace_publish_v1` | Verb `dispatch_target_workspace_publish {protocolVersion, jobId, remote?}` (registry row `HostControlPlane`, CLI handled; advertised only while the registry has the row): push a finished job's branch (see "Publish") |
+| `user_question_mailbox_v1` | `submit {userQuestions: true}` opts a job into the question mailbox; `status` and `status {summaryOnly}` carry `pendingQuestions`, and `answer {jobId, requestId, answers}` answers one (see "Approval and supervision") |
 
 The cloud controller submits with `approvalPolicy: auto` by default (full
 access); the target refuses it with `superagent_auto_approval_refused` when its
@@ -307,9 +310,88 @@ user turned `superagent.allowAutoApproval` off, and refuses all new work with
 (`answerRoute: "dispatch"`, the job id), the Inbox answers them on the owner with
 `dispatch_target_answer`, and the agent may answer them itself
 (`answeredBy: superagent`). The job appears in the target's fleet partition like
-any session. Windows targets have no detached runner yet: their probe lacks
-`detached_worker`, and the cloud controller reports
+any session. Linux, macOS and Windows targets advertise `detached_worker`; a
+target on any other OS omits it, and the cloud controller reports
 `detached_worker_unsupported`.
+
+### Detached runner per platform
+
+Every hidden action (the turn worker and the workspace provision, bundle-commit
+and sync actions) uses the same job directory, state files, leases and PID
+marker on every platform. Only process containment differs:
+
+- **Linux and macOS**: the spawner starts the action with `setsid`, so the
+  identity-verified leader PID (its command line names `dispatch <action> --job
+  <id>`) is also the process group that `cancel` signals with TERM, then KILL.
+- **Windows**: the spawner starts the action hidden (`CREATE_NO_WINDOW`), in a
+  new process group, and out of its own Job (`CREATE_BREAKAWAY_FROM_JOB`). When
+  the host Job forbids breakaway, the action stays in it only if that Job does
+  not terminate its members on close; otherwise the spawn fails loudly, because
+  the worker could not outlive its host. Before publishing a PID, the action
+  enrolls itself in a named Job Object derived from the data namespace, action
+  and job id (`Global\`, falling back to `Local\`). A PID authenticates only
+  while that live process is a member of the job's Job Object, so a recycled PID
+  never matches. `cancel` verifies membership and calls `TerminateJobObject`,
+  which stops the worker and every descendant that did not explicitly break
+  away. The name disappears with the worker's handle, so a stale marker never
+  authenticates leftover processes. A worker that cannot enroll settles its job
+  as Failed instead of running unverifiable.
+
+### Peer branch import
+
+A `job` source names a job on another device of the account. The runner owns
+the job store but holds no Link connection, so the target's host (desktop or
+CLI) does the transfer, and only a host advertises the capability: it adds
+`workspace_peer_import_v1` to its probe when its runner reports
+`workspace_peer_bundle_v1`, and an older host passes that runner fact through
+unchanged (a controller then never sends it a `job` source).
+
+1. The host asks its runner to provision. Until the result was imported the
+   runner answers `peerImport {sourceDeviceId, sourceJobId}` instead of a
+   worktree; the host answers its caller `pending` and starts the transfer in
+   the background (one per job; a failure is answered once, the next poll
+   retries).
+2. The host probes the source device (it must report
+   `workspace_peer_bundle_v1`) and calls its `workspace-sync` with
+   `fullHistory: true`: the source checkpoints the job worktree as a normal
+   sync does and bundles the whole branch into a separate `export.bundle`, so
+   an export and a controller's incremental result never replace each other
+   (an export takes no `knownHead`). `workspace-sync-chunk {fullHistory}`
+   reads it.
+3. The host streams the bytes into its own runner through the existing
+   `workspace-bundle-begin/chunk` (bound to the new job, size and SHA-256),
+   hashing them on the way, then calls the runner-internal
+   `peer-import-commit`. The runner verifies size, digest and `git bundle
+   verify`, fetches the source branch into a clone of its own (one per source
+   job, ref `refs/openbitfun/imports/<jobId>`), checks the reported head, and
+   records the import (`peer-import.json`).
+4. The next poll resolves the source from that record: the imported head is
+   the pinned base, the job gets its own branch and worktree, and a given
+   `head` must be contained in the import. The import is per job and
+   immutable, like every other source.
+
+The bundle is bounded (1 GiB) and stays inside the managed dispatch
+directories on both devices; nothing touches either user's checkout.
+
+### Publish
+
+`dispatch_target_workspace_publish` pushes a job branch to the job
+workspace's remote: for a job from one of the target's workspaces, that
+checkout's remote (`origin` unless `remote` names another); for a job from a
+remote URL or a controller's baseline, the URL it was provisioned from (only
+`origin`); a peer-imported job has no remote on that device and is refused
+with `no_publish_remote`. Publish only runs for a finished job, only for a
+`<prefix>/dispatch/<id>` branch, and never forces: Git-visible changes are
+committed first (as a sync does), the remote branch is read with `ls-remote`,
+and a remote head that is not in the job's history fails with
+`branch_diverged`. The push uses the device's own credentials and
+non-interactive Git (`GIT_TERMINAL_PROMPT=0`), with a 45-second bound. The
+answer reports what was pushed (`remote`, credential-free `remoteUrl`,
+`branch`, `headCommit`, `commitCount`, `created`, `upToDate`,
+`previousHead`, `committedChanges`), and the job log records a
+`branchPublished` audit event. The superagent's `fleet_publish_branch` calls
+it; under the default full access it runs without a confirmation card and
+posts the result as a visible card.
 
 ## Conversation model
 
@@ -406,12 +488,28 @@ Permission responses and appended messages are target-owned mailboxes. They are
 idempotent across controller retries and do not depend on the controller that
 originally submitted the job.
 
-The current dispatch protocol has no user-question mailbox or answer operation.
-All three policies therefore declare interactive user input unavailable through
-the shared Runtime context. `AskUserQuestion` must fail explicitly instead of
-waiting for an answer that no controller can deliver. Enabling it requires a
-negotiated capability and durable question/reply support on both sides; permission
-supervision alone is not evidence of that capability.
+User questions have their own mailbox (`user_question_mailbox_v1`). A
+controller opts a job in with `submit {userQuestions: true}`, only after the
+target advertised the capability; the cloud controller always does. For such
+a job the worker declares interactive input available, so `AskUserQuestion`
+waits instead of failing: the worker mirrors the Runtime's waiting questions
+(the job session and its subagents) into `questions/pending/` with a
+`questionPending` event, `status` and summary-only status carry
+`pendingQuestions {requestId, sessionId, title, questions, registeredAtMs}`,
+and `answer {jobId, requestId, answers}` (the Runtime's own answer shape:
+question index to a label or a list of labels; `answers` replaces `reply`)
+persists an idempotent answer that the worker hands to the Runtime, which
+resumes the turn (`questionResolved`, outcome `answered`). A question the
+Runtime stopped waiting on (its `user_question_timeout_secs` passed, or the
+turn ended) settles as `expired` and refuses a late answer. Questions are
+answered under any approval policy; they are not permissions. The fleet
+digest carries them as `question` prompts with `answerRoute: "dispatch"`, so
+the Inbox answers them on the owner with `dispatch_target_answer {answers}`,
+and the superagent answers them with `fleet_job_answer {answers}`
+(`answeredBy: superagent`). A job without the opt-in (every job of an older
+controller) keeps the previous contract: interactive input is unavailable and
+`AskUserQuestion` fails explicitly instead of waiting for an answer nobody can
+deliver.
 
 ## Failure rules
 

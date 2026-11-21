@@ -30,6 +30,9 @@ pub struct AppState {
     /// Optional isolated browser origins for untrusted Page content and the
     /// trusted Relay account login UI.
     pub page_browser_auth: Option<Arc<crate::PageBrowserAuthConfig>>,
+    /// The 2.0 account directory profile: no Pages, and sign-ins free quota
+    /// from dead or stale controller rows before registering.
+    pub directory_profile: bool,
 }
 
 // ── Health & Info ──────────────────────────────────────────────────────────

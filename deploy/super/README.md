@@ -70,6 +70,22 @@ systemctl daemon-reload && systemctl enable --now openbitfun-directory
 The binary builds in the reduced context of `deploy/easytier` (it is
 `cargo build --release -p openbitfun-relay-server` there).
 
+It runs with `RELAY_PROFILE=directory`
+(`relay-service/src/directory_hygiene.rs`), which the 1.0 relay never sets:
+
+- Published Pages are off: the Page routes are not mounted (404), there is
+  no asset store on disk, and the service refuses to start when any
+  `RELAY_PAGE_*` or `RELAY_ASSET_*` variable is set.
+- Retention, swept hourly: expired tokens are deleted; a device row with no
+  live token goes after `RELAY_STALE_DEVICE_DAYS` (90) without being seen, or
+  `RELAY_STALE_CONTROLLER_DAYS` (30) for phones and browser sign-ins (kind
+  `mobile`); a row without `last_seen_at` is never removed by age; a user with
+  no device, token or Page left goes after `RELAY_STALE_USER_DAYS` (365).
+- A sign-in on an account at the 64-device or 256-token quota first frees
+  room: the dead row seen longest ago, else the controller seen longest ago
+  (that browser or phone signs in again). Hosts and the cloud agent are never
+  removed this way.
+
 ## nginx
 
 ```bash
@@ -81,6 +97,31 @@ nginx -t && systemctl reload nginx
 
 Keep a copy of `/etc/nginx` before every change, and run `nginx -t` before
 every reload.
+
+## Logs
+
+The site logs to its own directory with its own retention; the host's
+`/etc/logrotate.d/nginx` (60 days for `/var/log/nginx/*.log`, kept for the
+1.0 release mirror) does not match it.
+
+- Access log `/var/log/nginx/openbitfun-super/access.log`: time, method,
+  route, status, size and timing. No client address, no query string, and
+  device, bundle and content ids are replaced by placeholders
+  (`$obf_super_log_path`). The error log keeps only `crit` lines, because
+  request errors carry the client address and the full request line.
+- Retention 14 days, at most 100 MiB per file (`logrotate-openbitfun-super.conf`).
+- The services log to the journal, capped host-wide at 2 GiB and 30 days
+  (`journald-openbitfun.conf`). Their lines carry hashed account labels and
+  device ids, never message text, titles, e-mail addresses or client
+  addresses (the Link relay logs the transport only).
+
+```bash
+install -d -m 0750 -o root -g adm /var/log/nginx/openbitfun-super
+install -m 0644 logrotate-openbitfun-super.conf /etc/logrotate.d/openbitfun-super
+logrotate -d /etc/logrotate.d/openbitfun-super
+install -D -m 0644 journald-openbitfun.conf /etc/systemd/journald.conf.d/50-openbitfun.conf
+systemctl restart systemd-journald
+```
 
 ## Configuration of the 2.0 clients
 

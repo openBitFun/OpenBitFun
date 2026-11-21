@@ -20,8 +20,16 @@
 //!   `superagent.acceptDispatch` and `superagent.allowAutoApproval` (both
 //!   default on) the OBP `cloud-agent` scope reads per call.
 //!
+//! The same relay serves the account's other devices (`account-device`
+//! scope): a session there may run one of this device's models
+//! (`service::fleet::models`). The round runs here with this device's
+//! credentials; only messages, tool definitions and the streamed answer
+//! cross the link. A relay entry for a third device's model is never
+//! relayed onwards.
+//!
 //! Hosts (desktop, CLI) wire it by routing `fleet_model_*` from a
-//! `cloud-agent` connection to [`handle_fleet_model_command`], answering
+//! `cloud-agent` or `account-device` connection to
+//! [`handle_fleet_model_command`], answering
 //! `ObpBackend::serves_cloud_agent` and `cloud_agent_policy` from
 //! [`device_settings`], and advertising [`FLEET_MODEL_CAPABILITY`].
 //!

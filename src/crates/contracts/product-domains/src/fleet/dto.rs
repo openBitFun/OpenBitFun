@@ -86,7 +86,7 @@ pub enum FleetHostKind {
     Desktop,
     Cli,
     /// The per-account cloud runtime node (device id `cloud-<hash>`, shown
-    /// as "OpenBitFun"). Its account-directory kind is `cloud_agent`, which
+    /// as "Super Agent"). Its account-directory kind is `cloud_agent`, which
     /// older clients never treat as a host. Older readers see `Unknown`.
     Cloud,
     #[default]
@@ -701,6 +701,11 @@ pub struct FleetDigest {
     /// The owner dropped sessions to stay within the partition bound.
     #[serde(deserialize_with = "null_default")]
     pub sessions_truncated: bool,
+    /// The owner's configured models (`models::FleetModel`), in every answer
+    /// (full or delta). `None` from a build before the account-wide model
+    /// catalog: its models are not offered to other devices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<super::models::FleetModel>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

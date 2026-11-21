@@ -27,7 +27,7 @@ export async function buildCliWebUi({ out = path.join(root, 'target', 'cli-web-u
   const { bin, version } = await installNsh();
   const nsh = path.join(bin, process.platform === 'win32' ? 'nsh.exe' : 'nsh');
   rmSync(out, { recursive: true, force: true });
-  execFileSync(nsh, ['package', 'src/nsh-ui', '--target', 'web', '-o', out], {
+  execFileSync(nsh, ['package', 'src/nsh-ui/WebApp.tsx', '--target', 'web', '-o', out], {
     cwd: root,
     stdio: 'inherit',
     windowsHide: true,

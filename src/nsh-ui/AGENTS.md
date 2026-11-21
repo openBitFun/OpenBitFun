@@ -47,8 +47,9 @@ switcher in the main flow.
   Agents, Skills, Spaces and Routines of the device in context ("On {device}"), one tab
   each (`libraryTab`).
 - **Settings** (`settings`; `scenes/SettingsScene.tsx`): three scopes. Preferences
-  (General, Appearance, Input, Shortcuts; labelled "Synced with your account"),
-  Account (Profile, Devices and chat apps in `scenes/AccountDevicesPage.tsx`,
+  (General, Appearance, Input, Shortcuts; labelled "Synced with your account" only
+  while the backend reports account settings sync active, `accountSyncStore.ts`),
+  Account (Profile with the settings sync switch and state, Devices and chat apps in `scenes/AccountDevicesPage.tsx`,
   OpenBitFun over the cloud agent's commands, Activity), and Device (Models,
   Permissions with this device's `superagent` switches, Execution, Session and memory,
   Editor, Terminal, Workspace, MCP, ...) for the device the scope chip names.
@@ -154,8 +155,14 @@ switcher in the main flow.
   store is the shell's actuator for `browser.*` shell requests over NSH `WebView` refs and
   reports page loads with `browser_webview_report_page_load`. `BrowserPageLayer` is
   mounted once around the scenes so pages outlive the scene; only the presented page is
-  placed over the scene's viewport. Other shells show an explicit unsupported state.
-  Headless tests install stand-in views (`installBrowserViewDriver`,
+  placed over the scene's viewport. The scene also opens as the inspector's Browser
+  tab; the view mounted last owns the viewport. `src/browserSession.ts` installs the
+  hooks that need `state.ts` (the store is loaded by the shell actuator before it): an
+  agent page of the open session presents in its inspector, the ⋯ element picker fills
+  the composer, a local `.html` path previews through `read_file_content`. Clients
+  that hold no page (phone, browser, another desktop) draw a read-only live view of
+  `browser_webview_capture_preview` (a script-free copy the desktop makes), polled
+  only while on screen. Headless tests install stand-in views (`installBrowserViewDriver`,
   `test/fixtures/installFakeBrowser.ts`).
 - `src/format.ts`: text, date and count helpers shared by the scenes
   (`formatTokens`, `formatCount`, `formatPercent`, `formatBucket`, `formatBytes`,
@@ -239,7 +246,7 @@ switcher in the main flow.
   sessions / Library; a session draws its own header instead. The sidebar never lists
   sessions or devices: sessions open from All sessions (Recent, By device), Inbox,
   job cards and ⌘K. The inspector (`AuxPane`) has text tabs Changes / Files /
-  Terminal and an Expand control to the full-width tool. One quiet line at the top
+  Terminal / Browser and an Expand control to the full-width tool. One quiet line at the top
   of the canvas states a failed connection or a non-fleet entry reached from a
   browser or phone.
   `⌘N` new conversation, `⌘I` the Inbox sheet. Tests reach sessions through

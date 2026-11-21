@@ -444,6 +444,19 @@ pub struct WebviewLabelRequest {
     pub label: String,
 }
 
+/// `browser_webview_capture_preview`. A client names a page by `label`, or
+/// asks for the page an agent conversation uses (`conversationId`), or for
+/// the device's most recently shown page (neither). Both fields are optional
+/// so the label-only shape older callers send keeps working.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebviewPreviewRequest {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum WebviewPreviewResponse {
@@ -454,6 +467,29 @@ pub enum WebviewPreviewResponse {
     Unsupported {
         reason: String,
     },
+    /// A script-free copy of the page's document as it is now: the native
+    /// desktop's web view has no pixel snapshot API, so a phone or a browser
+    /// draws this copy as a read-only live view.
+    #[serde(rename_all = "camelCase")]
+    Snapshot {
+        label: String,
+        url: String,
+        title: String,
+        html: String,
+        /// The page's viewport on the desktop, in CSS pixels.
+        viewport_width: u32,
+        viewport_height: u32,
+        captured_at_ms: u64,
+    },
+    /// The page exists but its copy is larger than a live view carries.
+    #[serde(rename_all = "camelCase")]
+    TooLarge {
+        label: String,
+        url: String,
+        title: String,
+    },
+    /// No page matches the request (the conversation opened none).
+    NoPage,
 }
 
 #[cfg(test)]

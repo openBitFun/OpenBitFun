@@ -26,9 +26,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::protocol::{
-    DispatchProvisionSource, DispatchWorkspaceProbe, DispatchWorkspaceProvisionRequest,
-    DispatchWorkspaceProvisionResponse, DispatchWorkspaceProvisionSourceRequest,
-    DispatchWorkspaceProvisionSourceResponse, DISPATCH_PROTOCOL_VERSION,
+    DispatchPeerImportNeed, DispatchProvisionSource, DispatchWorkspaceProbe,
+    DispatchWorkspaceProvisionRequest, DispatchWorkspaceProvisionResponse,
+    DispatchWorkspaceProvisionSourceRequest, DispatchWorkspaceProvisionSourceResponse,
+    DISPATCH_PROTOCOL_VERSION,
 };
 use super::store::{atomic_write_json, create_private_dir, read_json, DispatchStore, JobLock};
 use super::workspace::{
@@ -36,7 +37,7 @@ use super::workspace::{
     validate_remote_url,
 };
 
-const SOURCE_RECORD_FILE: &str = "source.json";
+pub(super) const SOURCE_RECORD_FILE: &str = "source.json";
 const SOURCE_LOCK_FILE: &str = "source.lock";
 const WORKSPACE_CATALOG_FILE: &str = "workspace_data.json";
 const MAX_WORKSPACE_ID_BYTES: usize = 128;
@@ -270,8 +271,84 @@ fn validate_source_request(request: &DispatchWorkspaceProvisionSourceRequest) ->
             validate_network_remote(&strip_remote_url_credentials(remote_url))?;
             validate_git_ref(git_ref)?;
         }
+        DispatchProvisionSource::Job {
+            job_id,
+            source_device_id,
+            head,
+            branch,
+            base_commit,
+        } => {
+            super::store::validate_id("source.jobId", job_id)?;
+            super::workspace::validate_device_id(source_device_id)?;
+            if job_id == &request.job_id {
+                bail!("a dispatch job cannot import its own result");
+            }
+            for commit in [head, base_commit].into_iter().flatten() {
+                if !is_full_commit(commit) {
+                    bail!("dispatch job source commits must be full 40-character ids");
+                }
+            }
+            if let Some(branch) = branch {
+                validate_branch(branch)?;
+            }
+        }
     }
     Ok(())
+}
+
+/// A `job` source resolved from its peer import: the imported head is the
+/// pinned base, in the import's own clone, with no remote.
+fn resolve_job_source(
+    request: &DispatchWorkspaceProvisionSourceRequest,
+    import: &super::workspace::PeerImportRecord,
+) -> Result<SourceRecord> {
+    Ok(SourceRecord {
+        request: request.clone(),
+        provision: DispatchWorkspaceProvisionRequest {
+            protocol_version: request.protocol_version,
+            job_id: request.job_id.clone(),
+            repo_key: import.repo_key.clone(),
+            remote_url: None,
+            project_label: Some(format!("import-{}", import.source_job_id)),
+            base_commit: import.head_commit.clone(),
+            branch: request.branch.clone(),
+        },
+        source_ref: Some(import.source_branch.clone()),
+        remote_url: None,
+        source_dirty: None,
+        resolved_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// The answer a host reads when a `job` source still needs its import.
+fn peer_import_needed(
+    request: &DispatchWorkspaceProvisionSourceRequest,
+) -> Option<DispatchWorkspaceProvisionSourceResponse> {
+    let DispatchProvisionSource::Job {
+        job_id,
+        source_device_id,
+        head,
+        ..
+    } = &request.source
+    else {
+        return None;
+    };
+    Some(DispatchWorkspaceProvisionSourceResponse {
+        pending: true,
+        provisioned: false,
+        workspace_path: None,
+        base_commit: head.clone().unwrap_or_default(),
+        branch: request.branch.clone(),
+        source_ref: None,
+        remote_url: None,
+        source_dirty: None,
+        fetch_error: None,
+        peer_import: Some(DispatchPeerImportNeed {
+            source_device_id: source_device_id.clone(),
+            source_job_id: job_id.clone(),
+            head: head.clone(),
+        }),
+    })
 }
 
 fn resolve_source(
@@ -279,6 +356,9 @@ fn resolve_source(
     request: &DispatchWorkspaceProvisionSourceRequest,
 ) -> Result<SourceRecord> {
     let (provision, source_ref, remote_url, source_dirty) = match &request.source {
+        DispatchProvisionSource::Job { .. } => {
+            bail!("a job source resolves from its peer import, not from this device's catalog")
+        }
         DispatchProvisionSource::Workspace {
             workspace_id,
             git_ref,
@@ -491,6 +571,40 @@ pub(super) fn provision_source_in_store(
                 bail!("dispatch job is already bound to a different source");
             }
             existing
+        } else if let DispatchProvisionSource::Job {
+            job_id,
+            source_device_id,
+            head,
+            ..
+        } = &request.source
+        {
+            // A peer's result arrives through the host (it holds the Link
+            // connection); until it was imported there is nothing to pin.
+            let Some(import) = super::workspace::read_peer_import(store, &request.job_id)? else {
+                return Ok(peer_import_needed(&request).expect("job source"));
+            };
+            if &import.source_job_id != job_id || &import.source_device_id != source_device_id {
+                bail!("dispatch job is already bound to a different peer import");
+            }
+            if let Some(head) = head {
+                // The controller saw `head`; the import may be later, never
+                // unrelated.
+                let repo = store.repo_dir(&import.repo_key)?.join("git");
+                let contains = super::workspace::git(
+                    &repo,
+                    &["merge-base", "--is-ancestor", head, &import.head_commit],
+                )
+                .is_ok();
+                if !contains {
+                    bail!(
+                        "the imported result {} does not contain the expected head {head}",
+                        import.head_commit
+                    );
+                }
+            }
+            let resolved = resolve_job_source(&request, &import)?;
+            atomic_write_json(&record_path, &resolved)?;
+            resolved
         } else {
             let resolved = resolve_source(catalog, &request)?;
             atomic_write_json(&record_path, &resolved)?;
@@ -519,6 +633,7 @@ pub(super) fn provision_source_in_store(
         remote_url: record.remote_url,
         source_dirty: record.source_dirty,
         fetch_error: response.fetch_error,
+        peer_import: None,
     })
 }
 

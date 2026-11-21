@@ -13,13 +13,13 @@ import {
   Text,
   Video,
   View,
+  WebView,
   type Point,
   type ViewRef,
 } from "nsh";
 import {
   DiffView,
   Editor,
-  TextView,
   Tree,
   type EditorRef,
   type EditorSearchResult,
@@ -66,6 +66,7 @@ import {
   openFileAt,
   openFilePaths,
   pasteFromClipboard,
+  pdfPreviewSupported,
   pathSep,
   pendingEdit,
   refreshDirectory,
@@ -101,9 +102,10 @@ import {
   activeWorkspaceRoot,
   auxSelectedFilePath,
   composerText,
+  deviceContext,
   navigateScene,
 } from "../state";
-import { invokeCommand } from "../bridge";
+import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "../bridge";
 import { mentionToken } from "../mentionStore";
 import { readFileContent } from "../api";
 import { openTerminal } from "../terminalStore";
@@ -111,8 +113,10 @@ import {
   concentricRadius,
   controlHeight,
   fontMono,
+  layout,
   palette,
   radii,
+  space,
   textLineHeight,
   textSize,
   textTracking,
@@ -121,10 +125,17 @@ import { Icon, type IconName } from "../ui/icons";
 import {
   createDiffViewStyles,
   createEditorStyles,
-  createMarkdownCodeActions,
-  createMarkdownStyles,
   inferCodeLanguage,
 } from "../ui/markdown";
+import {
+  askAiInDocument,
+  documentWebViewsAvailable,
+  MarkdownDocumentEditor,
+  MarkdownPreview,
+  visualEditBlock,
+  visualEditBlockMessage,
+  VisualEditNotice,
+} from "../ui/markdownEditor";
 import {
   MOTION_DURATION,
   paintTransition,
@@ -138,6 +149,7 @@ import {
   IconButton,
   InlineConfirmBar,
   InputBox,
+  SegmentedTabs,
   SplitHandle,
   TooltipBubble,
 } from "../ui/primitives";
@@ -168,6 +180,145 @@ const treeContextPos = signal<Point | null>(null);
 const treeContextOpen = signal(false);
 /** Stacked (narrow) layout: the preview is pushed over the explorer. */
 const filesStackDetail = signal(false);
+
+// ── Documents (wave 22 P1): Markdown Preview | Edit, HTML and PDF previews ──
+
+/** Markdown files the user chose to edit as source ("Edit as source"). */
+const markdownSourcePaths = signal<Record<string, true>>({});
+/** The rendered preview is showing over a Markdown draft that is kept. */
+const markdownPreviewing = signal(false);
+/** HTML files showing their rendered preview instead of the source. */
+const htmlPreviewPaths = signal<Record<string, true>>({});
+const docMenuOpen = signal(false);
+const docMenuAnchor = signal<ViewRef | null>(null);
+
+/** Why the open Markdown file edits as source on its own (the fidelity guard), decided per file text. */
+const markdownBlock = computed(() => {
+  const file = openFile();
+  if (!file || file.kind !== "markdown" || file.large) return null;
+  return visualEditBlock(untracked(() => editingContent()) ?? file.content);
+});
+
+type MarkdownMode = "preview" | "visual" | "source";
+
+/** What the Markdown body shows: the preview, the visual editor or the source editor. */
+const markdownMode = computed<MarkdownMode | null>(() => {
+  const file = openFile();
+  if (!file || file.kind !== "markdown") return null;
+  if (editingContent() === null || markdownPreviewing()) return "preview";
+  if (file.large || markdownSourcePaths()[file.path] || markdownBlock()) return "source";
+  return "visual";
+});
+
+function enterMarkdownEdit(): void {
+  markdownPreviewing.set(false);
+  if (editingContent() === null) beginEditFile();
+}
+
+/** Preview keeps an unsaved draft (and shows it); a clean file just leaves edit mode. */
+function showMarkdownPreview(): void {
+  if (hasUnsavedEdit()) {
+    markdownPreviewing.set(true);
+    return;
+  }
+  markdownPreviewing.set(false);
+  cancelEditFile();
+}
+
+function setMarkdownSource(path: string, source: boolean): void {
+  markdownSourcePaths.update(current => {
+    const next = { ...current };
+    if (source) next[path] = true;
+    else delete next[path];
+    return next;
+  });
+}
+
+function isHtmlFile(path: string): boolean {
+  const ext = extensionOf(path);
+  return ext === "html" || ext === "htm";
+}
+
+const htmlPreviewing = computed(() => {
+  const file = openFile();
+  return Boolean(file && file.kind === "code" && isHtmlFile(file.path) && htmlPreviewPaths()[file.path]);
+});
+
+function setHtmlPreview(path: string, preview: boolean): void {
+  htmlPreviewPaths.update(current => {
+    const next = { ...current };
+    if (preview) next[path] = true;
+    else delete next[path];
+    return next;
+  });
+}
+
+/**
+ * "Open in browser" asks the OS of the device that owns the file: offered only
+ * in the desktop app, for a local workspace of this same device.
+ */
+function canOpenInSystemBrowser(): boolean {
+  if (windowShellId() !== "nsh-desktop" || isRemoteWorkspace()) return false;
+  return !fleetActive() || !deviceContext() || deviceContext() === entryDeviceId();
+}
+
+async function openHtmlInSystemBrowser(path: string): Promise<void> {
+  try {
+    await invokeCommand<unknown>("open_html_file_in_browser", { path });
+  } catch (error) {
+    pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
+  }
+}
+
+function docMenuItems(): DropdownMenuItem[] {
+  const file = openFile();
+  if (!file) return [];
+  const mode = markdownMode();
+  const items: DropdownMenuItem[] = [];
+  if (mode === "visual") {
+    items.push({
+      id: "doc-ask-ai",
+      label: tr("doc.askAi"),
+      icon: "sparkles",
+      accessibilityLabel: "doc-ask-ai",
+      onSelect: () => askAiInDocument(file.path),
+    });
+    items.push({
+      id: "doc-edit-source",
+      label: tr("doc.editAsSource"),
+      icon: "code",
+      accessibilityLabel: "doc-edit-source",
+      onSelect: () => setMarkdownSource(file.path, true),
+    });
+  }
+  if (mode === "source" && markdownSourcePaths()[file.path]) {
+    items.push({
+      id: "doc-edit-visual",
+      label: tr("doc.editVisually"),
+      icon: "file-text",
+      accessibilityLabel: "doc-edit-visual",
+      onSelect: () => {
+        // A source draft the visual editor cannot keep stays in the source editor.
+        const block = visualEditBlock(editingContent() ?? file.content);
+        if (block) {
+          pushToast(visualEditBlockMessage(block));
+          return;
+        }
+        setMarkdownSource(file.path, false);
+      },
+    });
+  }
+  return items;
+}
+
+/** A PDF in the desktop's web view: its own viewer draws it, from the bytes the host read. */
+function pdfDocumentHtml(base64: string, background: string): string {
+  return (
+    `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:${background}}` +
+    `embed{width:100%;height:100%;border:0}</style></head><body>` +
+    `<embed src="data:application/pdf;base64,${base64}" type="application/pdf"></body></html>`
+  );
+}
 let lastStackedPath: string | null = null;
 
 const CODE_EXTENSIONS = new Set([
@@ -2453,21 +2604,81 @@ function PreviewBody(props: { compact?: boolean }) {
               </View>
             </If>
           </If>
-          <If when={file().kind === "markdown" && editingContent() === null}>
+          <If when={markdownMode() === "preview"}>
             <Scroll style={{ flex: 1, minHeight: 0 }}>
-              <View style={{ padding: props.compact ? 16 : 28, alignItems: "center" }}>
-                <View style={{ width: "100%", maxWidth: 740 }}>
-                  <TextView
-                    markdown={file().content}
-                    selectable={true}
-                    styles={createMarkdownStyles({ compact: props.compact })}
-                    codeBlockActions={createMarkdownCodeActions()}
+              <View style={{ padding: props.compact ? space.lg : space.x3l, alignItems: "center" }}>
+                <View style={{ width: "100%", maxWidth: layout.conversationWidth }}>
+                  <MarkdownPreview
+                    accessibilityLabel="file-markdown-preview"
+                    markdown={editingContent() ?? file().content}
+                    compact={props.compact}
                     renderImage={image => <MarkdownImage image={image} documentPath={file().path} />}
                     onLinkPress={event => openMarkdownLink(event.url, file().path)}
                   />
                 </View>
               </View>
             </Scroll>
+          </If>
+          <If when={markdownMode() === "visual"}>
+            <MarkdownDocumentEditor
+              documentKey={file().path}
+              documentName={file().name}
+              text={editingContent() ?? ""}
+              onChange={setEditingContent}
+              accessibilityLabel="file-editor"
+              placeholder={tr("doc.placeholder")}
+              compact={props.compact}
+              maxWidth={layout.conversationWidth}
+              ai={true}
+            />
+          </If>
+          <If when={htmlPreviewing()}>
+            <WebView
+              accessibilityLabel="file-html-view"
+              html={editingContent() ?? file().content}
+              javaScriptEnabled={false}
+              incognito={true}
+              style={{ flex: 1, minHeight: 0, minWidth: 0, backgroundColor: palette().canvas }}
+              onError={() => setHtmlPreview(file().path, false)}
+            />
+          </If>
+          <If when={file().kind === "pdf"}>
+            <If
+              when={file().content}
+              else={
+                <View
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    minWidth: 0,
+                    padding: props.compact ? space.lg : space.x3l,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <QuietEmptyPrompt
+                    icon="file-text"
+                    title={file().name}
+                    subtitle={pdfPreviewSupported() ? tr("doc.pdfUnavailable") : tr("doc.pdfElsewhere")}
+                  />
+                </View>
+              }
+            >
+              {encoded => (
+                <WebView
+                  accessibilityLabel="file-pdf-view"
+                  html={pdfDocumentHtml(encoded(), palette().canvas)}
+                  javaScriptEnabled={false}
+                  incognito={true}
+                  style={{ flex: 1, minHeight: 0, minWidth: 0 }}
+                  onError={() =>
+                    openFile.update(current =>
+                      current && current.path === file().path ? { ...current, content: "" } : current,
+                    )
+                  }
+                />
+              )}
+            </If>
           </If>
           <If when={file().kind === "text" && editingContent() === null}>
             <Scroll style={{ flex: 1, minHeight: 0 }}>
@@ -2488,11 +2699,15 @@ function PreviewBody(props: { compact?: boolean }) {
           </If>
           <If
             when={
-              file().kind === "code" ||
-              (editingContent() !== null && (file().kind === "markdown" || file().kind === "text"))
+              (file().kind === "code" && !htmlPreviewing()) ||
+              markdownMode() === "source" ||
+              (editingContent() !== null && file().kind === "text")
             }
           >
             <View style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+              <If when={markdownMode() === "source" ? markdownBlock() : null}>
+                {block => <VisualEditNotice block={block()} />}
+              </If>
               <If when={findOpen() && !props.compact}>
                 <EditorFindBar />
               </If>
@@ -2657,6 +2872,47 @@ function PreviewBody(props: { compact?: boolean }) {
   );
 }
 
+/**
+ * Preview | Edit for Markdown, Preview | Source for HTML. In the header on a
+ * wide pane; in the path strip under it on a narrow one, so Save keeps its room.
+ */
+function DocumentModeTabs() {
+  return (
+    <If when={openFile()}>
+      {file => (
+        <>
+          <If when={file().kind === "markdown"}>
+            <SegmentedTabs
+              size="sm"
+              options={[
+                { value: "preview", label: tr("files.preview"), accessibilityLabel: "file-preview" },
+                {
+                  value: "edit",
+                  label: file().large ? tr("files.editAnyway") : tr("common.edit"),
+                  accessibilityLabel: "file-edit",
+                },
+              ]}
+              value={markdownMode() === "preview" ? "preview" : "edit"}
+              onChange={value => (value === "edit" ? enterMarkdownEdit() : showMarkdownPreview())}
+            />
+          </If>
+          <If when={file().kind === "code" && isHtmlFile(file().path) && documentWebViewsAvailable() === true}>
+            <SegmentedTabs
+              size="sm"
+              options={[
+                { value: "preview", label: tr("files.preview"), accessibilityLabel: "file-html-preview" },
+                { value: "source", label: tr("doc.source"), accessibilityLabel: "file-html-source" },
+              ]}
+              value={htmlPreviewing() ? "preview" : "source"}
+              onChange={value => setHtmlPreview(file().path, value === "preview")}
+            />
+          </If>
+        </>
+      )}
+    </If>
+  );
+}
+
 function Preview(props: { compact?: boolean; stacked?: boolean }) {
   // The aux pane splits explorer and preview vertically; stacked views show one at a time.
   const splitBelowTree = () =>
@@ -2745,7 +3001,7 @@ function Preview(props: { compact?: boolean; stacked?: boolean }) {
                       onPress={() => void openDiffReview(file().path)}
                     />
                   </If>
-                  <If when={editingContent() === null}>
+                  <If when={editingContent() === null && file().kind !== "markdown"}>
                     <Button
                       label={file().large ? tr("files.editAnyway") : tr("files.editFile")}
                       accessibilityLabel="file-edit"
@@ -2755,26 +3011,65 @@ function Preview(props: { compact?: boolean; stacked?: boolean }) {
                       onPress={() => beginEditFile()}
                     />
                   </If>
-                  <If when={editingContent() !== null && file().kind === "markdown"}>
-                    <Button
-                      label={tr("files.preview")}
-                      accessibilityLabel="file-preview"
-                      variant="ghost"
-                      size="xs"
-                      leadingIcon="eye"
-                      onPress={() => cancelEditFile()}
+                </If>
+                <If when={!narrow()}>
+                  <DocumentModeTabs />
+                </If>
+                <If when={file().kind === "markdown"}>
+                  <If when={docMenuItems().length > 0}>
+                    <View ref={el => docMenuAnchor.set(el)} style={{ flexShrink: 0 }}>
+                      <IconButton
+                        icon="more"
+                        size="sm"
+                        active={docMenuOpen()}
+                        tooltip={tr("doc.moreActions")}
+                        accessibilityLabel="file-doc-menu"
+                        onPress={() => docMenuOpen.set(!docMenuOpen())}
+                      />
+                    </View>
+                    <DropdownMenu
+                      open={docMenuOpen()}
+                      anchor={docMenuAnchor()}
+                      align="end"
+                      minWidth={200}
+                      items={docMenuItems()}
+                      onClose={() => docMenuOpen.set(false)}
                     />
                   </If>
                 </If>
-                <If when={isEditableKind(file().kind) && hasUnsavedEdit()}>
+                <If when={file().kind === "code" && isHtmlFile(file().path) && canOpenInSystemBrowser()}>
                   <Button
-                    label={tr("files.discardEdit")}
-                    accessibilityLabel="file-discard"
+                    label={tr("doc.openInBrowser")}
+                    accessibilityLabel="file-open-in-browser"
                     variant="ghost"
                     size="xs"
-                    disabled={fileSaving()}
-                    onPress={() => cancelEditFile()}
+                    leadingIcon="external-link"
+                    onPress={() => void openHtmlInSystemBrowser(file().path)}
                   />
+                </If>
+                <If when={isEditableKind(file().kind) && hasUnsavedEdit()}>
+                  <If
+                    when={narrow()}
+                    else={
+                      <Button
+                        label={tr("files.discardEdit")}
+                        accessibilityLabel="file-discard"
+                        variant="ghost"
+                        size="xs"
+                        disabled={fileSaving()}
+                        onPress={() => cancelEditFile()}
+                      />
+                    }
+                  >
+                    <IconButton
+                      icon="undo"
+                      size="sm"
+                      tooltip={tr("files.discardEdit")}
+                      accessibilityLabel="file-discard"
+                      disabled={fileSaving()}
+                      onPress={() => cancelEditFile()}
+                    />
+                  </If>
                   <Button
                     label={fileSaving() ? tr("common.saving") : tr("files.saveFile")}
                     accessibilityLabel="file-save"
@@ -2924,18 +3219,25 @@ function Preview(props: { compact?: boolean; stacked?: boolean }) {
                   </Text>
                 )}
               </If>
-              <Text
-                style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.32),
-                  flexShrink: 0,
-                }}
+              <If
+                when={narrow() && (file().kind === "markdown" || (file().kind === "code" && isHtmlFile(file().path)))}
+                else={
+                  <Text
+                    style={{
+                      color: palette().textMuted,
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.32),
+                      flexShrink: 0,
+                    }}
+                  >
+                    {file().kind === "diff"
+                      ? "diff"
+                      : inferCodeLanguage(file().path) || file().language || file().kind}
+                  </Text>
+                }
               >
-                {file().kind === "diff"
-                  ? "diff"
-                  : inferCodeLanguage(file().path) || file().language || file().kind}
-              </Text>
+                <DocumentModeTabs />
+              </If>
             </View>
           </View>
         )}
@@ -2952,6 +3254,18 @@ function Preview(props: { compact?: boolean; stacked?: boolean }) {
 
 export function FilesScene(props: { compact?: boolean } = {}) {
   const sceneWidth = createSceneWidth();
+  // Another file starts in its own mode: the kept-draft preview and the
+  // document menu belong to the file that was open.
+  let lastDocumentPath: string | null = null;
+  effect(() => {
+    const path = openFile()?.path ?? null;
+    untracked(() => {
+      if (path === lastDocumentPath) return;
+      lastDocumentPath = path;
+      markdownPreviewing.set(false);
+      docMenuOpen.set(false);
+    });
+  });
   // Opening another file (a tree row, a tab, a search hit, a changed file, the
   // aux pane request) pushes the preview in the stacked layout.
   effect(() => {

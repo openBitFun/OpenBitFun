@@ -252,6 +252,8 @@ const ignoredPaths = Object.freeze([
   /(^|\/)build\//,
   /(^|\/)coverage\//,
   /^docs\/superpowers\//,
+  // Third-party renderer builds the NSH UI ships byte for byte (Mermaid, KaTeX).
+  /^src\/nsh-ui\/assets\/vendor\//,
 ]);
 
 export function normalizeRepositoryPath(file) {

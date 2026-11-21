@@ -43,7 +43,9 @@ Environment=SUPERAGENT_MAX_ACCOUNTS=256
 Environment=SUPERAGENT_MAX_RESIDENT=512
 Environment=SUPERAGENT_MODEL_ROUNDS=64
 Environment=SUPERAGENT_WATCH_SECONDS=5
-Environment=RUST_LOG=info,easytier=warn,easytier_core=warn
+# easytier's "Failed to send event" warnings repeat every connection with the
+# client's address; they carry no fault, so only their errors are logged.
+Environment=RUST_LOG=info,easytier=warn,easytier_core=warn,easytier::common::global_ctx=error
 ExecStart=/opt/openbitfun-superagent/bin/openbitfun-superagent
 StateDirectory=openbitfun-superagent
 StateDirectoryMode=0700

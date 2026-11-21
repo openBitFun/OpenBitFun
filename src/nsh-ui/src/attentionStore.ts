@@ -11,7 +11,8 @@
 //
 // Answering routes to the device whose runtime asked: `respond_permission` /
 // `submit_user_answers` with `target = deviceId`, or `dispatch_target_answer`
-// for a Detached Dispatch job (`answerRoute: "dispatch"`). An answered item
+// for a Detached Dispatch job (`answerRoute: "dispatch"`: a permission's
+// `reply`, or a question's `answers`). An answered item
 // holds "Answered on {device}" for `ANSWERED_HOLD_MS`, then leaves; an item the
 // backend dropped while it was on screen (answered on another client) does the
 // same instead of vanishing.
@@ -52,7 +53,7 @@ export interface AttentionEntry {
   source: AttentionSource;
   title: string;
   detail?: string;
-  /** The device's name as the backend projects it (`"OpenBitFun"` for the cloud). */
+  /** The device's name as the backend projects it (`"Super Agent"` for the cloud). */
   deviceName?: string;
   hostKind?: string;
   /** A prompt item carries its `FleetPrompt` (the answer goes to its device). */
@@ -333,6 +334,16 @@ async function send(prompt: FleetPrompt, answer: PromptAnswer): Promise<void> {
       return;
     }
     await invokeCommand<unknown>("respond_permission", { requestId: prompt.promptId, reply: answer.reply }, target);
+    return;
+  }
+  if (prompt.answerRoute === "dispatch" && prompt.jobId) {
+    // A Detached Dispatch job's question waits in the job's question mailbox
+    // (`user_question_mailbox_v1`); the runner reads the arguments as they are.
+    await invokeRawCommand<unknown>(
+      "dispatch_target_answer",
+      { jobId: prompt.jobId, requestId: prompt.promptId, answers: answer.answers },
+      target,
+    );
     return;
   }
   // Positional on the host: `tool_id`, `answers` (and the session) are separate arguments.

@@ -79,8 +79,9 @@ test("the left list draws three scopes without icons, and only Preferences pages
   for (const page of ["profile", "devices", "openbitfun", "activity", "models", "permissions", "archived", "mcp"]) {
     expect([page, app.shows(`nav-settings-page-${page}`)]).toEqual([page, true]);
   }
-  // The pet page belongs to the native desktop window only; the old groups are gone.
-  expect(app.shows("nav-settings-page-pet")).toBe(false);
+  // The pet page is listed everywhere and says "Desktop only" off the desktop
+  // app (tauri-gap §1.5, wave22-p3); the old groups are gone.
+  expect(app.shows("nav-settings-page-pet")).toBe(true);
   expect(app.shows("nav-settings-page-automation")).toBe(false);
   expect(app.shows("nav-settings-page-external-agents")).toBe(false);
 
@@ -131,7 +132,7 @@ test("Account › OpenBitFun turns the agent off and deletes its data through th
 
   await app.press("obf-delete-data");
   await app.waitFor("obf-delete-dialog");
-  await app.waitFor("Delete OpenBitFun data?");
+  await app.waitFor("Delete Super Agent data?");
   await app.press("obf-delete-confirm");
   await app.waitUntil(() => superagentCalls.some(call => call.action === "superagent_delete_data"));
   expect(superagentCalls.find(call => call.action === "superagent_delete_data")?.request).toEqual({ cancelJobs: true });
@@ -140,15 +141,15 @@ test("Account › OpenBitFun turns the agent off and deletes its data through th
 test("a node without the OpenBitFun commands answers with an explicit unsupported row", async () => {
   const { app } = await openSettings({ superagent: null });
   await app.press("nav-settings-page-openbitfun");
-  await app.waitFor("OpenBitFun can't be reached from here yet.");
+  await app.waitFor("Super Agent can't be reached from here yet.");
   expect(app.shows("obf-toggle")).toBe(false);
 });
 
 test("Permissions names the modes in plain words and writes the OpenBitFun device switches through set_superagent_settings", async () => {
   const { app, backend } = await openSettings();
   await app.press("nav-settings-page-permissions");
-  await app.waitFor("Let OpenBitFun answer for me");
-  await app.waitFor("Accept jobs from OpenBitFun");
+  await app.waitFor("Let Super Agent answer for me");
+  await app.waitFor("Accept jobs from Super Agent");
   await app.waitFor("Full access");
   await app.waitFor("Ask first");
   // Both switches are on unless the device stored exactly false, so a press writes false,
@@ -189,7 +190,7 @@ test("the phone lists the scopes first and pushes one page with a back control",
   expect(app.shows("settings-compact-page-openbitfun")).toBe(true);
   await app.press("settings-compact-page-permissions");
   await app.waitFor("settings-compact-back");
-  await app.waitFor("Let OpenBitFun answer for me");
+  await app.waitFor("Let Super Agent answer for me");
   await app.press("settings-compact-back");
   await app.waitFor("settings-compact-page-general");
 });

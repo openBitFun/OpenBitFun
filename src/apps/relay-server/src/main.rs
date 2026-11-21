@@ -24,11 +24,6 @@ async fn main() -> anyhow::Result<()> {
     let cfg = RelayConfig::from_env()?;
     info!("OpenBitFun Relay Server v{}", env!("CARGO_PKG_VERSION"));
 
-    let asset_store = Arc::new(DiskAssetStore::new_with_max_bytes(
-        &cfg.asset_dir,
-        cfg.asset_store_max_bytes,
-    ));
-
     let start_time = std::time::Instant::now();
 
     let db = if let Some(path) = &cfg.db_path {
@@ -46,6 +41,13 @@ async fn main() -> anyhow::Result<()> {
             "RELAY_CORS_ALLOW_ORIGINS=* is not allowed when RELAY_DB_PATH enables account APIs"
         );
     }
+    if cfg.directory_profile {
+        return serve_directory(cfg, start_time, db).await;
+    }
+    let asset_store = Arc::new(DiskAssetStore::new_with_max_bytes(
+        &cfg.asset_dir,
+        cfg.asset_store_max_bytes,
+    ));
     let page_browser_auth = match (
         cfg.page_public_base_url.as_deref(),
         cfg.page_auth_base_url.as_deref(),
@@ -103,6 +105,43 @@ async fn main() -> anyhow::Result<()> {
         cfg.listen_addr
     );
 
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// `RELAY_PROFILE=directory`: the OpenBitFun 2.0 account directory. No
+/// published Pages, no asset store on disk, and periodic retention of
+/// tokens, device rows and users.
+async fn serve_directory(
+    cfg: RelayConfig,
+    start_time: std::time::Instant,
+    db: Arc<openbitfun_relay_service::db::DbPool>,
+) -> anyhow::Result<()> {
+    use openbitfun_relay_service::directory_hygiene;
+    let hygiene = directory_hygiene::DirectoryHygiene::from_env()?;
+    let _sweeper = directory_hygiene::spawn_sweeper(Arc::clone(&db), hygiene);
+    let mut app = openbitfun_relay_service::build_directory_router(
+        start_time,
+        db,
+        env!("CARGO_PKG_VERSION"),
+        cfg.cors_allow_origins.clone(),
+    );
+    if let Some(static_dir) = &cfg.static_dir {
+        info!("Serving static files from: {static_dir}");
+        app = app.fallback_service(
+            tower_http::services::ServeDir::new(static_dir).append_index_html_on_directories(true),
+        );
+    }
+    app = app.layer(axum::middleware::from_fn(host_security_headers));
+    let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
+    info!(
+        "Account directory listening on {} (published Pages off)",
+        cfg.listen_addr
+    );
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

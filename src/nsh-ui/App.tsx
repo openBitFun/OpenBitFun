@@ -155,9 +155,14 @@ import {
   textStyle,
   touchSlop,
 } from "./src/theme";
-import { applyAppearance, loadAppearance } from "./src/themeStore";
+import { applyAppearance, loadAppearance, syncAppearanceFromHost } from "./src/themeStore";
 import { loadFontPreference } from "./src/fontPreferenceStore";
-import { loadContentWidth } from "./src/contentWidthStore";
+import { loadContentWidth, syncContentWidthFromHost } from "./src/contentWidthStore";
+import { initAccountSync } from "./src/accountSyncStore";
+// wave24-replica: account records (agents, skills, routines, cards, pets, ...).
+import { initAccountRecords } from "./src/accountRecordsStore";
+import { keybindingOverrides, loadKeybindings } from "./src/shortcutsStore"; // wave22-p5
+import { installSpaceAgentSurface } from "./src/spaceViewStore"; // wave22-p4
 import { loadQueue } from "./src/queueStore";
 import { ensureSendPolicy } from "./src/sendPolicyStore";
 import { ensureQuickActions } from "./src/quickActionStore";
@@ -275,12 +280,12 @@ interface SceneMeta {
 }
 
 const SCENE_META: Record<SceneId, SceneMeta> = {
-  openbitfun: { labelKey: "product.name", icon: "sparkles" },
+  openbitfun: { labelKey: "nav.superAgent", icon: "sparkles" },
   inbox: { labelKey: "nav.inbox", icon: "inbox" },
   "all-sessions": { labelKey: "nav.allSessions", icon: "layers" },
   device: { labelKey: "nav.allSessions", icon: "laptop" },
   library: { labelKey: "nav.library", icon: "package" },
-  home: { labelKey: "product.name", icon: "home" },
+  home: { labelKey: "nav.superAgent", icon: "home" },
   sessions: { labelKey: "nav.sessions", icon: "chat" },
   assistants: { labelKey: "nav.assistants", icon: "bot" },
   agents: { labelKey: "nav.agents", icon: "cpu" },
@@ -311,11 +316,12 @@ const PRIMARY_NAV_SCENES: ReadonlyArray<SceneId> = ["home", "sessions", "assista
 const STUDIO_ONLY_SCENES: ReadonlyArray<SceneId> = ["agents", "skills", "routines", "spaces"];
 const WORKBENCH_NAV_SCENES: ReadonlyArray<SceneId> = ["files", "git", "terminal", "browser"];
 
-/** The inspector's text tabs (visual spec §4.10): Changes, Files, Terminal. */
+/** The inspector's text tabs (visual spec §4.10): Changes, Files, Terminal, Browser (wave 22). */
 const AUX_TABS: ReadonlyArray<{ id: AuxPaneTab; labelKey: MessageKey; scene: SceneId }> = [
   { id: "git", labelKey: "tools.changes", scene: "git" },
   { id: "files", labelKey: "tools.files", scene: "files" },
   { id: "terminal", labelKey: "tools.terminal", scene: "terminal" },
+  { id: "browser", labelKey: "tools.browser", scene: "browser" },
 ];
 
 interface SearchCommandDef {
@@ -337,7 +343,7 @@ const SEARCH_COMMANDS: ReadonlyArray<SearchCommandDef> = [
   {
     id: "command:home",
     target: "openbitfun",
-    aliases: ["openbitfun", "home", "conversation", "new conversation"],
+    aliases: ["openbitfun", "super agent", "home", "conversation", "new conversation"],
     labelKey: "search.cmdOpenBitFun",
     detailKey: "search.cmdOpenBitFunDetail",
   },
@@ -640,6 +646,8 @@ function auxElement() {
       return <GitScene compact />;
     case "terminal":
       return <TerminalScene compact />;
+    case "browser":
+      return <BrowserScene compact />;
     default:
       return <FilesScene compact />;
   }
@@ -947,7 +955,7 @@ function NavPanel() {
     <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
       <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
         <SidebarRow
-          label={tr("product.name")}
+          label={tr("nav.superAgent")}
           leading={<BitMatrixGlyph size={14} color={palette().chromeText} />}
           active={activeScene() === "openbitfun"}
           accessibilityLabel="nav-openbitfun"
@@ -2292,37 +2300,6 @@ const SHELL_SHORTCUTS: ReadonlyArray<{ id: string; keystroke: string; run: () =>
   },
 ];
 
-function keystrokeFromOverride(raw: unknown): string | null {
-  if (!raw || typeof raw !== "object") return null;
-  const v = raw as Record<string, unknown>;
-  if (typeof v.key !== "string" || !v.key.trim()) return null;
-  const parts: string[] = [];
-  // The desktop treats `ctrl` as the primary modifier (Command on macOS).
-  if (v.ctrl === true || v.meta === true) parts.push("mod");
-  if (v.shift === true) parts.push("shift");
-  if (v.alt === true) parts.push("alt");
-  parts.push(v.key.trim().toLowerCase());
-  return parts.join("+");
-}
-
-function readKeybindingOverrides(raw: unknown): Record<string, string> {
-  if (!raw || typeof raw !== "object") return {};
-  const doc = raw as Record<string, unknown>;
-  const map =
-    doc.__version__ === 1 && doc.overrides && typeof doc.overrides === "object"
-      ? (doc.overrides as Record<string, unknown>)
-      : "__version__" in doc
-        ? {}
-        : doc;
-  const out: Record<string, string> = {};
-  for (const [id, value] of Object.entries(map)) {
-    if (id.startsWith("__")) continue;
-    const keystroke = keystrokeFromOverride(value);
-    if (keystroke) out[id] = keystroke;
-  }
-  return out;
-}
-
 function bindShortcut(keystroke: string, run: () => void): (() => void) | null {
   try {
     return keymap.bind(keystroke, () => run());
@@ -2347,19 +2324,23 @@ function bindShellShortcuts(): void {
     if (stop) unbinders.set(shortcut.id, stop);
   }
   cleanup(() => unbinders.forEach(stop => stop()));
-  void invokeCommand<unknown>("get_config", { path: "app.keybindings", skipRetryOnNotFound: true })
-    .then(raw => {
-      const overrides = readKeybindingOverrides(raw);
-      for (const shortcut of SHELL_SHORTCUTS) {
-        const keystroke = overrides[shortcut.id];
-        if (!keystroke || keystroke === shortcut.keystroke || menuOwned.has(shortcut.id)) continue;
-        const stop = bindShortcut(keystroke, shortcut.run);
-        if (!stop) continue;
-        unbinders.get(shortcut.id)?.();
-        unbinders.set(shortcut.id, stop);
-      }
-    })
-    .catch(() => undefined);
+  // wave22-p5 shortcut remapping: the overrides live in `shortcutsStore.ts`, and
+  // a change Settings › Shortcuts writes rebinds here without a restart.
+  const bound = new Map<string, string>(SHELL_SHORTCUTS.map(shortcut => [shortcut.id, shortcut.keystroke]));
+  effect(() => {
+    const overrides = keybindingOverrides();
+    for (const shortcut of SHELL_SHORTCUTS) {
+      if (menuOwned.has(shortcut.id)) continue;
+      const keystroke = overrides[shortcut.id] ?? shortcut.keystroke;
+      if (bound.get(shortcut.id) === keystroke) continue;
+      const stop = bindShortcut(keystroke, shortcut.run);
+      if (!stop) continue;
+      unbinders.get(shortcut.id)?.();
+      unbinders.set(shortcut.id, stop);
+      bound.set(shortcut.id, keystroke);
+    }
+  });
+  void loadKeybindings();
 }
 
 async function toggleMainWindowFullscreen(): Promise<void> {
@@ -2456,7 +2437,7 @@ const PHONE_TAB_SCENES: ReadonlyArray<SceneId> = ["openbitfun", "inbox", "all-se
 function phoneTitle(scene: SceneId): string {
   switch (scene) {
     case "openbitfun":
-      return tr("product.name");
+      return tr("nav.superAgent");
     case "inbox":
       return tr("nav.inbox");
     case "all-sessions":
@@ -2564,7 +2545,7 @@ function PhoneTabs() {
   const tabs = (): PhoneTab[] => [
     {
       id: "openbitfun",
-      label: tr("product.name"),
+      label: tr("nav.superAgent"),
       icon: "matrix",
       active: activeScene() === "openbitfun",
       onPress: () => navigateScene("openbitfun"),
@@ -2689,13 +2670,17 @@ function StudioApp() {
   syncGlobalNativeTheme();
   void initAppLocale();
   void initWindowChrome();
-  void loadAppearance();
+  // The page's remembered appearance first (no flash), then the host's, which
+  // account settings sync may have changed on another device.
+  void loadAppearance().then(() => syncAppearanceFromHost({ initial: true }));
   // The host's font baseline decides every text size in every scene, so it is
   // read before anything is drawn rather than when the settings page opens.
   void loadFontPreference();
   // The stored conversation width shapes how every transcript is laid out, so it
   // is read once here instead of when the settings page is opened.
-  void loadContentWidth();
+  void loadContentWidth().then(() => syncContentWidthFromHost());
+  initAccountSync();
+  initAccountRecords();
   void loadQueue();
   ensureSendPolicy();
   ensureQuickActions();
@@ -2709,6 +2694,7 @@ function StudioApp() {
   startNotifications();
   startAttentionStore();
   startSuperagentStore();
+  installSpaceAgentSurface(); // wave22-p4: the agent opens Spaces inside the app
   installAboutUpdates({
     supported: () => inAppUpdatesAvailable(),
     phase: () => updatePhase(),
@@ -2747,6 +2733,8 @@ function StudioApp() {
     toggleSidebar: () => runShellShortcut("panel.toggleLeft"),
     about: () => openAboutDialog(),
     markAllRead: () => markAllNotificationsRead(),
+    openInbox: () => navigateScene("inbox"), // wave22-p3
+    openPetSettings: () => requestSettingsPage("pet"), // wave22-p3
   });
   cleanup(() => stopShellIntegration());
 

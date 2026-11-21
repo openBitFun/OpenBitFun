@@ -267,3 +267,123 @@ async fn device_detail_of_this_host_and_of_an_unknown_device() {
         .unwrap_err();
     assert!(invalid.starts_with("invalid fleet request"), "{invalid}");
 }
+
+fn catalog(ids: &[&str]) -> Vec<FleetModel> {
+    ids.iter()
+        .map(|id| FleetModel {
+            model_id: id.to_string(),
+            display_name: id.to_uppercase(),
+            provider: "openai".into(),
+            primary: ids.first() == Some(id),
+            ..FleetModel::default()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_model_catalog_groups_every_device_and_follows_deltas() {
+    let index = FleetIndex::new("entry".into(), None, None);
+    index.set_self_facts(FleetDeviceFacts {
+        device_id: "entry".into(),
+        name: "Studio".into(),
+        host_kind: FleetHostKind::Desktop,
+        is_client_device: true,
+        state: FleetDeviceState::Online,
+        ..FleetDeviceFacts::default()
+    });
+    index.set_presence(&[
+        presence("mac", FleetHostKind::Desktop, true),
+        presence("linux", FleetHostKind::Cli, true),
+        presence("old", FleetHostKind::Desktop, true),
+        presence(CLOUD, FleetHostKind::Cloud, true),
+    ]);
+    let mut entry = digest("entry", Vec::new(), Vec::new());
+    entry.models = Some(catalog(&["local"]));
+    index.apply_digest("entry", None, entry);
+    let mut mac = digest("mac", Vec::new(), Vec::new());
+    mac.models = Some(catalog(&["big", "fast"]));
+    index.apply_digest("mac", None, mac);
+    index.apply_digest("old", None, digest("old", Vec::new(), Vec::new()));
+    let mut linux = digest("linux", Vec::new(), Vec::new());
+    linux.models = Some(catalog(&["srv"]));
+    index.apply_digest("linux", None, linux);
+    let before = index.revision();
+    // A delta that changes only the catalog moves the index.
+    let delta = FleetDigest {
+        device_id: "mac".into(),
+        instance_id: "mac-1".into(),
+        revision: 2,
+        full: false,
+        models: Some(catalog(&["fast"])),
+        ..FleetDigest::default()
+    };
+    index.apply_digest("mac", Some(1), delta);
+    assert!(index.revision() > before);
+    // A delta without a catalog keeps the held one.
+    let delta = FleetDigest {
+        device_id: "mac".into(),
+        instance_id: "mac-1".into(),
+        revision: 3,
+        full: false,
+        ..FleetDigest::default()
+    };
+    index.apply_digest("mac", Some(2), delta);
+    // linux goes offline: its models stay listed but cannot be picked.
+    index.set_presence(&[
+        presence("mac", FleetHostKind::Desktop, true),
+        presence("linux", FleetHostKind::Cli, false),
+        presence("old", FleetHostKind::Desktop, true),
+        presence(CLOUD, FleetHostKind::Cloud, true),
+    ]);
+    let attention = FleetAttention::new(
+        Arc::clone(&index),
+        Arc::new(CloudStatus {
+            status: json!({}),
+            calls: Mutex::new(0),
+        }) as Arc<dyn FleetPeerTransport>,
+        None,
+    );
+    let views = FleetViews::new(Arc::clone(&index), attention);
+    let wire = views
+        .handle("fleet_models", &json!({"request": {}}))
+        .await
+        .unwrap()
+        .unwrap();
+    let devices = wire["devices"].as_array().unwrap();
+    let ids: Vec<&str> = devices
+        .iter()
+        .map(|d| d["deviceId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["entry", "mac", "old", "linux"]);
+    assert_eq!(devices[0]["isThisDevice"], true);
+    assert_eq!(devices[0]["models"][0]["modelRef"], "local");
+    assert_eq!(devices[1]["models"].as_array().unwrap().len(), 1);
+    assert_eq!(devices[1]["models"][0]["modelRef"], "fleet:mac/fast");
+    assert_eq!(devices[1]["models"][0]["selectable"], true);
+    assert_eq!(devices[2]["unavailableReason"], "device_requires_update");
+    assert_eq!(devices[3]["unavailableReason"], "device_offline");
+    assert_eq!(devices[3]["online"], false);
+    assert_eq!(devices[3]["models"][0]["selectable"], false);
+
+    // Relative to the device that runs the session.
+    let wire = views
+        .handle("fleet_models", &json!({"request": {"deviceId": "mac"}}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wire["devices"][0]["deviceId"], "mac");
+    assert_eq!(wire["devices"][0]["models"][0]["modelRef"], "fast");
+    let ids: Vec<&str> = wire["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["deviceId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["mac", "old", "entry", "linux"]);
+    assert_eq!(
+        wire["devices"][2]["models"][0]["modelRef"],
+        "fleet:entry/local"
+    );
+    let (_, models) = index.device_models("mac").unwrap();
+    assert_eq!(models.unwrap()[0].model_id, "fast");
+}

@@ -668,7 +668,8 @@ mod tests {
                 .iter()
                 .filter(|id| id.starts_with("dispatch_target_"))
                 .count(),
-            16
+            // + `dispatch_target_workspace_publish` (`workspace_publish_v1`).
+            17
         );
         for id in control_plane {
             let op = operation(id).unwrap();
@@ -879,7 +880,7 @@ mod tests {
     #[test]
     fn fleet_verbs_are_answered_by_the_fleet_layer_not_the_relay_bridge() {
         let entry: Vec<&str> = fleet_entry_commands().collect();
-        assert_eq!(entry.len(), 10, "{entry:?}");
+        assert_eq!(entry.len(), 11, "{entry:?}");
         for id in entry {
             let op = operation(id).unwrap();
             // Registered backend commands of the desktop host.
@@ -904,7 +905,16 @@ mod tests {
             assert!(!cli_handled_commands().contains(id), "{id}");
         }
         assert!(!controller_local_commands().any(|id| id.starts_with("fleet_")));
-        for owner_verb in ["fleet_digest", "fleet_replay"] {
+        for owner_verb in [
+            "fleet_digest",
+            "fleet_replay",
+            "fleet_blob_get",
+            "fleet_blob_holders",
+            "fleet_replica_digest",
+            "fleet_replica_list",
+            "fleet_replica_pull",
+            "fleet_replica_push",
+        ] {
             let op = operation(owner_verb).unwrap();
             assert_eq!(op.surface, OperationSurface::HostInvokeOnly);
             assert_eq!(
@@ -946,6 +956,7 @@ mod tests {
                 "superagent_list_conversations",
                 "superagent_rename_conversation",
                 "superagent_send",
+                "superagent_set_model",
                 "superagent_status",
             ]
         );

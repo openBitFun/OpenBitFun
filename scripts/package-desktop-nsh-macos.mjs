@@ -12,6 +12,7 @@
 //   Contents/Resources/nsh-web/                      the same UI for browsers/phones (OBP)
 //   Contents/Resources/resources/{worker_host.js,ext-host/extension-host.js}
 //   Contents/Resources/resources/dsh-profile/        DeepSeek Harness bridge
+//   Contents/Resources/resources/agent-companion-pets/  built-in companion pet sprites
 //   Contents/Resources/flashgrep/flashgrep-<triple>  workspace search daemon
 //
 // Usage: node scripts/package-desktop-nsh-macos.mjs [--profile release|release-fast] [--skip-build]

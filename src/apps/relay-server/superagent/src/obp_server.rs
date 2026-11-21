@@ -126,6 +126,22 @@ impl Frontends {
         }
     }
 
+    /// Drops the device ids of accounts whose data is gone (shredded by the
+    /// time-to-live sweep or deleted); returns how many went.
+    pub fn prune_targets(&self) -> usize {
+        let store = self.service.engine.slots.store();
+        let removed = {
+            let mut targets = self.targets.lock().unwrap_or_else(|p| p.into_inner());
+            let before = targets.len();
+            targets.retain(|_, account_id| store.exists(account_id));
+            before - targets.len()
+        };
+        if removed > 0 {
+            self.save_targets();
+        }
+        removed
+    }
+
     fn account_of_target(&self, device_id: &str) -> Option<String> {
         self.targets
             .lock()
@@ -176,7 +192,7 @@ async fn ensure(State(frontends): State<Arc<Frontends>>, headers: HeaderMap) -> 
         return refusal(
             StatusCode::SERVICE_UNAVAILABLE,
             "superagent_unavailable",
-            "the OpenBitFun agent is not available on this server yet",
+            "Super Agent is not available on this server yet",
         );
     }
     let Some(token) = headers
@@ -237,7 +253,7 @@ async fn obp(
         return refusal(
             StatusCode::SERVICE_UNAVAILABLE,
             "superagent_unavailable",
-            "the OpenBitFun agent is not available on this server yet",
+            "Super Agent is not available on this server yet",
         );
     }
     if headers.contains_key(header::ORIGIN) {
@@ -424,7 +440,7 @@ async fn verify(
     let Some(account) = frontends.account_of_target(&hello.target) else {
         return Err((
             "wrong_device",
-            "this address does not belong to an OpenBitFun agent".to_string(),
+            "this address does not belong to a Super Agent".to_string(),
         ));
     };
     let now = openbitfun_obp::now_ms();

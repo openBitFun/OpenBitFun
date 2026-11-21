@@ -14,7 +14,9 @@
 //! - presence from the desktop's Link node and the account directory, links
 //!   through Peer Device Mode's [`crate::mesh::peer_link::global`];
 //! - [`fleet_api`]: the fleet backend commands, and the owner verbs served on the
-//!   mesh listener (`backend_protocol::ws::mesh_verbs`).
+//!   mesh listener (`backend_protocol::ws::mesh_verbs`);
+//! - `models`: sessions here may run another device's model: the account
+//!   catalog mirrored as runtime model entries, rounds over the links.
 //!
 //! It starts with the mesh listener (before it, so the first hello already
 //! advertises `fleet_v1`) and stops with it. Without a running fleet every
@@ -25,6 +27,7 @@
 //! it; remote workspaces stay owned by the device holding the SSH profile.
 
 pub mod fleet_api;
+mod models;
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -283,9 +286,19 @@ pub fn start(device_id: String, authority: Arc<dyn MeshAuthority>, link: Arc<Lin
         service: installed.service.clone(),
         digest: Arc::clone(&digest),
     });
+    // The digest follows model changes too (its catalog).
+    {
+        let digest = Arc::clone(&digest);
+        tokio::spawn(async move {
+            openbitfun_core::service::fleet::models::follow_model_config(&digest).await;
+        });
+    }
     let on_local_event: LocalEventHook = Arc::new(move |event: &str| {
         if is_digest_relevant_event(event) {
             digest.notify_changed();
+        }
+        if event == openbitfun_product_domains::fleet::FLEET_INDEX_CHANGED_EVENT {
+            models::schedule_sync();
         }
     });
     // The peer links dial the account's cloud node too (`peer_link`).
@@ -307,11 +320,15 @@ pub fn start(device_id: String, authority: Arc<dyn MeshAuthority>, link: Arc<Lin
     *CURRENT
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(host);
+    // Sessions here may run other devices' models (`fleet_models`).
+    openbitfun_core::service::fleet::models::install_peers(Arc::new(models::DesktopModelPeers));
+    models::schedule_sync();
 }
 
 /// Stops the running fleet (sign-out, account change, shutdown). The index
 /// cache stays on disk.
 pub fn stop() {
+    openbitfun_core::service::fleet::models::clear_peers();
     DIGEST
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

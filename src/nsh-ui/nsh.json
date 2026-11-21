@@ -17,12 +17,18 @@
     "picker": true,
     "speech": true,
     "statusBar": true,
+    "webview": {
+      "hosts": [
+        "*"
+      ]
+    },
     "openUrl": {
       "schemes": [
         "https",
         "http"
       ]
-    }
+    },
+    "windows": true
   },
   "web": {
     "host": "./host.js"

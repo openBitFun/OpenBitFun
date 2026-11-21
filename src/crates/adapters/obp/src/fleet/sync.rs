@@ -580,6 +580,8 @@ impl FleetSync {
             prompts,
             removed: FleetDigestRemovals::default(),
             sessions_truncated: false,
+            // A leaf owner publishes no model catalog.
+            models: None,
         };
         Ok(self.index.apply_digest(device_id, None, digest))
     }

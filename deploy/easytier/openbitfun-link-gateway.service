@@ -33,7 +33,9 @@ Environment=LINK_GATEWAY_UI_POOL_DIR=/var/lib/openbitfun-ui-pool
 Environment=LINK_GATEWAY_UI_POOL_MAX_BYTES=4294967296
 Environment=LINK_GATEWAY_UI_POOL_MAX_AGE_DAYS=30
 Environment=LINK_GATEWAY_UI_POOL_PULLS_PER_MINUTE=240
-Environment=RUST_LOG=info,easytier=warn,easytier_core=warn
+# easytier's "Failed to send event" warnings repeat every connection with the
+# client's address; they carry no fault, so only their errors are logged.
+Environment=RUST_LOG=info,easytier=warn,easytier_core=warn,easytier::common::global_ctx=error
 ExecStart=/opt/openbitfun-link-gateway/bin/openbitfun-link-gateway
 StateDirectory=openbitfun-ui-pool
 StateDirectoryMode=0750

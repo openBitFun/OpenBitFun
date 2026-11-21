@@ -84,6 +84,19 @@ impl DeviceDispatchRpc for AccountRuntimeDeviceDispatchRpc {
     }
 }
 
+/// Device dispatch over the installed mesh route alone, for a host that
+/// dials another device on its own behalf (peer import: a target pulling a
+/// job result from the source device). Signed out, the route is absent and
+/// the call answers `device_not_on_link`.
+pub struct MeshDeviceDispatchRpc;
+
+#[async_trait]
+impl DeviceDispatchRpc for MeshDeviceDispatchRpc {
+    async fn invoke(&self, device_id: &str, command: &str, args: Value) -> anyhow::Result<Value> {
+        invoke_device_dispatch(mesh_route(), device_id, command, args).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

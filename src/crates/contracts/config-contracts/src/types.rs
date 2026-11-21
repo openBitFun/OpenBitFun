@@ -252,6 +252,25 @@ pub struct AppConfig {
     /// Unknown ecosystem keys survive upgrades; only installed readers consume them.
     #[serde(default)]
     pub external_session_discovery: HashMap<String, bool>,
+    /// This device's account settings sync switch (Settings › Account). A
+    /// document without it reads the default (on); the switch itself never
+    /// syncs.
+    #[serde(default)]
+    pub account_sync: AccountSyncConfig,
+}
+
+/// Account settings sync (Preferences and permission configuration follow
+/// the signed-in account; `services-integrations` `remote_connect::settings_sync`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountSyncConfig {
+    pub enabled: bool,
+}
+
+impl Default for AccountSyncConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// An explicit empty source list stays empty; defaults apply only to absent settings.
@@ -670,6 +689,7 @@ pub struct AIExperienceConfig {
     /// Optional Petdex-compatible companion package selected by the user.
     #[serde(
         default = "default_agent_companion_pet",
+        deserialize_with = "deserialize_agent_companion_pet",
         skip_serializing_if = "Option::is_none"
     )]
     pub agent_companion_pet: Option<AgentCompanionPetSelection>,
@@ -726,19 +746,80 @@ pub struct AgentCompanionPetSelection {
     pub sprite_version_number: Option<u32>,
 }
 
+/// Logical path prefix of a built-in companion pet (`builtin:<id>` and
+/// `builtin:<id>/<file>`); the backend resolves it in its own resources, so a
+/// selection never names an install location.
+pub const AGENT_COMPANION_BUILTIN_PREFIX: &str = "builtin:";
+/// The web path 1.x selections named (`/agent-companion-pets/<id>/<file>`),
+/// served by the retired web UI.
+pub const AGENT_COMPANION_LEGACY_WEB_PREFIX: &str = "/agent-companion-pets/";
+/// The pet a selection falls back to; never "no pet".
+pub const AGENT_COMPANION_DEFAULT_PET_ID: &str = "bitblob";
+
 fn default_agent_companion_pet() -> Option<AgentCompanionPetSelection> {
     Some(AgentCompanionPetSelection {
-        id: "bitblob".to_string(),
+        id: AGENT_COMPANION_DEFAULT_PET_ID.to_string(),
         display_name: "BitBlob".to_string(),
         description: Some(
             "Rounded lavender companion with a soft antenna and curious eyes.".to_string(),
         ),
-        source: "preset".to_string(),
-        package_path: "/agent-companion-pets/bitblob".to_string(),
-        spritesheet_path: "/agent-companion-pets/bitblob/spritesheet.webp".to_string(),
+        source: "builtin".to_string(),
+        package_path: format!("{AGENT_COMPANION_BUILTIN_PREFIX}{AGENT_COMPANION_DEFAULT_PET_ID}"),
+        spritesheet_path: format!(
+            "{AGENT_COMPANION_BUILTIN_PREFIX}{AGENT_COMPANION_DEFAULT_PET_ID}/spritesheet.webp"
+        ),
         spritesheet_mime_type: "image/webp".to_string(),
         sprite_version_number: Some(2),
     })
+}
+
+/// Reads a 1.x selection that names the retired web path as the same built-in
+/// pet (`builtin:<id>/<file>`). An id with characters a pet id never has falls
+/// back to the default pet. Imported pets (absolute paths) are left alone.
+pub fn migrate_agent_companion_pet_selection(
+    mut selection: AgentCompanionPetSelection,
+) -> AgentCompanionPetSelection {
+    let legacy_part = |path: &str| {
+        path.strip_prefix(AGENT_COMPANION_LEGACY_WEB_PREFIX)
+            .map(str::to_string)
+    };
+    let Some(rest) =
+        legacy_part(&selection.spritesheet_path).or_else(|| legacy_part(&selection.package_path))
+    else {
+        return selection;
+    };
+    let (id, file) = match rest.split_once('/') {
+        Some((id, file)) if !file.is_empty() => (id.to_string(), file.to_string()),
+        Some((id, _)) => (id.to_string(), "spritesheet.webp".to_string()),
+        None => (rest.clone(), "spritesheet.webp".to_string()),
+    };
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    };
+    if !valid(&id) || !valid(&file) {
+        return default_agent_companion_pet().unwrap_or(selection);
+    }
+    selection.source = "builtin".to_string();
+    selection.package_path = format!("{AGENT_COMPANION_BUILTIN_PREFIX}{id}");
+    selection.spritesheet_path = format!("{AGENT_COMPANION_BUILTIN_PREFIX}{id}/{file}");
+    selection
+}
+
+fn deserialize_agent_companion_pet<'de, D>(
+    deserializer: D,
+) -> Result<Option<AgentCompanionPetSelection>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        Option::<AgentCompanionPetSelection>::deserialize(deserializer)?
+            .map(migrate_agent_companion_pet_selection),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -779,12 +860,17 @@ pub struct NotificationConfig {
 pub struct AppearanceConfig {
     /// Selected appearance/theme ID or `system`.
     pub selection: String,
+    /// How wide the conversation column grows, in px (`None`: the UI's
+    /// default). Absent from documents that never set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_width: Option<u32>,
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
             selection: "system".to_string(),
+            content_width: None,
         }
     }
 }
@@ -2303,6 +2389,7 @@ impl Default for AppConfig {
             hooks: AgentHooksConfig::default(),
             worktrees: WorktreeSettings::default(),
             external_session_discovery: HashMap::new(),
+            account_sync: AccountSyncConfig::default(),
         }
     }
 }
@@ -2634,6 +2721,31 @@ impl AIModelConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn account_sync_defaults_on_for_a_document_without_the_section() {
+        let mut legacy = serde_json::to_value(super::GlobalConfig::default()).unwrap();
+        let app = legacy["app"].as_object_mut().unwrap();
+        assert!(app.remove("account_sync").is_some());
+        // An older document has no content width either.
+        assert!(legacy["appearance"].get("content_width").is_none());
+        legacy["appearance"] = serde_json::json!({ "selection": "openbitfun-dark" });
+        let read: super::GlobalConfig = serde_json::from_value(legacy).unwrap();
+        assert!(read.app.account_sync.enabled);
+        assert_eq!(read.appearance.content_width, None);
+        assert_eq!(read.appearance.selection, "openbitfun-dark");
+
+        let mut saved = serde_json::to_value(&read).unwrap();
+        assert_eq!(
+            saved["app"]["account_sync"],
+            serde_json::json!({ "enabled": true })
+        );
+        saved["app"]["account_sync"] = serde_json::json!({ "enabled": false, "future": 1 });
+        saved["appearance"]["content_width"] = serde_json::json!(880);
+        let read: super::GlobalConfig = serde_json::from_value(saved).unwrap();
+        assert!(!read.app.account_sync.enabled);
+        assert_eq!(read.appearance.content_width, Some(880));
+    }
+
     #[test]
     fn superagent_switches_default_on_and_a_legacy_document_round_trips() {
         let defaults = super::SuperagentConfig::default();
@@ -3529,13 +3641,75 @@ mod tests {
             .expect("default companion pet should be present");
         assert_eq!(pet.id, "bitblob");
         assert_eq!(pet.display_name, "BitBlob");
-        assert_eq!(pet.package_path, "/agent-companion-pets/bitblob");
-        assert_eq!(
-            pet.spritesheet_path,
-            "/agent-companion-pets/bitblob/spritesheet.webp"
-        );
+        assert_eq!(pet.source, "builtin");
+        assert_eq!(pet.package_path, "builtin:bitblob");
+        assert_eq!(pet.spritesheet_path, "builtin:bitblob/spritesheet.webp");
         assert_eq!(pet.spritesheet_mime_type, "image/webp");
         assert_eq!(pet.sprite_version_number, Some(2));
+    }
+
+    #[test]
+    fn legacy_web_pet_selections_migrate_to_built_in_paths_and_round_trip() {
+        use super::{
+            default_agent_companion_pet, migrate_agent_companion_pet_selection,
+            AgentCompanionPetSelection,
+        };
+        // The 1.x default, exactly as 1.x wrote it.
+        let legacy = serde_json::json!({
+            "enable_agent_companion": true,
+            "agent_companion_pet": {
+                "id": "bitblob",
+                "displayName": "BitBlob",
+                "description": "Rounded lavender companion with a soft antenna and curious eyes.",
+                "source": "preset",
+                "packagePath": "/agent-companion-pets/bitblob",
+                "spritesheetPath": "/agent-companion-pets/bitblob/spritesheet.webp",
+                "spritesheetMimeType": "image/webp",
+                "spriteVersionNumber": 2
+            }
+        });
+        let config: AIExperienceConfig = serde_json::from_value(legacy).unwrap();
+        assert!(config.enable_agent_companion);
+        let pet = config.agent_companion_pet.clone().unwrap();
+        assert_eq!(pet, default_agent_companion_pet().unwrap());
+
+        let saved = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            saved["agent_companion_pet"]["spritesheetPath"],
+            "builtin:bitblob/spritesheet.webp"
+        );
+        let again: AIExperienceConfig = serde_json::from_value(saved).unwrap();
+        assert_eq!(again.agent_companion_pet, Some(pet));
+
+        // A legacy path with a broken id falls back to BitBlob, never to off.
+        let broken = migrate_agent_companion_pet_selection(AgentCompanionPetSelection {
+            id: "x".to_string(),
+            display_name: "X".to_string(),
+            description: None,
+            source: "preset".to_string(),
+            package_path: "/agent-companion-pets/../etc".to_string(),
+            spritesheet_path: "/agent-companion-pets/../etc/passwd".to_string(),
+            spritesheet_mime_type: "image/webp".to_string(),
+            sprite_version_number: None,
+        });
+        assert_eq!(broken.id, "bitblob");
+        assert_eq!(broken.spritesheet_path, "builtin:bitblob/spritesheet.webp");
+
+        // An imported pet keeps its own paths.
+        let imported = AgentCompanionPetSelection {
+            id: "cat".to_string(),
+            display_name: "Cat".to_string(),
+            description: None,
+            source: "user".to_string(),
+            package_path: "/Users/me/agent-companions/cat".to_string(),
+            spritesheet_path: "/Users/me/agent-companions/cat/sheet.png".to_string(),
+            spritesheet_mime_type: "image/png".to_string(),
+            sprite_version_number: Some(1),
+        };
+        assert_eq!(
+            migrate_agent_companion_pet_selection(imported.clone()),
+            imported
+        );
     }
 
     #[test]
@@ -3562,13 +3736,14 @@ mod tests {
             .expect("selected companion pet should be retained");
         assert_eq!(pet.id, "boxcat");
         assert_eq!(pet.display_name, "Boxcat");
-        assert_eq!(pet.package_path, "/agent-companion-pets/boxcat");
+        // The 1.x web path reads as the same built-in pet.
+        assert_eq!(pet.package_path, "builtin:boxcat");
 
         let serialized = serde_json::to_value(&config).expect("config should serialize");
         assert_eq!(serialized["agent_companion_pet"]["displayName"], "Boxcat");
         assert_eq!(
             serialized["agent_companion_pet"]["spritesheetPath"],
-            "/agent-companion-pets/boxcat/spritesheet.webp"
+            "builtin:boxcat/spritesheet.webp"
         );
     }
 

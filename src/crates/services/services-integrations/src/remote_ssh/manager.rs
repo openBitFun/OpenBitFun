@@ -3213,6 +3213,21 @@ impl SSHConnectionManager {
         self.save_connections().await
     }
 
+    /// Saves a profile as the account replica carries it (no password, no
+    /// key material): the password vault is left as it is, so a profile whose
+    /// password this device does not have yet is listed and asks for it when
+    /// it connects (`account_records` SSH binding, wave24-replica).
+    pub async fn save_profile_without_secret(
+        &self,
+        profile: SavedConnection,
+    ) -> anyhow::Result<()> {
+        let mut guard = self.saved_connections.write().await;
+        guard.retain(|existing| existing.id != profile.id);
+        guard.push(profile);
+        drop(guard);
+        self.save_connections().await
+    }
+
     /// Whether two saved-profile ids name the same connection through the
     /// legacy `ssh-user@host:port` spelling.
     fn connection_ids_are_aliases(left: &str, right: &str) -> bool {

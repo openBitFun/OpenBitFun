@@ -7,10 +7,15 @@
 //! rooms, relay RPC, HostInvoke, pairing invitations, the LAN relay and host
 //! streams) is not part of 2.0.
 
+/// Account records (agents, skills, routines, MCP shapes, personas, memory,
+/// quick actions, bot metadata) on the account replica.
+pub mod account_records;
 pub mod account_runtime;
 pub mod bot;
 pub mod control;
 pub mod remote_server;
+/// Account settings sync (Preferences and permission configuration).
+pub mod settings_sync;
 
 pub mod device {
     pub use openbitfun_services_integrations::remote_connect::device::*;

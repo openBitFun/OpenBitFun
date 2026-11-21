@@ -53,7 +53,7 @@ test("the header names the session, its device and workspace, and where it start
   expect(app.shows("id:session-breadcrumb-device >> text:linux-box")).toBe(true);
   expect(app.shows("label:session-breadcrumb-workspace")).toBe(true);
   expect(app.shows("text:openbitfun")).toBe(true);
-  expect(app.shows("text:Started by OpenBitFun in “Release 1.2” ›")).toBe(true);
+  expect(app.shows("text:Started by Super Agent in “Release 1.2” ›")).toBe(true);
   // An idle session draws no state word.
   expect(app.shows("label:session-status-working")).toBe(false);
   expect(app.shows("label:session-status-needs_you")).toBe(false);
@@ -70,7 +70,7 @@ test("the device badge opens the device page, and the tool toggles open the insp
   const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
   await openSession(app);
   // Without a superagent origin there is no origin line.
-  expect(app.texts().some(text => text.startsWith("Started by OpenBitFun"))).toBe(false);
+  expect(app.texts().some(text => text.startsWith("Started by Super Agent"))).toBe(false);
   for (const tool of ["files", "git", "terminal", "browser"]) {
     expect([tool, app.shows(`label:session-tool-${tool}`)]).toEqual([tool, true]);
   }

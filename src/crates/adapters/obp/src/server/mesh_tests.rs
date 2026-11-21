@@ -785,8 +785,8 @@ async fn cloud_agent_handshake_gets_full_access_and_the_model_relay() {
     drop(hub);
     connection.close().await;
 
-    // A desktop row on the same listener stays account-device and cannot
-    // reach the model relay.
+    // A desktop row on the same listener stays account-device and reaches
+    // the model relay too (a session there runs this device's model).
     let laptop = MeshDialer {
         connector: Arc::new(LoopbackConnector),
         authority: device("cloud-peer-laptop", ALICE, &[("cloud-scope-target", BOB)]),
@@ -796,14 +796,14 @@ async fn cloud_agent_handshake_gets_full_access_and_the_model_relay() {
         .await
         .unwrap();
     assert_eq!(connection.hello()["scope"], "account-device");
-    let refused = connection
+    let relayed = connection
         .call(
             "fleet_model_start",
             json!({ "request": { "requestId": "r1" } }),
         )
         .await
-        .unwrap_err();
-    assert_eq!(refused.code, -32003, "{refused}");
+        .unwrap();
+    assert_eq!(relayed["routed"], "fleet_model_start");
     connection.close().await;
     server.stop_mesh();
 }
@@ -950,6 +950,165 @@ async fn a_host_without_the_cloud_agent_does_not_advertise_it() {
         refused.message.starts_with("superagent_requires_update:"),
         "{refused}"
     );
+    connection.close().await;
+    server.stop_mesh();
+}
+
+/// `CloudServingBackend` with an account replica: the cloud agent's replica
+/// verbs never reach the dispatcher (an account device's full access).
+#[cfg(feature = "fleet")]
+struct ReplicaServingBackend {
+    cloud: CloudServingBackend,
+    replica: Arc<crate::fleet::replica::AccountReplica>,
+}
+
+#[cfg(feature = "fleet")]
+impl ObpBackend for ReplicaServingBackend {
+    fn dispatch(&self, command: String, args: Value) -> ObpDispatchFuture {
+        if is_replica_verb(&command) {
+            let replica = Arc::clone(&self.replica);
+            return Box::pin(async move {
+                replica
+                    .handle(&command, &args)
+                    .unwrap_or_else(|| Err("no handler".into()))
+            });
+        }
+        self.cloud.dispatch(command, args)
+    }
+
+    fn events(&self) -> Arc<EventHub> {
+        self.cloud.events()
+    }
+
+    fn info(&self) -> Value {
+        self.cloud.info()
+    }
+
+    fn is_account_device_host_verb(&self, command: &str) -> bool {
+        self.cloud.is_account_device_host_verb(command) || is_replica_verb(command)
+    }
+
+    fn mesh_capabilities(&self) -> Vec<&'static str> {
+        self.cloud.mesh_capabilities()
+    }
+
+    fn serves_cloud_agent(&self) -> bool {
+        true
+    }
+
+    fn account_replica(&self) -> Option<Arc<crate::fleet::replica::AccountReplica>> {
+        Some(Arc::clone(&self.replica))
+    }
+}
+
+/// The cloud agent pushes and lists only `superagent.` collections, never
+/// reads the whole replica, and cannot reach it through `fleet_call`; an
+/// account device on the same listener keeps full access.
+#[cfg(feature = "fleet")]
+#[tokio::test]
+async fn cloud_agent_replica_access_is_limited_to_superagent_collections() {
+    let target_id = "replica-scope-target";
+    let target = device(
+        target_id,
+        BOB,
+        &[("cloud-rep", CLOUD), ("replica-laptop", ALICE)],
+    );
+    let authority = Arc::new(KindedAuthority {
+        inner: target,
+        kinds: [
+            ("cloud-rep".to_string(), CLOUD_AGENT_DEVICE_KIND.to_string()),
+            ("replica-laptop".to_string(), "desktop".to_string()),
+        ]
+        .into(),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let replica = crate::fleet::replica::AccountReplica::open(target_id, None);
+    replica.put("settings", "theme", json!("dark")).unwrap();
+    let hub = EventHub::new(64);
+    let mut options = ObpServerOptions::new(dir.path().join("obp"));
+    options.loopback_port = 0;
+    let server = ObpServer::new(
+        Arc::new(ReplicaServingBackend {
+            cloud: CloudServingBackend {
+                echo: EchoBackend {
+                    hub: Arc::clone(&hub),
+                },
+                policy: CloudAgentPolicy::default(),
+            },
+            replica: Arc::clone(&replica),
+        }),
+        options,
+    )
+    .unwrap();
+    server.start_mesh(authority).await.unwrap();
+    let mesh_target = MeshTarget {
+        device_id: target_id.into(),
+        virtual_ip: Ipv4Addr::new(10, 126, 126, 2),
+        port: None,
+    };
+    let cloud = MeshDialer {
+        connector: Arc::new(LoopbackConnector),
+        authority: device("cloud-rep", CLOUD, &[(target_id, BOB)]),
+    };
+    let connection = cloud
+        .connect(&mesh_target, MeshConnectOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(connection.hello()["scope"], "cloud-agent");
+    let record = |collection: &str| {
+        json!({ "request": { "records": [{
+            "collection": collection, "id": "c1", "value": { "title": "t" },
+            "hlc": { "wallMs": 10, "deviceId": "cloud-rep" }
+        }] } })
+    };
+    let pushed = connection
+        .call("fleet_replica_push", record("superagent.conversations"))
+        .await
+        .unwrap();
+    assert_eq!(pushed["records"][0]["stored"], true);
+    for (command, args) in [
+        ("fleet_replica_push", record("settings")),
+        ("fleet_replica_pull", json!({ "request": {} })),
+        ("fleet_replica_digest", json!({ "request": {} })),
+        (
+            "fleet_replica_list",
+            json!({ "request": { "collection": "settings" } }),
+        ),
+        (
+            "fleet_call",
+            json!({ "request": { "target": "x", "command": "fleet_replica_pull", "args": {} } }),
+        ),
+    ] {
+        let error = connection.call(command, args).await.unwrap_err();
+        assert_eq!(error.code, -32003, "{command}: {error}");
+    }
+    let listed = connection
+        .call(
+            "fleet_replica_list",
+            json!({ "request": { "collection": "superagent.conversations" } }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["records"][0]["id"], "c1");
+    assert_eq!(
+        replica.get("settings", "theme").unwrap().value,
+        Some(json!("dark"))
+    );
+    connection.close().await;
+    // An account device keeps the full replica.
+    let laptop = MeshDialer {
+        connector: Arc::new(LoopbackConnector),
+        authority: device("replica-laptop", ALICE, &[(target_id, BOB)]),
+    };
+    let connection = laptop
+        .connect(&mesh_target, MeshConnectOptions::default())
+        .await
+        .unwrap();
+    let pulled = connection
+        .call("fleet_replica_pull", json!({ "request": {} }))
+        .await
+        .unwrap();
+    assert_eq!(pulled["records"].as_array().unwrap().len(), 2);
     connection.close().await;
     server.stop_mesh();
 }

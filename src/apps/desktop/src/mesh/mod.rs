@@ -330,6 +330,8 @@ impl MeshRuntime {
                 Arc::clone(&authority),
                 Arc::clone(&self.link),
             );
+            // The account replica (synced settings) rides the fleet.
+            crate::api::account_settings_sync_api::attach_replica(&account.user_id);
             let local = SocketAddr::from((
                 Ipv4Addr::UNSPECIFIED,
                 status
@@ -590,10 +592,12 @@ impl MeshRuntime {
         device_id: &str,
         options: MeshConnectOptions,
     ) -> Result<MeshObpConnection, String> {
-        let account =
-            self.serving.lock().await.clone().ok_or_else(|| {
-                "mesh_signed_out: sign in to reach the OpenBitFun agent".to_string()
-            })?;
+        let account = self
+            .serving
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| "mesh_signed_out: sign in to reach Super Agent".to_string())?;
         let url = openbitfun_obp::client::cloud::cloud_node_url(
             &crate::api::account_directory::directory_url(),
         )

@@ -12,6 +12,22 @@ import {
   type ViewRef,
 } from "nsh";
 import { Input, TextView } from "nsh/base";
+// wave22-p3: Settings › Pet (desktop pet and desktop cards)
+import { Picker } from "nsh";
+import { Buffer } from "buffer";
+import {
+  companionAvailableHere,
+  companionBusy,
+  companionEnabled,
+  companionNotice,
+  desktopCardsEnabled,
+  importCompanionPetArchive,
+  loadCompanionPets,
+  loadCompanionSettings,
+  setCompanionEnabled,
+  setDesktopCardsEnabled,
+} from "../companionStore";
+import { PetCharacterGrid } from "../ui/companion";
 import { STATIC_MARKDOWN_OPTIONS, createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
 import { fleetActive, invokeCommand, windowShellId } from "../bridge";
 import { fleetDeviceById, fleetDevices } from "../fleetStore";
@@ -138,6 +154,7 @@ import {
   formatDuration,
   formatPercent,
   formatPlural,
+  formatRelativeTime,
   formatTokens,
   weekdayShortLabels,
 } from "../format";
@@ -439,7 +456,6 @@ import {
   radii,
   resolvedAppearanceId,
   resolvedScheme,
-  selectAppearancePreset,
   space,
   textLineHeight,
   textSize,
@@ -447,7 +463,18 @@ import {
   textTracking,
   type AppearanceId,
 } from "../theme";
-import { applyAppearance, type AppearanceMode } from "../themeStore";
+import { applyAppearance, chooseAppearancePreset, type AppearanceMode } from "../themeStore";
+// wave24-replica: MCP servers from the account that still need a secret here.
+import { loadAccountRecords, mcpSecretsNote } from "../accountRecordsStore";
+import {
+  accountSync,
+  accountSyncBusy,
+  accountSyncCaptionShown,
+  accountSyncLoad,
+  accountSyncNote,
+  loadAccountSync,
+  setAccountSyncEnabled,
+} from "../accountSyncStore";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
 import { Icon, type IconName } from "../ui/icons";
 import {
@@ -458,6 +485,47 @@ import {
   tactileActiveStyle,
 } from "../ui/motion";
 import { DropdownMenu, ModalDialog, SelectDropdown, pushToast, type SelectDropdownOption } from "../ui/overlays";
+// wave22-p2: the external Chrome or Edge connect status.
+import { ExternalBrowserSection } from "../ui/externalBrowser";
+// wave22-p5 settings parity: shortcut remapping, desktop control permissions, settings export/import.
+import { keymap } from "nsh";
+import { TextField } from "../ui/primitives";
+import {
+  effectiveKeystroke,
+  keybindingOverrides,
+  keystrokeFromKeyEvent,
+  loadKeybindings,
+  resetAllShortcuts,
+  resetShortcut,
+  setShortcut,
+  SHORTCUT_DEFINITIONS,
+  shortcutNotice,
+  shortcutRecording,
+  shortcutUsing,
+  type ShortcutDefinition,
+} from "../shortcutsStore";
+import {
+  computerUseBusy,
+  computerUseNotice,
+  computerUseState,
+  computerUseStatus,
+  loadComputerUseStatus,
+  openComputerUseSettings,
+  requestComputerPermission,
+  type ComputerPermissionRow,
+} from "../computerUseStore";
+import {
+  closeConfigImport,
+  configImportError,
+  configImportName,
+  configImportOpen,
+  configImportText,
+  configTransferBusy,
+  copyConfigExport,
+  importConfigText,
+  openConfigImport,
+  pickConfigFile,
+} from "../configTransferStore";
 import { openSessionDelete } from "../ui/sessionActions";
 import {
   ActionButton,
@@ -605,9 +673,9 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         labelKey: "settings.page.pet",
         descriptionKey: "settings.page.petDesc",
         icon: "bot",
-        keywords: ["pet", "companion", "desktop"],
+        keywords: ["pet", "companion", "desktop", "cards"],
+        // Listed everywhere; phones and browsers say "Desktop only" (wave22-p3).
         anchors: [],
-        nativeOnly: true,
       },
     ],
   },
@@ -636,7 +704,7 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         labelKey: "settings.page.openbitfun",
         descriptionKey: "settings.page.openbitfunDesc",
         icon: "sparkles",
-        keywords: ["openbitfun", "cloud", "agent", "conversation"],
+        keywords: ["openbitfun", "super agent", "cloud", "agent", "conversation"],
         anchors: [],
       },
       {
@@ -3083,6 +3151,7 @@ function QuickActionsSection() {
 
 function McpSection() {
   ensureMcp();
+  void loadAccountRecords();
   const draft = () => mcpDraft();
   const mcpModalOpen = usePresenceFlag(() => Boolean(mcpDraft()));
   const mcpDocumentUsable = (): boolean => mcpDocument() !== null;
@@ -3228,6 +3297,13 @@ function McpSection() {
                 </Text>
                 <If when={!row().enabled && row().statusMessage ? row().statusMessage : ""}>
                   {hint => <Text style={textStyle("meta")}>{hint()}</Text>}
+                </If>
+                <If when={mcpSecretsNote(row().id)}>
+                  {note => (
+                    <Text style={textStyle("meta")} accessibilityLabel={`mcp-needs-secret-${row().id}`}>
+                      {note()}
+                    </Text>
+                  )}
                 </If>
               </View>
               <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 0, gap: 6 }}>
@@ -6490,7 +6566,7 @@ function AppearanceSwatchGallery() {
                 role="button"
                 accessibilityLabel={`appearance-swatch-${preset().id}`}
                 accessibilityState={{ selected: active() }}
-                onPress={() => selectAppearancePreset(preset().id)}
+                onPress={() => chooseAppearancePreset(preset().id)}
                 style={{
                   gap: 7,
                   padding: pad,
@@ -7376,32 +7452,6 @@ function AccountRow() {
   );
 }
 
-function KeyboardRow() {
-  const overrides = (): number => {
-    const app = settingsValues()["app"];
-    if (!app || typeof app !== "object") return 0;
-    const stored = (app as Record<string, unknown>).keybindings;
-    return stored && typeof stored === "object" ? Object.keys(stored as Record<string, unknown>).length : 0;
-  };
-  return (
-    <SettingsGroup id="shortcuts" title={tr("settings.shortcuts.title")}>
-      <SettingsRow label={tr("settings.shortcuts.title")} description={tr("settings.shortcuts.hint")} first={true}>
-        <RowValue
-          text={
-            overrides()
-              ? formatPlural(
-                  overrides(),
-                  "settings.shortcuts.overridesStoredOne",
-                  "settings.shortcuts.overridesStoredOther",
-                )
-              : tr("settings.shortcuts.defaults")
-          }
-        />
-      </SettingsRow>
-    </SettingsGroup>
-  );
-}
-
 /**
  * `terminal.default_shell` over the shells this host detects: empty means the
  * host picks (auto-detect), as the desktop's terminal page offers it.
@@ -7615,24 +7665,80 @@ function LaunchAtLoginRow() {
   );
 }
 
+/** Picks a `.zip` pet pack and imports it on this device. */
+async function pickCompanionPack(): Promise<void> {
+  const files = await Picker.pickFiles({
+    multiple: false,
+    filters: [{ name: "Petdex", extensions: ["zip"] }],
+    maxSize: 64 * 1024 * 1024,
+  });
+  const picked = files[0];
+  if (!picked?.file || picked.status !== "read") return;
+  const bytes = new Uint8Array(await picked.file.arrayBuffer());
+  await importCompanionPetArchive(picked.name, Buffer.from(bytes).toString("base64"));
+}
+
 /**
- * The companion pet and desktop cards are separate always-on-top windows of the
- * Tauri desktop. The native desktop does not draw them yet, so it says so here
- * instead of offering switches that would do nothing.
+ * Settings › Pet (wave22-p3): the desktop pet (on/off, character, import) and
+ * desktop cards (on/off). Both are floating windows of the desktop app, so a
+ * phone or a browser shows one "Desktop only" row instead of switches that
+ * would do nothing there.
  */
 function DesktopCompanionRow() {
+  if (!companionAvailableHere()) {
+    return (
+      <SettingsRow label={tr("settings.field.desktopCompanion")} description={tr("pet.desktopOnlyBody")} first={true}>
+        <Text
+          accessibilityLabel="desktop-companion-desktop-only"
+          style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}
+        >
+          {tr("pet.desktopOnly")}
+        </Text>
+      </SettingsRow>
+    );
+  }
+  void loadCompanionSettings();
+  void loadCompanionPets();
   return (
-    <SettingsRow
-      label={tr("settings.field.desktopCompanion")}
-      description={tr("settings.field.desktopCompanionUnavailable")}
-    >
-      <Text
-        accessibilityLabel="desktop-companion-unavailable"
-        style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}
-      >
-        {tr("settings.field.notAvailableHere")}
-      </Text>
-    </SettingsRow>
+    <View>
+      <If when={companionNotice()}>
+        {notice => <InlineBanner tone="danger" message={notice()} onDismiss={() => companionNotice.set("")} />}
+      </If>
+      <SettingsRow label={tr("pet.enabled")} description={tr("pet.enabledBody")} first={true}>
+        <If when={companionEnabled() !== null}>
+          <ToggleSwitch
+            value={companionEnabled() === true}
+            accessibilityLabel="pet-enabled"
+            disabled={companionBusy() !== null}
+            onChange={next => void setCompanionEnabled(next)}
+          />
+        </If>
+      </SettingsRow>
+      <SettingsRow label={tr("pet.character")} description={tr("pet.characterBody")} stacked={true}>
+        <PetCharacterGrid />
+        <View style={{ flexDirection: "row" }}>
+          <Button
+            label={tr("pet.import")}
+            variant="secondary"
+            size="sm"
+            leadingIcon="upload"
+            loading={companionBusy() === "import"}
+            accessibilityLabel="pet-import"
+            onPress={() => void pickCompanionPack()}
+          />
+        </View>
+      </SettingsRow>
+      <SettingsRow label={tr("cards.settingsEnabled")} description={tr("cards.settingsEnabledBody")}>
+        <If when={desktopCardsEnabled() !== null}>
+          <ToggleSwitch
+            value={desktopCardsEnabled() === true}
+            accessibilityLabel="desktop-cards-enabled"
+            disabled={companionBusy() !== null}
+            onChange={next => void setDesktopCardsEnabled(next)}
+          />
+        </If>
+      </SettingsRow>
+    </View>
   );
 }
 
@@ -7904,6 +8010,76 @@ async function deleteSuperagentData(): Promise<void> {
   } finally {
     obfBusy.set(false);
   }
+}
+
+// ── Account › Profile: account settings sync (the backend reports the state) ──
+
+function accountSyncStateText(): string {
+  const status = accountSync();
+  switch (status?.phase) {
+    case "synced":
+      return (status.peers ?? 0) === 0 ? tr("settings.sync.state.only") : tr("settings.sync.state.synced");
+    case "syncing":
+      return tr("settings.sync.state.syncing");
+    case "offline":
+      return tr("settings.sync.state.offline");
+    case "off":
+      return tr("settings.sync.state.off");
+    case "signed_out":
+      return tr("settings.sync.state.signedOut");
+    default:
+      return tr("settings.sync.state.unavailable");
+  }
+}
+
+function accountSyncDetail(): string {
+  const status = accountSync();
+  const parts: string[] = [];
+  if ((status?.peers ?? 0) > 0) {
+    parts.push(tr("settings.sync.peers", { online: String(status?.peersOnline ?? 0), total: String(status?.peers ?? 0) }));
+  }
+  if ((status?.pending ?? 0) > 0) parts.push(tr("settings.sync.pending", { count: String(status?.pending ?? 0) }));
+  if (status?.phase === "synced" && typeof status.lastSyncedAtMs === "number") {
+    parts.push(tr("settings.sync.lastSynced", { time: formatRelativeTime(status.lastSyncedAtMs) }));
+  }
+  return parts.join(" · ");
+}
+
+function AccountSyncSection() {
+  void loadAccountSync();
+  return (
+    <View accessibilityLabel="settings-account-sync">
+      <If when={accountSyncLoad() === "unsupported"}>
+        <UnsupportedNote title={tr("settings.sync.title")} message={tr("settings.sync.hostUnsupported")} />
+      </If>
+      <If when={accountSyncLoad() === "failed"}>
+        <InlineBanner
+          tone="danger"
+          accessibilityLabel="account-sync-load-failed"
+          message={localizeHostError(accountSyncNote())}
+          actionLabel={tr("common.retry")}
+          onAction={() => void loadAccountSync()}
+        />
+      </If>
+      <If when={accountSyncLoad() === "ready" && accountSync() !== null}>
+        <SettingsGroup id="account-sync" title={tr("settings.sync.title")} hideTitle={true}>
+          <SettingsRow label={tr("settings.sync.title")} description={tr("settings.sync.body")} first={true}>
+            <ToggleSwitch
+              value={accountSync()?.enabled !== false}
+              disabled={accountSyncBusy()}
+              accessibilityLabel="account-sync-toggle"
+              onChange={next => void setAccountSyncEnabled(next)}
+            />
+          </SettingsRow>
+          <SettingsRow label={tr("settings.sync.status")} description={accountSyncDetail() || undefined}>
+            <Text accessibilityLabel="account-sync-state" style={textStyle("label", { color: palette().textMuted })}>
+              {accountSyncStateText()}
+            </Text>
+          </SettingsRow>
+        </SettingsGroup>
+      </If>
+    </View>
+  );
 }
 
 function OpenBitFunSection() {
@@ -8953,7 +9129,7 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
       </View>
     );
   }
-  if (page === "shortcuts") return <KeyboardRow />;
+  if (page === "shortcuts") return <ShortcutsSection />; // wave22-p5
   if (page === "pet") {
     return (
       <SettingsGroup id="pet" title={tr("settings.page.pet")} hideTitle={true}>
@@ -8963,9 +9139,12 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   }
   if (page === "profile") {
     return (
-      <SettingsGroup id="profile" title={tr("settings.page.profile")} hideTitle={true}>
-        <AccountRow />
-      </SettingsGroup>
+      <View style={{ gap: layout.sectionGap }}>
+        <SettingsGroup id="profile" title={tr("settings.page.profile")} hideTitle={true}>
+          <AccountRow />
+        </SettingsGroup>
+        <AccountSyncSection />
+      </View>
     );
   }
   if (page === "devices") return <AccountDevicesPage />;
@@ -9037,7 +9216,17 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   }
   if (page === "external-import") return <ExternalImportSection />;
   if (page === "web-search") return <WebSearchSection />;
-  if (page === "desktop-control") return <FieldSection sectionId="tools" />;
+  if (page === "desktop-control") {
+    // wave22-p5: the device's own desktop-control permissions under its switches.
+    return (
+      <View style={{ gap: layout.sectionGap }}>
+        <FieldSection sectionId="tools" />
+        <ComputerUseSection />
+        {/* wave22-p2: the user's own Chrome or Edge. */}
+        <ExternalBrowserSection />
+      </View>
+    );
+  }
   if (page === "mcp") {
     return (
       <View style={{ gap: layout.sectionGap }}>
@@ -9060,6 +9249,7 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
     <View style={{ gap: layout.sectionGap }}>
       <FieldSection sectionId="diagnostics" />
       <LogFilesSection />
+      <ConfigTransferSection />
     </View>
   );
 }
@@ -9138,6 +9328,8 @@ let lastSettingsLocale: AppLocale | null = null;
 
 export function SettingsScene() {
   void loadAccountState();
+  // Whether Preferences say "Synced with your account" is the backend's answer.
+  void loadAccountSync();
   void loadSettingsValues();
   void loadModels();
   let noticeAutoClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -9245,7 +9437,7 @@ export function SettingsScene() {
                   <Text role="header" testID="settings-page-title" style={textStyle("pageTitle")}>
                     {tr(page().labelKey)}
                   </Text>
-                  <If when={settingsScopeOf(selectedSettingsPage()) === "preferences"}>
+                  <If when={settingsScopeOf(selectedSettingsPage()) === "preferences" && accountSyncCaptionShown()}>
                     <Text accessibilityLabel="settings-synced" style={textStyle("caption", { color: palette().textMuted })}>
                       {tr("settings.synced")}
                     </Text>
@@ -9619,4 +9811,362 @@ function SettingsNavigationList() {
  */
 export function SettingsNavigation() {
   return <View />;
+}
+
+// ── wave22-p5: Preferences › Shortcuts ────────────────────────────────────────
+
+function KeyCaps(props: { keystroke: string }) {
+  const label = (): string => {
+    try {
+      return keymap.label(props.keystroke);
+    } catch {
+      return props.keystroke;
+    }
+  };
+  return (
+    <View
+      style={{
+        paddingHorizontal: space.chip,
+        minHeight: space.xxl,
+        justifyContent: "center",
+        borderRadius: radii.sm,
+        borderWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().surfaceTertiary,
+      }}
+    >
+      <Text style={textStyle("label", { color: palette().textSecondary, tabular: true })}>{label()}</Text>
+    </View>
+  );
+}
+
+async function storeShortcut(definition: ShortcutDefinition, keystroke: string): Promise<void> {
+  const taken = shortcutUsing(keystroke, definition.id);
+  if (taken) {
+    shortcutNotice.set(tr("shortcuts.conflict", { action: tr(taken.labelKey) }));
+    return;
+  }
+  try {
+    await setShortcut(definition.id, keystroke);
+    shortcutNotice.set("");
+  } catch (error) {
+    shortcutNotice.set(localizeHostError(error instanceof Error ? error.message : String(error)));
+  } finally {
+    shortcutRecording.set(null);
+  }
+}
+
+function ShortcutRecorder(props: { definition: ShortcutDefinition }) {
+  return (
+    <View
+      ref={node => node?.focus()}
+      focusable={true}
+      captureKeys="all"
+      accessibilityLabel={`shortcut-recorder-${props.definition.id}`}
+      onKeyDown={event => {
+        if (event.key === "Escape") {
+          shortcutRecording.set(null);
+          return;
+        }
+        const keystroke = keystrokeFromKeyEvent(event);
+        if (keystroke) void storeShortcut(props.definition, keystroke);
+      }}
+      onBlur={() => {
+        if (shortcutRecording() === props.definition.id) shortcutRecording.set(null);
+      }}
+      style={{
+        paddingHorizontal: space.sm,
+        minHeight: space.xxl + space.xs,
+        justifyContent: "center",
+        borderRadius: radii.md,
+        borderWidth: 1,
+        borderColor: palette().accent,
+      }}
+    >
+      <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("shortcuts.recording")}</Text>
+    </View>
+  );
+}
+
+function ShortcutRow(props: { definition: ShortcutDefinition; first: boolean }) {
+  const overridden = () => props.definition.id in keybindingOverrides();
+  return (
+    <SettingsRow label={tr(props.definition.labelKey)} first={props.first}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, marginLeft: "auto" }}>
+        <If
+          when={shortcutRecording() === props.definition.id}
+          else={
+            <>
+              <View accessibilityLabel={`shortcut-keys-${props.definition.id}`}>
+                <KeyCaps keystroke={effectiveKeystroke(props.definition)} />
+              </View>
+              <Button
+                label={tr("shortcuts.change")}
+                variant="ghost"
+                size="sm"
+                accessibilityLabel={`shortcut-change-${props.definition.id}`}
+                onPress={() => {
+                  shortcutNotice.set("");
+                  shortcutRecording.set(props.definition.id);
+                }}
+              />
+            </>
+          }
+        >
+          <ShortcutRecorder definition={props.definition} />
+        </If>
+        <If when={overridden()}>
+          <IconButton
+            icon="undo"
+            size="sm"
+            tooltip={tr("shortcuts.reset")}
+            accessibilityLabel={`shortcut-reset-${props.definition.id}`}
+            onPress={() => void resetShortcut(props.definition.id).catch(() => undefined)}
+          />
+        </If>
+      </View>
+    </SettingsRow>
+  );
+}
+
+function ShortcutsSection() {
+  void loadKeybindings();
+  return (
+    <SettingsGroup
+      id="shortcuts"
+      title={tr("settings.shortcuts.title")}
+      description={tr("shortcuts.body")}
+      notice={shortcutNotice()}
+      onDismissNotice={() => shortcutNotice.set("")}
+      extra={
+        <If when={Object.keys(keybindingOverrides()).length > 0}>
+          <Button
+            label={tr("shortcuts.resetAll")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel="shortcut-reset-all"
+            onPress={() => void resetAllShortcuts().catch(() => undefined)}
+          />
+        </If>
+      }
+    >
+      <Each of={[...SHORTCUT_DEFINITIONS]} key={definition => definition.id}>
+        {(definition, index) => <ShortcutRow definition={definition()} first={index() === 0} />}
+      </Each>
+    </SettingsGroup>
+  );
+}
+
+// ── wave22-p5: Device › Browser and desktop control › permissions ─────────────
+
+const COMPUTER_PERMISSION_LABELS: Record<string, MessageKey> = {
+  accessibility: "computerUse.kind.accessibility",
+  screen_recording: "computerUse.kind.screenRecording",
+  input_posting: "computerUse.kind.inputPosting",
+  input_monitoring: "computerUse.kind.inputMonitoring",
+};
+
+const COMPUTER_PERMISSION_STATES: Record<string, MessageKey> = {
+  granted: "computerUse.state.granted",
+  required: "computerUse.state.required",
+  session_required: "computerUse.state.sessionRequired",
+  not_required: "computerUse.state.notRequired",
+  unavailable: "computerUse.state.unavailable",
+};
+
+function ComputerPermissionRowView(props: { row: ComputerPermissionRow; first: boolean }) {
+  const label = () => {
+    const key = COMPUTER_PERMISSION_LABELS[props.row.kind];
+    return key ? tr(key) : props.row.kind;
+  };
+  const stateWord = () => {
+    const key = COMPUTER_PERMISSION_STATES[props.row.state];
+    return key ? tr(key) : props.row.state;
+  };
+  const needsAction = () => props.row.state === "required" || props.row.state === "session_required";
+  return (
+    <SettingsRow label={label()} description={props.row.detail} first={props.first}>
+      <View
+        style={{ flexDirection: "row", alignItems: "center", gap: space.sm, marginLeft: "auto" }}
+        accessibilityLabel={`computer-use-${props.row.kind}`}
+      >
+        <Text style={textStyle("caption", { color: needsAction() ? palette().warning : palette().textMuted })}>
+          {stateWord()}
+        </Text>
+        <If when={needsAction() && props.row.requestable}>
+          <Button
+            label={tr("computerUse.request")}
+            variant="secondary"
+            size="sm"
+            loading={computerUseBusy() === props.row.kind}
+            accessibilityLabel={`computer-use-request-${props.row.kind}`}
+            onPress={() => void requestComputerPermission(props.row.kind)}
+          />
+        </If>
+        <If when={needsAction() && Boolean(props.row.settingsUrl)}>
+          <Button
+            label={tr("computerUse.openSettings")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel={`computer-use-open-${props.row.kind}`}
+            onPress={() => void openComputerUseSettings(props.row.kind)}
+          />
+        </If>
+      </View>
+    </SettingsRow>
+  );
+}
+
+function ComputerUseSection() {
+  effect(() => {
+    deviceContext();
+    void loadComputerUseStatus();
+  });
+  return (
+    <>
+      <If when={computerUseState() === "unsupported"}>
+        <UnsupportedNote title={tr("computerUse.title")} message={unsupportedOnDevice()} />
+      </If>
+      <If when={computerUseState() !== "unsupported"}>
+        <SettingsGroup
+          id="computer-use"
+          title={tr("computerUse.title")}
+          description={tr("computerUse.body")}
+          notice={computerUseNotice() ? localizeHostError(computerUseNotice()) : ""}
+          onDismissNotice={() => computerUseNotice.set("")}
+          extra={
+            <IconButton
+              icon="refresh"
+              size="sm"
+              tooltip={tr("computerUse.refresh")}
+              accessibilityLabel="computer-use-refresh"
+              onPress={() => void loadComputerUseStatus()}
+            />
+          }
+        >
+          <If when={computerUseState() === "loading" && !computerUseStatus()}>
+            <SettingsRow label={tr("computerUse.loading")} first={true} />
+          </If>
+          <Each of={computerUseStatus()?.permissions ?? []} key={row => row.kind}>
+            {(row, index) => <ComputerPermissionRowView row={row()} first={index() === 0} />}
+          </Each>
+        </SettingsGroup>
+      </If>
+    </>
+  );
+}
+
+// ── wave22-p5: Device › Diagnostics › settings export and import ──────────────
+
+async function exportSettingsToClipboard(): Promise<void> {
+  try {
+    await copyConfigExport();
+    pushToast(tr("configTransfer.copied", { device: scopeDeviceName() || tr("configTransfer.thisDevice") }), "success");
+  } catch (error) {
+    pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
+  }
+}
+
+async function runConfigImport(): Promise<void> {
+  const outcome = await importConfigText();
+  if (outcome?.success) {
+    pushToast(
+      outcome.warnings.length > 0
+        ? tr("configTransfer.importedWithWarnings", { count: outcome.warnings.length })
+        : tr("configTransfer.imported"),
+      "success",
+    );
+    void loadSettingsValues();
+  }
+}
+
+function configImportErrorText(): string {
+  const code = configImportError();
+  if (code === "invalidJson") return tr("configTransfer.invalidJson");
+  if (code === "tooLarge") return tr("configTransfer.tooLarge");
+  if (code === "failed") return tr("configTransfer.failed");
+  return localizeHostError(code);
+}
+
+function ConfigImportDialog() {
+  return (
+    <ModalDialog
+      open={configImportOpen()}
+      title={tr("configTransfer.importTitle")}
+      subtitle={tr("configTransfer.importBody", { device: scopeDeviceName() || tr("configTransfer.thisDevice") })}
+      size="md"
+      accessibilityLabel="config-import-dialog"
+      onClose={() => closeConfigImport()}
+      footer={
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <Button
+            label={tr("configTransfer.chooseFile")}
+            variant="ghost"
+            size="sm"
+            leadingIcon="file"
+            accessibilityLabel="config-import-choose"
+            onPress={() => void pickConfigFile().catch(() => undefined)}
+          />
+          <View style={{ flex: 1 }} />
+          <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => closeConfigImport()} />
+          <Button
+            label={tr("configTransfer.import")}
+            variant="primary"
+            size="sm"
+            loading={configTransferBusy() === "import"}
+            disabled={!configImportText().trim()}
+            accessibilityLabel="config-import-confirm"
+            onPress={() => void runConfigImport()}
+          />
+        </View>
+      }
+    >
+      <View style={{ gap: space.sm }}>
+        <If when={configImportName()}>
+          <Text style={textStyle("caption", { color: palette().textMuted })}>{configImportName()}</Text>
+        </If>
+        <TextField
+          multiline
+          monospace
+          minHeight={space.x6l * 2}
+          placeholder={tr("configTransfer.pastePlaceholder")}
+          value={configImportText()}
+          accessibilityLabel="config-import-text"
+          onChange={value => configImportText.set(value)}
+        />
+        <If when={configImportError()}>
+          <Text accessibilityLabel="config-import-error" style={textStyle("caption", { color: palette().danger })}>
+            {configImportErrorText()}
+          </Text>
+        </If>
+      </View>
+    </ModalDialog>
+  );
+}
+
+function ConfigTransferSection() {
+  return (
+    <SettingsGroup id="config-transfer" title={tr("configTransfer.title")}>
+      <SettingsRow label={tr("configTransfer.export")} description={tr("configTransfer.exportBody")} first={true}>
+        <Button
+          label={tr("configTransfer.copy")}
+          variant="secondary"
+          size="sm"
+          loading={configTransferBusy() === "export"}
+          accessibilityLabel="config-export-copy"
+          onPress={() => void exportSettingsToClipboard()}
+        />
+      </SettingsRow>
+      <SettingsRow label={tr("configTransfer.importRow")} description={tr("configTransfer.importRowBody")}>
+        <Button
+          label={tr("configTransfer.importEllipsis")}
+          variant="secondary"
+          size="sm"
+          accessibilityLabel="config-import-open"
+          onPress={() => openConfigImport()}
+        />
+      </SettingsRow>
+      <ConfigImportDialog />
+    </SettingsGroup>
+  );
 }

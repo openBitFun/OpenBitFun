@@ -1,10 +1,12 @@
 // The native NSH shell: the main window, its title bar, the application menu,
 // the tray and OS notifications, all through `nsh/desktop` and `nsh`. Nothing
 // here talks to the backend; a client whose backend runs elsewhere keeps this
-// shell unchanged.
+// shell unchanged. The desktop presence windows (cards, the pet) are started
+// from here and talk to this device's backend themselves (`desktopPresence.tsx`).
 
 import { effect, Notifications, platform, signal } from "nsh";
 import { Application, isAvailable, Menu, Tray, Window, type MenuItem, type WindowRef } from "nsh/desktop";
+import { startDesktopPresence } from "./desktopPresence";
 import { tr } from "./i18n";
 import type { ShellActions, WindowChromeSink, WindowShell } from "./windowShell";
 
@@ -220,6 +222,19 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
     },
     startIntegration(actions) {
       if (!isAvailable) return () => undefined;
+      // Desktop cards and the companion pet: floating windows of this app,
+      // installed here so they outlive scenes and never exist elsewhere.
+      const stopPresence = startDesktopPresence({
+        showMain: () => showMainWindow(),
+        openInbox: () => {
+          showMainWindow();
+          actions.openInbox?.();
+        },
+        openPetSettings: () => {
+          showMainWindow();
+          (actions.openPetSettings ?? actions.openSettings)();
+        },
+      });
       effect(() => Menu.setApplicationMenu(buildApplicationMenu(actions)));
       effect(() => {
         if (!deps.trayIcon) return;
@@ -233,6 +248,7 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
         });
       });
       return () => {
+        stopPresence();
         stopNotificationPress?.();
         stopNotificationPress = null;
         Menu.setApplicationMenu(null);

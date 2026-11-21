@@ -30,6 +30,7 @@ pub mod appearance;
 pub mod backend_protocol;
 pub mod computer_use;
 pub mod crash_diagnostics;
+pub mod desktop_cards;
 pub mod fleet;
 pub mod host;
 pub mod logging;
@@ -536,6 +537,9 @@ backend_commands![
     api::miniapp_api::miniapp_shell_call,
     miniapp_web_host::mark_miniapp_web_surface_ready,
     miniapp_web_host::report_miniapp_web_result,
+    // Spaces everywhere (wave 22, P4)
+    miniapp_desktop::inline::miniapp_inline,
+    miniapp_desktop::catalog::miniapp_account_catalog,
     backend_protocol::native_commands::show_main_window,
     backend_protocol::native_commands::hide_main_window_after_close_request,
     api::agentic_api::create_session,
@@ -699,6 +703,19 @@ backend_commands![
     list_agent_companion_pets,
     import_agent_companion_pet_package,
     delete_agent_companion_pet_package,
+    // Desktop presence: cards and the pet (wave 22, P3)
+    api::companion_pet_api::load_agent_companion_pet_spritesheet,
+    backend_protocol::native_commands::show_agent_companion_desktop_pet,
+    backend_protocol::native_commands::hide_agent_companion_desktop_pet,
+    backend_protocol::native_commands::resize_agent_companion_desktop_pet,
+    desktop_cards::desktop_card_api::desktop_card_list,
+    desktop_cards::desktop_card_api::desktop_card_get,
+    desktop_cards::desktop_card_api::desktop_card_set_visible,
+    desktop_cards::desktop_card_api::desktop_card_delete,
+    desktop_cards::desktop_card_api::desktop_card_refresh,
+    desktop_cards::desktop_card_api::desktop_card_set_checklist_item,
+    desktop_cards::desktop_card_api::desktop_card_set_always_on_top,
+    desktop_cards::desktop_card_api::desktop_card_set_bounds,
     read_file_content,
     write_file_content,
     workspace_file_upload,
@@ -1084,6 +1101,11 @@ backend_commands![
     api::account_identity_api::account_github_start,
     api::account_identity_api::account_github_poll,
     api::account_identity_api::account_github_info,
+    // Account settings sync (wave 21, S)
+    api::account_settings_sync_api::account_settings_sync_status,
+    api::account_settings_sync_api::account_settings_sync_set,
+    // Account records (wave24-replica)
+    api::account_records_api::device_records_overview,
     api::remote_connect_api::account_login,
     api::remote_connect_api::account_status,
     api::remote_connect_api::account_logout,
@@ -1271,6 +1293,7 @@ backend_commands![
     fleet::fleet_api::fleet_call,
     fleet::fleet_api::fleet_device_detail,
     fleet::fleet_api::fleet_events,
+    fleet::fleet_api::fleet_models,
     fleet::fleet_api::fleet_navigator,
     fleet::fleet_api::fleet_prompts,
     fleet::fleet_api::fleet_recent_sessions,

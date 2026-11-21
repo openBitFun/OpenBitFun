@@ -16,14 +16,26 @@ pub(crate) const fn cli_policy(policy: DispatchApprovalPolicy) -> CliApprovalPol
     }
 }
 
+#[cfg(test)]
 pub(crate) fn metadata(policy: DispatchApprovalPolicy) -> Map<String, Value> {
+    metadata_for_job(policy, false)
+}
+
+/// Turn metadata for a job. AskUserQuestion is available only when the
+/// controller opted into the job's question mailbox (`submit
+/// {userQuestions: true}`, `user_question_mailbox_v1`): then a question lands
+/// in the mailbox and waits for the user or the controller. Without the
+/// opt-in nobody would answer, so the Runtime's availability gate makes the
+/// tool fail explicitly instead of waiting. Permission supervision alone is
+/// not evidence that a controller can answer questions.
+pub(crate) fn metadata_for_job(
+    policy: DispatchApprovalPolicy,
+    user_questions: bool,
+) -> Map<String, Value> {
     let mut metadata = approval_metadata(cli_policy(policy));
-    // Dispatch persists permission replies, but its current wire has no user
-    // question mailbox. A remote permission supervisor therefore cannot answer
-    // AskUserQuestion. Use the Runtime's availability gate before a tool waits.
     metadata.insert(
         USER_INPUT_AVAILABLE_CONTEXT_KEY.to_string(),
-        Value::Bool(false),
+        Value::Bool(user_questions),
     );
     metadata
 }
@@ -70,5 +82,26 @@ mod tests {
             remote.get(AUTO_APPROVE_ASK_CONTEXT_KEY),
             Some(&Value::Bool(false))
         );
+    }
+
+    #[test]
+    fn the_question_mailbox_opt_in_makes_ask_user_question_available() {
+        for policy in [
+            DispatchApprovalPolicy::Auto,
+            DispatchApprovalPolicy::RejectAndReport,
+            DispatchApprovalPolicy::Remote,
+        ] {
+            let opted_in = metadata_for_job(policy, true);
+            assert_eq!(
+                opted_in.get(USER_INPUT_AVAILABLE_CONTEXT_KEY),
+                Some(&Value::Bool(true))
+            );
+            // The approval half is unchanged by the opt-in.
+            let mut without_gate = opted_in.clone();
+            without_gate.remove(USER_INPUT_AVAILABLE_CONTEXT_KEY);
+            let mut base = metadata(policy);
+            base.remove(USER_INPUT_AVAILABLE_CONTEXT_KEY);
+            assert_eq!(without_gate, base);
+        }
     }
 }

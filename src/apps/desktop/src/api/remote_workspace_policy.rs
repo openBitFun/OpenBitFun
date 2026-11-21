@@ -118,8 +118,6 @@ mod tests {
             "frontend_update_candidate_ready",
             "confirm_frontend_update",
             "debug_open_devtools",
-            "show_agent_companion_desktop_pet",
-            "desktop_card_list",
             "startup_window_control",
             "webdriver_bridge_result",
         ] {
@@ -127,6 +125,33 @@ mod tests {
             assert!(
                 openbitfun_product_domains::remote_surface::retired_reason(command).is_some(),
                 "{command} must answer older clients with its retirement reason"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_cards_and_the_pet_answer_again_in_the_native_desktop() {
+        // Retired with the Tauri shell, restored on the NSH shell (wave 22):
+        // older clients that got a tombstone now get real answers.
+        let registered = registered_commands();
+        for command in [
+            "desktop_card_list",
+            "desktop_card_get",
+            "desktop_card_set_visible",
+            "desktop_card_delete",
+            "desktop_card_refresh",
+            "desktop_card_set_checklist_item",
+            "desktop_card_set_always_on_top",
+            "desktop_card_set_bounds",
+            "show_agent_companion_desktop_pet",
+            "hide_agent_companion_desktop_pet",
+            "resize_agent_companion_desktop_pet",
+            "load_agent_companion_pet_spritesheet",
+        ] {
+            assert!(registered.contains(command), "{command} must be registered");
+            assert!(
+                openbitfun_product_domains::remote_surface::retired_reason(command).is_none(),
+                "{command} must not answer with a retirement reason"
             );
         }
     }

@@ -7,8 +7,9 @@
 //
 // Display only: what is drawn, in which order, with which state and which
 // actions is the cloud node's (`superagentStore.ts`). There is no device
-// picker, mode or model chip anywhere on this screen: the model decides where
-// work runs.
+// picker or mode chip: the model decides where work runs. The composer's
+// model picker chooses only where the model rounds run: Auto (the cloud node
+// picks) or a device and one of its models, as the cloud node lists them.
 
 import { Scroll, Text, View, openUrl, signal, type ScrollRef, type ViewRef } from "nsh";
 import { TextView } from "nsh/base";
@@ -17,6 +18,7 @@ import { tr } from "../i18n";
 import {
   activeConversationId,
   cancelTurn,
+  chooseSuperagentModel,
   citedJobId,
   composerDraft,
   conversationError,
@@ -24,9 +26,11 @@ import {
   conversationView,
   conversationsLoaded,
   conversationGroups,
+  currentModelSelection,
   enableSuperagent,
   jobCards,
   liveReply,
+  modelPickError,
   pendingSend,
   refreshConversation,
   refreshSuperagentStatus,
@@ -39,6 +43,7 @@ import {
   turnRunning,
   turnStep,
   type ConversationMessage,
+  type SuperagentModelSelection,
 } from "../superagentStore";
 import { compactLayout, controlHeight, layout, palette, radii, space, textStyle } from "../theme";
 import { openAccountAuthModal } from "../ui/AccountAuthModal";
@@ -56,8 +61,9 @@ import {
 } from "../ui/jobs";
 import { createMarkdownCodeActions, createMarkdownStyles, STATIC_MARKDOWN_OPTIONS, STREAMING_MARKDOWN_OPTIONS } from "../ui/markdown";
 import { BrandSpinner, paintTransition } from "../ui/motion";
-import { DropdownMenu } from "../ui/overlays";
+import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
 import { Button, EmptyStateCard, IconButton } from "../ui/primitives";
+import { CardsStrip } from "../ui/cardView"; // wave22-p3
 
 /** The user bubble's widest (spec §3: min(560, 72 %)). */
 const USER_BUBBLE_MAX = 560;
@@ -117,10 +123,112 @@ function placeholder(): string {
   return superagentStatus()?.placeholder || tr("sa.placeholder");
 }
 
+/** Why a device's models cannot be picked now, as the cloud node said. */
+function modelDeviceNote(reason: string | undefined): string {
+  switch (reason) {
+    case "device_offline":
+      return tr("models.deviceOffline");
+    case "superagent_requires_update":
+    case "device_requires_update":
+      return tr("models.deviceRequiresUpdate");
+    case "no_model":
+      return tr("models.deviceNoModel");
+    default:
+      return "";
+  }
+}
+
+/** Why the current pick cannot run now. */
+function modelPickNote(selection: SuperagentModelSelection): string {
+  if (selection.mode !== "pinned") return "";
+  switch (selection.unavailableReason) {
+    case "device_offline":
+    case "pinned_holder_offline":
+      return tr("models.pickOffline");
+    case "pinned_model_missing":
+      return tr("models.pickMissing");
+    default:
+      return modelDeviceNote(selection.unavailableReason);
+  }
+}
+
+function modelSelectionLabel(selection: SuperagentModelSelection): string {
+  if (selection.mode !== "pinned") return tr("models.auto");
+  const model = selection.modelName || selection.modelId || "";
+  return selection.deviceName ? tr("models.onDevice", { model, device: selection.deviceName }) : model;
+}
+
+/** Auto, then every device with its models, in the cloud node's order. */
+function modelMenuItems(): DropdownMenuItem[] {
+  const selection = currentModelSelection();
+  const items: DropdownMenuItem[] = [
+    {
+      id: "auto",
+      label: tr("models.auto"),
+      hint: tr("models.autoHint"),
+      active: selection.mode !== "pinned",
+      accessibilityLabel: "sa-model-auto",
+      onSelect: () => void chooseSuperagentModel(null),
+    },
+  ];
+  for (const device of superagentStatus()?.models ?? []) {
+    const note = modelDeviceNote(device.unavailableReason);
+    items.push({ id: `device:${device.deviceId}`, label: note ? `${device.name} · ${note}` : device.name, header: true });
+    for (const model of device.models ?? []) {
+      items.push({
+        id: `model:${device.deviceId}/${model.modelId}`,
+        label: model.displayName || model.modelId,
+        trailingHint: model.primary ? tr("models.primary") : undefined,
+        active: selection.mode === "pinned" && selection.deviceId === device.deviceId && selection.modelId === model.modelId,
+        disabled: Boolean(device.unavailableReason),
+        accessibilityLabel: `sa-model-${device.deviceId}-${model.modelId}`,
+        onSelect: () => void chooseSuperagentModel({ deviceId: device.deviceId, modelId: model.modelId }),
+      });
+    }
+  }
+  return items;
+}
+
+function ModelPicker() {
+  const open = signal(false);
+  let anchor: ViewRef | undefined;
+  return (
+    <View
+      ref={node => {
+        anchor = node;
+      }}
+    >
+      <Button
+        label={modelSelectionLabel(currentModelSelection())}
+        variant="ghost"
+        size="xs"
+        trailingIcon="chevron-down"
+        accessibilityLabel="sa-model-picker"
+        tooltip={tr("models.superAgentTitle")}
+        onPress={() => {
+          open.set(!open());
+          if (open()) void refreshSuperagentStatus();
+        }}
+      />
+      <DropdownMenu
+        open={open()}
+        anchor={anchor}
+        placement="top"
+        align="end"
+        minWidth={240}
+        items={modelMenuItems()}
+        onClose={() => open.set(false)}
+      />
+    </View>
+  );
+}
+
 function Composer(props: { maxFieldHeight: number }) {
+  const pickNote = () => modelPickNote(currentModelSelection());
   return (
     <View style={{ gap: space.sm }}>
       <SuperComposer
+        accessory={<ModelPicker />}
         value={composerDraft()}
         onChange={value => composerDraft.set(value)}
         onSubmit={() => void sendToSuperagent()}
@@ -133,6 +241,16 @@ function Composer(props: { maxFieldHeight: number }) {
       <If when={sendError()}>
         <Text testID="sa-send-error" style={{ ...textStyle("caption", { color: palette().danger }), paddingHorizontal: space.lg }}>
           {tr("job.unconfirmed")}
+        </Text>
+      </If>
+      <If when={pickNote()}>
+        <Text testID="sa-model-note" style={{ ...textStyle("caption", { color: palette().warning }), paddingHorizontal: space.lg }}>
+          {pickNote()}
+        </Text>
+      </If>
+      <If when={modelPickError()}>
+        <Text testID="sa-model-error" style={{ ...textStyle("caption", { color: palette().danger }), paddingHorizontal: space.lg }}>
+          {tr("models.pickFailed")}
         </Text>
       </If>
     </View>
@@ -181,6 +299,8 @@ function NewConversation(props: { height: number }) {
         <View style={{ paddingTop: space.sm }}>
           <WorkingNowList needsYou={workingNow().needsYou} working={workingNow().working} />
         </View>
+        {/* wave22-p3: desktop cards inline on phones and in browsers. */}
+        <CardsStrip />
         <If when={showEmpty()}>
           <EmptyStateCard title={tr("sa.emptyTitle")} subtitle={tr("sa.emptyBody")} />
         </If>

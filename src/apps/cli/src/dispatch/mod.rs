@@ -84,7 +84,14 @@ async fn run_dispatch_verb_canonical(
             serde_json::to_value(list(request)?).context("encode dispatch job list")
         }
         "answer" => {
-            serde_json::to_value(answer(parse(input)?)?).context("encode permission answer")
+            // `answers` (a question, `user_question_mailbox_v1`) replaces
+            // `reply` (a permission); each shape stays strict on its own.
+            if input.get("answers").is_some() {
+                serde_json::to_value(answer_question(parse(input)?)?)
+                    .context("encode question answer")
+            } else {
+                serde_json::to_value(answer(parse(input)?)?).context("encode permission answer")
+            }
         }
         "append" => serde_json::to_value(append(parse(input)?)?).context("encode appended message"),
         "continue" => serde_json::to_value(continue_job(parse(input)?).await?)
@@ -126,6 +133,22 @@ async fn run_dispatch_verb_canonical(
             DispatchWorkspaceSyncChunkRequest,
         >(input)?)?)
         .context("encode workspace sync chunk response"),
+        // `workspace_publish_v1`.
+        "workspace-publish" => serde_json::to_value(workspace::publish(parse::<
+            protocol::DispatchWorkspacePublishRequest,
+        >(input)?)?)
+        .context("encode workspace publish response"),
+        // Runner-internal half of a host's peer import (never a wire verb).
+        "peer-import-commit" => {
+            serde_json::to_value(workspace::peer_import_commit(parse::<
+                protocol::DispatchPeerImportCommitRequest,
+            >(input)?)?)
+            .context("encode peer import response")
+        }
+        "pending-questions" => {
+            let _: PendingPromptsRequest = parse(input)?;
+            serde_json::to_value(pending_question_entries()?).context("encode pending questions")
+        }
         "pending-prompts" => {
             let _: PendingPromptsRequest = parse(input)?;
             serde_json::to_value(pending_prompt_entries()?).context("encode pending prompts")
@@ -157,6 +180,36 @@ fn pending_prompt_entries() -> Result<Vec<serde_json::Value>> {
     Ok(entries)
 }
 
+/// The waiting questions of this host's live jobs, flattened like
+/// [`pending_prompt_entries`] (a separate verb, so an older desktop that
+/// reads `pending-prompts` strictly never sees a question entry).
+fn pending_question_entries() -> Result<Vec<serde_json::Value>> {
+    let mut entries = Vec::new();
+    for (job, questions) in pending_dispatch_questions()? {
+        for question in questions {
+            entries.push(serde_json::json!({
+                "jobId": job.job_id,
+                "sessionId": job.session_id,
+                "workspacePath": job.workspace_path,
+                "title": job.title,
+                "question": question,
+            }));
+        }
+    }
+    Ok(entries)
+}
+
+/// The live jobs of this host's dispatch store with their waiting questions
+/// (read-only; the fleet digest's dispatch questions, `fleet_host`).
+pub(crate) fn pending_dispatch_questions() -> Result<
+    Vec<(
+        protocol::DispatchJobListEntry,
+        Vec<protocol::DispatchPendingQuestion>,
+    )>,
+> {
+    DispatchStore::open_default()?.list_pending_dispatch_questions()
+}
+
 /// The live jobs of this host's dispatch store with their pending permission
 /// requests (read-only; the fleet digest's dispatch prompts, `fleet_host`).
 pub(crate) fn pending_dispatch_prompts() -> Result<
@@ -169,18 +222,46 @@ pub(crate) fn pending_dispatch_prompts() -> Result<
 }
 
 pub(crate) async fn run_worker(job_id: String) -> Result<()> {
+    let _containment = match runner::contain_detached_action("__run", &job_id) {
+        Ok(containment) => containment,
+        Err(error) => {
+            record_uncontained_worker_failure(&job_id, &error);
+            return Err(error);
+        }
+    };
     worker::run(job_id).await
 }
 
+/// Settle a job whose worker could not enter its containment. Without it no
+/// observer can authenticate or cancel the worker, so it must not run; the
+/// lease guard keeps a live duplicate's job untouched.
+fn record_uncontained_worker_failure(job_id: &str, error: &anyhow::Error) {
+    let Ok(store) = DispatchStore::open_default() else {
+        return;
+    };
+    if let Ok(Some(_lease)) = store.try_acquire_worker_lease(job_id) {
+        let _ = store.mark_state(
+            job_id,
+            DispatchJobState::Failed,
+            None,
+            Some(format!("Dispatch worker could not be contained: {error:#}")),
+        );
+        store.clear_preparing(job_id);
+    }
+}
+
 pub(crate) fn run_workspace_provision(job_id: String) -> Result<()> {
+    let _containment = runner::contain_detached_action("__workspace_provision_run", &job_id)?;
     workspace::run_provision(job_id)
 }
 
 pub(crate) fn run_workspace_bundle_commit(job_id: String) -> Result<()> {
+    let _containment = runner::contain_detached_action("__workspace_bundle_commit_run", &job_id)?;
     workspace::run_bundle_commit(job_id)
 }
 
 pub(crate) fn run_workspace_sync(job_id: String) -> Result<()> {
+    let _containment = runner::contain_detached_action("__workspace_sync_run", &job_id)?;
     workspace::run_sync(job_id)
 }
 
@@ -229,6 +310,19 @@ async fn probe(request: DispatchProbeRequest) -> Result<DispatchProbeResponse> {
         openbitfun_services_core::dispatch_contract::DISPATCH_FILE_CHUNKS_CAPABILITY.to_string(),
     );
     capabilities.extend(superagent_target_capabilities());
+    // Dispatch phase two. The bundle fact lets a host (which holds the Link
+    // connection) advertise `workspace_peer_import_v1` on top of it.
+    capabilities.push(contract_peer_bundle_capability().to_string());
+    capabilities.push(
+        openbitfun_services_core::dispatch_contract::DISPATCH_USER_QUESTION_MAILBOX_CAPABILITY
+            .to_string(),
+    );
+    if publish_routed() {
+        capabilities.push(
+            openbitfun_services_core::dispatch_contract::DISPATCH_WORKSPACE_PUBLISH_CAPABILITY
+                .to_string(),
+        );
+    }
     if runner::is_supported() {
         capabilities.push(
             openbitfun_services_core::dispatch_contract::DISPATCH_DETACHED_WORKER_CAPABILITY
@@ -271,6 +365,21 @@ fn superagent_target_capabilities() -> Vec<String> {
         .collect()
 }
 
+const fn contract_peer_bundle_capability() -> &'static str {
+    openbitfun_services_core::dispatch_contract::DISPATCH_PEER_BUNDLE_CAPABILITY
+}
+
+/// Publish is a new target command: advertised only once the registry routes
+/// it (see [`superagent_target_capabilities`]).
+fn publish_routed() -> bool {
+    openbitfun_product_domains::remote_surface::operations()
+        .iter()
+        .any(|operation| {
+            operation.id
+                == openbitfun_services_core::dispatch_contract::DISPATCH_TARGET_PUBLISH_COMMAND
+        })
+}
+
 async fn submit(mut request: DispatchSubmitRequest) -> Result<DispatchSubmitResponse> {
     validate_submit_request(&request)?;
     if let Some(submitter) = request.submitter.as_deref() {
@@ -278,7 +387,7 @@ async fn submit(mut request: DispatchSubmitRequest) -> Result<DispatchSubmitResp
             .map_err(anyhow::Error::msg)?;
     }
     if !runner::is_supported() {
-        bail!("dispatch detached workers are supported only on Linux and macOS");
+        return Err(runner::unsupported_error());
     }
     openbitfun_agent_runtime::session_control::validate_session_id(&request.session_id)
         .map_err(anyhow::Error::msg)?;
@@ -373,7 +482,7 @@ async fn continue_job(request: DispatchContinueRequest) -> Result<DispatchContin
         validate_reasoning_preset_id(preset)?;
     }
     if !runner::is_supported() {
-        bail!("dispatch detached workers are supported only on Linux and macOS");
+        return Err(runner::unsupported_error());
     }
     let store = DispatchStore::open_default()?;
     let job = store.load_job(&request.job_id)?;
@@ -578,11 +687,17 @@ fn full_status(
     } else {
         store.list_pending_permissions(&request.job_id)?
     };
+    let pending_questions = if state.state.is_terminal() {
+        Vec::new()
+    } else {
+        store.list_pending_questions(&request.job_id)?
+    };
     Ok(DispatchStatusResponse {
         state: state.state,
         cursor: page.cursor,
         events: page.events,
         pending_permissions,
+        pending_questions,
         cursor_reset: page.cursor_reset,
         history_truncated: page.history_truncated,
         event_log_complete: !page.history_truncated && page.omitted_event_count == 0,
@@ -611,6 +726,54 @@ fn answer(request: DispatchAnswerRequest) -> Result<DispatchAnswerResponse> {
     let resolved =
         store.save_permission_answer(&request.job_id, &request.request_id, request.reply)?;
     Ok(DispatchAnswerResponse { resolved })
+}
+
+/// Answer a waiting question of a job (`user_question_mailbox_v1`). Any
+/// approval policy: a question is not a permission, and the job opted into
+/// the mailbox when it was submitted.
+fn answer_question(
+    request: protocol::DispatchQuestionAnswerRequest,
+) -> Result<DispatchAnswerResponse> {
+    if request.request_id.trim().is_empty() || request.request_id.len() > 512 {
+        bail!("dispatch question requestId is invalid");
+    }
+    validate_question_answers(&request.answers)?;
+    let store = DispatchStore::open_default()?;
+    let job = store.load_job(&request.job_id)?;
+    if !job.request.user_questions {
+        bail!("dispatch job did not enable the question mailbox");
+    }
+    let resolved =
+        store.save_question_answer(&request.job_id, &request.request_id, request.answers)?;
+    Ok(DispatchAnswerResponse { resolved })
+}
+
+/// The Runtime's answer shape: an object from question index to a label or
+/// a list of labels, bounded like other mailbox text.
+fn validate_question_answers(answers: &serde_json::Value) -> Result<()> {
+    let Some(map) = answers.as_object() else {
+        bail!("dispatch question answers must be an object keyed by question index");
+    };
+    if map.is_empty() || map.len() > 16 {
+        bail!("dispatch question answers must answer 1-16 questions");
+    }
+    for (key, value) in map {
+        if key.parse::<u8>().is_err() {
+            bail!("dispatch question answers are keyed by question index, not '{key}'");
+        }
+        let ok = match value {
+            serde_json::Value::String(_) => true,
+            serde_json::Value::Array(items) => items.iter().all(serde_json::Value::is_string),
+            _ => false,
+        };
+        if !ok {
+            bail!("dispatch question answer {key} must be a label or a list of labels");
+        }
+    }
+    if serde_json::to_vec(answers)?.len() > MAX_DISPATCH_TEXT_BYTES {
+        bail!("dispatch question answers exceed the 32 KiB request limit");
+    }
+    Ok(())
 }
 
 fn append(request: DispatchAppendRequest) -> Result<DispatchAppendResponse> {
@@ -1272,6 +1435,7 @@ mod tests {
             attachments: Vec::new(),
             setup_audit: Vec::new(),
             submitter: None,
+            user_questions: false,
         }
     }
 
@@ -1345,6 +1509,53 @@ mod tests {
         let mut wrong_version = request;
         wrong_version.protocol_version = DISPATCH_PROTOCOL_VERSION + 1;
         assert!(validate_submit_request(&wrong_version).is_err());
+    }
+
+    #[test]
+    fn question_answers_use_the_runtime_shape_and_stay_bounded() {
+        for ok in [
+            serde_json::json!({"0": "sqlite"}),
+            serde_json::json!({"0": ["a", "b"], "1": "x"}),
+        ] {
+            assert!(validate_question_answers(&ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            serde_json::json!("sqlite"),
+            serde_json::json!({}),
+            serde_json::json!({"first": "a"}),
+            serde_json::json!({"0": 1}),
+            serde_json::json!({"0": ["a", 2]}),
+            serde_json::json!({"0": "x".repeat(MAX_DISPATCH_TEXT_BYTES + 1)}),
+        ] {
+            assert!(validate_question_answers(&bad).is_err(), "{bad}");
+        }
+        // The question shape is strict on its own and never a permission.
+        let parsed: protocol::DispatchQuestionAnswerRequest = serde_json::from_value(
+            serde_json::json!({"jobId": "j", "requestId": "t", "answers": {"0": "a"}}),
+        )
+        .unwrap();
+        assert_eq!(parsed.request_id, "t");
+        assert!(
+            serde_json::from_value::<protocol::DispatchQuestionAnswerRequest>(
+                serde_json::json!({"jobId": "j", "requestId": "t", "answers": {}, "reply": "once"})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn phase_two_capabilities_are_advertised_with_their_routes() {
+        use openbitfun_services_core::dispatch_contract as contract;
+        assert!(publish_routed(), "the registry routes the publish verb");
+        assert_eq!(
+            contract_peer_bundle_capability(),
+            contract::DISPATCH_PEER_BUNDLE_CAPABILITY
+        );
+        // Peer import itself is the host's to advertise (it holds the Link
+        // connection), never the bare runner's.
+        assert!(!superagent_target_capabilities()
+            .iter()
+            .any(|c| c == contract::DISPATCH_WORKSPACE_PEER_IMPORT_CAPABILITY));
     }
 
     #[test]

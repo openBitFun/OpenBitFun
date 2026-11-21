@@ -41,6 +41,10 @@ export interface ShellActions {
   toggleSidebar(): void;
   about(): void;
   markAllRead(): void;
+  /** Opens the Inbox (the desktop pet's press; wave22-p3). */
+  openInbox?(): void;
+  /** Opens Settings › Pet (the desktop pet's menu; wave22-p3). */
+  openPetSettings?(): void;
 }
 
 export interface WindowShell {

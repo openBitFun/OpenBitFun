@@ -45,6 +45,7 @@ fn journal_answers_deltas_tombstones_and_full_snapshots() {
         sessions: vec![session("w1", "s1", 10), session("w1", "s2", 20)],
         prompts: vec![prompt("p1")],
         sessions_truncated: false,
+        models: None,
     };
     assert!(journal.absorb(first.clone()));
     let r1 = journal.revision();
@@ -73,6 +74,7 @@ fn journal_answers_deltas_tombstones_and_full_snapshots() {
         sessions: vec![s1],
         prompts: vec![prompt("p1"), prompt("p2")],
         sessions_truncated: false,
+        models: None,
     }));
     let delta = journal.digest(&since(r1));
     assert!(!delta.full);
@@ -115,6 +117,7 @@ fn journal_answers_deltas_tombstones_and_full_snapshots() {
         sessions: vec![],
         prompts: vec![prompt("p2")],
         sessions_truncated: true,
+        models: None,
     }));
     let r3 = journal.revision();
     let delta = journal.digest(&since(r3 - 1));
@@ -250,6 +253,45 @@ fn dispatch_prompts_route_to_the_job_mailbox() {
 }
 
 #[test]
+fn dispatch_questions_route_to_the_job_question_mailbox() {
+    let prompt = dispatch_question_prompt(
+        "ws-1".into(),
+        &FleetDispatchQuestion {
+            job_id: "job-2".into(),
+            session_id: "job-session".into(),
+            workspace_path: "/w/ws-1".into(),
+            title: "fallback".into(),
+            request_id: "tool-7".into(),
+            questions: json!({"questions": [{"question": "Which db?", "header": "DB",
+                "options": [{"label": "sqlite", "description": ""}]}]}),
+            registered_at_ms: 42,
+        },
+    );
+    assert_eq!(prompt.kind, FleetPromptKind::Question);
+    assert_eq!(prompt.answer_route, FleetAnswerRoute::Dispatch);
+    assert_eq!(prompt.job_id.as_deref(), Some("job-2"));
+    assert_eq!(prompt.prompt_id, "tool-7");
+    assert_eq!(prompt.title, "Which db?");
+    assert_eq!(prompt.revision, 42);
+    assert_eq!(prompt.tool_name.as_deref(), Some("AskUserQuestion"));
+    assert_eq!(
+        prompt.payload.as_ref().unwrap()["questions"][0]["header"],
+        "DB"
+    );
+    // A source without a question mailbox has no questions.
+    struct PermissionsOnly;
+    impl FleetDispatchPromptSource for PermissionsOnly {
+        fn pending_dispatch_prompts(&self) -> Result<Vec<FleetDispatchPrompt>, String> {
+            Ok(Vec::new())
+        }
+    }
+    assert!(PermissionsOnly
+        .pending_dispatch_questions()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn session_status_prefers_waiting_then_running() {
     let activity = |execution: &str, approvals: usize| SessionActivitySummary {
         session_id: "s".into(),
@@ -283,4 +325,40 @@ fn session_status_prefers_waiting_then_running() {
     assert!(is_digest_relevant_event("agentic://dialog-turn-completed"));
     assert!(!is_digest_relevant_event("fleet://digest-changed"));
     assert!(!is_digest_relevant_event("terminal-output"));
+}
+
+#[test]
+fn the_model_catalog_rides_every_answer_and_a_change_moves_the_revision() {
+    use openbitfun_product_domains::fleet::FleetModel;
+    let model = |id: &str, primary: bool| FleetModel {
+        model_id: id.to_string(),
+        display_name: id.to_uppercase(),
+        primary,
+        ..FleetModel::default()
+    };
+    let mut journal = FleetDigestJournal::new("dev-a".into(), "inst-1".into());
+    let snapshot = |models: Vec<FleetModel>| FleetDigestSnapshot {
+        workspaces: vec![workspace("w1")],
+        models: Some(models),
+        ..FleetDigestSnapshot::default()
+    };
+    assert!(journal.absorb(snapshot(vec![model("a", true)])));
+    let r1 = journal.revision();
+    assert!(!journal.absorb(snapshot(vec![model("a", true)])));
+    let full = journal.digest(&FleetDigestRequest::default());
+    assert_eq!(full.models.as_ref().unwrap()[0].model_id, "a");
+    // Only the catalog changed: a new revision, and the delta carries it.
+    assert!(journal.absorb(snapshot(vec![model("a", false), model("b", true)])));
+    let delta = journal.digest(&since(r1));
+    assert!(!delta.full && delta.workspaces.is_empty());
+    let ids: Vec<String> = delta
+        .models
+        .unwrap()
+        .into_iter()
+        .map(|m| m.model_id)
+        .collect();
+    assert_eq!(ids, ["a", "b"]);
+    // An empty delta still carries the catalog whole.
+    let empty = journal.digest(&since(journal.revision()));
+    assert_eq!(empty.models.map(|m| m.len()), Some(2));
 }

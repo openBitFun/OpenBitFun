@@ -28,7 +28,7 @@ pub(crate) async fn handle_obp_call(command: &str, args: Value) -> Result<Value,
                         .get("workspacePath")
                         .and_then(Value::as_str)
                         .map(str::to_string);
-                    let answer = crate::dispatch::run_dispatch_verb(verb, args)
+                    let answer = run_target_verb(command, verb, args)
                         .await
                         .map_err(|error| format!("{error:#}"))?;
                     // The runner is another process: tell this host's
@@ -46,6 +46,52 @@ pub(crate) async fn handle_obp_call(command: &str, args: Value) -> Result<Value,
     let state = peer_host_state()?;
     let args = translate_agent_identity_command(command, args, AgentIdentityDialect::Canonical)?;
     commands::dispatch(command, &args, state).await
+}
+
+/// One target verb on this host's runner. Two verbs need the host itself:
+/// a provision from another device's job (`workspace_peer_import_v1`) is
+/// pulled over this host's Link connection, and the probe gains that
+/// capability when the runner can store the bundle.
+async fn run_target_verb(command: &str, verb: &str, args: Value) -> anyhow::Result<Value> {
+    use openbitfun_core::service::dispatch::{
+        advertise_peer_import, is_peer_import_provision, peer_import_coordinator,
+        MeshDeviceDispatchRpc,
+    };
+    if is_peer_import_provision(command, &args) {
+        return peer_import_coordinator()
+            .provision_source(
+                std::sync::Arc::new(MeshDeviceDispatchRpc),
+                std::sync::Arc::new(InProcessRunner),
+                args,
+            )
+            .await;
+    }
+    let mut answer = crate::dispatch::run_dispatch_verb(verb, args).await?;
+    if command == "dispatch_target_probe" {
+        advertise_peer_import(&mut answer);
+    }
+    Ok(answer)
+}
+
+/// The dispatch runner of this process, for the peer import coordinator.
+struct InProcessRunner;
+
+#[async_trait::async_trait]
+impl openbitfun_core::service::dispatch::PeerImportLocalRunner for InProcessRunner {
+    async fn run(
+        &self,
+        verb: openbitfun_core::service::dispatch::PeerImportLocalVerb,
+        args: Value,
+    ) -> anyhow::Result<Value> {
+        use openbitfun_core::service::dispatch::PeerImportLocalVerb as Verb;
+        let verb = match verb {
+            Verb::ProvisionSource => "workspace-provision-source",
+            Verb::BundleBegin => "workspace-bundle-begin",
+            Verb::BundleChunk => "workspace-bundle-chunk",
+            Verb::PeerImportCommit => "peer-import-commit",
+        };
+        crate::dispatch::run_dispatch_verb(verb, args).await
+    }
 }
 
 /// Whether `command` is a detached-dispatch target verb this host runs.
@@ -71,6 +117,7 @@ fn dispatch_target_verb(command: &str) -> Option<&'static str> {
         "dispatch_target_workspace_bundle_commit" => Some("workspace-bundle-commit"),
         "dispatch_target_workspace_sync" => Some("workspace-sync"),
         "dispatch_target_workspace_sync_chunk" => Some("workspace-sync-chunk"),
+        "dispatch_target_workspace_publish" => Some("workspace-publish"),
         _ => None,
     }
 }

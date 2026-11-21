@@ -1,7 +1,7 @@
 //! The account's cloud superagent: contract and pure policy.
 //!
 //! The superagent is a per-account control-plane node (host kind `cloud`,
-//! shown as "OpenBitFun") that plans work with a model and hands it to the
+//! shown as "Super Agent") that plans work with a model and hands it to the
 //! account's runtime hosts through Detached Dispatch. It never runs tools on
 //! its own machine and never holds model credentials: model rounds are relayed
 //! to an account device (`fleet_model_*`), and every job belongs to its target.
@@ -23,6 +23,7 @@
 //! more than once, and compares results itself from `fleet_job_result`.
 //! Frontends only display what the cloud node projects.
 
+pub mod archive;
 pub mod dto;
 pub mod policy;
 pub mod tools;

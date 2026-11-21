@@ -46,7 +46,7 @@ lacks `cloud_agent_scope_v1` is never dialed (`superagent_requires_update`).
 - Each account has a directory named `hmac(master, account)`. Inside it,
   `key.wrap` holds the account's 32-byte data key, AES-256-GCM under a key
   derived from the master key. Records (`meta`, `ledger`, `conversations`,
-  `conv-*`, `hist-*`, `index`, `devices`) are AES-256-GCM under the data key, with the
+  `conv-*`, `outbox`, `devices`, and legacy `hist-*` until it drains) are AES-256-GCM under the data key, with the
   account directory and the record name as associated data. No file name or
   byte on disk holds an account id or conversation text. This protects disks
   and backups. It does not protect against the operator of the running
@@ -62,6 +62,43 @@ lacks `cloud_agent_scope_v1` is never dialed (`superagent_requires_update`).
 - Logs hold ids and byte counts only.
 - **Never lose or rotate `master.key` casually.** Without it, no account's
   data opens. Back it up with the server's other secrets.
+
+## Working state and history (no durable user data)
+
+The node keeps only working state with a time to live; conversation history
+lives in the account replica on the account's runtime devices
+(`src/apps/relay-server/superagent/src/archive.rs`,
+`openbitfun_obp::fleet::superagent_archive`).
+
+| State | Kept |
+|---|---|
+| `key.wrap` + `meta` | Shredded after 180 days without a frontend's use and with no live job, running turn or pending history (the directory row is removed first; `ensure` recreates both) |
+| Working conversations (`conversations`, `conv-*`) | At most 32 and 4 MiB per account; a conversation leaves after 14 idle days, or earlier past a bound (least recently used, never with a running turn or unsealed history) |
+| `ledger` | Live jobs; finished jobs for 7 days; a live job with no status for 30 days is marked lost |
+| `devices` | 30 days after the device was last seen online; pruned against the directory |
+| `outbox` | Turns not yet held by a device: 4 MiB and 7 days. Past either, the oldest go and the conversation says "N earlier messages were not saved" |
+| `index` | Memory only |
+
+- Every finished turn is sealed into immutable, content-addressed chunks
+  (≤256 KiB) and pushed with the conversation's record to collection
+  `superagent.conversations` on the online devices that advertise
+  `superagent_archive_v1` (`fleet_replica_push`). Devices pin each chunk on
+  two runtime devices; the node drops its copy once the push answers report
+  enough holders (two, or one while only one device is online).
+- Devices grant the node only the `superagent.` collections
+  (`ReplicaAccess::Collections`); `fleet_replica_pull`/`digest` and
+  `fleet_call` wrapping a replica verb are refused for the cloud agent.
+- Reading: a frontend's entry (desktop or CLI, or the device a phone or
+  browser uses) passes its replica's archived conversations along on
+  `superagent_list_conversations` and the asked page on
+  `superagent_get_conversation`; the node projects them with its working set
+  and stores none of it. Sending to (or renaming) a conversation that left the
+  working set rebuilds its last 20 turns from any online device.
+- Legacy `conv-*` / `hist-*` records drain to the devices on first contact
+  (sealed only while the outbox has room); a `hist-*` record goes once its
+  chunks are held.
+- The sweep runs at load and hourly; each watched account also gets a pass
+  every ten minutes.
 
 ## Bounds
 

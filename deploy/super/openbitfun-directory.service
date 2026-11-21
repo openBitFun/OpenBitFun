@@ -16,8 +16,16 @@ Group=openbitfun-directory
 WorkingDirectory=/opt/openbitfun-directory
 Environment=RELAY_LISTEN_ADDR=127.0.0.1:19750
 Environment=RELAY_DB_PATH=/var/lib/openbitfun-directory/directory.db
-Environment=RELAY_ASSET_DIR=/var/lib/openbitfun-directory/assets
-Environment=RELAY_ASSET_STORE_MAX_BYTES=67108864
+# The 2.0 directory profile: no published Pages (it refuses to start with any
+# RELAY_PAGE_* or RELAY_ASSET_* variable), and retention: expired tokens are
+# swept hourly; a device row with no live token goes after 90 days unseen
+# (30 days for controllers: phones and browser sign-ins); a user with nothing
+# left goes after 365 days; a sign-in at the 64-device quota frees a dead or
+# stale controller row instead of failing.
+Environment=RELAY_PROFILE=directory
+Environment=RELAY_STALE_DEVICE_DAYS=90
+Environment=RELAY_STALE_CONTROLLER_DAYS=30
+Environment=RELAY_STALE_USER_DAYS=365
 Environment=RELAY_CORS_ALLOW_ORIGINS=https://super.openbitfun.com
 # The cloud agent's server-only registration route (64 hex characters, 0600).
 Environment=RELAY_CLOUD_AGENT_KEY_FILE=/opt/openbitfun-directory/etc/cloud-agent.key

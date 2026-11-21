@@ -14,7 +14,9 @@
 //! activity, the Runtime permission and user-question mailboxes, and the
 //! Detached Dispatch permission mailbox through [`FleetDispatchPromptSource`]
 //! (the dispatch store is owned by the CLI host). Only summaries leave the
-//! host: never transcripts, turns, files, config or credentials.
+//! host: never transcripts, turns, files, config or credentials. The digest
+//! also carries this device's model catalog (ids, names, providers,
+//! capabilities, the primary; never endpoints or keys).
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -45,6 +47,10 @@ pub struct FleetDigestSnapshot {
     pub sessions: Vec<FleetSession>,
     pub prompts: Vec<FleetPrompt>,
     pub sessions_truncated: bool,
+    /// This device's configured models (`models::catalog_of`); every
+    /// answer carries them (`None` publishes no catalog, like an older
+    /// build).
+    pub models: Option<Vec<FleetModel>>,
 }
 
 /// Where the producer reads its snapshots.
@@ -63,9 +69,28 @@ pub struct FleetDispatchPrompt {
     pub request: PermissionRequest,
 }
 
+/// One waiting `AskUserQuestion` of a Detached Dispatch job on this host
+/// (`user_question_mailbox_v1`).
+#[derive(Debug, Clone)]
+pub struct FleetDispatchQuestion {
+    pub job_id: String,
+    pub session_id: String,
+    pub workspace_path: String,
+    pub title: String,
+    /// The tool call id (the job mailbox's request id).
+    pub request_id: String,
+    /// The AskUserQuestion payload (`{questions: [...]}`).
+    pub questions: Value,
+    pub registered_at_ms: u64,
+}
+
 /// The dispatch store's pending permission mailbox (read-only).
 pub trait FleetDispatchPromptSource: Send + Sync + 'static {
     fn pending_dispatch_prompts(&self) -> Result<Vec<FleetDispatchPrompt>, String>;
+    /// The question mailbox; a store without one has none.
+    fn pending_dispatch_questions(&self) -> Result<Vec<FleetDispatchQuestion>, String> {
+        Ok(Vec::new())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +116,7 @@ pub struct FleetDigestJournal {
     prompts: BTreeMap<String, (FleetPrompt, u64)>,
     tombstones: Vec<(Kind, String, u64)>,
     sessions_truncated: bool,
+    models: Option<Vec<FleetModel>>,
     absorbed: bool,
 }
 
@@ -191,6 +217,14 @@ impl FleetDigestJournal {
             self.sessions_truncated = snapshot.sessions_truncated;
             changed = true;
         }
+        let mut models = snapshot.models;
+        if let Some(models) = models.as_mut() {
+            bound_catalog(models);
+        }
+        if models != self.models {
+            self.models = models;
+            changed = true;
+        }
         if changed {
             self.revision = next;
         }
@@ -253,6 +287,8 @@ impl FleetDigestJournal {
                 .collect(),
             removed,
             sessions_truncated: self.sessions_truncated,
+            // The catalog is small: every answer carries it whole.
+            models: self.models.clone(),
         }
     }
 }
@@ -643,6 +679,40 @@ pub fn dispatch_prompt(workspace_id: String, prompt: &FleetDispatchPrompt) -> Fl
     out
 }
 
+/// A dispatch job's waiting question as a prompt, answered through the job's
+/// question mailbox (`dispatch_target_answer {answers}` on this host).
+pub fn dispatch_question_prompt(
+    workspace_id: String,
+    question: &FleetDispatchQuestion,
+) -> FleetPrompt {
+    let title = question
+        .questions
+        .get("questions")
+        .and_then(Value::as_array)
+        .and_then(|list| list.first())
+        .and_then(|first| first.get("question").or_else(|| first.get("header")))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| question.title.clone());
+    FleetPrompt {
+        device_id: String::new(),
+        workspace_id,
+        session_id: question.session_id.clone(),
+        kind: FleetPromptKind::Question,
+        prompt_id: question.request_id.clone(),
+        revision: question.registered_at_ms,
+        title,
+        tool_name: Some("AskUserQuestion".to_string()),
+        payload: Some(question.questions.clone()),
+        payload_truncated: false,
+        answerable: true,
+        unanswerable_reason: None,
+        answer_route: FleetAnswerRoute::Dispatch,
+        job_id: Some(question.job_id.clone()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The core owners
 // ---------------------------------------------------------------------------
@@ -684,7 +754,10 @@ impl CoreFleetDigestSource {
         records.extend(service.get_recent_workspaces().await);
         let mut seen = std::collections::HashSet::new();
         records.retain(|info| !info.id.trim().is_empty() && seen.insert(info.id.clone()));
-        let mut snapshot = FleetDigestSnapshot::default();
+        let mut snapshot = FleetDigestSnapshot {
+            models: Some(super::models::local_catalog().await),
+            ..FleetDigestSnapshot::default()
+        };
         if records.len() > MAX_WORKSPACES_PER_DEVICE {
             records.truncate(MAX_WORKSPACES_PER_DEVICE);
             snapshot.sessions_truncated = true;
@@ -793,6 +866,23 @@ impl CoreFleetDigestSource {
                     }
                 }
                 Err(error) => log::debug!("Fleet digest without dispatch prompts: {error}"),
+            }
+            match dispatch.pending_dispatch_questions() {
+                Ok(questions) => {
+                    for question in &questions {
+                        let path = question.workspace_path.replace('\\', "/");
+                        let workspace_id = snapshot
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.root_path == path)
+                            .map(|workspace| workspace.workspace_id.clone())
+                            .unwrap_or_else(|| resolve(&question.session_id, None));
+                        snapshot
+                            .prompts
+                            .push(dispatch_question_prompt(workspace_id, question));
+                    }
+                }
+                Err(error) => log::debug!("Fleet digest without dispatch questions: {error}"),
             }
         }
         Ok(snapshot)

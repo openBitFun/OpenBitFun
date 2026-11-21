@@ -2,6 +2,11 @@
 
 pub mod account_directory;
 pub mod account_identity_api;
+pub mod account_settings_sync_api;
+// wave24-replica: account records on the account replica.
+pub mod account_records_api;
+pub mod account_records_pets;
+pub mod account_records_ssh;
 pub mod acp_client_api;
 pub mod agentic_api;
 pub mod app_state;
@@ -10,6 +15,7 @@ pub mod browser_control_api;
 pub mod btw_api;
 pub mod clipboard_file_api;
 pub mod commands;
+pub mod companion_pet_api;
 pub mod computer_use_api;
 pub mod config_api;
 pub mod context_upload_api;

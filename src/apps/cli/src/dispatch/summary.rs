@@ -55,11 +55,18 @@ pub(super) fn status_summary(
             })
             .collect()
     };
+    // Questions carry their text: answering one needs the options.
+    let pending_questions = if state.state.is_terminal() {
+        Vec::new()
+    } else {
+        store.list_pending_questions(job_id)?
+    };
     Ok(DispatchStatusSummaryResponse {
         summary_only: true,
         state: state.state,
         cursor: store.event_log_end_cursor(job_id)?,
         pending_permissions,
+        pending_questions,
         turn_id: state.turn_id.clone(),
         started_at: state.started_at.clone(),
         finished_at: state.finished_at.clone(),

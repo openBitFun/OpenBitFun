@@ -19,7 +19,9 @@ Environment=LINK_NODE_LISTENERS=ws://127.0.0.1:11011/
 Environment=LINK_NODE_HOSTNAME=openbitfun-link-relay-lwb
 Environment=LINK_NODE_JOIN_PUBLIC_KEY_FILE=/opt/openbitfun-link-node/etc/join.pub
 Environment=LINK_NODE_BPS_LIMIT=2097152
-Environment=RUST_LOG=info,easytier=warn,easytier_core=warn
+# easytier's "Failed to send event" warnings repeat every connection with the
+# client's address; they carry no fault, so only their errors are logged.
+Environment=RUST_LOG=info,easytier=warn,easytier_core=warn,easytier::common::global_ctx=error
 ExecStart=/opt/openbitfun-link-node/bin/openbitfun-link-node
 Restart=always
 RestartSec=3

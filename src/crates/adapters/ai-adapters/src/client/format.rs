@@ -10,6 +10,9 @@ pub(crate) enum ApiFormat {
     /// `gemini-cli` in personal-OAuth mode. The wire format is the regular
     /// Gemini body, but wrapped as `{ "model", "project", "request": { ... } }`.
     GeminiCodeAssist,
+    /// A model of another device of the account, run through its model
+    /// relay (`client::relay_transport`).
+    Relay,
 }
 
 impl ApiFormat {
@@ -23,6 +26,7 @@ impl ApiFormat {
             "gemini-code-assist" | "gemini_code_assist" | "code-assist" => {
                 Ok(Self::GeminiCodeAssist)
             }
+            super::relay_transport::RELAY_FORMAT => Ok(Self::Relay),
             _ => Err(anyhow!("Unknown API format: {}", value)),
         }
     }

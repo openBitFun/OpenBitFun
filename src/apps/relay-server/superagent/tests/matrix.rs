@@ -11,12 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use openbitfun_product_domains::fleet::FleetHostKind;
+use openbitfun_product_domains::fleet::FleetModel;
 use openbitfun_product_domains::superagent::{RuntimeFacts, SuperagentJobState};
 use openbitfun_superagent::api::Service;
 use openbitfun_superagent::conversation::Step;
 use openbitfun_superagent::device::{BoxFuture, DeviceRpc, DeviceSnapshot, RpcError};
 use openbitfun_superagent::directory::{Directory, DirectoryDevice, DirectoryError};
-use openbitfun_superagent::engine::{Clock, Engine, EngineConfig, NO_HOLDER_NOTICE};
+use openbitfun_superagent::engine::{Clock, Engine, EngineConfig};
 use openbitfun_superagent::model::{ModelReply, ModelToolCall, RelayModel};
 use openbitfun_superagent::slots::{SlotLimits, Slots};
 use openbitfun_superagent::store::Store;
@@ -66,6 +67,8 @@ struct FakeFleet {
     script: Mutex<VecDeque<Step_>>,
     model_rounds: Mutex<BTreeMap<String, (String, ModelReply)>>,
     holders: Mutex<Vec<String>>,
+    /// The model each round asked its holder for (`None`: its primary).
+    round_models: Mutex<Vec<Option<String>>>,
 }
 
 fn device(
@@ -327,6 +330,10 @@ impl FakeFleet {
                 assert_relay_start_shape(&request);
                 let id = request["requestId"].as_str().unwrap().to_string();
                 self.holders.lock().unwrap().push(device_id.to_string());
+                self.round_models
+                    .lock()
+                    .unwrap()
+                    .push(request["model"].as_str().map(str::to_string));
                 if device.drop_model {
                     return Err(RpcError::Transport("holder dropped".into()));
                 }
@@ -397,6 +404,19 @@ impl DeviceRpc for FakeFleet {
                     version: Some("1.1.0".into()),
                     models: vec!["fake-model".into()],
                     workspaces: vec![json!({ "workspaceId": format!("w-{}", d.facts.device_id), "name": "app", "git": {"branch": "main", "dirty": false} })],
+                    model_catalog: vec![
+                        FleetModel {
+                            model_id: "fake-model".into(),
+                            display_name: "Fake".into(),
+                            primary: true,
+                            ..FleetModel::default()
+                        },
+                        FleetModel {
+                            model_id: format!("big-{}", d.facts.device_id),
+                            display_name: "Big".into(),
+                            ..FleetModel::default()
+                        },
+                    ],
                 })
                 .collect())
         })
@@ -1079,15 +1099,19 @@ async fn offline_queue_exactly_once() {
 }
 
 #[tokio::test]
-async fn no_holder_parks() {
+async fn no_holder_answers_at_once_and_never_parks() {
     let fleet = FakeFleet::matrix();
     for id in [MAC, WIN, LINUX] {
         fleet.with(id, |d| d.facts.model_configured = false);
     }
+    fleet.with(WIN, |d| d.facts.online = false);
     let h = Harness::new(Arc::clone(&fleet)).await;
     let conversation = h.send("hello").await;
     let step = h.settle(&conversation, 10).await;
-    assert!(matches!(step, Step::Parked { .. }), "{step:?}");
+    assert!(
+        matches!(&step, Step::Failed { reason } if reason == "no_holder"),
+        "{step:?}"
+    );
     let view = h.conversation(&conversation).await;
     let card = view["messages"]
         .as_array()
@@ -1096,17 +1120,125 @@ async fn no_holder_parks() {
         .find(|m| m["role"] == "card")
         .unwrap()
         .clone();
-    assert_eq!(card["text"], NO_HOLDER_NOTICE);
     assert_eq!(card["card"]["kind"], "no_holder");
-    assert!(
-        fleet.holders.lock().unwrap().is_empty(),
-        "no model call while parked"
-    );
-    // A device with a model comes online: the turn starts by itself.
+    assert_eq!(card["card"]["offline"], json!(["Win Desktop"]));
+    assert_eq!(card["card"]["noModel"], json!(["Linux CLI", "Mac CLI"]));
+    let text = card["text"].as_str().unwrap();
+    assert!(text.contains("offline: Win Desktop"), "{text}");
+    assert!(text.contains("then send again"), "{text}");
+    assert!(fleet.holders.lock().unwrap().is_empty(), "no model call");
+    // The turn is over: a device coming online does not start it.
     fleet.with(LINUX, |d| d.facts.model_configured = true);
+    h.engine().tick_all().await;
+    assert!(fleet.holders.lock().unwrap().is_empty());
+    // The next message runs.
     fleet.push(|_| say("Hello!"));
+    h.call(
+        "superagent_send",
+        json!({ "conversationId": conversation, "message": "again", "clientMessageId": "c-again" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(h.settle(&conversation, 30).await, Step::Done);
     assert_eq!(*fleet.holders.lock().unwrap(), vec![LINUX.to_string()]);
+    assert_eq!(*fleet.round_models.lock().unwrap(), vec![None]);
+}
+
+#[tokio::test]
+async fn a_picked_device_and_model_hold_every_round_and_auto_comes_back() {
+    let fleet = FakeFleet::matrix();
+    let h = Harness::new(Arc::clone(&fleet)).await;
+    // The picker lists every device with its models.
+    let status = h.call("superagent_status", json!({})).await.unwrap();
+    let models = status["models"].as_array().unwrap();
+    assert_eq!(models.len(), 3);
+    assert!(models
+        .iter()
+        .all(|d| d["models"].as_array().unwrap().len() == 2));
+    // A new conversation starts with the pick it was sent with.
+    fleet.push(|_| say("From Linux."));
+    let answer = h
+        .call(
+            "superagent_send",
+            json!({ "message": "hi", "clientMessageId": "c-pick",
+                    "model": { "deviceId": LINUX, "modelId": format!("big-{LINUX}") } }),
+        )
+        .await
+        .unwrap();
+    let conversation = answer["conversationId"].as_str().unwrap().to_string();
+    assert_eq!(h.settle(&conversation, 30).await, Step::Done);
+    // Linux is not the Auto favourite (a desktop ranks first).
+    assert_eq!(*fleet.holders.lock().unwrap(), vec![LINUX.to_string()]);
+    assert_eq!(
+        *fleet.round_models.lock().unwrap(),
+        vec![Some(format!("big-{LINUX}"))]
+    );
+    let view = h.conversation(&conversation).await;
+    assert_eq!(view["conversation"]["model"]["mode"], "pinned");
+    assert_eq!(view["conversation"]["model"]["deviceName"], "Linux CLI");
+    assert_eq!(view["conversation"]["model"]["modelName"], "Big");
+
+    // The picked device goes offline: the turn answers at once, never on
+    // another device.
+    fleet.with(LINUX, |d| d.facts.online = false);
+    h.call(
+        "superagent_send",
+        json!({ "conversationId": conversation, "message": "more", "clientMessageId": "c-more" }),
+    )
+    .await
+    .unwrap();
+    let step = h.settle(&conversation, 10).await;
+    assert!(
+        matches!(&step, Step::Failed { reason } if reason == "pinned_holder_offline"),
+        "{step:?}"
+    );
+    let view = h.conversation(&conversation).await;
+    let card = view["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "card")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        card["text"],
+        "Big lives on Linux CLI, which is offline. Start Linux CLI, or pick Auto or another model, then send again."
+    );
+    assert_eq!(
+        view["conversation"]["model"]["unavailableReason"],
+        "device_offline"
+    );
+    assert_eq!(fleet.holders.lock().unwrap().len(), 1);
+
+    // Back to Auto: the backend picks the holder and its primary model.
+    let set = h
+        .call(
+            "superagent_set_model",
+            json!({ "conversationId": conversation, "deviceId": null, "modelId": null }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(set["model"]["mode"], "auto");
+    fleet.push(|_| say("From the desktop."));
+    h.call(
+        "superagent_send",
+        json!({ "conversationId": conversation, "message": "auto", "clientMessageId": "c-auto" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.settle(&conversation, 30).await, Step::Done);
+    assert_eq!(fleet.holders.lock().unwrap().last().unwrap(), WIN);
+    assert_eq!(fleet.round_models.lock().unwrap().last().unwrap(), &None);
+    // A half pick is refused.
+    let error = h
+        .call(
+            "superagent_set_model",
+            json!({ "conversationId": conversation, "deviceId": MAC }),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.starts_with("invalid_request"), "{error}");
 }
 
 #[tokio::test]
@@ -1215,10 +1347,15 @@ async fn frontends_gone_turn_completes() {
         }
     }
     assert_eq!(h.step_of(&conversation).await, Step::Done);
-    assert!(
-        h.engine().watched_accounts().is_empty(),
-        "nothing left to watch"
-    );
+    // Nothing left to watch but the history that waits for a device (these
+    // fake devices keep none): the watcher hands it over once one is online.
+    let state = slot.state.lock().await;
+    assert!(!state.ledger.has_live_jobs());
+    assert!(state
+        .conversations
+        .values()
+        .all(|conversation| conversation.active_turn().is_none()));
+    assert!(!state.outbox.is_empty(), "the turn waits for a device");
 }
 
 #[tokio::test]

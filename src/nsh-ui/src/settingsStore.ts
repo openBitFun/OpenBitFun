@@ -155,13 +155,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     // This device's switches for the OpenBitFun cloud agent (config path
     // `superagent`); both are on unless they are exactly `false`.
     id: "superagent-device",
-    title: "OpenBitFun",
+    title: "Super Agent",
     titleKey: "obf.toggle",
     page: "permissions",
     fields: [
       {
         id: "superagent-allow-auto-approval",
-        label: "Let OpenBitFun answer for me",
+        label: "Let Super Agent answer for me",
         labelKey: "perm.agentAnswers",
         descriptionKey: "perm.agentAnswersBody",
         path: "superagent.allowAutoApproval",
@@ -169,11 +169,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         mutation: { command: "set_superagent_settings", requestKey: "allowAutoApproval" },
         optional: true,
         defaultValue: true,
-        keywords: ["openbitfun", "approve", "superagent"],
+        keywords: ["openbitfun", "super agent", "approve", "superagent"],
       },
       {
         id: "superagent-accept-dispatch",
-        label: "Accept jobs from OpenBitFun",
+        label: "Accept jobs from Super Agent",
         labelKey: "perm.acceptJobs",
         descriptionKey: "perm.acceptJobsBody",
         path: "superagent.acceptDispatch",
@@ -181,7 +181,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         mutation: { command: "set_superagent_settings", requestKey: "acceptDispatch" },
         optional: true,
         defaultValue: true,
-        keywords: ["openbitfun", "jobs", "superagent"],
+        keywords: ["openbitfun", "super agent", "jobs", "superagent"],
       },
     ],
   },

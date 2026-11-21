@@ -1,6 +1,8 @@
 //! Desktop presentation adapter for the portable MiniApp instance owner.
 //! The shell branch never initializes AppState, the Agent runtime, or the main UI.
+pub(crate) mod catalog;
 mod chat;
+pub(crate) mod inline;
 mod ipc;
 mod launcher;
 mod sdk;
@@ -73,6 +75,8 @@ pub(crate) struct MiniAppHostLease(#[allow(dead_code)] pub(crate) std::fs::File)
 /// Starts MiniApp windows in the native host: the lease, the instance owner
 /// and the local IPC endpoint the lightweight shell connects to.
 pub(crate) fn start_native(app: &HostHandle) {
+    // The account's MiniApp list follows this device's installs (wave 22, P4).
+    catalog::install(app);
     let host = app.native();
     let channel = host_channel();
     match try_claim_host_now(channel) {
@@ -126,9 +130,12 @@ impl DesktopMiniApps {
             .clone()
     }
 
-    /// The live window presentation of `app_id`, when that window can answer
-    /// agent-bridge requests. Windows the Shell never advertised a bridge for are
-    /// skipped on purpose: routing to them would only produce a timeout.
+    /// The live presentation of `app_id` that relays agent-bridge requests: an
+    /// independent window, or the NSH UI's in-product view (`inline`), which
+    /// speaks the same Shell protocol. Views that never advertised a bridge are
+    /// skipped on purpose: routing to them would only produce a timeout. A tab
+    /// view without a Shell lease belongs to the retired Web UI tab runtime and
+    /// is never a target here.
     pub(crate) fn agent_window(&self, app_id: &str) -> Option<AgentWindow> {
         let snapshot = self.instances.snapshot();
         let shells = self.shells.lock().unwrap_or_else(|p| p.into_inner());
@@ -137,9 +144,6 @@ impl DesktopMiniApps {
                 return None;
             }
             let view = instance.primary_view.as_ref()?;
-            if view.kind != MiniAppViewKind::Window {
-                return None;
-            }
             let lease = shells.get(&view.view_id)?;
             match lease.agent_bridge {
                 true => Some(AgentWindow {
@@ -557,7 +561,7 @@ async fn local_workspace(app: &HostHandle, path: Option<String>) -> Result<Optio
             crate::api::path_target::resolve_desktop_path_target(&state, &path, None, None).await?;
         let local = target
             .as_local_path()
-            .ok_or("Independent MiniApp presentation does not yet support remote workspaces")?;
+            .ok_or("MiniApp presentation does not yet support remote workspaces; open the Space in a local workspace")?;
         return std::fs::canonicalize(local)
             .map(|path| Some(path.to_string_lossy().into_owned()))
             .map_err(|e| e.to_string());

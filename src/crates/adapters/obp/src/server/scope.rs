@@ -12,12 +12,15 @@
 //! `cloud-agent` is the account's cloud superagent (directory kind
 //! `cloud_agent`). It authenticates with the same device handshake and has
 //! the `account-device` allowlist (full access, like any of the user's
-//! frontends); the label only tells it apart in logs and adds two things:
-//! the model relay `fleet_model_*`, which only it may call, and this device's
+//! frontends); the label only tells it apart in logs and adds this device's
 //! switches, read per call: `superagent.acceptDispatch` (default on; off
 //! fences the device off) and `superagent.allowAutoApproval` (default on;
 //! off refuses `approvalPolicy: auto`, answering prompts and loosening
 //! approval rules).
+//!
+//! The model relay `fleet_model_*` serves the cloud agent and the account's
+//! other devices (a session on another device running one of this device's
+//! models), never a paired client.
 
 use openbitfun_product_domains::remote_surface::{
     event_stance, operation, retired_reason, EventStance, OperationSurface, PeerStance,
@@ -151,16 +154,21 @@ pub fn check_command(
     if command.is_empty() {
         return Err("forbidden_for_scope: the command name is empty".to_string());
     }
-    // The model relay serves the cloud agent only (whatever the registry
-    // says about it later), and only on a host that runs it.
+    // The model relay serves the account's cloud agent and the account's
+    // other devices (a session there running one of this device's models;
+    // whatever the registry says about it later), never a paired client, and
+    // only on a host that runs it.
     if FLEET_MODEL_COMMANDS.contains(&command) {
         return match scope {
-            Scope::CloudAgent { .. } if host_verb(command) => Ok(()),
+            Scope::CloudAgent { .. } | Scope::AccountDevice { .. } if host_verb(command) => Ok(()),
             Scope::CloudAgent { .. } => Err(format!(
                 "superagent_requires_update: command '{command}' is not served by this OpenBitFun host; update it"
             )),
+            Scope::AccountDevice { .. } => Err(format!(
+                "fleet_model_unavailable: command '{command}' is not served by this OpenBitFun host; update it"
+            )),
             _ => Err(format!(
-                "forbidden_for_scope: command '{command}' runs only for the account's cloud agent"
+                "forbidden_for_scope: command '{command}' runs only for the account's devices and its cloud agent"
             )),
         };
     }
@@ -267,6 +275,63 @@ fn requests_auto_approval(args: &Value) -> bool {
     is_auto(args) || args.get("request").is_some_and(is_auto)
 }
 
+/// The account replica verbs (`fleet::replica`) and the collections the
+/// cloud agent may use with them: it pushes and reads only the `superagent.`
+/// collections (conversation history), never the full replica
+/// (`fleet_replica_digest`, `fleet_replica_pull`) and never another
+/// collection. A host answers these verbs for a `cloud-agent` connection
+/// through [`cloud_agent_replica_verb`] only, never through its dispatcher
+/// (which serves the account's runtime devices).
+pub const CLOUD_AGENT_REPLICA_COLLECTIONS: &[&str] = &["superagent."];
+
+/// Whether `command` is an account replica verb.
+pub fn is_replica_verb(command: &str) -> bool {
+    matches!(
+        command,
+        "fleet_blob_get"
+            | "fleet_blob_holders"
+            | "fleet_replica_digest"
+            | "fleet_replica_list"
+            | "fleet_replica_pull"
+            | "fleet_replica_push"
+    )
+}
+
+/// What the cloud agent's call of a replica verb is: `None` for any other
+/// command. `fleet_call` wrapping a replica verb is refused (it would reach
+/// another device as an account device, with full replica access).
+pub fn cloud_agent_replica_verb(command: &str, args: &Value) -> Option<CloudReplicaCall> {
+    if command == "fleet_call" {
+        let inner = args
+            .get("request")
+            .unwrap_or(args)
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return is_replica_verb(inner).then(|| CloudReplicaCall::Refused(format!(
+            "forbidden_for_scope: the cloud agent calls replica verb '{inner}' on each device directly, never through fleet_call"
+        )));
+    }
+    if !is_replica_verb(command) {
+        return None;
+    }
+    if matches!(command, "fleet_replica_digest" | "fleet_replica_pull") {
+        return Some(CloudReplicaCall::Refused(format!(
+            "forbidden_for_scope: command '{command}' reads the whole account replica and is not served to the cloud agent"
+        )));
+    }
+    Some(CloudReplicaCall::Scoped)
+}
+
+/// See [`cloud_agent_replica_verb`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudReplicaCall {
+    /// Answer it with the replica's restricted access to
+    /// [`CLOUD_AGENT_REPLICA_COLLECTIONS`].
+    Scoped,
+    Refused(String),
+}
+
 /// Whether `scope` receives `event`.
 pub fn event_visible(scope: &Scope, event: &str) -> bool {
     scope.is_owner() || event_stance(event) == EventStance::Proxied
@@ -283,6 +348,41 @@ mod tests {
 
     fn check(scope: &Scope, command: &str) -> Result<(), String> {
         check_command(scope, command, &desktop_verbs)
+    }
+
+    #[test]
+    fn the_cloud_agent_gets_scoped_replica_verbs_only() {
+        let empty = serde_json::json!({});
+        for verb in [
+            "fleet_replica_push",
+            "fleet_replica_list",
+            "fleet_blob_get",
+            "fleet_blob_holders",
+        ] {
+            assert_eq!(
+                cloud_agent_replica_verb(verb, &empty),
+                Some(CloudReplicaCall::Scoped)
+            );
+        }
+        for verb in ["fleet_replica_digest", "fleet_replica_pull"] {
+            assert!(matches!(
+                cloud_agent_replica_verb(verb, &empty),
+                Some(CloudReplicaCall::Refused(_))
+            ));
+        }
+        let wrapped =
+            serde_json::json!({"request": {"target": "d2", "command": "fleet_replica_pull"}});
+        assert!(matches!(
+            cloud_agent_replica_verb("fleet_call", &wrapped),
+            Some(CloudReplicaCall::Refused(_))
+        ));
+        let plain =
+            serde_json::json!({"request": {"target": "d2", "command": "superagent_status"}});
+        assert_eq!(cloud_agent_replica_verb("fleet_call", &plain), None);
+        assert_eq!(
+            cloud_agent_replica_verb("dispatch_target_probe", &empty),
+            None
+        );
     }
 
     #[test]
@@ -500,19 +600,29 @@ mod tests {
     }
 
     #[test]
-    fn the_model_relay_is_refused_for_every_other_scope() {
+    fn the_model_relay_serves_account_devices_and_refuses_paired_clients() {
         let device = Scope::AccountDevice {
             device_id: "d1".into(),
         };
         let paired = Scope::PairedClient {
             client_id: "c1".into(),
         };
-        for scope in [&device, &paired] {
-            for command in FLEET_MODEL_COMMANDS {
-                let error = check_command(scope, command, &cloud_host_verbs).unwrap_err();
-                assert!(error.contains("cloud agent"), "{command}: {error}");
-            }
+        for command in FLEET_MODEL_COMMANDS {
+            // A session on another device of the account runs this
+            // device's model through the relay.
+            assert!(
+                check_command(&device, command, &cloud_host_verbs).is_ok(),
+                "{command}"
+            );
+            let error = check_command(&paired, command, &cloud_host_verbs).unwrap_err();
+            assert!(
+                error.starts_with("forbidden_for_scope:"),
+                "{command}: {error}"
+            );
         }
+        // A host without the relay answers with a stable reason.
+        let error = check_command(&device, "fleet_model_start", &desktop_verbs).unwrap_err();
+        assert!(error.starts_with("fleet_model_unavailable:"), "{error}");
         assert!(check_command(&Scope::Owner, "fleet_model_start", &cloud_host_verbs).is_ok());
     }
 

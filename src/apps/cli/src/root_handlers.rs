@@ -80,6 +80,9 @@ pub(crate) async fn handle_dispatch_action(action: DispatchAction) -> Result<()>
         DispatchAction::WorkspaceBundleCommit => "workspace-bundle-commit",
         DispatchAction::WorkspaceSync => "workspace-sync",
         DispatchAction::WorkspaceSyncChunk => "workspace-sync-chunk",
+        DispatchAction::WorkspacePublish => "workspace-publish",
+        DispatchAction::PeerImportCommit => "peer-import-commit",
+        DispatchAction::PendingQuestions => "pending-questions",
     };
     let result = async {
         use std::io::{IsTerminal, Read};

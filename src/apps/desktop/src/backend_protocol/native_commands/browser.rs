@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::{arg, DispatchFuture};
+use super::{arg, arg_or_default, DispatchFuture};
 use crate::api::browser_api::{
     WebviewBoundsRequest, WebviewCreateRequest, WebviewEvalRequest, WebviewLabelRequest,
-    WebviewNavigateRequest,
+    WebviewNavigateRequest, WebviewPreviewRequest,
 };
 use crate::host::NativeHost;
 use crate::native_browser;
@@ -88,11 +88,12 @@ pub(in crate::backend_protocol) fn browser_webview_capture_preview(
     host: &Arc<NativeHost>,
     args: Value,
 ) -> DispatchFuture<'_> {
-    let _ = host;
     Box::pin(async move {
-        let request: WebviewLabelRequest =
-            arg(&args, "request", "browser_webview_capture_preview")?;
-        native_browser::capture_preview(&request.label)
+        // Every field is optional; a call without a request asks for the
+        // device's most recently shown page.
+        let request: WebviewPreviewRequest =
+            arg_or_default(&args, "request", "browser_webview_capture_preview")?;
+        native_browser::capture_preview(host, request).await
     })
 }
 

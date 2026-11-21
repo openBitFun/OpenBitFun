@@ -7,9 +7,10 @@
 // none.
 
 import { expect, open, test } from "nsh/test";
-import { createBackend, openSession, openToolScene } from "./support";
+import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, openSession, openToolScene } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
+const PHONE = { width: 375, height: 812, platform: "macos" as const };
 const BROWSER_COMMANDS = new Set([
   "browser_webview_create",
   "browser_webview_navigate",
@@ -26,8 +27,8 @@ interface ShellReply {
   error?: string;
 }
 
-function browserBackendHost() {
-  const backend = createBackend();
+function browserBackendHost(options: Parameters<typeof createBackend>[0] = {}) {
+  const backend = createBackend(options);
   const invokes: Array<{ command: string; args: Record<string, unknown> }> = [];
   const fake: Array<{ label: string; action: string; [key: string]: unknown }> = [];
   const queued: Array<{ op: string; args: Record<string, unknown> }> = [];
@@ -263,13 +264,336 @@ test("an agent's page lives hidden, takes DOM input instead of trusted input, an
   expect(gone.value).toBeNull();
 });
 
-test("a window without web views shows the browser as unavailable and creates no page", async () => {
+test("a window without web views reads the device's page instead of opening one of its own", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "NSH skeleton");
   await openToolScene(app, "browser");
-  await app.waitFor("browser-unavailable");
-  // Visual spec §4.10: one short line names where the browser runs.
-  expect(app.texts()).toContain("The browser runs only in the desktop app.");
+  await app.waitFor("browser-live-view");
+  expect(app.shows("browser-toolbar")).toBe(false);
+  expect(backend.actions()).toContain("browser_webview_capture_preview");
   expect(backend.actions()).not.toContain("browser_webview_create");
+});
+
+test("the inspector's Browser tab sits beside the session and an agent page of that session presents there", async () => {
+  const wire = browserBackendHost();
+  const app = await open("./fixtures/browserApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_attach"));
+
+  // The header's Browser toggle opens the fourth inspector tab, not a scene.
+  await app.press("session-tool-browser");
+  await app.waitFor("aux-tab-browser");
+  expect(app.shows("aux-tab-changes") || app.shows("aux-tab-git")).toBe(true);
+  await app.waitFor("browser-toolbar");
+  expect(app.shows("tool-pane-header")).toBe(false);
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
+  await pump(app, wire);
+  const user = "embedded-browser-view-1";
+  await app.waitUntil(() => reports(wire, user).some(report => report.event === "finished"));
+
+  // Closing the inspector, then the session's agent opens a page: it presents beside the session.
+  await app.press("aux-close");
+  await app.waitUntil(() => !app.shows("aux-tab-browser"));
+  const agent = "embedded-browser-panel-view-builtin-browser-open-2-1";
+  await ask(app, wire, [
+    { op: "browser.create", args: { label: agent, url: "https://example.org/", conversationId: "session-1", width: 1024, height: 768 } },
+  ]);
+  await app.host.send(
+    "openbitfun.wireEvents",
+    wire.event("agentic://open-built-in-browser", { targetId: agent, sessionId: "session-1" }),
+  );
+  await app.waitFor("aux-tab-browser");
+  await app.waitFor("browser-toolbar");
+  await app.waitUntil(() => app.value("browser-address") === "https://example.org/");
+  const [state] = await ask(app, wire, [{ op: "browser.state", args: { label: agent } }]);
+  expect(state.value).toMatchObject({ presented: true });
+
+  // Another session's agent page does not take the inspector over.
+  await app.press("aux-close");
+  const other = "embedded-browser-panel-view-builtin-browser-open-2-2";
+  await ask(app, wire, [
+    { op: "browser.create", args: { label: other, url: "https://example.net/", conversationId: "session-2", width: 1024, height: 768 } },
+  ]);
+  await app.host.send(
+    "openbitfun.wireEvents",
+    wire.event("agentic://open-built-in-browser", { targetId: other, sessionId: "session-2" }),
+  );
+  await app.waitUntil(() => app.texts().length > 0);
+  expect(app.shows("aux-tab-browser")).toBe(false);
+});
+
+test("the element picker puts the clicked element into the composer as a reference", async () => {
+  const wire = browserBackendHost();
+  const app = await open("./fixtures/browserApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_attach"));
+  await app.press("session-tool-browser");
+  await app.waitFor("browser-toolbar");
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
+  await pump(app, wire);
+  const label = "embedded-browser-view-1";
+  await app.waitUntil(() => reports(wire, label).some(report => report.event === "finished"));
+
+  await app.press("browser-more");
+  await app.press("browser-pick-element");
+  // The picker runs in the page with a result, like `browser.evaluate`.
+  await app.waitUntil(() =>
+    wire.fake.some(item => item.action === "evaluate" && String(item.script).includes("__openbitfunPicker")),
+  );
+  await app.waitUntil(() => (app.value("composer") ?? "").includes("#element"));
+  expect(app.value("composer")).toBe("#element `main > button.primary` “Sign in” (https://openbitfun.com/) ");
+  expect(app.shows("browser-picking")).toBe(false);
+  // Nothing is sent: the reference waits in the composer.
+  expect(wire.invokes.some(call => call.command === "submit_user_message")).toBe(false);
+});
+
+test("a local HTML file typed into the address previews through the workspace and closes back to the page", async () => {
+  const wire = browserBackendHost({
+    fileContent: { "/repo/site/index.html": "<!DOCTYPE html><html><body><h1>Hello preview</h1></body></html>" },
+  });
+  const app = await open("./fixtures/browserApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_attach"));
+  await openToolScene(app, "browser");
+  await app.waitFor("browser-toolbar");
+  await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
+  await pump(app, wire);
+
+  await app.press("Clear address");
+  await app.type("browser-address", "file:///repo/site/index.html");
+  await app.keyboard.press("Enter");
+  await app.waitFor("browser-html-preview");
+  // Read through the workspace's device (a remote workspace routes there), never loaded as a page.
+  const read = wire.invokes.find(call => call.command === "read_file_content")?.args.request as { filePath: string };
+  expect(read.filePath).toBe("/repo/site/index.html");
+  expect(wire.invokes.some(call => call.command === "browser_webview_navigate")).toBe(false);
+  expect(app.texts()).toContain("/repo/site/index.html");
+  const [hidden] = await ask(app, wire, [{ op: "browser.state", args: { label: "embedded-browser-view-1" } }]);
+  expect(hidden.value).toMatchObject({ presented: false });
+
+  await app.press("browser-preview-close");
+  await app.waitFor("browser-toolbar");
+  const [shown] = await ask(app, wire, [{ op: "browser.state", args: { label: "embedded-browser-view-1" } }]);
+  expect(shown.value).toMatchObject({ presented: true });
+});
+
+/** A host page whose backend answers the live view as a desktop holding `pages` does. */
+function liveViewBackend(answer: (request: Record<string, unknown>) => unknown) {
+  const backend = createBackend();
+  const captures: Array<Record<string, unknown>> = [];
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const { action, request } = data as { action: string; request?: Record<string, unknown> | null };
+    if (action === "browser_webview_capture_preview") {
+      captures.push(request ?? {});
+      return { ok: true, value: answer(request ?? {}) };
+    }
+    return invoke(data);
+  };
+  return { backend, captures };
+}
+
+test("a phone shows the session device's page as a read-only live view, polled only while it is on screen", async () => {
+  const { backend, captures } = liveViewBackend(request =>
+    request.conversationId === "session-1"
+      ? {
+          status: "snapshot",
+          label: "embedded-browser-panel-view-1",
+          url: "https://example.com/live",
+          title: "Live",
+          html: "<!DOCTYPE html><html><head></head><body><h1>Live</h1></body></html>",
+          viewportWidth: 1024,
+          viewportHeight: 768,
+          capturedAtMs: 1,
+        }
+      : { status: "noPage" },
+  );
+  const app = await open("../App.tsx", { ...PHONE, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.press("thread-actions-trigger");
+  await app.press("session-browser-live");
+  await app.waitFor("browser-live-view");
+  await app.waitFor("browser-live-frame");
+  // The copy of the session's page, with its address and a way out to a real browser.
+  expect(captures[0]).toEqual({ conversationId: "session-1" });
+  expect(app.texts()).toContain("https://example.com/live");
+  expect(app.texts().some(text => text.startsWith("Live view from "))).toBe(true);
+  expect(app.shows("browser-live-open")).toBe(true);
+  // No address bar, no back or reload: it never pretends to be the page.
+  expect(app.shows("browser-toolbar")).toBe(false);
+  expect(app.shows("browser-address")).toBe(false);
+  expect(backend.actions()).not.toContain("browser_webview_create");
+
+  // About every 2 s while visible.
+  await app.waitUntil(() => captures.length >= 2, { timeout: 6000 });
+
+  // Leaving the view stops the reads.
+  await app.press("phone-back");
+  await app.waitUntil(() => !app.shows("browser-live-view"));
+  const seen = captures.length;
+  await new Promise(resolve => setTimeout(resolve, 2600));
+  expect(captures.length).toBe(seen);
+});
+
+test("the live view says what is missing instead of drawing an empty page", async () => {
+  let reply: unknown = { status: "noPage" };
+  const { backend } = liveViewBackend(() => reply);
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await openToolScene(app, "browser");
+  await app.waitFor("browser-live-empty");
+  expect(app.texts().some(text => text.startsWith("No page is open on "))).toBe(true);
+  expect(app.texts()).toContain("When an agent in this session opens a page, it shows here.");
+
+  // A page too large to copy keeps its address and the way out.
+  reply = { status: "tooLarge", label: "embedded-browser-view-1", url: "https://example.com/big", title: "Big" };
+  await app.waitUntil(() => app.texts().includes("This page is too large to show here."), { timeout: 6000 });
+  expect(app.texts()).toContain("https://example.com/big");
+});
+
+test("an older desktop without the live view request gets an update sentence", async () => {
+  const backend = createBackend();
+  const invoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const { action } = data as { action: string };
+    if (action === "browser_webview_capture_preview") {
+      return { ok: false, error: "invalid args `request` for command `browser_webview_capture_preview`: missing field `label`" };
+    }
+    return invoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await openToolScene(app, "browser");
+  await app.waitFor("browser-live-empty");
+  expect(app.texts().some(text => text.startsWith("Update OpenBitFun on "))).toBe(true);
+});
+
+const DEVICE_SETTINGS = "./fixtures/settingsApp.tsx";
+
+function settingsFleet() {
+  return {
+    revision: 2,
+    full: true,
+    devices: [
+      fleetDeviceRow("dev-a", "MacBook", [
+        {
+          workspaceId: "workspace-1",
+          name: "OpenBitFun",
+          rootPath: "/repo",
+          isHostCurrent: true,
+          sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "NSH skeleton")],
+        },
+      ]),
+      fleetDeviceRow(
+        "dev-b",
+        "linux-box",
+        [{ workspaceId: "workspace-2", name: "infra", rootPath: "/srv/infra", isHostCurrent: true, sessions: [] }],
+        { hostKind: "cli" },
+      ),
+    ],
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+  };
+}
+
+test("Settings shows the user's own Chrome and connects through the browser's consent page", async () => {
+  const backend = createBackend();
+  const base = backend.handlers["openbitfun.invoke"];
+  const sent: Array<{ action: string; target: string | null; request: unknown }> = [];
+  let connected = false;
+  let attempts = 0;
+  // eslint-disable-next-line prefer-const
+  let host: ReturnType<typeof fleetObpHost>;
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const { action, request } = data as { action?: string; request?: unknown };
+    const target = host?.fleetCalls.at(-1)?.target ?? null;
+    if (!action?.startsWith("browser_control_") || action === "browser_control_list_browsers") return base(data);
+    sent.push({ action, target, request });
+    // A CLI device has no browser to control.
+    if (target === "dev-b") return { ok: false, error: `${action} is not available on this host: no browser or OS automation` };
+    switch (action) {
+      case "browser_control_get_status":
+        return {
+          ok: true,
+          value: {
+            cdpAvailable: connected,
+            defaultCdpSupported: true,
+            defaultCdpEnabled: connected,
+            setupUrl: "chrome://inspect/#remote-debugging",
+            browserReady: connected,
+            browserKind: "chrome",
+            browserVersion: connected ? "Chrome/142" : null,
+            port: 9222,
+            pageCount: connected ? 3 : 0,
+          },
+        };
+      case "browser_control_enable_default_cdp":
+        attempts += 1;
+        // The first attempt opens the browser's own consent page; the second connects.
+        if (attempts === 1) {
+          return {
+            ok: true,
+            value: { success: false, status: "requires_user_profile_setup", browserKind: "chrome", setupUrl: "chrome://inspect/#remote-debugging" },
+          };
+        }
+        connected = true;
+        return { ok: true, value: { success: true, status: "connected_user_profile", browserKind: "chrome" } };
+      case "browser_control_disconnect":
+        connected = false;
+        return { ok: true, value: { success: true, status: "disconnected", browserKind: "chrome" } };
+      default:
+        return { ok: false, error: `unexpected ${action}` };
+    }
+  };
+  host = fleetObpHost(backend, { fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: settingsFleet() });
+  const app = await open(DEVICE_SETTINGS, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitFor("nav-settings-page-desktop-control");
+  await app.press("nav-settings-page-desktop-control");
+  await app.waitFor("external-browser-section");
+  await app.waitFor("external-browser-state");
+  expect(app.texts()).toContain("Not connected");
+  expect(sent[0]).toMatchObject({ action: "browser_control_get_status", request: { port: 9222 } });
+
+  // Chrome keeps remote debugging as its own setting: the host opens its consent page.
+  await app.press("external-browser-connect");
+  await app.waitFor("external-browser-outcome-setup");
+  expect(app.texts()).toContain("Allow remote debugging on the page Google Chrome opened, then connect again.");
+  expect(app.shows("external-browser-copy-setup")).toBe(true);
+
+  await app.press("external-browser-connect");
+  await app.waitFor("external-browser-outcome-connected");
+  await app.waitUntil(() => app.texts().includes("Connected"));
+  expect(app.texts()).toContain("Google Chrome · 3 tabs");
+  expect(sent.filter(call => call.action === "browser_control_enable_default_cdp")).toHaveLength(2);
+
+  await app.press("external-browser-disconnect");
+  await app.waitFor("external-browser-outcome-disconnected");
+  await app.waitUntil(() => app.texts().includes("Not connected"));
+});
+
+test("over the fleet, a browser's live view asks the device that runs the session", async () => {
+  const { backend, captures } = liveViewBackend(() => ({
+    status: "snapshot",
+    label: "embedded-browser-panel-view-1",
+    url: "https://example.com/fleet",
+    title: "Fleet",
+    html: "<!DOCTYPE html><html><head></head><body>Fleet</body></html>",
+    viewportWidth: 1024,
+    viewportHeight: 768,
+    capturedAtMs: 1,
+  }));
+  const host = fleetObpHost(backend, { fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" }, navigator: settingsFleet() });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("session-tool-browser");
+  await app.press("session-tool-browser");
+  await app.waitFor("browser-live-frame");
+  // A `fleet_call` addressed to the session's device, never a page this client opens.
+  const call = host.fleetCalls.find(item => item.command === "browser_webview_capture_preview");
+  expect(call?.target).toBe("dev-a");
+  expect((call?.args.request as { conversationId?: string } | undefined)?.conversationId).toBe("session-1");
+  expect(captures.length).toBeGreaterThan(0);
+  expect(app.texts()).toContain("Live view from MacBook");
+  expect(host.fleetCalls.some(item => item.command === "browser_webview_create")).toBe(false);
 });

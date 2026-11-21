@@ -2636,8 +2636,9 @@
         "pageId": "application.shortcuts"
       },
       "evidence": [
-        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#keybindings",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.shortcuts.overridesStoredOne\""
+        "source:src/nsh-ui/src/scenes/SettingsScene.tsx#ShortcutRecorder",
+        "source:src/nsh-ui/src/shortcutsStore.ts#app.keybindings",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"shortcuts.change\""
       ]
     },
     {

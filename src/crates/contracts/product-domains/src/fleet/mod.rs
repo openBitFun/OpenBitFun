@@ -14,12 +14,15 @@
 //! It performs no IO. The per-command routing table lives with the Product
 //! Operation Registry (`remote_surface::fleet_routing`).
 
+pub mod account_records;
 pub mod attention;
 pub mod dto;
+pub mod models;
 pub mod policy;
 pub mod views;
 
 pub use attention::*;
 pub use dto::*;
+pub use models::*;
 pub use policy::*;
 pub use views::*;

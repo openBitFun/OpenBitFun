@@ -167,6 +167,8 @@ pub(crate) fn install(runtime: &Arc<CliRuntimeContext>) {
                 data_dir: fleet_dir.clone(),
                 runtime: weak.clone(),
             });
+            // The account replica (synced settings) rides the fleet.
+            crate::account_settings_sync::attach_replica(&account.user_id);
             // Bots and Detached Dispatch on this host reach other devices
             // over the same Link node (`crate::mesh_route`).
             crate::mesh_route::attach(Arc::clone(&fleet_link), Arc::clone(&authority));
@@ -357,6 +359,19 @@ impl ObpBackend for CliObpBackend {
                 crate::fleet_host::dispatch(&command, args, &instance).await
             });
         }
+        // Account settings sync, as the desktop serves it to its own UI
+        // (`ControllerLocal`: the scope check admits only this host's owner).
+        match command.as_str() {
+            "account_settings_sync_status" => {
+                return Box::pin(crate::account_settings_sync::status_command())
+            }
+            "account_settings_sync_set" => {
+                return Box::pin(
+                    async move { crate::account_settings_sync::set_command(&args).await },
+                )
+            }
+            _ => {}
+        }
         Box::pin(async move { crate::peer_host::handle_obp_call(&command, args).await })
     }
 
@@ -390,14 +405,27 @@ impl ObpBackend for CliObpBackend {
             superagent_relay::FLEET_MODEL_CAPABILITY,
         ];
         // `fleet_v1` only while the fleet serves the owner verbs.
-        if crate::fleet_host::current().is_some() {
+        if let Some(host) = crate::fleet_host::current() {
             capabilities.push(openbitfun_product_domains::fleet::FLEET_V1_CAPABILITY);
+            // The account replica's verbs (`fleet::replica`), once attached.
+            if host.replica_sync().is_some() {
+                capabilities.push(openbitfun_obp::fleet::replica::ACCOUNT_REPLICA_V1_CAPABILITY);
+                // Super Agent history (`fleet::superagent_archive`).
+                capabilities.push(
+                    openbitfun_product_domains::superagent::archive::SUPERAGENT_ARCHIVE_CAPABILITY,
+                );
+            }
         }
         capabilities
     }
 
     fn fleet_mux(&self) -> Option<Arc<openbitfun_obp::fleet::mux::FleetMux>> {
         crate::fleet_host::mux()
+    }
+
+    fn account_replica(&self) -> Option<Arc<openbitfun_obp::fleet::replica::AccountReplica>> {
+        let sync = crate::fleet_host::current()?.replica_sync()?;
+        Some(Arc::clone(sync.replica()))
     }
 
     fn serves_cloud_agent(&self) -> bool {

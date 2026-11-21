@@ -143,7 +143,7 @@ test('CLI build embeds the web UI of this tree, or fails loudly', () => {
   };
   const write = (dir, options) => ({ bundleDir: join(dir, 'Acme'), bundleId: 'id', options });
   const dir = prepareCliWebUi(plan, { spawn, write });
-  assert.deepEqual(calls, [['nsh', 'package', 'src/nsh-ui', '--target', 'web', '-o', plan.webUiOutPath]]);
+  assert.deepEqual(calls, [['nsh', 'package', 'src/nsh-ui/WebApp.tsx', '--target', 'web', '-o', plan.webUiOutPath]]);
   assert.equal(dir, join(plan.webUiOutPath, 'Acme'));
   assert.equal(plan.environment[CLI_WEB_UI_VARIABLE], dir);
   // An explicit directory is used as is; a failed web build fails the CLI build.

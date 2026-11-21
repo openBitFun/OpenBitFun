@@ -57,6 +57,16 @@ export interface BackendOptions {
   absentConfigs?: string[];
   /** A host older than the typed settings commands (wave 3 config): they are unknown. */
   legacySettingsHost?: boolean;
+  /**
+   * account settings sync (wave 21): what `account_settings_sync_status`
+   * answers; `null` is a host without the commands. Default: on and synced.
+   */
+  accountSync?: Record<string, unknown> | null;
+  /**
+   * account records (wave24-replica): what `device_records_overview`
+   * answers; omitted or `null` is a host without the command.
+   */
+  accountRecords?: Record<string, unknown> | null;
   devices?: Array<Record<string, unknown>>;
   /** The host answers `manage_dialog_queue`; without it the surface keeps its own list. */
   hostQueue?: boolean;
@@ -1199,6 +1209,10 @@ const SETTINGS_DESCRIPTOR: Record<string, Record<string, unknown>> = {
 };
 
 export function createBackend(options: BackendOptions = {}): Backend {
+  let accountSyncStatus: Record<string, unknown> | null =
+    options.accountSync === undefined
+      ? { enabled: true, phase: "synced", pending: 0, peers: 1, peersOnline: 1, active: true, groups: ["preferences", "permissions"] }
+      : options.accountSync;
   const calls: BackendCall[] = [];
   // features (wave 5): what the presentation surface reported back.
   const controlReports: Array<Record<string, unknown>> = [];
@@ -2074,6 +2088,21 @@ export function createBackend(options: BackendOptions = {}): Backend {
   function answer(action: string, request: unknown, positional = false): unknown {
     const payload = (request ?? {}) as Record<string, unknown>;
     switch (action) {
+      // account records (wave24-replica)
+      case "device_records_overview": {
+        if (!options.accountRecords) throw new Error(`Command ${action} not found`);
+        return JSON.parse(JSON.stringify(options.accountRecords));
+      }
+      // account settings sync (wave 21)
+      case "account_settings_sync_status":
+      case "account_settings_sync_set": {
+        if (accountSyncStatus === null) throw new Error(`Command ${action} not found`);
+        if (action === "account_settings_sync_set") {
+          const enabled = payload.enabled === true;
+          accountSyncStatus = { ...accountSyncStatus, enabled, phase: enabled ? "synced" : "off", active: enabled };
+        }
+        return { ...accountSyncStatus };
+      }
       // settings mutations (wave 3 config)
       case "ai_model_upsert":
       case "ai_model_delete":
@@ -3651,6 +3680,12 @@ export interface FleetObpHostOptions {
    * command.
    */
   deviceDetails?: Record<string, Record<string, unknown>> | false;
+  /**
+   * The `fleet_models` answer (wave 21): every device's models grouped by
+   * device, keyed by the request's `deviceId` (`""` for the entry). Unset
+   * makes the entry older than the command.
+   */
+  fleetModels?: Record<string, Record<string, unknown>>;
 }
 
 /** The user-facing capability ids `fleet_device_detail` sends, from a navigator row's host capabilities. */
@@ -3803,6 +3838,12 @@ export function fleetObpHost(backend: Backend, options: FleetObpHostOptions): Fl
         if (served) return [reply(frame.id, { result: served })];
         if (row) return [reply(frame.id, { result: fleetDeviceDetailFrom(row, Number(options.navigator?.revision ?? 1)) })];
         return [reply(frame.id, { error: { code: -32000, message: `fleet_device_unknown: ${deviceId}` } })];
+      }
+      if (options.fleet && params.command === "fleet_models") {
+        const request = (params.args.request ?? {}) as { deviceId?: string };
+        const served = options.fleetModels?.[String(request.deviceId ?? "")];
+        if (served) return [reply(frame.id, { result: served })];
+        return [reply(frame.id, { error: { code: -32601, message: `unknown command: ${params.command}` } })];
       }
       if (options.fleet && params.command === "fleet_call") {
         const request = (params.args.request ?? {}) as { target?: string; command?: string; args?: Record<string, unknown> };

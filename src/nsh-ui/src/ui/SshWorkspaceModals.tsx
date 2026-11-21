@@ -19,6 +19,8 @@ import {
   type Point,
 } from "nsh";
 import { formatPlural } from "../format";
+// wave24-replica: account SSH profiles that still need a secret here.
+import { loadAccountRecords, sshSecretNote } from "../accountRecordsStore";
 import { localizeHostError, tr } from "../i18n";
 import {
   addLocalFolderToNewWorkspace,
@@ -181,6 +183,7 @@ import {
   radii,
   textLineHeight,
   textSize,
+  textStyle,
   textTracking,
 } from "../theme";
 import { BotCharacter, Icon, type IconName } from "./icons";
@@ -931,6 +934,7 @@ function stageLatencyMs(stage: ConnectionTestStage): number | null {
 
 function SshConnectionModal() {
   const confirmingDeleteId = signal<string | null>(null);
+  void loadAccountRecords();
 
   const targetTabs = () => [
     { value: "ssh" as WorkspaceConnectionTarget, label: tr("ssh.ssh") },
@@ -1286,6 +1290,16 @@ function SshConnectionModal() {
                         >
                           {formatSavedConnectionSubtitle(conn())}
                         </Text>
+                        <If when={sshSecretNote(conn().id)}>
+                          {note => (
+                            <Text
+                              style={textStyle("meta")}
+                              accessibilityLabel={`ssh-needs-secret-${conn().id}`}
+                            >
+                              {note()}
+                            </Text>
+                          )}
+                        </If>
                       </View>
 
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>

@@ -1,4 +1,7 @@
-use std::process::{Command, Stdio};
+use std::path::Path;
+#[cfg(unix)]
+use std::process::Command;
+use std::process::{Child, Stdio};
 #[cfg(unix)]
 use std::time::Duration;
 
@@ -6,14 +9,54 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use super::store::DispatchStore;
 
+mod windows_job;
+
 pub(crate) const PREPARING_GRACE_SECONDS: u64 = 10;
 
+/// Hidden action of the detached turn worker; cancellation targets only it.
+const WORKER_ACTION: &str = "__run";
+
 pub(crate) fn is_supported() -> bool {
-    cfg!(any(target_os = "linux", target_os = "macos"))
+    cfg!(any(target_os = "linux", target_os = "macos", windows))
+}
+
+/// The error every entry point returns on a platform without detached workers.
+pub(crate) fn unsupported_error() -> anyhow::Error {
+    anyhow!("dispatch detached workers are supported only on Linux, macOS and Windows")
+}
+
+/// Keeps a detached action verifiable and cancellable for as long as it runs.
+///
+/// On Windows it owns the action's named Job Object (see `windows_job`); on
+/// Unix the spawner already made the action a session and process-group
+/// leader, so there is nothing to hold.
+#[must_use = "dropping the containment ends the action's verifiable identity"]
+pub(crate) struct DetachedActionContainment {
+    #[cfg(windows)]
+    _job: windows_job::OwnedHandle,
+}
+
+/// Enter the containment of a detached action. Every hidden action calls this
+/// before it publishes a PID, so a PID marker always names a process that an
+/// observer can authenticate.
+pub(crate) fn contain_detached_action(
+    action: &str,
+    job_id: &str,
+) -> Result<DetachedActionContainment> {
+    #[cfg(windows)]
+    {
+        windows_job::enroll_current_process(action, job_id)
+            .map(|job| DetachedActionContainment { _job: job })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (action, job_id);
+        Ok(DetachedActionContainment {})
+    }
 }
 
 pub(crate) fn spawn(store: &DispatchStore, job_id: &str) -> Result<u32> {
-    let result = spawn_detached_action("__run", job_id, "dispatch worker");
+    let result = spawn_detached_action(WORKER_ACTION, job_id, "dispatch worker");
     if result.is_err() {
         store.clear_preparing(job_id);
     }
@@ -46,31 +89,87 @@ pub(crate) fn spawn_workspace_sync(job_id: &str) -> Result<u32> {
 
 fn spawn_detached_action(action: &str, job_id: &str, description: &str) -> Result<u32> {
     if !is_supported() {
-        bail!("dispatch detached workers are supported only on Linux and macOS");
+        return Err(unsupported_error());
     }
 
     let executable = std::env::current_exe().context("resolve OpenBitFun executable")?;
-    let mut command = openbitfun_services_core::process_manager::create_command(executable);
-    command
-        .arg("dispatch")
-        .arg(action)
-        .arg("--job")
-        .arg(job_id)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(home) = dirs::home_dir() {
-        command.current_dir(home);
-    }
-    configure_detached_process(&mut command);
+    let home = dirs::home_dir();
+    let configure = |command: &mut std::process::Command| {
+        command
+            .arg("dispatch")
+            .arg(action)
+            .arg("--job")
+            .arg(job_id)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(home) = &home {
+            command.current_dir(home);
+        }
+    };
 
-    let child = command
-        .spawn()
+    let child = spawn_detached_child(&executable, configure)
         .with_context(|| format!("start detached {description}"))?;
     let pid = child.id();
     // The action acquires its durable job or upload lock in the child. The
     // parent PID is informational until that target-owned claim succeeds.
     Ok(pid)
+}
+
+#[cfg(unix)]
+fn spawn_detached_child(
+    executable: &Path,
+    configure: impl Fn(&mut Command),
+) -> std::io::Result<Child> {
+    let mut command = openbitfun_services_core::process_manager::create_command(executable);
+    configure(&mut command);
+    configure_detached_process(&mut command);
+    command.spawn()
+}
+
+/// Start a hidden action that outlives its spawner: no console window, its own
+/// process group (no inherited Ctrl+C), and out of the spawner's Job so a
+/// kill-on-close host Job does not take it down. The action then enrolls in
+/// its own named Job Object (`contain_detached_action`).
+#[cfg(windows)]
+fn spawn_detached_child(
+    executable: &Path,
+    configure: impl Fn(&mut std::process::Command),
+) -> std::io::Result<Child> {
+    use openbitfun_services_core::process_manager;
+
+    const ERROR_ACCESS_DENIED: i32 = 5;
+
+    let mut command = process_manager::create_detached_command(executable);
+    configure(&mut command);
+    match command.spawn() {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+            // The spawner's Job forbids breakaway. Staying in it is safe only
+            // when that Job does not terminate its members on close.
+            windows_job::breakaway_denied_fallback(windows_job::current_job_kills_on_close())
+                .map_err(|reason| std::io::Error::new(error.kind(), reason))?;
+            tracing::warn!(
+                "Windows Job breakaway was denied; the detached dispatch action stays in the \
+                 host Job, which does not terminate its members on close"
+            );
+            let mut command =
+                process_manager::create_inherited_job_process_group_command(executable);
+            configure(&mut command);
+            command.spawn()
+        }
+        result => result,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn spawn_detached_child(
+    _executable: &Path,
+    _configure: impl Fn(&mut std::process::Command),
+) -> std::io::Result<Child> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        unsupported_error().to_string(),
+    ))
 }
 
 pub(crate) fn worker_process_alive(pid: u32, job_id: &str) -> bool {
@@ -90,6 +189,9 @@ pub(crate) fn worker_process_group_alive(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
+        // Windows authenticates the worker by its named Job Object, which
+        // loses its name with the leader's handle; a PID alone cannot vouch
+        // for any leftover processes, so there is no group to report.
         let _ = pid;
         false
     }
@@ -150,29 +252,31 @@ pub(crate) fn terminate_worker(pid: u32, job_id: &str) -> Result<bool> {
         }
         Ok(true)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // The worker's named Job Object is the Windows process group: it
+        // authenticates the leader and stops every descendant together.
+        windows_job::terminate_action(pid, WORKER_ACTION, job_id)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pid, job_id);
         bail!("dispatch worker cancellation is unsupported on this platform")
     }
 }
 
+#[cfg(unix)]
 fn configure_detached_process(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-        }
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
     }
-    #[cfg(not(unix))]
-    let _ = command;
 }
 
 #[cfg(unix)]
@@ -278,14 +382,19 @@ pub(crate) fn process_alive(pid: u32) -> bool {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub(crate) fn process_alive(pid: u32) -> bool {
+    windows_job::process_alive(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn process_alive(_pid: u32) -> bool {
     false
 }
 
 #[cfg(target_os = "linux")]
 fn process_matches_job(pid: u32, job_id: &str) -> bool {
-    process_matches_action(pid, "__run", job_id)
+    process_matches_action(pid, WORKER_ACTION, job_id)
 }
 
 #[cfg(target_os = "linux")]
@@ -303,7 +412,7 @@ fn process_matches_action(pid: u32, action: &str, job_id: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 fn process_matches_job(pid: u32, job_id: &str) -> bool {
-    process_matches_action(pid, "__run", job_id)
+    process_matches_action(pid, WORKER_ACTION, job_id)
 }
 
 #[cfg(target_os = "macos")]
@@ -325,16 +434,30 @@ fn process_matches_action(pid: u32, action: &str, job_id: &str) -> bool {
     arguments_match_action(&args, action, job_id)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Windows identity is Job Object membership, not the command line: reading
+/// another process's arguments needs undocumented APIs, while membership in
+/// the action's named Job cannot survive PID reuse.
+#[cfg(windows)]
+fn process_matches_job(pid: u32, job_id: &str) -> bool {
+    process_matches_action(pid, WORKER_ACTION, job_id)
+}
+
+#[cfg(windows)]
+fn process_matches_action(pid: u32, action: &str, job_id: &str) -> bool {
+    windows_job::process_matches_action(pid, action, job_id)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn process_matches_job(_pid: u32, _job_id: &str) -> bool {
     false
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn process_matches_action(_pid: u32, _action: &str, _job_id: &str) -> bool {
     false
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn arguments_match_action(args: &[String], action: &str, job_id: &str) -> bool {
     args.windows(4).any(|window| {
         window[0] == "dispatch"
@@ -349,11 +472,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detached_runner_support_matches_the_v1_platform_contract() {
+    fn detached_runner_support_matches_the_platform_contract() {
         assert_eq!(
             is_supported(),
-            cfg!(any(target_os = "linux", target_os = "macos"))
+            cfg!(any(target_os = "linux", target_os = "macos", windows))
         );
+    }
+
+    #[test]
+    fn unsupported_platform_error_names_every_supported_platform() {
+        let message = unsupported_error().to_string();
+        for platform in ["Linux", "macOS", "Windows"] {
+            assert!(message.contains(platform), "{message} omits {platform}");
+        }
+    }
+
+    #[test]
+    fn containment_is_available_for_the_current_process() {
+        // Unix holds nothing; Windows enrolls this test process in a fresh,
+        // uniquely named Job Object, which is harmless for the test runner.
+        let job_id = format!("containment-{}", uuid::Uuid::new_v4().as_simple());
+        let _containment =
+            contain_detached_action("__containment_test", &job_id).expect("contain action");
+        #[cfg(windows)]
+        assert!(windows_job::process_matches_action(
+            std::process::id(),
+            "__containment_test",
+            &job_id
+        ));
+    }
+
+    #[test]
+    fn spawned_detached_child_runs_hidden_and_reports_its_pid() {
+        // A real detached spawn through the platform path, with a harmless
+        // short-lived program in place of the OpenBitFun executable.
+        #[cfg(unix)]
+        let (program, args): (&str, &[&str]) = ("/bin/sh", &["-c", "exit 0"]);
+        #[cfg(windows)]
+        let (program, args): (&str, &[&str]) = ("cmd.exe", &["/C", "exit 0"]);
+        let spawned = spawn_detached_child(Path::new(program), |command| {
+            command
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        });
+        // A test runner inside a kill-on-close Job that forbids breakaway gets
+        // the loud refusal instead of a worker that would die with its host.
+        #[cfg(windows)]
+        if let Err(error) = &spawned {
+            assert!(error.to_string().contains("cannot outlive"), "{error}");
+            return;
+        }
+        let mut child = spawned.expect("spawn detached child");
+        assert!(child.id() > 0);
+        assert!(child.wait().expect("reap detached child").success());
     }
 
     #[test]

@@ -102,31 +102,19 @@ impl CredentialVault {
         }
     }
 
+    /// An exclusive lock for a read-modify-write that spans more than one
+    /// vault call, such as a token rotation that waits on the network. It is
+    /// a separate lock file, so `get`, `set` and `remove` stay usable while it
+    /// is held, and it serializes every process that opens the same vault.
+    /// Dropping the guard releases it.
+    pub async fn update_lock(&self) -> Result<CredentialVaultUpdateLock> {
+        acquire_lock_file(self.vault_path.with_extension("update.lock"))
+            .await
+            .map(|lock| CredentialVaultUpdateLock { _lock: lock })
+    }
+
     async fn acquire_lock(&self) -> Result<VaultLock> {
-        if let Some(parent) = self.lock_path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!(
-                    "create local credential vault directory {}",
-                    parent.display()
-                )
-            })?;
-        }
-        let path = self.lock_path.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut options = OpenOptions::new();
-            options.create(true).truncate(false).read(true).write(true);
-            configure_private_open(&mut options);
-            let file = options
-                .open(&path)
-                .with_context(|| format!("open local credential vault lock {}", path.display()))?;
-            fs2::FileExt::lock_exclusive(&file).with_context(|| {
-                format!("acquire local credential vault lock {}", path.display())
-            })?;
-            restrict_file_permissions(&path)?;
-            Ok(VaultLock { file, path })
-        })
-        .await
-        .context("join local credential vault lock task")?
+        acquire_lock_file(self.lock_path.clone()).await
     }
 
     async fn read_key(&self) -> Result<[u8; KEY_BYTES]> {
@@ -266,6 +254,36 @@ impl CredentialVault {
         }
         restrict_file_permissions(&self.vault_path)
     }
+}
+
+async fn acquire_lock_file(path: PathBuf) -> Result<VaultLock> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!(
+                "create local credential vault directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        configure_private_open(&mut options);
+        let file = options
+            .open(&path)
+            .with_context(|| format!("open local credential vault lock {}", path.display()))?;
+        fs2::FileExt::lock_exclusive(&file)
+            .with_context(|| format!("acquire local credential vault lock {}", path.display()))?;
+        restrict_file_permissions(&path)?;
+        Ok(VaultLock { file, path })
+    })
+    .await
+    .context("join local credential vault lock task")?
+}
+
+/// Held by [`CredentialVault::update_lock`]; released on drop.
+pub struct CredentialVaultUpdateLock {
+    _lock: VaultLock,
 }
 
 struct VaultLock {
@@ -413,6 +431,30 @@ mod tests {
         tokio::fs::remove_file(dir.join(".key")).await.unwrap();
         let error = vault.get("account").await.unwrap_err();
         assert!(error.to_string().contains("read local credential key"));
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn update_lock_is_exclusive_and_leaves_entries_usable() {
+        let (dir, vault) = test_vault("update-lock");
+        let held = vault.update_lock().await.unwrap();
+        // Entry access is a different lock, so it works while the guard is held.
+        vault.set("account", b"pair-1").await.unwrap();
+        assert_eq!(
+            vault.get("account").await.unwrap(),
+            Some(b"pair-1".to_vec())
+        );
+        // A second holder (another task or process) waits for the first.
+        let other = vault.clone();
+        let waiter = tokio::spawn(async move { other.update_lock().await.map(|_| ()) });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!waiter.is_finished());
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("the lock is released on drop")
+            .unwrap()
+            .unwrap();
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 

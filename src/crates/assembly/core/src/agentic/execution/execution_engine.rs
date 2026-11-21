@@ -1353,20 +1353,29 @@ impl ExecutionEngine {
                 });
         }
 
+        // A reference to one of this device's models qualified with its own
+        // id reads as the plain model id.
+        let configured_model_id =
+            crate::service::fleet::models::local_model_ref(configured_model_id);
         let configured_model_id = configured_model_id.trim();
         let selector = if configured_model_id.is_empty() || configured_model_id == "default" {
             "primary"
         } else {
             configured_model_id
         };
-        ai_config
-            .resolve_model_selection(selector)
-            .or_else(|| ai_config.resolve_model_selection("primary"))
-            .ok_or_else(|| {
-                OpenBitFunError::AIClient(
-                    "Dialog turn model could not resolve a concrete primary model".to_string(),
-                )
-            })
+        if let Some(resolved) = ai_config.resolve_model_selection(selector) {
+            return Ok(resolved);
+        }
+        // Another device's model that this host cannot resolve now fails the
+        // turn with its reason; it never silently runs the primary model.
+        if let Some(error) = crate::service::fleet::models::unresolved_model_error(selector) {
+            return Err(OpenBitFunError::AIClient(error));
+        }
+        ai_config.resolve_model_selection("primary").ok_or_else(|| {
+            OpenBitFunError::AIClient(
+                "Dialog turn model could not resolve a concrete primary model".to_string(),
+            )
+        })
     }
 
     fn validate_frozen_reasoning_contract(

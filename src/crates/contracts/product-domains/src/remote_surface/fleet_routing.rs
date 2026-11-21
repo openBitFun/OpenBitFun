@@ -177,6 +177,8 @@ const fn local(id: &'static str) -> FleetRouting {
 }
 
 const OPENS_ON_CHOSEN_DEVICE: &str = "opens or reopens a workspace on the chosen device; workspace ids are per device (the same root on two devices shares one), so the id cannot pick the device";
+const LIVE_VIEW_ON_PAGE_DEVICE: &str =
+    "a live view reads the page on the device whose window holds it; the conversationId only picks among that device's pages";
 const SIGN_IN_FLOW_ID: &str =
     "the sessionId is a sign-in flow id on the chosen device, not an agent session";
 
@@ -195,6 +197,8 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     local("account_list_devices"),
     local("account_login"),
     local("account_logout"),
+    local("account_settings_sync_set"),
+    local("account_settings_sync_status"),
     local("account_status"),
     local("account_token_expired"),
     local("account_update_device_alias"),
@@ -217,7 +221,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("browser_control_list_browsers"),
     target("browser_control_restart_with_cdp"),
     local("browser_get_url"),
-    local("browser_webview_capture_preview"),
+    target_because("browser_webview_capture_preview",                          LIVE_VIEW_ON_PAGE_DEVICE),
     local("browser_webview_create"),
     local("browser_webview_eval"),
     local("browser_webview_navigate"),
@@ -301,6 +305,15 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     owner("delete_skill",                                              Workspace, "workspaceId"),
     owner("delete_subagent",                                           Workspace, "request.workspaceId"),
     owner("delete_terminal_profile",                                   Workspace, "request.workspaceId"),
+    target("desktop_card_delete"),
+    target("desktop_card_get"),
+    target("desktop_card_list"),
+    target("desktop_card_refresh"),
+    target("desktop_card_set_always_on_top"),
+    target("desktop_card_set_bounds"),
+    target("desktop_card_set_checklist_item"),
+    target("desktop_card_set_visible"),
+    target("device_records_overview"),
     local("dispatch_answer"),
     local("dispatch_append"),
     local("dispatch_cancel"),
@@ -481,6 +494,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("grant_miniapp_path"),
     target("grant_miniapp_workspace"),
     local("has_insights_data"),
+    local("hide_agent_companion_desktop_pet"),
     local("hide_main_window_after_close_request"),
     local("host_shell_attach"),
     local("host_shell_respond"),
@@ -531,6 +545,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("list_subscription_accounts"),
     owner("list_visible_subagents",                                    Workspace, "request.workspaceId"),
     target("load_acp_json_config"),
+    local("load_agent_companion_pet_spritesheet"),
     target("load_git_repo_history"),
     local("load_insights_report"),
     target("load_mcp_json_config"),
@@ -548,6 +563,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     owner("mark_session_seen",                                         Session,   "request.sessionId"),
     local("mesh_list_devices"),
     local("mesh_status"),
+    target("miniapp_account_catalog"),
     owner("miniapp_agent_cancel",                                      Session,   "request.sessionId"),
     target("miniapp_agent_cancel_stale_runs"),
     owner("miniapp_agent_ensure_session",                              Session,   "request.sessionId"),
@@ -569,6 +585,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("miniapp_get_draft"),
     target("miniapp_host_call"),
     target("miniapp_import_from_path"),
+    target("miniapp_inline"),
     target("miniapp_install_deps"),
     target("miniapp_market_browse"),
     target("miniapp_market_get_listing"),
@@ -687,6 +704,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("reset_memory"),
     owner("reset_mode_skill_selection",                                Workspace, "request.workspaceId"),
     owner("reset_workspace_persona_files",                             Workspace, "request.workspaceId"),
+    local("resize_agent_companion_desktop_pet"),
     local("resolve_ai_model_request_url"),
     target("respond_permission"),
     target("respond_permission_batch"),
@@ -776,6 +794,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     local("set_tray_unread_count"),
     target("set_web_search_provider"),
     owner("set_workspace_icon",                                        Workspace, "request.workspaceId"),
+    local("show_agent_companion_desktop_pet"),
     local("show_main_window"),
     local("speech_append_audio_chunk"),
     local("speech_append_realtime_audio"),
@@ -843,6 +862,7 @@ const FLEET_ROUTES: &[FleetRouting] = &[
     target("superagent_list_conversations"),
     target("superagent_rename_conversation"),
     target("superagent_send"),
+    target("superagent_set_model"),
     target("superagent_status"),
     owner("terminal_ack",                                              Terminal,  "request.sessionId"),
     owner("terminal_close",                                            Terminal,  "request.sessionId"),
@@ -1099,6 +1119,7 @@ mod tests {
                 "fleet_call",
                 "fleet_device_detail",
                 "fleet_events",
+                "fleet_models",
                 "fleet_navigator",
                 "fleet_prompts",
                 "fleet_recent_sessions",
@@ -1106,7 +1127,19 @@ mod tests {
                 "fleet_ui_bundle",
             ])
         );
-        for verb in entry.iter().chain(["fleet_digest", "fleet_replay"].iter()) {
+        for verb in entry.iter().chain(
+            [
+                "fleet_digest",
+                "fleet_replay",
+                "fleet_blob_get",
+                "fleet_blob_holders",
+                "fleet_replica_digest",
+                "fleet_replica_list",
+                "fleet_replica_pull",
+                "fleet_replica_push",
+            ]
+            .iter(),
+        ) {
             assert!(is_fleet_verb(verb), "{verb}");
             assert!(
                 FLEET_ROUTES.iter().all(|row| row.id != *verb),

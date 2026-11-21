@@ -26,6 +26,11 @@ pub(crate) use openbitfun_services_core::dispatch_contract::wire::{
     DispatchWorkspaceSyncChunkRequest, DispatchWorkspaceSyncChunkResponse,
     DispatchWorkspaceSyncRequest, DispatchWorkspaceSyncResponse, DispatchWorkspaceSyncedChange,
 };
+// Dispatch phase two: peer import, publish and the question mailbox.
+pub(crate) use openbitfun_services_core::dispatch_contract::wire::{
+    DispatchPeerImportCommitRequest, DispatchPeerImportCommitResponse, DispatchPeerImportNeed,
+    DispatchPendingQuestion, DispatchWorkspacePublishRequest, DispatchWorkspacePublishResponse,
+};
 
 pub(crate) const MAX_DISPATCH_TEXT_BYTES: usize = 32 * 1024;
 
@@ -56,6 +61,17 @@ pub(crate) struct DispatchAnswerRequest {
     pub(crate) job_id: String,
     pub(crate) request_id: String,
     pub(crate) reply: PermissionReply,
+}
+
+/// `answer` for a waiting `AskUserQuestion` (`user_question_mailbox_v1`):
+/// `answers` replaces `reply`. The answers are the Runtime's own shape
+/// (question index to the chosen label or labels).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DispatchQuestionAnswerRequest {
+    pub(crate) job_id: String,
+    pub(crate) request_id: String,
+    pub(crate) answers: serde_json::Value,
 }
 
 // `deny_unknown_fields` cannot recognize the fields consumed by a flattened,
@@ -165,6 +181,30 @@ impl DispatchEvent {
         }
     }
 
+    pub(crate) fn question_pending(request_id: &str) -> Self {
+        Self::Audit {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            action: "questionPending".to_string(),
+            details: serde_json::json!({ "requestId": request_id }),
+        }
+    }
+
+    pub(crate) fn question_resolved(request_id: &str, outcome: &str) -> Self {
+        Self::Audit {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            action: "questionResolved".to_string(),
+            details: serde_json::json!({ "requestId": request_id, "outcome": outcome }),
+        }
+    }
+
+    pub(crate) fn branch_published(response: &DispatchWorkspacePublishResponse) -> Self {
+        Self::Audit {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            action: "branchPublished".to_string(),
+            details: serde_json::to_value(response).unwrap_or_default(),
+        }
+    }
+
     pub(crate) fn message_appended(message_id: &str) -> Self {
         Self::Audit {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -227,6 +267,9 @@ pub(crate) struct DispatchStatusResponse {
     pub(crate) cursor: u64,
     pub(crate) events: Vec<DispatchEvent>,
     pub(crate) pending_permissions: Vec<PermissionRequest>,
+    /// Waiting `AskUserQuestion` calls (`user_question_mailbox_v1`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pending_questions: Vec<DispatchPendingQuestion>,
     pub(crate) cursor_reset: bool,
     pub(crate) history_truncated: bool,
     pub(crate) event_log_complete: bool,

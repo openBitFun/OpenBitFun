@@ -30,6 +30,12 @@ fn sessions() -> Arc<DirectorySessions> {
     )
 }
 
+/// The process's directory sessions now (account settings sync reads them on
+/// every call, so a replacement is picked up).
+pub(crate) fn current_sessions() -> Arc<DirectorySessions> {
+    sessions()
+}
+
 /// Replaces the process's directory sessions (tests drive a local directory).
 #[cfg(test)]
 pub(crate) fn install_for_test(replacement: Arc<DirectorySessions>) {
@@ -96,6 +102,8 @@ pub(crate) fn signed_in() {
             }
             Err(error) => log::warn!("Account directory sign-in failed: {error}"),
         }
+        // Account settings sync follows the account's replica.
+        crate::api::account_settings_sync_api::signed_in();
     });
 }
 
@@ -109,6 +117,7 @@ pub(crate) async fn retire_other_account(account_id: &str) {
 /// network notice.
 pub(crate) async fn sign_out() {
     sessions().sign_out().await;
+    crate::api::account_settings_sync_api::signed_out();
     if let Some(mesh) = crate::mesh::global() {
         mesh.wake();
     }

@@ -163,13 +163,14 @@ command, args}` and runs on the device that owns it
 The registry carries what the fleet needs:
 
 - **`PeerStance::FleetEntry` rows**: `fleet_call`, `fleet_navigator`,
-  `fleet_prompts`, `fleet_attention`, `fleet_attention_mark_read`,
+  `fleet_prompts`, `fleet_attention`, `fleet_attention_mark_read`, `fleet_models`,
   `fleet_subscribe`, `fleet_events`, `fleet_ui_bundle`. The owner verbs
   `fleet_digest` and `fleet_replay` are `HostInvokeOnly` + `OperatorOnly` rows
   admitted on the mesh listener as same-account host verbs (`fleet_v1`). The
   model relay `fleet_model_start` / `_poll` / `_cancel` are `HostInvokeOnly` +
-  `HostControlPlane` rows, admitted by the OBP scope for the `cloud-agent`
-  connection only.
+  `HostControlPlane` rows, admitted by the OBP scope for the `cloud-agent` and
+  `account-device` connections (a session on another device running this
+  device's model), never a paired client. `fleet_models` is a `FleetEntry` row.
 - **The fleet routing side table** (`remote_surface/fleet_routing.rs`, exported as
   `fleetRouting` in the registry JSON): one row per registered backend command
   and per cloud-node command, sorted by id. `ByOwner {entity: Session |

@@ -72,6 +72,15 @@ impl ModelProvider for ConfiguredModelProvider {
                         "no usable model '{model_id}' is configured on this device: {error}"
                     ))
                 })?;
+            // A round relayed here runs here: never onwards to a third
+            // device through one of this device's relay entries.
+            if openbitfun_ai_adapters::client::relay_transport::is_relay_format(
+                &client.config.format,
+            ) {
+                return Err(unavailable(format!(
+                    "model '{model_id}' is not configured on this device"
+                )));
+            }
             let client = match request.max_output_tokens {
                 Some(limit) => {
                     let limit = client.config.max_tokens.map_or(limit, |own| own.min(limit));

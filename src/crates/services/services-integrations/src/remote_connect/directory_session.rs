@@ -461,6 +461,12 @@ impl DirectorySessions {
         }
     }
 
+    /// The signed-in identity's account id (`Ok(None)`: signed out; an error
+    /// when it cannot be told now, for example offline).
+    pub async fn signed_in_account(&self) -> Result<Option<String>> {
+        self.login.current_account().await
+    }
+
     /// The cached session while it is fresh, without any network call.
     pub async fn cached(&self) -> Option<(AccountSession, String)> {
         self.entry

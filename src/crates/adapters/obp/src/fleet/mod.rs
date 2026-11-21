@@ -17,7 +17,11 @@
 //!   cursor;
 //! - [`attention`] and [`views`]: the Inbox (`fleet_attention`) and the view
 //!   models (`fleet_recent_sessions`, `fleet_device_detail`) projected from
-//!   the index.
+//!   the index;
+//! - [`replica`]: the account replica (records with hybrid-clock revisions
+//!   and tombstones, content-addressed blobs) every runtime device keeps and
+//!   exchanges with its peers (`fleet_replica_*`), first used by settings
+//!   sync.
 //!
 //! Hosts plug in through [`router::FleetBackend`] (the local digest and
 //! dispatcher) and [`sync::FleetPeerTransport`] (links to other devices).
@@ -28,11 +32,14 @@ use std::pin::Pin;
 
 use serde_json::Value;
 
+pub mod account_port;
 pub mod attention;
 pub mod host;
 pub mod index;
 pub mod mux;
+pub mod replica;
 pub mod router;
+pub mod superagent_archive;
 pub mod sync;
 pub mod views;
 

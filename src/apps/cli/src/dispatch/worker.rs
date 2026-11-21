@@ -272,7 +272,10 @@ async fn run_inner(store: &DispatchStore, job_id: &str) -> Result<()> {
                     reply_route: None,
                     prepended_reminders: Vec::new(),
                     attachments: turn_attachments,
-                    metadata: permissions::metadata(effective_policy),
+                    metadata: permissions::metadata_for_job(
+                        effective_policy,
+                        job.request.user_questions,
+                    ),
                 })
                 .await
                 .map_err(|error| anyhow!(error.into_message()))
@@ -297,6 +300,12 @@ async fn run_inner(store: &DispatchStore, job_id: &str) -> Result<()> {
         .into_iter()
         .collect::<VecDeque<_>>();
     let mut handled_permissions = HashSet::new();
+    // The question mailbox (`user_question_mailbox_v1`): only for a job whose
+    // controller opted in; otherwise AskUserQuestion is unavailable.
+    let questions_enabled = job.request.user_questions;
+    let question_manager = openbitfun_agent_runtime::user_questions::get_user_input_manager();
+    let mut question_changes = question_manager.subscribe_changes();
+    let mut mailbox_questions = HashSet::new();
     let mut mailbox_tick = tokio::time::interval(Duration::from_millis(200));
     mailbox_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -423,7 +432,15 @@ async fn run_inner(store: &DispatchStore, job_id: &str) -> Result<()> {
                     break (DispatchJobState::Failed, Some(reason));
                 }
             }
+            changed = question_changes.changed(), if questions_enabled => {
+                if changed.is_ok() {
+                    sync_question_mailbox(store, job_id, question_manager, &event_scope, &mut mailbox_questions)?;
+                }
+            }
             _ = mailbox_tick.tick() => {
+                if questions_enabled {
+                    apply_question_answers(store, job_id, question_manager, &mut mailbox_questions)?;
+                }
                 if let Some(outcome) = process_mailboxes(
                     store,
                     job_id,
@@ -569,6 +586,99 @@ async fn process_mailboxes(
         )?;
     }
     Ok(None)
+}
+
+/// Mirror the Runtime's waiting questions of this job into its mailbox.
+///
+/// A new question is persisted (and logged) once; a question the Runtime no
+/// longer waits on without an applied answer (its timeout passed, its turn was
+/// cancelled) settles as `expired`, so no client keeps offering it.
+fn sync_question_mailbox(
+    store: &DispatchStore,
+    job_id: &str,
+    manager: &openbitfun_agent_runtime::user_questions::UserInputManager,
+    scope: &JobEventScope,
+    known: &mut HashSet<String>,
+) -> Result<()> {
+    let mut current = std::collections::BTreeMap::new();
+    for session in std::iter::once(&scope.session_id).chain(scope.children.iter()) {
+        for question in manager.pending_question_snapshot(session).questions {
+            current.entry(question.tool_id.clone()).or_insert(question);
+        }
+    }
+    for (tool_id, question) in &current {
+        if known.contains(tool_id) {
+            continue;
+        }
+        let pending = super::protocol::DispatchPendingQuestion {
+            request_id: tool_id.clone(),
+            session_id: question.session_id.clone(),
+            title: question_title(&question.questions),
+            questions: question.questions.clone(),
+            registered_at_ms: question.registered_at_ms,
+        };
+        if store.save_pending_question(job_id, &pending)? {
+            store.append_event(job_id, &DispatchEvent::question_pending(tool_id))?;
+        }
+        known.insert(tool_id.clone());
+    }
+    let gone: Vec<String> = known
+        .iter()
+        .filter(|tool_id| !current.contains_key(*tool_id))
+        .cloned()
+        .collect();
+    for tool_id in gone {
+        known.remove(&tool_id);
+        store.mark_question_resolved(job_id, &tool_id, None, "expired")?;
+        store.append_event(
+            job_id,
+            &DispatchEvent::question_resolved(&tool_id, "expired"),
+        )?;
+    }
+    Ok(())
+}
+
+/// Hand persisted answers to the Runtime question they answer.
+fn apply_question_answers(
+    store: &DispatchStore,
+    job_id: &str,
+    manager: &openbitfun_agent_runtime::user_questions::UserInputManager,
+    known: &mut HashSet<String>,
+) -> Result<()> {
+    for answer in store.list_question_answers(job_id)? {
+        let outcome = match manager.send_answer(&answer.request_id, answer.answers.clone()) {
+            Ok(()) => "answered",
+            Err(error) => {
+                tracing::warn!(
+                    "Dispatch question answer arrived after the question settled: job_id={}, error={}",
+                    job_id,
+                    error
+                );
+                "expired"
+            }
+        };
+        known.remove(&answer.request_id);
+        store.mark_question_resolved(job_id, &answer.request_id, Some(&answer), outcome)?;
+        store.append_event(
+            job_id,
+            &DispatchEvent::question_resolved(&answer.request_id, outcome),
+        )?;
+    }
+    Ok(())
+}
+
+/// The first question's text (or header) of an AskUserQuestion payload.
+pub(super) fn question_title(questions: &serde_json::Value) -> String {
+    questions
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|list| list.first())
+        .and_then(|first| first.get("question").or_else(|| first.get("header")))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .take(512)
+        .collect()
 }
 
 async fn cancel_turn(

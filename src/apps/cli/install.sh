@@ -380,7 +380,7 @@ if [ -z "${OPENBITFUN_CLI_WEB_UI_DIR:-}" ] && [ "${OPENBITFUN_CLI_WEB_UI:-}" != 
   if command -v nsh >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
     WEB_UI_OUT="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/cli-web-ui"
     rm -rf "$WEB_UI_OUT"
-    nsh package src/nsh-ui --target web -o "$WEB_UI_OUT"
+    nsh package src/nsh-ui/WebApp.tsx --target web -o "$WEB_UI_OUT"
     node scripts/write-ui-bundle-manifest.mjs "$WEB_UI_OUT"
     for candidate in "$WEB_UI_OUT"/*/; do
       if [ -f "${candidate}ui-bundle.json" ]; then

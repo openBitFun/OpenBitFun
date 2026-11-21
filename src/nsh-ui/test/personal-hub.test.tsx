@@ -145,7 +145,7 @@ test("account sign-in runs the host's browser flow in the dialog, polls its stat
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
 
   await app.press("label:account-row");
   await app.press("label:sidebar-account-sign-in");
@@ -255,7 +255,7 @@ test("Account › Activity lists insights reports, opens the reader, and generat
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
 
   await openActivity(app);
   await app.waitFor("30-Day Insights");
@@ -369,7 +369,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
 
   // The list sits beside the selected assistant's persona studio.
   await openAssistants(app);
@@ -385,7 +385,10 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.keyboard.press("escape");
   await app.waitFor("assistant-delete-asst-1", { state: "gone" });
 
-  // The Persona tab edits IDENTITY.md first.
+  // The Persona tab edits IDENTITY.md first, in the visual editor; the source
+  // editor is one press away and stays chosen across the persona documents.
+  await app.waitFor("persona-source-toggle");
+  await app.press("persona-source-toggle");
   expect(app.value("persona-editor-input")).toBe("# Muse\n\nPrimary studio assistant.");
 
   // Edit IDENTITY.md and save with POSIX path.
@@ -533,7 +536,7 @@ test("assistants repaint when switching between dark and light color schemes", a
     colorScheme: "dark",
     host: { handlers: base.handlers },
   });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
 
   await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
@@ -541,7 +544,8 @@ test("assistants repaint when switching between dark and light color schemes", a
   // In the Library an open assistant replaces the list.
   await app.press("assistant-card-asst-1");
   await app.waitFor("assistants-back");
-  const darkAssistantsHeadingColor = app.spanStyle("Muse").color;
+  // The studio header's name (the persona document below shows its heading too).
+  const darkAssistantsHeadingColor = app.spanStyle("Muse >> nth=0").color;
 
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
@@ -557,7 +561,7 @@ test("assistants repaint when switching between dark and light color schemes", a
   expect(app.spanStyle("An assistant waiting to be defined").color).not.toBe(darkAssistantsRailColor);
   await app.press("assistant-card-asst-1");
   await app.waitFor("assistants-back");
-  expect(app.spanStyle("Muse").color).not.toBe(darkAssistantsHeadingColor);
+  expect(app.spanStyle("Muse >> nth=0").color).not.toBe(darkAssistantsHeadingColor);
 });
 
 test("creating a named assistant rewrites only the IDENTITY.md frontmatter name and keeps the seeded body", async () => {
@@ -610,7 +614,7 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
   };
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openAssistants(app);
   await app.waitFor("assistants-new");
   await app.press("assistants-new");
@@ -655,7 +659,7 @@ test("Account › Activity insights take the day range and model the desktop off
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openActivity(app);
   await app.waitFor("activity-generate-insights");
   await app.press("activity-insights-days");
@@ -694,7 +698,7 @@ test("an assistant workspace opens and closes on the host from its studio header
     return undefined;
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openAssistants(app);
   await app.waitFor("assistant-card-asst-7");
   // The saved emoji is the avatar, as on the desktop.
@@ -736,7 +740,7 @@ test("assistants switch to the compact single-column layout at phone width", asy
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
 
   // Phone width: the shell's sidebar is put away.
   await app.setViewport(390, 844);
@@ -768,7 +772,7 @@ test("Account › Activity asks for an update when the device is older than the 
     return undefined;
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openActivity(app);
   await app.waitFor("Update OpenBitFun on this device to see its activity.");
   expect(app.shows("settings-activity-heatmap")).toBe(false);

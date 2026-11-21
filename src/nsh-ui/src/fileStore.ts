@@ -6,7 +6,7 @@
 // authority on what a directory now contains.
 
 import { Clipboard, computed, signal } from "nsh";
-import { invokeCommand, listenEvent } from "./bridge";
+import { invokeCommand, listenEvent, windowShellId } from "./bridge";
 import { holdGitStatusLive } from "./gitStatusLive";
 import {
   createWorkspaceDirectory,
@@ -33,7 +33,7 @@ import {
 } from "./state";
 import { basename, extensionOf, formatBytes } from "./format";
 
-export type PreviewKind = "markdown" | "code" | "text" | "image" | "video" | "diff" | "binary";
+export type PreviewKind = "markdown" | "code" | "text" | "image" | "video" | "pdf" | "diff" | "binary";
 
 export interface OpenFile {
   path: string;
@@ -280,6 +280,7 @@ function previewKindOf(path: string): PreviewKind {
   if (MARKDOWN_EXTENSIONS.has(extension)) return "markdown";
   if (IMAGE_EXTENSIONS.has(extension)) return "image";
   if (VIDEO_EXTENSIONS.has(extension)) return "video";
+  if (extension === "pdf") return "pdf";
   if (BINARY_EXTENSIONS.has(extension)) return "binary";
   if (LANGUAGE_BY_EXTENSION[extension]) return "code";
   return "text";
@@ -489,6 +490,14 @@ export async function setExpanded(path: string, expanded: boolean): Promise<void
 
 let openTicket = 0;
 
+/**
+ * Whether this client previews PDFs: the native desktop's web view has a PDF
+ * viewer; a browser tab and the phone open them elsewhere.
+ */
+export function pdfPreviewSupported(): boolean {
+  return windowShellId() === "nsh-desktop";
+}
+
 /** Above this, text opens without colouring and the editor says why. */
 export const LARGE_FILE_BYTES = 1024 * 1024;
 
@@ -537,6 +546,39 @@ export async function openFileAt(path: string): Promise<void> {
     });
     return;
   }
+  if (kind === "pdf") {
+    // Only the native desktop draws a PDF (its web view's own viewer); other
+    // clients show where to open it instead of fetching bytes they cannot show.
+    if (!pdfPreviewSupported()) {
+      openFile.set({ path, name, kind, language: "", content: "" });
+      return;
+    }
+    const size = knownSizeOf(path);
+    if (size !== undefined && size > MEDIA_PREVIEW_LIMIT_BYTES) {
+      openFile.set({
+        path,
+        name,
+        kind: "binary",
+        language: "",
+        content: "",
+        note: `${formatBytes(size)} is too large to preview here: open it in an external app.`,
+      });
+      return;
+    }
+    // Read through the host as base64, so a remote workspace's PDF shows too.
+    await runStep(async () => {
+      try {
+        const encoded = await readFileContent(workspaceId, path, "base64");
+        if (ticket !== openTicket) return;
+        openFile.set({ path, name, kind, language: "", content: encoded ?? "" });
+      } catch (error) {
+        if (ticket !== openTicket) return;
+        const message = error instanceof Error ? error.message : String(error);
+        openFile.set({ path, name, kind: "binary", language: "", content: "", note: message });
+      }
+    });
+    return;
+  }
   if (kind === "binary") {
     openFile.set({
       path,
@@ -544,10 +586,7 @@ export async function openFileAt(path: string): Promise<void> {
       kind,
       language: "",
       content: "",
-      note:
-        extensionOf(path) === "pdf"
-          ? "PDF preview needs a document viewer this frontend does not have yet: open it in an external app."
-          : "Binary file: no preview for this format.",
+      note: "Binary file: no preview for this format.",
     });
     return;
   }

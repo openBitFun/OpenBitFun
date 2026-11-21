@@ -40,9 +40,12 @@ static NEXT_OPEN_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 /// How long target discovery waits for a page's title.
 const TITLE_READ_TIMEOUT_MS: u64 = 2_000;
 
-/// Why the native host cannot capture a page preview or screenshot.
+/// Why the native host cannot capture a page screenshot (pixels).
 pub(crate) const CAPTURE_UNSUPPORTED_REASON: &str =
     "The native desktop's web view has no snapshot API (NSH 0.6); page screenshots and previews are unavailable here";
+/// Why a live view copy cannot be made: the desktop window offers no browser.
+pub(crate) const LIVE_VIEW_UNSUPPORTED_REASON: &str =
+    "The desktop window does not run the embedded browser, so its pages cannot be shown elsewhere";
 
 /// The shell operations of the embedded browser, as the UI announces them.
 pub(crate) mod ops {
@@ -227,14 +230,189 @@ pub(crate) async fn current_url(host: &NativeHost, label: &str) -> Result<String
     }
 }
 
-/// `browser_webview_capture_preview`: validated like the Tauri command, then
-/// answered with its explicit unsupported shape.
-pub(crate) fn capture_preview(label: &str) -> Result<Value, String> {
-    require_registered(label)?;
-    serde_json::to_value(browser_api::WebviewPreviewResponse::Unsupported {
-        reason: CAPTURE_UNSUPPORTED_REASON.to_string(),
+/// How long a live-view copy may take the page to produce.
+const SNAPSHOT_TIMEOUT_MS: u64 = 4_000;
+/// The largest copy a live view carries; a bigger page answers `tooLarge`.
+pub(crate) const SNAPSHOT_MAX_BYTES: usize = 1_048_576;
+
+/// Copies the page's document without anything that runs or navigates:
+/// scripts, frames, plugins, inline handlers and `javascript:` URLs are
+/// dropped, links and forms lose their targets, fields keep what the user
+/// typed and are disabled. A `<base>` keeps stylesheets and images resolving
+/// against the page, the viewport meta names the desktop's width (a phone's
+/// web view then scales the page instead of reflowing it), and the scroll
+/// offset is applied so the copy shows what the desktop shows. Heavy inline
+/// images are dropped first when the copy is too large.
+const SNAPSHOT_SCRIPT: &str = r#"(() => {
+  const MAX = __MAX__;
+  const live = document.documentElement;
+  const doc = live.cloneNode(true);
+  const liveFields = live.querySelectorAll('input, textarea, select');
+  const copyFields = doc.querySelectorAll('input, textarea, select');
+  liveFields.forEach((field, index) => {
+    const copy = copyFields[index];
+    if (!copy) return;
+    if (field.tagName === 'TEXTAREA') copy.textContent = field.value;
+    else if (field.tagName === 'SELECT') {
+      Array.from(copy.options || []).forEach((option, i) => { if (field.options[i] && field.options[i].selected) option.setAttribute('selected', ''); else option.removeAttribute('selected'); });
+    } else if (field.type === 'checkbox' || field.type === 'radio') {
+      if (field.checked) copy.setAttribute('checked', ''); else copy.removeAttribute('checked');
+    } else if (field.type !== 'password' && field.type !== 'file') copy.setAttribute('value', field.value);
+    copy.setAttribute('disabled', '');
+  });
+  const liveCanvases = live.querySelectorAll('canvas');
+  doc.querySelectorAll('canvas').forEach((canvas, index) => {
+    try {
+      const data = liveCanvases[index] && liveCanvases[index].toDataURL('image/png');
+      if (!data || data.length > 262144) return;
+      const image = document.createElement('img');
+      image.setAttribute('src', data);
+      image.setAttribute('style', canvas.getAttribute('style') || '');
+      image.width = liveCanvases[index].clientWidth;
+      image.height = liveCanvases[index].clientHeight;
+      canvas.replaceWith(image);
+    } catch (_) {}
+  });
+  doc.querySelectorAll('script, noscript, iframe, frame, frameset, object, embed, applet, portal, base, meta[http-equiv], meta[name="viewport"], link[rel~="preload"], link[rel~="modulepreload"], link[rel~="prefetch"], link[rel~="prerender"], link[rel~="manifest"], link[rel~="import"]').forEach(node => node.remove());
+  const unsafe = value => /^\s*(javascript|vbscript|data:text\/html)/i.test(value || '');
+  doc.querySelectorAll('*').forEach(node => {
+    for (const attribute of Array.from(node.attributes)) {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc' || name === 'formaction' || name === 'ping' || name === 'target') node.removeAttribute(attribute.name);
+      else if ((name === 'src' || name === 'href' || name === 'action' || name === 'xlink:href' || name === 'poster') && unsafe(attribute.value)) node.removeAttribute(attribute.name);
+    }
+  });
+  doc.querySelectorAll('a[href], area[href]').forEach(node => node.removeAttribute('href'));
+  doc.querySelectorAll('form').forEach(node => node.removeAttribute('action'));
+  let head = doc.querySelector('head');
+  if (!head) { head = document.createElement('head'); doc.insertBefore(head, doc.firstChild); }
+  const base = document.createElement('base');
+  base.setAttribute('href', document.baseURI);
+  head.insertBefore(base, head.firstChild);
+  const width = Math.max(1, Math.round(window.innerWidth || 0));
+  const height = Math.max(1, Math.round(window.innerHeight || 0));
+  const viewport = document.createElement('meta');
+  viewport.setAttribute('name', 'viewport');
+  viewport.setAttribute('content', 'width=' + width);
+  head.insertBefore(viewport, base.nextSibling);
+  const scroll = document.createElement('style');
+  scroll.textContent = 'html{margin-top:' + (-Math.round(window.scrollY || 0)) + 'px!important;margin-left:' + (-Math.round(window.scrollX || 0)) + 'px!important}';
+  head.appendChild(scroll);
+  const serialize = () => '<!DOCTYPE html>' + doc.outerHTML;
+  let html = serialize();
+  if (html.length > MAX) {
+    doc.querySelectorAll('img[src^="data:"], source[srcset*="data:"], image[href^="data:"]').forEach(node => node.remove());
+    html = serialize();
+  }
+  if (html.length > MAX) {
+    doc.querySelectorAll('svg').forEach(node => { if (node.outerHTML.length > 16384) node.remove(); });
+    html = serialize();
+  }
+  return { html, url: location.href, title: document.title || '', width, height };
+})()"#;
+
+#[derive(Deserialize)]
+struct SnapshotReply {
+    #[serde(default)]
+    html: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    width: f64,
+    #[serde(default)]
+    height: f64,
+}
+
+/// The page a live view shows: the named one, else the newest page the
+/// conversation owns, else (no conversation named) the newest page of all.
+fn preview_target(request: &browser_api::WebviewPreviewRequest) -> Result<Option<String>, String> {
+    if let Some(label) = request.label.as_deref().filter(|label| !label.is_empty()) {
+        require_registered(label)?;
+        return Ok(Some(label.to_string()));
+    }
+    let conversation = request
+        .conversation_id
+        .as_deref()
+        .filter(|conversation| !conversation.is_empty());
+    Ok(browser_api::registered_browser_targets()
+        .into_iter()
+        .find(|target| conversation.is_none() || target.conversation_id.as_deref() == conversation)
+        .map(|target| target.id))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `browser_webview_capture_preview`: a read-only copy of a page for the
+/// live view of a phone, a browser or another desktop. The native web view
+/// has no pixel snapshot API, so the page copies its own document (scripts
+/// and navigation removed); a UI shell without the browser operations gets
+/// the explicit unsupported shape.
+pub(crate) async fn capture_preview(
+    host: &Arc<NativeHost>,
+    request: browser_api::WebviewPreviewRequest,
+) -> Result<Value, String> {
+    let to_value = |response: browser_api::WebviewPreviewResponse| {
+        serde_json::to_value(response).map_err(|error| error.to_string())
+    };
+    let Some(label) = preview_target(&request)? else {
+        return to_value(browser_api::WebviewPreviewResponse::NoPage);
+    };
+    let actuator = NativePageActuator {
+        host: Arc::clone(host),
+        label: label.clone(),
+    };
+    let script = SNAPSHOT_SCRIPT.replace("__MAX__", &SNAPSHOT_MAX_BYTES.to_string());
+    let value = match actuator.evaluate(&script, SNAPSHOT_TIMEOUT_MS).await {
+        Ok(value) => value,
+        Err(ScriptFailure::Host(error)) if error.starts_with("unsupported_in_native_host") => {
+            return to_value(browser_api::WebviewPreviewResponse::Unsupported {
+                reason: LIVE_VIEW_UNSUPPORTED_REASON.to_string(),
+            });
+        }
+        Err(ScriptFailure::Host(error)) | Err(ScriptFailure::Script(error)) => {
+            return Err(format!("The page did not give a live view copy: {error}"));
+        }
+    };
+    let reply: SnapshotReply = serde_json::from_value(value)
+        .map_err(|error| format!("The page sent an unreadable live view copy: {error}"))?;
+    let (url, title) = if reply.url.is_empty() {
+        let known = browser_api::registered_browser_targets()
+            .into_iter()
+            .find(|target| target.id == label);
+        (
+            known.as_ref().map(|t| t.url.clone()).unwrap_or_default(),
+            known.map(|t| t.title).unwrap_or_default(),
+        )
+    } else {
+        (reply.url, reply.title)
+    };
+    // The page is untrusted: its own size check is advisory.
+    if reply.html.len() > SNAPSHOT_MAX_BYTES || !reply.html.starts_with("<!DOCTYPE html>") {
+        return to_value(browser_api::WebviewPreviewResponse::TooLarge { label, url, title });
+    }
+    let dimension = |value: f64| {
+        if value.is_finite() && value >= 1.0 {
+            value.min(16_384.0) as u32
+        } else {
+            1
+        }
+    };
+    to_value(browser_api::WebviewPreviewResponse::Snapshot {
+        label,
+        url,
+        title,
+        html: reply.html,
+        viewport_width: dimension(reply.width),
+        viewport_height: dimension(reply.height),
+        captured_at_ms: now_ms(),
     })
-    .map_err(|error| error.to_string())
 }
 
 /// One page as the actuator of the shared browser primitives.
@@ -642,7 +820,16 @@ mod tests {
             .await
             .unwrap_err()
             .contains("Webview not found"));
-        assert!(capture_preview(label).is_err());
+        // A label the backend does not know is refused, never guessed.
+        assert!(capture_preview(
+            &host,
+            browser_api::WebviewPreviewRequest {
+                label: Some(label.into()),
+                conversation_id: None,
+            },
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -782,10 +969,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ui_commands_keep_the_tauri_shapes_and_capture_is_explicitly_unsupported() {
+    async fn ui_commands_keep_the_tauri_shapes_and_capture_copies_the_page() {
         let host = host();
-        let seen = play_shell(&host, |op, _| match op {
+        let seen = play_shell(&host, |op, args| match op {
             ops::STATE => Ok(json!({ "url": "https://example.com/a", "title": "A" })),
+            ops::EVALUATE => {
+                assert!(args["script"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("cloneNode"));
+                Ok(json!({ "ok": true, "value": {
+                    "html": "<!DOCTYPE html><html><head></head><body>A</body></html>",
+                    "url": "https://example.com/a",
+                    "title": "A",
+                    "width": 800.0,
+                    "height": 600.0,
+                } }))
+            }
             _ => Ok(Value::Null),
         });
         let label = "embedded-browser-view-native-ui";
@@ -832,10 +1032,23 @@ mod tests {
             .await
             .is_err());
         reload_page(&host, label).await.unwrap();
-        assert_eq!(
-            capture_preview(label).unwrap(),
-            json!({ "status": "unsupported", "reason": CAPTURE_UNSUPPORTED_REASON })
-        );
+        let preview = capture_preview(
+            &host,
+            browser_api::WebviewPreviewRequest {
+                label: Some(label.into()),
+                conversation_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview["status"], "snapshot");
+        assert_eq!(preview["label"], label);
+        assert_eq!(preview["url"], "https://example.com/a");
+        assert_eq!(preview["title"], "A");
+        assert_eq!(preview["viewportWidth"], 800);
+        assert_eq!(preview["viewportHeight"], 600);
+        assert!(preview["html"].as_str().unwrap().contains("<body>A</body>"));
+        assert!(preview["capturedAtMs"].as_u64().unwrap() > 0);
         let ops_seen: Vec<String> = seen
             .lock()
             .unwrap()
@@ -849,9 +1062,78 @@ mod tests {
                 ops::STATE,
                 ops::INJECT,
                 ops::SET_BOUNDS,
-                ops::RELOAD
+                ops::RELOAD,
+                ops::EVALUATE
             ]
         );
         browser_api::unregister_browser_target(label);
+    }
+
+    #[tokio::test]
+    async fn a_live_view_finds_the_conversation_page_and_degrades_loudly() {
+        let host = host();
+        let request = |conversation: &str| browser_api::WebviewPreviewRequest {
+            label: None,
+            conversation_id: Some(conversation.into()),
+        };
+        // No shell yet: a registered page answers the explicit unsupported shape.
+        let label = "embedded-browser-panel-view-live-view-test";
+        browser_api::register_browser_target(
+            label,
+            "https://example.com/live",
+            None,
+            Some("conversation-live-view".into()),
+        );
+        assert_eq!(
+            capture_preview(&host, request("conversation-live-view"))
+                .await
+                .unwrap(),
+            json!({ "status": "unsupported", "reason": LIVE_VIEW_UNSUPPORTED_REASON })
+        );
+        // Another conversation's page is never shown for this one.
+        assert_eq!(
+            capture_preview(&host, request("conversation-live-view-other"))
+                .await
+                .unwrap(),
+            json!({ "status": "noPage" })
+        );
+
+        let huge = format!("<!DOCTYPE html>{}", "x".repeat(SNAPSHOT_MAX_BYTES));
+        let seen = play_shell(&host, move |op, _| match op {
+            ops::EVALUATE => Ok(json!({ "ok": true, "value": {
+                "html": huge.clone(),
+                "url": "https://example.com/live",
+                "title": "Live",
+                "width": 1024.0,
+                "height": 768.0,
+            } })),
+            _ => Ok(Value::Null),
+        });
+        // The page is untrusted: an oversized copy is not passed on.
+        assert_eq!(
+            capture_preview(&host, request("conversation-live-view"))
+                .await
+                .unwrap(),
+            json!({ "status": "tooLarge", "label": label, "url": "https://example.com/live", "title": "Live" })
+        );
+        let evaluated = seen.lock().unwrap().clone();
+        assert_eq!(evaluated.len(), 1);
+        assert_eq!(evaluated[0].1["label"], label);
+        browser_api::unregister_browser_target(label);
+    }
+
+    #[test]
+    fn the_live_view_capture_reaches_the_desktop_from_other_devices() {
+        use openbitfun_product_domains::remote_surface::{operation, PeerStance};
+        // A phone, a browser or another desktop asks the device that holds
+        // the page; only the page commands themselves stay with that window.
+        assert_eq!(
+            operation("browser_webview_capture_preview").map(|op| op.peer),
+            Some(PeerStance::Proxied)
+        );
+        assert_eq!(
+            operation("browser_webview_create").map(|op| op.peer),
+            Some(PeerStance::ControllerLocal)
+        );
     }
 }

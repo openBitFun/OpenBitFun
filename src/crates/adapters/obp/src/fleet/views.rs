@@ -1,5 +1,5 @@
 //! The entry's view models over its fleet index (`fleet_recent_sessions`,
-//! `fleet_device_detail`): the projections of
+//! `fleet_device_detail`, `fleet_models`): the projections of
 //! `product_domains::fleet::views` over this host's navigator projection,
 //! prompt tray, and the cloud agent's job cards the Inbox already reads.
 //!
@@ -17,7 +17,11 @@ use super::attention::FleetAttention;
 use super::index::FleetIndex;
 
 /// The view verbs (`PeerStance::FleetEntry`).
-pub const FLEET_VIEW_COMMANDS: &[&str] = &["fleet_device_detail", "fleet_recent_sessions"];
+pub const FLEET_VIEW_COMMANDS: &[&str] = &[
+    "fleet_device_detail",
+    "fleet_models",
+    "fleet_recent_sessions",
+];
 
 /// The view models of one fleet host.
 pub struct FleetViews {
@@ -36,6 +40,8 @@ impl FleetViews {
         let result = match command {
             "fleet_recent_sessions" => parse::<FleetRecentSessionsRequest>(request)
                 .and_then(|request| to_value(self.recent_sessions(&request))),
+            "fleet_models" => parse::<FleetModelsRequest>(request)
+                .and_then(|request| to_value(self.models(&request))),
             "fleet_device_detail" => match parse::<FleetDeviceDetailRequest>(request) {
                 Ok(request) => match self.device_detail(&request).await {
                     Ok(detail) => to_value(detail),
@@ -52,6 +58,13 @@ impl FleetViews {
     pub fn recent_sessions(&self, request: &FleetRecentSessionsRequest) -> FleetRecentSessions {
         let navigator = self.index.navigator(None);
         project_recent_sessions(navigator.revision, &navigator.devices, request)
+    }
+
+    /// `fleet_models {deviceId?}`: the account-wide model catalog grouped by
+    /// device, relative to the device that runs the session.
+    pub fn models(&self, request: &FleetModelsRequest) -> FleetModels {
+        self.index
+            .models(request.device_id.as_deref().unwrap_or_default())
     }
 
     /// `fleet_device_detail {deviceId}`; an empty id is this host. A device

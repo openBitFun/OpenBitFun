@@ -374,6 +374,7 @@ pub(crate) async fn login(
     )
     .await?;
     let db = state.db.as_ref();
+    make_directory_room(&state, &user.user_id, &body.device_id).await;
     DeviceRow::upsert_with_metadata(
         db,
         &body.device_id,
@@ -604,6 +605,7 @@ pub async fn provision_device(
         return Err(err("forbidden", StatusCode::FORBIDDEN));
     }
 
+    make_directory_room(&state, &auth.user_id, &body.device_id).await;
     // This route only ever bootstraps a machine over SSH, so an unreported
     // kind is a desktop rather than an unknown.
     let provisioned = AuthToken::provision_new_device(
@@ -1085,6 +1087,25 @@ mod tests {
         // Challenge traffic has its own budget and cannot exhaust credential
         // verification for the same client IP.
         assert!(limiter.check_and_record("challenge", "127.0.0.1", 1, None));
+    }
+}
+
+/// Under the 2.0 directory profile, frees account quota before a sign-in
+/// registers `device_id` (see [`crate::directory_hygiene::make_room`]). A
+/// failure only logs: the quota trigger still decides admission.
+async fn make_directory_room(state: &AppState, user_id: &str, device_id: &str) {
+    if !state.directory_profile {
+        return;
+    }
+    if let Err(error) = crate::directory_hygiene::make_room(
+        state.db.as_ref(),
+        user_id,
+        device_id,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    {
+        tracing::warn!("Directory quota room not made: {error}");
     }
 }
 

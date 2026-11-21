@@ -326,6 +326,16 @@ impl LinkRpc {
                         .and_then(Value::as_array)
                         .map(|items| items.iter().take(MAX_WORKSPACES).cloned().collect())
                         .unwrap_or_default();
+                    // The account-wide model catalog (absent on older builds).
+                    snapshot.model_catalog = digest
+                        .get("models")
+                        .cloned()
+                        .and_then(|models| serde_json::from_value(models).ok())
+                        .map(|mut models| {
+                            openbitfun_product_domains::fleet::bound_catalog(&mut models);
+                            models
+                        })
+                        .unwrap_or_default();
                 }
             }
         }
@@ -436,6 +446,28 @@ impl DeviceRpc for LinkRpc {
                 .await
                 .map_err(|e| RpcError::Transport(e.to_string()))?;
             let peers = self.gateway.peers(account_id).await.unwrap_or_default();
+            // Devices that left the account lose their kept facts.
+            let known: Vec<String> = rows
+                .iter()
+                .filter(|row| {
+                    matches!(
+                        row.device_kind.as_deref(),
+                        None | Some("desktop") | Some("cli")
+                    )
+                })
+                .map(|row| row.device_id.clone())
+                .collect();
+            self.facts
+                .lock()
+                .await
+                .retain(|(account, device), _| account != account_id || known.contains(device));
+            if let Ok(slot) = self
+                .slots
+                .load(account_id, openbitfun_obp::now_ms(), None)
+                .await
+            {
+                slot.prune_device_facts(Some(&known)).await;
+            }
             let mut out = Vec::new();
             for row in rows.iter().filter(|row| {
                 matches!(

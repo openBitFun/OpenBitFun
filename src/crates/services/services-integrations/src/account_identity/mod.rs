@@ -1,7 +1,10 @@
 //! Shared GitHub identity used by every OpenBitFun product surface.
 mod credentials;
 mod flow;
+#[cfg(test)]
+mod refresh_tests;
 pub(crate) use credentials::profile_credential_vault;
+use credentials::CredentialStore;
 pub use credentials::{
     clear_market_credentials, load_market_credentials, save_market_credentials,
     StoredMarketCredentials,
@@ -92,7 +95,14 @@ pub struct AccountIdentityClient {
     base_url: String,
     client: reqwest::Client,
     credentials: Option<StoredMarketCredentials>,
+    store: CredentialStore,
 }
+
+/// An access token this close to its expiry is refreshed before use.
+const ACCESS_REFRESH_MARGIN_SECS: i64 = 30;
+/// Bounds a refresh request, which runs under the credential update guard.
+const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl AccountIdentityClient {
     /// Verify a controller credential without reading or mutating host credentials.
     pub async fn verify_access_token(access_token: &str) -> Result<MarketMe, MarketClientError> {
@@ -147,6 +157,13 @@ impl AccountIdentityClient {
     }
 
     pub async fn new(base_url: impl Into<String>) -> Result<Self, MarketClientError> {
+        Self::with_store(base_url, CredentialStore::Profile).await
+    }
+
+    async fn with_store(
+        base_url: impl Into<String>,
+        store: CredentialStore,
+    ) -> Result<Self, MarketClientError> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         let parsed = reqwest::Url::parse(&base_url)
             .map_err(|error| local_error("invalid_market_url", error.to_string()))?;
@@ -165,13 +182,12 @@ impl AccountIdentityClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| local_error("market_client_init_failed", error.to_string()))?;
-        let credentials = load_market_credentials()
-            .await
-            .map_err(|error| local_error("credential_store_unavailable", error))?;
+        let credentials = store.load().await.map_err(store_error)?;
         Ok(Self {
             base_url,
             client,
             credentials,
+            store,
         })
     }
 
@@ -196,9 +212,10 @@ impl AccountIdentityClient {
             .await?;
         if let Some(tokens) = response.tokens.clone() {
             let credentials: StoredMarketCredentials = tokens.into();
-            save_market_credentials(&credentials)
-                .await
-                .map_err(|error| local_error("credential_store_unavailable", error))?;
+            // Under the update guard, so a refresh that is about to clear a
+            // rejected pair never removes this new sign-in.
+            let _guard = self.store.update_guard().await;
+            self.store.save(&credentials).await.map_err(store_error)?;
             self.credentials = Some(credentials);
         }
         Ok(response)
@@ -212,21 +229,43 @@ impl AccountIdentityClient {
         let Some(credentials) = self.credentials.as_ref() else {
             return Ok(None);
         };
-        let response = self
-            .client
-            .get(self.url("/me"))
-            .bearer_auth(&credentials.access_token)
-            .send()
-            .await
-            .map_err(transport_error)?;
+        let rejected = credentials.access_token.clone();
+        let response = self.get_me(&rejected).await?;
+        if response.status() != StatusCode::UNAUTHORIZED {
+            return Ok(Some(decode_json(checked_response(response).await?).await?));
+        }
+        // A refresh anywhere on this sign-in (another task, or another process
+        // on the profile) revokes the earlier access tokens of its family, so
+        // a 401 here is first recovered from the store or with the refresh
+        // token. Only a pair the service still rejects after that is cleared.
+        self.refresh_serialized(Some(&rejected)).await?;
+        let Some(credentials) = self.credentials.as_ref() else {
+            return Ok(None);
+        };
+        let retried = credentials.access_token.clone();
+        let response = self.get_me(&retried).await?;
         if response.status() == StatusCode::UNAUTHORIZED {
-            clear_market_credentials()
-                .await
-                .map_err(|error| local_error("credential_store_unavailable", error))?;
+            let _guard = self.store.update_guard().await;
+            let stored = self.store.load().await.map_err(store_error)?;
+            if stored
+                .as_ref()
+                .is_some_and(|stored| stored.access_token == retried)
+            {
+                self.store.clear().await.map_err(store_error)?;
+            }
             self.credentials = None;
             return Ok(None);
         }
         Ok(Some(decode_json(checked_response(response).await?).await?))
+    }
+
+    async fn get_me(&self, access_token: &str) -> Result<Response, MarketClientError> {
+        self.client
+            .get(self.url("/me"))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(transport_error)
     }
 
     pub async fn access_token(&mut self) -> Result<Option<String>, MarketClientError> {
@@ -250,48 +289,79 @@ impl AccountIdentityClient {
                 return Err(response_error(response).await);
             }
         }
-        clear_market_credentials()
-            .await
-            .map_err(|error| local_error("credential_store_unavailable", error))?;
+        self.store.clear().await.map_err(store_error)?;
         self.credentials = None;
         Ok(())
     }
 
     async fn refresh_if_needed(&mut self) -> Result<(), MarketClientError> {
-        let Some(credentials) = self.credentials.as_ref() else {
+        match self.credentials.as_ref() {
+            Some(credentials) if needs_refresh(credentials, chrono::Utc::now().timestamp()) => {
+                self.refresh_serialized(None).await
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Brings the token pair up to date under the update guard. The pair is
+    /// re-read from the store first: another task or process may already have
+    /// rotated it (a refresh token is single use) or signed out. `rejected`
+    /// is an access token the service answered 401 for; a stored pair that
+    /// still holds it is refreshed even though it has not expired.
+    async fn refresh_serialized(
+        &mut self,
+        rejected: Option<&str>,
+    ) -> Result<(), MarketClientError> {
+        let _guard = self.store.update_guard().await;
+        let Some(current) = self.store.load().await.map_err(store_error)? else {
+            self.credentials = None;
             return Ok(());
         };
         let now = chrono::Utc::now().timestamp();
-        if credentials.refresh_expires_at <= now {
-            clear_market_credentials()
-                .await
-                .map_err(|error| local_error("credential_store_unavailable", error))?;
+        if current.refresh_expires_at <= now {
+            self.store.clear().await.map_err(store_error)?;
             self.credentials = None;
             return Ok(());
         }
-        if credentials.access_expires_at > now + 30 {
+        let was_rejected = rejected.is_some_and(|token| token == current.access_token);
+        if !was_rejected && !needs_refresh(&current, now) {
+            self.credentials = Some(current);
             return Ok(());
         }
-        let refresh_token = credentials.refresh_token.clone();
         let response = self
             .client
             .post(self.url("/auth/refresh"))
-            .json(&serde_json::json!({ "refreshToken": refresh_token }))
+            .json(&serde_json::json!({ "refreshToken": current.refresh_token }))
+            // The update guard is held across this request.
+            .timeout(REFRESH_TIMEOUT)
             .send()
             .await
             .map_err(transport_error)?;
         if response.status() == StatusCode::UNAUTHORIZED {
-            clear_market_credentials()
-                .await
-                .map_err(|error| local_error("credential_store_unavailable", error))?;
-            self.credentials = None;
+            // The refresh token was spent elsewhere (a process that does not
+            // take the update lock, such as an older build) or the sign-in was
+            // revoked. A newer pair in the store is adopted; only the pair the
+            // service rejected is cleared.
+            let latest = self.store.load().await.map_err(store_error)?;
+            match latest {
+                Some(latest) if latest.refresh_token != current.refresh_token => {
+                    log::info!(
+                        "Account sign-in was refreshed by another process; using its tokens"
+                    );
+                    self.credentials = Some(latest);
+                }
+                Some(_) => {
+                    log::warn!("Account refresh token was rejected; signing this profile out");
+                    self.store.clear().await.map_err(store_error)?;
+                    self.credentials = None;
+                }
+                None => self.credentials = None,
+            }
             return Ok(());
         }
         let tokens: MarketTokenPair = decode_json(checked_response(response).await?).await?;
         let stored: StoredMarketCredentials = tokens.into();
-        save_market_credentials(&stored)
-            .await
-            .map_err(|error| local_error("credential_store_unavailable", error))?;
+        self.store.save(&stored).await.map_err(store_error)?;
         self.credentials = Some(stored);
         Ok(())
     }
@@ -336,6 +406,15 @@ async fn response_error(response: Response) -> MarketClientError {
             format!("The GitHub account service returned HTTP {status}."),
         ),
     }
+}
+
+fn needs_refresh(credentials: &StoredMarketCredentials, now: i64) -> bool {
+    credentials.refresh_expires_at <= now
+        || credentials.access_expires_at <= now + ACCESS_REFRESH_MARGIN_SECS
+}
+
+fn store_error(error: String) -> MarketClientError {
+    local_error("credential_store_unavailable", error)
 }
 
 fn transport_error(error: reqwest::Error) -> MarketClientError {

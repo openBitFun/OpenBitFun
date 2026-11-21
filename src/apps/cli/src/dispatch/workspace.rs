@@ -24,6 +24,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::protocol::{
+    DispatchPeerImportCommitRequest, DispatchPeerImportCommitResponse,
+    DispatchWorkspacePublishRequest, DispatchWorkspacePublishResponse,
+};
+use super::protocol::{
     DispatchWorkspaceBundleBeginRequest, DispatchWorkspaceBundleBeginResponse,
     DispatchWorkspaceBundleChunkRequest, DispatchWorkspaceBundleChunkResponse,
     DispatchWorkspaceBundleCommitRequest, DispatchWorkspaceBundleCommitResponse,
@@ -43,6 +47,13 @@ const BUNDLE_RECORD_FILE: &str = "bundle.json";
 const SYNC_OPERATION_FILE: &str = "sync-operation.json";
 const INCOMING_BUNDLE_FILE: &str = "incoming.bundle";
 const RESULT_BUNDLE_FILE: &str = "result.bundle";
+/// The full-history export a peer imports (`workspace-sync {fullHistory}`),
+/// kept apart from the incremental result so neither replaces the other.
+const EXPORT_BUNDLE_FILE: &str = "export.bundle";
+/// The peer import a `job` source provisions from (`peer-import-commit`).
+pub(super) const PEER_IMPORT_RECORD_FILE: &str = "peer-import.json";
+/// Backstop for one publish push / remote listing.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(45);
 /// Backstop for one fetch from the project's Git remote.
 ///
 /// The fetch used to be unbounded, so a dead transport parked the whole dispatch
@@ -808,6 +819,9 @@ where
     {
         bail!("dispatch knownHead must be a full 40-character commit id");
     }
+    if request.full_history && request.known_head.is_some() {
+        bail!("dispatch fullHistory exports the whole branch and takes no knownHead");
+    }
     let job_dir = store.workspace_upload_dir(&request.job_id)?;
     let _lock = JobLock::exclusive(&store.workspace_operation_lock_path(&request.job_id)?)?;
     let provision: ProvisionRecord = read_json(&job_dir.join(PROVISION_RECORD_FILE))
@@ -834,9 +848,20 @@ where
                     .response
                     .as_ref()
                     .is_some_and(|response| response.changed)
-                && existing.request.known_head == request.known_head =>
+                && existing.request.known_head == request.known_head
+                && existing.request.full_history == request.full_history =>
         {
             existing
+        }
+        // A finished operation of the other kind (an incremental result vs
+        // a peer's full-history export) never answers this one. Each writes
+        // its own bundle file, so replacing the record loses nothing: an
+        // unacknowledged incremental result is rebuilt on its next retry.
+        Some(existing)
+            if existing.state == WorkspaceOperationState::Succeeded
+                && existing.request.full_history != request.full_history =>
+        {
+            new_sync_operation(request.clone())
         }
         // An acknowledged head is the generation boundary. A later click gets
         // a new operation id and intentionally re-opens the operation so a
@@ -1099,6 +1124,9 @@ fn sync_in_store(
     )? {
         bail!("dispatch branch no longer descends from its immutable base commit");
     }
+    if request.full_history {
+        return export_full_history(&job_dir, &worktree, provision, head_commit);
+    }
     let sync_base = request
         .known_head
         .as_deref()
@@ -1178,7 +1206,11 @@ pub(crate) fn sync_chunk(
     }
     let store = DispatchStore::open_default()?;
     let job_dir = store.workspace_upload_dir(&request.job_id)?;
-    let bundle_path = job_dir.join(RESULT_BUNDLE_FILE);
+    let bundle_path = job_dir.join(if request.full_history {
+        EXPORT_BUNDLE_FILE
+    } else {
+        RESULT_BUNDLE_FILE
+    });
     let mut file =
         fs::File::open(&bundle_path).context("run the dispatch sync before reading its bundle")?;
     let size = file.metadata()?.len();
@@ -1197,6 +1229,524 @@ pub(crate) fn sync_chunk(
         data_base64: base64::engine::general_purpose::STANDARD.encode(&buffer),
         eof: next_offset >= size,
     })
+}
+
+/// `workspace-sync {fullHistory}`: the job branch with its whole history,
+/// for a peer device that has none of it (`workspace_peer_bundle_v1`).
+///
+/// Always produces a bundle, even for an untouched branch: the importer needs
+/// the base commit itself. `changed` still says whether the job added commits.
+fn export_full_history(
+    job_dir: &Path,
+    worktree: &Path,
+    provision: ProvisionRecord,
+    head_commit: String,
+) -> Result<DispatchWorkspaceSyncResponse> {
+    let base = provision.base_commit.clone();
+    let range = format!("{base}..{head_commit}");
+    let commit_count = git(worktree, &["rev-list", "--count", &range])?
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    let (changes, truncated_changes) = collect_changes(worktree, &base, &head_commit)?;
+    let bundle_path = job_dir.join(EXPORT_BUNDLE_FILE);
+    remove_file_if_present(&bundle_path);
+    git(
+        worktree,
+        &[
+            "bundle",
+            "create",
+            path_arg(&bundle_path)?,
+            &provision.branch,
+        ],
+    )
+    .context("package the dispatch branch for a peer import")?;
+    set_private_file_permissions(&bundle_path)?;
+    let bundle_size = fs::symlink_metadata(&bundle_path)
+        .context("inspect the dispatch peer export bundle")?
+        .len();
+    let bundle_sha256 = sha256_file(&bundle_path)?;
+    Ok(DispatchWorkspaceSyncResponse {
+        pending: false,
+        changed: head_commit != base,
+        branch: provision.branch,
+        base_commit: base,
+        head_commit,
+        commit_count,
+        changes,
+        truncated_changes,
+        bundle_path: Some(bundle_path.to_string_lossy().to_string()),
+        bundle_sha256: Some(bundle_sha256),
+        bundle_size,
+    })
+}
+
+/// The peer import a `job` source provisions from. Written once per job by
+/// `peer-import-commit`; the import pins the head.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PeerImportRecord {
+    pub(super) source_device_id: String,
+    pub(super) source_job_id: String,
+    pub(super) source_branch: String,
+    pub(super) head_commit: String,
+    pub(super) repo_key: String,
+    pub(super) imported_at: String,
+}
+
+/// The shared clone a peer import lands in: one per source job.
+pub(super) fn peer_import_repo_key(source_device_id: &str, source_job_id: &str) -> String {
+    let digest = Sha256::digest(format!("peer\n{source_device_id}\n{source_job_id}").as_bytes());
+    format!("{digest:x}").chars().take(32).collect()
+}
+
+/// The private ref that holds an imported head in the shared clone.
+fn peer_import_ref(job_id: &str) -> String {
+    format!("refs/openbitfun/imports/{job_id}")
+}
+
+pub(super) fn validate_device_id(device_id: &str) -> Result<()> {
+    if device_id.is_empty()
+        || device_id.len() > 128
+        || device_id.starts_with('-')
+        || !device_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        bail!("dispatch sourceDeviceId must be 1-128 bytes of [A-Za-z0-9._:-]");
+    }
+    Ok(())
+}
+
+pub(super) fn read_peer_import(
+    store: &DispatchStore,
+    job_id: &str,
+) -> Result<Option<PeerImportRecord>> {
+    read_optional_json(
+        &store
+            .workspace_upload_dir(job_id)?
+            .join(PEER_IMPORT_RECORD_FILE),
+    )
+}
+
+/// Runner-internal `peer-import-commit`.
+pub(crate) fn peer_import_commit(
+    request: DispatchPeerImportCommitRequest,
+) -> Result<DispatchPeerImportCommitResponse> {
+    peer_import_commit_in_store(&DispatchStore::open_default()?, request)
+}
+
+/// Import the bundle uploaded for `jobId` (`workspace-bundle-begin/chunk`) as
+/// the source job's branch, and record the pinned head.
+///
+/// The bundle is verified the same way a base bundle is (size, SHA-256 and
+/// `git bundle verify`), and lands in a clone of its own, so a peer's history
+/// never mixes with another repository's cache.
+pub(super) fn peer_import_commit_in_store(
+    store: &DispatchStore,
+    request: DispatchPeerImportCommitRequest,
+) -> Result<DispatchPeerImportCommitResponse> {
+    if request.protocol_version != DISPATCH_PROTOCOL_VERSION {
+        bail!(
+            "unsupported dispatch protocolVersion {}; target requires {}",
+            request.protocol_version,
+            DISPATCH_PROTOCOL_VERSION
+        );
+    }
+    super::store::validate_id("jobId", &request.job_id)?;
+    super::store::validate_id("sourceJobId", &request.source_job_id)?;
+    validate_device_id(&request.source_device_id)?;
+    validate_branch(&request.source_branch)?;
+    validate_commit(&request.head_commit)?;
+    let head = request.head_commit.to_ascii_lowercase();
+
+    let job_dir = store.workspace_upload_dir(&request.job_id)?;
+    create_private_dir(&job_dir)?;
+    let _lock = JobLock::exclusive(&store.workspace_operation_lock_path(&request.job_id)?)?;
+    let _git_lock = JobLock::exclusive(&store.workspace_git_operation_lock_path(&request.job_id)?)?;
+    let record_path = job_dir.join(PEER_IMPORT_RECORD_FILE);
+    if let Some(existing) = read_optional_json::<PeerImportRecord>(&record_path)? {
+        if existing.source_device_id != request.source_device_id
+            || existing.source_job_id != request.source_job_id
+            || existing.head_commit != head
+        {
+            bail!("dispatch job is already bound to a different peer import");
+        }
+        return Ok(DispatchPeerImportCommitResponse {
+            imported: true,
+            head_commit: existing.head_commit,
+        });
+    }
+
+    let bundle_record_path = job_dir.join(BUNDLE_RECORD_FILE);
+    let mut bundle: BundleUploadRecord = read_json(&bundle_record_path)
+        .context("the peer import bundle was not uploaded for this job")?;
+    if bundle.job_id != request.job_id {
+        bail!("dispatch bundle upload identity mismatch");
+    }
+    let bundle_path = job_dir.join(INCOMING_BUNDLE_FILE);
+    let metadata = fs::symlink_metadata(&bundle_path).context("inspect the peer import bundle")?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("the peer import bundle is not a regular file");
+    }
+    if metadata.len() != bundle.size {
+        bail!(
+            "the peer import bundle is incomplete: expected {} bytes, received {}",
+            bundle.size,
+            metadata.len()
+        );
+    }
+    if !sha256_file(&bundle_path)?.eq_ignore_ascii_case(&bundle.sha256) {
+        bail!("the peer import bundle SHA-256 does not match");
+    }
+    let repo_key = peer_import_repo_key(&request.source_device_id, &request.source_job_id);
+    let _repo_lock = JobLock::exclusive(&store.repo_lock_path(&repo_key)?)?;
+    let repo = ensure_repository(store, &repo_key, None)?;
+    git(&repo, &["bundle", "verify", path_arg(&bundle_path)?])
+        .context("verify the peer import bundle")?;
+    let import_ref = peer_import_ref(&request.job_id);
+    git(
+        &repo,
+        &[
+            "fetch",
+            "--no-tags",
+            path_arg(&bundle_path)?,
+            &format!("+refs/heads/{}:{import_ref}", request.source_branch),
+        ],
+    )
+    .context("fetch the peer import bundle")?;
+    let fetched = git(
+        &repo,
+        &["rev-parse", "--verify", &format!("{import_ref}^{{commit}}")],
+    )?
+    .trim()
+    .to_ascii_lowercase();
+    if fetched != head {
+        bail!("the peer import bundle carries {fetched}, not the reported head {head}");
+    }
+    atomic_write_json(
+        &record_path,
+        &PeerImportRecord {
+            source_device_id: request.source_device_id,
+            source_job_id: request.source_job_id,
+            source_branch: request.source_branch,
+            head_commit: head.clone(),
+            repo_key,
+            imported_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )?;
+    bundle.state = BundleUploadState::Committed;
+    bundle.worker_pid = None;
+    bundle.last_error = None;
+    bundle.updated_at = chrono::Utc::now().to_rfc3339();
+    atomic_write_json(&bundle_record_path, &bundle)?;
+    remove_file_if_present(&bundle_path);
+    Ok(DispatchPeerImportCommitResponse {
+        imported: true,
+        head_commit: head,
+    })
+}
+
+/// A publishable job branch: `<prefix>/dispatch/<id>`, the shape every
+/// controller gives a job branch. Anything else is never pushed.
+pub(super) fn is_dispatch_branch(branch: &str) -> bool {
+    let segments: Vec<&str> = branch.split('/').collect();
+    segments.len() >= 3
+        && segments.iter().all(|segment| !segment.is_empty())
+        && segments[segments.len() - 2] == "dispatch"
+        && validate_branch(branch).is_ok()
+}
+
+fn validate_remote_name(remote: &str) -> Result<()> {
+    if remote.is_empty()
+        || remote.len() > 64
+        || remote.starts_with('-')
+        || remote.starts_with('.')
+        || !remote
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        bail!("dispatch publish remote must be a plain remote name");
+    }
+    Ok(())
+}
+
+/// Where a publish pushes: the job workspace's own remote.
+///
+/// A job from one of this device's workspaces pushes to that checkout's
+/// remote (`origin` unless named); a job from a remote URL or a controller's
+/// baseline pushes to the URL it was provisioned from (only `origin`). A
+/// peer-imported job has no remote of its own here.
+fn publish_remote_url(
+    store: &DispatchStore,
+    catalog: &Path,
+    job_id: &str,
+    provision: &ProvisionRecord,
+    remote: &str,
+) -> Result<String> {
+    let source: Option<serde_json::Value> = read_optional_json(
+        &store
+            .workspace_upload_dir(job_id)?
+            .join(super::source::SOURCE_RECORD_FILE),
+    )?;
+    let source_kind = source
+        .as_ref()
+        .and_then(|record| record.pointer("/request/source/kind"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let url = match source_kind.as_deref() {
+        Some("workspace") => {
+            let workspace_id = source
+                .as_ref()
+                .and_then(|record| record.pointer("/request/source/workspaceId"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("the job's source record names no workspace"))?;
+            let workspace = super::source::resolve_catalog_workspace(catalog, workspace_id)?;
+            git(&workspace.root, &["remote", "get-url", "--", remote])
+                .with_context(|| {
+                    format!("workspace '{workspace_id}' has no remote named '{remote}'")
+                })?
+                .trim()
+                .to_string()
+        }
+        Some("job") => bail!(
+            "no_publish_remote: this job was imported from another device and has no remote here; publish the source job on its own device"
+        ),
+        _ => {
+            if remote != "origin" {
+                bail!("this job's workspace has only the remote it was provisioned from ('origin')");
+            }
+            provision.remote_url.clone().unwrap_or_default()
+        }
+    };
+    if url.is_empty() {
+        bail!("no_publish_remote: the job's workspace has no remote to publish to");
+    }
+    validate_remote_url(&url)?;
+    Ok(url)
+}
+
+/// Commit Git-visible changes on the managed branch (as `workspace-sync`
+/// does). `true` when a commit was made.
+fn checkpoint_worktree(worktree: &Path, branch: &str, message: &str) -> Result<bool> {
+    let current_branch = git(worktree, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .context("verify the dispatch worktree branch")?
+        .trim()
+        .to_string();
+    if current_branch != branch {
+        bail!(
+            "dispatch worktree is on branch '{current_branch}' instead of its managed branch '{branch}'"
+        );
+    }
+    git(worktree, &["add", "-A"]).context("stage dispatch worktree changes")?;
+    if git_succeeds(worktree, &["diff", "--cached", "--quiet"])? {
+        return Ok(false);
+    }
+    git(
+        worktree,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=OpenBitFun Dispatch",
+            "-c",
+            "user.email=dispatch@openbitfun.local",
+            "commit",
+            "--no-verify",
+            "-m",
+            message,
+        ],
+    )
+    .context("commit dispatch worktree changes")?;
+    Ok(true)
+}
+
+/// `dispatch_target_workspace_publish` on the default store.
+pub(crate) fn publish(
+    request: DispatchWorkspacePublishRequest,
+) -> Result<DispatchWorkspacePublishResponse> {
+    let store = DispatchStore::open_default()?;
+    let catalog = super::source::default_workspace_catalog()?;
+    let response = publish_in_store(&store, &catalog, request.clone())?;
+    let _ = store.append_event(
+        &request.job_id,
+        &super::protocol::DispatchEvent::branch_published(&response),
+    );
+    Ok(response)
+}
+
+/// Push the job branch to its workspace's remote. Never forced: a remote
+/// branch that is not an ancestor of the job head fails. Refused while the
+/// job still runs, so what is pushed is a settled result.
+pub(super) fn publish_in_store(
+    store: &DispatchStore,
+    catalog: &Path,
+    request: DispatchWorkspacePublishRequest,
+) -> Result<DispatchWorkspacePublishResponse> {
+    if request.protocol_version != DISPATCH_PROTOCOL_VERSION {
+        bail!(
+            "unsupported dispatch protocolVersion {}; target requires {}",
+            request.protocol_version,
+            DISPATCH_PROTOCOL_VERSION
+        );
+    }
+    super::store::validate_id("jobId", &request.job_id)?;
+    let remote = request.remote.as_deref().unwrap_or("origin");
+    validate_remote_name(remote)?;
+    let state = store.load_state(&request.job_id)?;
+    if !state.state.is_terminal() {
+        bail!("job_not_finished: a dispatch job is published only after it finished");
+    }
+    let job_dir = store.workspace_upload_dir(&request.job_id)?;
+    let _git_lock = JobLock::exclusive(&store.workspace_git_operation_lock_path(&request.job_id)?)?;
+    let provision: ProvisionRecord = read_json(&job_dir.join(PROVISION_RECORD_FILE))
+        .context("this job did not receive a Git workspace")?;
+    if !is_dispatch_branch(&provision.branch) {
+        bail!(
+            "dispatch publish pushes only '<prefix>/dispatch/<id>' branches, not '{}'",
+            provision.branch
+        );
+    }
+    let url = publish_remote_url(store, catalog, &request.job_id, &provision, remote)?;
+    let _repo_lock = JobLock::exclusive(&store.repo_lock_path(&provision.repo_key)?)?;
+    let worktree = PathBuf::from(
+        provision
+            .workspace_path
+            .as_deref()
+            .context("this job's Git workspace was never checked out")?,
+    );
+    if !is_real_directory(&worktree) {
+        bail!("the dispatch worktree is missing");
+    }
+    let committed_changes =
+        checkpoint_worktree(&worktree, &provision.branch, DEFAULT_SYNC_COMMIT_MESSAGE)?;
+    let head_commit = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_string();
+    let commit_count = git(
+        &worktree,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{}..{head_commit}", provision.base_commit),
+        ],
+    )?
+    .trim()
+    .parse::<u64>()
+    .unwrap_or(0);
+    let remote_ref = format!("refs/heads/{}", provision.branch);
+    let listing = git_stdout_within(
+        &worktree,
+        PUBLISH_TIMEOUT,
+        &["ls-remote", "--", &url, &remote_ref],
+    )
+    .context("read the remote branch before publishing")?;
+    let previous_head = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(_, name)| name.trim() == remote_ref)
+        .map(|(sha, _)| sha.trim().to_ascii_lowercase())
+        .filter(|sha| validate_commit(sha).is_ok());
+    let reported_url =
+        openbitfun_services_core::dispatch_contract::strip_remote_url_credentials(&url);
+    let answer = |published, created, up_to_date| DispatchWorkspacePublishResponse {
+        published,
+        remote: remote.to_string(),
+        remote_url: reported_url.clone(),
+        branch: provision.branch.clone(),
+        head_commit: head_commit.clone(),
+        base_commit: provision.base_commit.clone(),
+        commit_count,
+        created,
+        up_to_date,
+        previous_head: previous_head.clone(),
+        committed_changes,
+    };
+    if previous_head.as_deref() == Some(head_commit.as_str()) {
+        return Ok(answer(true, false, true));
+    }
+    if let Some(previous) = previous_head.as_deref() {
+        // The remote head must be in the job's own history; a commit this
+        // clone does not even have cannot be one.
+        let descends = commit_exists(&worktree, previous)?
+            && git_succeeds(
+                &worktree,
+                &["merge-base", "--is-ancestor", previous, &head_commit],
+            )?;
+        if !descends {
+            bail!(
+                "branch_diverged: '{}' on {reported_url} has commits this job does not; publish never forces",
+                provision.branch
+            );
+        }
+    }
+    git_within(
+        &worktree,
+        PUBLISH_TIMEOUT,
+        &[
+            "push",
+            "--porcelain",
+            "--no-verify",
+            "--",
+            &url,
+            &format!("refs/heads/{0}:refs/heads/{0}", provision.branch),
+        ],
+    )
+    .context("push the dispatch branch")?;
+    Ok(answer(true, previous_head.is_none(), false))
+}
+
+/// Run git with a deadline and return its stdout.
+fn git_stdout_within(dir: &Path, timeout: Duration, args: &[&str]) -> Result<String> {
+    let mut command = git_command(dir);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("run git {}", args.join(" ")))?;
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let out = std::thread::spawn(move || {
+        let mut captured = Vec::new();
+        if let Some(pipe) = stdout.as_mut() {
+            let _ = pipe.take(4 * 1024 * 1024).read_to_end(&mut captured);
+        }
+        captured
+    });
+    let err = std::thread::spawn(move || {
+        let mut captured = String::new();
+        if let Some(pipe) = stderr.as_mut() {
+            let _ = pipe.read_to_string(&mut captured);
+        }
+        captured
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().context("wait for git")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            kill_process_tree(&mut child);
+            bail!(
+                "git {} did not finish within {} seconds",
+                args.join(" "),
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(GIT_WAIT_POLL_INTERVAL);
+    };
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    if !status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            truncate_utf8(stderr.trim())
+        );
+    }
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 fn collect_changes(
@@ -1893,6 +2443,9 @@ pub(super) fn truncate_utf8(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::protocol::{
+        DispatchProvisionSource, DispatchWorkspaceProvisionSourceRequest,
+    };
 
     fn init_source_repository(path: &Path) -> String {
         fs::create_dir_all(path).expect("source directory");
@@ -2245,6 +2798,7 @@ mod tests {
                 operation_id: "sync-untouched".to_string(),
                 message: None,
                 known_head: None,
+                full_history: false,
             },
         )
         .expect("sync");
@@ -2275,6 +2829,7 @@ mod tests {
                 operation_id: "sync-agent-edits".to_string(),
                 message: Some("agent work".to_string()),
                 known_head: None,
+                full_history: false,
             },
         )
         .expect("sync");
@@ -2320,6 +2875,7 @@ mod tests {
                 operation_id: "sync-first".to_string(),
                 message: None,
                 known_head: None,
+                full_history: false,
             },
         )
         .expect("first sync");
@@ -2332,6 +2888,7 @@ mod tests {
                 operation_id: "sync-clean".to_string(),
                 message: None,
                 known_head: Some(first.head_commit.clone()),
+                full_history: false,
             },
         )
         .expect("clean incremental sync");
@@ -2346,6 +2903,7 @@ mod tests {
                 operation_id: "sync-second".to_string(),
                 message: None,
                 known_head: Some(first.head_commit.clone()),
+                full_history: false,
             },
         )
         .expect("second sync");
@@ -2380,6 +2938,7 @@ mod tests {
                 operation_id: "sync-clean-poll".to_string(),
                 message: None,
                 known_head: Some(base_commit),
+                full_history: false,
             };
             let response = sync_in_store(&store, request.clone()).expect("clean sync");
             assert!(!response.changed);
@@ -2460,6 +3019,7 @@ mod tests {
             operation_id: "sync-failed-generation".to_string(),
             message: None,
             known_head: Some(base_commit.clone()),
+            full_history: false,
         };
         atomic_write_json(
             &operation_path,
@@ -2491,6 +3051,7 @@ mod tests {
             operation_id: "sync-retry-generation".to_string(),
             message: None,
             known_head: Some(base_commit),
+            full_history: false,
         };
         retained.worker_pid = Some(std::process::id());
         retained.updated_at = chrono::Utc::now().to_rfc3339();
@@ -2557,6 +3118,7 @@ mod tests {
             operation_id: "sync-after-upgrade-1".to_string(),
             message: None,
             known_head: Some(base_commit.clone()),
+            full_history: false,
         };
         let error = start_sync_in_store(&store, first_retry, |_| {
             panic!("reporting a legacy failure must not spawn a worker")
@@ -2574,6 +3136,7 @@ mod tests {
             operation_id: "sync-after-upgrade-2".to_string(),
             message: None,
             known_head: Some(base_commit),
+            full_history: false,
         };
         let response = start_sync_in_store(&store, second_retry.clone(), |job_id| {
             assert_eq!(job_id, "job-1");
@@ -2605,6 +3168,7 @@ mod tests {
                 operation_id: "sync-wrong-branch".to_string(),
                 message: None,
                 known_head: None,
+                full_history: false,
             },
         )
         .expect_err("a different branch must not be bundled under the managed ref");
@@ -2920,5 +3484,408 @@ mod tests {
         assert!(validate_remote_url("ext::sh -c whoami").is_err());
         assert!(validate_remote_url("--upload-pack=touch").is_err());
         assert!(validate_remote_url("https://example.com/acme/app.git").is_ok());
+    }
+
+    // -- Dispatch phase two: peer export/import and publish -------------------
+
+    fn dispatch_job(store: &DispatchStore, job_id: &str, workspace: &Path) {
+        let request = crate::dispatch::protocol::DispatchSubmitRequest {
+            protocol_version: DISPATCH_PROTOCOL_VERSION,
+            job_id: job_id.to_string(),
+            session_id: format!("session-{job_id}"),
+            workspace_path: workspace.to_string_lossy().to_string(),
+            agent_type: "Standard".to_string(),
+            prompt: "task".to_string(),
+            approval_policy: crate::dispatch::protocol::DispatchApprovalPolicy::Auto,
+            model: None,
+            reasoning_preset: None,
+            title: None,
+            attachments: Vec::new(),
+            setup_audit: Vec::new(),
+            submitter: None,
+            user_questions: false,
+        };
+        store.create_job(request, "Task".into()).expect("job");
+    }
+
+    /// A job checked out from `remote` (a local path standing in for a Git
+    /// remote) on a `<prefix>/dispatch/<id>` branch.
+    fn provision_from_remote(
+        store: &DispatchStore,
+        job_id: &str,
+        remote: &Path,
+        base: &str,
+    ) -> PathBuf {
+        let response = provision_in_store(
+            store,
+            DispatchWorkspaceProvisionRequest {
+                protocol_version: DISPATCH_PROTOCOL_VERSION,
+                job_id: job_id.to_string(),
+                repo_key: "fedcba9876543210".to_string(),
+                project_label: Some("app".to_string()),
+                remote_url: Some(remote.to_string_lossy().to_string()),
+                base_commit: base.to_string(),
+                branch: format!("openbitfun/dispatch/{job_id}"),
+            },
+        )
+        .expect("provision");
+        let worktree = PathBuf::from(response.workspace_path.expect("worktree"));
+        git(&worktree, &["config", "user.email", "dispatch@example.com"]).expect("email");
+        git(&worktree, &["config", "user.name", "Dispatch Test"]).expect("name");
+        worktree
+    }
+
+    fn full_history_request(job_id: &str) -> DispatchWorkspaceSyncRequest {
+        DispatchWorkspaceSyncRequest {
+            job_id: job_id.to_string(),
+            operation_id: format!("export-{job_id}"),
+            message: None,
+            known_head: None,
+            full_history: true,
+        }
+    }
+
+    #[test]
+    fn a_full_history_export_imports_on_a_peer_and_provisions_a_job_from_it() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_repo = temp.path().join("source");
+        let base = init_source_repository(&source_repo);
+        // Device A ran job src-1 and left committed and uncommitted work.
+        let device_a = DispatchStore::open(temp.path().join("a")).expect("store a");
+        let worktree = provision_from_remote(&device_a, "src-1", &source_repo, &base);
+        fs::write(worktree.join("file.txt"), b"committed by the agent").unwrap();
+        git(&worktree, &["commit", "--quiet", "-am", "agent"]).unwrap();
+        fs::write(worktree.join("new.txt"), b"left uncommitted").unwrap();
+
+        // The incremental result and the full export live side by side.
+        let incremental = sync_in_store(
+            &device_a,
+            DispatchWorkspaceSyncRequest {
+                job_id: "src-1".into(),
+                operation_id: "result".into(),
+                message: None,
+                known_head: None,
+                full_history: false,
+            },
+        )
+        .expect("incremental sync");
+        let export = sync_in_store(&device_a, full_history_request("src-1")).expect("export");
+        assert_eq!(export.head_commit, incremental.head_commit);
+        assert_eq!(export.commit_count, 2);
+        let export_path = PathBuf::from(export.bundle_path.clone().expect("export bundle"));
+        assert!(export_path.ends_with(EXPORT_BUNDLE_FILE));
+        assert!(PathBuf::from(incremental.bundle_path.unwrap()).is_file());
+        // The export needs nothing on the importing side: it verifies in an
+        // empty repository, unlike the incremental result.
+        let empty = temp.path().join("empty.git");
+        git(temp.path(), &["init", "--bare", "--quiet", "empty.git"]).unwrap();
+        git(
+            &empty,
+            &["bundle", "verify", path_arg(&export_path).unwrap()],
+        )
+        .expect("self-contained");
+
+        // Device B receives the bytes for its job dst-1 (as a host would
+        // through bundle-begin/chunk) and imports them.
+        let device_b = DispatchStore::open(temp.path().join("b")).expect("store b");
+        let catalog = temp.path().join("no-catalog.json");
+        let request = DispatchWorkspaceProvisionSourceRequest {
+            protocol_version: DISPATCH_PROTOCOL_VERSION,
+            job_id: "dst-1".into(),
+            source: DispatchProvisionSource::Job {
+                job_id: "src-1".into(),
+                source_device_id: "device-a".into(),
+                head: Some(incremental.head_commit.clone()),
+                branch: None,
+                base_commit: Some(base.clone()),
+            },
+            branch: "openbitfun/dispatch/dst-1".into(),
+        };
+        let provision = |store: &DispatchStore, request: DispatchWorkspaceProvisionRequest| {
+            provision_in_store(store, request)
+        };
+        let before = super::super::source::provision_source_in_store(
+            &device_b,
+            &catalog,
+            request.clone(),
+            provision,
+        )
+        .expect("needs import");
+        let need = before.peer_import.expect("the host is asked to import");
+        assert_eq!(need.source_device_id, "device-a");
+        assert_eq!(need.source_job_id, "src-1");
+        assert!(before.pending && !before.provisioned);
+
+        bundle_begin_in_store(
+            &device_b,
+            DispatchWorkspaceBundleBeginRequest {
+                protocol_version: DISPATCH_PROTOCOL_VERSION,
+                job_id: "dst-1".into(),
+                sha256: export.bundle_sha256.clone().unwrap(),
+                size: export.bundle_size,
+            },
+        )
+        .expect("begin");
+        fs::copy(
+            &export_path,
+            device_b
+                .workspace_upload_dir("dst-1")
+                .unwrap()
+                .join(INCOMING_BUNDLE_FILE),
+        )
+        .unwrap();
+        let commit = DispatchPeerImportCommitRequest {
+            protocol_version: DISPATCH_PROTOCOL_VERSION,
+            job_id: "dst-1".into(),
+            source_device_id: "device-a".into(),
+            source_job_id: "src-1".into(),
+            source_branch: export.branch.clone(),
+            head_commit: export.head_commit.clone(),
+        };
+        let imported = peer_import_commit_in_store(&device_b, commit.clone()).expect("import");
+        assert_eq!(imported.head_commit, export.head_commit);
+        // Idempotent, and bound to that import.
+        peer_import_commit_in_store(&device_b, commit.clone()).expect("again");
+        let mut other = commit;
+        other.head_commit = base.clone();
+        assert!(peer_import_commit_in_store(&device_b, other).is_err());
+
+        let after = super::super::source::provision_source_in_store(
+            &device_b, &catalog, request, provision,
+        )
+        .expect("provision from the import");
+        assert!(after.provisioned && after.peer_import.is_none());
+        assert_eq!(after.base_commit, export.head_commit);
+        assert_eq!(
+            after.source_ref.as_deref(),
+            Some("openbitfun/dispatch/src-1")
+        );
+        let imported_worktree = PathBuf::from(after.workspace_path.unwrap());
+        assert_eq!(
+            fs::read(imported_worktree.join("file.txt")).unwrap(),
+            b"committed by the agent"
+        );
+        assert_eq!(
+            fs::read(imported_worktree.join("new.txt")).unwrap(),
+            b"left uncommitted",
+            "the export checkpoints the source worktree first"
+        );
+        assert_eq!(
+            git(&imported_worktree, &["symbolic-ref", "--short", "HEAD"])
+                .unwrap()
+                .trim(),
+            "openbitfun/dispatch/dst-1"
+        );
+    }
+
+    #[test]
+    fn an_import_that_does_not_carry_the_expected_head_is_refused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_repo = temp.path().join("source");
+        let base = init_source_repository(&source_repo);
+        let device_a = DispatchStore::open(temp.path().join("a")).expect("store a");
+        provision_from_remote(&device_a, "src-2", &source_repo, &base);
+        let export = sync_in_store(&device_a, full_history_request("src-2")).expect("export");
+        assert!(!export.changed, "an untouched job still exports its base");
+        assert!(export.bundle_size > 0);
+        let device_b = DispatchStore::open(temp.path().join("b")).expect("store b");
+        bundle_begin_in_store(
+            &device_b,
+            DispatchWorkspaceBundleBeginRequest {
+                protocol_version: DISPATCH_PROTOCOL_VERSION,
+                job_id: "dst-2".into(),
+                sha256: export.bundle_sha256.clone().unwrap(),
+                size: export.bundle_size,
+            },
+        )
+        .unwrap();
+        let incoming = device_b
+            .workspace_upload_dir("dst-2")
+            .unwrap()
+            .join(INCOMING_BUNDLE_FILE);
+        // A truncated upload never imports.
+        fs::write(&incoming, b"short").unwrap();
+        let commit = DispatchPeerImportCommitRequest {
+            protocol_version: DISPATCH_PROTOCOL_VERSION,
+            job_id: "dst-2".into(),
+            source_device_id: "device-a".into(),
+            source_job_id: "src-2".into(),
+            source_branch: export.branch.clone(),
+            head_commit: "b".repeat(40),
+        };
+        assert!(peer_import_commit_in_store(&device_b, commit.clone()).is_err());
+        // The full bundle with a head it does not carry is refused too.
+        fs::copy(export.bundle_path.as_deref().unwrap(), &incoming).unwrap();
+        let error = peer_import_commit_in_store(&device_b, commit).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("not the reported head"),
+            "{error:#}"
+        );
+        assert!(read_peer_import(&device_b, "dst-2").unwrap().is_none());
+    }
+
+    #[test]
+    fn incremental_and_full_history_operations_never_answer_each_other() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_repo = temp.path().join("source");
+        let base = init_source_repository(&source_repo);
+        let store = DispatchStore::open(temp.path().join("a")).expect("store");
+        let worktree = provision_from_remote(&store, "job-m", &source_repo, &base);
+        fs::write(worktree.join("file.txt"), b"agent").unwrap();
+        // A finished, unacknowledged incremental result.
+        let incremental_request = DispatchWorkspaceSyncRequest {
+            job_id: "job-m".into(),
+            operation_id: "inc-1".into(),
+            message: None,
+            known_head: None,
+            full_history: false,
+        };
+        let incremental = sync_in_store(&store, incremental_request.clone()).unwrap();
+        let operation_path = store
+            .workspace_upload_dir("job-m")
+            .unwrap()
+            .join(SYNC_OPERATION_FILE);
+        atomic_write_json(
+            &operation_path,
+            &SyncOperationRecord {
+                request: incremental_request,
+                state: WorkspaceOperationState::Succeeded,
+                worker_pid: None,
+                response: Some(incremental),
+                last_error: None,
+                failure_reported: false,
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+        // A peer's export with a new operation id is a new operation.
+        let mut spawned = false;
+        let answer = start_sync_in_store(&store, full_history_request("job-m"), |_| {
+            spawned = true;
+            Ok(std::process::id())
+        })
+        .unwrap();
+        assert!(spawned && answer.pending);
+        let operation: SyncOperationRecord = read_json(&operation_path).unwrap();
+        assert!(operation.request.full_history);
+        // An export never takes a knownHead.
+        let mut mixed = full_history_request("job-m");
+        mixed.operation_id = "mixed".into();
+        mixed.known_head = Some(base);
+        assert!(start_sync_in_store(&store, mixed, |_| unreachable!()).is_err());
+    }
+
+    #[test]
+    fn publish_pushes_a_finished_dispatch_branch_and_never_forces() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_repo = temp.path().join("source");
+        let base = init_source_repository(&source_repo);
+        git(temp.path(), &["init", "--bare", "--quiet", "remote.git"]).unwrap();
+        let remote = temp.path().join("remote.git");
+        git(
+            &source_repo,
+            &["push", "--quiet", remote.to_str().unwrap(), "main"],
+        )
+        .unwrap();
+        let store = DispatchStore::open(temp.path().join("dispatch")).expect("store");
+        let worktree = provision_from_remote(&store, "job-p", &remote, &base);
+        dispatch_job(&store, "job-p", &worktree);
+        fs::write(worktree.join("file.txt"), b"result").unwrap();
+        let catalog = temp.path().join("no-catalog.json");
+        let request = DispatchWorkspacePublishRequest {
+            protocol_version: DISPATCH_PROTOCOL_VERSION,
+            job_id: "job-p".into(),
+            remote: None,
+        };
+
+        // Not while the job is still queued or running.
+        let error = publish_in_store(&store, &catalog, request.clone()).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("job_not_finished"),
+            "{error:#}"
+        );
+        store
+            .mark_state(
+                "job-p",
+                crate::dispatch::protocol::DispatchJobState::Succeeded,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let published = publish_in_store(&store, &catalog, request.clone()).expect("publish");
+        assert!(published.published && published.created && published.committed_changes);
+        assert_eq!(published.branch, "openbitfun/dispatch/job-p");
+        assert_eq!(published.commit_count, 1);
+        let remote_head = git(
+            &remote,
+            &["rev-parse", "refs/heads/openbitfun/dispatch/job-p"],
+        )
+        .unwrap();
+        assert_eq!(remote_head.trim(), published.head_commit);
+        // Only the job branch was pushed.
+        let refs = git(&remote, &["for-each-ref", "--format=%(refname)"]).unwrap();
+        assert_eq!(refs.lines().count(), 2, "{refs}");
+
+        let again = publish_in_store(&store, &catalog, request.clone()).expect("again");
+        assert!(again.up_to_date && !again.created);
+
+        // A remote branch with commits the job lacks is never overwritten.
+        let elsewhere = temp.path().join("elsewhere");
+        git(
+            temp.path(),
+            &["clone", "--quiet", remote.to_str().unwrap(), "elsewhere"],
+        )
+        .unwrap();
+        git(&elsewhere, &["config", "user.email", "x@example.com"]).unwrap();
+        git(&elsewhere, &["config", "user.name", "X"]).unwrap();
+        git(
+            &elsewhere,
+            &["checkout", "--quiet", "openbitfun/dispatch/job-p"],
+        )
+        .unwrap();
+        fs::write(elsewhere.join("other.txt"), b"someone else").unwrap();
+        git(&elsewhere, &["add", "-A"]).unwrap();
+        git(&elsewhere, &["commit", "--quiet", "-m", "someone else"]).unwrap();
+        git(
+            &elsewhere,
+            &["push", "--quiet", "origin", "openbitfun/dispatch/job-p"],
+        )
+        .unwrap();
+        let diverged_head = git(&elsewhere, &["rev-parse", "HEAD"]).unwrap();
+        fs::write(worktree.join("file.txt"), b"more").unwrap();
+        let error = publish_in_store(&store, &catalog, request).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("branch_diverged"),
+            "{error:#}"
+        );
+        assert_eq!(
+            git(
+                &remote,
+                &["rev-parse", "refs/heads/openbitfun/dispatch/job-p"]
+            )
+            .unwrap(),
+            diverged_head
+        );
+    }
+
+    #[test]
+    fn only_dispatch_branches_and_plain_remote_names_are_published() {
+        for branch in ["openbitfun/dispatch/j1", "team/x/dispatch/j-2"] {
+            assert!(is_dispatch_branch(branch), "{branch}");
+        }
+        for branch in [
+            "main",
+            "dispatch/j1",
+            "openbitfun/dispatch/",
+            "openbitfun/dispatch/a/b",
+            "a//dispatch/b",
+        ] {
+            assert!(!is_dispatch_branch(branch), "{branch}");
+        }
+        assert!(validate_remote_name("origin").is_ok());
+        for remote in ["", "-x", "../x", "a b", "x/y"] {
+            assert!(validate_remote_name(remote).is_err(), "{remote}");
+        }
     }
 }

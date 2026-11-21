@@ -39,8 +39,8 @@ test("shell and sessions come from the host", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("OpenBitFun");
-  // The sidebar is OpenBitFun, Inbox, Search, history, then All sessions and Library.
+  await app.waitFor("Super Agent");
+  // The sidebar is Super Agent, Inbox, Search, history, then All sessions and Library.
   expect(app.shows("nav-openbitfun")).toBe(true);
   expect(app.shows("nav-inbox")).toBe(true);
   expect(app.shows("nav-all-sessions")).toBe(true);
@@ -1272,7 +1272,7 @@ test("settings preserves explicit zh-CN app.language override when writing sibli
   });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   // Works both before and after Wave 2 wires `initAppLocale()` into `App.tsx`.
   await app.press(app.shows("设置") ? "设置" : "Settings");
   await app.press("nav-settings-page-general");
@@ -1711,21 +1711,19 @@ test("a host without message search still answers the other sources", async () =
   expect(app.texts()).not.toContain("Messages");
 });
 
-test("stored key bindings are shown, not edited", async () => {
+test("Settings › Shortcuts lists the shell's shortcuts with their keys and writes nothing by itself", async () => {
+  // wave22-p5: the page edits `app.keybindings` (test/settings-parity.test.tsx covers the writes).
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
   await app.press("nav-settings-page-shortcuts");
   await app.waitFor("Keyboard shortcuts");
-  // The count is the host's document; this surface has no shortcut registry, so
-  // the row states that instead of offering an editor that would change nothing.
-  await app.waitFor("2 overrides stored");
-  expect(
-    app.texts().some(text =>
-      text.includes("Managed in the desktop app shortcut registry; stored overrides are shown read-only here."),
-    ),
-  ).toBe(true);
+  await app.waitFor("shortcut-keys-search.global");
+  expect(app.texts()).toContain("Show or hide the sidebar");
+  expect(app.texts()).toContain("⌘B");
+  // The fixture's legacy entries name no shell shortcut: nothing shows as changed.
+  expect(app.shows("shortcut-reset-all")).toBe(false);
   expect(backend.settingsWrites.filter(entry => entry.path.startsWith("app.keybindings"))).toHaveLength(0);
 });
 

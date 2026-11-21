@@ -261,7 +261,7 @@ async fn relay_to_window(
             }))
         }
         method => Err(format!(
-            "{}: MiniApp {} is running in its own window, which cannot expose DOM structure or pixels, so '{method}' is unavailable there. Its agent bridge (observe_bridge, act_bridge, watch_state) and host-routed key input still work. To use DOM or screenshot actions, move the MiniApp to a tab.",
+            "{}: MiniApp {} is presented through its Shell bridge (its own window, or the in-product view), which cannot expose DOM structure or pixels, so '{method}' is unavailable there. Its agent bridge (observe_bridge, act_bridge, watch_state) and host-routed key input still work.",
             MiniAppWebErrorCode::CapabilityMissing.as_str(),
             command.app_id
         )),
@@ -741,7 +741,7 @@ mod tests {
         .await
         .expect_err("a window cannot serve DOM actions");
         assert!(error.starts_with(MiniAppWebErrorCode::CapabilityMissing.as_str()));
-        assert!(error.contains("move the MiniApp to a tab"), "{error}");
+        assert!(error.contains("agent bridge"), "{error}");
 
         let error = relay_to_window(
             &host,

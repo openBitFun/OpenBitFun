@@ -28,10 +28,32 @@ window the NSH web target ran in during the migration.
   host page exposes `window.__TAURI__`, `dev` fixtures otherwise) remains for
   `nsh run --target web` development and the headless tests; nothing ships it as
   the desktop transport.
-- Capabilities without an NSH implementation degrade loudly: the desktop pet
-  window and desktop cards (retired with the Tauri shell), in-product MiniApp tabs
-  (MiniApps open as independent windows), browser screenshots, and in-place
-  updates on Windows/Linux.
+- Capabilities without an NSH implementation degrade loudly: browser screenshots,
+  and in-place updates on Windows/Linux.
+- Spaces everywhere (wave 22): a Space opens inside the app on every client
+  (`src/ui/miniAppFrame.tsx`, Library › Spaces). Its document runs in a `WebView`
+  (an iframe on the web target) and `src/spaceFrame.ts` speaks the MiniApp Shell
+  protocol to the Space's device over the proxied `miniapp_inline` command, so the
+  worker, storage, versions, drafts and grants stay on that device and a remote
+  workspace grant is refused. Desktop keeps "Open in window" (the sidecar Shell).
+  Dialogs and the Shell's chat composer need that window and are refused inline.
+  The agent's MiniApp surface attaches on a desktop over its own backend and
+  relays through the in-product view's Shell bridge (observe/act/key; DOM and
+  pixel actions report the capability gap). The account's Space list comes from
+  `miniapp_account_catalog` (per-device install records in the account replica,
+  collection `miniapps.installs`); packages stay in each device's MiniApp store.
+  Library › Spaces has "Apps | Cards | Market | Submissions"; there is no
+  "Published" tab because 2.0 keeps no Pages on the server.
+- Desktop presence (wave 22): desktop cards and the companion pet are floating
+  NSH windows of the desktop app (`src/desktopPresence.tsx`, started by
+  `nshDesktopShell.ts`; `"windows"` capability). The cards are backend facts of
+  the device that made them (`src/apps/desktop/src/desktop_cards`: definitions
+  behind `CardDefinitionStore` in `cards.json`, window geometry and visibility in
+  `local-state.json`); every client lists them inline (Library › Spaces, the
+  OpenBitFun page on phones and browsers) through the proxied `desktop_card_*`
+  commands. The pet animates the fleet's attention (`fleet_attention`) with the
+  built-in sprite sets in the backend's resources (`builtin:<id>` paths); a
+  press opens the Inbox. Phones and browsers show the Pet page as "Desktop only".
 
 ## Transport
 
@@ -214,6 +236,7 @@ what the surface does show instead of claiming a behavior it does not have.
 
 | Feature point | React owner | NSH status |
 |---|---|---|
+| Session goal, side questions, background commands, MCP prompts and MCP App panels (wave 22) | `flow_chat/components/thread-goal`, `btw`, `background-command`, `tool-cards/MCPToolDisplay` | ported (`src/ui/sessionExtras.tsx` over one store each: `goalStore.ts` reads `get_session_thread_goal`, sets it with `activate_session_goal` (the `/goal <objective>` path, also typed in the composer), edits, pauses and clears it, and follows `agentic://thread-goal-updated`; `btwStore.ts` asks `btw_ask_stream` under a child session id it names and draws that child's `agentic://text-chunk` stream in a sheet, never in the transcript, with `btw_cancel`; `backgroundCommandsStore.ts` lists `list_background_command_activities`, pages `read_background_command_output` by cursor while its sheet is open, and sends `send_background_command_input` / `control_background_command`; `mcpPromptsStore.ts` lists the running servers' `list_mcp_prompts` under a typed `/` and puts `get_mcp_prompt`'s text in the composer; `mcpAppStore.ts` opens a finished MCP tool's `ui://` resource (`get_tool_info` + `get_mcp_tool_ui_uri`, `fetch_mcp_app_resource`) in a web view and pipes its JSON-RPC to `send_mcp_app_message`. Every call goes to the session's device) |
 | Personal Agent Welcome Studio | `flow_chat` empty state | ported (renders `"How can I help today?"` with `BotCharacter` and 4 `TapOptionRow` starter options on empty or zero-session views, populating `composerText` without auto-sending) |
 | Workspace list and switching | `NavPanel/sections/workspaces` | ported (`NavPanel` Workspaces/Sessions/`SSH HOSTS` tree + `NewWorkspaceModal` / `SshConnectionModal`: `get_opened_workspaces`, `get_recent_workspaces`, `set_active_workspace`, `close_workspace`, and `open_workspace` / `open_remote_workspace`) |
 | Session catalog with paging | `sections/sessions` | ported (`list_persisted_sessions_page` + cursor "Load older sessions") |
@@ -242,7 +265,7 @@ what the surface does show instead of claiming a behavior it does not have.
 |---|---|---|
 | Assistant gallery & primary designation | `scenes/profile/views/NurseryGallery`, `AssistantCard` | ported (`AssistantsScene` opens on a card gallery, primary first and large, with open/close workspace, set-primary and delete per card and a create card below three assistants; `src/assistantStore.ts`: `get_assistant_workspaces`, `get_primary_assistant_workspace`, `create_assistant_workspace` (which opens the new assistant's page), `set_primary_assistant_workspace`, `reset_assistant_workspace`, `delete_assistant_workspace` behind `InlineConfirmBar` with primary-delete guard) |
 | Assistant config page | `scenes/profile/views/AssistantConfigPage`, `AssistantAvatarPicker` | ported (back to gallery; avatar picker with the official artwork, the 16 emoji presets and a one-character custom symbol; in-place name edit saved on Return or blur; `saveIdentityFields` re-reads `IDENTITY.md` and rewrites only the edited frontmatter field, so unknown fields and the body survive; new-session composer; the assistant's sessions via `list_persisted_sessions_page`, opened in `Sessions`. Not ported: the scheduled-sessions block (`ScheduledJobsView`), which stays on the `Routines` scene) |
-| Persona & Soul Studio (`IDENTITY.md`, `SOUL.md`, `USER.md`) | `scenes/profile/views/AssistantConfigPage` | ported (the page's three persona links open an editor dialog with `SegmentedTabs` across the POSIX-joined files via `read_file_content`, treating missing files as empty drafts, multiline `Input` with live `TextView` Markdown preview, `write_file_content` save, `reset_workspace_persona_files` behind `InlineConfirmBar`, and quick message launch via `startQuickPromptInSession(..., "Claw")`) |
+| Persona & Soul Studio (`IDENTITY.md`, `SOUL.md`, `USER.md`) | `scenes/profile/views/AssistantConfigPage` | ported (the page's three persona links open an editor dialog with `SegmentedTabs` across the POSIX-joined files via `read_file_content`, treating missing files as empty drafts, the shared visual Markdown editor (source `Input` on request or when the fidelity guard needs it) with a live Markdown preview, `write_file_content` save, `reset_workspace_persona_files` behind `InlineConfirmBar`, and quick message launch via `startQuickPromptInSession(..., "Claw")`) |
 
 ### Agents
 
@@ -282,6 +305,7 @@ what the surface does show instead of claiming a behavior it does not have.
 
 | Feature point | React owner | NSH status |
 |---|---|---|
+| Shortcuts, desktop-control permissions, settings backup (wave 22) | `KeyboardShortcutsSection`, `ComputerUse*`, config import/export | ported (`src/shortcutsStore.ts`: Settings › Shortcuts lists the shell's shortcuts by registry id, records a key and writes `app.keybindings` as `{ __version__: 1, overrides }` (legacy entries kept), and the shell rebinds on the write. Device › Browser and desktop control draws the scope device's own `computer_use_get_status` rows with `computer_use_request_permission` / `computer_use_open_system_settings`; a device that refuses the command shows `settings.unsupported`. Device › Diagnostics copies `export_config` to the clipboard and sends a picked or pasted export to `import_config`) |
 | Two-column category rail | `scenes/settings` | ported (`SettingsNavBlock` inside `App.tsx` `NavPanel` defaulting to `All sections` plus 7 domain filters: `Appearance & Layout`, `Agent & Memory`, `Models & Pools`, `Permissions & Safety`, `MCP & Web Search`, `Workspace & Shell`, `Usage & Diagnostics`) |
 | Config sections read | `scenes/settings` | ported for the paths it draws (`get_config` per path, so one missing path cannot fail the batch: `app`, `app.ai_experience`, `app.logging.level`, `editor`, `terminal` and the two `app.notifications` flags; a path a host lacks is shown as `unavailable` instead of breaking the page. `AI execution` draws the `ai.*` scalars the desktop page reconciles — `enable_deferred_tool_loading`, `subagent_max_concurrency`, `swarm_max_concurrency`, `subagent_batch_execution_policy`, `tool_execution_timeout_secs`, `user_question_timeout_secs`, `tool_presentation_mode` — as ordinary fields, with `native` / `ptc` / `ptc_python` as the values `ToolPresentationMode` deserializes. `ai.task_models` has its own section rather than a field table, because `TaskModelSelection` is a serde enum (`"Inherit"` or `{"Fixed":{"model_id":…}}`), so the whole object is written back with each task set to a model id from `ai.models` shown by name. `Permissions` reads `tool_permissions`, resolves it to Ask / Auto / Full access the way the desktop does, and writes the mode back by rewriting `policy.preset`, `interaction.auto_approve_ask` and `approval.strategy` while keeping the rule list and any other field; full access takes a second press. The rule list is edited as its own draft: `Edit rules` opens it, `Add rule` seeds an empty row, each row is an effect chip — `Allow` / `Ask` / `Deny` — over an `action` and a `resource`, plus `Up` / `Down` / `Remove`, and `Save rules` writes the whole `tool_permissions` document once, so the drawn order becomes the evaluation order the host applies; `Discard changes` drops the draft and says nothing was written. A row whose action or resource is blank is refused instead of being stored as a rule that matches everything. Automatic approval is drawn from the same document: `Chat model` / `Decision model` pick the `model_kind` that answers, the chat route lists the `fast` / `primary` roles beside the `ai.models` entries and writes `approval.chat_model_id` with `model_kind: "chat"`, the decision route edits `ai.decision_model` (name and endpoint) and keeps its key in the vault through `save_decision_model_credential` / `clear_decision_model_credential`, so the secret never enters the config, `Approval timeout` clamps the seconds it accepts, and the `When it is unsure` / `When it fails` chips write `on_ask` and `on_error`. Those writes never move the permission mode: saving approval rewrites `approval` alone. Driven in the real window: `Auto` wrote `approval` as `strategy: "model"`, `model_kind: "chat"`, `chat_model_id: "fast"`, `on_ask: "user"`, `on_error: "ask"`, `timeout_ms: 30000` together with `interaction.auto_approve_ask: true`; a rule added as `*` / `workspace/*` / `Deny` reached `policy.rules` and the section then read `1 rule in force`; removing it and saving cleared the list to `0 rules in force`; and `Full access` behind its confirmation wrote `preset: "full_access"` and dropped the approval block again. `Tools` and `Agent hooks` draw the switches the desktop keeps for Computer Use, browser reattachment and native hooks (`ai.computer_use_enabled`, `ai.browser_control_auto_connect_on_startup`, `ai.browser_control_preferred_browser`, `app.hooks.enabled`, `app.hooks.project_hooks_enabled`), plus `app.prevent_sleep` under `Application` and `app.logging.include_sensitive_diagnostics` under `Diagnostics`; those are written as leaf paths, so `ai` (models and keys) and `app.hooks` are never replaced wholesale. `Session memory` draws the user-facing `memories.*` switches (extraction, prompt inclusion, background sessions, the `MemoryExternalContextPolicy` enum, how long an unused memory stays, and the consolidation batch), again as leaf paths. `AI experience` also draws `app.ai_experience.enable_git_commit_coauthor` — the desktop's commit-attribution switch — as its own leaf path rather than through the `app.ai_experience` object the quick-action list is merged into, so a press cannot rewrite a list it does not own. `application.input`, `development.*` and the memory scheduler's lease and retry timings are not drawn) |
 | Scalar field editing (toggles, choices, numbers, text) | `scenes/settings` | ported (`set_config` one path at a time; numbers clamp to the field's range; an empty field leaves the value alone) |
@@ -303,16 +327,12 @@ scene therefore reads each path on its own and treats the paths the React
 preload marks optional as optional, so a backend that lacks one of them still
 renders the rest of the page.
 
-Two settings belong to the desktop's own front end rather than to a shared store,
-so they are stated instead of drawn as controls. `Keyboard shortcuts` reads
-`app.keybindings` and prints how many overrides are stored: the desktop applies
-them through its shortcut registry, which this surface does not have, so an editor
-here would change the desktop and none of this page's keys. Re-checked at build
-76: the widget's `shortcut` and `keymap.label` are menu-item hints and a menu
-popup, not an application-level key registry, so a chord still cannot be
-registered from here. The background-session
-close confirmation is a `localStorage` preference of the desktop's own panel, which
-has no counterpart here at all.
+`Keyboard shortcuts` edits `app.keybindings` (wave 22): the shell binds its
+shortcuts by the desktop registry's ids (`SHELL_SHORTCUTS` in `App.tsx`,
+listed in `src/shortcutsStore.ts`), so an override written here rebinds the same
+action in every front end that reads the document. The background-session close
+confirmation is a `localStorage` preference of the desktop's own panel, which has
+no counterpart here at all.
 
 ### Terminal
 
@@ -335,10 +355,13 @@ has no counterpart here at all.
 | Search (files, contents) | `search_*` commands | ported (`search_files`; `Names` matches file names, `Contents` greps inside files and lists one row per matching line with its preview, and a hit opens in the preview) |
 | Git decorations | `tools/git` | ported (`git_get_status` on the workspace root: a `Changes n` strip over the tree names the branch, lists each changed path with its porcelain letter and opens that file's diff; a workspace that is not a repository simply stays undecorated) |
 | Paste from the clipboard | `pasteClipboardFilesToWorkspaceDirectory` | ported (`Clipboard.readFiles` gives the OS file list as `file:` URLs, `paste_files` copies them into the selected directory and the tree refreshes; the host refuses a remote workspace because the remote provider has no copy primitive, and that message reaches the notice instead of a silent no-op) |
-| Markdown, plain text & code preview + live editing | `tools/editor`, `TextView`, `Editor` | ported (`TextView` Markdown preview, syntax-highlighted `Editor` preview, and `Edit file` / `Save file` / `Discard edit` toolbar for `"code" | "markdown" | "text"` files persisting through `write_file_content` via `src/fileStore.ts`) |
+| Plain text & code preview + live editing | `tools/editor`, `Editor` | ported (syntax-highlighted `Editor`, `Edit file` / `Save file` / `Discard edit` for `"code" | "text"` files persisting through `write_file_content` with `expectedHash` via `src/fileStore.ts`) |
+| Markdown documents (`MarkdownEditor`, meditor IR/Source) | `tools/editor/meditor` | partial (`src/ui/markdownEditor.tsx`, shared by the Files pane, the persona documents and the SKILL.md preview. Preview \| Edit: Edit is NSH's native `RichEditor` (StarterKit + tables), parsed from the file's Markdown and serialized back on every change, saved through the same `write_file_content` path with its conflict and changed-on-disk banners; Preview keeps an unsaved draft. A fidelity guard opens a file the visual editor cannot write back unchanged (front matter, raw HTML, reference links, `*` bullets) as source with one muted line, and "Edit as source" is in the document menu. Inline AI is `editor_ai_stream` / `editor_ai_cancel` on the document's device, with Insert / Replace selection / Discard. Mermaid blocks and `$$` formulas render in a web view island where the client shows web views. The renderers are the app's own assets (`src/nsh-ui/assets/vendor`: Mermaid 10.9.1 and KaTeX 0.16.11 byte for byte from their npm packages, KaTeX's woff2 fonts inlined into its stylesheet), read through `?url` + `fetch` only when a document has a diagram or a formula, and inlined into the island's page, whose content security policy loads nothing. nsh ships only files inside an app's directory (symlinks are resolved and refused), so each entry registers its own copy in `src/documentRenderers.ts`: the web build from the thin entry `src/nsh-ui/WebApp.tsx` (every `nsh package … --target web` path uses it), and `src/apps/desktop-nsh` / `src/apps/mobile-nsh` from gitignored copies that `scripts/sync-nsh-vendor-assets.mjs` writes before every native build and after `pnpm install`; `App.tsx` alone registers none and shows the source. A browser gets the files from the device's UI bundle and the content-addressed pool. They add 3.98 MB raw to the native UI and 6.40 MB to the web bundle with its `.br`/`.gz` siblings (1.08 MB over the wire with brotli); the main JS bundle is unchanged. Until an island draws, after 8 s without a drawing, or on any failure the source shows as code, and inline `$…$` stays TeX. Not ported: a live split preview, the plan viewer, disk-sync polling inside the editor (the workspace watcher covers it), and workspace-relative images inside the visual editor (the preview reads them through the host)) |
+| HTML preview | `HtmlPreviewPanel` | ported in the Files pane (Preview \| Source: a script-free, incognito `WebView html` of the file's text where the client shows web views; "Open in browser" runs `open_html_file_in_browser` only in the desktop app for a local workspace of the same device) |
 | Image preview | `Image` | ported (`read_file_content` with `encoding: "base64"`, shown from a `data:` URL with `objectFit: "contain"`; verified in the real window) |
 | Video preview | `Video` | ported (same base64 data URL, native controls, muted start; verified in the real window) |
-| PDF preview | `file-viewer` | not ported: no document viewer exists in NSH; the scene says so instead of showing an empty panel. Re-checked at build 76: the only `pdf` in the widget types is a file-extension string in `index.d.ts`, not a renderer |
+| PDF preview | `file-viewer` | ported in the desktop app (the bytes come through `read_file_content` with `encoding: "base64"`, so a remote workspace's PDF shows too, and the web view's own PDF viewer draws them from an `<embed>`; a `data:` page URL is not grantable). A browser tab and the phone read no bytes and say to open the PDF in the desktop app or another viewer. Annotations are not ported |
+| Built-in browser (wave 22 P2) | `app/scenes/browser` (`BrowserPanel`, `browserInspectorScript`, `HtmlPreviewPanel`) | ported: `src/scenes/BrowserScene.tsx` full width and as the inspector's fourth tab (Changes, Files, Terminal, Browser); a page the open session's agent opens presents there (`src/browserSession.ts`). ⋯ "Pick element" runs a picker in the page through the `browser.evaluate` result channel and puts `#element \`path\` “text” (url)` into the composer, nothing sent. A local `.html` path or `file:` URL in the address field previews through `read_file_content` (remote workspaces route there) in its own incognito web view, with "Open in default browser" only for a file on this desktop. A phone, a browser or another desktop gets a read-only live view: `browser_webview_capture_preview {conversationId}` (now `Proxied`) answers a script-free copy of the page's document (`status: "snapshot"`; also `noPage`, `tooLarge`, `unsupported`), drawn with scripts off and presses blocked, read about every 2 s only while the view is on screen and the app is in the foreground; an older desktop (label-only request) gets an update sentence. Settings › Device › Browser and desktop control shows the user's own Chrome or Edge (`browser_control_get_status` / `enable_default_cdp` / `launch` / `disconnect` / `restart_with_cdp`, `src/browserControlStore.ts`, `src/ui/externalBrowser.tsx`). Not ported: pixel screenshots (NSH has no web view snapshot API), occlusion handling beyond the menus |
 | Oversized media & binary files | `file-viewer` | files over 32 MB are not read into base64; binary files state that the format has no preview |
 | Diff review | `DiffView` | ported (`git_get_diff` for one path, rendered by `DiffView` from its unified patch) |
 
@@ -354,6 +377,7 @@ has no counterpart here at all.
 
 | Feature point | React owner | NSH status |
 |---|---|---|
+| Workspace icon and file transfer (wave 22) | `WorkspaceIcon/*`, remote transfer | ported (`src/ui/workspaceActions.tsx`: the workspace ⋯ menu's Change icon… offers the glyphs `get_workspace_icon` lists in `supportedGlyphs` and saves with `set_workspace_icon` against the revision read (colors are not drawn, so the record keeps its own; a device without `supportedGlyphs` says to update). Upload/Download for an SSH workspace call `remote_upload_from_local_path` / `remote_download_to_local_path` with `upload_progress` / `download_progress` and `cancel_transfer`, offered only where the connection's machine is this window's (a local path means nothing elsewhere)) |
 | New Workspace Wizard | `app/components/NewProjectDialog` | ported (`NewWorkspaceModal` in `src/ui/SshWorkspaceModals.tsx` + `src/sshRemoteStore.ts`: Personal Assistant creation via `create_assistant_workspace` and Local/SSH/Docker/WSL Project Workspace creation via `create_directory` + `open_workspace` or `remote_create_dir` + `open_remote_workspace`) |
 | SSH Connection Manager, `~/.ssh/config`, Docker & WSL | `features/ssh-remote` | ported (`SshConnectionModal`: saved profiles, `ssh_list_saved_connections`, `ssh_save_connection`, `ssh_delete_connection`, `ssh_has_stored_password`, `ssh_connect`, `ssh_disconnect`, `ssh_is_connected`, `ssh_get_server_info`, `ssh_test_connection` stage reports, `~/.ssh/config` `ssh_list_config_hosts` / `ssh_get_config`, `ssh_list_docker_containers`, `ssh_list_wsl_distributions`, and `SshAuthPromptModal`) |
 | Remote File Browser & Port Forwarding | `features/ssh-remote` | ported (`RemoteFileBrowserModal`: POSIX `remote_read_dir`, `remote_exists`, `remote_create_dir`, `remote_rename`, `remote_remove`, `open_remote_workspace` / `remote_open_workspace`, rebind conflict handling, `remote_close_workspace`, `remote_remove_workspace`; `PortForwardModal`: `ssh_list_port_forwards`, `ssh_list_remote_listening_ports`, `ssh_start_port_forward`, `ssh_stop_port_forward`) |
@@ -372,7 +396,7 @@ not offer, and how it says so:
 | Capability | State in the native desktop |
 |---|---|
 | Interactive MiniApp windows & hosted `pages` | Independent windows through the `openbitfun-miniapp-shell` sidecar; in-product tabs are refused (`kind: tab`) |
-| Desktop cards & companion pet window | Retired with the Tauri shell (registry `retired(...)` rows; Settings says so); the agent `DesktopCard` tool hides itself without a card host |
+| Desktop cards & companion pet window | Native floating windows on the desktop app (`desktopPresence.tsx`); cards inline on every client; the pet is "Desktop only" on phones and browsers. Not ported: line, donut and stacked charts draw as bars; the pet's look-at-pointer frames |
 | `ecosystem-compatibility` account capture, pets and per-application pages | Discovery snapshot, MCP import and removed-session restore are in `Settings → External import`; account capture and pet handling use desktop-only adapters |
 | In-place updates on Windows/Linux | The updater reports that in-place install is not available yet; macOS installs in place |
 
@@ -756,11 +780,10 @@ efforts) the composer drew `Reasoning: Default` between the model and the agent,
 catalog command answered with presets, and `get_session_model_target` answered with no preset
 for that session, which is why the chip reads `Default` rather than a level.
 
-The key-binding row (build 66) is headless-verified only, for the same reason: the
-test opens `Settings`, asserts the row reports the two overrides the fixture stores
-and states that this front end has no shortcut registry, and asserts that nothing
-was written to `app.keybindings`. It does not assert what the desktop does with
-those overrides, which is the desktop's own behavior.
+The shortcut editor (wave 22) is headless-verified (`test/settings-parity.test.tsx`:
+a stored override rebinds the shell, Reset writes the document without it and the
+default key works again) and was driven on the web target: Change → ⇧⌘P stored the
+override and ⇧⌘P then opened Search.
 
 The memory model and window fields (build 65) are headless-verified only, for the
 same reason. One test writes a configured model onto the stored `memories`

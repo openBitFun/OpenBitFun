@@ -132,8 +132,11 @@ export function backendEnv(productEnv = {}, base = process.env) {
 export async function buildAll({ profile, target, nshOut, webOut, productEnv = {} }) {
   // NSH builds the `openbitfun/native` module, which needs rustc >= 1.97.
   const nshEnv = { ...process.env, RUSTUP_TOOLCHAIN: process.env.RUSTUP_TOOLCHAIN ?? "1.98.1" };
+  // The app ships its own copy of the shared UI's document renderers.
+  const { syncVendorAssets } = await import("./sync-nsh-vendor-assets.mjs");
+  syncVendorAssets();
   run("nsh", ["build", "src/apps/desktop-nsh", "--release", "--out", nshOut], { env: nshEnv });
-  run("nsh", ["package", "src/nsh-ui", "--target", "web", "-o", webOut]);
+  run("nsh", ["package", "src/nsh-ui/WebApp.tsx", "--target", "web", "-o", webOut]);
   const targetArgs = target ? ["--target", target] : [];
   run("cargo", ["build", "-p", "openbitfun-desktop", "--lib", "--profile", profile, ...targetArgs], {
     env: backendEnv(productEnv),
@@ -220,6 +223,8 @@ export function backendResources({ webSite, flashgrep = null, dshProfile = null 
   return [
     [webSite, "nsh-web"],
     [join(desktop, "resources/worker_host.js"), "resources/worker_host.js"],
+    // Built-in companion pet sprite sets (`api/companion_pet_api.rs`).
+    [join(desktop, "resources/agent-companion-pets"), "resources/agent-companion-pets"],
     [join(root, "src/apps/extension-host/dist/extension-host.js"), "resources/ext-host/extension-host.js"],
     [join(root, "THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md"],
     [join(root, "src/crates/services/services-integrations/assets/models-dev.LICENSE.txt"), "third-party/models.dev/LICENSE.txt"],

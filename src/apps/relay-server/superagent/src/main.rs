@@ -197,6 +197,24 @@ async fn main() -> anyhow::Result<()> {
     );
 
     engine.recover().await;
+    // The time-to-live sweep: at load, then hourly.
+    let sweeper = {
+        let service = Arc::clone(&frontends.service);
+        let frontends = Arc::clone(&frontends);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                let shredded = service.sweep_accounts().await;
+                let pruned = frontends.prune_targets();
+                log::info!(
+                    "Superagent sweep done: shredded={}, targets_pruned={}",
+                    shredded.len(),
+                    pruned
+                );
+            }
+        })
+    };
     let watcher = {
         let engine = Arc::clone(&engine);
         let every = Duration::from_secs(args.watch_seconds.max(1));
@@ -224,6 +242,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     log::info!("OpenBitFun agent stopping");
     watcher.abort();
+    sweeper.abort();
     tokio::time::timeout(Duration::from_secs(10), gateway.shutdown())
         .await
         .ok();

@@ -56,21 +56,38 @@ use crate::events::EventHub;
 pub const FLEET_HOST_COMMANDS: &[&str] = &[
     "fleet_attention",
     "fleet_attention_mark_read",
+    "fleet_blob_get",
+    "fleet_blob_holders",
     "fleet_call",
     "fleet_device_detail",
     "fleet_digest",
     "fleet_events",
+    "fleet_models",
     "fleet_navigator",
     "fleet_prompts",
     "fleet_recent_sessions",
     "fleet_replay",
+    "fleet_replica_digest",
+    "fleet_replica_list",
+    "fleet_replica_pull",
+    "fleet_replica_push",
     "fleet_subscribe",
     "fleet_ui_bundle",
 ];
 
 /// The owner verbs (`fleet_v1`): same-account host verbs another runtime
 /// host calls on the mesh listener (`ObpBackend::is_account_device_host_verb`).
-pub const FLEET_OWNER_VERBS: &[&str] = &["fleet_digest", "fleet_replay"];
+pub const FLEET_OWNER_VERBS: &[&str] = &[
+    "fleet_digest",
+    "fleet_replay",
+    // The account replica (`fleet::replica`, `account_replica_v1`).
+    "fleet_blob_get",
+    "fleet_blob_holders",
+    "fleet_replica_digest",
+    "fleet_replica_list",
+    "fleet_replica_pull",
+    "fleet_replica_push",
+];
 
 /// The error prefix while a host has no fleet (signed out, device network
 /// off, or still starting).
@@ -309,11 +326,8 @@ pub fn merge_presence_with(
         presence.retain(|peer| peer.device_id != row.device_id);
         presence.push(FleetPeerPresence {
             device_id: row.device_id.clone(),
-            name: if row.name.trim().is_empty() {
-                openbitfun_product_domains::superagent::CLOUD_DEVICE_DISPLAY_NAME.to_string()
-            } else {
-                row.name.clone()
-            },
+            name: openbitfun_product_domains::superagent::cloud_node_display_name(&row.name)
+                .to_string(),
             host_kind: FleetHostKind::Cloud,
             // Always on the account server; whether it answers is the link's.
             online: true,
@@ -849,6 +863,10 @@ pub struct FleetHost {
     /// `fleet_recent_sessions`, `fleet_device_detail`.
     views: Arc<FleetViews>,
     watcher: Mutex<Option<JoinHandle<()>>>,
+    /// Links to the account's other devices (the account replica uses them).
+    transport: Arc<dyn FleetPeerTransport>,
+    /// The account replica's exchange, once the host attached one.
+    replica: Mutex<Option<Arc<super::replica::ReplicaSync>>>,
 }
 
 impl FleetHost {
@@ -884,7 +902,12 @@ impl FleetHost {
             Arc::clone(&transport),
             Some(Arc::clone(&hub) as Arc<dyn super::FleetEventSink>),
         );
-        let sync = FleetSync::new(Arc::clone(&index), Arc::clone(&backend), transport, config);
+        let sync = FleetSync::new(
+            Arc::clone(&index),
+            Arc::clone(&backend),
+            Arc::clone(&transport),
+            config,
+        );
         sync.start();
         sync.local_changed();
         sync.presence_changed();
@@ -902,6 +925,8 @@ impl FleetHost {
             attention: Arc::clone(&attention),
             views,
             watcher: Mutex::new(None),
+            transport,
+            replica: Mutex::new(None),
         });
         let weak = Arc::downgrade(&sync);
         let attention = Arc::downgrade(&attention);
@@ -973,9 +998,58 @@ impl FleetHost {
         &self.views
     }
 
+    /// Runs one command on another device of the account over this host's
+    /// links (the owner's errors unchanged). The model catalog uses it for
+    /// the model relay (`fleet_model_*`).
+    pub async fn call_device(
+        &self,
+        device_id: &str,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, String> {
+        self.links.call(device_id, command, args).await
+    }
+
     /// The device network changed (a device came, left, or moved).
     pub fn presence_changed(&self) {
         self.sync.presence_changed();
+        if let Some(replica) = self.replica_sync() {
+            replica.wake();
+        }
+    }
+
+    /// Attaches the account replica (`fleet::replica`) and starts its
+    /// exchange with the account's other devices; replaces an earlier one.
+    pub fn attach_replica(
+        &self,
+        replica: Arc<super::replica::AccountReplica>,
+    ) -> Arc<super::replica::ReplicaSync> {
+        // Super Agent history: every replica that serves the cloud node pins
+        // the conversation chunks (`superagent_archive`).
+        super::superagent_archive::declare(&replica);
+        let sync = super::replica::ReplicaSync::new(
+            replica,
+            Arc::clone(&self.transport),
+            super::replica::ReplicaSyncConfig::default(),
+        );
+        sync.start();
+        if let Some(previous) = self
+            .replica
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replace(Arc::clone(&sync))
+        {
+            previous.shutdown();
+        }
+        sync
+    }
+
+    /// The account replica's exchange, when attached.
+    pub fn replica_sync(&self) -> Option<Arc<super::replica::ReplicaSync>> {
+        self.replica
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Answers a fleet verb; `None` for any other command. `instance_id` is
@@ -991,6 +1065,25 @@ impl FleetHost {
         if !is_fleet_host_command(command) {
             return None;
         }
+        if super::replica::REPLICA_VERBS.contains(&command) {
+            return Some(match self.replica_sync() {
+                Some(sync) => sync
+                    .replica()
+                    .handle(command, &args)
+                    .unwrap_or_else(|| Err(format!("fleet verb {command} has no handler"))),
+                None => Err(format!(
+                    "{FLEET_UNAVAILABLE}: the account replica is not running on this device"
+                )),
+            });
+        }
+        // A frontend's Super Agent history call leaves with what this
+        // device's replica holds (`superagent_archive`).
+        let args = match (command, self.replica_sync()) {
+            ("fleet_call", Some(sync)) => {
+                super::superagent_archive::augment_fleet_call(&sync, args).await
+            }
+            _ => args,
+        };
         if let Some(result) = self.attention.handle(command, &args).await {
             return Some(result);
         }
@@ -1095,6 +1188,14 @@ impl FleetHost {
             watcher.abort();
         }
         self.sync.shutdown();
+        if let Some(replica) = self
+            .replica
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            replica.shutdown();
+        }
         log::info!("Fleet stopped for this device");
     }
 }

@@ -1,5 +1,4 @@
 import { computed, effect, lifecycle, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
-import { TextView } from "nsh/base";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import {
@@ -59,7 +58,7 @@ import { activeWorkspace, activeWorkspaceId } from "../state";
 import { fontMono, palette, radii, space, textLineHeight, textSize, textTracking } from "../theme";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import { Icon, type IconName } from "../ui/icons";
-import { createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
+import { MarkdownPreview } from "../ui/markdownEditor";
 import {
   GallerySkeleton,
   InsetGroup,
@@ -728,13 +727,7 @@ function SkillInspectModal() {
                         </Text>
                       }
                     >
-                      <TextView
-                        markdown={inspectedSkillContent() ?? ""}
-                        selectable={true}
-                        links="open"
-                        codeBlockActions={createMarkdownCodeActions()}
-                        styles={createMarkdownStyles({ compact: true })}
-                      />
+                      <MarkdownPreview markdown={inspectedSkillContent() ?? ""} links="open" compact={true} />
                     </If>
                   </View>
                 </View>

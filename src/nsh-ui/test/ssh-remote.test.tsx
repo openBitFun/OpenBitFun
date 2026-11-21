@@ -620,7 +620,7 @@ test("New Workspace modal creates Assistant and Local Project without mixing rem
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openNewWorkspaceViaUi(app);
 
   // Assistant creation flow
@@ -662,7 +662,7 @@ test("New Workspace remote SSH and Docker/WSL host selection opens via remote_op
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openNewWorkspaceViaUi(app);
   await app.press("new-workspace-choice-project");
 
@@ -711,7 +711,7 @@ test("SSH Connection modal supports ~/.ssh/config import, ssh_get_config, test r
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openSshModalViaUi(app);
 
   await app.waitFor("ssh-saved-conn-prod-1");
@@ -770,7 +770,7 @@ test("SSH Auth Prompt modal repairs password credentials after authentication re
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openSshModalViaUi(app);
   await app.waitFor("ssh-connect-conn-staging-2");
   await app.press("ssh-connect-conn-staging-2");
@@ -795,7 +795,7 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openSshModalViaUi(app);
   await app.press("ssh-browse-conn-prod-1");
   await app.waitFor("remote-file-browser-modal");
@@ -900,7 +900,7 @@ test("Port Forwarding modal detects listeners without auto-forwarding, normalize
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openSshModalViaUi(app);
   await app.press("ssh-pf-conn-prod-1");
   await app.waitFor("port-forward-modal");
@@ -980,7 +980,7 @@ test("the remote browser tolerates a host lacking remote_open_workspace", async 
     host: { handlers: deviceBackend.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openSshModalViaUi(app);
   await app.press("ssh-browse-conn-prod-1");
   await app.waitFor("remote-file-browser-modal");
@@ -998,7 +998,7 @@ test("Local Docker / WSL target discovery in the SSH Connection modal", async ()
     host: { handlers: ssh.base.handlers },
   });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
 
   await openSshModalViaUi(app);
   await app.press("Local Docker");
@@ -1020,7 +1020,7 @@ test("Remote workspace activation asks the backend to restore a dropped link and
   const ssh = createSshBackend({ openedWorkspaces: opened });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
 
@@ -1064,7 +1064,7 @@ test("Remote link state follows the backend's remote://link-state events and ask
   const ssh = createSshBackend({ openedWorkspaces: opened });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await showDevices(app);
@@ -1101,7 +1101,7 @@ test("A host without backend link supervision gets an explicit update-the-host s
   const ssh = createSshBackend({ openedWorkspaces: opened, noLinkSupervision: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
-  await app.waitFor("OpenBitFun");
+  await app.waitFor("Super Agent");
   await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await showDevices(app);
@@ -1111,4 +1111,133 @@ test("A host without backend link supervision gets an explicit update-the-host s
   await app.waitFor("staging.example.com: this host cannot restore remote connections");
   expect(ssh.callsFor("ssh_connect")).toHaveLength(0);
   expect(app.shows("remote-link-reconnect")).toBe(false);
+});
+
+// wave22-p5: upload/download only on an SSH workspace of this machine, and the workspace icon on any workspace.
+test("an SSH workspace of this machine uploads and downloads through the backend; a local one offers neither", async () => {
+  const opened = [
+    { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
+    { id: "ws-staging", name: "staging", rootPath: "/srv/staging", workspaceKind: "remote", connectionId: "conn-staging-2", sshHost: "staging.example.com" },
+  ] as unknown as BackendOptions["openedWorkspaces"];
+  const ssh = createSshBackend({ openedWorkspaces: opened });
+  const inner = ssh.base.handlers["openbitfun.invoke"] as (data: unknown) => unknown;
+  const sent: Array<{ action: string; payload: Record<string, unknown>; raw: boolean }> = [];
+  ssh.base.handlers["openbitfun.invoke"] = async (data: unknown) => {
+    const args = asRecord(data);
+    const action = String(args.action ?? "");
+    const raw = Object.prototype.hasOwnProperty.call(args, "raw");
+    const payload = asRecord(raw ? args.raw : args.request);
+    if (action === "remote_upload_from_local_path" || action === "remote_download_to_local_path") {
+      sent.push({ action, payload, raw });
+      return { ok: true, value: action === "remote_upload_from_local_path" ? { wasDirectory: false } : null, transport: "dev" };
+    }
+    return inner(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
+  await app.waitFor("Super Agent");
+
+  await showDevices(app);
+  await app.press("workspace-actions-workspace-1");
+  await app.waitFor("Change icon…");
+  expect(app.shows("text:Upload to workspace…")).toBe(false);
+  expect(app.shows("text:Download from workspace…")).toBe(false);
+  await app.keyboard.press("escape");
+
+  await app.press("workspace-actions-ws-staging");
+  await app.press("text:Upload to workspace…");
+  await app.waitFor("workspace-transfer-modal");
+  await app.type("workspace-transfer-local", "/Users/me/notes.md");
+  await app.press("workspace-transfer-start");
+  await app.waitUntil(() => sent.length === 1);
+  expect(sent[0]?.raw).toBe(true);
+  expect(sent[0]?.payload).toMatchObject({
+    connectionId: "conn-staging-2",
+    localPath: "/Users/me/notes.md",
+    remotePath: "/srv/staging/notes.md",
+  });
+  expect(String(sent[0]?.payload.transferId)).toMatch(/^transfer-/);
+  await app.waitFor("Uploaded notes.md");
+
+  await app.press("workspace-actions-ws-staging");
+  await app.press("text:Download from workspace…");
+  await app.waitFor("workspace-transfer-modal");
+  await app.clear("workspace-transfer-remote");
+  await app.type("workspace-transfer-remote", "/srv/staging/logs");
+  await app.type("workspace-transfer-local", "/Users/me/Downloads");
+  await app.press("workspace-transfer-start");
+  await app.waitUntil(() => sent.length === 2);
+  expect(sent[1]?.payload).toMatchObject({
+    connectionId: "conn-staging-2",
+    remotePath: "/srv/staging/logs",
+    localPath: "/Users/me/Downloads/logs",
+  });
+});
+
+test("the workspace icon offers the glyphs the device supports and saves against the revision it read", async () => {
+  const ssh = createSshBackend();
+  const inner = ssh.base.handlers["openbitfun.invoke"] as (data: unknown) => unknown;
+  const sets: Array<Record<string, unknown>> = [];
+  let supported = ["default", "code", "research"];
+  ssh.base.handlers["openbitfun.invoke"] = async (data: unknown) => {
+    const args = asRecord(data);
+    const action = String(args.action ?? "");
+    const request = asRecord(args.request);
+    if (action === "get_workspace_icon") {
+      return {
+        ok: true,
+        value: {
+          workspaceId: request.workspaceId,
+          icon: { version: 1, revision: 3, mode: "default", color: "blue", glyph: "default" },
+          imageUnavailable: false,
+          ...(supported.length ? { supportedGlyphs: supported } : {}),
+        },
+        transport: "dev",
+      };
+    }
+    if (action === "set_workspace_icon") {
+      sets.push(request);
+      return { ok: true, value: { workspaceId: request.workspaceId, icon: { version: 1, revision: 4, mode: "default", color: "blue", glyph: "code" }, imageUnavailable: false }, transport: "dev" };
+    }
+    return inner(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
+  await app.waitFor("Super Agent");
+  await showDevices(app);
+  await app.press("workspace-actions-workspace-1");
+  await app.press("text:Change icon…");
+  await app.waitFor("workspace-icon-glyph-code");
+  expect(app.shows("workspace-icon-glyph-music")).toBe(false);
+  await app.press("workspace-icon-glyph-code");
+  await app.press("workspace-icon-save");
+  await app.waitUntil(() => sets.length === 1);
+  expect(sets[0]).toMatchObject({
+    workspaceId: "workspace-1",
+    expectedRevision: 3,
+    // Colors are not drawn: the record keeps the one it has.
+    icon: { kind: "default", color: "blue", glyph: "code" },
+  });
+
+  // A device that offers no glyphs (an older one) says so instead of a picker.
+  supported = [];
+  await app.press("workspace-actions-workspace-1");
+  await app.press("text:Change icon…");
+  await app.waitFor("Update OpenBitFun on this device to choose an icon.");
+  expect(app.shows("workspace-icon-glyph-code")).toBe(false);
+});
+
+// wave24-replica: a profile from the account that still needs its key here says so.
+test("an account SSH profile without its key on this device says so", async () => {
+  const ssh = createSshBackend({
+    accountRecords: {
+      attached: true,
+      routinesElsewhere: [],
+      mcpNeedsSecrets: [],
+      sshNeedsSecrets: [{ id: "conn-prod-1", missing: ["key"] }],
+    },
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
+  await app.waitFor("Super Agent");
+  await openSshModalViaUi(app);
+  await app.waitFor("label:ssh-needs-secret-conn-prod-1");
+  expect(app.texts()).toContain("Needs a key on this device");
 });

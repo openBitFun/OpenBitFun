@@ -38,6 +38,8 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("account_list_devices", NativeCommandSupport::Native),
     ("account_login", NativeCommandSupport::Native),
     ("account_logout", NativeCommandSupport::Native),
+    ("account_settings_sync_set", NativeCommandSupport::Native),
+    ("account_settings_sync_status", NativeCommandSupport::Native),
     ("account_status", NativeCommandSupport::Native),
     ("account_token_expired", NativeCommandSupport::Native),
     ("account_update_device_alias", NativeCommandSupport::Native),
@@ -144,6 +146,15 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("delete_skill", NativeCommandSupport::Native),
     ("delete_subagent", NativeCommandSupport::Native),
     ("delete_terminal_profile", NativeCommandSupport::Native),
+    ("desktop_card_delete", NativeCommandSupport::Native),
+    ("desktop_card_get", NativeCommandSupport::Native),
+    ("desktop_card_list", NativeCommandSupport::Native),
+    ("desktop_card_refresh", NativeCommandSupport::Native),
+    ("desktop_card_set_always_on_top", NativeCommandSupport::Native),
+    ("desktop_card_set_bounds", NativeCommandSupport::Native),
+    ("desktop_card_set_checklist_item", NativeCommandSupport::Native),
+    ("desktop_card_set_visible", NativeCommandSupport::Native),
+    ("device_records_overview", NativeCommandSupport::Native),
     ("dispatch_answer", NativeCommandSupport::Native),
     ("dispatch_append", NativeCommandSupport::Native),
     ("dispatch_cancel", NativeCommandSupport::Native),
@@ -181,6 +192,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("fleet_call", NativeCommandSupport::Native),
     ("fleet_device_detail", NativeCommandSupport::Native),
     ("fleet_events", NativeCommandSupport::Native),
+    ("fleet_models", NativeCommandSupport::Native),
     ("fleet_navigator", NativeCommandSupport::Native),
     ("fleet_prompts", NativeCommandSupport::Native),
     ("fleet_recent_sessions", NativeCommandSupport::Native),
@@ -334,6 +346,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("grant_miniapp_path", NativeCommandSupport::Native),
     ("grant_miniapp_workspace", NativeCommandSupport::Native),
     ("has_insights_data", NativeCommandSupport::Native),
+    ("hide_agent_companion_desktop_pet", NativeCommandSupport::Adapter),
     ("hide_main_window_after_close_request", NativeCommandSupport::Adapter),
     ("host_shell_attach", NativeCommandSupport::Native),
     ("host_shell_respond", NativeCommandSupport::Native),
@@ -384,6 +397,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("list_subscription_accounts", NativeCommandSupport::Native),
     ("list_visible_subagents", NativeCommandSupport::Native),
     ("load_acp_json_config", NativeCommandSupport::Native),
+    ("load_agent_companion_pet_spritesheet", NativeCommandSupport::Native),
     ("load_git_repo_history", NativeCommandSupport::Native),
     ("load_insights_report", NativeCommandSupport::Native),
     ("load_mcp_json_config", NativeCommandSupport::Native),
@@ -401,6 +415,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("mark_session_seen", NativeCommandSupport::Native),
     ("mesh_list_devices", NativeCommandSupport::Native),
     ("mesh_status", NativeCommandSupport::Native),
+    ("miniapp_account_catalog", NativeCommandSupport::Native),
     ("miniapp_agent_cancel", NativeCommandSupport::Native),
     ("miniapp_agent_cancel_stale_runs", NativeCommandSupport::Native),
     ("miniapp_agent_ensure_session", NativeCommandSupport::Native),
@@ -422,6 +437,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("miniapp_get_draft", NativeCommandSupport::Native),
     ("miniapp_host_call", NativeCommandSupport::Native),
     ("miniapp_import_from_path", NativeCommandSupport::Native),
+    ("miniapp_inline", NativeCommandSupport::Native),
     ("miniapp_install_deps", NativeCommandSupport::Native),
     ("miniapp_market_browse", NativeCommandSupport::Native),
     ("miniapp_market_get_listing", NativeCommandSupport::Native),
@@ -540,6 +556,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("reset_memory", NativeCommandSupport::Native),
     ("reset_mode_skill_selection", NativeCommandSupport::Native),
     ("reset_workspace_persona_files", NativeCommandSupport::Native),
+    ("resize_agent_companion_desktop_pet", NativeCommandSupport::Adapter),
     ("resolve_ai_model_request_url", NativeCommandSupport::Native),
     ("respond_permission", NativeCommandSupport::Native),
     ("respond_permission_batch", NativeCommandSupport::Native),
@@ -629,6 +646,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("set_tray_unread_count", NativeCommandSupport::Adapter),
     ("set_web_search_provider", NativeCommandSupport::Native),
     ("set_workspace_icon", NativeCommandSupport::Native),
+    ("show_agent_companion_desktop_pet", NativeCommandSupport::Adapter),
     ("show_main_window", NativeCommandSupport::Adapter),
     ("speech_append_audio_chunk", NativeCommandSupport::Native),
     ("speech_append_realtime_audio", NativeCommandSupport::Native),
@@ -764,6 +782,8 @@ pub(super) fn dispatch<'a>(
         "account_list_devices" => command_account_list_devices(host, args),
         "account_login" => command_account_login(host, args),
         "account_logout" => command_account_logout(host, args),
+        "account_settings_sync_set" => command_account_settings_sync_set(host, args),
+        "account_settings_sync_status" => command_account_settings_sync_status(host, args),
         "account_status" => command_account_status(host, args),
         "account_token_expired" => command_account_token_expired(host, args),
         "account_update_device_alias" => command_account_update_device_alias(host, args),
@@ -870,6 +890,15 @@ pub(super) fn dispatch<'a>(
         "delete_skill" => command_delete_skill(host, args),
         "delete_subagent" => command_delete_subagent(host, args),
         "delete_terminal_profile" => command_delete_terminal_profile(host, args),
+        "desktop_card_delete" => command_desktop_card_delete(host, args),
+        "desktop_card_get" => command_desktop_card_get(host, args),
+        "desktop_card_list" => command_desktop_card_list(host, args),
+        "desktop_card_refresh" => command_desktop_card_refresh(host, args),
+        "desktop_card_set_always_on_top" => command_desktop_card_set_always_on_top(host, args),
+        "desktop_card_set_bounds" => command_desktop_card_set_bounds(host, args),
+        "desktop_card_set_checklist_item" => command_desktop_card_set_checklist_item(host, args),
+        "desktop_card_set_visible" => command_desktop_card_set_visible(host, args),
+        "device_records_overview" => command_device_records_overview(host, args),
         "dispatch_answer" => command_dispatch_answer(host, args),
         "dispatch_append" => command_dispatch_append(host, args),
         "dispatch_cancel" => command_dispatch_cancel(host, args),
@@ -907,6 +936,7 @@ pub(super) fn dispatch<'a>(
         "fleet_call" => command_fleet_call(host, args),
         "fleet_device_detail" => command_fleet_device_detail(host, args),
         "fleet_events" => command_fleet_events(host, args),
+        "fleet_models" => command_fleet_models(host, args),
         "fleet_navigator" => command_fleet_navigator(host, args),
         "fleet_prompts" => command_fleet_prompts(host, args),
         "fleet_recent_sessions" => command_fleet_recent_sessions(host, args),
@@ -1060,6 +1090,7 @@ pub(super) fn dispatch<'a>(
         "grant_miniapp_path" => command_grant_miniapp_path(host, args),
         "grant_miniapp_workspace" => command_grant_miniapp_workspace(host, args),
         "has_insights_data" => command_has_insights_data(host, args),
+        "hide_agent_companion_desktop_pet" => super::native_commands::hide_agent_companion_desktop_pet(host, args),
         "hide_main_window_after_close_request" => super::native_commands::hide_main_window_after_close_request(host, args),
         "host_shell_attach" => command_host_shell_attach(host, args),
         "host_shell_respond" => command_host_shell_respond(host, args),
@@ -1110,6 +1141,7 @@ pub(super) fn dispatch<'a>(
         "list_subscription_accounts" => command_list_subscription_accounts(host, args),
         "list_visible_subagents" => command_list_visible_subagents(host, args),
         "load_acp_json_config" => command_load_acp_json_config(host, args),
+        "load_agent_companion_pet_spritesheet" => command_load_agent_companion_pet_spritesheet(host, args),
         "load_git_repo_history" => command_load_git_repo_history(host, args),
         "load_insights_report" => command_load_insights_report(host, args),
         "load_mcp_json_config" => command_load_mcp_json_config(host, args),
@@ -1127,6 +1159,7 @@ pub(super) fn dispatch<'a>(
         "mark_session_seen" => command_mark_session_seen(host, args),
         "mesh_list_devices" => command_mesh_list_devices(host, args),
         "mesh_status" => command_mesh_status(host, args),
+        "miniapp_account_catalog" => command_miniapp_account_catalog(host, args),
         "miniapp_agent_cancel" => command_miniapp_agent_cancel(host, args),
         "miniapp_agent_cancel_stale_runs" => command_miniapp_agent_cancel_stale_runs(host, args),
         "miniapp_agent_ensure_session" => command_miniapp_agent_ensure_session(host, args),
@@ -1148,6 +1181,7 @@ pub(super) fn dispatch<'a>(
         "miniapp_get_draft" => command_miniapp_get_draft(host, args),
         "miniapp_host_call" => command_miniapp_host_call(host, args),
         "miniapp_import_from_path" => command_miniapp_import_from_path(host, args),
+        "miniapp_inline" => command_miniapp_inline(host, args),
         "miniapp_install_deps" => command_miniapp_install_deps(host, args),
         "miniapp_market_browse" => command_miniapp_market_browse(host, args),
         "miniapp_market_get_listing" => command_miniapp_market_get_listing(host, args),
@@ -1266,6 +1300,7 @@ pub(super) fn dispatch<'a>(
         "reset_memory" => command_reset_memory(host, args),
         "reset_mode_skill_selection" => command_reset_mode_skill_selection(host, args),
         "reset_workspace_persona_files" => command_reset_workspace_persona_files(host, args),
+        "resize_agent_companion_desktop_pet" => super::native_commands::resize_agent_companion_desktop_pet(host, args),
         "resolve_ai_model_request_url" => command_resolve_ai_model_request_url(host, args),
         "respond_permission" => command_respond_permission(host, args),
         "respond_permission_batch" => command_respond_permission_batch(host, args),
@@ -1355,6 +1390,7 @@ pub(super) fn dispatch<'a>(
         "set_tray_unread_count" => super::native_commands::set_tray_unread_count(host, args),
         "set_web_search_provider" => command_set_web_search_provider(host, args),
         "set_workspace_icon" => command_set_workspace_icon(host, args),
+        "show_agent_companion_desktop_pet" => super::native_commands::show_agent_companion_desktop_pet(host, args),
         "show_main_window" => super::native_commands::show_main_window(host, args),
         "speech_append_audio_chunk" => command_speech_append_audio_chunk(host, args),
         "speech_append_realtime_audio" => command_speech_append_realtime_audio(host, args),
@@ -1575,6 +1611,29 @@ fn command_account_logout(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_logout(
             HostHandle::new(Arc::clone(host)),
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_account_settings_sync_set(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::account_settings_sync_api::account_settings_sync_set(
+            HostHandle::new(Arc::clone(host)),
+            host.command_state("account_settings_sync_set")?,
+            arg(&args, "request", "account_settings_sync_set")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_account_settings_sync_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::account_settings_sync_api::account_settings_sync_status(
+            host.command_state("account_settings_sync_status")?,
+            arg(&args, "request", "account_settings_sync_status")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })
@@ -2628,6 +2687,105 @@ fn command_delete_terminal_profile(host: &Arc<NativeHost>, args: Value) -> Dispa
 }
 
 #[inline(never)]
+fn command_desktop_card_delete(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_delete(
+            host.command_state("desktop_card_delete")?,
+            arg(&args, "request", "desktop_card_delete")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_card_get(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_get(
+            host.command_state("desktop_card_get")?,
+            arg(&args, "request", "desktop_card_get")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_card_list(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_list(
+            host.command_state("desktop_card_list")?,
+            arg(&args, "request", "desktop_card_list")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_card_refresh(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_refresh(
+            host.command_state("desktop_card_refresh")?,
+            arg(&args, "request", "desktop_card_refresh")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_card_set_always_on_top(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_set_always_on_top(
+            host.command_state("desktop_card_set_always_on_top")?,
+            arg(&args, "request", "desktop_card_set_always_on_top")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_card_set_bounds(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_set_bounds(
+            host.command_state("desktop_card_set_bounds")?,
+            arg(&args, "request", "desktop_card_set_bounds")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_card_set_checklist_item(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_set_checklist_item(
+            host.command_state("desktop_card_set_checklist_item")?,
+            arg(&args, "request", "desktop_card_set_checklist_item")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_desktop_card_set_visible(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::desktop_cards::desktop_card_api::desktop_card_set_visible(
+            host.command_state("desktop_card_set_visible")?,
+            arg(&args, "request", "desktop_card_set_visible")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_device_records_overview(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::account_records_api::device_records_overview(
+            host.command_state("device_records_overview")?,
+            arg(&args, "request", "device_records_overview")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
 fn command_dispatch_answer(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::dispatch_api::dispatch_answer(
@@ -3020,6 +3178,16 @@ fn command_fleet_events(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'
     Box::pin(async move {
         let result = crate::fleet::fleet_api::fleet_events(
             arg(&args, "request", "fleet_events")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_models(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_models(
+            arg(&args, "request", "fleet_models")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })
@@ -5122,6 +5290,17 @@ fn command_load_acp_json_config(host: &Arc<NativeHost>, args: Value) -> Dispatch
 }
 
 #[inline(never)]
+fn command_load_agent_companion_pet_spritesheet(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::companion_pet_api::load_agent_companion_pet_spritesheet(
+            host.command_state("load_agent_companion_pet_spritesheet")?,
+            arg(&args, "request", "load_agent_companion_pet_spritesheet")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
 fn command_load_git_repo_history(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::load_git_repo_history(
@@ -5291,6 +5470,16 @@ fn command_mesh_list_devices(host: &Arc<NativeHost>, args: Value) -> DispatchFut
 fn command_mesh_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::mesh::mesh_api::mesh_status().await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_miniapp_account_catalog(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::miniapp_desktop::catalog::miniapp_account_catalog(
+            arg(&args, "request", "miniapp_account_catalog")?,
+        ).await;
         (&result).dispatch_kind().finish(result)
     })
 }
@@ -5529,6 +5718,17 @@ fn command_miniapp_import_from_path(host: &Arc<NativeHost>, args: Value) -> Disp
         let result = crate::api::miniapp_api::miniapp_import_from_path(
             host.command_state("miniapp_import_from_path")?,
             arg(&args, "request", "miniapp_import_from_path")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_miniapp_inline(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::miniapp_desktop::inline::miniapp_inline(
+            HostHandle::new(Arc::clone(host)),
+            arg(&args, "request", "miniapp_inline")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })

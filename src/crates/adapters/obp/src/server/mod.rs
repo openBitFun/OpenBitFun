@@ -52,6 +52,9 @@ pub use scope::{
     check_cloud_agent_call, check_command, event_visible, scope_for_device, CloudAgentPolicy,
     Scope, CLOUD_AGENT_DEVICE_KIND, CLOUD_AGENT_SCOPE_CAPABILITY, FLEET_MODEL_COMMANDS,
 };
+pub use scope::{
+    cloud_agent_replica_verb, is_replica_verb, CloudReplicaCall, CLOUD_AGENT_REPLICA_COLLECTIONS,
+};
 
 pub use crate::authority::{DeviceKindFuture, MeshAuthority, MeshInfo, MeshIo, PairKeyFuture};
 pub use crate::OBP_PROTOCOL_VERSION;
@@ -117,6 +120,15 @@ pub trait ObpBackend: Send + Sync + 'static {
     /// answered as an old entry's, frames unchanged.
     #[cfg(feature = "fleet")]
     fn fleet_mux(&self) -> Option<Arc<crate::fleet::mux::FleetMux>> {
+        None
+    }
+    /// This host's copy of the account replica, once its fleet attached
+    /// one: a `cloud-agent` connection's replica verbs are answered from it
+    /// with access to [`scope::CLOUD_AGENT_REPLICA_COLLECTIONS`] only (never
+    /// through [`Self::dispatch`], which serves the account's runtime
+    /// devices). `None` (the default): refused as unsupported.
+    #[cfg(feature = "fleet")]
+    fn account_replica(&self) -> Option<Arc<crate::fleet::replica::AccountReplica>> {
         None
     }
     /// Whether this host serves the account's cloud agent (its device

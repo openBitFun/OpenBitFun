@@ -32,6 +32,7 @@ async fn openbitfun_library_path_exposes_supported_relay_api() {
         device_manager: relay::DeviceManager::new(),
         cors_allow_origins: Arc::new(Vec::new()),
         page_browser_auth: None,
+        directory_profile: false,
     };
 
     fn require_store<T: WebAssetStore>() {}

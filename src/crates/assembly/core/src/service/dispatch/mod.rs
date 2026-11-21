@@ -16,6 +16,8 @@ mod baseline;
 mod controller;
 #[cfg(all(feature = "agent-runtime", feature = "ssh-remote"))]
 mod device_controller;
+#[cfg(all(feature = "agent-runtime", feature = "ssh-remote"))]
+mod peer_import;
 #[cfg(feature = "agent-runtime")]
 mod preparation;
 mod status_error;
@@ -40,7 +42,7 @@ use crate::infrastructure::PathManager;
 ))]
 pub use account_device_rpc::{
     device_dispatch_wire_args, device_dispatch_wire_value, invoke_device_dispatch,
-    AccountRuntimeDeviceDispatchRpc,
+    AccountRuntimeDeviceDispatchRpc, MeshDeviceDispatchRpc,
 };
 #[cfg(all(
     feature = "agent-runtime",
@@ -72,6 +74,11 @@ pub use device_controller::{
     query_device_job as query_device_dispatch_job, status_device as get_device_dispatch_status,
     submit_device as submit_device_dispatch, sync_device_result as sync_device_dispatch_result,
     DeviceDispatchRpc,
+};
+#[cfg(all(feature = "agent-runtime", feature = "ssh-remote"))]
+pub use peer_import::{
+    advertise_peer_import, is_peer_import_provision, peer_import_coordinator,
+    PeerImportCoordinator, PeerImportLocalRunner, PeerImportLocalVerb,
 };
 pub use status_error::{
     classify_target_status_error, is_target_job_not_found_message, DispatchJobNotFoundOnTarget,

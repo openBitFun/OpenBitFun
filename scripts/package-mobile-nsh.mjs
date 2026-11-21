@@ -12,6 +12,7 @@
 // Output: target/mobile-nsh/<target>/, or `-o <dir>`. NSH needs rustc >= 1.97
 // (RUSTUP_TOOLCHAIN defaults to 1.98.1 here).
 import { spawnSync } from 'node:child_process';
+import { syncVendorAssets } from './sync-nsh-vendor-assets.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,6 +45,8 @@ export function mobilePackageCommand(args, env = process.env) {
 
 function main(args) {
   const { command, args: nshArgs, env, out } = mobilePackageCommand(args);
+  // The app ships its own copy of the shared UI's document renderers.
+  syncVendorAssets();
   console.log(`[mobile-nsh] nsh ${nshArgs.join(' ')}`);
   const result = spawnSync(command, nshArgs, {
     cwd: ROOT,

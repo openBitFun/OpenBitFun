@@ -98,7 +98,7 @@ export type SceneId =
   | "devices"
   | "settings";
 
-export type AuxPaneTab = "files" | "git" | "terminal";
+export type AuxPaneTab = "files" | "git" | "terminal" | "browser";
 export type AuxPaneSide = "right" | "left";
 export type SessionGrouping = "grouped" | "flat";
 

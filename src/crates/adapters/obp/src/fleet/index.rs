@@ -578,6 +578,42 @@ impl FleetIndex {
         project_prompts(state.revision, &Self::inputs(&state, &facts))
     }
 
+    /// The `fleet_models` answer: every device's published models, relative
+    /// to `this_device_id` (the device that runs the session; empty: this
+    /// host).
+    pub fn models(&self, this_device_id: &str) -> FleetModels {
+        let this_device_id = match this_device_id.trim() {
+            "" => self.self_device_id.as_str(),
+            id => id,
+        };
+        let state = self.lock();
+        let facts: Vec<(String, FleetDeviceFacts)> = state
+            .devices
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.facts(id)))
+            .collect();
+        project_fleet_models(
+            state.revision,
+            this_device_id,
+            &Self::inputs(&state, &facts),
+        )
+    }
+
+    /// One device's published catalog (`None`: unknown device, no partition
+    /// yet, or a build without a catalog) and whether it is online now.
+    pub fn device_models(
+        &self,
+        device_id: &str,
+    ) -> Option<(FleetDeviceFacts, Option<Vec<FleetModel>>)> {
+        let state = self.lock();
+        let entry = state.devices.get(device_id)?;
+        let models = entry
+            .partition
+            .as_ref()
+            .and_then(|partition| partition.models.clone());
+        Some((entry.facts(device_id), models))
+    }
+
     // -- cache --------------------------------------------------------------
 
     fn load_cache(&self) {
@@ -776,14 +812,21 @@ impl FleetOwnerIndex for FleetIndex {
 }
 
 /// A partition's content without its position (`revision`, `instanceId`).
-fn content_of(
-    partition: &FleetDigest,
-) -> (&[FleetWorkspace], &[FleetSession], &[FleetPrompt], bool) {
+type PartitionContent<'a> = (
+    &'a [FleetWorkspace],
+    &'a [FleetSession],
+    &'a [FleetPrompt],
+    bool,
+    Option<&'a [FleetModel]>,
+);
+
+fn content_of(partition: &FleetDigest) -> PartitionContent<'_> {
     (
         &partition.workspaces,
         &partition.sessions,
         &partition.prompts,
         partition.sessions_truncated,
+        partition.models.as_deref(),
     )
 }
 
@@ -808,6 +851,10 @@ fn merge_delta(held: &FleetDigest, delta: FleetDigest) -> FleetDigest {
     let mut next = held.clone();
     next.revision = delta.revision;
     next.sessions_truncated = delta.sessions_truncated;
+    // The catalog comes whole in every answer of a build that has one.
+    if delta.models.is_some() {
+        next.models = delta.models.clone();
+    }
     let removed = &delta.removed;
     let gone_ws: BTreeSet<&str> = removed.workspace_ids.iter().map(String::as_str).collect();
     let gone_sessions: BTreeSet<&str> = removed.session_ids.iter().map(String::as_str).collect();
@@ -874,6 +921,9 @@ fn normalize_partition(partition: &mut FleetDigest) {
         prompt.device_id = device_id.clone();
         !prompt.prompt_id.is_empty() && seen_prompts.insert((prompt.kind, prompt.prompt_id.clone()))
     });
+    if let Some(models) = partition.models.as_mut() {
+        bound_catalog(models);
+    }
 }
 
 fn latest_activity(partition: &FleetDigest) -> BTreeMap<String, u64> {

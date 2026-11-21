@@ -4059,12 +4059,35 @@ const devSuperagent = (() => {
     status: conversation.turn ? "running" : "idle", rollup: conversation.rollup, unread: conversation.unread,
   });
   let seq = 0;
+  // The Super Agent model picker: every device with its models (the cloud
+  // node's order), and each conversation's pick (absent: Auto).
+  const superagentModelDevices = [
+    { deviceId: "dev-mac", name: "MacBook Pro", hostKind: "desktop", online: true,
+      models: [{ modelId: "model-1", displayName: "Claude Sonnet", provider: "anthropic", primary: true }, { modelId: "model-2", displayName: "GPT-5", provider: "openai" }] },
+    { deviceId: "dev-linux", name: "build-box", hostKind: "cli", online: false, unavailableReason: "device_offline",
+      models: [{ modelId: "model-srv", displayName: "Qwen", provider: "openai", primary: true }] },
+  ];
+  const modelSelectionOf = conversation => {
+    const pick = conversation && conversation.model;
+    if (!pick) return { mode: "auto" };
+    const device = superagentModelDevices.find(item => item.deviceId === pick.deviceId);
+    const model = device && device.models.find(item => item.modelId === pick.modelId);
+    return {
+      mode: "pinned",
+      deviceId: pick.deviceId,
+      deviceName: device ? device.name : undefined,
+      modelId: pick.modelId,
+      modelName: model ? model.displayName : undefined,
+      ...(device && device.unavailableReason ? { unavailableReason: device.unavailableReason } : {}),
+    };
+  };
   const fixtures = {
     superagent_status: () => ({
-      enabled: true, signedIn: true, deviceId: "cloud-dev", name: "OpenBitFun", hostKind: "cloud",
-      placeholder: "Ask OpenBitFun",
+      enabled: true, signedIn: true, deviceId: "cloud-dev", name: "Super Agent", hostKind: "cloud",
+      placeholder: "Ask Super Agent…",
       suggestions: ["Run the tests on all my devices", "Update deps", "Summarize today's work"],
       workingNow: { needsYou: [cards["job-test-mac"]], working: [cards["job-test-linux"], cards["job-test-win"]] },
+      models: superagentModelDevices,
     }),
     superagent_enable: () => ({ enabled: true }),
     superagent_disable: () => ({ enabled: false }),
@@ -4082,7 +4105,7 @@ const devSuperagent = (() => {
       if (!conversation) throw new Error("not_found: no such conversation");
       const ids = new Set(conversation.messages.flatMap(message => message.jobIds || []));
       return {
-        conversation: { id: conversation.id, title: conversation.title, updatedMs: conversation.updatedMs, turn: conversation.turn },
+        conversation: { id: conversation.id, title: conversation.title, updatedMs: conversation.updatedMs, turn: conversation.turn, model: modelSelectionOf(conversation) },
         messages: conversation.messages,
         cursor: 0,
         hasMore: false,
@@ -4097,6 +4120,7 @@ const devSuperagent = (() => {
         conversation = { id, title: String(req.message || "").slice(0, 48), updatedMs: Date.now(), rollup: "none", unread: false, turn: null, messages: [] };
         conversations[id] = conversation;
       }
+      if (req.model !== undefined) conversation.model = req.model || null;
       const duplicate = conversation.messages.some(message => message.clientMessageId === req.clientMessageId);
       if (!duplicate) {
         conversation.messages.push({ id: `m-dev-${++seq}`, role: "user", text: String(req.message || ""), atMs: Date.now(), clientMessageId: req.clientMessageId });
@@ -4105,6 +4129,14 @@ const devSuperagent = (() => {
       conversation.turn = { id: `turn-dev-${seq}`, step: "done", rounds: 1 };
       conversation.updatedMs = Date.now();
       return { conversationId: conversation.id, messageId: `m-dev-${seq}`, turnId: `turn-dev-${seq}`, duplicate };
+    },
+    superagent_set_model: args => {
+      const req = payloadOf(args);
+      const conversation = conversations[req.conversationId];
+      if (!conversation) throw new Error("not_found: no such conversation");
+      if (Boolean(req.deviceId) !== Boolean(req.modelId)) throw new Error("invalid_request: pick a device and a model, or Auto");
+      conversation.model = req.deviceId ? { deviceId: req.deviceId, modelId: req.modelId } : null;
+      return { conversationId: conversation.id, model: modelSelectionOf(conversation) };
     },
     superagent_cancel_turn: args => {
       const conversation = conversations[payloadOf(args).conversationId];
@@ -4141,6 +4173,111 @@ const devSuperagent = (() => {
 })();
 Object.assign(DEV_FIXTURES, devSuperagent);
 // ── end UI-B OpenBitFun conversation (wave 15) ───────────────────────────────
+
+// ── wave22-p5 session and settings parity (dev fixtures) ─────────────────────
+// The goal, background commands, MCP prompts, desktop-control permissions, the
+// workspace icon and settings export, as a desktop answers them.
+const devP5Goals = {};
+Object.assign(DEV_FIXTURES, {
+  get_session_thread_goal: args => ({ goal: devP5Goals[payloadOf(args).sessionId] ?? null }),
+  activate_session_goal: args => {
+    const req = payloadOf(args);
+    devP5Goals[req.sessionId] = { goalId: `goal-${req.sessionId}`, sessionId: req.sessionId, objective: req.userHint, status: "active", tokensUsed: 0 };
+    return { success: true, goal: devP5Goals[req.sessionId] };
+  },
+  update_session_thread_goal_objective: args => {
+    const req = payloadOf(args);
+    devP5Goals[req.sessionId] = { ...(devP5Goals[req.sessionId] ?? {}), objective: req.objective, status: "active" };
+    return devP5Goals[req.sessionId];
+  },
+  set_session_thread_goal_status: args => {
+    const req = payloadOf(args);
+    devP5Goals[req.sessionId] = { ...(devP5Goals[req.sessionId] ?? {}), status: req.status };
+    return devP5Goals[req.sessionId];
+  },
+  clear_session_thread_goal: args => {
+    delete devP5Goals[payloadOf(args).sessionId];
+    return null;
+  },
+  list_background_command_activities: () => ({ activities: [] }),
+  list_mcp_prompts: () => [],
+  computer_use_get_status: () => ({
+    computerUseEnabled: false,
+    accessibilityGranted: false,
+    screenCaptureGranted: true,
+    permissions: {
+      platform: "macos",
+      process_id: 1,
+      prompts_requested: false,
+      permissions: [
+        { kind: "accessibility", state: "required", requestable: true, settings_url: "x-apple.systempreferences:", detail: "Lets agents click and type for you." },
+        { kind: "screen_recording", state: "granted", requestable: false, settings_url: null, detail: "Lets agents see the screen." },
+      ],
+    },
+  }),
+  computer_use_request_permission: () => null,
+  computer_use_open_system_settings: () => null,
+  get_workspace_icon: args => ({
+    workspaceId: payloadOf(args).workspaceId,
+    icon: { version: 1, revision: 0, mode: "default", color: "default", glyph: "default" },
+    imageUnavailable: false,
+    supportedGlyphs: ["default", "code", "learning", "design", "documents", "research", "web", "mobile", "games", "data", "business", "tools", "travel", "food", "fitness", "music", "reading", "home", "finance", "photography", "pets", "nature", "shopping", "movies"],
+  }),
+  set_workspace_icon: args => ({ workspaceId: payloadOf(args).workspaceId, icon: { version: 1, revision: 1, mode: "default", color: "default", glyph: payloadOf(args).icon?.glyph }, imageUnavailable: false }),
+  export_config: () => ({ product_id: "openbitfun", format_version: 1, config: {}, export_timestamp: "2026-11-21T00:00:00Z", version: "2.0.0" }),
+  import_config: () => ({ success: true, errors: [], warnings: [] }),
+});
+// ── end wave22-p5 ─────────────────────────────────────────────────────────────
+// ── wave22-p2 browser (dev fixtures) ─────────────────────────────────────────
+// A desktop's agent page as its live view copy, and the user's own Chrome, as
+// a desktop answers them.
+const devP2BrowserPage = `<!DOCTYPE html><html><head><meta name="viewport" content="width=1024"><style>
+body{font:15px -apple-system,Helvetica,sans-serif;margin:0;color:#1f2023}
+header{display:flex;gap:24px;align-items:center;padding:16px 32px;border-bottom:1px solid #e5e5e5}
+header b{font-size:18px} nav span{margin-right:16px;color:#08798a}
+main{padding:32px;max-width:760px} h1{font-size:28px;margin:0 0 12px} p{line-height:24px;color:#4a4c52}
+.card{border:1px solid #e5e5e5;border-radius:12px;padding:16px;margin-top:16px}
+button{background:#08798a;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:14px}
+</style></head><body><header><b>Acme Docs</b><nav><span>Guides</span><span>API</span><span>Pricing</span></nav></header>
+<main><h1>Deploying with Acme</h1><p>Connect your repository, pick a region and press Deploy. Every push to main builds a preview.</p>
+<div class="card"><p>Region: Frankfurt · Plan: Team</p><button>Deploy now</button></div></main></body></html>`;
+let devP2BrowserConnected = true;
+Object.assign(DEV_FIXTURES, {
+  browser_webview_capture_preview: () => ({
+    status: "snapshot",
+    label: "embedded-browser-panel-view-dev-1",
+    url: "https://docs.acme.dev/deploy",
+    title: "Deploying with Acme",
+    html: devP2BrowserPage,
+    viewportWidth: 1024,
+    viewportHeight: 768,
+    capturedAtMs: Date.now(),
+  }),
+  browser_control_get_status: () => ({
+    cdpAvailable: devP2BrowserConnected,
+    defaultCdpSupported: true,
+    defaultCdpEnabled: devP2BrowserConnected,
+    setupUrl: "chrome://inspect/#remote-debugging",
+    browserReady: devP2BrowserConnected,
+    browserKind: "chrome",
+    browserVersion: devP2BrowserConnected ? "Chrome/142" : null,
+    port: 9222,
+    pageCount: devP2BrowserConnected ? 3 : 0,
+  }),
+  browser_control_enable_default_cdp: () => {
+    devP2BrowserConnected = true;
+    return { success: true, status: "connected_user_profile", browserKind: "chrome" };
+  },
+  browser_control_launch: () => {
+    devP2BrowserConnected = true;
+    return { success: true, status: "launched", browserKind: "chrome" };
+  },
+  browser_control_disconnect: () => {
+    devP2BrowserConnected = false;
+    return { success: true, status: "disconnected", browserKind: "chrome" };
+  },
+});
+// ── end wave22-p2 ─────────────────────────────────────────────────────────────
 
 
 // ── Browser controller (page realm): device key and the end-to-end channel ──

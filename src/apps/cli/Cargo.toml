@@ -146,7 +146,7 @@ openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "fl
 tokio = { workspace = true, features = ["io-util", "net"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
 winsplit = { workspace = true }
 
 # portable-pty: ohos requires 0.9 (nix 0.25 is incompatible); all other

@@ -22,7 +22,7 @@ Official release archives contain the same `openbitfun` executable.
 The executable carries the web UI that browsers load when they control this
 CLI as a device (`https://super.openbitfun.com/`). The installer and
 `pnpm run cli:build` build it from the same tree with the NSH toolchain
-(`nsh package src/nsh-ui --target web`, then
+(`nsh package src/nsh-ui/WebApp.tsx --target web`, then
 `scripts/write-ui-bundle-manifest.mjs`) and compile it in through
 `OPENBITFUN_CLI_WEB_UI_DIR`. It is embedded rather than installed next to the
 binary so it can never drift from the binary through self-update, `cargo

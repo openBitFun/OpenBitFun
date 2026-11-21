@@ -1036,7 +1036,8 @@ async fn devices_route_ranks_with_probes_and_lists_the_cloud_node_last() {
     );
     assert_eq!(
         devices["cloudNode"],
-        serde_json::json!({ "deviceId": "cloud-b", "name": "OpenBitFun", "path": "/agent/obp" })
+        // A node registered under the legacy default reads as "Super Agent".
+        serde_json::json!({ "deviceId": "cloud-b", "name": "Super Agent", "path": "/agent/obp" })
     );
     let rows = devices["devices"].as_array().unwrap();
     assert!(

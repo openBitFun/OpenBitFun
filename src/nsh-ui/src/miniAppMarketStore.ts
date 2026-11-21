@@ -20,7 +20,8 @@ import { loadSpaces, openSpaceWindow, spaceWindowBlockedReason } from "./spacesS
 import { activeWorkspace } from "./state";
 import { pushToast } from "./ui/overlays";
 
-export type SpacesView = "library" | "market" | "submissions";
+// "cards": the device's desktop cards under Library › Spaces (wave 22, P4).
+export type SpacesView = "library" | "cards" | "market" | "submissions";
 export type MarketSort = "newest" | "downloads" | "rating";
 
 /** The catalogue categories the market accepts (`MARKET_CATEGORIES`), plus `all`. */

@@ -15,6 +15,7 @@ import { Buffer } from "buffer";
 import { Clipboard } from "nsh";
 import { Application, Window } from "nsh/desktop";
 import { BROWSER_SHELL_OPERATIONS, markBrowserActuatorInstalled } from "./browserStore";
+import { PET_SHELL_OPERATIONS } from "./desktopPresence"; // wave22-p3
 import type { WindowShell } from "./windowShell";
 
 export interface ShellRequest {
@@ -120,6 +121,8 @@ const OPERATIONS: Record<string, Operation> = {
   },
   // embedded browser (wave 4): the backend's pages are this shell's web views.
   ...BROWSER_SHELL_OPERATIONS,
+  // desktop pet window (wave22-p3): `show/hide/resize_agent_companion_desktop_pet`.
+  ...PET_SHELL_OPERATIONS,
 };
 
 /** The operations this shell runs, as it announces them to the backend. */

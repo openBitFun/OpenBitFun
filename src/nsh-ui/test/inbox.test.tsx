@@ -150,6 +150,52 @@ test("prompts from three devices are answered in place, each on the device that 
   await app.waitFor("text:Answered · win-pc");
 });
 
+test("a Detached Dispatch job's question is answered through its job's question mailbox", async () => {
+  const backend = withAnswers(createBackend());
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: navigator(),
+    prompts: {
+      revision: 8,
+      prompts: [
+        {
+          deviceId: "dev-c",
+          workspaceId: "ws-1",
+          sessionId: "s-c1",
+          kind: "question",
+          promptId: "tool-dq",
+          revision: 1,
+          title: "Which database?",
+          toolName: "AskUserQuestion",
+          payload: {
+            questions: [
+              {
+                question: "Which database?",
+                header: "Database",
+                multiSelect: false,
+                options: [{ label: "sqlite" }, { label: "postgres" }],
+              },
+            ],
+          },
+          payloadTruncated: false,
+          answerable: true,
+          answerRoute: "dispatch",
+          jobId: "job-q",
+        },
+      ],
+    },
+  });
+  const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitFor("id:inbox-item-dev-c/tool-dq >> text:Which database?");
+  await app.press("id:inbox-item-dev-c/tool-dq >> label:postgres");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.command === "dispatch_target_answer"));
+  const answer = host.fleetCalls.find(call => call.command === "dispatch_target_answer");
+  expect(answer?.target).toBe("dev-c");
+  expect(answer?.args).toEqual({ jobId: "job-q", requestId: "tool-dq", answers: { "0": "postgres" } });
+  // Never the runtime's own question route: the job's worker owns it.
+  expect(host.fleetCalls.some(call => call.command === "submit_user_answers")).toBe(false);
+});
+
 test("a job card draws the same prompt without its header and answers it the same way", async () => {
   const host = inboxHost();
   const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });

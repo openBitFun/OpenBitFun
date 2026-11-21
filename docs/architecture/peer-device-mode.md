@@ -406,12 +406,27 @@ Do **not** treat cloud session blobs as the Remote data plane. Do **not** merge
 cloud session metadata into local disk on login or periodic pull — that pollutes
 A and conflicts with Peer Mode.
 
-Settings sync is continuous on every logged-in host (Desktop, interactive CLI,
-and the CLI daemon): local changes upload after a ~5s debounce (content-hash
-deduped); cloud changes are pulled at process start and then every ~30s. After
-applying or uploading settings, a host fans out `account://settings-applied`
-to attached controllers; the controller re-emits it locally so the frontend
-config cache and model selectors refresh without reconnecting.
+Settings sync (2.0) is continuous on every signed-in runtime host (the desktop
+backend and a CLI host that serves the device), switched by
+`app.account_sync.enabled` (Settings › Account, default on). No server keeps
+the settings: every runtime device holds the account replica
+(`openbitfun_obp::fleet::replica`, `<user data>/fleet/replica-<account>.json`)
+and exchanges it with the account's other runtime devices over Link through
+the owner verbs `fleet_replica_digest` / `fleet_replica_pull` /
+`fleet_replica_push` / `fleet_blob_get` (`account_replica_v1`). Records carry a
+hybrid logical clock (wall time, counter, device id); the greater clock wins
+per key, a deletion is a tombstone kept for 30 days, and the replica is
+size-capped. Only a fixed list of config paths is written to it
+(`remote_connect::settings_sync::SYNCED_SETTINGS`: the Preferences pages and
+the permission mode and rules; never models, credentials or the Super Agent
+device switches). Local edits are pushed to every online peer at once;
+offline edits stay undelivered in the replica and merge on reconnect; a new
+device offers only its non-default values (with the lowest clock, so they
+never override the account) and takes the account's values from the first
+peer it reaches. Account values apply through the host's typed config
+mutation; the host then emits `account://settings-applied` (`{keys}`) and
+`account://settings-sync-state`, and the UI re-reads what it draws. Phones
+and browsers read and write through the device they are connected to.
 
 The opened/recent workspace catalog is host-owned in the same way. Whenever a
 host's `WorkspaceService` persists a catalog change — including one made by a

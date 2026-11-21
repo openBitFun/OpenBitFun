@@ -6,6 +6,14 @@
 // the page's local storage shows one width in both frontends rather than two.
 
 import { Storage, signal } from "nsh";
+import { getConfig, setConfig } from "./api";
+
+/**
+ * The host keeps the width as `appearance.content_width` too, which account
+ * settings sync carries to the account's other devices; the page storage
+ * stays the fast first read.
+ */
+const HOST_WIDTH_PATH = "appearance.content_width";
 
 /** The conversation column default (visual spec §2.2: ≈72 characters at 15 px); stored values keep theirs. */
 export const DEFAULT_CONTENT_WIDTH = 760;
@@ -40,12 +48,39 @@ export async function loadContentWidth(): Promise<void> {
   }
 }
 
+/**
+ * Shows the host's width when it differs (account settings sync changed it on
+ * another device). A host that never stored one gets this surface's width
+ * once it is not the default (the first read after an upgrade).
+ */
+export async function syncContentWidthFromHost(): Promise<void> {
+  let stored: unknown;
+  try {
+    stored = await getConfig(HOST_WIDTH_PATH, true);
+  } catch {
+    return;
+  }
+  if (typeof stored === "number" && Number.isFinite(stored) && stored >= MIN_CONTENT_WIDTH) {
+    applyWidth(clampWidth(stored), false);
+  } else if (stored == null && contentWidth() !== DEFAULT_CONTENT_WIDTH) {
+    void setConfig(HOST_WIDTH_PATH, contentWidth()).catch(() => {});
+  }
+}
+
 /** Applies a width, which the conversation panes read on every paint. */
 export function setContentWidth(width: number): void {
   if (!Number.isFinite(width)) return;
-  const next = clampWidth(width);
+  applyWidth(clampWidth(width), true);
+}
+
+function applyWidth(next: number, toHost: boolean): void {
   if (next === contentWidth()) return;
   contentWidth.set(next);
+  if (toHost) {
+    void setConfig(HOST_WIDTH_PATH, next).catch(() => {
+      // An older or unreachable host keeps the width in this surface only.
+    });
+  }
   contentWidthNotice.set("");
   void Storage.setItem(CONTENT_WIDTH_STORAGE_KEY, String(next)).catch(() => {
     // A store that refuses the write still shows the width for this run.

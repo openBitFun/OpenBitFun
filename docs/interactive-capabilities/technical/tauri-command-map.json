@@ -2,12 +2,12 @@
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
   "catalogDigest": "111f8eba88e117defacc127be88915b4344b785e72d1ddb74208d7f2a9b21f74",
-  "commandCount": 714,
+  "commandCount": 732,
   "coverage": {
-    "commandCount": 714,
+    "commandCount": 732,
     "documentedCommandCount": 631,
-    "implementationCommandCount": 83,
-    "implementationDigest": "ac0edaf745cbeecfa4b41aac88fcaee2b6c4761f029578565cb55a02850a6baf"
+    "implementationCommandCount": 101,
+    "implementationDigest": "4da91069f60067fe644f54d0e5b1f5169cf651cd7308d6c85b4f5b52c4c4f774"
   },
   "commands": [
     {
@@ -190,6 +190,34 @@
       "rustPath": "api::remote_connect_api::account_logout",
       "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
       "signature": "fn account_logout(app: HostHandle) -> Result<(), String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "account_settings_sync_set",
+      "moduleId": "account_settings_sync",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "api::account_settings_sync_api::account_settings_sync_set",
+      "sourceFile": "src/apps/desktop/src/api/account_settings_sync_api.rs",
+      "signature": "fn account_settings_sync_set( app: HostHandle, state: State<'_, AppState>, request: AccountSettingsSyncSetRequest, ) -> Result<SyncStatus, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "account_settings_sync_status",
+      "moduleId": "account_settings_sync",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "api::account_settings_sync_api::account_settings_sync_status",
+      "sourceFile": "src/apps/desktop/src/api/account_settings_sync_api.rs",
+      "signature": "fn account_settings_sync_status( state: State<'_, AppState>, _request: AccountSettingsSyncStatusRequest, ) -> Result<SyncStatus, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -1899,6 +1927,132 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
+      "id": "desktop_card_delete",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_delete",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_delete( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardIdRequest, ) -> Result<(), String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_card_get",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_get",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_get( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardIdRequest, ) -> Result<DesktopCardRecord, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_card_list",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_list",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_list( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardListRequest, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_card_refresh",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_refresh",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_refresh( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardIdRequest, ) -> Result<DesktopCardRecord, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_card_set_always_on_top",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_set_always_on_top",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_set_always_on_top( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardAlwaysOnTopRequest, ) -> Result<DesktopCardRecord, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_card_set_bounds",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_set_bounds",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_set_bounds( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardSetBoundsRequest, ) -> Result<(), String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_card_set_checklist_item",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_set_checklist_item",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_set_checklist_item( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardChecklistItemRequest, ) -> Result<DesktopCardRecord, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "desktop_card_set_visible",
+      "moduleId": "desktop_card",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "desktop_cards::desktop_card_api::desktop_card_set_visible",
+      "sourceFile": "src/apps/desktop/src/desktop_cards/desktop_card_api.rs",
+      "signature": "fn desktop_card_set_visible( cards: State<'_, Arc<DesktopCards>>, request: DesktopCardSetVisibleRequest, ) -> Result<DesktopCardRecord, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "device_records_overview",
+      "moduleId": "account_records",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "api::account_records_api::device_records_overview",
+      "sourceFile": "src/apps/desktop/src/api/account_records_api.rs",
+      "signature": "fn device_records_overview( state: State<'_, AppState>, _request: AccountRecordsOverviewRequest, ) -> Result<AccountRecordsOverview, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "dispatch_answer",
       "moduleId": "dispatch",
       "capabilityId": "feature.detached-dispatch",
@@ -2474,6 +2628,20 @@
       "rustPath": "fleet::fleet_api::fleet_events",
       "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
       "signature": "fn fleet_events(request: FleetEventsRequest) -> Result<FleetEventsResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_models",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_models",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_models(request: FleetModelsRequest) -> Result<FleetModels, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -4916,6 +5084,20 @@
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
+      "id": "hide_agent_companion_desktop_pet",
+      "moduleId": "pet",
+      "capabilityId": "feature.desktop-pet",
+      "capabilityIds": [
+        "feature.desktop-pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "backend_protocol::native_commands::hide_agent_companion_desktop_pet",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/pet.rs",
+      "signature": "fn hide_agent_companion_desktop_pet( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
       "id": "hide_main_window_after_close_request",
       "moduleId": "native_shell",
       "capabilityId": "setting.application.general",
@@ -5698,6 +5880,20 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
+      "id": "load_agent_companion_pet_spritesheet",
+      "moduleId": "companion_pet",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "api::companion_pet_api::load_agent_companion_pet_spritesheet",
+      "sourceFile": "src/apps/desktop/src/api/companion_pet_api.rs",
+      "signature": "fn load_agent_companion_pet_spritesheet( state: State<'_, AppState>, request: LoadAgentCompanionPetSpritesheetRequest, ) -> Result<AgentCompanionPetSpritesheet, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "load_git_repo_history",
       "moduleId": "git",
       "capabilityId": "feature.git",
@@ -5951,6 +6147,20 @@
       "rustPath": "mesh::mesh_api::mesh_status",
       "sourceFile": "src/apps/desktop/src/mesh/mesh_api.rs",
       "signature": "fn mesh_status() -> Result<MeshStatus, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "miniapp_account_catalog",
+      "moduleId": "catalog",
+      "capabilityId": "feature.miniapps",
+      "capabilityIds": [
+        "feature.miniapps"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "miniapp_desktop::catalog::miniapp_account_catalog",
+      "sourceFile": "src/apps/desktop/src/miniapp_desktop/catalog.rs",
+      "signature": "fn miniapp_account_catalog( request: MiniAppAccountCatalogRequest, ) -> Result<MiniAppAccountCatalog, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -6288,6 +6498,20 @@
       "sourceFile": "src/apps/desktop/src/api/miniapp_api.rs",
       "signature": "fn miniapp_import_from_path( state: State<'_, AppState>, request: MiniAppImportFromPathRequest, ) -> Result<MiniApp, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "miniapp_inline",
+      "moduleId": "inline",
+      "capabilityId": "feature.miniapps",
+      "capabilityIds": [
+        "feature.miniapps"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "miniapp_desktop::inline::miniapp_inline",
+      "sourceFile": "src/apps/desktop/src/miniapp_desktop/inline.rs",
+      "signature": "fn miniapp_inline( app: HostHandle, request: MiniAppInlineRequest, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "RemoteUnsupported"
     },
     {
       "id": "miniapp_install_deps",
@@ -8165,6 +8389,20 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
+      "id": "resize_agent_companion_desktop_pet",
+      "moduleId": "pet",
+      "capabilityId": "feature.desktop-pet",
+      "capabilityIds": [
+        "feature.desktop-pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "backend_protocol::native_commands::resize_agent_companion_desktop_pet",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/pet.rs",
+      "signature": "fn resize_agent_companion_desktop_pet( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
       "id": "resolve_ai_model_request_url",
       "moduleId": "settings_mutation",
       "capabilityId": "setting.application.general",
@@ -9570,6 +9808,20 @@
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn set_workspace_icon( state: State<'_, AppState>, request: openbitfun_core::service::workspace::SetWorkspaceIconRequest, ) -> Result<openbitfun_core::service::workspace::WorkspaceIconSnapshot, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "show_agent_companion_desktop_pet",
+      "moduleId": "pet",
+      "capabilityId": "feature.desktop-pet",
+      "capabilityIds": [
+        "feature.desktop-pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "backend_protocol::native_commands::show_agent_companion_desktop_pet",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/native_commands/pet.rs",
+      "signature": "fn show_agent_companion_desktop_pet( host: &Arc<NativeHost>, args: Value, ) -> DispatchFuture<'_>",
+      "remoteWorkspacePolicy": "LocalOnly"
     },
     {
       "id": "show_main_window",

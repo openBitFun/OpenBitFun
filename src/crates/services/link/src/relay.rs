@@ -36,7 +36,7 @@ impl easytier::openbitfun::ForeignNetworkAdmission for Gate {
                     "Link join admitted: network={}, member={}, remote={}",
                     request.network_name,
                     label,
-                    request.remote_url.as_deref().unwrap_or("-")
+                    remote_label(request.remote_url.as_deref())
                 );
                 Ok(())
             }
@@ -45,11 +45,42 @@ impl easytier::openbitfun::ForeignNetworkAdmission for Gate {
                     "Link join refused: network={}, reason={}, remote={}",
                     request.network_name,
                     reason,
-                    request.remote_url.as_deref().unwrap_or("-")
+                    remote_label(request.remote_url.as_deref())
                 );
                 Err(reason)
             }
         }
+    }
+}
+
+/// The peer's transport for the log, without its address: a client IP is
+/// personal data and the log keeps no user data (`ws`, `ws-loopback`, `-`).
+fn remote_label(remote_url: Option<&str>) -> String {
+    let Some(url) = remote_url else {
+        return "-".to_string();
+    };
+    let (scheme, rest) = url.split_once("://").unwrap_or(("unknown", url));
+    let host = rest
+        .split(['/', '?'])
+        .next()
+        .unwrap_or_default()
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or_default()
+        .trim_matches(['[', ']']);
+    let loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    let scheme: String = scheme
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    if loopback {
+        format!("{scheme}-loopback")
+    } else {
+        scheme
     }
 }
 
@@ -74,4 +105,32 @@ pub async fn start_relay(config: &RelayNodeConfig) -> Result<Arc<LinkNode>, Stri
         status_interval: Duration::from_secs(30),
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_label;
+
+    #[test]
+    fn the_remote_label_never_carries_an_address() {
+        assert_eq!(remote_label(None), "-");
+        assert_eq!(remote_label(Some("ws://127.0.0.1:50700/")), "ws-loopback");
+        assert_eq!(remote_label(Some("ws://[::1]:50700/")), "ws-loopback");
+        for url in [
+            "ws://121.36.124.31:37624/?proxy=127.0.0.1%3A37624",
+            "wss://[2405:f080::1]:443/mesh/et/",
+            "tcp://10.126.126.3:11010",
+            "garbage 203.0.113.9",
+        ] {
+            let label = remote_label(Some(url));
+            assert!(
+                !label.contains('.') && !label.contains(':'),
+                "{url} -> {label}"
+            );
+        }
+        assert_eq!(
+            remote_label(Some("ws://121.36.124.31:37624/?proxy=127.0.0.1%3A37624")),
+            "ws"
+        );
+    }
 }

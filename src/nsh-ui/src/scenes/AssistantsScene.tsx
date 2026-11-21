@@ -1,5 +1,5 @@
-import { cleanup, effect, Overlay, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
-import { Input, TextView } from "nsh/base";
+import { cleanup, computed, effect, Overlay, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
+import { Input } from "nsh/base";
 import {
   ASSISTANT_AVATAR_PRESETS,
   ASSISTANT_EMOJI_PRESETS,
@@ -103,10 +103,12 @@ import {
 } from "../ui/studio";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import {
-  STATIC_MARKDOWN_OPTIONS,
-  createMarkdownCodeActions,
-  createMarkdownStyles,
-} from "../ui/markdown";
+  MarkdownDocumentEditor,
+  MarkdownPreview,
+  visualEditBlock,
+  visualEditBlockMessage,
+  VisualEditNotice,
+} from "../ui/markdownEditor";
 import { MOTION_DURATION, animateLayout, paintTransition } from "../ui/motion";
 import { DropdownMenu, ModalDialog, type DropdownMenuItem } from "../ui/overlays";
 import {
@@ -119,6 +121,17 @@ import {
   StatusDot,
   ToggleSwitch,
 } from "../ui/primitives";
+
+// Persona documents (wave 22 P1): the shared visual Markdown editor, with the
+// source editor when the user asks for it or the document needs it (front matter).
+const personaSourceMode = signal(false);
+/** Decided on the document as it loads, so the editor does not switch while the user types. */
+const personaVisualBlock = computed(() => {
+  activePersonaFile();
+  if (personaLoading()) return null;
+  return visualEditBlock(untracked(() => personaDraft()));
+});
+const personaEditsVisually = () => !personaSourceMode() && !personaVisualBlock();
 
 const PERSONA_TAB_OPTIONS: ReadonlyArray<{
   value: PersonaFileName;
@@ -1351,6 +1364,23 @@ function PersonaStudioPane() {
                               accessibilityLabel="persona-preview-toggle"
                               onChange={togglePersonaPreview}
                             />
+                            <If when={!personaPreview() && !personaVisualBlock()}>
+                              <Button
+                                label={personaSourceMode() ? tr("doc.editVisually") : tr("doc.editAsSource")}
+                                variant="ghost"
+                                size="sm"
+                                accessibilityLabel="persona-source-toggle"
+                                onPress={() => {
+                                  // A source draft the visual editor cannot keep stays in the source editor.
+                                  const block = personaSourceMode() ? visualEditBlock(personaDraft()) : null;
+                                  if (block) {
+                                    personaNotice.set(visualEditBlockMessage(block));
+                                    return;
+                                  }
+                                  personaSourceMode.set(!personaSourceMode());
+                                }}
+                              />
+                            </If>
                             <Button
                               label={tr("common.reset")}
                               variant="ghost"
@@ -1490,26 +1520,47 @@ function PersonaStudioPane() {
                                 alignSelf: "center",
                               }}
                             >
-                              <Input
-                                value={personaDraft()}
-                                placeholder={tr("assistants.editorPlaceholder", {
-                                  file: activePersonaFile(),
-                                })}
-                                accessibilityLabel="persona-editor-input"
-                                multiline={true}
-                                submitBehavior="newline"
-                                style={{
-                                  flex: 1,
-                                  minHeight: 190,
-                                  color: palette().text,
-                                  placeholderColor: palette().textMuted,
-                                  caretColor: palette().accent,
-                                  fontFamily: fontMono,
-                                  fontSize: textSize(13),
-                                  lineHeight: textLineHeight(13, 1.62),
-                                }}
-                                onChange={event => setPersonaDraftText(event.value)}
-                              />
+                              <If
+                                when={personaEditsVisually()}
+                                else={
+                                  <View style={{ flex: 1, minHeight: 0 }}>
+                                    <If when={personaVisualBlock()}>
+                                      {block => <VisualEditNotice block={block()} inset={0} />}
+                                    </If>
+                                    <Input
+                                      value={personaDraft()}
+                                      placeholder={tr("assistants.editorPlaceholder", {
+                                        file: activePersonaFile(),
+                                      })}
+                                      accessibilityLabel="persona-editor-input"
+                                      multiline={true}
+                                      submitBehavior="newline"
+                                      style={{
+                                        flex: 1,
+                                        minHeight: 190,
+                                        color: palette().text,
+                                        placeholderColor: palette().textMuted,
+                                        caretColor: palette().accent,
+                                        fontFamily: fontMono,
+                                        fontSize: textSize(13),
+                                        lineHeight: textLineHeight(13, 1.62),
+                                      }}
+                                      onChange={event => setPersonaDraftText(event.value)}
+                                    />
+                                  </View>
+                                }
+                              >
+                                <MarkdownDocumentEditor
+                                  documentKey={joinPersonaFilePath(assistant().rootPath, activePersonaFile())}
+                                  documentName={activePersonaFile()}
+                                  text={personaDraft()}
+                                  onChange={setPersonaDraftText}
+                                  accessibilityLabel="persona-editor-input"
+                                  placeholder={tr("assistants.editorPlaceholder", { file: activePersonaFile() })}
+                                  compact={true}
+                                  ai={true}
+                                />
+                              </If>
                             </View>
                           </View>
                         }
@@ -1542,16 +1593,7 @@ function PersonaStudioPane() {
                                 </View>
                               }
                             >
-                              {md => (
-                                <TextView
-                                  markdown={md()}
-                                  selectable={true}
-                                  links="open"
-                                  options={STATIC_MARKDOWN_OPTIONS}
-                                  codeBlockActions={createMarkdownCodeActions()}
-                                  styles={createMarkdownStyles()}
-                                />
-                              )}
+                              {md => <MarkdownPreview markdown={md()} links="open" />}
                             </If>
                           </View>
                         </Scroll>

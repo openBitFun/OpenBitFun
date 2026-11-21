@@ -36,7 +36,7 @@ const out = path.resolve(root, option('out', 'target/web-controller/app'));
 const staging = `${out}.staging`;
 
 fs.rmSync(staging, { recursive: true, force: true });
-const built = spawnSync('nsh', ['package', 'src/nsh-ui', '--target', 'web', '-o', staging], {
+const built = spawnSync('nsh', ['package', 'src/nsh-ui/WebApp.tsx', '--target', 'web', '-o', staging], {
   cwd: root,
   stdio: 'inherit',
   windowsHide: true,

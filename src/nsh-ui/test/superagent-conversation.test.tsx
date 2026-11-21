@@ -3,9 +3,9 @@
 // Working now; an idempotent send; live job cards where the model dispatched
 // them, updated in place; Steer and Stop calling the card's own verbs; a
 // pending prompt answered on the card and sent to the device that asked; the
-// "OpenBitFun allowed it" line; citation chips; the signed-out, off and
-// unavailable states; the history slot; and no device picker anywhere in the
-// composer.
+// "Super Agent allowed it" line; citation chips; the signed-out, off and
+// unavailable states; the history slot; no device picker anywhere in the
+// composer; and the model picker (Auto, or a device and one of its models).
 import { expect, open, test } from "nsh/test";
 import { createSuperagentFixture, type SuperagentFixtureOptions } from "./fixtures/superagentFixtures";
 
@@ -52,7 +52,7 @@ test("the new conversation asks one question, offers the backend's suggestions a
   expect(backend.callsOf("superagent_status")[0]?.request.locale).toBe("en-US");
 });
 
-test("no device picker exists anywhere in the composer, on the desktop or the phone", async () => {
+test("no device picker exists anywhere in the composer, on the desktop or the phone (only the model picker)", async () => {
   for (const viewport of [DESKTOP, PHONE]) {
     const { app } = await openApp({}, viewport);
     await app.waitFor("id:super-composer");
@@ -75,7 +75,68 @@ test("no device picker exists anywhere in the composer, on the desktop or the ph
     expect(app.count("id:super-composer >> role:combobox")).toBe(0);
     expect(app.shows("id:super-composer >> label:super-composer-attach")).toBe(true);
     expect(app.shows("id:super-composer >> label:Send")).toBe(true);
+    // The one model control: Auto until the user picks a device and model.
+    expect(app.shows("id:super-composer >> label:sa-model-picker")).toBe(true);
   }
+});
+
+test("the model picker offers Auto and every device's models; a new conversation sends its pick with the first message", async () => {
+  const { app, backend } = await openApp();
+  await app.waitFor("id:sa-suggestions");
+  expect(app.shows("id:super-composer >> text:Auto")).toBe(true);
+  await app.press("label:sa-model-picker");
+  await app.waitFor("label:sa-model-auto");
+  // The cloud node's groups, with the offline device's models not pickable.
+  expect(app.shows("text:MAC-MINI")).toBe(true);
+  expect(app.shows("text:WIN-PC · OFFLINE")).toBe(true);
+  expect(app.shows("label:sa-model-dev-mac-gpt")).toBe(true);
+  const refused = await app.press("label:sa-model-dev-win-local").then(() => "", (error: unknown) => String(error));
+  expect(refused).toContain("disabled");
+  await app.press("label:sa-model-dev-mac-gpt");
+  await app.waitFor("id:super-composer >> text:GPT-5 · mac-mini");
+  // Nothing is sent before the first message: there is no conversation yet.
+  expect(backend.callsOf("superagent_set_model")).toHaveLength(0);
+  await app.type("label:super-composer-field", "Update deps");
+  await app.press("label:Send");
+  await app.waitFor("id:sa-conversation-header");
+  const send = backend.callsOf("superagent_send")[0]!;
+  expect(send.request.model).toEqual({ deviceId: "dev-mac", modelId: "gpt" });
+  // The open conversation shows the cloud node's projection of its pick.
+  await app.waitFor("id:super-composer >> text:GPT-5 · mac-mini");
+});
+
+test("an open conversation changes its model at once and goes back to Auto", async () => {
+  const { app, backend } = await openRelease();
+  await app.waitFor("id:sa-conversation-header >> text:Release 1.2");
+  expect(app.shows("id:super-composer >> text:Auto")).toBe(true);
+  await app.press("label:sa-model-picker");
+  await app.press("label:sa-model-dev-mac-sonnet");
+  await app.waitUntil(() => backend.callsOf("superagent_set_model").length === 1);
+  expect(backend.callsOf("superagent_set_model")[0]!.request).toEqual({
+    conversationId: "conv-release",
+    deviceId: "dev-mac",
+    modelId: "sonnet",
+  });
+  await app.waitFor("id:super-composer >> text:Claude Sonnet · mac-mini");
+  expect(app.shows("id:sa-model-note")).toBe(false);
+  await app.press("label:sa-model-picker");
+  await app.press("label:sa-model-auto");
+  await app.waitUntil(() => backend.callsOf("superagent_set_model").length === 2);
+  expect(backend.callsOf("superagent_set_model")[1]!.request).toEqual({
+    conversationId: "conv-release",
+    deviceId: null,
+    modelId: null,
+  });
+  await app.waitFor("id:super-composer >> text:Auto");
+});
+
+test("a pick whose device is offline says so under the composer", async () => {
+  const { app } = await openRelease({ picks: { "conv-release": { deviceId: "dev-win", modelId: "local" } } });
+  await app.waitFor("id:super-composer >> text:Local model · win-pc");
+  await app.waitFor("id:sa-model-note");
+  expect(
+    app.shows("text:The device of this model is offline. Super Agent answers at once until it is back; pick Auto or another model to continue."),
+  ).toBe(true);
 });
 
 test("sending is idempotent: a retry after a lost send keeps its clientMessageId, then the thread opens", async () => {
@@ -121,10 +182,10 @@ test("the conversation draws its cards where the model dispatched them, with the
   expect(app.spanStyle("id:job-job-build >> text:+3 −1").color).toBe(app.spanStyle("id:job-job-build >> text:release/1.2").color);
 });
 
-test("the answeredBy line says what OpenBitFun allowed and shows the details on request", async () => {
+test("the answeredBy line says what Super Agent allowed and shows the details on request", async () => {
   const { app } = await openRelease();
   await app.waitFor("id:job-answered-job-test-linux");
-  expect(app.shows("id:job-answered-job-test-linux >> text:OpenBitFun allowed it · 2 min ago")).toBe(true);
+  expect(app.shows("id:job-answered-job-test-linux >> text:Super Agent allowed it · 2 min ago")).toBe(true);
   expect(app.shows("text:cargo test --workspace")).toBe(false);
   await app.press("id:job-answered-job-test-linux >> label:Details");
   await app.waitFor("text:cargo test --workspace");
@@ -207,18 +268,18 @@ test("streamed text and the thinking line follow the running turn", async () => 
 test("signed out, off and unavailable replace the composer's bottom row with the reason and one action", async () => {
   const signedOut = await openApp({ signedIn: false });
   await signedOut.app.waitFor("id:super-composer-blocked");
-  expect(signedOut.app.shows("text:Sign in to use OpenBitFun · Your sessions on this device still work.")).toBe(true);
+  expect(signedOut.app.shows("text:Sign in to use Super Agent · Your sessions on this device still work.")).toBe(true);
   expect(signedOut.app.shows("id:super-composer-blocked >> text:Sign in")).toBe(true);
   expect(signedOut.app.shows("label:Send")).toBe(false);
 
   const off = await openApp({ enabled: false });
-  await off.app.waitFor("text:OpenBitFun is off · Turn it on to start work on any of your devices.");
+  await off.app.waitFor("text:Super Agent is off · Turn it on to start work on any of your devices.");
   await off.app.press("id:super-composer-blocked >> text:Turn on");
   await off.app.waitFor("label:Send");
   expect(off.backend.callsOf("superagent_enable")).toHaveLength(1);
 
   const old = await openApp({ statusError: "unknown command: superagent_status" });
-  await old.app.waitFor("text:OpenBitFun isn't available right now. This device needs an update to use it.");
+  await old.app.waitFor("text:Super Agent isn't available right now. This device needs an update to use it.");
   expect(old.app.shows("id:super-composer-blocked >> text:Try again")).toBe(true);
   // The field stays visible but takes no message.
   expect(old.app.shows("label:super-composer-field")).toBe(true);

@@ -5,7 +5,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use openbitfun_product_domains::superagent::RuntimeFacts;
+use openbitfun_product_domains::fleet::FleetModel;
+use openbitfun_product_domains::superagent::{ModelHolderCandidate, RuntimeFacts};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,6 +23,41 @@ pub struct DeviceSnapshot {
     /// The device's workspaces with their repository facts (from its fleet
     /// digest and a probe by workspace id), already bounded.
     pub workspaces: Vec<Value>,
+    /// The device's published model catalog (its fleet digest `models`);
+    /// empty for a build without one (then [`Self::models`] names the ids).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub model_catalog: Vec<FleetModel>,
+}
+
+impl DeviceSnapshot {
+    /// The device as a model holder: its catalog, or the probe's model ids
+    /// (the first marked primary) for a build without one.
+    pub fn holder_candidate(&self) -> ModelHolderCandidate {
+        let models = if self.model_catalog.is_empty() {
+            self.models
+                .iter()
+                .enumerate()
+                .map(|(index, id)| FleetModel {
+                    model_id: id.clone(),
+                    display_name: id.clone(),
+                    primary: index == 0,
+                    ..FleetModel::default()
+                })
+                .collect()
+        } else {
+            self.model_catalog.clone()
+        };
+        ModelHolderCandidate {
+            device_id: self.facts.device_id.clone(),
+            host_kind: self.facts.host_kind,
+            online: self.facts.online,
+            model_configured: self.facts.model_configured,
+            host_capabilities: self.facts.host_capabilities.clone(),
+            latency_ms: self.facts.latency_ms,
+            name: self.facts.name.clone(),
+            models,
+        }
+    }
 }
 
 /// Why a device call failed.

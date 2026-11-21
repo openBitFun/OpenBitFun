@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:a5fbb00ca565a0cc",
+  "digest": "fnv1a64:96616cb3b53493e6",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -374,6 +374,30 @@
       }
     },
     {
+      "id": "account_settings_sync_set",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "account_settings_sync_status",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
       "id": "account_status",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -663,11 +687,11 @@
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the CLI peer host has no browser or OS automation runtime"
       }
     },
     {
@@ -1706,93 +1730,110 @@
     },
     {
       "id": "desktop_card_delete",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "reason": "the CLI peer host keeps no desktop cards"
       }
     },
     {
       "id": "desktop_card_get",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "reason": "the CLI peer host keeps no desktop cards"
       }
     },
     {
       "id": "desktop_card_list",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "reason": "the CLI peer host keeps no desktop cards"
       }
     },
     {
       "id": "desktop_card_refresh",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "reason": "the CLI peer host keeps no desktop cards"
       }
     },
     {
       "id": "desktop_card_set_always_on_top",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "reason": "the CLI peer host keeps no desktop cards"
+      }
+    },
+    {
+      "id": "desktop_card_set_bounds",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host keeps no desktop cards"
       }
     },
     {
       "id": "desktop_card_set_checklist_item",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "reason": "the CLI peer host keeps no desktop cards"
       }
     },
     {
       "id": "desktop_card_set_visible",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "kind": "proxied"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "desktop cards were Tauri windows and were retired with the Tauri desktop shell"
+        "reason": "the CLI peer host keeps no desktop cards"
+      }
+    },
+    {
+      "id": "device_records_overview",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
       }
     },
     {
@@ -2118,6 +2159,17 @@
       }
     },
     {
+      "id": "dispatch_target_workspace_publish",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "host_control_plane"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "dispatch_target_workspace_sync",
       "surface": "host_invoke_only",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -2375,6 +2427,30 @@
       }
     },
     {
+      "id": "fleet_blob_get",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "fleet_blob_holders",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
       "id": "fleet_call",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -2456,6 +2532,18 @@
       }
     },
     {
+      "id": "fleet_models",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
       "id": "fleet_navigator",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -2493,6 +2581,54 @@
     },
     {
       "id": "fleet_replay",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "fleet_replica_digest",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "fleet_replica_list",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "fleet_replica_pull",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "fleet_replica_push",
       "surface": "host_invoke_only",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
@@ -4305,15 +4441,14 @@
     },
     {
       "id": "hide_agent_companion_desktop_pet",
-      "surface": "host_invoke_only",
+      "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "retired",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -4925,15 +5060,14 @@
     },
     {
       "id": "load_agent_companion_pet_spritesheet",
-      "surface": "host_invoke_only",
-      "remoteWorkspace": "LocalOnly",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
-        "kind": "retired",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -5171,6 +5305,18 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "miniapp_account_catalog",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
       }
     },
     {
@@ -5417,6 +5563,18 @@
       "id": "miniapp_import_from_path",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "miniapp_inline",
+      "surface": "tauri_command",
+      "remoteWorkspace": "RemoteUnsupported",
       "peer": {
         "kind": "proxied"
       },
@@ -7008,15 +7166,14 @@
     },
     {
       "id": "resize_agent_companion_desktop_pet",
-      "surface": "host_invoke_only",
+      "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "retired",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -8121,15 +8278,14 @@
     },
     {
       "id": "show_agent_companion_desktop_pet",
-      "surface": "host_invoke_only",
+      "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "retired",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the desktop pet window was retired with the Tauri desktop shell"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -8973,6 +9129,21 @@
       }
     },
     {
+      "id": "superagent_set_model",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "superagent_status",
       "surface": "cloud_node",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -9705,6 +9876,18 @@
       }
     },
     {
+      "id": "account_settings_sync_set",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_settings_sync_status",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
       "id": "account_status",
       "route": {
         "kind": "entry_local"
@@ -9855,7 +10038,8 @@
     {
       "id": "browser_webview_capture_preview",
       "route": {
-        "kind": "entry_local"
+        "kind": "by_target",
+        "reason": "a live view reads the page on the device whose window holds it; the conversationId only picks among that device's pages"
       }
     },
     {
@@ -10417,6 +10601,60 @@
         "kind": "by_owner",
         "entity": "workspace",
         "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "desktop_card_delete",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_card_get",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_card_list",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_card_refresh",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_card_set_always_on_top",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_card_set_bounds",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_card_set_checklist_item",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "desktop_card_set_visible",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "device_records_overview",
+      "route": {
+        "kind": "by_target"
       }
     },
     {
@@ -11693,6 +11931,12 @@
       }
     },
     {
+      "id": "hide_agent_companion_desktop_pet",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
       "id": "hide_main_window_after_close_request",
       "route": {
         "kind": "entry_local"
@@ -12027,6 +12271,12 @@
       }
     },
     {
+      "id": "load_agent_companion_pet_spritesheet",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
       "id": "load_git_repo_history",
       "route": {
         "kind": "by_target"
@@ -12140,6 +12390,12 @@
       "id": "mesh_status",
       "route": {
         "kind": "entry_local"
+      }
+    },
+    {
+      "id": "miniapp_account_catalog",
+      "route": {
+        "kind": "by_target"
       }
     },
     {
@@ -12272,6 +12528,12 @@
     },
     {
       "id": "miniapp_import_from_path",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_inline",
       "route": {
         "kind": "by_target"
       }
@@ -13026,6 +13288,12 @@
       }
     },
     {
+      "id": "resize_agent_companion_desktop_pet",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
       "id": "resolve_ai_model_request_url",
       "route": {
         "kind": "entry_local"
@@ -13664,6 +13932,12 @@
       }
     },
     {
+      "id": "show_agent_companion_desktop_pet",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
       "id": "show_main_window",
       "route": {
         "kind": "entry_local"
@@ -14083,6 +14357,12 @@
     },
     {
       "id": "superagent_send",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_set_model",
       "route": {
         "kind": "by_target"
       }

@@ -127,6 +127,12 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     crate::openbitfun_control_host::install(handle.clone());
     // Agent browser tools drive the UI's web views through the shell channel.
     crate::native_browser::install(Arc::clone(&host));
+    // Desktop cards: the store, refresh timers and the DesktopCard tool host;
+    // the shell draws the windows (wave 22, P3).
+    if let Err(error) = crate::desktop_cards::install(&handle) {
+        log::warn!("Desktop cards unavailable: {}", error);
+    }
+    let settings_sync_handle = handle.clone();
     crate::start_backend_services(
         handle,
         event_queue,
@@ -153,6 +159,10 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     // Other devices of the signed-in account reach this backend over the
     // device network (OpenBitFun Link in-process + the OBP mesh listener).
     crate::mesh::start_for_native_host(&data_dir);
+    // wave24-replica: agents, skills, routines, cards, pets, ... follow it too.
+    crate::api::account_records_api::start(settings_sync_handle.clone());
+    // Preferences and permission configuration follow the signed-in account.
+    crate::api::account_settings_sync_api::start(settings_sync_handle);
     Ok(service)
 }
 

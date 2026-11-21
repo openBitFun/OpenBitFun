@@ -14,6 +14,7 @@
 
 mod browser;
 mod miniapp;
+mod pet;
 mod update;
 
 use std::sync::Arc;
@@ -30,6 +31,10 @@ pub(super) use browser::{
     browser_webview_navigate, browser_webview_reload, browser_webview_set_bounds,
 };
 pub(super) use miniapp::miniapp_presentation;
+pub(super) use pet::{
+    hide_agent_companion_desktop_pet, resize_agent_companion_desktop_pet,
+    show_agent_companion_desktop_pet,
+};
 pub(super) use update::{
     check_for_updates, download_update, get_pending_update, install_pending_update, install_update,
 };

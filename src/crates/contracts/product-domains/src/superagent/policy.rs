@@ -188,14 +188,14 @@ fn can_hold(candidate: &ModelHolderCandidate) -> bool {
         && has(&candidate.host_capabilities, CLOUD_AGENT_SCOPE_CAPABILITY)
 }
 
-/// Rank the devices that may hold the next model round: the pinned device,
-/// then the last holder (its prompt cache is warm), then desktop over CLI,
-/// then the lowest latency (unknown last), then the device id. Only online
-/// devices with a model configured and `fleet_model_v1` qualify; `exclude`
-/// drops holders that were just lost so the round retries elsewhere.
+/// Rank the devices that may hold the next model round of an Auto
+/// conversation: the last holder (its prompt cache is warm), then desktop
+/// over CLI, then the lowest latency (unknown last), then the device id. The
+/// holder runs its primary model. Only online devices with a model
+/// configured and `fleet_model_v1` qualify; `exclude` drops holders that
+/// were just lost so the round retries elsewhere.
 pub fn rank_model_holders(
     candidates: &[ModelHolderCandidate],
-    pinned: Option<&str>,
     last_holder: Option<&str>,
     exclude: &[String],
 ) -> HolderChoice {
@@ -211,7 +211,6 @@ pub fn rank_model_holders(
     eligible.sort_by(|a, b| {
         let key = |c: &ModelHolderCandidate| {
             (
-                Some(c.device_id.as_str()) != pinned,
                 Some(c.device_id.as_str()) != last_holder,
                 host_rank(c.host_kind),
                 c.latency_ms.unwrap_or(u32::MAX),
@@ -233,6 +232,210 @@ pub fn rank_model_holders(
         }
     } else {
         HolderChoice::Chosen { ranked }
+    }
+}
+
+/// The holder of a conversation that picked a device and a model: that
+/// device only, never another one. A device whose catalog is unknown (an
+/// older build) is trusted with the model id; one whose catalog lacks it is
+/// refused.
+pub fn pinned_model_holder(
+    candidates: &[ModelHolderCandidate],
+    pick: &SuperagentModelPick,
+) -> HolderChoice {
+    let refuse = |code: &str| HolderChoice::NoHolder {
+        reason: code.to_string(),
+    };
+    let Some(candidate) = candidates
+        .iter()
+        .find(|candidate| candidate.device_id == pick.device_id)
+    else {
+        return refuse(model_reason::PINNED_HOLDER_OFFLINE);
+    };
+    if !candidate.online {
+        return refuse(model_reason::PINNED_HOLDER_OFFLINE);
+    }
+    let has_model = candidate.models.is_empty()
+        || candidate
+            .models
+            .iter()
+            .any(|model| model.model_id == pick.model_id);
+    if !can_hold(candidate) || !has_model {
+        return refuse(model_reason::PINNED_MODEL_MISSING);
+    }
+    HolderChoice::Chosen {
+        ranked: vec![candidate.device_id.clone()],
+    }
+}
+
+fn label_of(candidate: &ModelHolderCandidate) -> String {
+    if candidate.name.trim().is_empty() {
+        candidate.device_id.clone()
+    } else {
+        candidate.name.clone()
+    }
+}
+
+fn join_names(names: &[String]) -> String {
+    names.join(", ")
+}
+
+/// Why no device can run the round, with what to do. Frontends show the
+/// card; the turn ends with it (no model round waits on a device).
+pub fn no_holder_notice(
+    candidates: &[ModelHolderCandidate],
+    pick: Option<&SuperagentModelPick>,
+) -> NoHolderNotice {
+    let mut notice = NoHolderNotice::default();
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| is_runtime_host(candidate.host_kind))
+    {
+        let name = label_of(candidate);
+        if !candidate.online {
+            notice.offline.push(name);
+        } else if !has(&candidate.host_capabilities, FLEET_MODEL_CAPABILITY)
+            || !has(&candidate.host_capabilities, CLOUD_AGENT_SCOPE_CAPABILITY)
+        {
+            notice.requires_update.push(name);
+        } else if !candidate.model_configured {
+            notice.no_model.push(name);
+        }
+    }
+    if let Some(pick) = pick {
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.device_id == pick.device_id);
+        let device = candidate.map_or_else(|| pick.device_id.clone(), label_of);
+        let model = candidate
+            .and_then(|candidate| {
+                candidate
+                    .models
+                    .iter()
+                    .find(|model| model.model_id == pick.model_id)
+            })
+            .map(|model| model.display_name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| pick.model_id.clone());
+        let online = candidate.is_some_and(|candidate| candidate.online);
+        if online {
+            notice.reason = model_reason::PINNED_MODEL_MISSING.to_string();
+            notice.text = format!(
+                "{model} cannot run on {device} now: the device no longer offers it. Pick another model or Auto, then send again."
+            );
+        } else {
+            notice.reason = model_reason::PINNED_HOLDER_OFFLINE.to_string();
+            notice.text = format!(
+                "{model} lives on {device}, which is offline. Start {device}, or pick Auto or another model, then send again."
+            );
+        }
+        return notice;
+    }
+    notice.reason = reason::NO_HOLDER.to_string();
+    let mut parts = Vec::new();
+    if !notice.offline.is_empty() {
+        parts.push(format!("offline: {}", join_names(&notice.offline)));
+    }
+    if !notice.no_model.is_empty() {
+        parts.push(format!(
+            "no model configured: {}",
+            join_names(&notice.no_model)
+        ));
+    }
+    if !notice.requires_update.is_empty() {
+        parts.push(format!(
+            "needs an update: {}",
+            join_names(&notice.requires_update)
+        ));
+    }
+    notice.text = if parts.is_empty() {
+        "No device can run a model for this request: no desktop or CLI of this account is signed in. Sign in on one with a model configured, then send again.".to_string()
+    } else {
+        format!(
+            "No device can run a model for this request right now ({}). Start a device, configure a model on an online one, or update it, then send again.",
+            parts.join("; ")
+        )
+    };
+    notice
+}
+
+/// The Super Agent model picker: every runtime device of the account with
+/// its models, online and able to relay rounds first, then by name. A
+/// device's models are offered when it can hold a round now.
+pub fn project_model_devices(candidates: &[ModelHolderCandidate]) -> Vec<SuperagentModelDevice> {
+    let mut devices: Vec<SuperagentModelDevice> = candidates
+        .iter()
+        .filter(|candidate| is_runtime_host(candidate.host_kind))
+        .map(|candidate| {
+            let unavailable_reason = if !candidate.online {
+                Some(reason::DEVICE_OFFLINE)
+            } else if !has(&candidate.host_capabilities, FLEET_MODEL_CAPABILITY)
+                || !has(&candidate.host_capabilities, CLOUD_AGENT_SCOPE_CAPABILITY)
+            {
+                Some(reason::SUPERAGENT_REQUIRES_UPDATE)
+            } else if !candidate.model_configured || candidate.models.is_empty() {
+                Some(crate::fleet::MODEL_REASON_NO_MODEL)
+            } else {
+                None
+            };
+            SuperagentModelDevice {
+                device_id: candidate.device_id.clone(),
+                name: label_of(candidate),
+                host_kind: candidate.host_kind,
+                online: candidate.online,
+                unavailable_reason: unavailable_reason.map(str::to_string),
+                models: candidate.models.clone(),
+            }
+        })
+        .collect();
+    devices.sort_by(|a, b| {
+        a.unavailable_reason
+            .is_some()
+            .cmp(&b.unavailable_reason.is_some())
+            .then_with(|| b.online.cmp(&a.online))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.device_id.cmp(&b.device_id))
+    });
+    devices
+}
+
+/// The conversation's model as frontends show it.
+pub fn project_model_selection(
+    pick: Option<&SuperagentModelPick>,
+    candidates: &[ModelHolderCandidate],
+) -> SuperagentModelSelection {
+    let Some(pick) = pick else {
+        return SuperagentModelSelection {
+            mode: "auto".to_string(),
+            ..SuperagentModelSelection::default()
+        };
+    };
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.device_id == pick.device_id);
+    let model_name = candidate
+        .and_then(|candidate| {
+            candidate
+                .models
+                .iter()
+                .find(|model| model.model_id == pick.model_id)
+        })
+        .map(|model| model.display_name.clone())
+        .filter(|name| !name.trim().is_empty());
+    let unavailable_reason = match pinned_model_holder(candidates, pick) {
+        HolderChoice::Chosen { .. } => None,
+        HolderChoice::NoHolder { reason } if reason == model_reason::PINNED_HOLDER_OFFLINE => {
+            Some(super::dto::reason::DEVICE_OFFLINE.to_string())
+        }
+        HolderChoice::NoHolder { reason } => Some(reason),
+    };
+    SuperagentModelSelection {
+        mode: "pinned".to_string(),
+        device_id: Some(pick.device_id.clone()),
+        device_name: candidate.map(label_of),
+        model_id: Some(pick.model_id.clone()),
+        model_name,
+        unavailable_reason,
     }
 }
 
@@ -627,6 +830,7 @@ mod tests {
             model_configured: true,
             host_capabilities: caps(&[CLOUD_AGENT_SCOPE_CAPABILITY, FLEET_MODEL_CAPABILITY]),
             latency_ms: latency,
+            ..ModelHolderCandidate::default()
         }
     }
 
@@ -646,31 +850,21 @@ mod tests {
             holder("desk-unknown", FleetHostKind::Desktop, None),
         ];
         assert_eq!(
-            ranked(rank_model_holders(&candidates, None, None, &[])),
+            ranked(rank_model_holders(&candidates, None, &[])),
             ["desk-fast", "desk-slow", "desk-unknown", "cli-fast"]
         );
         assert_eq!(
-            ranked(rank_model_holders(&candidates, None, Some("cli-fast"), &[]))[0],
+            ranked(rank_model_holders(&candidates, Some("cli-fast"), &[]))[0],
             "cli-fast"
-        );
-        assert_eq!(
-            ranked(rank_model_holders(
-                &candidates,
-                Some("desk-slow"),
-                Some("cli-fast"),
-                &[]
-            ))[..2],
-            ["desk-slow", "cli-fast"]
         );
         // A lost holder is excluded and the round retries elsewhere.
         assert_eq!(
             ranked(rank_model_holders(
                 &candidates,
-                Some("desk-slow"),
-                None,
-                &["desk-slow".to_string()]
+                Some("desk-fast"),
+                &["desk-fast".to_string()]
             ))[0],
-            "desk-fast"
+            "desk-slow"
         );
     }
 
@@ -684,10 +878,120 @@ mod tests {
         old.host_capabilities = caps(&[CLOUD_AGENT_SCOPE_CAPABILITY]);
         let cloud = holder("cloud-x", FleetHostKind::Cloud, Some(1));
         assert_eq!(
-            rank_model_holders(&[offline, no_model, old, cloud], Some("a"), None, &[]),
+            rank_model_holders(&[offline, no_model, old, cloud], Some("a"), &[]),
             HolderChoice::NoHolder {
                 reason: reason::NO_HOLDER.to_string()
             }
+        );
+    }
+
+    fn named(
+        mut candidate: ModelHolderCandidate,
+        name: &str,
+        models: &[&str],
+    ) -> ModelHolderCandidate {
+        candidate.name = name.to_string();
+        candidate.models = models
+            .iter()
+            .map(|id| crate::fleet::FleetModel {
+                model_id: id.to_string(),
+                display_name: id.to_uppercase(),
+                primary: models.first() == Some(id),
+                ..crate::fleet::FleetModel::default()
+            })
+            .collect();
+        candidate
+    }
+
+    #[test]
+    fn a_pinned_pick_runs_only_on_its_device_and_model() {
+        let desk = named(
+            holder("desk", FleetHostKind::Desktop, Some(9)),
+            "Studio",
+            &["big", "fast"],
+        );
+        let mut cli = named(holder("cli", FleetHostKind::Cli, Some(1)), "Box", &["srv"]);
+        let pick = |device: &str, model: &str| SuperagentModelPick {
+            device_id: device.to_string(),
+            model_id: model.to_string(),
+        };
+        assert_eq!(
+            ranked(pinned_model_holder(
+                &[desk.clone(), cli.clone()],
+                &pick("cli", "srv")
+            )),
+            ["cli"]
+        );
+        // Never another device, even an online one.
+        cli.online = false;
+        assert_eq!(
+            pinned_model_holder(&[desk.clone(), cli.clone()], &pick("cli", "srv")),
+            HolderChoice::NoHolder {
+                reason: model_reason::PINNED_HOLDER_OFFLINE.to_string()
+            }
+        );
+        assert_eq!(
+            pinned_model_holder(&[desk.clone()], &pick("desk", "gone")),
+            HolderChoice::NoHolder {
+                reason: model_reason::PINNED_MODEL_MISSING.to_string()
+            }
+        );
+        // An unknown catalog (older device) is trusted with the id.
+        let mut older = holder("old", FleetHostKind::Desktop, None);
+        older.models.clear();
+        assert_eq!(
+            ranked(pinned_model_holder(&[older], &pick("old", "x"))),
+            ["old"]
+        );
+
+        let notice = no_holder_notice(&[desk.clone(), cli.clone()], Some(&pick("cli", "srv")));
+        assert_eq!(notice.reason, model_reason::PINNED_HOLDER_OFFLINE);
+        assert_eq!(
+            notice.text,
+            "SRV lives on Box, which is offline. Start Box, or pick Auto or another model, then send again."
+        );
+        let selection =
+            project_model_selection(Some(&pick("cli", "srv")), &[desk.clone(), cli.clone()]);
+        assert_eq!(selection.mode, "pinned");
+        assert_eq!(selection.device_name.as_deref(), Some("Box"));
+        assert_eq!(selection.model_name.as_deref(), Some("SRV"));
+        assert_eq!(
+            selection.unavailable_reason.as_deref(),
+            Some(reason::DEVICE_OFFLINE)
+        );
+        assert_eq!(project_model_selection(None, &[desk]).mode, "auto");
+    }
+
+    #[test]
+    fn the_no_holder_notice_names_devices_and_what_to_do() {
+        let mut offline = named(holder("a", FleetHostKind::Desktop, None), "Laptop", &["m"]);
+        offline.online = false;
+        let mut no_model = named(holder("b", FleetHostKind::Cli, None), "Build box", &[]);
+        no_model.model_configured = false;
+        let mut old = named(holder("c", FleetHostKind::Desktop, None), "Old Mac", &[]);
+        old.host_capabilities = caps(&[CLOUD_AGENT_SCOPE_CAPABILITY]);
+        let notice = no_holder_notice(&[offline.clone(), no_model.clone(), old.clone()], None);
+        assert_eq!(notice.reason, reason::NO_HOLDER);
+        assert_eq!(notice.offline, ["Laptop"]);
+        assert_eq!(notice.no_model, ["Build box"]);
+        assert_eq!(notice.requires_update, ["Old Mac"]);
+        assert!(notice.text.contains("offline: Laptop"), "{}", notice.text);
+        assert!(notice.text.contains("no model configured: Build box"));
+        assert!(notice.text.contains("needs an update: Old Mac"));
+        assert!(no_holder_notice(&[], None).text.contains("Sign in on one"));
+
+        let picker = project_model_devices(&[
+            offline,
+            no_model,
+            old,
+            named(holder("d", FleetHostKind::Desktop, None), "studio", &["x"]),
+        ]);
+        let ids: Vec<&str> = picker.iter().map(|d| d.device_id.as_str()).collect();
+        assert_eq!(ids, ["d", "b", "c", "a"]);
+        assert_eq!(picker[0].unavailable_reason, None);
+        assert_eq!(
+            picker[3].unavailable_reason.as_deref(),
+            Some(reason::DEVICE_OFFLINE)
         );
     }
 
@@ -825,5 +1129,13 @@ mod tests {
         assert_eq!(encoded["state"], "working");
         assert_eq!(encoded["hostKind"], "cli");
         assert!(encoded.get("pendingPrompt").is_none());
+    }
+
+    #[test]
+    fn the_cloud_node_reads_as_super_agent_under_its_legacy_default_name() {
+        assert_eq!(CLOUD_DEVICE_DISPLAY_NAME, "Super Agent");
+        assert_eq!(cloud_node_display_name(""), "Super Agent");
+        assert_eq!(cloud_node_display_name("OpenBitFun"), "Super Agent");
+        assert_eq!(cloud_node_display_name("Team agent"), "Team agent");
     }
 }

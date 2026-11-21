@@ -156,8 +156,46 @@ export interface ConversationTurn {
   rounds?: number;
 }
 
+/** A conversation's model as the cloud node shows it (`SuperagentModelSelection`). */
+export interface SuperagentModelSelection {
+  mode: "auto" | "pinned" | (string & {});
+  deviceId?: string;
+  deviceName?: string;
+  modelId?: string;
+  modelName?: string;
+  /** Why the pick cannot run now (`device_offline`, `pinned_model_missing`). */
+  unavailableReason?: string;
+}
+
+/** One configured model of a device, as the cloud node lists it. */
+export interface SuperagentModelOption {
+  modelId: string;
+  displayName: string;
+  provider?: string;
+  primary?: boolean;
+}
+
+/** One device's group in the Super Agent model picker (`SuperagentModelDevice`). */
+export interface SuperagentModelDevice {
+  deviceId: string;
+  name: string;
+  hostKind?: string;
+  online: boolean;
+  unavailableReason?: string;
+  models: SuperagentModelOption[];
+}
+
+/** A pick to send: a device and one of its models; `null` is Auto. */
+export type SuperagentModelPick = { deviceId: string; modelId: string } | null;
+
 export interface ConversationView {
-  conversation: { id: string; title: string; updatedMs?: number; turn?: ConversationTurn | null };
+  conversation: {
+    id: string;
+    title: string;
+    updatedMs?: number;
+    turn?: ConversationTurn | null;
+    model?: SuperagentModelSelection;
+  };
   messages: ConversationMessage[];
   cursor?: number;
   hasMore?: boolean;
@@ -179,6 +217,8 @@ export interface SuperagentStatus {
   workingNow?: WorkingNow;
   deviceId?: string;
   name?: string;
+  /** The model picker's device groups (Auto is always offered besides them). */
+  models?: SuperagentModelDevice[];
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -217,6 +257,13 @@ export const turnStep = signal("");
 export const pendingSend = signal<{ text: string; clientMessageId: string; conversationId: string | null } | null>(null);
 export const sendError = signal("");
 export const composerDraft = signal("");
+/**
+ * The model chosen for a conversation that does not exist yet; sent with its
+ * first message (`superagent_send {model}`). `undefined`: nothing chosen
+ * (the cloud node's Auto).
+ */
+export const draftModelPick = signal<SuperagentModelPick | undefined>(undefined);
+export const modelPickError = signal("");
 
 export const conversationGroups = signal<ConversationGroup[]>([]);
 export const conversationsCursor = signal<string | number | null>(null);
@@ -467,6 +514,9 @@ export function newConversation(): void {
     sendError.set("");
     citedJobId.set(null);
     if (pendingSend()?.conversationId !== null) pendingSend.set(null);
+    // A new conversation starts on Auto.
+    draftModelPick.set(undefined);
+    modelPickError.set("");
   });
   void refreshSuperagentStatus();
 }
@@ -515,11 +565,14 @@ export async function sendToSuperagent(text?: string): Promise<boolean> {
     turnStep.set("model_round");
   });
   try {
+    const draftPick = conversationId ? undefined : draftModelPick();
     const answer = await call<{ conversationId?: string; turnId?: string }>("superagent_send", {
       ...(conversationId ? { conversationId } : {}),
       message,
       clientMessageId,
+      ...(draftPick !== undefined ? { model: draftPick } : {}),
     });
+    if (!conversationId) draftModelPick.set(undefined);
     const id = answer?.conversationId ?? conversationId;
     if (id && id !== activeConversationId()) {
       batch(() => {
@@ -537,6 +590,55 @@ export async function sendToSuperagent(text?: string): Promise<boolean> {
       // Give the text back so the user can send it again with the same id.
       if (!composerDraft()) composerDraft.set(message);
     });
+    return false;
+  }
+}
+
+/**
+ * The model the composer shows: the open conversation's (as the cloud node
+ * projected it), else the choice held for the new one, else Auto.
+ */
+export function currentModelSelection(): SuperagentModelSelection {
+  if (activeConversationId()) return conversationView()?.conversation.model ?? { mode: "auto" };
+  const pick = draftModelPick();
+  if (!pick) return { mode: "auto" };
+  const device = superagentStatus()?.models?.find(item => item.deviceId === pick.deviceId);
+  const model = device?.models.find(item => item.modelId === pick.modelId);
+  return {
+    mode: "pinned",
+    deviceId: pick.deviceId,
+    deviceName: device?.name,
+    modelId: pick.modelId,
+    modelName: model?.displayName,
+    unavailableReason: device?.unavailableReason,
+  };
+}
+
+/**
+ * Picks the conversation's model (`null`: Auto). An open conversation is
+ * changed at once (`superagent_set_model`); a new one keeps the choice for
+ * its first message.
+ */
+export async function chooseSuperagentModel(pick: SuperagentModelPick): Promise<boolean> {
+  const conversationId = activeConversationId();
+  modelPickError.set("");
+  if (!conversationId) {
+    draftModelPick.set(pick);
+    return true;
+  }
+  try {
+    const answer = await call<{ conversationId?: string; model?: SuperagentModelSelection }>("superagent_set_model", {
+      conversationId,
+      deviceId: pick?.deviceId ?? null,
+      modelId: pick?.modelId ?? null,
+    });
+    const view = conversationView();
+    if (answer?.model && view && view.conversation.id === conversationId) {
+      conversationView.set({ ...view, conversation: { ...view.conversation, model: answer.model } });
+    }
+    return true;
+  } catch (error) {
+    modelPickError.set(errorMessageOf(error));
     return false;
   }
 }

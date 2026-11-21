@@ -1,7 +1,8 @@
 //! The fleet backend commands of the desktop host.
 //!
 //! `fleet_call`, `fleet_navigator`, `fleet_prompts`, `fleet_attention`,
-//! `fleet_recent_sessions`, `fleet_device_detail` and `fleet_ui_bundle`
+//! `fleet_recent_sessions`, `fleet_device_detail`, `fleet_models` and
+//! `fleet_ui_bundle`
 //! serve every client of this host (the native UI, and phones and browsers
 //! over the mesh in the `account-device` scope). `fleet_subscribe` and
 //! `fleet_events` serve the native UI in-process: OBP connections answer them
@@ -13,9 +14,10 @@ use openbitfun_obp::fleet::FleetCallError;
 use openbitfun_product_domains::fleet::{
     FleetAttentionMarkReadRequest, FleetAttentionMarkReadResponse, FleetAttentionRequest,
     FleetAttentionView, FleetCallRequest, FleetDeviceDetail, FleetDeviceDetailRequest,
-    FleetEventsRequest, FleetEventsResponse, FleetNavigator, FleetNavigatorRequest,
-    FleetPromptsRequest, FleetPromptsResponse, FleetRecentSessions, FleetRecentSessionsRequest,
-    FleetSubscribeRequest, FleetSubscribeResponse, FleetUiBundleRequest, FleetUiBundleResponse,
+    FleetEventsRequest, FleetEventsResponse, FleetModels, FleetModelsRequest, FleetNavigator,
+    FleetNavigatorRequest, FleetPromptsRequest, FleetPromptsResponse, FleetRecentSessions,
+    FleetRecentSessionsRequest, FleetSubscribeRequest, FleetSubscribeResponse,
+    FleetUiBundleRequest, FleetUiBundleResponse,
 };
 use serde_json::Value;
 
@@ -72,6 +74,13 @@ pub async fn fleet_recent_sessions(
     Ok(super::require("fleet_recent_sessions")?
         .views()
         .recent_sessions(&request))
+}
+
+/// `fleet_models {deviceId?}`: every device's models grouped by device,
+/// the device that runs the session first, with each device's online state.
+// @backend-command
+pub async fn fleet_models(request: FleetModelsRequest) -> Result<FleetModels, String> {
+    Ok(super::require("fleet_models")?.views().models(&request))
 }
 
 /// `fleet_device_detail {deviceId}`: the device page (facts, route,

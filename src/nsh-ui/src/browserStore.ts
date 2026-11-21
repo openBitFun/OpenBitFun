@@ -18,10 +18,40 @@
 // Pages outlive the Browser scene: `BrowserPageLayer` keeps every page's web
 // view mounted (an agent's page exists before anyone looks at it) and places
 // the presented one over the scene's viewport.
+//
+// Wave 22 adds what sits around the pages: the inspector tab beside a
+// session (an agent page the session opens presents there), the element
+// picker that hands a page element to the composer, the preview of a
+// workspace's HTML file, and the read-only live view a phone, a browser or
+// another desktop draws of a desktop's page (`browser_webview_capture_preview`,
+// a script-free copy the backend takes; there is no pixel snapshot API).
 
-import { computed, openUrl, signal, WebView } from "nsh";
+import { computed, lifecycle, openUrl, signal, WebView } from "nsh";
 import { invokeCommand, listenEvent, windowShellId } from "./bridge";
+import { isCommandUnavailable } from "./hostCommands";
 import { localizeHostError, tr } from "./i18n";
+import { palette } from "./theme";
+
+/**
+ * What the browser asks of the session around it. `src/browserSession.ts`
+ * installs these when the shell loads: this module is also loaded by the
+ * native shell's actuator before the app state exists, so it cannot import
+ * `state.ts` itself.
+ */
+export interface BrowserSessionHooks {
+  /** An agent page of `sessionId` opened: present it beside that session if it is open. */
+  agentPageOpened(sessionId: string | null): void;
+  /** Adds text to the composer of the open session (or of a new one). */
+  insertIntoComposer(text: string): void;
+  /** Previews a local HTML file through the workspace's device. */
+  previewLocalHtml(path: string): Promise<void>;
+}
+
+let sessionHooks: BrowserSessionHooks | null = null;
+
+export function installBrowserSessionHooks(hooks: BrowserSessionHooks): void {
+  sessionHooks = hooks;
+}
 
 export const BROWSER_DEFAULT_URL = "https://openbitfun.com/";
 const USER_LABEL_PREFIX = "embedded-browser-view-";
@@ -320,7 +350,7 @@ function receivePageMessage(label: string, data: string): void {
 }
 
 function pageIsOnScreen(label: string): boolean {
-  return presentedLabel() === label && browserViewport() !== null && !browserOccluded();
+  return presentedLabel() === label && browserViewport() !== null && !browserOccluded() && htmlPreview() === null;
 }
 
 function reportPageLoad(label: string, event: "started" | "finished" | "failed", facts: { url: string; title?: string; error?: string }): void {
@@ -550,8 +580,36 @@ async function openUserPage(url: string, present = true): Promise<void> {
   }
 }
 
+/**
+ * A local HTML file typed into the address field: a `file:` URL or an
+ * absolute path ending in `.html` / `.htm`. It previews through the
+ * workspace's device instead of loading as a page.
+ */
+export function localHtmlPath(raw: string): string | null {
+  const value = raw.trim();
+  let path = value;
+  if (/^file:\/\//i.test(value)) {
+    path = value.replace(/^file:\/\/(localhost)?/i, "");
+    try {
+      path = decodeURIComponent(path);
+    } catch {
+      // Keep the undecoded text: a path with a stray `%` is still a path.
+    }
+    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+  } else if (!(value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value))) {
+    return null;
+  }
+  return /\.html?$/i.test(path) ? path : null;
+}
+
 /** The address field's submit. */
 export async function loadBrowserUrl(raw: string): Promise<void> {
+  const local = localHtmlPath(raw);
+  if (local && sessionHooks) {
+    browserNotice.set(null);
+    await sessionHooks.previewLocalHtml(local);
+    return;
+  }
   const url = normalizeUrl(raw);
   browserAddress.set(url);
   browserNotice.set(null);
@@ -640,12 +698,314 @@ export function startBrowserEvents(): void {
   if (eventsStarted) return;
   eventsStarted = true;
   void probeBrowserAvailability();
-  listenEvent<{ targetId?: string }>("agentic://open-built-in-browser", payload => {
+  listenEvent<{ targetId?: string; sessionId?: string | null }>("agentic://open-built-in-browser", payload => {
     const targetId = payload?.targetId;
     // The agent's page is what the user wants to see next in the browser.
     if (isBrowserLabel(targetId) && pageOf(targetId)) {
       presentedLabel.set(targetId);
       browserAddress.set(pageOf(targetId)?.url ?? "");
+      htmlPreview.set(null);
+      // A page the open session's agent opened presents beside it (spec §4.2).
+      sessionHooks?.agentPageOpened(payload?.sessionId ?? null);
     }
   });
+}
+
+// ── Element picker (desktop) ──
+//
+// The picker runs in the presented page through the same result channel as
+// `browser.evaluate`: the script highlights what is under the pointer and
+// settles with the clicked element (or `null` on Escape). The reference goes
+// into the composer as text the agent can read; nothing is sent.
+
+const PICKER_TIMEOUT_MS = 120_000;
+const PICKER_KEY = "__openbitfunPicker";
+
+/** The page the picker is running in. */
+export const browserPicking = signal<string | null>(null);
+
+/** What the picker reports of the clicked element. */
+export interface PickedElement {
+  tagName: string;
+  path: string;
+  text: string;
+  url: string;
+}
+
+/** The picker script; its value is a {@link PickedElement} or `null`. */
+export function elementPickerScript(border: string, fill: string): string {
+  return `new Promise(resolve => {
+  const KEY = ${JSON.stringify(PICKER_KEY)};
+  if (window[KEY]) window[KEY](null);
+  const box = document.createElement('div');
+  box.setAttribute('data-openbitfun-picker', '');
+  box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;border-radius:2px;display:none;border:2px solid ' + ${JSON.stringify(border)} + ';background:' + ${JSON.stringify(fill)};
+  document.documentElement.appendChild(box);
+  const cssPath = el => {
+    const parts = [];
+    for (let node = el; node && node.nodeType === 1 && node !== document.documentElement; node = node.parentElement) {
+      let part = node.tagName.toLowerCase();
+      if (node.id) { parts.unshift(part + '#' + (window.CSS && CSS.escape ? CSS.escape(node.id) : node.id)); break; }
+      const same = node.parentElement ? Array.from(node.parentElement.children).filter(child => child.tagName === node.tagName) : [];
+      if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+      const classes = Array.from(node.classList).slice(0, 2);
+      if (classes.length) part += '.' + classes.join('.');
+      parts.unshift(part);
+    }
+    return parts.join(' > ') || 'html';
+  };
+  const show = el => {
+    if (!el || el === box) { box.style.display = 'none'; return; }
+    const rect = el.getBoundingClientRect();
+    box.style.display = 'block';
+    box.style.left = rect.left + 'px'; box.style.top = rect.top + 'px';
+    box.style.width = rect.width + 'px'; box.style.height = rect.height + 'px';
+  };
+  const over = event => show(event.target);
+  const stop = event => { event.preventDefault(); event.stopPropagation(); };
+  const click = event => {
+    stop(event);
+    const el = event.target;
+    finish(el && el.nodeType === 1 ? {
+      tagName: el.tagName.toLowerCase(),
+      path: cssPath(el),
+      text: String(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('alt') || '').replace(/\\s+/g, ' ').trim().slice(0, 120),
+      url: location.href,
+    } : null);
+  };
+  const key = event => { if (event.key === 'Escape') { stop(event); finish(null); } };
+  const finish = value => {
+    document.removeEventListener('mouseover', over, true);
+    document.removeEventListener('click', click, true);
+    document.removeEventListener('mousedown', stop, true);
+    document.removeEventListener('mouseup', stop, true);
+    document.removeEventListener('keydown', key, true);
+    box.remove();
+    delete window[KEY];
+    resolve(value);
+  };
+  window[KEY] = finish;
+  document.addEventListener('mouseover', over, true);
+  document.addEventListener('click', click, true);
+  document.addEventListener('mousedown', stop, true);
+  document.addEventListener('mouseup', stop, true);
+  document.addEventListener('keydown', key, true);
+})`;
+}
+
+const CANCEL_PICKER_SCRIPT = `window[${JSON.stringify(PICKER_KEY)}] && window[${JSON.stringify(PICKER_KEY)}](null);`;
+
+function readPicked(value: unknown): PickedElement | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const text = (key: string, limit: number) => (typeof raw[key] === "string" ? (raw[key] as string).slice(0, limit) : "");
+  const path = text("path", 400);
+  if (!path) return null;
+  return { tagName: text("tagName", 40), path, text: text("text", 120), url: text("url", 2048) };
+}
+
+/** The composer text for a picked element: `#element` with its path, page and text. */
+export function elementReference(element: PickedElement): string {
+  const label = element.text ? ` “${element.text}”` : "";
+  return `#element \`${element.path}\`${label} (${element.url})`;
+}
+
+/** Starts the picker on the presented page; a second call cancels it. */
+export async function startElementPicker(): Promise<void> {
+  const page = presentedPage();
+  if (!page) return;
+  if (browserPicking()) {
+    cancelElementPicker();
+    return;
+  }
+  const label = page.label;
+  browserNotice.set(null);
+  let handle: BrowserViewHandle;
+  try {
+    handle = await waitForHandle(label);
+  } catch (error) {
+    browserNotice.set(sceneError(error));
+    return;
+  }
+  browserPicking.set(label);
+  const script = elementPickerScript(palette().accent, palette().accentSoft);
+  const reply = await evaluateInPage(label, handle, script, PICKER_TIMEOUT_MS);
+  if (browserPicking() === label) browserPicking.set(null);
+  if (!reply.ok) {
+    // A navigation or a cancel ends the picker without a word; a page that
+    // refused the script says so.
+    if (reply.code === "ERR_NSH_WEBVIEW_SCRIPT") browserNotice.set(tr("browser.pickFailed"));
+    return;
+  }
+  const picked = readPicked(reply.value);
+  if (picked) sessionHooks?.insertIntoComposer(elementReference(picked));
+}
+
+/** Ends a running picker without a pick. */
+export function cancelElementPicker(): void {
+  const label = browserPicking();
+  if (!label) return;
+  browserPicking.set(null);
+  handles.get(label)?.injectJavaScript(CANCEL_PICKER_SCRIPT);
+}
+
+// ── HTML preview ──
+//
+// A workspace's HTML file, read through the workspace's device
+// (`read_file_content` routes remote workspaces) and shown in a web view of
+// its own over the browser's viewport. It runs the file's scripts in a web
+// view kept apart from the app's pages. NSH grants a web view no `file:`
+// base, so relative assets do not load; the user can open the file in the
+// device's default browser where that device is this desktop.
+
+export interface HtmlPreview {
+  path: string;
+  name: string;
+  html: string;
+  /** The file is on this desktop, so its default browser can open it. */
+  onThisDesktop: boolean;
+  workspaceId: string | null;
+  deviceId: string | null;
+}
+
+export const htmlPreview = signal<HtmlPreview | null>(null);
+export const htmlPreviewNotice = signal<string | null>(null);
+/** Larger files are not loaded into a preview. */
+export const HTML_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
+export function closeHtmlPreview(): void {
+  htmlPreview.set(null);
+  htmlPreviewNotice.set(null);
+}
+
+/** Whether the preview's file can open in this desktop's default browser. */
+export function htmlPreviewOpensHere(preview: HtmlPreview | null): boolean {
+  return preview?.onThisDesktop === true;
+}
+
+/** Opens the previewed file in the default browser of the desktop it is on. */
+export async function openHtmlPreviewInDefaultBrowser(): Promise<void> {
+  const preview = htmlPreview();
+  if (!preview) return;
+  try {
+    await invokeCommand<null>("open_html_file_in_browser", { path: preview.path });
+  } catch (error) {
+    htmlPreviewNotice.set(sceneError(error));
+  }
+}
+
+// ── Live view (phone, browser, another desktop) ──
+//
+// The desktop that holds a page answers `browser_webview_capture_preview`
+// with a script-free copy of it; this client draws the copy as a still frame
+// and asks again about every 2 s while the view is on screen and the app is
+// in the foreground. It never forwards input: the frame is not the page.
+
+export type BrowserLiveView =
+  | { status: "loading" }
+  | {
+      status: "snapshot";
+      label: string;
+      url: string;
+      title: string;
+      html: string;
+      viewportWidth: number;
+      viewportHeight: number;
+      capturedAtMs: number;
+    }
+  | { status: "ready"; dataUrl: string; url: string }
+  | { status: "tooLarge"; url: string; title: string }
+  | { status: "noPage" }
+  | { status: "unsupported"; reason: string }
+  | { status: "outdated" }
+  | { status: "failed"; message: string };
+
+export const LIVE_VIEW_INTERVAL_MS = 2_000;
+const CAPTURE_COMMAND = "browser_webview_capture_preview";
+
+export const browserLiveView = signal<BrowserLiveView>({ status: "loading" });
+
+export interface LiveViewSource {
+  deviceId: string | null;
+  conversationId: string | null;
+}
+
+function readLiveView(value: unknown): BrowserLiveView {
+  const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const text = (key: string) => (typeof raw[key] === "string" ? (raw[key] as string) : "");
+  const number = (key: string) => (typeof raw[key] === "number" && Number.isFinite(raw[key]) ? (raw[key] as number) : 0);
+  switch (raw.status) {
+    case "snapshot":
+      return {
+        status: "snapshot",
+        label: text("label"),
+        url: text("url"),
+        title: text("title"),
+        html: text("html"),
+        viewportWidth: number("viewportWidth"),
+        viewportHeight: number("viewportHeight"),
+        capturedAtMs: number("capturedAtMs"),
+      };
+    case "ready":
+      return { status: "ready", dataUrl: text("dataUrl"), url: text("url") };
+    case "tooLarge":
+      return { status: "tooLarge", url: text("url"), title: text("title") };
+    case "noPage":
+      return { status: "noPage" };
+    case "unsupported":
+      return { status: "unsupported", reason: text("reason") };
+    default:
+      // A status this build does not know comes from a newer device.
+      return { status: "outdated" };
+  }
+}
+
+/** An older device: no command, or the label-only request shape. */
+function liveViewOutdated(error: unknown): boolean {
+  const message = errorMessage(error);
+  return isCommandUnavailable(error, CAPTURE_COMMAND) || /missing field `label`/.test(message);
+}
+
+/**
+ * Polls the live view of `source()` until the returned function is called.
+ * A read is skipped while the app is in the background.
+ */
+export function startBrowserLiveView(source: () => LiveViewSource): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastKey = "";
+  browserLiveView.set({ status: "loading" });
+  const tick = async () => {
+    timer = null;
+    if (stopped) return;
+    const { deviceId, conversationId } = source();
+    const key = `${deviceId ?? ""}/${conversationId ?? ""}`;
+    if (key !== lastKey) {
+      lastKey = key;
+      browserLiveView.set({ status: "loading" });
+    }
+    if (lifecycle() !== "background") {
+      try {
+        const reply = await invokeCommand<unknown>(
+          CAPTURE_COMMAND,
+          conversationId ? { conversationId } : {},
+          deviceId ? { target: deviceId } : undefined,
+        );
+        if (!stopped && key === lastKey) browserLiveView.set(readLiveView(reply));
+      } catch (error) {
+        if (!stopped && key === lastKey) {
+          browserLiveView.set(
+            liveViewOutdated(error) ? { status: "outdated" } : { status: "failed", message: localizeHostError(errorMessage(error)) },
+          );
+        }
+      }
+    }
+    if (!stopped) timer = setTimeout(() => void tick(), LIVE_VIEW_INTERVAL_MS);
+  };
+  void tick();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
 }

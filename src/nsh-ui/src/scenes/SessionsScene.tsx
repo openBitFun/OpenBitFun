@@ -137,6 +137,11 @@ import {
   chooseModel,
   chooseReasoning,
   ensureModelsLoaded,
+  fleetChoiceOf,
+  fleetModelGroups,
+  refreshFleetModels,
+  type FleetModelChoice,
+  type FleetModelsDevice,
   ensureReasoningLoaded,
   modelPickerOpen,
   reasoningPickerOpen,
@@ -275,6 +280,19 @@ import {
   sendReviewNotes,
   sendingReviewNotes,
 } from "../reviewStore";
+// wave22-p5 session parity: goal, side questions, background commands, MCP prompts and apps.
+import {
+  BackgroundCommandsStrip,
+  GoalStrip,
+  goalAvailable,
+  McpPromptRows,
+  mcpPromptMatches,
+  openGoalDialog,
+  openSideQuestion,
+  runExtrasCommand,
+  SessionExtrasDialogs,
+  useSessionExtras,
+} from "../ui/sessionExtras";
 import {
   Badge,
   Button,
@@ -789,15 +807,12 @@ const TOOL_TOGGLES: ReadonlyArray<{ id: ToolPaneId; icon: IconName; label: Messa
   { id: "browser", icon: "globe", label: "tools.browser" },
 ];
 
+// wave22-p2: the Browser is the inspector's fourth tab, like the other tools.
 function toolActive(id: ToolPaneId): boolean {
-  return id === "browser" ? false : auxPaneOpen() && auxPaneTab() === id;
+  return auxPaneOpen() && auxPaneTab() === id;
 }
 
 function toggleTool(id: ToolPaneId): void {
-  if (id === "browser") {
-    navigateScene("browser");
-    return;
-  }
   if (toolActive(id)) auxPaneOpen.set(false);
   else openInAuxPane(id);
 }
@@ -1412,6 +1427,39 @@ function ThreadActionsSurface(props: { placement: Placement }) {
               onPress={() => {
                 closeThreadMenu();
                 openReviewLauncher();
+              }}
+            />
+            {/* wave22-p2: a phone has no tool toggles; the page of the session's device, live. */}
+            <If when={sessionsCompact()}>
+              <ThreadMenuAction
+                icon="globe"
+                label={tr("browser.live.menu")}
+                accessibilityLabel="session-browser-live"
+                onPress={() => {
+                  closeThreadMenu();
+                  navigateScene("browser");
+                }}
+              />
+            </If>
+            {/* wave22-p5: the session goal and a side question beside the session. */}
+            <ThreadMenuAction
+              icon="circle-dot"
+              label={tr("goal.menu")}
+              disabled={!goalAvailable()}
+              hint={goalAvailable() ? undefined : tr("goal.hostUpdate")}
+              accessibilityLabel="session-goal-open"
+              onPress={() => {
+                closeThreadMenu();
+                openGoalDialog();
+              }}
+            />
+            <ThreadMenuAction
+              icon="message-circle"
+              label={tr("btw.menu")}
+              accessibilityLabel="side-question-open"
+              onPress={() => {
+                closeThreadMenu();
+                openSideQuestion();
               }}
             />
             {/* Copy session ID, Export as Markdown and Show storage folder: the same items as the All sessions ⋯. */}
@@ -3159,6 +3207,7 @@ function SlashCommandSurface() {
           </View>
         )}
       </Each>
+      <McpPromptRows />
     </View>
   );
 }
@@ -3175,6 +3224,11 @@ async function submitComposer(sendDuringTurn?: "immediate" | "queue"): Promise<v
   const slash = parseSlashCommand(composerText());
   if (slash && activeSessionId()) {
     await executeSlashCommand(slash.command, slash.arg);
+    return;
+  }
+  // wave22-p5: `/goal <objective>` and `/btw <question>`.
+  if (activeSessionId() && runExtrasCommand(composerText())) {
+    composerText.set("");
     return;
   }
   const sessionId = activeSessionId();
@@ -3350,7 +3404,10 @@ const activeContextUsage = computed(() => {
   const sessionId = activeSessionId();
   const usage = sessionId ? contextUsage()[sessionId] : undefined;
   if (!usage) return null;
-  const fallbackMax = chatModels().find(model => model.id === activeModelId())?.contextWindow ?? null;
+  const fallbackMax =
+    chatModels().find(model => model.id === activeModelId())?.contextWindow ??
+    fleetChoiceOf(activeModelId())?.choice.contextWindow ??
+    null;
   const max = usage.max ?? fallbackMax;
   return { ...usage, max, ratio: max && max > 0 ? Math.min(1, usage.used / max) : null };
 });
@@ -4222,7 +4279,7 @@ function ComposerDock() {
         </Overlay>
       </If>
 
-      <If when={(slashMatches()?.length ?? 0) > 0 && !mentionOpen()}>
+      <If when={((slashMatches()?.length ?? 0) > 0 || mcpPromptMatches().length > 0) && !mentionOpen()}>
         <Overlay
           anchor={composerCardAnchor()}
           placement="top"
@@ -4398,6 +4455,8 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
           const next = !modelPickerOpen();
           closePickers(next ? "model" : undefined);
           modelPickerOpen.set(next);
+          // Other devices' models may have come or gone since the last read.
+          if (next) void refreshFleetModels();
         }}
         style={{
           height: controlHeight.sm,
@@ -5006,6 +5065,10 @@ function ModelPickerSurface(props: { placement: Placement }) {
       >
         {tr("sessions.model")}
       </Text>
+      <If when={fleetModelGroups()}>
+        {groups => <FleetModelList groups={groups()} />}
+      </If>
+      <If when={!fleetModelGroups()}>
       <Scroll style={{ maxHeight: 204, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: 2 }}>
           <Each of={chatModels()} key="index">
@@ -5056,6 +5119,125 @@ function ModelPickerSurface(props: { placement: Placement }) {
           </Each>
         </View>
       </Scroll>
+      </If>
+    </View>
+  );
+}
+
+/** Why a device's models cannot be picked, as the backend said (`unavailableReason`). */
+function deviceModelsNote(device: FleetModelsDevice): string {
+  switch (device.unavailableReason) {
+    case "device_offline":
+      return tr("models.deviceOffline");
+    case "device_requires_update":
+      return tr("models.deviceRequiresUpdate");
+    case "no_model":
+      return tr("models.deviceNoModel");
+    default:
+      return "";
+  }
+}
+
+/** Every device's models in the entry's order, one header per device. */
+function FleetModelList(props: { groups: FleetModelsDevice[] }) {
+  return (
+    <Scroll style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
+      <View style={{ gap: 2 }}>
+        <Each of={props.groups} key="index">
+          {device => (
+            <View testID={`model-device-${device().deviceId}`} style={{ gap: 2, paddingTop: 4 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 6, paddingVertical: 2 }}>
+                <Text
+                  style={{
+                    flexShrink: 1,
+                    minWidth: 0,
+                    color: palette().textElevatedMuted,
+                    fontSize: textSize(10.5),
+                    lineHeight: textLineHeight(10.5, 1.3),
+                    fontWeight: "600",
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {device().isThisDevice ? `${device().name} · ${tr("models.thisDevice")}` : device().name}
+                </Text>
+                <If when={deviceModelsNote(device())}>
+                  <Text
+                    testID={`model-device-note-${device().deviceId}`}
+                    style={{
+                      flexShrink: 1,
+                      minWidth: 0,
+                      color: palette().textMuted,
+                      fontSize: textSize(10.5),
+                      lineHeight: textLineHeight(10.5, 1.3),
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {deviceModelsNote(device())}
+                  </Text>
+                </If>
+              </View>
+              <Each of={device().models} key="index">
+                {choice => <FleetModelRow choice={choice()} />}
+              </Each>
+            </View>
+          )}
+        </Each>
+      </View>
+    </Scroll>
+  );
+}
+
+function FleetModelRow(props: { choice: FleetModelChoice }) {
+  const active = () => props.choice.modelRef === activeModelId();
+  return (
+    <View
+      role="button"
+      accessibilityLabel={`model-option-${props.choice.modelRef}`}
+      disabled={!props.choice.selectable}
+      accessibilityState={{ disabled: !props.choice.selectable, selected: active() }}
+      onPress={() => {
+        if (props.choice.selectable) void chooseModel(props.choice.modelRef);
+      }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 9,
+        paddingVertical: 6.5,
+        borderRadius: radii.sm,
+        borderCurve: "continuous",
+        backgroundColor: active() ? palette().accentSoft : "transparent",
+        opacity: props.choice.selectable ? 1 : 0.5,
+        cursor: props.choice.selectable ? "pointer" : "not-allowed",
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={props.choice.selectable ? { backgroundColor: active() ? palette().accentSoft : palette().panelHover } : {}}
+      focusVisibleStyle={focusRingStyle(-1)}
+    >
+      <Text
+        style={{
+          flex: 1,
+          minWidth: 0,
+          color: active() ? palette().accent : palette().text,
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.35),
+          fontWeight: active() ? "600" : "500",
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {`${props.choice.displayName || props.choice.modelId}${props.choice.provider ? ` · ${props.choice.provider}` : ""}`}
+      </Text>
+      <If when={props.choice.primary}>
+        <Text style={{ color: palette().textMuted, fontSize: textSize(10.5), lineHeight: textLineHeight(10.5, 1.3) }}>
+          {tr("models.primary")}
+        </Text>
+      </If>
+      <If when={active()}>
+        <Icon name="check" size={12.5} color={palette().accent} />
+      </If>
     </View>
   );
 }
@@ -5789,6 +5971,7 @@ function followSearchRevealRequests(): void {
 
 export function SessionsScene() {
   followSearchRevealRequests();
+  useSessionExtras(); // wave22-p5
   return (
     <View
       onLayout={event => {
@@ -5800,13 +5983,16 @@ export function SessionsScene() {
       style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: palette().canvas }}
     >
       <ConversationHeader />
+      <GoalStrip />
       <Transcript />
       <SessionOfflineNotice />
       <PermissionPrompts />
       <QuestionPrompts />
       <SessionReviewNotes />
       <ReviewLauncherDialog />
+      <BackgroundCommandsStrip />
       <ComposerDock />
+      <SessionExtrasDialogs />
     </View>
   );
 }

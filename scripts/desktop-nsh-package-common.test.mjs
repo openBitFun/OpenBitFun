@@ -90,6 +90,7 @@ test('the DeepSeek Harness profile is copied when built and reported when not', 
   assert.ok(destinations.includes('flashgrep/flashgrep-aarch64-apple-darwin'));
   assert.ok(destinations.includes('resources/dsh-profile'));
   assert.ok(destinations.includes('resources/worker_host.js'));
+  assert.ok(destinations.includes('resources/agent-companion-pets'));
 });
 
 test('package resource paths are the ones the backend resolvers look for', () => {
@@ -104,6 +105,9 @@ test('package resource paths are the ones the backend resolvers look for', () =>
   const dsh = readFileSync(join(root, 'src/crates/interfaces/acp/src/client/dsh_profile.rs'), 'utf8');
   assert.match(dsh, /directory\.join\("resources"\)\.join\("dsh-profile"\)/);
   assert.match(dsh, /\.join\("Resources"\)\s*\.join\("resources"\)\s*\.join\("dsh-profile"\)/);
+  const pets = readFileSync(join(root, 'src/apps/desktop/src/api/companion_pet_api.rs'), 'utf8');
+  assert.match(pets, /const BUILTIN_DIR: &str = "agent-companion-pets"/);
+  assert.match(pets, /parent\.join\("Resources"\)\.join\("resources"\)\.join\(BUILTIN_DIR\)/);
 });
 
 test('the packaged UI bundle carries the product identity in app.json', () => {

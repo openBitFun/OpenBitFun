@@ -11,6 +11,7 @@
  * target mono 12, duration on the right; it expands into a mono well.
  */
 
+import { McpAppLauncher } from "./sessionExtras"; // wave22-p5
 import { Clipboard, computed, Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import type { JSX, Signal, ViewStyle } from "nsh";
 import { DiffView } from "nsh/base";
@@ -1136,6 +1137,10 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
         {args => (
           <MonoBlock copyKey={`${props.cardId}-args`} label={tr("chat.tool.arguments")} text={args()} maxHeight={160} />
         )}
+      </If>
+      {/* wave22-p5: an MCP tool with an interactive UI opens it in a panel. */}
+      <If when={kind === "mcp"}>
+        <McpAppLauncher call={props.call} cardId={props.cardId} />
       </If>
       <If when={kind !== "grep" && kind !== "glob" && kind !== "ls" && !(kind === "websearch" && webResultsOf(props.call).length > 0)}>
         <ResultSection

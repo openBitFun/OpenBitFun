@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::protocol::{
     DispatchAppendRequest, DispatchApprovalPolicy, DispatchAttachment, DispatchContinueRequest,
-    DispatchEvent, DispatchJobListEntry, DispatchJobState, DispatchSubmitRequest, DispatchTurnKind,
-    DISPATCH_PROTOCOL_VERSION,
+    DispatchEvent, DispatchJobListEntry, DispatchJobState, DispatchPendingQuestion,
+    DispatchSubmitRequest, DispatchTurnKind, DISPATCH_PROTOCOL_VERSION,
 };
 
 const JOB_RECORD_FILE: &str = "job.json";
@@ -24,6 +24,10 @@ const WORKER_LOCK_FILE: &str = ".worker.lock";
 const PENDING_PERMISSIONS_DIR: &str = "permissions/pending";
 const PERMISSION_ANSWERS_DIR: &str = "permissions/answers";
 const RESOLVED_PERMISSIONS_DIR: &str = "permissions/resolved";
+/// The question mailbox (`user_question_mailbox_v1`), beside the permission one.
+const PENDING_QUESTIONS_DIR: &str = "questions/pending";
+const QUESTION_ANSWERS_DIR: &str = "questions/answers";
+const RESOLVED_QUESTIONS_DIR: &str = "questions/resolved";
 const PENDING_MESSAGES_DIR: &str = "messages/pending";
 const CONSUMED_MESSAGES_DIR: &str = "messages/consumed";
 /// Follow-up turns queued against a job that has already finished one.
@@ -195,6 +199,19 @@ pub(crate) struct StoredPermissionAnswer {
     pub(crate) request_id: String,
     pub(crate) reply: PermissionReply,
     pub(crate) answered_at: String,
+}
+
+/// A controller's answer to a waiting question, kept until the worker hands
+/// it to the Runtime.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StoredQuestionAnswer {
+    pub(crate) request_id: String,
+    pub(crate) answers: serde_json::Value,
+    pub(crate) answered_at: String,
+    /// How the question settled (`answered`, `expired`); set once resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outcome: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -841,11 +858,185 @@ impl DispatchStore {
         Ok(())
     }
 
+    // -- Question mailbox (`user_question_mailbox_v1`) -------------------------
+
+    /// Persist a question the job's Runtime is waiting on. Idempotent per
+    /// request id; bounded like the permission mailbox.
+    pub(crate) fn save_pending_question(
+        &self,
+        job_id: &str,
+        question: &DispatchPendingQuestion,
+    ) -> Result<bool> {
+        let job_dir = self.existing_job_dir(job_id)?;
+        let _lock = JobLock::exclusive(&job_dir.join(".lock"))?;
+        let state = self.load_state_unlocked(&job_dir)?;
+        if state.state.is_terminal() {
+            bail!("dispatch job is already terminal");
+        }
+        let path = mailbox_path(&job_dir, PENDING_QUESTIONS_DIR, &question.request_id)?;
+        let encoded_bytes = serde_json::to_vec_pretty(question)
+            .context("encode dispatch question")?
+            .len()
+            .saturating_add(1) as u64;
+        if encoded_bytes > MAX_PENDING_PERMISSION_BYTES {
+            bail!("dispatch question exceeds the 48 KiB safety limit");
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let (count, bytes) = mailbox_usage(&job_dir.join(PENDING_QUESTIONS_DIR))?;
+                if count >= MAX_PENDING_PERMISSIONS
+                    || bytes.saturating_add(encoded_bytes) > MAX_PENDING_PERMISSIONS_BYTES
+                {
+                    bail!("dispatch question mailbox exceeds the status safety limit");
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+        write_json_if_absent_or_equal(&path, question)?;
+        Ok(true)
+    }
+
+    pub(crate) fn list_pending_questions(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<DispatchPendingQuestion>> {
+        let job_dir = self.existing_job_dir(job_id)?;
+        let mut questions =
+            read_json_directory::<DispatchPendingQuestion>(&job_dir.join(PENDING_QUESTIONS_DIR))?;
+        questions.sort_by(|left, right| {
+            left.registered_at_ms
+                .cmp(&right.registered_at_ms)
+                .then_with(|| left.request_id.cmp(&right.request_id))
+        });
+        Ok(questions)
+    }
+
+    /// Every live job with its waiting questions, for the fleet digest
+    /// (`answerRoute: "dispatch"`). Read-only, like the permission listing.
+    pub(crate) fn list_pending_dispatch_questions(
+        &self,
+    ) -> Result<Vec<(DispatchJobListEntry, Vec<DispatchPendingQuestion>)>> {
+        if !self.root.join("jobs").is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut pending = Vec::new();
+        for job in self.list_jobs()? {
+            if job.state.is_terminal() {
+                continue;
+            }
+            match self.list_pending_questions(&job.job_id) {
+                Ok(questions) if !questions.is_empty() => pending.push((job, questions)),
+                Ok(_) => {}
+                Err(error) => tracing::debug!(
+                    "Dispatch questions skipped an unreadable job: job_id={}, error={:#}",
+                    job.job_id,
+                    error
+                ),
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Persist an answer to a waiting question. Idempotent: the same answer
+    /// again (also after it was applied) succeeds, a different one fails.
+    pub(crate) fn save_question_answer(
+        &self,
+        job_id: &str,
+        request_id: &str,
+        answers: serde_json::Value,
+    ) -> Result<bool> {
+        let job_dir = self.existing_job_dir(job_id)?;
+        let _lock = JobLock::exclusive(&job_dir.join(".lock"))?;
+        let same = |existing: &StoredQuestionAnswer| -> Result<bool> {
+            if existing.request_id != request_id || existing.answers != answers {
+                bail!("dispatch question requestId is already bound to a different answer");
+            }
+            Ok(true)
+        };
+        let resolved_path = mailbox_path(&job_dir, RESOLVED_QUESTIONS_DIR, request_id)?;
+        if let Some(existing) = read_optional_regular_json::<StoredQuestionAnswer>(&resolved_path)?
+        {
+            if existing.outcome.as_deref() == Some("expired") {
+                bail!("dispatch question {request_id} is no longer waiting");
+            }
+            return same(&existing);
+        }
+        let state = self.load_state_unlocked(&job_dir)?;
+        if state.state.is_terminal() {
+            bail!("dispatch job is already terminal");
+        }
+        let pending_path = mailbox_path(&job_dir, PENDING_QUESTIONS_DIR, request_id)?;
+        let pending = read_optional_regular_json::<DispatchPendingQuestion>(&pending_path)?
+            .ok_or_else(|| anyhow!("dispatch question not found: {request_id}"))?;
+        if pending.request_id != request_id {
+            bail!("dispatch question mailbox identity mismatch");
+        }
+        let answer_path = mailbox_path(&job_dir, QUESTION_ANSWERS_DIR, request_id)?;
+        if let Some(existing) = read_optional_regular_json::<StoredQuestionAnswer>(&answer_path)? {
+            return same(&existing);
+        }
+        let answer = StoredQuestionAnswer {
+            request_id: request_id.to_string(),
+            answers,
+            answered_at: chrono::Utc::now().to_rfc3339(),
+            outcome: None,
+        };
+        write_json_if_absent_or_equal(&answer_path, &answer)?;
+        Ok(true)
+    }
+
+    pub(crate) fn list_question_answers(&self, job_id: &str) -> Result<Vec<StoredQuestionAnswer>> {
+        let job_dir = self.existing_job_dir(job_id)?;
+        let mut answers =
+            read_json_directory::<StoredQuestionAnswer>(&job_dir.join(QUESTION_ANSWERS_DIR))?;
+        answers.sort_by(|left, right| {
+            left.answered_at
+                .cmp(&right.answered_at)
+                .then_with(|| left.request_id.cmp(&right.request_id))
+        });
+        Ok(answers)
+    }
+
+    /// Settle one question: `answered` with the applied answer, or `expired`
+    /// when the Runtime stopped waiting (timeout, cancelled turn).
+    pub(crate) fn mark_question_resolved(
+        &self,
+        job_id: &str,
+        request_id: &str,
+        answer: Option<&StoredQuestionAnswer>,
+        outcome: &str,
+    ) -> Result<()> {
+        let job_dir = self.existing_job_dir(job_id)?;
+        let _lock = JobLock::exclusive(&job_dir.join(".lock"))?;
+        let resolved_path = mailbox_path(&job_dir, RESOLVED_QUESTIONS_DIR, request_id)?;
+        let mut resolved = answer.cloned().unwrap_or_else(|| StoredQuestionAnswer {
+            request_id: request_id.to_string(),
+            answers: serde_json::Value::Null,
+            answered_at: chrono::Utc::now().to_rfc3339(),
+            outcome: None,
+        });
+        resolved.outcome = Some(outcome.to_string());
+        if read_optional_regular_json::<StoredQuestionAnswer>(&resolved_path)?.is_none() {
+            atomic_write_json(&resolved_path, &resolved)?;
+        }
+        remove_file_if_present(&mailbox_path(&job_dir, PENDING_QUESTIONS_DIR, request_id)?);
+        remove_file_if_present(&mailbox_path(&job_dir, QUESTION_ANSWERS_DIR, request_id)?);
+        Ok(())
+    }
+
     pub(crate) fn clear_pending_permissions(&self, job_id: &str) {
         let Ok(job_dir) = self.job_dir(job_id) else {
             return;
         };
-        for directory in [PENDING_PERMISSIONS_DIR, PERMISSION_ANSWERS_DIR] {
+        // The question mailbox settles with the permission one: both only
+        // hold what a live turn waits on.
+        for directory in [
+            PENDING_PERMISSIONS_DIR,
+            PERMISSION_ANSWERS_DIR,
+            PENDING_QUESTIONS_DIR,
+            QUESTION_ANSWERS_DIR,
+        ] {
             if let Err(error) = fs::remove_dir_all(job_dir.join(directory)) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     tracing::warn!(
@@ -2361,6 +2552,7 @@ mod tests {
             attachments: Vec::new(),
             setup_audit: Vec::new(),
             submitter: None,
+            user_questions: false,
         }
     }
 
@@ -2421,6 +2613,104 @@ mod tests {
             delegation: None,
             display_metadata: Map::new(),
         }
+    }
+
+    #[test]
+    fn the_question_mailbox_persists_answers_once_and_settles() {
+        let (_dir, store) = store();
+        let mut job = request("job-q");
+        job.user_questions = true;
+        store.create_job(job, "Task".to_string()).expect("job");
+        store
+            .mark_state("job-q", DispatchJobState::Running, None, None)
+            .expect("running");
+        let question = DispatchPendingQuestion {
+            request_id: "tool-1".into(),
+            session_id: "session-job-q".into(),
+            title: "Which db?".into(),
+            questions: serde_json::json!({"questions": [{"question": "Which db?", "header": "DB",
+                "options": [{"label": "sqlite", "description": ""}]}]}),
+            registered_at_ms: 5,
+        };
+        assert!(store.save_pending_question("job-q", &question).unwrap());
+        assert!(
+            !store.save_pending_question("job-q", &question).unwrap(),
+            "idempotent"
+        );
+        assert_eq!(
+            store.list_pending_questions("job-q").unwrap(),
+            vec![question.clone()]
+        );
+        let listed = store.list_pending_dispatch_questions().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0.job_id, "job-q");
+
+        // Unknown questions are refused; an answer is persisted once.
+        assert!(store
+            .save_question_answer("job-q", "tool-x", serde_json::json!({"0": "sqlite"}))
+            .is_err());
+        let answers = serde_json::json!({"0": "sqlite"});
+        assert!(store
+            .save_question_answer("job-q", "tool-1", answers.clone())
+            .unwrap());
+        assert!(store
+            .save_question_answer("job-q", "tool-1", answers.clone())
+            .unwrap());
+        assert!(store
+            .save_question_answer("job-q", "tool-1", serde_json::json!({"0": "other"}))
+            .is_err());
+        let stored = store.list_question_answers("job-q").unwrap();
+        assert_eq!(stored.len(), 1);
+
+        // The worker applies it: pending and answer leave, the resolution stays.
+        store
+            .mark_question_resolved("job-q", "tool-1", Some(&stored[0]), "answered")
+            .unwrap();
+        assert!(store.list_pending_questions("job-q").unwrap().is_empty());
+        assert!(store.list_question_answers("job-q").unwrap().is_empty());
+        // A retried answer after resolution is still accepted (same answer).
+        assert!(store
+            .save_question_answer("job-q", "tool-1", answers)
+            .unwrap());
+
+        // An expired question refuses a late answer.
+        let late = DispatchPendingQuestion {
+            request_id: "tool-2".into(),
+            ..question
+        };
+        store.save_pending_question("job-q", &late).unwrap();
+        store
+            .mark_question_resolved("job-q", "tool-2", None, "expired")
+            .unwrap();
+        assert!(store
+            .save_question_answer("job-q", "tool-2", serde_json::json!({"0": "sqlite"}))
+            .is_err());
+
+        // Terminal jobs drop the mailbox.
+        store
+            .save_pending_question(
+                "job-q",
+                &DispatchPendingQuestion {
+                    request_id: "tool-3".into(),
+                    ..late
+                },
+            )
+            .unwrap();
+        store.clear_pending_permissions("job-q");
+        assert!(store.list_pending_questions("job-q").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_job_record_without_the_question_field_reads_as_opted_out() {
+        let mut value = serde_json::to_value(request("job-old")).unwrap();
+        value.as_object_mut().unwrap().remove("userQuestions");
+        let decoded: DispatchSubmitRequest = serde_json::from_value(value).unwrap();
+        assert!(!decoded.user_questions);
+        // And a request that never opted in serializes exactly as before.
+        assert!(serde_json::to_value(request("job-old"))
+            .unwrap()
+            .get("userQuestions")
+            .is_none());
     }
 
     #[test]

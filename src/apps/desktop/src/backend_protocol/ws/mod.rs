@@ -67,6 +67,11 @@ impl ObpBackend for BackendService {
         crate::fleet::mux()
     }
 
+    fn account_replica(&self) -> Option<Arc<openbitfun_obp::fleet::replica::AccountReplica>> {
+        let sync = crate::fleet::current()?.replica_sync()?;
+        Some(Arc::clone(sync.replica()))
+    }
+
     fn serves_cloud_agent(&self) -> bool {
         true
     }

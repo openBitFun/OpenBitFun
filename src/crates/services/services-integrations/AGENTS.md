@@ -190,6 +190,7 @@ cargo test -p openbitfun-services-integrations --no-default-features --features 
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-ssh-concrete --lib remote_ssh::relay_deploy::tests::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::message_encoding::tests
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::account::tests
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::settings_sync
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::routing_lease::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::mesh_route::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::host_stream::
@@ -261,6 +262,18 @@ cargo test --locked -p openbitfun-services-integrations --no-default-features --
 
 These loopback protocol fixtures exercise the serving host's HTTP and filesystem
 behavior; they do not establish real SSH, relay, peer or dispatch support.
+
+For the account sign-in's refresh-token rotation (every `AccountIdentityClient`
+of a profile, in one process or a desktop and a CLI daemon together, spends a
+refresh token once under the vault update lock and re-reads the pair after
+losing the race; a 401 is not a sign-out until the stored pair is rejected):
+
+```bash
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features account-identity --lib account_identity
+```
+
+The loopback identity fixture mirrors the service's per-family rotation; it
+does not establish live identity-service behavior.
 
 For models.dev snapshot reuse, last-valid recovery, and background refresh:
 

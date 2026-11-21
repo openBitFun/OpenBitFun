@@ -93,9 +93,6 @@ const FRONTEND_HOT_UPDATE_RETIRED: &str =
     "WebView frontend hot updates were retired with the Tauri desktop shell; the native app ships its UI inside the app bundle";
 const WEBVIEW_DEVTOOLS_RETIRED: &str =
     "WebView devtools and the element inspector were retired with the Tauri desktop shell";
-const DESKTOP_PET_RETIRED: &str = "the desktop pet window was retired with the Tauri desktop shell";
-const DESKTOP_CARDS_RETIRED: &str =
-    "desktop cards were Tauri windows and were retired with the Tauri desktop shell";
 const DESKTOP_EXTERNAL_CONTROL_RETIRED: &str =
     "local HTTP task control was retired with the Tauri desktop shell";
 const TAURI_WEBVIEW_RETIRED: &str =
@@ -132,6 +129,9 @@ pub(super) const REFUSED: HostSupport = HostSupport::Unsupported {
 };
 pub(super) const CLI_NOT_IMPLEMENTED: HostSupport = HostSupport::Unsupported {
     reason: "the CLI peer host has no handler for this command",
+};
+pub(super) const CLI_NO_DESKTOP_CARDS: HostSupport = HostSupport::Unsupported {
+    reason: "the CLI peer host keeps no desktop cards",
 };
 pub(super) const CLI_NO_DESKTOP_IDE_SURFACE: HostSupport = HostSupport::Unsupported {
     reason: "the CLI peer host does not run this desktop IDE surface",
@@ -200,6 +200,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("account_logout",                                             Agnostic,    ControllerLocal,  REFUSED),
     retired("account_online_devices", RELAY_TRANSPORT_RETIRED),
     retired("account_relay_capabilities", RELAY_TRANSPORT_RETIRED),
+    op("account_settings_sync_set",                                  Agnostic,    ControllerLocal,  REFUSED),
+    op("account_settings_sync_status",                               Agnostic,    ControllerLocal,  REFUSED),
     op("account_status",                                             Agnostic,    ControllerLocal,  REFUSED),
     retired("account_subscribe_session", RELAY_TRANSPORT_RETIRED),
     op("account_token_expired",                                      Agnostic,    ControllerLocal,  REFUSED),
@@ -224,7 +226,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("browser_control_list_browsers",                              LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
     op("browser_control_restart_with_cdp",                           LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
     op("browser_get_url",                                            LocalOnly,   ControllerLocal,  REFUSED),
-    op("browser_webview_capture_preview",                            LocalOnly,   ControllerLocal,  REFUSED),
+    op("browser_webview_capture_preview",                            LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
     op("browser_webview_create",                                     LocalOnly,   ControllerLocal,  REFUSED),
     op("browser_webview_eval",                                       LocalOnly,   ControllerLocal,  REFUSED),
     op("browser_webview_navigate",                                   LocalOnly,   ControllerLocal,  REFUSED),
@@ -314,14 +316,18 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("delete_skill",                                               Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("delete_subagent",                                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("delete_terminal_profile",                                    Agnostic,    Proxied,          HANDLED),
-    retired("desktop_card_delete", DESKTOP_CARDS_RETIRED),
-    retired("desktop_card_get", DESKTOP_CARDS_RETIRED),
-    retired("desktop_card_list", DESKTOP_CARDS_RETIRED),
-    retired("desktop_card_refresh", DESKTOP_CARDS_RETIRED),
-    retired("desktop_card_set_always_on_top", DESKTOP_CARDS_RETIRED),
-    retired("desktop_card_set_checklist_item", DESKTOP_CARDS_RETIRED),
-    retired("desktop_card_set_visible", DESKTOP_CARDS_RETIRED),
+    // Desktop cards are facts of the device that made them: every client
+    // lists and acts on them there; its shell draws the windows.
+    op("desktop_card_delete",                                        Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
+    op("desktop_card_get",                                           Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
+    op("desktop_card_list",                                          Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
+    op("desktop_card_refresh",                                       Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
+    op("desktop_card_set_always_on_top",                             Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
+    op("desktop_card_set_bounds",                                    Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
+    op("desktop_card_set_checklist_item",                            Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
+    op("desktop_card_set_visible",                                   Agnostic,    Proxied,          CLI_NO_DESKTOP_CARDS),
     retired("desktop_external_control", DESKTOP_EXTERNAL_CONTROL_RETIRED),
+    op("device_records_overview",                                    Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("dispatch_answer",                                            Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_append",                                            Agnostic,    ControllerLocal,  REFUSED),
     op("dispatch_cancel",                                            Agnostic,    ControllerLocal,  REFUSED),
@@ -353,6 +359,9 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     // workspace id or a remote URL at a ref) into a pinned worktree; a CLI
     // host advertises the capability because this row exists.
     host_invoke_only("dispatch_target_workspace_provision_source",   Agnostic,    HostControlPlane, HANDLED),
+    // `workspace_publish_v1`: push a finished job's `<prefix>/dispatch/*`
+    // branch to its workspace's remote, never forced.
+    host_invoke_only("dispatch_target_workspace_publish",            Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("dispatch_target_workspace_sync",               Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("dispatch_target_workspace_sync_chunk",         Agnostic,    HostControlPlane, HANDLED),
     op("download_skill_market",                                      Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -381,6 +390,10 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     // runtime host, with its read state.
     op("fleet_attention",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     op("fleet_attention_mark_read",                                  Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    // Account replica owner verb (`account_replica_v1`, `fleet::replica`):
+    // a blob by hash from another runtime host of the account.
+    host_invoke_only("fleet_blob_get",                               Agnostic,    OperatorOnly,     REFUSED),
+    host_invoke_only("fleet_blob_holders",                           Agnostic,    OperatorOnly,     REFUSED),
     op("fleet_call",                                                 Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     // The device page (`fleet_device_detail`): an index projection of the
     // serving runtime host, with the cloud agent's queued jobs.
@@ -389,18 +402,29 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     // account-device host verb, like `obp_remote_command`.
     host_invoke_only("fleet_digest",                                 Agnostic,    OperatorOnly,     REFUSED),
     op("fleet_events",                                               Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
-    // The model relay for the account's cloud agent: the OBP scope admits it
-    // for the `cloud-agent` connection only, before this registry; peer hosts
-    // answer it in their OBP backend, never as a proxied product command.
+    // The model relay: the OBP scope admits it for the account's cloud agent
+    // and the account's other devices (a session on another device running
+    // this device's model), never a paired client, before this registry;
+    // peer hosts answer it in their OBP backend, never as a proxied product
+    // command.
     host_invoke_only("fleet_model_cancel",                           Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("fleet_model_poll",                             Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("fleet_model_start",                            Agnostic,    HostControlPlane, HANDLED),
+    // The account-wide model catalog (`fleet::models`): an index projection
+    // of the serving runtime host, grouped by device.
+    op("fleet_models",                                               Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     op("fleet_navigator",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     op("fleet_prompts",                                              Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     // All sessions › Recent: an index projection of the serving runtime host.
     op("fleet_recent_sessions",                                      Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     // Owner verb (`fleet_v1`), see `fleet_digest`.
     host_invoke_only("fleet_replay",                                 Agnostic,    OperatorOnly,     REFUSED),
+    // Account replica owner verbs (`account_replica_v1`): the account's
+    // other runtime hosts exchange its replica (synced settings) over Link.
+    host_invoke_only("fleet_replica_digest",                         Agnostic,    OperatorOnly,     REFUSED),
+    host_invoke_only("fleet_replica_list",                           Agnostic,    OperatorOnly,     REFUSED),
+    host_invoke_only("fleet_replica_pull",                           Agnostic,    OperatorOnly,     REFUSED),
+    host_invoke_only("fleet_replica_push",                           Agnostic,    OperatorOnly,     REFUSED),
     op("fleet_subscribe",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     op("fleet_ui_bundle",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     op("fork_session",                                               Routed,      Proxied,          HANDLED),
@@ -560,7 +584,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("grant_miniapp_path",                                         Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("grant_miniapp_workspace",                                    Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("has_insights_data",                                          Routed,      ControllerLocal,  REFUSED),
-    retired("hide_agent_companion_desktop_pet", DESKTOP_PET_RETIRED),
+    op("hide_agent_companion_desktop_pet",                           LocalOnly,   ControllerLocal,  REFUSED),
     op("hide_main_window_after_close_request",                       LocalOnly,   ControllerLocal,  REFUSED),
     op("host_shell_attach",                                          LocalOnly,   ControllerLocal,  REFUSED),
     op("host_shell_respond",                                         LocalOnly,   ControllerLocal,  REFUSED),
@@ -614,7 +638,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("list_subscription_accounts",                                 LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
     op("list_visible_subagents",                                     Routed,      Proxied,          HANDLED),
     op("load_acp_json_config",                                       Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
-    retired("load_agent_companion_pet_spritesheet", DESKTOP_PET_RETIRED),
+    op("load_agent_companion_pet_spritesheet",                       Agnostic,    ControllerLocal,  REFUSED),
     op("load_git_repo_history",                                      Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("load_insights_report",                                       LocalOnly,   ControllerLocal,  REFUSED),
     op("load_mcp_json_config",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -635,6 +659,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("mesh_list_devices",                                          Agnostic,    ControllerLocal,  REFUSED),
     retired("mesh_phone_join_info", MESH_PHONE_JOIN_RETIRED),
     op("mesh_status",                                                Agnostic,    ControllerLocal,  REFUSED),
+    // The account's MiniApp list from the account replica (wave 22, P4).
+    op("miniapp_account_catalog",                                    Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_agent_cancel",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_agent_cancel_stale_runs",                            Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_agent_ensure_session",                               LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -656,6 +682,9 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("miniapp_get_draft",                                          Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_host_call",                                          Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_import_from_path",                                   Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    // The in-product Space view: it runs on the Space's device and refuses a
+    // remote workspace grant (wave 22, P4).
+    op("miniapp_inline",                                             Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_install_deps",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("miniapp_market_browse",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     retired("miniapp_market_capture_window", TAURI_WEBVIEW_RETIRED),
@@ -789,7 +818,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("reset_memory",                                               Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("reset_mode_skill_selection",                                 Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("reset_workspace_persona_files",                              Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
-    retired("resize_agent_companion_desktop_pet", DESKTOP_PET_RETIRED),
+    op("resize_agent_companion_desktop_pet",                         LocalOnly,   ControllerLocal,  REFUSED),
     op("resolve_ai_model_request_url",                               Agnostic,    ControllerLocal,  REFUSED),
     retired("resolve_browser_dropped_file_paths", SHELL_OWNS_WINDOW_RETIRED),
     op("respond_permission",                                         Agnostic,    Proxied,          HANDLED),
@@ -886,7 +915,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("set_tray_unread_count",                                      LocalOnly,   ControllerLocal,  REFUSED),
     op("set_web_search_provider",                                    Agnostic,    Proxied,          HANDLED),
     op("set_workspace_icon",                                         Agnostic,    Proxied,          HANDLED),
-    retired("show_agent_companion_desktop_pet", DESKTOP_PET_RETIRED),
+    op("show_agent_companion_desktop_pet",                           LocalOnly,   ControllerLocal,  REFUSED),
     op("show_main_window",                                           LocalOnly,   ControllerLocal,  REFUSED),
     op("speech_append_audio_chunk",                                  LocalOnly,   ControllerLocal,  REFUSED),
     op("speech_append_realtime_audio",                               LocalOnly,   ControllerLocal,  REFUSED),
@@ -957,6 +986,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     cloud_node("superagent_list_conversations"),
     cloud_node("superagent_rename_conversation"),
     cloud_node("superagent_send"),
+    cloud_node("superagent_set_model"),
     cloud_node("superagent_status"),
     op("terminal_ack",                                               Routed,      Proxied,          HANDLED),
     op("terminal_close",                                             Routed,      Proxied,          HANDLED),

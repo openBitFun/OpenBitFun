@@ -23,6 +23,8 @@ export interface SuperagentFixtureOptions {
   failFirstSend?: string;
   /** The running turn's step in the release conversation ("parked"). */
   turnStep?: string;
+  /** Model picks the conversations start with (absent: Auto). */
+  picks?: Record<string, { deviceId: string; modelId: string }>;
 }
 
 export interface SuperagentFixture {
@@ -179,6 +181,28 @@ export function createSuperagentFixture(options: SuperagentFixtureOptions = {}):
     "conv-812": { id: "conv-812", title: "Fix #812", updatedMs: now - 30 * MIN, rollup: "working", unread: false, turn: null, messages: [] },
     "conv-deps": { id: "conv-deps", title: "Bump deps", updatedMs: now - 26 * 60 * MIN, rollup: "unread", unread: true, turn: null, messages: [] },
   };
+  // The model picker (wave 21): devices with their models, each conversation's pick.
+  const modelDevices = [
+    { deviceId: "dev-mac", name: "mac-mini", hostKind: "desktop", online: true,
+      models: [{ modelId: "sonnet", displayName: "Claude Sonnet", provider: "anthropic", primary: true }, { modelId: "gpt", displayName: "GPT-5", provider: "openai" }] },
+    { deviceId: "dev-win", name: "win-pc", hostKind: "desktop", online: false, unavailableReason: "device_offline",
+      models: [{ modelId: "local", displayName: "Local model", provider: "openai", primary: true }] },
+  ];
+  const picks: Record<string, { deviceId: string; modelId: string } | null> = { ...(options.picks ?? {}) };
+  const selectionOf = (id: string) => {
+    const pick = picks[id];
+    if (!pick) return { mode: "auto" };
+    const device = modelDevices.find(item => item.deviceId === pick.deviceId);
+    const model = device?.models.find(item => item.modelId === pick.modelId);
+    return {
+      mode: "pinned",
+      deviceId: pick.deviceId,
+      deviceName: device?.name,
+      modelId: pick.modelId,
+      modelName: model?.displayName,
+      ...(device?.unavailableReason ? { unavailableReason: device.unavailableReason } : {}),
+    };
+  };
   const row = (conversation: FixtureConversation) => ({
     id: conversation.id,
     title: conversation.title,
@@ -203,11 +227,12 @@ export function createSuperagentFixture(options: SuperagentFixtureOptions = {}):
           enabled,
           signedIn: true,
           deviceId: "cloud-test",
-          name: "OpenBitFun",
+          name: "Super Agent",
           hostKind: "cloud",
-          placeholder: "Ask OpenBitFun",
+          placeholder: "Ask Super Agent…",
           suggestions: ["Run the tests on all my devices", "Update deps", "Summarize today's work"],
           workingNow: { needsYou: [cards["job-test-mac"]], working: [cards["job-test-linux"], cards["job-test-win"]] },
+          models: modelDevices,
         };
       case "superagent_enable":
         enabled = true;
@@ -229,7 +254,7 @@ export function createSuperagentFixture(options: SuperagentFixtureOptions = {}):
         if (!conversation) throw new Error("not_found: no such conversation");
         const ids = new Set(conversation.messages.flatMap(message => (message.jobIds as string[] | undefined) ?? []));
         return {
-          conversation: { id: conversation.id, title: conversation.title, updatedMs: conversation.updatedMs, turn: conversation.turn },
+          conversation: { id: conversation.id, title: conversation.title, updatedMs: conversation.updatedMs, turn: conversation.turn, model: selectionOf(conversation.id) },
           messages: conversation.messages,
           cursor: 0,
           hasMore: false,
@@ -255,12 +280,19 @@ export function createSuperagentFixture(options: SuperagentFixtureOptions = {}):
           };
           conversations[conversation.id] = conversation;
         }
+        if (request.model !== undefined) picks[conversation.id] = (request.model as { deviceId: string; modelId: string } | null) ?? null;
         const duplicate = conversation.messages.some(message => message.clientMessageId === request.clientMessageId);
         if (!duplicate) {
           conversation.messages.push({ id: `m-${++seq}`, role: "user", text: String(request.message ?? ""), clientMessageId: request.clientMessageId });
         }
         conversation.turn = { id: `turn-${seq}`, step: "model_round" };
         return { conversationId: conversation.id, messageId: `m-${seq}`, turnId: `turn-${seq}`, ...(duplicate ? { duplicate: true } : {}) };
+      }
+      case "superagent_set_model": {
+        const id = String(request.conversationId ?? "");
+        if (!conversations[id]) throw new Error("not_found: no such conversation");
+        picks[id] = request.deviceId ? { deviceId: String(request.deviceId), modelId: String(request.modelId) } : null;
+        return { conversationId: id, model: selectionOf(id) };
       }
       case "superagent_cancel_turn": {
         const conversation = conversations[String(request.conversationId ?? "")];

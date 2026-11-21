@@ -434,16 +434,21 @@ async fn normalize_model_selection(model_id: &str) -> OpenBitFunResult<String> {
                     "Failed to load AI configuration for model update: {error}"
                 ))
             })?;
-            let ai_config: crate::service::config::types::AIConfig = config_service
-                .get_config(Some("ai"))
+            // The effective configuration: runtime entries (another device's
+            // models, `service::fleet::models`) are selectable too.
+            let ai_config = config_service
+                .get_effective_ai_config()
                 .await
                 .map_err(|error| {
                     OpenBitFunError::AIClient(format!(
                         "Failed to read AI configuration for model update: {error}"
                     ))
                 })?;
+            // One of this device's models qualified with its own id is
+            // stored as the plain id.
+            let model_config_id = crate::service::fleet::models::local_model_ref(model_config_id);
             ai_config
-                .resolve_model_reference(model_config_id)
+                .resolve_model_reference(&model_config_id)
                 .ok_or_else(|| {
                     OpenBitFunError::Validation(format!(
                         "Unknown or disabled model configuration ID: {model_config_id}"

@@ -11,6 +11,59 @@ enum SessionUpdatePollOutcome {
     ExitAfterUnknownOutcome(String),
 }
 
+/// The selectable models of the account's other online devices, from this
+/// host's fleet (`fleet_models`); none without a running fleet.
+async fn fleet_model_items() -> Vec<ModelItem> {
+    let Some(host) = crate::fleet_host::current() else {
+        return Vec::new();
+    };
+    let Some(Ok(answer)) = host
+        .dispatch("fleet_models", serde_json::json!({ "request": {} }), "")
+        .await
+    else {
+        return Vec::new();
+    };
+    let Ok(catalog) =
+        serde_json::from_value::<openbitfun_product_domains::fleet::FleetModels>(answer)
+    else {
+        return Vec::new();
+    };
+    fleet_items_of(&catalog)
+}
+
+/// Other devices' selectable models as picker rows (this device's own come
+/// from its configuration).
+fn fleet_items_of(catalog: &openbitfun_product_domains::fleet::FleetModels) -> Vec<ModelItem> {
+    catalog
+        .devices
+        .iter()
+        .filter(|device| !device.is_this_device)
+        .flat_map(|device| {
+            device
+                .models
+                .iter()
+                .filter(|choice| choice.selectable && !choice.model_ref.is_empty())
+                .map(move |choice| {
+                    let display = if choice.model.display_name.trim().is_empty() {
+                        choice.model.model_id.clone()
+                    } else {
+                        choice.model.display_name.clone()
+                    };
+                    ModelItem {
+                        id: choice.model_ref.clone(),
+                        name: display.clone(),
+                        provider: device.name.clone(),
+                        model_name: if choice.model.model_name.trim().is_empty() {
+                            display
+                        } else {
+                            choice.model.model_name.clone()
+                        },
+                    }
+                })
+        })
+        .collect()
+}
+
 fn previous_session_update_status(
     setting_name: &str,
     selected_id: &str,
@@ -554,7 +607,7 @@ impl ChatMode {
                     &catalog,
                     chat_state.current_model_id.as_deref(),
                 );
-                let model_items: Vec<ModelItem> = catalog
+                let mut model_items: Vec<ModelItem> = catalog
                     .models
                     .into_iter()
                     .filter(|model| model.enabled)
@@ -565,6 +618,10 @@ impl ChatMode {
                         model_name: model.model_name,
                     })
                     .collect();
+                // The account's other devices' models (`fleet_models`, as the
+                // desktop picker lists them): picked as `fleet:<device>/<model>`,
+                // each round runs on that device.
+                model_items.extend(fleet_model_items().await);
                 Some((model_items, current_model_id))
             })
         });
@@ -928,5 +985,34 @@ mod usage_metadata_tests {
             message,
             "Agent mode cannot be changed during the current turn."
         );
+    }
+}
+
+#[cfg(test)]
+mod fleet_model_tests {
+    use super::fleet_items_of;
+    use openbitfun_product_domains::fleet::FleetModels;
+
+    #[test]
+    fn other_devices_selectable_models_are_listed_by_their_fleet_reference() {
+        let catalog: FleetModels = serde_json::from_value(serde_json::json!({
+            "revision": 3,
+            "devices": [
+                { "deviceId": "me", "name": "This CLI", "isThisDevice": true, "online": true,
+                  "models": [{ "modelId": "local", "displayName": "Local", "modelRef": "local", "selectable": true }] },
+                { "deviceId": "desk", "name": "Studio", "online": true,
+                  "models": [
+                    { "modelId": "big", "displayName": "Big", "modelRef": "fleet:desk/big", "selectable": true },
+                    { "modelId": "off", "displayName": "Off", "modelRef": "fleet:desk/off", "selectable": false }
+                  ] }
+            ]
+        }))
+        .unwrap();
+        let items = fleet_items_of(&catalog);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "fleet:desk/big");
+        assert_eq!(items[0].provider, "Studio");
+        assert_eq!(items[0].model_name, "Big");
+        assert_eq!(items[0].name, "Big");
     }
 }

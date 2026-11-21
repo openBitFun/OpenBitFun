@@ -8,6 +8,7 @@
 //! session/runtime hosts stay in `openbitfun-core` until their ports are explicit.
 
 pub mod account;
+pub mod account_records;
 pub mod bot;
 mod chat_projection;
 pub mod device;
@@ -28,6 +29,7 @@ pub mod routing_lease;
 pub mod rpc_execution;
 pub mod session_records;
 pub mod session_store;
+pub mod settings_sync;
 pub mod transcript_view;
 
 pub use chat_projection::{

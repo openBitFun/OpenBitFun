@@ -10,6 +10,9 @@
 /// - Batch task processing
 mod account;
 mod account_guidance;
+// wave24-replica: account records on the account replica.
+mod account_records;
+mod account_settings_sync;
 mod acp_cli;
 mod actions;
 mod agent;
@@ -840,6 +843,15 @@ pub(crate) enum DispatchAction {
     WorkspaceSync,
     #[command(name = "__workspace_sync_chunk", hide = true)]
     WorkspaceSyncChunk,
+    /// Push a finished job's branch to its workspace's remote (never forced)
+    #[command(name = "__workspace_publish", hide = true)]
+    WorkspacePublish,
+    /// Import a peer job's uploaded bundle (host-internal, peer import)
+    #[command(name = "__peer_import_commit", hide = true)]
+    PeerImportCommit,
+    /// Waiting questions of live jobs (read-only, for the desktop)
+    #[command(name = "__pending_questions", hide = true)]
+    PendingQuestions,
     #[command(name = "__workspace_provision_run", hide = true)]
     WorkspaceProvisionRun {
         #[arg(long)]
@@ -1074,6 +1086,9 @@ async fn initialize_core_services_for_deployment(
             tracing::warn!("Failed to initialize CLI peer host services: {e}");
         } else {
             tracing::info!("CLI peer host services initialized");
+            // Preferences and permission configuration follow the signed-in
+            // account (independent of Link).
+            account_settings_sync::start(&runtime);
             // Remote control over OpenBitFun Link (joins only while this
             // process serves the device; see `obp_host`).
             obp_host::install(&runtime);

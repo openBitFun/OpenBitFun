@@ -51,6 +51,15 @@ Content action contracts are reserved and their advertised capability list is
 empty. Remote workspace, Peer, mobile, and detached hosts do not acquire local
 presentation as a silent fallback.
 
+The NSH UI's in-product view (`inline.rs`, command `miniapp_inline`) is a
+Shell over the backend protocol: `open` prepares a `Tab` view and a Shell lease
+for the caller's nonce (a second client takes it over), then only the closed
+Shell operations pass (`poll`, `rpc`, `ready`, `heartbeat`, `close`,
+`permissions`, `agentClaim`, `agentResponse`). It is proxied, so a phone draws
+the frame while the worker runs here; remote workspace grants are refused.
+`catalog.rs` publishes this device's installs to the account replica
+(`miniapps.installs`, one record per app and device, written only by the owner).
+
 The agent bridge is relayed, never reimplemented. A Shell that advertises
 `miniapp_agent_bridge_v1` lets the host push `agentRequest` events into the
 window; the Shell forwards them to its content frame over the same postMessage

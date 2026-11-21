@@ -509,6 +509,13 @@
     }
   ],
   "implementationOnlyCommands": {
+    "accountSettingsSync": [
+      "account_settings_sync_set",
+      "account_settings_sync_status"
+    ],
+    "accountRecords": [
+      "device_records_overview"
+    ],
     "deviceMeshTransport": [
       "mesh_list_devices",
       "mesh_status",
@@ -525,7 +532,8 @@
       "fleet_attention",
       "fleet_attention_mark_read",
       "fleet_recent_sessions",
-      "fleet_device_detail"
+      "fleet_device_detail",
+      "fleet_models"
     ],
     "legacyUpdateCompatibility": [
       "install_update"
@@ -627,6 +635,24 @@
       "refresh_subscription_account_instance",
       "set_subscription_account_enabled",
       "start_subscription_account_login"
+    ],
+    "desktopPresence": [
+      "desktop_card_delete",
+      "desktop_card_get",
+      "desktop_card_list",
+      "desktop_card_refresh",
+      "desktop_card_set_always_on_top",
+      "desktop_card_set_bounds",
+      "desktop_card_set_checklist_item",
+      "desktop_card_set_visible",
+      "hide_agent_companion_desktop_pet",
+      "load_agent_companion_pet_spritesheet",
+      "resize_agent_companion_desktop_pet",
+      "show_agent_companion_desktop_pet"
+    ],
+    "spacesEverywhere": [
+      "miniapp_account_catalog",
+      "miniapp_inline"
     ]
   },
   "capabilities": [
@@ -8393,8 +8419,9 @@
             "reasonEn": "“Record new shortcuts, detect conflicts live, revert single bindings or reset all, and click Apply to save” requires pressing physical key combinations on your keyboard, reviewing conflict badges, and clicking Apply; the Agent opens the Keyboard Shortcuts section directly."
           },
           "evidence": [
-            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#keybindings",
-            "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.shortcuts.overridesStoredOne\""
+            "source:src/nsh-ui/src/scenes/SettingsScene.tsx#ShortcutRecorder",
+            "source:src/nsh-ui/src/shortcutsStore.ts#app.keybindings",
+            "source:src/nsh-ui/src/locales/zh-CN.ts#\"shortcuts.change\""
           ]
         }
       ],
@@ -13425,6 +13452,12 @@
     "miniapp_web_host": {
       "capabilityId": "feature.miniapps"
     },
+    "inline": {
+      "capabilityId": "feature.miniapps"
+    },
+    "catalog": {
+      "capabilityId": "feature.miniapps"
+    },
     "acp_client": {
       "capabilityId": "setting.tools.acp"
     },
@@ -13530,8 +13563,23 @@
     "account_identity": {
       "capabilityId": "feature.remote-connect"
     },
+    "account_settings_sync": {
+      "capabilityId": "feature.remote-connect"
+    },
+    "account_records": {
+      "capabilityId": "feature.remote-connect"
+    },
     "model_pool": {
       "capabilityId": "setting.ai.models"
+    },
+    "companion_pet": {
+      "capabilityId": "setting.application.pet"
+    },
+    "pet": {
+      "capabilityId": "feature.desktop-pet"
+    },
+    "desktop_card": {
+      "capabilityId": "setting.application.pet"
     }
   }
 }

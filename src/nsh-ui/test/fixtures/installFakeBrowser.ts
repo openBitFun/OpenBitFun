@@ -56,9 +56,13 @@ installBrowserViewDriver({
           const evaluated = /\(0, eval\)\(("(?:[^"\\]|\\.)*")\)/.exec(script)?.[1];
           const source = evaluated ? (JSON.parse(evaluated) as string) : "";
           report("evaluate", { script: source });
+          // The element picker settles with the element the user clicked.
+          const picked = source.includes("__openbitfunPicker")
+            ? { tagName: "button", path: "main > button.primary", text: "Sign in", url: history[index] }
+            : null;
           const envelope = source.includes("throw")
             ? { ok: false, code: "ERR_NSH_WEBVIEW_SCRIPT", message: "boom" }
-            : { ok: true, value: source.includes("document.title") ? titleOf(history[index]) : true };
+            : { ok: true, value: picked ?? (source.includes("document.title") ? titleOf(history[index]) : true) };
           setTimeout(() => events.message(JSON.stringify({ __openbitfunEvaluation: JSON.parse(nonce), ...envelope })), 0);
           return;
         }

@@ -66,8 +66,13 @@ pub struct AccountMeta {
     pub enabled: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
-    /// A device the user pinned for model rounds.
-    pub pinned_holder: Option<String>,
+    /// When a frontend last used the account's node (Unix ms; 0 in records
+    /// of earlier builds, which then count from `updated_ms`). An account
+    /// unused for [`crate::api::ACCOUNT_TTL_MS`] with no live work is
+    /// shredded.
+    pub last_used_ms: u64,
+    // An account-wide `pinnedHolder` of earlier records is ignored: the
+    // pick is per conversation (`Conversation::pinned_holder`).
 }
 
 #[derive(Debug, Default)]
@@ -76,8 +81,12 @@ pub struct SlotState {
     pub ledger: Ledger,
     pub conversations: BTreeMap<String, Conversation>,
     pub summaries: Vec<ConversationSummary>,
-    /// The last `fleet_list_runtimes` projection (bounded).
+    /// The last `fleet_list_runtimes` projection (bounded; memory only).
     pub index: Option<Value>,
+    /// History waiting for the account's devices (`archive`).
+    pub outbox: crate::archive::Outbox,
+    /// Legacy history may still need to drain to the devices.
+    pub legacy_pending: bool,
 }
 
 pub struct Slot {
@@ -97,6 +106,8 @@ pub struct Slot {
     limits: SlotLimits,
     /// Serializes read-modify-write of the `devices` record.
     device_facts_lock: Mutex<()>,
+    /// The engine's clock, once it runs (the system clock before).
+    clock: Arc<std::sync::OnceLock<Arc<dyn crate::engine::Clock>>>,
 }
 
 pub const META_RECORD: &str = "meta";
@@ -119,7 +130,20 @@ fn sha(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
 }
 
+/// How long a device's facts are kept after it was last seen online.
+pub const DEVICE_FACTS_TTL_MS: u64 = 30 * 24 * 3600 * 1000;
+/// The key a persisted device entry records when it was last seen.
+const SEEN_KEY: &str = "seenMs";
+
 impl Slot {
+    /// Now, on the engine's clock.
+    pub fn now(&self) -> u64 {
+        self.clock
+            .get()
+            .map(|clock| clock.now_ms())
+            .unwrap_or_else(openbitfun_obp::now_ms)
+    }
+
     pub fn touch(&self, now: u64) {
         self.last_used_ms.store(now, Ordering::Relaxed);
     }
@@ -175,15 +199,34 @@ impl Slot {
     /// Persists one conversation (moving turns that left the window to its
     /// history record) and the conversation list.
     pub fn save_conversation(&self, state: &mut SlotState, id: &str) -> Result<(), StoreError> {
-        let Some(conversation) = state.conversations.get_mut(id) else {
+        let now = self.now();
+        let device_id = state.meta.device_id.clone();
+        let SlotState {
+            conversations,
+            outbox,
+            legacy_pending,
+            ..
+        } = &mut *state;
+        let Some(conversation) = conversations.get_mut(id) else {
             return Ok(());
         };
-        let older = conversation.take_overflow();
-        if !older.is_empty() {
-            let name = history_record(id);
-            let mut history: History = self.store.read_json(&name)?.unwrap_or_default();
-            history.append(older);
-            self.store.write_json(&name, &history)?;
+        let older = conversation.take_overflow_bounded();
+        // Finished turns are sealed for the account's devices (`archive`);
+        // history only this node holds in its legacy form keeps the legacy
+        // record until it drains.
+        let mut outbox_changed = false;
+        if crate::archive::is_legacy(conversation, older.len()) {
+            *legacy_pending = true;
+            if !older.is_empty() {
+                let name = history_record(id);
+                let mut history: History =
+                    read_or_quarantine(&self.store, &name)?.unwrap_or_default();
+                history.append(older);
+                self.store.write_json(&name, &history)?;
+            }
+        } else {
+            outbox_changed =
+                crate::archive::seal(outbox, &device_id, conversation, &older, None, now);
         }
         self.store
             .write_json(&conversation_record(id), &*conversation)?;
@@ -215,8 +258,23 @@ impl Slot {
             .sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
         self.store
             .write_json(CONVERSATIONS_RECORD, &state.summaries)?;
+        if outbox_changed {
+            self.save_outbox(state, now);
+        }
         self.enforce_bounds(state);
         Ok(())
+    }
+
+    /// Bounds and persists the outbox (dropped history is counted on its
+    /// conversations).
+    pub fn save_outbox(&self, state: &mut SlotState, now: u64) {
+        let dropped = crate::archive::enforce_outbox(&mut state.outbox, now);
+        if !dropped.is_empty() {
+            crate::archive::account_dropped(self, state, dropped, now);
+        }
+        if let Err(error) = crate::archive::save_outbox(&self.store, &state.outbox) {
+            log::warn!("Superagent outbox not saved: {}", error);
+        }
     }
 
     /// Records that a frontend opened the conversation now.
@@ -252,6 +310,11 @@ impl Slot {
         state.summaries.retain(|entry| entry.id != id);
         self.store.delete(&conversation_record(id))?;
         self.store.delete(&history_record(id))?;
+        // The devices delete their copy (a tombstone; its pending chunks go).
+        let now = self.now();
+        let device_id = state.meta.device_id.clone();
+        crate::archive::queue_tombstone(&mut state.outbox, &device_id, id, now);
+        self.save_outbox(state, now);
         self.store
             .write_json(CONVERSATIONS_RECORD, &state.summaries)?;
         self.enforce_bounds(state);
@@ -267,7 +330,7 @@ impl Slot {
         } else {
             index
         };
-        self.store.write_json(INDEX_RECORD, &index)?;
+        // A cache: memory only (a record of an earlier build is removed at load).
         state.index = Some(index);
         self.enforce_bounds(state);
         Ok(())
@@ -313,12 +376,61 @@ impl Slot {
             // Never overwrite a record this build cannot read.
             Err(error) => return Err(error),
         };
-        let value = serde_json::to_value(&held).map_err(|e| StoreError::Io(e.to_string()))?;
-        if raw.get(&device_id) == Some(&value) {
+        let mut value = serde_json::to_value(&held).map_err(|e| StoreError::Io(e.to_string()))?;
+        let now = self.now();
+        let seen_before = raw
+            .get(&device_id)
+            .and_then(|entry| entry.get(SEEN_KEY))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let unchanged = raw.get(&device_id).is_some_and(|entry| {
+            let mut entry = entry.clone();
+            if let Some(object) = entry.as_object_mut() {
+                object.remove(SEEN_KEY);
+            }
+            entry == value
+        });
+        // The seen time is refreshed at most once a day.
+        if unchanged && now.saturating_sub(seen_before) < 24 * 3600 * 1000 {
             return Ok(());
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert(SEEN_KEY.into(), Value::from(now));
         }
         raw.insert(device_id, value);
         self.store.write_json(DEVICES_RECORD, &raw).map(|_| ())
+    }
+
+    /// Drops the facts of devices that left the account (`known`: the
+    /// directory's runtime devices now) or were not seen online for
+    /// [`DEVICE_FACTS_TTL_MS`]. Returns how many went.
+    pub async fn prune_device_facts(&self, known: Option<&[String]>) -> usize {
+        let now = self.now();
+        let _guard = self.device_facts_lock.lock().await;
+        let mut raw: BTreeMap<String, Value> = match self.store.read_json(DEVICES_RECORD) {
+            Ok(Some(raw)) => raw,
+            _ => return 0,
+        };
+        let before = raw.len();
+        raw.retain(|device_id, entry| {
+            if known.is_some_and(|known| !known.contains(device_id)) {
+                return false;
+            }
+            // An entry of an earlier build (no seen time) counts from now on.
+            match entry.get(SEEN_KEY).and_then(Value::as_u64) {
+                Some(seen) => now.saturating_sub(seen) < DEVICE_FACTS_TTL_MS,
+                None => true,
+            }
+        });
+        let removed = before - raw.len();
+        if removed > 0 {
+            if let Err(error) = self.store.write_json(DEVICES_RECORD, &raw) {
+                log::warn!("Superagent device facts not pruned: {}", error);
+                return 0;
+            }
+            log::info!("Superagent device facts pruned: removed={}", removed);
+        }
+        removed
     }
 
     /// A conversation, loading it from the store when it is not resident.
@@ -328,10 +440,7 @@ impl Slot {
         id: &str,
     ) -> Result<Option<&'a mut Conversation>, StoreError> {
         if !state.conversations.contains_key(id) {
-            match self
-                .store
-                .read_json::<Conversation>(&conversation_record(id))?
-            {
+            match read_or_quarantine::<Conversation>(&self.store, &conversation_record(id))? {
                 Some(conversation) => {
                     state.conversations.insert(id.to_string(), conversation);
                 }
@@ -343,10 +452,7 @@ impl Slot {
     }
 
     pub fn history(&self, id: &str) -> Result<History, StoreError> {
-        Ok(self
-            .store
-            .read_json(&history_record(id))?
-            .unwrap_or_default())
+        Ok(read_or_quarantine(&self.store, &history_record(id))?.unwrap_or_default())
     }
 
     /// Keeps the resident state within `max_slot_bytes`: conversations
@@ -385,6 +491,27 @@ pub struct AttachGuard(Arc<Slot>);
 impl Drop for AttachGuard {
     fn drop(&mut self) {
         self.0.attached.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// A JSON record, quarantining one larger than any build reads (kept on
+/// disk, never deleted) so the slot still loads; it then reads as absent.
+fn read_or_quarantine<T: for<'de> Deserialize<'de>>(
+    store: &AccountStore,
+    name: &str,
+) -> Result<Option<T>, StoreError> {
+    match store.read_json(name) {
+        Err(StoreError::Oversize { bytes, .. }) => {
+            let moved = store.quarantine(name)?;
+            log::error!(
+                "Superagent oversize record quarantined: name={}, bytes={}, moved={}",
+                name,
+                bytes,
+                moved
+            );
+            Ok(None)
+        }
+        other => other,
     }
 }
 
@@ -430,6 +557,7 @@ impl From<StoreError> for SlotError {
 pub struct Slots {
     store: Arc<Store>,
     limits: SlotLimits,
+    clock: Arc<std::sync::OnceLock<Arc<dyn crate::engine::Clock>>>,
     resident: std::sync::Mutex<HashMap<String, Arc<Slot>>>,
     loading: Mutex<()>,
 }
@@ -439,6 +567,7 @@ impl Slots {
         Self {
             store,
             limits,
+            clock: Arc::new(std::sync::OnceLock::new()),
             resident: std::sync::Mutex::new(HashMap::new()),
             loading: Mutex::new(()),
         }
@@ -446,6 +575,11 @@ impl Slots {
 
     pub fn store(&self) -> &Arc<Store> {
         &self.store
+    }
+
+    /// Slots tell time by the engine's clock (set once).
+    pub fn set_clock(&self, clock: Arc<dyn crate::engine::Clock>) {
+        let _ = self.clock.set(clock);
     }
 
     pub fn limits(&self) -> &SlotLimits {
@@ -509,11 +643,18 @@ impl Slots {
         };
         let state = SlotState {
             meta,
-            ledger: store.read_json(LEDGER_RECORD)?.unwrap_or_default(),
+            ledger: read_or_quarantine(&store, LEDGER_RECORD)?.unwrap_or_default(),
             conversations: BTreeMap::new(),
-            summaries: store.read_json(CONVERSATIONS_RECORD)?.unwrap_or_default(),
-            index: store.read_json(INDEX_RECORD)?,
+            summaries: read_or_quarantine(&store, CONVERSATIONS_RECORD)?.unwrap_or_default(),
+            index: None,
+            outbox: crate::archive::load_outbox(&store),
+            legacy_pending: store
+                .names()
+                .iter()
+                .any(|name| name.starts_with("conv-") || name.starts_with("hist-")),
         };
+        // The runtime index was persisted by earlier builds; it is a cache.
+        let _ = store.delete(INDEX_RECORD);
         let slot = Arc::new(Slot {
             account_id: account_id.to_string(),
             instance_id: uuid::Uuid::new_v4().simple().to_string(),
@@ -528,6 +669,7 @@ impl Slots {
             resident_bytes: AtomicUsize::new(0),
             limits: self.limits.clone(),
             device_facts_lock: Mutex::new(()),
+            clock: Arc::clone(&self.clock),
         });
         {
             let mut state = slot.state.lock().await;
@@ -640,6 +782,7 @@ mod tests {
             version: Some("2.0.0".into()),
             models: vec!["model-a".into()],
             workspaces: vec![serde_json::json!({ "workspaceId": "w1" })],
+            model_catalog: Vec::new(),
         }
     }
 
@@ -664,6 +807,52 @@ mod tests {
         assert_eq!(held.facts.host_capabilities, vec!["cloud_agent_scope_v1"]);
         assert_eq!(held.models, vec!["model-a"]);
         assert_eq!(held.version.as_deref(), Some("2.0.0"));
+    }
+
+    #[tokio::test]
+    async fn an_oversize_legacy_record_is_quarantined_and_the_slot_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        {
+            let slots = slots(temp.path());
+            let slot = slots.load("email-alice", 1, Some(meta())).await.unwrap();
+            // A ledger and a history larger than any build reads.
+            for name in [LEDGER_RECORD.to_string(), history_record("c1")] {
+                let file =
+                    std::fs::File::create(slot.store.path().join(format!("{name}.rec"))).unwrap();
+                file.set_len(crate::store::LEGACY_MAX_READ_BYTES as u64 + 1)
+                    .unwrap();
+            }
+        }
+        let slots = slots(temp.path());
+        let slot = slots.load("email-alice", 2, None).await.unwrap();
+        assert!(slot.state.lock().await.ledger.jobs.is_empty());
+        assert!(slot.history("c1").unwrap().messages.is_empty());
+        // Kept on disk, out of the way.
+        assert!(slot.store.path().join("ledger.rec.oversize").is_file());
+        assert!(slot
+            .store
+            .path()
+            .join(format!("{}.rec.oversize", history_record("c1")))
+            .is_file());
+        // A conversation with history saves again.
+        let mut state = slot.state.lock().await;
+        let mut conversation = Conversation::new("c1".into(), "t".into(), 3);
+        for index in 0..(crate::conversation::WINDOW_TURNS + 2) {
+            conversation.messages.push(crate::conversation::Message {
+                id: format!("u{index}"),
+                role: crate::conversation::Role::User,
+                ..Default::default()
+            });
+        }
+        state.conversations.insert("c1".into(), conversation);
+        slot.save_conversation(&mut state, "c1").unwrap();
+        // The turns that left the window are sealed for the devices (the
+        // outbox), not kept in a history record any more.
+        assert!(slot.history("c1").unwrap().messages.is_empty());
+        let conversation = &state.conversations["c1"];
+        assert_eq!(conversation.history_count, 2);
+        assert_eq!(conversation.archive.sealed_seq, 22);
+        assert_eq!(state.outbox.chunks.len(), 1);
     }
 
     #[tokio::test]

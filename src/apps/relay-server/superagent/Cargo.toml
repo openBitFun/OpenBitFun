@@ -52,6 +52,8 @@ chrono-tz = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The account replica a fake device keeps (`tests/archive.rs`).
+openbitfun-obp = { path = "../../../crates/adapters/obp", features = ["fleet"] }
 # Route tests drive the router in-process.
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["test-util"] }

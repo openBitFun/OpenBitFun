@@ -26,10 +26,63 @@ pub(crate) async fn dispatch(command: &str, args: Value) -> anyhow::Result<Value
         .get("workspacePath")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let answer = invoke_cli(&executable, verb, args).await?;
+    let answer = run_target_verb(executable, command, verb, args).await?;
     // The runner is another process: tell this host's catalog and digest.
     crate::fleet::dispatch_target_answered(command, workspace_path).await;
     Ok(answer)
+}
+
+/// One target verb on the installed runner. Two verbs need this host: a
+/// provision from another device's job (`workspace_peer_import_v1`) is pulled
+/// over this host's Link connection, and the probe gains that capability
+/// when the runner can store the bundle.
+async fn run_target_verb(
+    executable: PathBuf,
+    command: &str,
+    verb: &str,
+    args: Value,
+) -> anyhow::Result<Value> {
+    use openbitfun_core::service::dispatch::{
+        advertise_peer_import, is_peer_import_provision, peer_import_coordinator,
+        MeshDeviceDispatchRpc,
+    };
+    if is_peer_import_provision(command, &args) {
+        return peer_import_coordinator()
+            .provision_source(
+                std::sync::Arc::new(MeshDeviceDispatchRpc),
+                std::sync::Arc::new(CliRunner { executable }),
+                args,
+            )
+            .await;
+    }
+    let mut answer = invoke_cli(&executable, verb, args).await?;
+    if command == "dispatch_target_probe" {
+        advertise_peer_import(&mut answer);
+    }
+    Ok(answer)
+}
+
+/// The installed runner, for the peer import coordinator.
+struct CliRunner {
+    executable: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl openbitfun_core::service::dispatch::PeerImportLocalRunner for CliRunner {
+    async fn run(
+        &self,
+        verb: openbitfun_core::service::dispatch::PeerImportLocalVerb,
+        args: Value,
+    ) -> anyhow::Result<Value> {
+        use openbitfun_core::service::dispatch::PeerImportLocalVerb as Verb;
+        let verb = match verb {
+            Verb::ProvisionSource => "__workspace_provision_source",
+            Verb::BundleBegin => "__workspace_bundle_begin",
+            Verb::BundleChunk => "__workspace_bundle_chunk",
+            Verb::PeerImportCommit => "__peer_import_commit",
+        };
+        invoke_cli(&self.executable, verb, args).await
+    }
 }
 
 pub(crate) fn is_target_command(command: &str) -> bool {
@@ -55,6 +108,8 @@ fn target_cli_verb(command: &str) -> Option<&'static str> {
         "dispatch_target_workspace_bundle_commit" => Some("__workspace_bundle_commit"),
         "dispatch_target_workspace_sync" => Some("__workspace_sync"),
         "dispatch_target_workspace_sync_chunk" => Some("__workspace_sync_chunk"),
+        // `workspace_publish_v1`.
+        "dispatch_target_workspace_publish" => Some("__workspace_publish"),
         _ => None,
     }
 }
@@ -144,6 +199,7 @@ struct PromptsInner {
 struct PromptsState {
     raw: Value,
     prompts: Vec<openbitfun_core::service::fleet::FleetDispatchPrompt>,
+    questions: Vec<openbitfun_core::service::fleet::FleetDispatchQuestion>,
     last_error: Option<String>,
     fetched: bool,
     poller: bool,
@@ -174,10 +230,11 @@ impl DesktopDispatchPrompts {
                 let changed = {
                     let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
                     let changed = match outcome {
-                        Ok((raw, prompts)) => {
+                        Ok((raw, prompts, questions)) => {
                             let changed = !state.fetched || state.raw != raw;
                             state.raw = raw;
                             state.prompts = prompts;
+                            state.questions = questions;
                             state.last_error = None;
                             changed
                         }
@@ -216,12 +273,21 @@ impl openbitfun_core::service::fleet::FleetDispatchPromptSource for DesktopDispa
             _ => Ok(state.prompts.clone()),
         }
     }
+
+    fn pending_dispatch_questions(
+        &self,
+    ) -> Result<Vec<openbitfun_core::service::fleet::FleetDispatchQuestion>, String> {
+        self.ensure_poller();
+        let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(state.questions.clone())
+    }
 }
 
-/// One read of the CLI dispatch store's pending permissions.
+/// One read of the CLI dispatch store's pending permissions and questions.
 async fn read_pending_prompts() -> anyhow::Result<(
     Value,
     Vec<openbitfun_core::service::fleet::FleetDispatchPrompt>,
+    Vec<openbitfun_core::service::fleet::FleetDispatchQuestion>,
 )> {
     let jobs = openbitfun_core::infrastructure::PathManager::new()
         .map_err(|error| anyhow!("resolve OpenBitFun storage root: {error}"))?
@@ -232,13 +298,70 @@ async fn read_pending_prompts() -> anyhow::Result<(
         .map(|mut entries| entries.any(|entry| entry.is_ok_and(|entry| entry.path().is_dir())))
         .unwrap_or(false);
     if !has_jobs {
-        return Ok((Value::Array(Vec::new()), Vec::new()));
+        return Ok((Value::Array(Vec::new()), Vec::new(), Vec::new()));
     }
     let executable = discover_cli()
         .ok_or_else(|| anyhow!("OpenBitFun CLI dispatch runner is not installed on this device"))?;
-    let raw = invoke_cli(&executable, "__pending_prompts", serde_json::json!({})).await?;
-    let prompts = parse_pending_prompts(&raw)?;
-    Ok((raw, prompts))
+    let permissions = invoke_cli(&executable, "__pending_prompts", serde_json::json!({})).await?;
+    let prompts = parse_pending_prompts(&permissions)?;
+    // An older runner has no question mailbox (and no verb for it): no
+    // questions, not an error for the permission half.
+    let raw_questions = invoke_cli(&executable, "__pending_questions", serde_json::json!({}))
+        .await
+        .unwrap_or_else(|error| {
+            log::debug!("Dispatch runner without a question mailbox: {error:#}");
+            Value::Array(Vec::new())
+        });
+    let questions = parse_pending_questions(&raw_questions)?;
+    let raw = serde_json::json!({ "permissions": permissions, "questions": raw_questions });
+    Ok((raw, prompts, questions))
+}
+
+fn parse_pending_questions(
+    raw: &Value,
+) -> anyhow::Result<Vec<openbitfun_core::service::fleet::FleetDispatchQuestion>> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry {
+        job_id: String,
+        #[serde(default)]
+        session_id: String,
+        #[serde(default)]
+        workspace_path: String,
+        question: Question,
+    }
+    // Read tolerantly (the runner's `DispatchPendingQuestion`).
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    #[derive(Default)]
+    struct Question {
+        request_id: String,
+        session_id: String,
+        title: String,
+        questions: Value,
+        registered_at_ms: u64,
+    }
+    let entries: Vec<Entry> =
+        serde_json::from_value(raw.clone()).context("decode dispatch pending questions")?;
+    Ok(entries
+        .into_iter()
+        .filter(|entry| !entry.question.request_id.is_empty())
+        .map(
+            |entry| openbitfun_core::service::fleet::FleetDispatchQuestion {
+                job_id: entry.job_id,
+                session_id: if entry.question.session_id.is_empty() {
+                    entry.session_id
+                } else {
+                    entry.question.session_id
+                },
+                workspace_path: entry.workspace_path,
+                title: entry.question.title,
+                request_id: entry.question.request_id,
+                questions: entry.question.questions,
+                registered_at_ms: entry.question.registered_at_ms,
+            },
+        )
+        .collect())
 }
 
 fn parse_pending_prompts(
@@ -349,6 +472,26 @@ mod tests {
             ),
             Some("__workspace_provision_source")
         );
+    }
+
+    #[test]
+    fn pending_questions_parse_the_cli_answer() {
+        let raw = serde_json::json!([{
+            "jobId": "job-1", "sessionId": "session-1", "workspacePath": "/w", "title": "Task",
+            "question": {
+                "requestId": "tool-1", "sessionId": "", "title": "Which?",
+                "questions": {"questions": [{"question": "Which?", "header": "Pick", "options": []}]},
+                "registeredAtMs": 7, "newerField": 1
+            }
+        }]);
+        let questions = parse_pending_questions(&raw).expect("parse");
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].request_id, "tool-1");
+        assert_eq!(questions[0].session_id, "session-1");
+        assert_eq!(questions[0].registered_at_ms, 7);
+        assert!(parse_pending_questions(&serde_json::json!([]))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

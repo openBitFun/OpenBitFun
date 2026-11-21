@@ -199,7 +199,7 @@ try {
             $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repoRoot 'target' }
             $webUiOut = Join-Path $targetRoot 'cli-web-ui'
             if (Test-Path -LiteralPath $webUiOut) { Remove-Item -LiteralPath $webUiOut -Recurse -Force }
-            & nsh package src/nsh-ui --target web -o $webUiOut
+            & nsh package src/nsh-ui/WebApp.tsx --target web -o $webUiOut
             Assert-CommandSucceeded 'nsh package'
             & node scripts/write-ui-bundle-manifest.mjs $webUiOut
             Assert-CommandSucceeded 'write-ui-bundle-manifest'

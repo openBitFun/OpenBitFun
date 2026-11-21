@@ -16,6 +16,7 @@
 //! under each device's own switches.
 
 pub mod api;
+pub mod archive;
 pub mod conversation;
 pub mod crypto;
 pub mod device;

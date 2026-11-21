@@ -5,4 +5,5 @@
 // modules run, and the UI's `App.tsx` mounts itself.
 
 import "./src/nativeTransport";
+import "./src/documentRenderers";
 import "../../nsh-ui/App";

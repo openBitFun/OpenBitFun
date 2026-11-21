@@ -1009,7 +1009,9 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   expect(app.shows("label:space-running-space-board")).toBe(true);
 
   // Open Inspector ModalDialog -> checks get_miniapp (invokeCommand) & get_miniapp_versions (invokeRawCommand)
-  await app.press("label:space-inspect-space-board");
+  // The card opens the Space inside the app; its source is under ⋯ (wave 22, P4).
+  await app.press("label:space-more-space-board");
+  await app.press("label:space-menu-inspect-space-board");
   await app.waitFor("Create a release readiness tracker Space.");
   expect(app.texts()).toContain("v2");
   expect(app.texts()).toContain("Node/Bun Worker");
@@ -1049,7 +1051,9 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   });
   expect(app.texts()).not.toContain("Release Tracker");
 
-  await app.press("label:space-inspect-space-notes");
+  // The card opens the Space inside the app; its source is under ⋯ (wave 22, P4).
+  await app.press("label:space-more-space-notes");
+  await app.press("label:space-menu-inspect-space-notes");
   await app.waitFor("Minimal scratchpad for daily plans.");
   expect(app.texts()).toContain("<main>Focus Pad</main>");
   await app.press("label:space-inspector-close");
@@ -1293,7 +1297,7 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   await app.waitFor("Release Tracker");
   await app.setViewport(390, 844);
   await app.waitFor("label:spaces-create-agent");
-  expect(app.shows("label:space-inspect-space-board")).toBe(true);
+  expect(app.shows("label:space-open-space-board")).toBe(true);
   await app.type("label:spaces-prompt-input", "A tiny habit tracker");
   expect(app.enabled("label:spaces-create-agent")).toBe(true);
 

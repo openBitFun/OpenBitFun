@@ -560,11 +560,18 @@ pub struct ReadFileContentRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportAgentCompanionPetPackageRequest {
+    #[serde(default)]
     pub path: String,
     #[serde(default)]
     pub expected_fingerprint: Option<String>,
     #[serde(default)]
     pub builtin_id: Option<String>,
+    /// A `.zip` pack the client read itself (a picker gives bytes, not a
+    /// path), base64. Additive: older clients send `path`.
+    #[serde(default)]
+    pub archive_base64: Option<String>,
+    #[serde(default)]
+    pub archive_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2891,7 +2898,7 @@ mod pet_package_tests {
     }
 }
 
-fn companion_user_packages_dir(state: &AppState) -> PathBuf {
+pub(crate) fn companion_user_packages_dir(state: &AppState) -> PathBuf {
     state
         .workspace_service
         .path_manager()
@@ -2899,7 +2906,7 @@ fn companion_user_packages_dir(state: &AppState) -> PathBuf {
         .join("agent-companions")
 }
 
-fn pet_package_dto_from_dir(
+pub(crate) fn pet_package_dto_from_dir(
     dir: &Path,
     source: &str,
 ) -> Result<AgentCompanionPetPackageDto, String> {
@@ -2986,6 +2993,8 @@ pub async fn list_agent_companion_pets(
         .as_ref()
         .is_some_and(|r| r.builtin_import_version == Some(1));
     let mut response = list_agent_companion_pets_impl(&state).await?;
+    // Built-in sprite sets first (wave 22, P3): they ship with the backend.
+    response.pets = crate::api::companion_pet_api::with_builtin_pets(&state, response.pets);
     if request.is_some_and(|r| r.include_external) {
         let source_root = openbitfun_core::external_sources::external_pet_source_root("codex")
             .ok_or("Pet source is unavailable")?;
@@ -3076,11 +3085,51 @@ fn import_pet_request(
             expected,
         );
     }
+    if let Some(archive) = request.archive_base64.as_deref() {
+        let staged = stage_pet_archive(archive, request.archive_name.as_deref())?;
+        let imported = openbitfun_services_core::pet_packages::import(
+            &root,
+            &staged,
+            request.expected_fingerprint.as_deref(),
+        );
+        if let Some(dir) = staged.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        return imported;
+    }
     openbitfun_services_core::pet_packages::import(
         &root,
         Path::new(&request.path),
         request.expected_fingerprint.as_deref(),
     )
+}
+
+/// Writes a picked `.zip` pack to a private staging folder named by its
+/// content, so importing the same pack twice reads as the same source.
+fn stage_pet_archive(archive_base64: &str, name: Option<&str>) -> Result<PathBuf, String> {
+    use base64::Engine as _;
+    use std::hash::{Hash, Hasher};
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(archive_base64.trim())
+        .map_err(|e| format!("Pet archive is not valid base64: {}", e))?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err("Pet archive is larger than 64 MiB".to_string());
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let file_name = name
+        .and_then(|name| Path::new(name).file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| name.to_ascii_lowercase().ends_with(".zip"))
+        .unwrap_or("pet.zip")
+        .to_string();
+    let dir = std::env::temp_dir()
+        .join("openbitfun-pet-import")
+        .join(format!("{:016x}", hasher.finish()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to stage pet archive: {}", e))?;
+    let path = dir.join(file_name);
+    std::fs::write(&path, bytes).map_err(|e| format!("Failed to stage pet archive: {}", e))?;
+    Ok(path)
 }
 
 pub(crate) async fn import_agent_companion_pet_package_impl(

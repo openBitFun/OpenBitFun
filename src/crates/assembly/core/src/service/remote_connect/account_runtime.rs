@@ -251,6 +251,12 @@ impl AccountRuntime {
         Ok(context)
     }
 
+    /// The new-version account directory sessions (account settings sync
+    /// reads the settings document through them).
+    pub fn directory_sessions(&self) -> Arc<DirectorySessions> {
+        Arc::clone(&self.directory)
+    }
+
     /// The new-version account directory base URL.
     pub fn directory_url(&self) -> &str {
         self.directory.url()

@@ -144,3 +144,8 @@ AGENTS.override.md
 /src/crates/assembly/core/builtin_skills/visualize/authoring/
 
 /.visualize-runtime/
+
+# NSH native apps' copies of the shared UI's vendored document renderers
+# (source of truth: src/nsh-ui/assets/vendor; written by scripts/sync-nsh-vendor-assets.mjs).
+src/apps/desktop-nsh/assets/vendor/
+src/apps/mobile-nsh/assets/vendor/

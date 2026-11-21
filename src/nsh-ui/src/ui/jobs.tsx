@@ -8,7 +8,7 @@
 // (the only place a state takes a color). Nothing is sorted, merged or counted
 // beyond folding a long stack behind "+{n} more jobs".
 
-import { Scroll, Text, View, cleanup, reduceMotion, signal, type ViewRef, type ViewStyle } from "nsh";
+import { Scroll, Text, View, cleanup, reduceMotion, signal, type JSX, type ViewRef, type ViewStyle } from "nsh";
 import { Dialog, Input } from "nsh/base";
 import { fleetDeviceById, fleetPromptList, fleetSessionRow, refreshFleetNavigator } from "../fleetStore";
 import { tr, type MessageKey } from "../i18n";
@@ -897,14 +897,17 @@ export interface SuperComposerProps {
   maxFieldHeight?: number;
   /** An attached session ("{device} · {session}"), drawn as a chip above the text. */
   context?: { label: string; onClear: () => void } | null;
+  /** A control drawn in the bottom row before the send circle (the model picker). */
+  accessory?: JSX.Element;
   testID?: string;
 }
 
 /**
  * The one input box (spec §3 SuperComposer): radius 16, `inputBg`, hairline,
  * `shadowComposer` (focus `fieldFocusBorder` + `shadowComposerFocus`); field
- * 15/24; attach and mic on the left, the send circle on the right. No device
- * picker, no mode or model chip, no hint line.
+ * 15/24; attach and mic on the left, the send circle on the right, an optional
+ * accessory (the model picker) before it. No device picker, no mode chip, no
+ * hint line.
  */
 export function SuperComposer(props: SuperComposerProps) {
   const focused = signal(false);
@@ -1015,6 +1018,7 @@ export function SuperComposer(props: SuperComposerProps) {
               />
             </If>
             <View style={{ flex: 1 }} />
+            {props.accessory}
             <SendCircle
               running={Boolean(props.running)}
               empty={empty()}

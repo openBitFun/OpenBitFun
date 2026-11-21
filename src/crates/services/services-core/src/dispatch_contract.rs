@@ -138,6 +138,29 @@ pub const DISPATCH_SUPERAGENT_TARGET_CAPABILITIES: &[&str] = &[
     DISPATCH_STATUS_SUMMARY_ONLY_CAPABILITY,
     DISPATCH_JOB_SUBMITTER_CAPABILITY,
 ];
+/// Optional (dispatch phase two): `dispatch_target_workspace_provision_source`
+/// accepts a `job` source — another account device's job result, which the
+/// target's host pulls over Link through that device's full-history
+/// `workspace-sync` bundle. Advertised by the *host* (desktop or CLI), not by
+/// the bare CLI runner, because only a host holds the Link connection that
+/// dials the source device; a host adds it when its runner reports
+/// [`DISPATCH_PEER_BUNDLE_CAPABILITY`].
+pub const DISPATCH_WORKSPACE_PEER_IMPORT_CAPABILITY: &str = "workspace_peer_import_v1";
+/// Runner fact behind peer import: `workspace-sync {fullHistory: true}`
+/// exports a job branch with its whole history, and the store imports such a
+/// bundle (`peer-import-commit`). Every peer-import source must advertise it.
+pub const DISPATCH_PEER_BUNDLE_CAPABILITY: &str = "workspace_peer_bundle_v1";
+/// Optional: `dispatch_target_workspace_publish` pushes a job branch to the
+/// job workspace's remote, never forced, only under `<prefix>/dispatch/*`.
+pub const DISPATCH_WORKSPACE_PUBLISH_CAPABILITY: &str = "workspace_publish_v1";
+/// The target command of the publish verb.
+pub const DISPATCH_TARGET_PUBLISH_COMMAND: &str = "dispatch_target_workspace_publish";
+/// Optional: `AskUserQuestion` inside a job lands in the job's question
+/// mailbox (status `pendingQuestions`, `answer {answers}`) instead of
+/// failing. A controller opts in per job with `submit {userQuestions: true}`;
+/// without it the job keeps failing the tool explicitly, because nobody
+/// would answer.
+pub const DISPATCH_USER_QUESTION_MAILBOX_CAPABILITY: &str = "user_question_mailbox_v1";
 /// Files listed in a result summary's diff stat (the rest is counted only).
 pub const DISPATCH_RESULT_SUMMARY_MAX_FILES: usize = 50;
 /// Bound of the summary text a result summary carries.
@@ -451,6 +474,11 @@ pub mod wire {
         /// can filter by it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub submitter: Option<String>,
+        /// The controller answers `AskUserQuestion` through the job's question
+        /// mailbox (`user_question_mailbox_v1`). Sent only to a target that
+        /// advertised it; absent means the tool stays unavailable.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub user_questions: bool,
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -509,6 +537,27 @@ pub mod wire {
         pub tool_name: Option<String>,
     }
 
+    /// One waiting `AskUserQuestion` of a job (`user_question_mailbox_v1`).
+    /// `requestId` is the tool call id; answer it with
+    /// `answer {jobId, requestId, answers}`.
+    #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DispatchPendingQuestion {
+        #[serde(default)]
+        pub request_id: String,
+        #[serde(default)]
+        pub session_id: String,
+        /// The first question's text (or header), for lists.
+        #[serde(default)]
+        pub title: String,
+        /// The tool input as asked: `{questions: [{question, header,
+        /// options: [{label, description}], multiSelect}]}`.
+        #[serde(default)]
+        pub questions: serde_json::Value,
+        #[serde(default)]
+        pub registered_at_ms: u64,
+    }
+
     /// `status` with `summaryOnly: true`.
     #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
     #[serde(rename_all = "camelCase")]
@@ -520,6 +569,9 @@ pub mod wire {
         pub cursor: u64,
         #[serde(default)]
         pub pending_permissions: Vec<DispatchPendingPromptSummary>,
+        /// Waiting `AskUserQuestion` calls (`user_question_mailbox_v1`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub pending_questions: Vec<DispatchPendingQuestion>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub turn_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -632,6 +684,25 @@ pub mod wire {
             #[serde(rename = "ref")]
             git_ref: String,
         },
+        /// Another account device's job result (`workspace_peer_import_v1`):
+        /// the target's host dials `sourceDeviceId` over Link and pulls the
+        /// job branch through its full-history `workspace-sync` bundle. The
+        /// imported head is pinned per job like any other source.
+        #[serde(rename_all = "camelCase")]
+        Job {
+            job_id: String,
+            source_device_id: String,
+            /// A commit the import must contain (the head the controller
+            /// saw); any later head of the source branch is accepted.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            head: Option<String>,
+            /// Informational: the source job's branch and base, as the
+            /// controller recorded them.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            branch: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            base_commit: Option<String>,
+        },
     }
 
     /// `dispatch_target_workspace_provision_source`
@@ -669,6 +740,84 @@ pub mod wire {
         pub source_dirty: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub fetch_error: Option<String>,
+        /// Runner to host only (a `job` source): the job's bundle has not
+        /// been imported yet, so the host must pull it from the source device
+        /// and feed it through `workspace-bundle-begin/chunk` and
+        /// `peer-import-commit`. A host answers its caller `pending` instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub peer_import: Option<DispatchPeerImportNeed>,
+    }
+
+    /// What a host must import before a `job` source can provision.
+    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DispatchPeerImportNeed {
+        pub source_device_id: String,
+        pub source_job_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub head: Option<String>,
+    }
+
+    /// Runner-internal `peer-import-commit` (never a wire command): import the
+    /// bundle already uploaded for `jobId` (`workspace-bundle-begin/chunk`)
+    /// as the source job's branch, pinned at `headCommit`.
+    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    pub struct DispatchPeerImportCommitRequest {
+        pub protocol_version: u32,
+        pub job_id: String,
+        pub source_device_id: String,
+        pub source_job_id: String,
+        /// The branch inside the bundle (the source job's branch).
+        pub source_branch: String,
+        pub head_commit: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DispatchPeerImportCommitResponse {
+        pub imported: bool,
+        pub head_commit: String,
+    }
+
+    /// `dispatch_target_workspace_publish` (`workspace_publish_v1`).
+    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    pub struct DispatchWorkspacePublishRequest {
+        pub protocol_version: u32,
+        pub job_id: String,
+        /// A remote name of the job's source checkout; `origin` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub remote: Option<String>,
+    }
+
+    /// What a publish pushed. Never forced: a diverged remote branch fails.
+    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DispatchWorkspacePublishResponse {
+        pub published: bool,
+        pub remote: String,
+        /// The pushed-to URL with credentials stripped.
+        pub remote_url: String,
+        pub branch: String,
+        pub head_commit: String,
+        #[serde(default)]
+        pub base_commit: String,
+        /// Commits on the branch since the job's base.
+        #[serde(default)]
+        pub commit_count: u64,
+        /// The remote branch did not exist before.
+        #[serde(default)]
+        pub created: bool,
+        /// The remote branch already pointed at `headCommit`.
+        #[serde(default)]
+        pub up_to_date: bool,
+        /// The remote head before the push, when the branch existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub previous_head: Option<String>,
+        /// Git-visible changes were committed before the push.
+        #[serde(default)]
+        pub committed_changes: bool,
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -742,6 +891,11 @@ pub mod wire {
         /// transport retries before acknowledgement receive the cached result.
         #[serde(default)]
         pub known_head: Option<String>,
+        /// Export the whole branch history (`workspace_peer_bundle_v1`), for a
+        /// peer that has none of it. Kept apart from the incremental result:
+        /// its own bundle file, and never mixed with `knownHead`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub full_history: bool,
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -783,6 +937,9 @@ pub mod wire {
         pub job_id: String,
         pub offset: u64,
         pub length: u64,
+        /// Read the full-history export instead of the incremental result.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub full_history: bool,
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1250,6 +1407,81 @@ mod superagent_contract_tests {
                         .is_err()
                 );
             }
+        }
+
+        #[test]
+        fn phase_two_fields_are_additive_and_strict() {
+            // A job source reads with or without its informational fields,
+            // and a pre-phase-two request (no job kind) still reads.
+            let value = json!({
+                "protocolVersion": 6, "jobId": "j2", "branch": "openbitfun/dispatch/j2",
+                "source": {"kind": "job", "jobId": "j1", "sourceDeviceId": "dev-a",
+                    "branch": "openbitfun/dispatch/j1", "baseCommit": null}
+            });
+            let request: DispatchWorkspaceProvisionSourceRequest =
+                serde_json::from_value(value).unwrap();
+            assert_eq!(
+                request.source,
+                DispatchProvisionSource::Job {
+                    job_id: "j1".into(),
+                    source_device_id: "dev-a".into(),
+                    head: None,
+                    branch: Some("openbitfun/dispatch/j1".into()),
+                    base_commit: None,
+                }
+            );
+            assert!(
+                serde_json::from_value::<DispatchWorkspaceProvisionSourceRequest>(json!({
+                    "protocolVersion": 6, "jobId": "j2", "branch": "b",
+                    "source": {"kind": "job", "jobId": "j1"}
+                }))
+                .is_err(),
+                "a job source names its device"
+            );
+
+            // Old submit, sync and chunk requests read with the new flags off,
+            // and the flags are never sent when off.
+            let submit: DispatchSubmitRequest = serde_json::from_value(legacy_submit()).unwrap();
+            assert!(!submit.user_questions);
+            assert!(serde_json::to_value(&submit)
+                .unwrap()
+                .get("userQuestions")
+                .is_none());
+            let sync: DispatchWorkspaceSyncRequest =
+                serde_json::from_value(json!({"jobId": "j", "operationId": "o"})).unwrap();
+            assert!(!sync.full_history);
+            assert!(serde_json::to_value(&sync)
+                .unwrap()
+                .get("fullHistory")
+                .is_none());
+            let chunk: DispatchWorkspaceSyncChunkRequest =
+                serde_json::from_value(json!({"jobId": "j", "offset": 0, "length": 1})).unwrap();
+            assert!(!chunk.full_history);
+
+            // A summary from an older target has no questions; a newer one's
+            // questions read.
+            let summary: DispatchStatusSummaryResponse = serde_json::from_value(json!({
+                "summaryOnly": true, "state": "running", "cursor": 1
+            }))
+            .unwrap();
+            assert!(summary.pending_questions.is_empty());
+            let summary: DispatchStatusSummaryResponse = serde_json::from_value(json!({
+                "summaryOnly": true, "state": "running", "cursor": 1,
+                "pendingQuestions": [{"requestId": "t", "questions": {"questions": []}, "newer": 1}]
+            }))
+            .unwrap();
+            assert_eq!(summary.pending_questions[0].request_id, "t");
+
+            let publish: DispatchWorkspacePublishRequest =
+                serde_json::from_value(json!({"protocolVersion": 6, "jobId": "j"})).unwrap();
+            assert_eq!(publish.remote, None);
+            assert!(
+                serde_json::from_value::<DispatchWorkspacePublishRequest>(
+                    json!({"protocolVersion": 6, "jobId": "j", "force": true})
+                )
+                .is_err(),
+                "there is no force"
+            );
         }
 
         #[test]

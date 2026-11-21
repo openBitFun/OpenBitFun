@@ -21,7 +21,8 @@
         "https",
         "http"
       ]
-    }
+    },
+    "windows": true
   },
   "window": {
     "title": "OpenBitFun",

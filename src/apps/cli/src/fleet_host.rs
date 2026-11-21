@@ -174,6 +174,33 @@ impl FleetDispatchPromptSource for CliDispatchPrompts {
             })
             .collect())
     }
+
+    fn pending_dispatch_questions(
+        &self,
+    ) -> Result<Vec<openbitfun_core::service::fleet::FleetDispatchQuestion>, String> {
+        let pending =
+            crate::dispatch::pending_dispatch_questions().map_err(|error| format!("{error:#}"))?;
+        Ok(pending
+            .into_iter()
+            .flat_map(|(job, questions)| {
+                questions.into_iter().map(move |question| {
+                    openbitfun_core::service::fleet::FleetDispatchQuestion {
+                        job_id: job.job_id.clone(),
+                        session_id: if question.session_id.is_empty() {
+                            job.session_id.clone()
+                        } else {
+                            question.session_id
+                        },
+                        workspace_path: job.workspace_path.clone(),
+                        title: question.title,
+                        request_id: question.request_id,
+                        questions: question.questions,
+                        registered_at_ms: question.registered_at_ms,
+                    }
+                })
+            })
+            .collect())
+    }
 }
 
 /// The signed-in account's directory, through the CLI's account session.
@@ -314,9 +341,19 @@ pub(crate) fn start(start: CliFleetStart) {
         obp: start.obp,
         digest: Arc::clone(&digest),
     });
+    // The digest follows model changes too (its catalog).
+    {
+        let digest = Arc::clone(&digest);
+        tokio::spawn(async move {
+            openbitfun_core::service::fleet::models::follow_model_config(&digest).await;
+        });
+    }
     let on_local_event: LocalEventHook = Arc::new(move |event: &str| {
         if is_digest_relevant_event(event) {
             digest.notify_changed();
+        }
+        if event == openbitfun_product_domains::fleet::FLEET_INDEX_CHANGED_EVENT {
+            schedule_model_sync();
         }
     });
     // The links dial the account's cloud node too (`client::cloud`).
@@ -355,6 +392,72 @@ pub(crate) fn start(start: CliFleetStart) {
     *CURRENT
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(host);
+    // Sessions here may run other devices' models (`fleet_models`).
+    openbitfun_core::service::fleet::models::install_peers(Arc::new(CliModelPeers));
+    schedule_model_sync();
+}
+
+/// The running fleet as the model catalog's peers: owner facts from the
+/// index, relay rounds over the fleet's links.
+struct CliModelPeers;
+
+impl openbitfun_core::service::fleet::models::FleetModelPeers for CliModelPeers {
+    fn self_device_id(&self) -> String {
+        current()
+            .map(|host| host.device_id().to_string())
+            .unwrap_or_default()
+    }
+
+    fn owner(
+        &self,
+        device_id: &str,
+    ) -> Option<openbitfun_core::service::fleet::models::ModelOwner> {
+        let host = current()?;
+        let (facts, models) = host.index().device_models(device_id)?;
+        Some(openbitfun_core::service::fleet::models::ModelOwner {
+            name: if facts.name.trim().is_empty() {
+                device_id.to_string()
+            } else {
+                facts.name
+            },
+            online: facts.state == FleetDeviceState::Online,
+            models,
+        })
+    }
+
+    fn call<'a>(
+        &'a self,
+        device_id: &'a str,
+        command: &'a str,
+        args: Value,
+    ) -> openbitfun_core::service::fleet::models::PeersFuture<'a, Result<Value, String>> {
+        Box::pin(async move {
+            let host = current().ok_or_else(|| fleet_unavailable(command))?;
+            host.call_device(device_id, command, args).await
+        })
+    }
+}
+
+/// Mirrors the account's model catalog as runtime model entries once the
+/// index settles (index changes within 500 ms become one sync).
+fn schedule_model_sync() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        PENDING.store(false, Ordering::SeqCst);
+        return;
+    };
+    runtime.spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        PENDING.store(false, Ordering::SeqCst);
+        if let Some(host) = current() {
+            openbitfun_core::service::fleet::models::sync_runtime_models(&host.index().models(""))
+                .await;
+        }
+    });
 }
 
 /// Stops the running fleet (sign-out, account change, shutdown).
@@ -389,6 +492,7 @@ pub(crate) async fn dispatch_target_answered(command: &str, workspace_path: Opti
 }
 
 pub(crate) fn stop() {
+    openbitfun_core::service::fleet::models::clear_peers();
     DIGEST
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

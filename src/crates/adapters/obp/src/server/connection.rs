@@ -870,6 +870,14 @@ async fn handle_message(
                     return;
                 }
             };
+            // The cloud agent's replica verbs: restricted access, never the
+            // dispatcher (which grants an account device's full access).
+            if let Scope::CloudAgent { .. } = context.scope {
+                if let Some(frame) = answer_cloud_replica_verb(&id, &params, context) {
+                    send_text(outbox, frame).await;
+                    return;
+                }
+            }
             if let Some(frame) = answer_fleet_verb(&id, &params, context, fleet).await {
                 send_text(outbox, frame).await;
                 return;
@@ -972,6 +980,90 @@ async fn handle_message(
 /// desktop's in-process long poll and never runs over OBP (a connection gets
 /// the fleet stream as frames), and `fleet_subscribe` on a fleet connection
 /// sets that connection's interest. `None`: the call goes on as usual.
+/// A `cloud-agent` call of an account replica verb (`None`: any other
+/// command): answered from the host's replica with access to the
+/// `superagent.` collections, or refused.
+fn answer_cloud_replica_verb(
+    id: &Value,
+    params: &CallParams,
+    context: &ConnectionContext,
+) -> Option<String> {
+    use super::scope::{cloud_agent_replica_verb, CloudReplicaCall};
+    let forbidden = |message: String| {
+        let error = RpcError::new(FORBIDDEN, message).with_data(serde_json::json!({
+            "kind": "forbidden",
+            "command": params.command,
+            "scope": context.scope.wire_name(),
+        }));
+        error_frame(id, &error)
+    };
+    match cloud_agent_replica_verb(&params.command, &params.args)? {
+        CloudReplicaCall::Refused(message) => {
+            log::info!(
+                "OBP replica call refused for the cloud agent: command={}",
+                params.command
+            );
+            Some(forbidden(message))
+        }
+        CloudReplicaCall::Scoped => {
+            #[cfg(feature = "fleet")]
+            {
+                let Some(replica) = context.backend.account_replica() else {
+                    return Some(error_frame(
+                        id,
+                        &command_error(
+                            &params.command,
+                            format!(
+                                "{}: the account replica is not running on this device",
+                                crate::UNSUPPORTED_IN_NATIVE_HOST
+                            ),
+                            true,
+                        ),
+                    ));
+                };
+                let access = crate::fleet::replica::ReplicaAccess::Collections(
+                    super::scope::CLOUD_AGENT_REPLICA_COLLECTIONS
+                        .iter()
+                        .map(|name| name.to_string())
+                        .collect(),
+                );
+                Some(
+                    match replica.handle_as(&params.command, &params.args, &access) {
+                        Some(Ok(value)) => result_frame(id, &value),
+                        Some(Err(message))
+                            if message.contains("for this caller")
+                                || message.contains("forbidden") =>
+                        {
+                            forbidden(message)
+                        }
+                        Some(Err(message)) => {
+                            error_frame(id, &command_error(&params.command, message, false))
+                        }
+                        None => forbidden(format!(
+                            "forbidden_for_scope: command '{}' is not served to the cloud agent",
+                            params.command
+                        )),
+                    },
+                )
+            }
+            #[cfg(not(feature = "fleet"))]
+            {
+                Some(error_frame(
+                    id,
+                    &command_error(
+                        &params.command,
+                        format!(
+                            "{}: this host keeps no account replica",
+                            crate::UNSUPPORTED_IN_NATIVE_HOST
+                        ),
+                        true,
+                    ),
+                ))
+            }
+        }
+    }
+}
+
 async fn answer_fleet_verb(
     id: &Value,
     params: &CallParams,

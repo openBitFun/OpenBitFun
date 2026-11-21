@@ -828,7 +828,7 @@ fn cloud_node_view(devices: &[DirectoryDevice]) -> serde_json::Value {
                 .unwrap_or(device.device_name.as_str());
             serde_json::json!({
                 "deviceId": device.device_id,
-                "name": if name.trim().is_empty() { "OpenBitFun" } else { name },
+                "name": openbitfun_product_domains::superagent::cloud_node_display_name(name),
                 "path": CLOUD_NODE_PATH,
             })
         })

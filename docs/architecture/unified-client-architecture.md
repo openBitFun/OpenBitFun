@@ -259,8 +259,24 @@ any of them can be the entry, there is no home device, and the user never picks 
   index window), `fleet_device_detail {deviceId}` (the device page: the navigator row, user and dispatch sessions
   running now, jobs waiting to start or waiting on the user from the device's dispatch sessions and prompts and the
   cloud agent's queued jobs, capability ids, and the update line of an `update_required` device),
-  `fleet_subscribe {follow}`, `fleet_events` (the native desktop's long poll for peer origins) and
-  `fleet_ui_bundle`. Owner verbs on the device network: `fleet_digest`, `fleet_replay`.
+  `fleet_models {deviceId?}` (the account-wide model catalog, below), `fleet_subscribe {follow}`, `fleet_events`
+  (the native desktop's long poll for peer origins) and `fleet_ui_bundle`. Owner verbs on the device network:
+  `fleet_digest`, `fleet_replay`.
+- **Account-wide model catalog** (`product_domains::fleet::models`, `openbitfun_core::service::fleet::models`).
+  Every runtime device publishes its configured chat models in its digest (`models`: id, display name,
+  provider, capabilities, context window, which one is its primary; never endpoints or keys); a digest from an
+  older build has none, and its device shows `device_requires_update` in the picker. `fleet_models` groups the
+  catalog by device relative to the device that runs the session (that device first, then online devices),
+  with each device's state and `unavailableReason` (`device_offline`, `device_requires_update`, `no_model`), so
+  the session model picker only draws it. Picking another device's model stores `fleet:<deviceId>/<modelId>`
+  (a plain id, every selection stored before the catalog, stays this device's model). The runtime host mirrors
+  every other device's published models as runtime model entries (provider `fleet_relay`, no credentials,
+  never persisted), so the session resolves like any configured model and each round runs through the owner's
+  model relay over Link (`account-device` scope). Credentials never leave the owner, and the owner never relays
+  a round onwards. A round whose owner is offline fails at once, not retried, with "{model} lives on {device},
+  which is offline"; a stored reference this host cannot resolve fails the turn instead of running the
+  primary model. Publishing the catalog is the negotiation: a device with a catalog runs a build whose relay
+  admits other devices.
 - **Events: per-origin cursors** (`fleet/mux.rs`). A client that sends `fleet: {protocol: 1, cursor: {[deviceId]:
   {instanceId, seq}}}` on its hello gets one stream of frames `{seq, event, payload, origin, originInstance}`,
   where `seq` is the origin's own and the payload is unchanged. Order holds within an origin only. The entry keeps
@@ -281,6 +297,31 @@ any of them can be the entry, there is no home device, and the user never picks 
   they show. The native folder picker exists only for the client's own machine; other devices use the in-app
   browser over `fleet_call get_directory_children`. An SSH workspace belongs to the device holding the SSH
   profile; two devices on one SSH root are two rows.
+- **Account replica (wave 21).** Account-level data that follows the user, starting with synced settings, is
+  held by the runtime devices themselves, never by a server: `fleet/replica.rs` keeps records with
+  hybrid-logical-clock revisions (last writer wins per record), tombstones kept 30 days and content-addressed
+  blobs, size-capped, in `<user data>/fleet/replica-<account>.json`. Peers exchange it through the owner verbs
+  `fleet_replica_digest` / `fleet_replica_pull` / `fleet_replica_push` / `fleet_blob_get`
+  (`account_replica_v1`): local writes are pushed to every online peer at once, digests are compared every
+  minute and whenever a peer comes online, and writes made offline stay undelivered until a peer acknowledges
+  them. Settings sync binds it to the config (`services-integrations` `remote_connect::settings_sync`, see
+  [peer-device-mode.md](peer-device-mode.md)). Phones and browsers read and write through their entry.
+- **Account records (wave 24).** The rest of the account's data rides the same replica, one collection per
+  kind with its own budget (`product_domains::fleet::account_records::ACCOUNT_COLLECTIONS`, declared by every
+  runtime device when it opens the replica): quick actions, user custom agents and agent profiles, user skills
+  (files as blobs), routine definitions (each names the one device that runs it), MCP server shapes, SSH
+  profiles, the consolidated memory document, assistant persona documents, desktop card definitions, imported
+  pets and the pet choice, and IM bot binding metadata. The binder
+  (`services-integrations` `remote_connect::account_records`) follows the settings pattern: each owner lists
+  its items as replica-safe projections and applies account items through its own typed mutation, a device's
+  first sync offers only its non-default items at the lowest clock, the 1.x files are read in place and never
+  rewritten by the offer, and the account sync switch covers it. Records never carry a secret: the replica
+  refuses secret-named fields, non-placeholder `env`/`headers` values and credential-shaped strings on write
+  and on merge (`find_secret`), and every binding replaces secrets with per-device placeholders
+  (`{"$secretRef": …}`) that the device needing them fills locally (`device_records_overview` tells the UI
+  which MCP servers, SSH profiles and skill markets still need one here, and which routines run elsewhere).
+  Device-bound items (command cards, another device's routines) are listed but materialized only on their
+  device; prose (personas, memory) keeps a conflict copy when a concurrent edit replaces local content.
 - **Compatibility.** An entry without `fleet` on its hello leaves the UI on that one backend (with an "update
   this device" notice) and its legacy Peer Device Mode ([peer-device-mode.md](peer-device-mode.md)). Fleet DTOs
   read tolerantly: every field defaults, unknown fields are ignored, every enum has an `Unknown` variant.
@@ -311,10 +352,18 @@ the tools.
   default on. Devices advertise `cloud_agent_scope_v1`; a device without it is never dialed
   (`superagent_requires_update`).
 - **Model rounds without server credentials.** `fleet_model_start` / `fleet_model_poll` / `fleet_model_cancel`
-  (`fleet_model_v1`, `cloud-agent` scope only) run one completion on a device with the provider configured
-  there (`openbitfun_core::service::superagent_relay`); no tool runs on the device for it, polling resumes by
-  sequence, and usage is recorded there as "OpenBitFun agent". The holder is ranked by policy and a lost holder's
-  round retries elsewhere; with no holder the turn parks and says so.
+  (`fleet_model_v1`; the `cloud-agent` and `account-device` scopes, never a paired client) run one completion on
+  a device with the provider configured there (`openbitfun_core::service::superagent_relay`); no tool runs on
+  the device for it, polling resumes by sequence, and usage is recorded there as "OpenBitFun agent". A
+  conversation runs on **Auto** (the backend ranks the holder: the last one, then desktop over CLI, then
+  latency, and the holder runs its primary model) or on the device and model the user picked
+  (`Conversation.pinnedHolder` + `modelId`, persisted in the encrypted store; `superagent_set_model`, or `model`
+  on `superagent_send` for a new conversation). A lost Auto holder's round retries elsewhere; a pick never moves
+  to another device. With no holder the turn ends at once with a `no_holder` card that names the offline
+  devices, the ones without a model and the ones that need an update, and says what to do; it never parks on
+  model availability (a turn parked by an earlier build resumes into that answer). Queued jobs for offline
+  devices are unaffected. `superagent_status.models` is the picker (devices with their catalogs) and
+  `superagent_get_conversation` carries the conversation's `model`.
 - **Work through Detached Dispatch.** Tools: `fleet_list_runtimes`, `fleet_dispatch`, `fleet_wait`,
   `fleet_job_status`, `fleet_job_result`, `fleet_job_transcript`, `fleet_job_message`, `fleet_job_cancel`,
   `fleet_job_answer`, `fleet_publish_branch` (closed set, strict parsing). Jobs default to `approval: auto`
@@ -575,7 +624,7 @@ retired one adds its registry reason.
 | `check_for_updates`, `download_update`, `get_pending_update`, `install_pending_update`, `install_update` | Adapter (native update channel above) |
 | `miniapp_presentation` | Adapter (independent windows); `miniapp_ai_chat` now takes `HostHandle` and runs natively |
 | `browser_webview_{create,navigate,reload,eval,set_bounds}`, `browser_get_url` | Adapter over the shell channel (embedded browser below) |
-| `browser_webview_capture_preview` | Adapter answering its explicit `{status: "unsupported"}` shape: NSH 0.6 has no web view snapshot API (agent `Page.captureScreenshot` fails with the same reason) |
+| `browser_webview_capture_preview` | Adapter, `Proxied` (wave 22): `{label?, conversationId?}` picks the page (the conversation's newest, else the device's newest) and answers a script-free copy of its document made in the page through `browser.evaluate` (`status: "snapshot"`, or `noPage`, `tooLarge` over 1 MiB, `unsupported` when the window offers no browser). Phones, browsers and other desktops draw it as a read-only live view. NSH 0.6 has no web view pixel snapshot, so agent `Page.captureScreenshot` still fails with that reason |
 | `browser_webview_report_page_load` (new, `ControllerLocal`) | Native: the NSH web views report `started`/`finished`/`failed` |
 | `confirm_frontend_update`, `frontend_update_candidate_{ready,failed}`, `get_frontend_update_status`, `rollback_frontend_update` | Retired (WebView frontend hot update; the native UI bundle ships inside the app bundle) |
 | `debug_{open,close}_devtools`, `debug_devtools_available`, `debug_element_picked` | Retired (WebView devtools and element inspector) |
@@ -708,7 +757,7 @@ Running turn and live channel (wave 5). `get_session_transcript_view` also answe
 | Desktop | Native NSH host with the in-process `BackendService`, shell channel, native updater, MiniApp windows, macOS/Windows/Linux runners; Tauri shell and React UI retired | In-place update on Windows and Linux; non-macOS folder picker |
 | Protocol and transport | One OBP crate (`openbitfun-obp`) for desktop, CLI, phone and cloud node; loopback owner listener; OpenBitFun Link device network with join tokens; browser gateway with the end-to-end channel; domain-only server | Retiring `mobile-web` and the relay transport once no supported peer needs them |
 | Fleet | Symmetric fleet layer on desktop and CLI: owner partitions, `fleet_call` routing by owner, per-origin cursors, entry ranking and failover, Inbox (`fleet_attention`) | Retiring `peer_link_*` and legacy Peer Device Mode once no supported backend lacks `fleet_v1` |
-| Cloud superagent | Cloud node service, encrypted per-account slots, model relay, Detached Dispatch tools, frontend commands | Frontends switched on in deployment (`SUPERAGENT_FRONTENDS`); the target side of peer branch import and publish (`workspace_peer_import_v1`, `workspace_publish_v1`), a Windows detached runner, a worker-question mailbox |
+| Cloud superagent | Cloud node service, encrypted per-account slots, model relay, Detached Dispatch tools, frontend commands; the target side of peer branch import, publish and the worker-question mailbox (`workspace_peer_import_v1`, `workspace_publish_v1`, `user_question_mailbox_v1`, see [detached-task-dispatch.md](detached-task-dispatch.md)) | Live verification of the Windows detached runner on a real Windows host |
 | Browsers | The device's own web UI from the content-addressed pool | The browser does not yet load through `fleet_ui_bundle` holders |
 | Bots and dispatch | Bot turns and menu commands over OBP (`mesh_route`); Detached Dispatch over OBP with the relay for older targets | IM bots hosted by the CLI daemon still reach other devices through the relay only |
 | Display-only frontend | Logic batches 1-5 (table above) | Marketplace `installed` flags are still derived by the client |

@@ -199,7 +199,7 @@ test("a served device detail says what runs and waits there in words, and the ca
   await app.press("device-open-dev-b");
   await app.waitFor("device-waiting");
   expect(host.calls.find(call => call.command === "fleet_device_detail")?.args).toMatchObject({ request: { deviceId: "dev-b" } });
-  expect(app.shows("text:2 sessions · 1 jobs from OpenBitFun")).toBe(true);
+  expect(app.shows("text:2 sessions · 1 jobs from Super Agent")).toBe(true);
   expect(app.shows("text:1 job · Starts when it's online")).toBe(true);
   // The served capability ids win over the navigator's host capabilities.
   expect(app.shows("text:Terminal · Git")).toBe(true);

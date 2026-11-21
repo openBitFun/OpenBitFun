@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 use crate::conversation::{ConversationSummary, Message, Role};
 use crate::crypto;
+use crate::device::DeviceSnapshot;
 use crate::directory::{Directory, DirectoryError};
 use crate::engine::Engine;
 use crate::slots::{AccountMeta, Slot, SlotError};
@@ -30,6 +31,7 @@ pub const COMMANDS: &[&str] = &[
     "superagent_list_conversations",
     "superagent_get_conversation",
     "superagent_send",
+    "superagent_set_model",
     "superagent_cancel_turn",
     "superagent_job_action",
     "superagent_rename_conversation",
@@ -145,6 +147,11 @@ pub const HOST_CAPABILITIES: &[&str] = &[
 ];
 
 const PAGE: usize = 100;
+/// An account's node unused this long with no live work is shredded (key,
+/// metadata and every record; `ensure` creates a new one on next use).
+pub const ACCOUNT_TTL_MS: u64 = 180 * 24 * 3600 * 1000;
+/// How often a frontend's use is written to the account's metadata.
+const LAST_USED_WRITE_MS: u64 = 24 * 3600 * 1000;
 
 pub struct Service {
     pub engine: Arc<Engine>,
@@ -169,6 +176,59 @@ struct SendRequest {
     conversation_id: Option<String>,
     message: String,
     client_message_id: String,
+    /// The picker's choice: absent keeps the conversation's, `null` is Auto,
+    /// `{deviceId, modelId}` that device and model.
+    #[serde(default, deserialize_with = "present")]
+    model: Option<Value>,
+}
+
+/// `superagent_set_model {conversationId, deviceId?, modelId?}`: both set
+/// pins that device and model, both absent (or `null`) is Auto.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetModelRequest {
+    #[serde(alias = "id")]
+    conversation_id: String,
+    #[serde(default)]
+    device_id: Option<String>,
+    #[serde(default)]
+    model_id: Option<String>,
+}
+
+/// Keeps an explicit `null` apart from an absent field.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
+    Ok(Some(Value::deserialize(deserializer)?))
+}
+
+/// A pick from the wire: `null` (or both ids empty) is Auto.
+fn model_pick_of(
+    device_id: Option<&str>,
+    model_id: Option<&str>,
+) -> Result<Option<openbitfun_product_domains::superagent::SuperagentModelPick>, String> {
+    let device_id = device_id.map(str::trim).filter(|id| !id.is_empty());
+    let model_id = model_id.map(str::trim).filter(|id| !id.is_empty());
+    match (device_id, model_id) {
+        (None, None) => Ok(None),
+        (Some(device_id), Some(model_id)) if device_id.len() <= 128 && model_id.len() <= 256 => {
+            Ok(Some(
+                openbitfun_product_domains::superagent::SuperagentModelPick {
+                    device_id: device_id.to_string(),
+                    model_id: model_id.to_string(),
+                },
+            ))
+        }
+        _ => Err("invalid_request: pick a device and a model, or Auto".into()),
+    }
+}
+
+fn model_pick_of_value(
+    value: &Value,
+) -> Result<Option<openbitfun_product_domains::superagent::SuperagentModelPick>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text = |key: &str| value.get(key).and_then(Value::as_str);
+    model_pick_of(text("deviceId"), text("modelId"))
 }
 
 #[derive(Deserialize)]
@@ -178,6 +238,10 @@ struct ConversationRequest {
     conversation_id: String,
     #[serde(default)]
     cursor: Option<u64>,
+    /// The page of an archived conversation the frontend's entry read from
+    /// its replica (`fleet::superagent_archive`); used, never stored.
+    #[serde(default)]
+    archive: Option<openbitfun_product_domains::superagent::archive::ArchivedPage>,
 }
 
 #[derive(Deserialize)]
@@ -202,6 +266,10 @@ struct ListRequest {
     locale: Option<String>,
     /// IANA zone the date groups use (UTC when absent or unknown).
     time_zone: Option<String>,
+    /// The archived conversations the frontend's entry holds in its replica
+    /// (`fleet::superagent_archive`), listed with the working set; used,
+    /// never stored.
+    archived: Vec<openbitfun_product_domains::superagent::archive::ArchivedSummary>,
 }
 
 #[derive(Deserialize, Default)]
@@ -245,7 +313,7 @@ impl Service {
             enabled: true,
             created_ms: now,
             updated_ms: now,
-            pinned_holder: None,
+            last_used_ms: now,
         };
         let slot = self
             .engine
@@ -287,13 +355,19 @@ impl Service {
             Ok(slot) => slot,
             Err(SlotError::NotProvisioned) => {
                 return Err(
-                    "superagent_not_provisioned: sign in again to set up the OpenBitFun agent"
-                        .into(),
+                    "superagent_not_provisioned: sign in again to set up Super Agent".into(),
                 )
             }
             Err(error) => return Err(error.to_string()),
         };
         slot.touch(now);
+        {
+            let mut state = slot.state.lock().await;
+            if now.saturating_sub(state.meta.last_used_ms) >= LAST_USED_WRITE_MS {
+                state.meta.last_used_ms = now;
+                let _ = slot.save_meta(&state);
+            }
+        }
         match command {
             "superagent_status" => {
                 let request: StatusRequest = args_of(&args)?;
@@ -328,6 +402,9 @@ impl Service {
                 if title.is_empty() || title.chars().count() > 120 {
                     return Err("invalid_request: the title must be 1-120 characters".into());
                 }
+                self.engine
+                    .ensure_conversation(&slot, &request.conversation_id)
+                    .await?;
                 let mut state = slot.state.lock().await;
                 if !slot
                     .rename_conversation(&mut state, &request.conversation_id, title)
@@ -357,23 +434,52 @@ impl Service {
                     .count();
                 drop(state);
                 self.engine.digest_changed(&slot);
-                Ok(json!({ "deleted": deleted, "jobsLeftRunning": jobs_kept }))
+                // An archived conversation is deleted on the devices (its
+                // tombstone is queued even when this node did not hold it).
+                let _ = deleted;
+                Ok(json!({ "deleted": true, "jobsLeftRunning": jobs_kept }))
             }
             "superagent_get_conversation" => {
                 let request: ConversationRequest = args_of(&args)?;
-                self.conversation(&slot, &request.conversation_id, request.cursor)
-                    .await
+                self.conversation_view(&slot, request).await
             }
             "superagent_send" => {
                 let request: SendRequest = args_of(&args)?;
+                let pick = request
+                    .model
+                    .as_ref()
+                    .map(model_pick_of_value)
+                    .transpose()?;
                 self.engine
-                    .send(
+                    .send_with_model(
                         &slot,
                         request.conversation_id.as_deref(),
                         &request.message,
                         &request.client_message_id,
+                        pick,
                     )
                     .await
+            }
+            "superagent_set_model" => {
+                let request: SetModelRequest = args_of(&args)?;
+                let pick =
+                    model_pick_of(request.device_id.as_deref(), request.model_id.as_deref())?;
+                self.engine
+                    .set_model(&slot, &request.conversation_id, pick)
+                    .await?;
+                let candidates = self.engine.holder_candidates(account_id).await;
+                let state = slot.state.lock().await;
+                let selected = state
+                    .conversations
+                    .get(&request.conversation_id)
+                    .and_then(|conversation| conversation.model_pick());
+                Ok(json!({
+                    "conversationId": request.conversation_id,
+                    "model": openbitfun_product_domains::superagent::project_model_selection(
+                        selected.as_ref(),
+                        &candidates,
+                    ),
+                }))
             }
             "superagent_cancel_turn" => {
                 let request: ConversationRequest = args_of(&args)?;
@@ -441,10 +547,93 @@ impl Service {
                 self.delete_data(slot, request.cancel_jobs).await
             }
             other => Err(format!(
-                "{}: command '{other}' is not served by the OpenBitFun cloud agent",
+                "{}: command '{other}' is not served by Super Agent",
                 openbitfun_obp::UNSUPPORTED_IN_NATIVE_HOST
             )),
         }
+    }
+
+    /// The time-to-live sweep over every stored account (on a timer and at
+    /// load): an account unused for [`ACCOUNT_TTL_MS`] with no live job,
+    /// running turn or pending history is shredded (its directory row is
+    /// removed first; `ensure` recreates both on next use); every other
+    /// account gets its time-to-live pass. Returns the shredded accounts.
+    pub async fn sweep_accounts(&self) -> Vec<String> {
+        let now = self.engine.now();
+        let store = Arc::clone(self.engine.slots.store());
+        let mut shredded = Vec::new();
+        for dir in store.account_dirs() {
+            let Ok(account) = store.account_by_dir(&dir) else {
+                continue;
+            };
+            // Internal records (the watch list, the target index) have no
+            // metadata.
+            let Ok(Some(meta)) = account.read_json::<AccountMeta>(crate::slots::META_RECORD) else {
+                continue;
+            };
+            if meta.account_id.is_empty() {
+                continue;
+            }
+            let last_used = if meta.last_used_ms > 0 {
+                meta.last_used_ms
+            } else {
+                meta.updated_ms.max(meta.created_ms)
+            };
+            let slot = match self.engine.slots.load(&meta.account_id, now, None).await {
+                Ok(slot) => slot,
+                Err(error) => {
+                    log::warn!("Superagent sweep could not load an account: {}", error);
+                    continue;
+                }
+            };
+            if now.saturating_sub(last_used) < ACCOUNT_TTL_MS {
+                crate::archive::pump(&self.engine, &slot, true).await;
+                self.engine.sweep_slot(&slot, true).await;
+                continue;
+            }
+            let busy = {
+                let state = slot.state.lock().await;
+                state.ledger.has_live_jobs()
+                    || !state.outbox.chunks.is_empty()
+                    || state
+                        .conversations
+                        .values()
+                        .any(|conversation| conversation.active_turn().is_some())
+                    || slot.attached() > 0
+            };
+            if busy {
+                continue;
+            }
+            match self
+                .directory
+                .unregister(
+                    &meta.account_id,
+                    &meta.device_id,
+                    meta.directory_token.as_deref(),
+                )
+                .await
+            {
+                Ok(()) | Err(DirectoryError::NotFound) => {}
+                Err(error) => {
+                    log::info!(
+                        "Superagent sweep kept an account: directory unavailable ({})",
+                        error
+                    );
+                    continue;
+                }
+            }
+            drop(slot);
+            self.engine.slots.forget(&meta.account_id);
+            self.engine.forget_account(&meta.account_id);
+            match store.shred(&meta.account_id) {
+                Ok(_) => {
+                    log::info!("Superagent account unused for 180 days shredded");
+                    shredded.push(meta.account_id.clone());
+                }
+                Err(error) => log::warn!("Superagent account not shredded: {}", error),
+            }
+        }
+        shredded
     }
 
     async fn status(&self, slot: &Arc<Slot>, locale: Option<&str>) -> Result<Value, String> {
@@ -493,6 +682,105 @@ impl Service {
             "liveJobs": state.ledger.live_jobs().count(),
             "holderAvailable": holder,
             "devicesOnline": devices.iter().filter(|d| d.facts.online).count(),
+            // The model picker: Auto, or a device and one of its models.
+            "models": openbitfun_product_domains::superagent::project_model_devices(
+                &devices.iter().map(DeviceSnapshot::holder_candidate).collect::<Vec<_>>(),
+            ),
+        }))
+    }
+
+    /// `superagent_get_conversation`: the working set's conversation (its
+    /// older pages from the outbox, a legacy record or the page the entry
+    /// passed along), else the entry's archived page, else the conversation
+    /// resumed from the devices.
+    async fn conversation_view(
+        &self,
+        slot: &Arc<Slot>,
+        request: ConversationRequest,
+    ) -> Result<Value, String> {
+        let id = request.conversation_id.as_str();
+        let held = {
+            let mut state = slot.state.lock().await;
+            slot.conversation(&mut state, id)
+                .map_err(|e| e.to_string())?
+                .is_some()
+        };
+        if held {
+            return self
+                .conversation(slot, id, request.cursor, request.archive.as_ref())
+                .await;
+        }
+        if let Some(page) = request.archive {
+            if page.summary.id == id {
+                return self.archived_view(slot, page).await;
+            }
+        }
+        if self.engine.ensure_conversation(slot, id).await? {
+            return self.conversation(slot, id, request.cursor, None).await;
+        }
+        Err("not_found: no such conversation".into())
+    }
+
+    /// An archived conversation, read only, from the page its entry passed.
+    async fn archived_view(
+        &self,
+        slot: &Arc<Slot>,
+        page: openbitfun_product_domains::superagent::archive::ArchivedPage,
+    ) -> Result<Value, String> {
+        let id = page.summary.id.clone();
+        let devices = self.engine.devices(&slot.account_id).await;
+        let state = slot.state.lock().await;
+        let cards: Vec<Value> = state
+            .ledger
+            .jobs
+            .values()
+            .filter(|job| job.conversation_id == id)
+            .map(|job| self.engine.job_card_seen(job, Some(&devices), None))
+            .collect();
+        let job_labels: Vec<(String, String)> = state
+            .ledger
+            .jobs
+            .values()
+            .filter(|job| job.conversation_id == id)
+            .map(|job| {
+                (
+                    job.job_id.clone(),
+                    job.label.clone().unwrap_or_else(|| job.title.clone()),
+                )
+            })
+            .collect();
+        drop(state);
+        let messages: Vec<Message> = page
+            .messages
+            .iter()
+            .map(|value| serde_json::from_value(value.clone()).unwrap_or_default())
+            .collect();
+        let mut projected = crate::archive::history_notices(page.summary.unsaved, None, 0);
+        projected.extend(project_messages(messages, &job_labels));
+        let candidates: Vec<_> = devices
+            .iter()
+            .map(DeviceSnapshot::holder_candidate)
+            .collect();
+        let model =
+            openbitfun_product_domains::superagent::project_model_selection(None, &candidates);
+        Ok(json!({
+            "conversation": {
+                "id": id,
+                "title": page.summary.title,
+                "updatedMs": page.summary.updated_ms,
+                "turn": Value::Null,
+                "model": model,
+                "archived": true,
+            },
+            "messages": projected,
+            "cursor": page.from_seq,
+            "hasMore": page.from_seq > page.dropped && !page.messages.is_empty(),
+            "cards": cards,
+            "history": {
+                "state": crate::archive::history_state(page.summary.unsaved, false),
+                "unsaved": page.summary.unsaved,
+                "missingChunks": page.missing_chunks,
+            },
         }))
     }
 
@@ -501,45 +789,83 @@ impl Service {
         slot: &Arc<Slot>,
         id: &str,
         cursor: Option<u64>,
+        archive: Option<&openbitfun_product_domains::superagent::archive::ArchivedPage>,
     ) -> Result<Value, String> {
-        let (conversation, history) = {
+        let (conversation, history, outbox_page, pending_since) = {
             let mut state = slot.state.lock().await;
             let conversation = slot
                 .conversation(&mut state, id)
                 .map_err(|e| e.to_string())?
                 .cloned()
                 .ok_or_else(|| "not_found: no such conversation".to_string())?;
-            let history = if cursor.is_some_and(|c| {
+            let older_wanted = cursor.is_some_and(|c| {
                 c < conversation.history_count + conversation.messages.len() as u64
-            }) {
+            }) || conversation.history_count > 0;
+            let history = if older_wanted
+                && slot
+                    .store
+                    .names()
+                    .contains(&crate::slots::history_record(id))
+            {
                 Some(slot.history(id).map_err(|e| e.to_string())?)
             } else {
                 None
             };
-            (conversation, history)
+            let total = conversation.history_count + conversation.messages.len() as u64;
+            let end = cursor.unwrap_or(total).min(total);
+            let start = end.saturating_sub(PAGE as u64);
+            // What this node still holds of the older part (the outbox).
+            let outbox_page: Vec<(u64, Message)> = (start..end.min(conversation.history_count))
+                .filter_map(|seq| {
+                    crate::archive::held_message(&state.outbox, id, None, seq)
+                        .map(|message| (seq, message))
+                })
+                .collect();
+            let pending_since = state.outbox.oldest_pending_ms(id);
+            (conversation, history, outbox_page, pending_since)
         };
         let total = conversation.history_count + conversation.messages.len() as u64;
         let end = cursor.unwrap_or(total).min(total);
         let start = end.saturating_sub(PAGE as u64);
         let mut messages: Vec<Message> = Vec::new();
-        let first_kept = history
-            .as_ref()
-            .map(|h| h.dropped)
-            .unwrap_or(conversation.history_count);
-        for index in start.max(first_kept)..end {
-            let message = if index < conversation.history_count {
-                history
-                    .as_ref()
-                    .and_then(|h| h.messages.get((index - h.dropped) as usize))
-                    .cloned()
-            } else {
+        // The oldest message any build still has.
+        let floor = conversation
+            .archive
+            .dropped
+            .max(history.as_ref().map(|h| h.dropped).unwrap_or(0));
+        let mut first_kept = end;
+        for index in (start.max(floor)..end).rev() {
+            let message = if index >= conversation.history_count {
                 conversation
                     .messages
                     .get((index - conversation.history_count) as usize)
                     .cloned()
+            } else {
+                history
+                    .as_ref()
+                    .and_then(|h| {
+                        index
+                            .checked_sub(h.dropped)
+                            .and_then(|i| h.messages.get(i as usize))
+                    })
+                    .cloned()
+                    .or_else(|| {
+                        outbox_page
+                            .iter()
+                            .find(|(seq, _)| *seq == index)
+                            .map(|(_, message)| message.clone())
+                    })
+                    .or_else(|| crate::archive::page_message(archive, index))
             };
-            messages.extend(message);
+            // The page stays contiguous: it ends at the first gap.
+            let Some(message) = message else {
+                break;
+            };
+            messages.push(message);
+            first_kept = index;
         }
+        messages.reverse();
+        let found_any = !messages.is_empty();
         let devices = self.engine.devices(&slot.account_id).await;
         let now = self.engine.now();
         let mut state = slot.state.lock().await;
@@ -569,18 +895,39 @@ impl Service {
             .collect();
         let _ = slot.mark_seen(&mut state, id, now);
         drop(state);
-        let messages = project_messages(messages, &job_labels);
+        let mut projected = crate::archive::history_notices(
+            conversation.archive.unsaved,
+            pending_since,
+            self.engine.now(),
+        );
+        projected.extend(project_messages(messages, &job_labels));
+        let messages = projected;
+        let candidates: Vec<_> = devices
+            .iter()
+            .map(DeviceSnapshot::holder_candidate)
+            .collect();
+        let model = openbitfun_product_domains::superagent::project_model_selection(
+            conversation.model_pick().as_ref(),
+            &candidates,
+        );
         Ok(json!({
             "conversation": {
                 "id": conversation.id,
                 "title": conversation.title,
                 "updatedMs": conversation.updated_ms,
                 "turn": conversation.turn.as_ref().map(|turn| json!({ "id": turn.id, "step": turn.step.name(), "rounds": turn.rounds })),
+                "model": model,
             },
             "messages": messages,
-            "cursor": start.max(first_kept),
-            "hasMore": start > first_kept,
+            "cursor": first_kept,
+            // Older messages live on the devices: the entry passes the next
+            // page along (`fleet::superagent_archive`).
+            "hasMore": found_any && first_kept > floor,
             "cards": cards,
+            "history": {
+                "state": crate::archive::history_state(conversation.archive.unsaved, pending_since.is_some()),
+                "unsaved": conversation.archive.unsaved,
+            },
         }))
     }
 
@@ -596,8 +943,11 @@ impl Service {
         let state = slot.state.lock().await;
         let offset = request.cursor.unwrap_or(0) as usize;
         let limit = request.limit.unwrap_or(LIST_PAGE).clamp(1, 200);
-        let page: Vec<&ConversationSummary> =
-            state.summaries.iter().skip(offset).take(limit).collect();
+        // The working set with the archived conversations the entry's
+        // replica holds (and those whose history still waits here).
+        let merged =
+            crate::archive::merged_summaries(&state.summaries, &request.archived, &state.outbox);
+        let page: Vec<&ConversationSummary> = merged.iter().skip(offset).take(limit).collect();
         let rows: Vec<Value> = page
             .iter()
             .map(|summary| {
@@ -653,7 +1003,7 @@ impl Service {
         Ok(json!({
             "conversations": rows,
             "groups": groups.into_iter().map(|(id, rows)| json!({ "id": id, "rows": rows })).collect::<Vec<_>>(),
-            "nextCursor": (next < state.summaries.len()).then_some(next as u64),
+            "nextCursor": (next < merged.len()).then_some(next as u64),
             "timeZone": zone,
         }))
     }
@@ -738,6 +1088,8 @@ impl Service {
             sessions_truncated: state.summaries.len() > MAX_SESSIONS_PER_DEVICE,
             sessions,
             prompts,
+            // The cloud node holds no models of its own.
+            models: None,
             removed: Default::default(),
         };
         serde_json::to_value(digest).map_err(|e| e.to_string())

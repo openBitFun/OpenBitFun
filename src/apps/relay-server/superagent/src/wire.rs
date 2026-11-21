@@ -68,6 +68,89 @@ pub struct PromptSummary {
 }
 
 pub const PROMPT_SUMMARY_MAX: usize = 512;
+/// The tool name a worker question is shown with.
+pub const QUESTION_TOOL: &str = "AskUserQuestion";
+
+/// `1. Which library? [a | b]; 2. ...` — the questions with their options.
+fn question_summary(questions: Option<&Value>) -> String {
+    questions
+        .and_then(|value| value.get("questions"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .enumerate()
+                .map(|(index, question)| {
+                    let text = question
+                        .get("question")
+                        .or_else(|| question.get("header"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let options: Vec<&str> = question
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(|options| {
+                            options
+                                .iter()
+                                .filter_map(|option| option.get("label").and_then(Value::as_str))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let multi = question
+                        .get("multiSelect")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    format!(
+                        "{index}. {text} [{}]{}",
+                        options.join(" | "),
+                        if multi { " (several)" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default()
+}
+
+/// The Runtime's answer shape from the tool's answers: question index to
+/// the chosen label (a `;`-separated answer of a multi-select question is
+/// split into labels). A missing `questionId` is the answer's position.
+pub fn question_answers(
+    answers: &[openbitfun_product_domains::superagent::QuestionAnswerInput],
+) -> Value {
+    let mut map = serde_json::Map::new();
+    for (position, answer) in answers.iter().enumerate() {
+        let key = answer
+            .question_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| id.parse::<u8>().is_ok())
+            .map(str::to_string)
+            .unwrap_or_else(|| position.to_string());
+        let parts: Vec<&str> = answer
+            .answer
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        let value = if parts.len() > 1 {
+            Value::Array(
+                parts
+                    .into_iter()
+                    .map(|p| Value::String(p.to_string()))
+                    .collect(),
+            )
+        } else {
+            Value::String(answer.answer.trim().to_string())
+        };
+        map.insert(key, value);
+    }
+    Value::Object(map)
+}
+
+/// A question answer (`dispatch_target_answer {answers}`).
+pub fn question_answer_args(job_id: &str, request_id: &str, answers: Value) -> Value {
+    json!({ "jobId": job_id, "requestId": request_id, "answers": answers })
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -147,8 +230,9 @@ pub fn parse_status(value: &Value) -> StatusView {
                 .collect()
         })
         .unwrap_or_default();
-    let pending_summaries = items.iter().map(prompt_summary).collect();
-    let pending = items
+    let mut pending_summaries: Vec<Option<PromptSummary>> =
+        items.iter().map(prompt_summary).collect();
+    let mut pending: Vec<JobPendingPrompt> = items
         .into_iter()
         .map(|item| JobPendingPrompt {
             request_id: item.request_id,
@@ -157,6 +241,38 @@ pub fn parse_status(value: &Value) -> StatusView {
             more: 0,
         })
         .collect();
+    // Worker questions (`user_question_mailbox_v1`) wait behind the
+    // permissions; the summary carries the options so the agent can answer.
+    for question in value
+        .get("pendingQuestions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(request_id) = question
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let title = question
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|title| !title.trim().is_empty());
+        pending_summaries.push(Some(PromptSummary {
+            request_id: request_id.to_string(),
+            command: None,
+            summary: clip(&question_summary(question.get("questions"))),
+        }));
+        pending.push(JobPendingPrompt {
+            request_id: request_id.to_string(),
+            tool_name: Some(QUESTION_TOOL.to_string()),
+            title,
+            more: 0,
+        });
+    }
     StatusView {
         state,
         cursor: value.get("cursor").and_then(Value::as_u64).unwrap_or(0),
@@ -174,9 +290,8 @@ pub fn job_branch(job_id: &str) -> String {
     format!("openbitfun/dispatch/{job_id}")
 }
 
-/// The provision-source request. A `job` source (peer import,
-/// `workspace_peer_import_v1`, phase S2) has no shared DTO yet; it is only
-/// sent to targets that advertise that capability.
+/// The provision-source request. A `job` source (peer import) is only sent
+/// to targets that advertise `workspace_peer_import_v1`.
 pub fn provision_args(
     job_id: &str,
     source: &DispatchSourceInput,
@@ -198,20 +313,13 @@ pub fn provision_args(
             remote_url: remote_url.clone(),
             git_ref: git_ref.clone(),
         },
-        DispatchSourceInput::Job { job_id: origin_id } => {
-            return json!({
-                "protocolVersion": DISPATCH_PROTOCOL_VERSION,
-                "jobId": job_id,
-                "source": {
-                    "kind": "job",
-                    "jobId": origin_id,
-                    "sourceDeviceId": origin.map(|o| o.device_id.clone()),
-                    "branch": origin.and_then(|o| o.branch.clone()),
-                    "baseCommit": origin.and_then(|o| o.base_commit.clone()),
-                },
-                "branch": branch,
-            })
-        }
+        DispatchSourceInput::Job { job_id: origin_id } => DispatchProvisionSource::Job {
+            job_id: origin_id.clone(),
+            source_device_id: origin.map(|o| o.device_id.clone()).unwrap_or_default(),
+            head: None,
+            branch: origin.and_then(|o| o.branch.clone()),
+            base_commit: origin.and_then(|o| o.base_commit.clone()),
+        },
     };
     to_value(&DispatchWorkspaceProvisionSourceRequest {
         protocol_version: DISPATCH_PROTOCOL_VERSION,
@@ -256,9 +364,19 @@ fn approval_policy(value: &str) -> DispatchApprovalPolicy {
     }
 }
 
-/// `submitter` only for targets with `job_submitter_v1` (older targets
-/// reject the field).
-pub fn submit_args(job: &JobRecord, workspace_path: &str, submitter: bool) -> Value {
+/// The optional submit fields, each sent only to a target that advertised
+/// the capability adding it (older targets reject unknown fields).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubmitFields {
+    /// `submitter` (`job_submitter_v1`).
+    pub submitter: bool,
+    /// `userQuestions` (`user_question_mailbox_v1`).
+    pub user_questions: bool,
+}
+
+/// `submitter` only for targets with `job_submitter_v1`, `userQuestions` only
+/// for targets with `user_question_mailbox_v1`.
+pub fn submit_args(job: &JobRecord, workspace_path: &str, fields: SubmitFields) -> Value {
     let non_empty = |value: &Option<String>| value.clone().filter(|v| !v.trim().is_empty());
     to_value(&DispatchSubmitRequest {
         protocol_version: DISPATCH_PROTOCOL_VERSION,
@@ -276,7 +394,8 @@ pub fn submit_args(job: &JobRecord, workspace_path: &str, submitter: bool) -> Va
         title: Some(job.title.clone()).filter(|t| !t.trim().is_empty()),
         attachments: Vec::new(),
         setup_audit: Vec::new(),
-        submitter: submitter.then(|| CLOUD_SUBMITTER.to_string()),
+        submitter: fields.submitter.then(|| CLOUD_SUBMITTER.to_string()),
+        user_questions: fields.user_questions,
     })
 }
 
@@ -440,6 +559,67 @@ mod tests {
     }
 
     #[test]
+    fn worker_questions_are_pending_prompts_with_their_options() {
+        let view = parse_status(&json!({
+            "state": "running",
+            "pendingPermissions": [{"requestId": "p1", "toolName": "bash"}],
+            "pendingQuestions": [{
+                "requestId": "tool-q", "title": "Which db?",
+                "questions": {"questions": [{"question": "Which db?", "header": "DB",
+                    "options": [{"label": "sqlite", "description": ""}, {"label": "pg", "description": ""}]}]}
+            }, {"title": "no id"}]
+        }));
+        assert_eq!(view.pending.len(), 2);
+        assert_eq!(view.pending[1].request_id, "tool-q");
+        assert_eq!(view.pending[1].tool_name.as_deref(), Some(QUESTION_TOOL));
+        let summary = view.pending_summaries[1].as_ref().unwrap();
+        assert_eq!(summary.summary, "0. Which db? [sqlite | pg]");
+
+        use openbitfun_product_domains::superagent::QuestionAnswerInput;
+        let answers = question_answers(&[
+            QuestionAnswerInput {
+                question_id: None,
+                answer: "pg".into(),
+            },
+            QuestionAnswerInput {
+                question_id: Some("3".into()),
+                answer: "a; b".into(),
+            },
+        ]);
+        assert_eq!(answers, json!({"0": "pg", "3": ["a", "b"]}));
+        assert_eq!(
+            question_answer_args("j", "tool-q", answers.clone()),
+            json!({"jobId": "j", "requestId": "tool-q", "answers": answers})
+        );
+    }
+
+    #[test]
+    fn a_job_source_matches_the_target_dto() {
+        let origin = JobRecord {
+            job_id: "sa-0".into(),
+            device_id: "dev-a".into(),
+            branch: Some("openbitfun/dispatch/sa-0".into()),
+            base_commit: Some("a".repeat(40)),
+            ..JobRecord::default()
+        };
+        let source = DispatchSourceInput::Job {
+            job_id: "sa-0".into(),
+        };
+        let request: DispatchWorkspaceProvisionSourceRequest =
+            serde_json::from_value(provision_args("sa-1", &source, Some(&origin))).unwrap();
+        assert_eq!(
+            request.source,
+            DispatchProvisionSource::Job {
+                job_id: "sa-0".into(),
+                source_device_id: "dev-a".into(),
+                head: None,
+                branch: Some("openbitfun/dispatch/sa-0".into()),
+                base_commit: Some("a".repeat(40)),
+            }
+        );
+    }
+
+    #[test]
     fn requests_match_the_target_dtos() {
         let job = JobRecord {
             job_id: "sa-1".into(),
@@ -449,10 +629,20 @@ mod tests {
             ..JobRecord::default()
         };
         // The target's own request types read them back (deny_unknown_fields).
-        let submit: DispatchSubmitRequest =
-            serde_json::from_value(submit_args(&job, "/w", true)).unwrap();
+        let submit: DispatchSubmitRequest = serde_json::from_value(submit_args(
+            &job,
+            "/w",
+            SubmitFields {
+                submitter: true,
+                user_questions: true,
+            },
+        ))
+        .unwrap();
         assert_eq!(submit.submitter.as_deref(), Some("cloud"));
-        assert!(submit_args(&job, "/w", false).get("submitter").is_none());
+        assert!(submit.user_questions);
+        let plain = submit_args(&job, "/w", SubmitFields::default());
+        assert!(plain.get("submitter").is_none());
+        assert!(plain.get("userQuestions").is_none());
         let source = DispatchSourceInput::Workspace {
             workspace_id: "w1".into(),
             git_ref: None,

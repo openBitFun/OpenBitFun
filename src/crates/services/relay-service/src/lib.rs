@@ -19,6 +19,7 @@ mod account_transport_tests;
 pub mod admin;
 mod admission;
 pub mod db;
+pub mod directory_hygiene;
 pub mod link_token;
 pub mod mesh_issuer;
 pub mod page_data;
@@ -1146,6 +1147,53 @@ pub fn build_relay_router_with_page_data_origins_and_page_auth(
     cors_allow_origins: Vec<String>,
     page_browser_auth: Option<PageBrowserAuthConfig>,
 ) -> Router {
+    build_router(
+        asset_store,
+        start_time,
+        db,
+        host_version,
+        page_data_dir,
+        cors_allow_origins,
+        page_browser_auth,
+        false,
+    )
+}
+
+/// The OpenBitFun 2.0 account directory (`RELAY_PROFILE=directory`): the
+/// account, device and realtime routes only. Published Pages are not mounted
+/// (no Page data, assets or sign-in origin), and sign-ins free quota from
+/// dead or stale controller rows ([`directory_hygiene::make_room`]). The
+/// caller runs [`directory_hygiene::spawn_sweeper`] for retention.
+pub fn build_directory_router(
+    start_time: std::time::Instant,
+    db: std::sync::Arc<crate::db::DbPool>,
+    host_version: &'static str,
+    cors_allow_origins: Vec<String>,
+) -> Router {
+    build_router(
+        // Pages are not mounted; the store only answers the health counters.
+        Arc::new(MemoryAssetStore::new_with_max_bytes(0)),
+        start_time,
+        db,
+        host_version,
+        None,
+        cors_allow_origins,
+        None,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_router(
+    asset_store: Arc<dyn WebAssetStore>,
+    start_time: std::time::Instant,
+    db: std::sync::Arc<crate::db::DbPool>,
+    host_version: &'static str,
+    page_data_dir: Option<std::path::PathBuf>,
+    cors_allow_origins: Vec<String>,
+    page_browser_auth: Option<PageBrowserAuthConfig>,
+    directory_profile: bool,
+) -> Router {
     let page_data = page_data_dir.map(crate::page_data::PageDataStore::new);
     let cors_allow_origins = cors_allow_origins
         .into_iter()
@@ -1169,6 +1217,7 @@ pub fn build_relay_router_with_page_data_origins_and_page_auth(
         device_manager: crate::relay::DeviceManager::new(),
         cors_allow_origins: Arc::new(cors_allow_origins.clone()),
         page_browser_auth: page_browser_auth.map(Arc::new),
+        directory_profile,
     };
     // Resolve retirement configuration at startup so its state is in the log
     // before the first request can be refused.
@@ -1196,8 +1245,12 @@ pub fn build_relay_router_with_page_data_origins_and_page_auth(
         .merge(routes::cloud_agent::cloud_agent_router(
             routes::cloud_agent::CloudAgentKey::from_env(),
             Arc::clone(&state.db),
-        ))
-        .merge(routes::pages::pages_router());
+        ));
+    let router = if directory_profile {
+        router
+    } else {
+        router.merge(routes::pages::pages_router())
+    };
     let router = realtime::mount(router, state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1306,6 +1359,63 @@ mod tests {
         assert_eq!(info["name"], "OpenBitFun Relay Server");
         assert_eq!(info["version"], "test-host-version");
         assert_eq!(info["protocol_version"], 3);
+    }
+
+    #[tokio::test]
+    async fn the_directory_profile_mounts_no_page_routes() {
+        let db = Arc::new(db::connect(":memory:").await.unwrap());
+        let status = |app: Router, method: &'static str, path: &'static str| async move {
+            app.oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        };
+        let directory = build_directory_router(
+            std::time::Instant::now(),
+            Arc::clone(&db),
+            "test-host-version",
+            Vec::new(),
+        );
+        for (method, path) in [
+            ("GET", "/api/pages"),
+            ("POST", "/api/pages/demo/deploy"),
+            ("GET", "/api/page-auth/session"),
+            ("GET", "/p/alice/demo/"),
+        ] {
+            assert_eq!(
+                status(directory.clone(), method, path).await,
+                StatusCode::NOT_FOUND,
+                "{method} {path}"
+            );
+        }
+        // Account and device routes are still there.
+        let health = get_json(directory.clone(), "/health").await;
+        assert_eq!(health["asset_store_max_bytes"], 0);
+        assert_ne!(
+            status(directory.clone(), "GET", "/api/devices").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_ne!(
+            status(directory, "POST", "/api/auth/login").await,
+            StatusCode::NOT_FOUND
+        );
+        // The relay profile keeps its Page routes.
+        let relay = build_relay_router(
+            Arc::new(MemoryAssetStore::new()),
+            std::time::Instant::now(),
+            db,
+            "test-host-version",
+        );
+        assert_ne!(
+            status(relay, "GET", "/api/pages").await,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[test]

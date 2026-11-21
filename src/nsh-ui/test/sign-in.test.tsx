@@ -45,7 +45,7 @@ test("first run: the sign-in column, the browser step, then the device is ready"
   const app = await open(FIXTURE, { ...DESKTOP, host: { handlers: base.handlers } });
 
   await app.waitFor("text:Your agents, on every device");
-  expect(app.shows("text:Sign in to talk to OpenBitFun and reach all your devices from here.")).toBe(true);
+  expect(app.shows("text:Sign in to talk to Super Agent and reach all your devices from here.")).toBe(true);
   expect(app.shows("text:Use on this device only")).toBe(true);
   // No GitHub wording anywhere in the sign-in.
   expect(app.texts().some(text => /github/i.test(text))).toBe(false);

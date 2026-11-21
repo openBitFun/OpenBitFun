@@ -29,8 +29,19 @@ const KEY_FILE: &str = "key.wrap";
 const RECORD_SUFFIX: &str = ".rec";
 const RECORD_VERSION: u8 = 1;
 const NONCE_LEN: usize = 12;
-/// The largest record the store reads back.
+/// The largest record plaintext the store writes, and the largest record
+/// it reads back (plus the seal overhead). Write and read use the same cap,
+/// so a record that was written can always be read again.
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
+/// Bytes a sealed record adds to its plaintext: version, nonce and tag.
+const SEAL_OVERHEAD: usize = 1 + NONCE_LEN + 16;
+/// Records written by builds before the write cap may be larger than
+/// [`MAX_RECORD_BYTES`]; they are still read up to this size so the next
+/// write compacts them. Anything larger is quarantined, never deleted.
+pub const LEGACY_MAX_READ_BYTES: usize = 96 * 1024 * 1024;
+/// The suffix a quarantined record is renamed to (kept on disk, not listed
+/// as a record, removed with the account).
+const QUARANTINE_SUFFIX: &str = ".rec.oversize";
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -38,12 +49,32 @@ pub enum StoreError {
     /// another account or name.
     Unreadable(String),
     Io(String),
+    /// A write over [`MAX_RECORD_BYTES`] was refused; nothing was written.
+    TooLarge {
+        name: String,
+        bytes: usize,
+        max: usize,
+    },
+    /// A record on disk is larger than any build reads (it is kept, and the
+    /// caller may quarantine it with [`AccountStore::quarantine`]).
+    Oversize {
+        name: String,
+        bytes: usize,
+    },
 }
 
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unreadable(message) | Self::Io(message) => f.write_str(message),
+            Self::TooLarge { name, bytes, max } => write!(
+                f,
+                "superagent_record_too_large: record {name} would be {bytes} bytes, the limit is {max}"
+            ),
+            Self::Oversize { name, bytes } => write!(
+                f,
+                "superagent_record_oversize: record {name} is {bytes} bytes on disk, larger than any build reads"
+            ),
         }
     }
 }
@@ -107,7 +138,19 @@ impl Store {
 
     /// The account's store, creating its data key when `create`.
     pub fn account(&self, account_id: &str, create: bool) -> Result<AccountStore, StoreError> {
-        let dir = self.dir_name(account_id);
+        self.open_dir(self.dir_name(account_id), create)
+    }
+
+    /// An account's store by its directory name (the time-to-live sweep
+    /// reads each directory's metadata without knowing the account id).
+    pub fn account_by_dir(&self, dir: &str) -> Result<AccountStore, StoreError> {
+        if dir.is_empty() || dir.contains(['/', '\\', '.']) {
+            return Err(StoreError::Io(format!("invalid account directory {dir}")));
+        }
+        self.open_dir(dir.to_string(), false)
+    }
+
+    fn open_dir(&self, dir: String, create: bool) -> Result<AccountStore, StoreError> {
         let path = self.account_path(&dir);
         let key_path = path.join(KEY_FILE);
         let aad = format!("openbitfun-superagent dek v1\n{dir}");
@@ -236,8 +279,18 @@ impl AccountStore {
         Ok(self.path.join(format!("{name}{RECORD_SUFFIX}")))
     }
 
+    /// Seals and writes one record. A plaintext over [`MAX_RECORD_BYTES`] is
+    /// refused with [`StoreError::TooLarge`] and nothing is written, so the
+    /// record on disk keeps its previous (readable) value.
     pub fn write(&self, name: &str, plaintext: &[u8]) -> Result<usize, StoreError> {
         let path = self.record_path(name)?;
+        if plaintext.len() > MAX_RECORD_BYTES {
+            return Err(StoreError::TooLarge {
+                name: name.to_string(),
+                bytes: plaintext.len(),
+                max: MAX_RECORD_BYTES,
+            });
+        }
         let nonce: [u8; NONCE_LEN] = crypto::random_bytes();
         let aad = self.aad(name);
         let sealed = self
@@ -260,15 +313,41 @@ impl AccountStore {
 
     pub fn read(&self, name: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let path = self.record_path(name)?;
+        let size = match std::fs::metadata(&path) {
+            Ok(meta) => meta.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if size > LEGACY_MAX_READ_BYTES as u64 {
+            return Err(StoreError::Oversize {
+                name: name.to_string(),
+                bytes: size as usize,
+            });
+        }
         let body = match std::fs::read(&path) {
             Ok(body) => body,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        if body.len() > MAX_RECORD_BYTES + 64 || body.len() < 1 + NONCE_LEN + 16 {
+        if body.len() > LEGACY_MAX_READ_BYTES {
+            return Err(StoreError::Oversize {
+                name: name.to_string(),
+                bytes: body.len(),
+            });
+        }
+        if body.len() < SEAL_OVERHEAD {
             return Err(StoreError::Unreadable(format!(
                 "record {name} has a bad size"
             )));
+        }
+        if body.len() > MAX_RECORD_BYTES + SEAL_OVERHEAD {
+            // Written before the write cap; the caller's next write compacts it.
+            log::warn!(
+                "Superagent legacy oversize record read: name={}, bytes={}, limit={}",
+                name,
+                body.len(),
+                MAX_RECORD_BYTES + SEAL_OVERHEAD
+            );
         }
         if body[0] != RECORD_VERSION {
             return Err(StoreError::Unreadable(format!(
@@ -312,6 +391,22 @@ impl AccountStore {
         match std::fs::remove_file(self.record_path(name)?) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Moves a record no build can read out of the way, keeping its bytes
+    /// (it is not listed as a record and goes when the account is shredded).
+    /// Returns whether a record was moved.
+    pub fn quarantine(&self, name: &str) -> Result<bool, StoreError> {
+        let path = self.record_path(name)?;
+        let target = self.path.join(format!("{name}{QUARANTINE_SUFFIX}"));
+        match std::fs::rename(&path, &target) {
+            Ok(()) => {
+                sync_dir(&self.path);
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
     }
@@ -445,6 +540,86 @@ mod tests {
         let again = store.account("email-alice", true).unwrap();
         std::fs::copy(&backup, again.path().join("ledger.rec")).unwrap();
         assert!(again.read("ledger").is_err());
+    }
+
+    #[test]
+    fn an_oversize_write_is_refused_and_the_previous_record_stays_readable() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path(), [9u8; 32]).unwrap();
+        let account = store.account("email-alice", true).unwrap();
+        account.write("hist-a", b"small").unwrap();
+        let big = vec![b'x'; MAX_RECORD_BYTES + 1];
+        let error = account.write("hist-a", &big).unwrap_err();
+        assert!(matches!(
+            &error,
+            StoreError::TooLarge { name, bytes, max }
+                if name == "hist-a" && *bytes == MAX_RECORD_BYTES + 1 && *max == MAX_RECORD_BYTES
+        ));
+        assert!(error.to_string().starts_with("superagent_record_too_large"));
+        assert_eq!(account.read("hist-a").unwrap().unwrap(), b"small");
+        // A new record is not created either, and no temp file is left.
+        assert!(account.write("hist-b", &big).is_err());
+        assert!(account.read("hist-b").unwrap().is_none());
+        assert_eq!(
+            std::fs::read_dir(account.path()).unwrap().count(),
+            2,
+            "key.wrap and hist-a.rec only"
+        );
+        // The largest allowed record round-trips: write and read share the cap.
+        let max = vec![b'y'; MAX_RECORD_BYTES];
+        account.write("hist-c", &max).unwrap();
+        assert_eq!(
+            account.read("hist-c").unwrap().unwrap().len(),
+            MAX_RECORD_BYTES
+        );
+    }
+
+    /// Seals `plaintext` as `name` the way builds before the write cap did.
+    fn write_unchecked(account: &AccountStore, name: &str, plaintext: &[u8]) {
+        let nonce: [u8; NONCE_LEN] = crypto::random_bytes();
+        let aad = account.aad(name);
+        let sealed = account
+            .cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .unwrap();
+        let mut body = vec![RECORD_VERSION];
+        body.extend_from_slice(&nonce);
+        body.extend_from_slice(&sealed);
+        std::fs::write(account.record_path(name).unwrap(), body).unwrap();
+    }
+
+    #[test]
+    fn a_legacy_oversize_record_is_still_read_and_a_huge_one_is_quarantined() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path(), [9u8; 32]).unwrap();
+        let account = store.account("email-alice", true).unwrap();
+        // Written by an older build over today's cap: still readable.
+        let legacy = vec![b'z'; MAX_RECORD_BYTES + 4096];
+        write_unchecked(&account, "ledger", &legacy);
+        assert_eq!(account.read("ledger").unwrap().unwrap().len(), legacy.len());
+        // Larger than any build reads: a typed error, then quarantined (kept).
+        let path = account.path().join("hist-x.rec");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(LEGACY_MAX_READ_BYTES as u64 + 1).unwrap();
+        drop(file);
+        assert!(matches!(
+            account.read("hist-x"),
+            Err(StoreError::Oversize { .. })
+        ));
+        assert!(account.quarantine("hist-x").unwrap());
+        assert!(account.read("hist-x").unwrap().is_none());
+        assert!(account.path().join("hist-x.rec.oversize").is_file());
+        assert!(!account.names().contains(&"hist-x".to_string()));
+        assert!(!account.quarantine("hist-x").unwrap());
+        // Shredding the account removes the quarantined bytes too.
+        assert!(store.shred("email-alice").unwrap());
+        assert!(walk(temp.path()).is_empty());
     }
 
     pub(crate) fn walk(root: &Path) -> Vec<PathBuf> {

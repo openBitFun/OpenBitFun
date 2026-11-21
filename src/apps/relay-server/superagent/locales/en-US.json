@@ -1,5 +1,5 @@
 {
-  "composer.placeholder": "Ask OpenBitFun to do something on your devices",
+  "composer.placeholder": "Ask Super Agent…",
   "composer.suggestion.1": "Run the tests on all my devices and tell me what fails",
   "composer.suggestion.2": "Build this on Linux, then test it on macOS and Windows",
   "composer.suggestion.3": "What are my devices working on right now?"

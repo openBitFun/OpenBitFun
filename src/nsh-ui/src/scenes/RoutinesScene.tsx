@@ -54,6 +54,13 @@ import {
 import { activeWorkspaceId, deviceContext, sessions, workspaces } from "../state";
 import { palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
+// wave24-replica: the account's routines that run on another device.
+import {
+  loadAccountRecords,
+  routineRunsOnLabel,
+  routinesElsewhere,
+  type AccountRoutineElsewhere,
+} from "../accountRecordsStore";
 import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
 import {
   InsetGroup,
@@ -608,6 +615,45 @@ function RoutineListSection() {
           </Each>
         </InsetGroup>
       </If>
+    </StudioSection>
+  );
+}
+
+// wave24-replica: listed from the account replica; each runs only on its
+// target device, so the row names that device and offers no actions here.
+function elsewhereSchedule(routine: AccountRoutineElsewhere): string {
+  try {
+    return routine.schedule && typeof routine.schedule === "object"
+      ? formatScheduleSummary(routine.schedule as CronSchedule)
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function RoutinesElsewhereSection() {
+  return (
+    <StudioSection title={tr("accountRecords.routinesElsewhere.title")}>
+      <InsetGroup accessibilityLabel="routines-elsewhere">
+        <Each of={routinesElsewhere()} key={routine => routine.id}>
+          {(routine, index) => (
+            <InsetRow
+              first={index() === 0}
+              icon="calendar"
+              label={routine().name || routine().id}
+              detail={[
+                elsewhereSchedule(routine()),
+                routine().enabled === false ? tr("accountRecords.routinesElsewhere.paused") : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              value={routineRunsOnLabel(routine())}
+              tone={routine().enabled === false ? "muted" : "default"}
+              accessibilityLabel={`routine-elsewhere-${routine().id}`}
+            />
+          )}
+        </Each>
+      </InsetGroup>
     </StudioSection>
   );
 }
@@ -1195,6 +1241,10 @@ function RoutinesBody(props: { embedded?: boolean }) {
 
       <RoutineListSection />
 
+      <If when={routinesElsewhere().length > 0}>
+        <RoutinesElsewhereSection />
+      </If>
+
       <If when={!sideCalendar()}>
         <StudioSection title={tr("routines.polish.calendarSection")}>
           <CalendarBlock />
@@ -1249,6 +1299,7 @@ export function RoutinesScene(props: { embedded?: boolean }) {
     void scopeKey;
     ensureCronHostReady();
     void loadRoutines();
+    void loadAccountRecords();
   });
 
   cleanup(subscribeRoutinesChanged());
