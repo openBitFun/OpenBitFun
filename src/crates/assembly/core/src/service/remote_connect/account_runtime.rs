@@ -16,6 +16,7 @@ use tokio::sync::{Mutex, MutexGuard, RwLock};
 use openbitfun_services_integrations::remote_connect::account::{
     AccountClient, AccountSession, RoutingIntent,
 };
+use openbitfun_services_integrations::remote_connect::directory_session::DirectorySessions;
 use openbitfun_services_integrations::remote_connect::{session_store, DeviceIdentity};
 
 use super::validate_relay_base_url;
@@ -141,11 +142,24 @@ pub struct AccountRuntime {
     renewal_wake: Arc<tokio::sync::Notify>,
     routing_recovery_generation: AtomicU64,
     token_expired: AtomicBool,
+    /// The new-version account directory session (device network, fleet,
+    /// cloud node). Independent of the legacy relay context above.
+    directory: Arc<DirectorySessions>,
 }
 
 impl AccountRuntime {
     pub fn new(host: Arc<dyn AccountRuntimeHost>) -> Arc<Self> {
+        let directory = Arc::new(DirectorySessions::from_environment(host.is_cli_host()));
+        Self::new_with_directory(host, directory)
+    }
+
+    /// [`Self::new`] with an explicit directory (tests drive a local one).
+    pub fn new_with_directory(
+        host: Arc<dyn AccountRuntimeHost>,
+        directory: Arc<DirectorySessions>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            directory,
             host,
             account_context: RwLock::new(None),
             account_context_generation: AtomicU64::new(1),
@@ -235,6 +249,43 @@ impl AccountRuntime {
             return Err(anyhow!("account context changed"));
         }
         Ok(context)
+    }
+
+    /// The new-version account directory base URL.
+    pub fn directory_url(&self) -> &str {
+        self.directory.url()
+    }
+
+    /// The new-version account directory session and URL, signed in from the
+    /// account identity alone (the legacy relay context is not needed).
+    pub async fn read_directory_context(&self) -> Result<(AccountSession, String)> {
+        if let Some(context) = self.directory.cached().await {
+            return Ok(context);
+        }
+        let device = current_device_identity()?;
+        self.directory
+            .context(&device)
+            .await
+            .map_err(|error| anyhow!("account directory unavailable: {error}"))
+    }
+
+    /// Drops the directory session holding `token` after the directory
+    /// answered 401; the next read signs in again.
+    pub async fn invalidate_directory_session(&self, token: &str) {
+        self.directory.invalidate(token).await;
+    }
+
+    /// This device in the new-version account directory (the device network's
+    /// identity): `relay_url` is the directory URL.
+    pub async fn directory_account_info(&self) -> Result<AccountInfo> {
+        let (session, directory_url) = self.read_directory_context().await?;
+        let device = current_device_identity()?;
+        Ok(AccountInfo {
+            user_id: session.user_id,
+            relay_url: directory_url,
+            device_id: device.device_id,
+            device_name: device.device_name,
+        })
     }
 
     pub async fn is_logged_in(&self) -> bool {
@@ -337,6 +388,7 @@ impl AccountRuntime {
         let transition = self.begin_account_transition().await;
         self.host.stop_device_routing().await;
         let mut metadata_device_id = None;
+        let mut had_persisted_session = true;
         let restored = match session_store::load_session_detailed() {
             Ok(Some(loaded)) => {
                 let relay_url = match normalize_relay_url(&loaded.relay_url) {
@@ -362,13 +414,30 @@ impl AccountRuntime {
                 log::info!("Restored account session for user {user_id}");
                 Some(user_id)
             }
-            Ok(None) => None,
+            Ok(None) => {
+                had_persisted_session = false;
+                None
+            }
             Err(error) => {
                 log::warn!("Failed to load persisted session: {error}");
                 None
             }
         };
         let generation = transition.finish();
+        if restored.is_none() && !had_persisted_session {
+            // OpenBitFun 2.0 signs in with the account identity alone: a
+            // host whose identity is signed in (another surface of this
+            // profile, or a sign-in before the directory session existed)
+            // registers with the account directory instead of reporting
+            // "not logged in". Without identity tokens this fails quietly.
+            return match self.restore_from_identity().await {
+                Ok(user_id) => Some(user_id),
+                Err(error) => {
+                    log::debug!("No account session to restore: {error}");
+                    None
+                }
+            };
+        }
         // Headless exec/Shared/dispatch hosts may never start routing. Report
         // their own persisted account identity here, not a controller's SSH
         // provisioning target. Legacy sessions without an id wait for AuthOk.
@@ -381,6 +450,43 @@ impl AccountRuntime {
             }
         }
         restored
+    }
+
+    /// Restores a host whose account identity is signed in but that has no
+    /// persisted directory credential: registers this device with the
+    /// account directory and installs the session exactly as a restore
+    /// would. Unlike [`Self::login_with_identity`] it neither retires a
+    /// background routing owner (the caller may be that owner, the daemon)
+    /// nor starts routing; the caller restores routing as after any restore.
+    async fn restore_from_identity(self: &Arc<Self>) -> Result<String> {
+        let _login_guard = self.account_login_lock.lock().await;
+        let relay_url = openbitfun_product_domains::account::DEFAULT_RELAY_URL.to_string();
+        let device = current_device_identity()?;
+        let client = AccountClient::new();
+        let device_kind = client
+            .reported_device_kind(&relay_url, self.host.is_cli_host())
+            .await;
+        let (session, profile) = client
+            .login_with_identity(&relay_url, &device, device_kind)
+            .await
+            .map_err(|error| anyhow!("login failed: {error}"))?;
+        let transition = self.begin_account_transition().await;
+        let user_id = session.user_id.clone();
+        *self.account_context.write().await = Some(AccountContextState {
+            session: session.clone(),
+            relay_url: relay_url.clone(),
+        });
+        session_store::save_credential_hint(&profile.login, &relay_url);
+        self.token_expired.store(false, Ordering::Relaxed);
+        if let Err(error) =
+            session_store::save_issued_session(&session, &relay_url, Some(&device.device_id), None)
+                .await
+        {
+            log::warn!("Failed to persist session: {error}");
+        }
+        transition.finish();
+        log::info!("Account session restored from the signed-in identity for user {user_id}");
+        Ok(user_id)
     }
 
     /// Called on the account-owning host, using its restored or authenticated id.
@@ -480,6 +586,8 @@ impl AccountRuntime {
             return Err(anyhow!("account context changed"));
         };
         self.host.stop_device_routing().await;
+        // A directory session of another account is retired with it.
+        self.directory.retire_other_account(&session.user_id).await;
         if let Some(previous) = previous_account_context.as_ref() {
             if let Err(error) = crate::service::filesystem::upload::retire_account_uploads(
                 &previous.session.user_id,
@@ -564,6 +672,8 @@ impl AccountRuntime {
     pub async fn logout(&self) -> Result<()> {
         let mut identity = openbitfun_services_integrations::account_identity::AccountIdentityClient::from_environment().await?;
         identity.logout().await?;
+        // The new-version directory session goes with the identity.
+        self.directory.sign_out().await;
         let transition = self.begin_account_transition().await;
         self.host.stop_device_routing().await;
         if self.host.request_background_routing_owner_shutdown() {
@@ -646,16 +756,6 @@ impl AccountRuntime {
             device_id: device.device_id,
             device_name: device.device_name,
         })
-    }
-
-    pub async fn relay_capabilities(&self) -> Result<Vec<String>> {
-        let generation = self.account_context_generation();
-        let (_, relay_url) = self.read_account_context_for_generation(generation).await?;
-        let capabilities = AccountClient::new().relay_capabilities(&relay_url).await?;
-        if !self.account_context_is_current(generation) {
-            return Err(anyhow!("account context changed"));
-        }
-        Ok(capabilities)
     }
 
     pub async fn update_device_alias(
@@ -869,6 +969,47 @@ mod tests {
 
     pub(super) fn test_runtime() -> Arc<AccountRuntime> {
         AccountRuntime::new(Arc::new(TestAccountRuntimeHost))
+    }
+
+    /// The new-version directory session stands on its own: it is served
+    /// while the legacy relay context is signed out, and a 401 drops it.
+    #[tokio::test]
+    async fn directory_context_does_not_need_the_legacy_relay_context() {
+        use openbitfun_services_integrations::remote_connect::directory_session::DirectoryLogin;
+        struct Issued;
+        #[async_trait]
+        impl DirectoryLogin for Issued {
+            async fn login(&self, _url: &str, device: &DeviceIdentity) -> Result<AccountSession> {
+                Ok(AccountSession::new(
+                    format!("directory-{}", device.device_id),
+                    "42".into(),
+                    [9; 32],
+                ))
+            }
+            async fn revoke(&self, _url: &str, _session: &AccountSession) {}
+            async fn ensure(&self, _url: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+        let directory = Arc::new(DirectorySessions::new(
+            "http://127.0.0.1:9/directory",
+            Arc::new(Issued),
+        ));
+        let device = DeviceIdentity {
+            device_id: "d".repeat(32),
+            device_name: "Test".into(),
+            mac_address: "00:00:00:00:00:02".into(),
+        };
+        directory.context(&device).await.unwrap();
+        let runtime =
+            AccountRuntime::new_with_directory(Arc::new(TestAccountRuntimeHost), directory);
+        assert!(runtime.read_account_context().await.is_err());
+        let (session, url) = runtime.read_directory_context().await.unwrap();
+        assert_eq!(url, "http://127.0.0.1:9/directory");
+        assert_eq!(runtime.directory_url(), url);
+        assert_eq!(session.user_id, "42");
+        runtime.invalidate_directory_session(&session.token).await;
+        assert!(runtime.directory.cached().await.is_none());
     }
 
     #[tokio::test]

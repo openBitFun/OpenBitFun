@@ -1,5 +1,40 @@
 # Peer Device Mode
 
+**Status: retired from the NSH UI in OpenBitFun 2.0; this document is the
+record of the 1.x mode and of the backend pieces that remain.** Every 2.0
+backend runs the fleet layer (its hello or native ready info answers `fleet`,
+advertised as `fleet_v1`), so every runtime of the account is reached through
+that one entry and there is no mode to enter: picking a device moves the UI's
+**device context** (`{deviceId, workspaceId}`, `selectDeviceContext` in
+`src/nsh-ui/src/state.ts`), nothing is reset, and every session, turn, draft,
+prompt and terminal is keyed by device. Commands go out as `fleet_call` and run
+on their owner
+([unified-client-architecture.md](unified-client-architecture.md#fleet-every-runtime-of-the-account-in-one-surface)).
+
+The NSH client is compatible with OpenBitFun 1.x for session records and
+configuration only; frontend, remote control and accounts are not. The UI
+therefore no longer carries either Peer Device Mode transport:
+
+- The 1.x relay transport (relay HostInvoke, `peer_mode_ping` /
+  `peer_control_attach` / `peer_control_detach`, `peer_controller_set_active`,
+  `peer_host_bridge_ready`, `peer_host_invoke_complete`, `account_device_rpc`
+  and the relay host streams) was removed from the 2.0 tree; those commands are
+  `retired(...)` registry rows.
+- The UI's non-fleet mesh path (swapping the whole data backend to a peer over
+  `peer_link_*`, the "Back to this device" line, per-peer capability probes)
+  was removed too, because no 2.0 backend lacks `fleet`. A backend that answers
+  without the fleet layer is one backend and one device to the UI.
+
+What remains in the backend: the fleet's own links reuse the same pool
+(`openbitfun_obp::client::links::PeerLinks`, index-only links widened while a
+client follows a device); `peer_link_*` stay registered as `ControllerLocal`
+backend commands (no 2.0 UI calls them); the Product Operation Registry still
+declares each command's `ControllerLocal` / proxied stance, which the desktop
+OBP scope check, the CLI peer host and the fleet routing
+(`src/nsh-ui/src/peerRouting.ts`, from `src/nsh-ui/src/generated/peerSurface.ts`)
+derive from. The sections below describe the 1.x mode and the legacy relay and
+mesh transports as a record only.
+
 Peer Device Mode switches the desktop (and mobile control target) data plane
 onto another same-account online OpenBitFun device. The controller's UI shell
 stays local; product invokes and agentic events come from the peer. The peer may be Desktop
@@ -47,9 +82,9 @@ Two rules follow, and both are load-bearing:
   the background one bus carries several agent streams. The desktop controller
   tags each re-emitted payload with `__openbitfunSourceDeviceId`
   (`remote_connect_api::PEER_EVENT_SOURCE_KEY`; non-object payloads are wrapped
-  under `__openbitfunSourcePayload`), and the UI's peer routing
-  (`src/nsh-ui/src/peerRouting.ts`, applied by the bridge over any connection)
-  delivers a surface-scoped event only when its producing device is the rendered one. Untagged events are local by definition.
+  under `__openbitfunSourcePayload`), and the 1.x UI's peer routing delivered
+  a surface-scoped event only when its producing device was the rendered one
+  (the 2.0 NSH UI dropped this filter with the relay). Untagged events are local by definition.
   Control-plane events (`account://…`, window chrome, updater) are never scoped
   and always pass.
 
@@ -73,9 +108,9 @@ no observer can see B's state while requests still target A.
 
 Frontend class names in this document (`PeerDeviceSurfaceController`,
 `PeerConnectionManager`, `ApiClient`, ...) name the retired React desktop UI
-(`src/web-ui`, see Git history); the rules they implement remain the contract
-for the native desktop UI's peer path
-(`src/nsh-ui/src/{peerRouting,peerStore,peerState,meshPeerConnection}.ts`).
+(`src/web-ui`, see Git history); the native desktop UI's peer path that
+followed them (`src/nsh-ui/src/{peerStore,peerState,meshPeerConnection}.ts`)
+was removed in 2.0 (see the status note).
 `PeerDeviceSurfaceController` serializes activation outside React. Rapid
 requests coalesce to the last target, a committed-but-superseded hydrate is
 invalidated before the next target proceeds, and a real activation failure
@@ -476,7 +511,7 @@ FS) and must not be mixed with Peer Device Mode.
   control plane) never execute on the peer on behalf of a controller. Which
   commands those are is declared once, per command, in the Product Operation
   Registry (`openbitfun_product_domains::remote_surface`); the desktop host, the
-  CLI host, and the NSH UI peer routing (`src/nsh-ui/src/peerRouting.ts`, from the
+  CLI host, and the NSH UI fleet routing (`src/nsh-ui/src/peerRouting.ts`, from the
   generated `src/nsh-ui/src/generated/peerSurface.ts`) derive their tables from it. See
   [remote-surface-contract.md](remote-surface-contract.md).
 - Unsupported or denied commands fail loudly; they must not fall back to the
@@ -487,9 +522,11 @@ FS) and must not be mixed with Peer Device Mode.
 
 ## OBP over the device mesh (new hosts)
 
-Owner: `src/apps/desktop/src/mesh/peer_link.rs` (controller link),
-`src/nsh-ui/src/{peerStore,meshPeerConnection,peerRouting,bridge}.ts` (NSH
-surface). The mesh itself (OpenBitFun Link in-process, issuer and join tokens,
+This was the path for a backend without the fleet layer; the NSH surface
+side (`src/nsh-ui/src/{peerStore,meshPeerConnection}.ts`) was removed in 2.0
+(see the status note at the top). Backend owner:
+`src/apps/desktop/src/mesh/peer_link.rs` (controller link over the shared
+`openbitfun_obp::client::links::PeerLinks` pool). The mesh itself (OpenBitFun Link in-process, issuer and join tokens,
 `account-device` listener, handshake) is described in
 [unified-client-architecture.md](unified-client-architecture.md#device-mesh-obp-between-account-devices-over-openbitfun-link-wave-4-link-core-wave-7).
 
@@ -598,7 +635,7 @@ through the relay node and the controller link streams paced tokens
 (`mesh_tests::peer_link_e2e_streams_live_tokens_over_the_relay_node`, ignored by
 default). Two native apps need two profiles signed in to one account.
 
-## Transport (legacy relay)
+## Transport (legacy relay, OpenBitFun 1.x only; removed in 2.0)
 
 - One account-scoped Socket.IO connection owns RPC acknowledgements, method
   registration, presence and session updates. Rust `relay_client` supplies account
@@ -770,16 +807,18 @@ comes from the account WebSocket, without a second periodic directory RPC.
   (same handlers through `handle_obp_call`; the event fan-out also publishes
   to its OBP ring). Same machine Desktop+CLI share one `device_id`;
   the authenticated connection epoch retires the previous connection.
-- Frontend mode + transport (native desktop UI): `src/nsh-ui/src/peerRouting.ts`,
-  `peerStore.ts`, `peerState.ts`, `meshPeerConnection.ts`, and the generated
-  `src/nsh-ui/src/generated/peerSurface.ts`. The React desktop UI's
-  `src/web-ui/src/infrastructure/peer-device/` was retired with the Tauri shell.
+- Frontend: none in 2.0. The NSH UI reaches other devices through the fleet
+  device context; `src/nsh-ui/src/peerRouting.ts` holds only the fleet routing,
+  from the generated `src/nsh-ui/src/generated/peerSurface.ts`. The NSH peer
+  path (`peerStore.ts`, `peerState.ts`, `meshPeerConnection.ts`) was removed in
+  2.0, and the React desktop UI's `src/web-ui/src/infrastructure/peer-device/`
+  was retired with the Tauri shell.
 
 ## Regression guards (read before changing session/account paths)
 
 Frontend invariants and known failure modes were recorded for the retired React
 desktop UI in `src/web-ui/src/infrastructure/peer-device/README.md` (Git
-history); the native desktop UI's peer routing rules live in
+history); the native desktop UI's fleet routing rules live in
 [`src/nsh-ui/AGENTS.md`](../../src/nsh-ui/AGENTS.md).
 
 Especially: Peer Mode must not call fail-closed `account_fetch_session_turns`

@@ -80,25 +80,25 @@ impl AsyncWrite for Recorded {
 }
 
 /// One end-to-end client connection, after the channel handshake.
-struct E2eClient {
+pub(super) struct E2eClient {
     stream: Recorded,
     send: RecordCipher,
     recv: RecordCipher,
     next_id: u64,
-    hello: ServerHello,
+    pub(super) hello: ServerHello,
     /// Frames that arrived while a call waited for its answer.
     backlog: std::collections::VecDeque<Value>,
 }
 
 /// What a channel handshake attempt changes (refusal tests).
 #[derive(Default, Clone)]
-struct Tamper {
+pub(super) struct Tamper {
     wrong_target: bool,
     swap_eph_after_proof: bool,
     nonce: Option<String>,
 }
 
-async fn open_channel(
+pub(super) async fn open_channel(
     addr: std::net::SocketAddr,
     client: &str,
     client_secret: [u8; 32],
@@ -176,7 +176,7 @@ async fn open_channel(
 }
 
 impl E2eClient {
-    async fn send(&mut self, message: Message) {
+    pub(super) async fn send(&mut self, message: Message) {
         let record = self.send.seal(&encode_message(&message)).unwrap();
         write_record(&mut self.stream, &record).await.unwrap();
     }
@@ -192,7 +192,7 @@ impl E2eClient {
         decode_message(self.recv.open(&record).unwrap()).unwrap()
     }
 
-    async fn frame(&mut self) -> Value {
+    pub(super) async fn frame(&mut self) -> Value {
         if let Some(frame) = self.backlog.pop_front() {
             return frame;
         }
@@ -205,7 +205,7 @@ impl E2eClient {
         }
     }
 
-    async fn rpc(&mut self, method: &str, params: Value) -> Value {
+    pub(super) async fn rpc(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });

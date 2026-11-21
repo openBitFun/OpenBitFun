@@ -23,10 +23,10 @@ const SOURCE_OWNER_ROOTS = [
   'OpenBitFun-Installer/src',
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
-  'src/mobile-web/src',
+  // Brand vector assets (assetMetadata colors).
+  'design-system/packages/ui/src/brand/assets',
 ];
 const NEAR_PAIR_DECISION_AUDIT_ROOTS = [
-  { root: 'src/mobile-web/src', args: ['--root', 'src/mobile-web/src', '--json', '--no-baseline', '--top', '0'] },
   { root: 'OpenBitFun-Installer/src', args: ['--root', 'OpenBitFun-Installer/src', '--json', '--no-baseline', '--top', '0'] },
 ];
 

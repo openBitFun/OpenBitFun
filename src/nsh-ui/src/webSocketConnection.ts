@@ -17,6 +17,14 @@ import {
   type BackendInfo,
   type ConnectionState,
 } from "./backendConnection";
+import {
+  advanceFleetCursor,
+  FLEET_PROTOCOL_VERSION,
+  fleetCursorHasSeen,
+  readFleetHelloAnswer,
+  type FleetCursor,
+  type FleetHelloAnswer,
+} from "./fleetTypes";
 
 export const EVENTS_DROPPED_EVENT = "backend://events-dropped";
 export const OBP_PROTOCOL_VERSION = 1;
@@ -52,6 +60,14 @@ export interface WebSocketConnectionOptions {
   maxBackoffMs?: number;
   /** How long a command waits for a connection before failing (30 s). */
   connectWaitMs?: number;
+  /**
+   * Asks to be a fleet client: the hello carries `fleet {protocol, cursor}` and
+   * frames tagged with an origin are de-duplicated per origin against this
+   * vector cursor (shared, so a client moving to another entry resumes from
+   * it). `false` sends a plain hello. An older backend ignores the member and
+   * answers without `fleet`.
+   */
+  fleet?: { cursor: FleetCursor } | false;
 }
 
 /** What the backend answered to `hello`. */
@@ -62,6 +78,8 @@ export interface ObpHello {
   lastSeq: number;
   creditBytes: number | null;
   backend: { version?: string; platform?: string; instanceId?: string; dataDir?: string };
+  /** The fleet answer; `null` from a backend that is not a fleet entry. */
+  fleet: FleetHelloAnswer | null;
 }
 
 export interface WebSocketConnection extends BackendConnection {
@@ -103,6 +121,7 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
   const error = signal("");
   const scope = signal<string | null>(null);
   const helloAnswer = signal<ObpHello | null>(null);
+  const fleetCursor: FleetCursor | null = options.fleet === false ? null : (options.fleet?.cursor ?? {});
   const subscribers = new Set<(events: readonly BackendEvent[]) => void>();
 
   let socket: ObpSocket | null = null;
@@ -153,7 +172,11 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
     if (ackTimer !== null) clearTimeout(ackTimer);
     ackTimer = null;
     bytesSinceAck = 0;
-    if (lastSeq !== null) sendFrame({ method: "ack", params: { seq: lastSeq } });
+    if (lastSeq === null) return;
+    const params: Record<string, unknown> = { seq: lastSeq };
+    // A fleet stream numbers frames per origin; the vector says what was rendered.
+    if (fleetCursor && helloAnswer()?.fleet) params.cursor = fleetCursor;
+    sendFrame({ method: "ack", params });
   }
 
   function noteReceived(bytes: number): void {
@@ -187,6 +210,27 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
     const seq = typeof params.seq === "number" ? params.seq : undefined;
     const item: BackendEvent = { event: params.event, payload: params.payload ?? null };
     if (seq !== undefined) item.seq = seq;
+    const origin = typeof params.origin === "string" && params.origin ? params.origin : null;
+    if (origin && fleetCursor) {
+      // A fleet frame: `seq` is the origin's own, ordered within that origin only.
+      const instance = typeof params.originInstance === "string" ? params.originInstance : "";
+      item.origin = origin;
+      if (instance) item.originInstance = instance;
+      if (params.event === EVENTS_DROPPED_EVENT) {
+        // The origin skipped ahead: its cursor restarts at the notice's own seq
+        // (`resumeSeq - 1`), and the UI re-hydrates that origin.
+        const resume = (params.payload as { resumeSeq?: unknown } | null)?.resumeSeq;
+        const at = seq ?? (typeof resume === "number" ? resume - 1 : undefined);
+        if (at !== undefined) fleetCursor[origin] = { instanceId: instance, seq: at };
+      } else if (seq !== undefined) {
+        if (fleetCursorHasSeen(fleetCursor, origin, instance, seq)) return;
+        advanceFleetCursor(fleetCursor, origin, instance, seq);
+      }
+      if (seq !== undefined) lastSeq = seq;
+      noteReceived(bytes);
+      deliver([item]);
+      return;
+    }
     if (params.event === EVENTS_DROPPED_EVENT) {
       // The backend restarted or skipped ahead: its cursor replaces ours.
       if (seq !== undefined) lastSeq = seq;
@@ -211,6 +255,7 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
       lastSeq: typeof result.lastSeq === "number" ? result.lastSeq : 0,
       creditBytes: typeof result.creditBytes === "number" ? result.creditBytes : null,
       backend,
+      fleet: fleetCursor ? readFleetHelloAnswer(result.fleet) : null,
     };
     if (typeof backend.instanceId === "string") instanceId = backend.instanceId;
     // Without a cursor, the stream starts at the backend's newest event.
@@ -224,6 +269,7 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
       version: typeof backend.version === "string" && backend.version ? backend.version : null,
       platform: typeof backend.platform === "string" && backend.platform ? backend.platform : null,
       dataDir: typeof backend.dataDir === "string" && backend.dataDir ? backend.dataDir : null,
+      ...(answer.fleet ? { fleet: answer.fleet } : {}),
     });
     settleWaiters(null);
   }
@@ -324,6 +370,7 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
       };
       if (lastSeq !== null) params.lastSeq = lastSeq;
       if (instanceId !== null) params.instanceId = instanceId;
+      if (fleetCursor) params.fleet = { protocol: FLEET_PROTOCOL_VERSION, cursor: fleetCursor };
       sendFrame({ id: 0, method: "hello", params });
     };
     next.onmessage = event => {
@@ -404,6 +451,7 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
     lastSeq: () => lastSeq,
     scope: () => scope(),
     hello: () => helloAnswer(),
+    fleet: () => helloAnswer()?.fleet ?? null,
     close() {
       closedByUser = true;
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);

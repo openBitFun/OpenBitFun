@@ -134,6 +134,11 @@ pub(crate) struct DispatchJobRecord {
     pub(crate) request: DispatchSubmitRequest,
     pub(crate) created_at: String,
     pub(crate) title: String,
+    /// Who submitted the job (`job_submitter_v1`). Kept beside the request,
+    /// not in it: the request type is strict, so an older binary reading this
+    /// record after a downgrade still parses the request and ignores this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) submitter: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -287,9 +292,10 @@ impl DispatchStore {
     pub(crate) fn create_job_with_intent(
         &self,
         intent: DispatchSubmitRequest,
-        request: DispatchSubmitRequest,
+        mut request: DispatchSubmitRequest,
         title: String,
     ) -> Result<CreateJobOutcome> {
+        let submitter = request.submitter.take();
         validate_id("jobId", &request.job_id)?;
         let intent_sha256 = submit_intent_fingerprint(&intent)?;
         let job_dir = self.job_dir(&request.job_id)?;
@@ -333,6 +339,7 @@ impl DispatchStore {
             request,
             created_at: chrono::Utc::now().to_rfc3339(),
             title,
+            submitter,
         };
         // job.json is the commit marker. Any fragments left without it came
         // from an interrupted initialization and are safely rebuilt while the
@@ -598,6 +605,28 @@ impl DispatchStore {
         self.append_event_unlocked(&job_dir, event)
     }
 
+    /// The cursor just past the last retained event.
+    pub(crate) fn event_log_end_cursor(&self, job_id: &str) -> Result<u64> {
+        let job_dir = self.existing_job_dir(job_id)?;
+        let lock_path = job_dir.join(EVENTS_LOCK_FILE);
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("open dispatch event lock {}", lock_path.display()))?;
+        let _lock = FileLock::shared(&lock_file)?;
+        let path = job_dir.join(EVENTS_FILE);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&path)
+            .with_context(|| format!("open dispatch events {}", path.display()))?;
+        let len = file.metadata()?.len();
+        let (header, data_start) = read_event_log_header(&mut file, &path)?;
+        Ok(header
+            .cursor_base
+            .saturating_add(len.saturating_sub(data_start)))
+    }
+
     pub(crate) fn read_events(&self, job_id: &str, cursor: u64) -> Result<EventPage> {
         let job_dir = self.existing_job_dir(job_id)?;
         let lock_path = job_dir.join(EVENTS_LOCK_FILE);
@@ -704,6 +733,33 @@ impl DispatchStore {
                 .then_with(|| left.request_id.cmp(&right.request_id))
         });
         Ok(requests)
+    }
+
+    /// Every live job with its pending permission requests, for the fleet
+    /// digest's dispatch prompts (`answerRoute: "dispatch"`). Read-only: it
+    /// takes no job lock and skips a job it cannot read.
+    pub(crate) fn list_pending_dispatch_prompts(
+        &self,
+    ) -> Result<Vec<(DispatchJobListEntry, Vec<PermissionRequest>)>> {
+        if !self.root.join("jobs").is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut pending = Vec::new();
+        for job in self.list_jobs()? {
+            if job.state.is_terminal() {
+                continue;
+            }
+            match self.list_pending_permissions(&job.job_id) {
+                Ok(requests) if !requests.is_empty() => pending.push((job, requests)),
+                Ok(_) => {}
+                Err(error) => tracing::debug!(
+                    "Dispatch prompts skipped an unreadable job: job_id={}, error={:#}",
+                    job.job_id,
+                    error
+                ),
+            }
+        }
+        Ok(pending)
     }
 
     /// Persist a controller answer. `true` means the answer is durably queued
@@ -1119,6 +1175,7 @@ impl DispatchStore {
                 approval_policy,
                 model,
                 reasoning_preset,
+                submitter: job.submitter,
             });
         }
         entries.sort_by(|left, right| right.started_at.cmp(&left.started_at));
@@ -2303,6 +2360,7 @@ mod tests {
             title: None,
             attachments: Vec::new(),
             setup_audit: Vec::new(),
+            submitter: None,
         }
     }
 

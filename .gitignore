@@ -14,7 +14,6 @@ node_modules
 # These packages share pnpm-lock.yaml. Standalone npm packages keep their own lockfile.
 /package-lock.json
 /OpenBitFun-Installer/package-lock.json
-/src/mobile-web/package-lock.json
 /tests/e2e/package-lock.json
 
 # Build outputs - Frontend

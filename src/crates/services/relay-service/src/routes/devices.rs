@@ -56,6 +56,13 @@ pub fn device_router() -> Router<AppState> {
 pub struct DeviceKeyResponse {
     pub device_id: String,
     pub public_key: String,
+    /// The row's kind (`desktop`, `cli`, `mobile`, `cloud_agent`, …), so a
+    /// device that verifies a handshake with this key can pick the caller's
+    /// scope (the account's cloud agent gets a narrower one). Absent for rows
+    /// without a kind and for delegated controller keys; older readers ignore
+    /// it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_kind: Option<String>,
 }
 
 /// Resolve even hidden controller keys, scoped to the authenticated account.
@@ -69,9 +76,9 @@ pub async fn device_key(
         return Err(StatusCode::BAD_REQUEST);
     }
     let db = state.db.as_ref();
-    let public_key = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT public_key FROM devices WHERE user_id = ?1 AND device_id = ?2
-         UNION ALL SELECT k.public_key FROM delegated_device_keys k JOIN auth_tokens t ON t.token = k.token
+    let (public_key, device_kind) = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT public_key, device_kind FROM devices WHERE user_id = ?1 AND device_id = ?2
+         UNION ALL SELECT k.public_key, NULL FROM delegated_device_keys k JOIN auth_tokens t ON t.token = k.token
          WHERE t.user_id = ?1 AND k.controller_id = ?2 AND t.expires_at > unixepoch() LIMIT 1",
     )
     .bind(&auth.user_id)
@@ -79,11 +86,12 @@ pub async fn device_key(
     .fetch_optional(db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .flatten()
     .ok_or(StatusCode::NOT_FOUND)?;
+    let public_key = public_key.ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(DeviceKeyResponse {
         device_id: target_device_id,
         public_key,
+        device_kind: device_kind.filter(|kind| !kind.is_empty()),
     }))
 }
 
@@ -107,6 +115,26 @@ pub struct DeviceListEntry {
     pub last_seen_at: Option<i64>,
 }
 
+/// `GET /api/devices` query: `include=cloud_agent` (comma-separated) also
+/// lists the account's cloud agent row (kind `cloud_agent`). Only the
+/// server gateway asks for it, to rank the cloud node as the last entry
+/// candidate; older callers never send it and never see that row.
+#[derive(Debug, Default, Deserialize)]
+struct ListDevicesQuery {
+    #[serde(default)]
+    include: Option<String>,
+}
+
+impl ListDevicesQuery {
+    fn includes_cloud_agent(&self) -> bool {
+        self.include.as_deref().is_some_and(|include| {
+            include
+                .split(',')
+                .any(|item| item.trim() == crate::db::DEVICE_KIND_CLOUD_AGENT)
+        })
+    }
+}
+
 /// `GET /api/devices` — list the account's remote-control targets.
 ///
 /// Phones and watches register device rows too (they need one to hold an auth
@@ -114,7 +142,9 @@ pub struct DeviceListEntry {
 async fn list_devices(
     State(state): State<AppState>,
     headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ListDevicesQuery>,
 ) -> Result<Json<Vec<DeviceListEntry>>, StatusCode> {
+    let include_cloud_agent = query.includes_cloud_agent();
     let auth = validate_user(&state, &headers).await?;
     let user_id = auth.user_id.clone();
 
@@ -144,6 +174,28 @@ async fn list_devices(
         let db = &state.db;
         if let Ok(db_devices) = crate::db::DeviceRow::list_by_user(db, &user_id).await {
             for row in db_devices {
+                if include_cloud_agent
+                    && crate::db::device_kind_is_cloud_agent(row.device_kind.as_deref())
+                {
+                    // The cloud agent is a server-side node: no socket
+                    // presence, and no client build to compare.
+                    hidden_ids.insert(row.device_id.clone());
+                    devices.push(DeviceListEntry {
+                        device_id: row.device_id,
+                        device_name: row.device_name.unwrap_or_default(),
+                        device_kind: row.device_kind,
+                        device_alias: row.device_alias,
+                        device_model: row.device_model,
+                        device_os: row.device_os,
+                        device_os_version: row.device_os_version,
+                        client_version: row.client_version,
+                        client_protocol: None,
+                        compatible: true,
+                        online: false,
+                        last_seen_at: row.last_seen_at,
+                    });
+                    continue;
+                }
                 if !crate::db::device_kind_is_host(row.device_kind.as_deref()) {
                     hidden_ids.insert(row.device_id);
                     continue;
@@ -651,6 +703,113 @@ mod tests {
             .unwrap();
         assert!(controller.routing_device_id(&ctx.db).await.is_err());
         assert!(second.routing_device_id(&ctx.db).await.is_err());
+    }
+
+    /// The key answer names the row kind (a device picks the caller's scope
+    /// from it); a row without a kind answers exactly as before.
+    #[tokio::test]
+    async fn device_key_carries_the_row_kind_when_known() {
+        let ctx = setup_app().await;
+        DeviceRow::upsert(
+            &ctx.db,
+            "cli-host",
+            "owner",
+            "CLI",
+            Some("cli"),
+            Some("cli-key"),
+        )
+        .await
+        .unwrap();
+        DeviceRow::upsert(
+            &ctx.db,
+            "legacy-host",
+            "owner",
+            "Old",
+            None,
+            Some("old-key"),
+        )
+        .await
+        .unwrap();
+        let read = |id: &'static str| {
+            let app = ctx.app.clone();
+            let token = ctx.owner_token.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/devices/{id}/key"))
+                            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let cli = read("cli-host").await;
+        assert_eq!(cli["public_key"], "cli-key");
+        assert_eq!(cli["device_kind"], "cli");
+        let legacy = read("legacy-host").await;
+        assert_eq!(legacy["public_key"], "old-key");
+        assert!(legacy.get("device_kind").is_none(), "{legacy}");
+    }
+
+    /// The cloud agent row stays out of the plain list (older clients never
+    /// see it) and is listed only with `include=cloud_agent`.
+    #[tokio::test]
+    async fn the_cloud_agent_row_is_listed_only_when_asked_for() {
+        let ctx = setup_app().await;
+        DeviceRow::register_cloud_agent(&ctx.db, "owner", "cloud-abc", "OpenBitFun", "key-1")
+            .await
+            .unwrap();
+        let list = |uri: &'static str| {
+            let app = ctx.app.clone();
+            let token = ctx.owner_token.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(uri)
+                            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let ids = |entries: &serde_json::Value| -> Vec<String> {
+            entries
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["device_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let plain = list("/api/devices").await;
+        assert!(!ids(&plain).contains(&"cloud-abc".to_string()), "{plain}");
+        let other = list("/api/devices?include=something_else").await;
+        assert!(!ids(&other).contains(&"cloud-abc".to_string()), "{other}");
+        let with_cloud = list("/api/devices?include=cloud_agent").await;
+        let cloud = with_cloud
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["device_id"] == "cloud-abc")
+            .unwrap();
+        assert_eq!(cloud["device_kind"], "cloud_agent");
+        assert_eq!(cloud["device_name"], "OpenBitFun");
+        assert_eq!(ids(&with_cloud).len(), ids(&plain).len() + 1);
     }
 
     async fn setup_app() -> TestContext {

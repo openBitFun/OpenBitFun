@@ -2376,59 +2376,6 @@ impl CoreServiceAgentRuntime {
         image_context_from_remote_image_context(context)
     }
 
-    /// Read just one persisted historical turn for the host's backward cursor.
-    #[cfg(feature = "remote-connect")]
-    pub(crate) async fn load_relay_history_batch(
-        session_id: &str,
-        before: Option<usize>,
-    ) -> anyhow::Result<openbitfun_services_integrations::remote_connect::host_stream::HistoryBatch>
-    {
-        let directory = Self::resolve_session_storage_dir(session_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Session storage is unavailable on this host"))?;
-        let coordinator =
-            get_global_coordinator().ok_or_else(|| anyhow::anyhow!("Runtime is unavailable"))?;
-        let (turns, before) = coordinator
-            .load_relay_history_turn(&directory, session_id, before)
-            .await?;
-        let records = tokio::task::spawn_blocking(move || {
-            openbitfun_services_integrations::remote_connect::session_records::records_from_turns(
-                &turns,
-                &read_remote_chat_image_pixels,
-            )
-        })
-        .await??;
-        Ok(
-            openbitfun_services_integrations::remote_connect::host_stream::HistoryBatch {
-                records,
-                before,
-            },
-        )
-    }
-
-    /// One source read/commit owner for both migration and live block updates.
-    #[cfg(feature = "remote-connect")]
-    pub(crate) async fn synchronize_relay_session(
-        hub: &openbitfun_services_integrations::remote_connect::host_stream::HostStreamHub,
-        session_id: &str,
-        turn_id: Option<&str>,
-    ) -> Result<(), String> {
-        if turn_id.is_none() && hub.invalidate_paged_history(session_id).await {
-            return Ok(());
-        }
-        hub.synchronize_records(session_id.to_owned(),turn_id.is_none(),||async {
-            let directory=Self::resolve_session_storage_dir(session_id).await
-                .ok_or_else(||anyhow::anyhow!("Session storage is unavailable on this host"))?;
-            let coordinator=get_global_coordinator().ok_or_else(||anyhow::anyhow!("Runtime is unavailable"))?;
-            let turns=coordinator.load_relay_session_turns(&directory,session_id,turn_id).await?;
-            // Attachment paths are read and images re-encoded here, so the work
-            // leaves the reactor rather than stalling the session's other events.
-            tokio::task::spawn_blocking(move||{
-                openbitfun_services_integrations::remote_connect::session_records::records_from_turns(&turns,&read_remote_chat_image_pixels)
-            }).await?
-        }).await.map_err(|error|error.to_string())
-    }
-
     #[cfg(feature = "remote-connect")]
     pub(crate) async fn load_remote_chat_messages(
         session_storage_dir: &std::path::Path,

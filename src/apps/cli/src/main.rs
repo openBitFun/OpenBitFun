@@ -19,10 +19,12 @@ mod config;
 mod daemon;
 mod diagnostics;
 mod dispatch;
+mod fleet_host;
 mod hook_import;
 mod logging;
 mod management;
 mod mcp_import;
+mod mesh_route;
 mod model_selection;
 mod modes;
 mod obp_host;
@@ -40,6 +42,7 @@ mod server_host;
 mod shared_runtime;
 mod terminal_attention;
 mod ui;
+mod ui_bundle;
 
 use anyhow::{anyhow, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
@@ -396,8 +399,8 @@ enum Commands {
 
     /// Manage the always-on account device host daemon
     ///
-    /// The daemon holds the relay device-routing connection in a headless
-    /// process so this device stays reachable by account peers whenever the
+    /// The daemon serves this device on OpenBitFun Link in a headless process
+    /// so it stays reachable by the account's other devices whenever the
     /// machine is up, even without an interactive CLI running.
     Daemon {
         #[command(subcommand)]
@@ -822,6 +825,11 @@ pub(crate) enum DispatchAction {
     },
     #[command(name = "__workspace_provision", hide = true)]
     WorkspaceProvision,
+    #[command(name = "__workspace_provision_source", hide = true)]
+    WorkspaceProvisionSource,
+    /// Pending permission requests of live jobs (read-only, for the desktop)
+    #[command(name = "__pending_prompts", hide = true)]
+    PendingPrompts,
     #[command(name = "__workspace_bundle_begin", hide = true)]
     WorkspaceBundleBegin,
     #[command(name = "__workspace_bundle_chunk", hide = true)]
@@ -1825,7 +1833,7 @@ fn main() {
         return;
     }
     // Install the workspace-owned ring CryptoProvider before any TLS-capable
-    // work (relay WS, reqwest rustls paths, Feishu wss) so every client uses
+    // work (OBP and Link TLS, reqwest rustls paths, Feishu wss) so every client uses
     // the same explicit process-level provider.
     openbitfun_core::service::remote_connect::ensure_rustls_crypto_provider();
 

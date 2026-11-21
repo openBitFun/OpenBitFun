@@ -8,7 +8,6 @@
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
 import { tr } from "./i18n";
-import { peerScope } from "./peerState";
 import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot } from "./state";
 
 export type SkillTab = "installed" | "marketplace";
@@ -263,9 +262,6 @@ export const filteredInstalledSkills = computed<SkillRecord[]>(() => {
 });
 
 export const folderInstallUnsupportedReason = computed<string | null>(() => {
-  if (peerScope()) {
-    return `Peer Device Mode (${peerScope()?.label}): installing skills from a local folder on this controller machine is unsupported.`;
-  }
   if (activeWorkspace()?.workspaceKind === "remote") {
     return "Remote workspace active: installing skills from a local folder path is unsupported.";
   }
@@ -354,7 +350,7 @@ export async function loadSkillsCatalog(forceRefresh = false, contextKey?: strin
   const workspaceId = workspace?.id ?? activeWorkspaceId() ?? null;
   const workspacePath = workspace?.rootPath || activeWorkspaceRoot() || null;
   const isRemote = workspace?.workspaceKind === "remote";
-  const key = contextKey ?? `${peerScope()?.deviceId ?? "local"}:${workspaceId ?? "none"}:${workspacePath ?? ""}`;
+  const key = contextKey ?? `local:${workspaceId ?? "none"}:${workspacePath ?? ""}`;
 
   skillsLoading.set(true);
   skillsError.set(null);
@@ -665,7 +661,7 @@ export async function loadSkillMarketCatalog(query?: string): Promise<void> {
     const normalized = normalizeMarketResponse(raw);
     marketSkills.set(normalized.skills);
     marketSourceErrors.set(normalized.sourceErrors);
-    marketLoadedKey.set(`${trimmed}:${peerScope()?.deviceId ?? "local"}`);
+    marketLoadedKey.set(`${trimmed}:local`);
   } catch (error) {
     if (ticket !== marketLoadTicket) return;
     marketSkills.set([]);

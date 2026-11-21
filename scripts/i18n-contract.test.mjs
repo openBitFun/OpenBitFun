@@ -11,7 +11,6 @@ const skipAuditIntegrationTests = contractTestProfile === 'ci' && !runAuditInteg
 const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'locales.json');
 const sharedTermsDir = path.join(root, 'src', 'shared', 'i18n', 'resources', 'shared');
 const expectedGeneratedFiles = [
-  'src/mobile-web/src/i18n/generatedLocaleContract.ts',
   'OpenBitFun-Installer/src/i18n/generatedLocaleContract.ts',
   'src/crates/assembly/core/src/service/i18n/generated_locale_contract.rs',
   'OpenBitFun-Installer/src-tauri/src/installer/generated_locale_contract.rs',
@@ -76,18 +75,6 @@ function flattenKeys(value, prefix = '') {
   return Object.entries(value)
     .flatMap(([key, child]) => flattenKeys(child, prefix ? `${prefix}.${key}` : key))
     .sort();
-}
-
-function listFiles(dir, predicate) {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  return entries.flatMap((entry) => {
-    const absolutePath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      return listFiles(absolutePath, predicate);
-    }
-
-    return predicate(absolutePath) ? [absolutePath] : [];
-  });
 }
 
 function escapeRegExp(value) {
@@ -158,9 +145,6 @@ test('core runtime uses the generated locale contract for language identity', ()
 });
 
 test('shared i18n terms are consumed by each product surface runtime', () => {
-  const mobileMessagesSource = readText('src/mobile-web/src/i18n/messages.ts');
-  assert.match(mobileMessagesSource, /SHARED_TERMS_BY_LOCALE/, 'mobile-web should expose shared terms through its message tree');
-
   const installerLanguagesSource = readText('OpenBitFun-Installer/src/i18n/languages.ts');
   assert.match(installerLanguagesSource, /SHARED_TERMS_BY_APP_LANGUAGE/, 'installer should merge shared terms into its i18next resources');
 
@@ -169,14 +153,6 @@ test('shared i18n terms are consumed by each product surface runtime', () => {
 });
 
 test('frontend runtimes use generated locale defaults and fallback chains', () => {
-  const mobileProviderSource = readText('src/mobile-web/src/i18n/I18nProvider.tsx');
-  assert.match(mobileProviderSource, /getMobileFallbackChain/, 'mobile-web translate should use the generated locale fallback chain');
-  assert.doesNotMatch(
-    mobileProviderSource,
-    /messages\[DEFAULT_LANGUAGE\]/,
-    'mobile-web translate should not fall back directly to the surface default only',
-  );
-
   const installerI18nSource = readText('OpenBitFun-Installer/src/i18n/index.ts');
   assert.match(installerI18nSource, /DEFAULT_INSTALLER_UI_LANGUAGE/, 'installer i18next should use the generated default UI language');
   assert.match(installerI18nSource, /getInstallerUiFallbackChain/, 'installer i18next should use the generated locale fallback chain');
@@ -197,7 +173,6 @@ test('i18n audit treats locale key parity as an error', () => {
 
   assert.match(parityFunction, /reportError\(`\$\{locale\}\/\$\{namespace\}\.json is missing/, 'missing locale keys should fail i18n:audit');
   assert.match(parityFunction, /reportError\(`\$\{locale\}\/\$\{namespace\}\.json has/, 'extra locale keys should fail i18n:audit');
-  assert.match(auditSource, /auditMobileWebMessageParity/, 'mobile-web message keys should be covered by i18n:audit');
   assert.match(auditSource, /auditInstallerKeyParity/, 'installer locale keys should be covered by i18n:audit');
 });
 
@@ -215,12 +190,10 @@ test('i18n audit enforces interpolation parameter parity across resource formats
   const auditSource = readText('scripts/i18n-audit.mjs');
 
   assert.match(auditSource, /auditSharedTermPlaceholderParity/, 'shared term JSON placeholders should be audited');
-  assert.match(auditSource, /auditMobileWebPlaceholderParity/, 'mobile-web placeholders should be audited');
   assert.match(auditSource, /auditInstallerPlaceholderParity/, 'installer placeholders should be audited');
   assert.match(auditSource, /auditCoreFluentParity/, 'core Fluent keys and placeholders should be audited');
   assert.match(auditSource, /auditRelayStaticHomepageResources/, 'relay static homepage resources should be audited');
   assert.match(auditSource, /extractI18nextPlaceholders/, 'i18next placeholder extraction should be explicit');
-  assert.match(auditSource, /extractMobilePlaceholders/, 'mobile placeholder extraction should be explicit');
   assert.match(auditSource, /extractFluentPlaceholders/, 'Fluent placeholder extraction should be explicit');
 });
 
@@ -273,8 +246,8 @@ auditIntegrationTest('i18n audit reports locale formatting candidate baselines',
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const report = readJson(reportPath);
     assert.equal(
-      report.summary.byCategory.localeFormatCandidates.bySurface['mobile-web'],
-      report.localeFormatCandidates.filter((entry) => entry.surface === 'mobile-web').length,
+      report.summary.byCategory.localeFormatCandidates.bySurface.installer,
+      report.localeFormatCandidates.filter((entry) => entry.surface === 'installer').length,
       'report should summarize direct locale formatting candidates by surface',
     );
   } finally {
@@ -284,7 +257,7 @@ auditIntegrationTest('i18n audit reports locale formatting candidate baselines',
   const baselinePath = 'scripts/i18n-locale-format-baseline.json';
   const baseline = readJson(baselinePath);
   baseline.budgets.push({
-    path: 'src/mobile-web/src/__removed_locale_format_fixture__.ts',
+    path: 'OpenBitFun-Installer/src/__removed_locale_format_fixture__.ts',
     maxLocaleFormatCalls: 1,
   });
 
@@ -298,7 +271,7 @@ auditIntegrationTest('i18n audit reports locale formatting candidate baselines',
     );
   });
 
-  withTemporaryTextFile('src/mobile-web/src/__locale_format_fixture__.ts', 'export const value = Intl.NumberFormat().format(1234);\n', () => {
+  withTemporaryTextFile('OpenBitFun-Installer/src/__locale_format_fixture__.ts', 'export const value = Intl.NumberFormat().format(1234);\n', () => {
     const result = runI18nAudit();
     assert.notEqual(result.status, 0, 'direct Intl format calls without new must fail audit');
     assert.match(
@@ -449,78 +422,6 @@ auditIntegrationTest('i18n audit reports same-text zh-TW copy with a terminology
         'audit inventory should retain the same-text pair even though only signal-bearing entries are governance candidates',
       );
     }));
-  } finally {
-    fs.rmSync(absoluteReportPath, { force: true });
-  }
-});
-
-auditIntegrationTest('mobile-web uses shared terms for stable shared concept labels', { concurrency: false }, () => {
-  const reportPath = 'scripts/.tmp-i18n-mobile-shared-terms-report.json';
-  const absoluteReportPath = path.join(root, reportPath);
-  fs.rmSync(absoluteReportPath, { force: true });
-
-  try {
-    const result = runI18nAudit(['--report-json', reportPath]);
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-
-    const report = readJson(reportPath);
-    const migratedSharedKeys = new Set([
-      'product.remote',
-      'features.workspace',
-      'modes.assistant',
-      'modes.expert',
-      'agents.claw',
-      'agents.code',
-      'agents.cowork',
-      'agents.default',
-      'tools.edit',
-      'tools.explore',
-      'tools.read',
-      'tools.shell',
-      'tools.todo',
-      'tools.write',
-    ]);
-    const mobileDuplicates = report.sharedTermDuplicates
-      .filter((entry) => entry.surface === 'mobile-web' && migratedSharedKeys.has(entry.sharedKey))
-      .map((entry) => `${entry.sharedKey}:${entry.key}:${entry.locale}`)
-      .sort();
-    const legacyMobileKeys = [
-      'common.appName',
-      'sessions.workspace',
-      'sessions.assistantMode',
-      'sessions.coworkSession',
-      'sessions.codeSession',
-      'sessions.defaultAssistant',
-      'sessions.agentClaw',
-      'sessions.proMode',
-      'workspace.title',
-      'tools.edit',
-      'tools.explore',
-      'tools.read',
-      'tools.shell',
-      'tools.todo',
-      'tools.write',
-    ];
-    const mobileSourceFiles = listFiles(path.join(root, 'src', 'mobile-web', 'src'), (file) => (
-      /\.(?:ts|tsx)$/.test(file) && !file.endsWith(`${path.sep}i18n${path.sep}messages.ts`)
-    ));
-    const legacyReferences = mobileSourceFiles.flatMap((file) => {
-      const source = fs.readFileSync(file, 'utf8');
-      return legacyMobileKeys
-        .filter((key) => source.includes(`'${key}'`) || source.includes(`"${key}"`))
-        .map((key) => `${path.relative(root, file)}:${key}`);
-    }).sort();
-
-    assert.deepEqual(
-      mobileDuplicates,
-      [],
-      'mobile-web should read migrated stable labels from shared terms instead of copying values',
-    );
-    assert.deepEqual(
-      legacyReferences,
-      [],
-      'mobile-web source should not call removed local keys for migrated shared terms',
-    );
   } finally {
     fs.rmSync(absoluteReportPath, { force: true });
   }
@@ -772,13 +673,6 @@ test('i18n generation checks are stable across line endings', () => {
   assert.match(generatorSource, /currentContentForCheck/, 'generated contract check should compare normalized current content');
 });
 
-test('i18n audit preflights TypeScript before TypeScript-backed checks', () => {
-  const auditSource = readText('scripts/i18n-audit.mjs');
-
-  assert.match(auditSource, /loadTypeScriptForAudit/, 'audit should load TypeScript through a single preflight helper');
-  assert.match(auditSource, /Run pnpm install/, 'missing TypeScript should tell contributors how to fix the local setup');
-});
-
 test('installer Rust locale contract is generated from the installer surface order', () => {
   const generatorSource = readText('scripts/generate-i18n-contract.mjs');
   const installerRustGenerator = generatorSource.match(/function generateInstallerRustLocaleContract\(contract\) \{[\s\S]*?\n\}/)?.[0] ?? '';
@@ -802,8 +696,6 @@ test('i18n contract surface resource roots point at existing owned resources', (
         assert.ok(fs.existsSync(path.join(resourceRoot, `${locale.installer.uiCode}.json`)), `${surface} is missing ${localeId} resource JSON`);
       } else if (surface === 'core') {
         assert.ok(fs.existsSync(path.join(resourceRoot, `${localeId}.ftl`)), `${surface} is missing ${localeId} Fluent resource`);
-      } else if (surface === 'mobile-web') {
-        assert.ok(fs.existsSync(path.join(resourceRoot, 'messages.ts')), `${surface} is missing messages.ts`);
       }
     }
   }

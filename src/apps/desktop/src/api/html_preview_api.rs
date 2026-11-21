@@ -1,9 +1,8 @@
 //! Controller-owned HTTP gateway for workspace HTML, including SSH and peer hosts.
 
 use crate::api::app_state::AppState;
-use crate::api::remote_connect_api::{
-    account_context_generation, account_context_is_current, account_device_rpc,
-};
+use crate::api::remote_connect_api::{account_context_generation, account_context_is_current};
+use crate::backend_protocol::ws::mesh_client::{MeshConnectOptions, MeshObpConnection};
 use axum::{
     body::Body,
     extract::State,
@@ -21,9 +20,8 @@ use openbitfun_product_domains::{
     },
     remote_surface::PeerHostCapability,
 };
-use openbitfun_services_integrations::remote_connect::{
-    html_preview::transfer::{HtmlPreviewReader as PreviewReader, HtmlPreviewTransfer},
-    RemoteCommand, RemoteResponse,
+use openbitfun_services_integrations::remote_connect::html_preview::transfer::{
+    HtmlPreviewReader as PreviewReader, HtmlPreviewTransfer,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -60,12 +58,33 @@ pub struct HtmlPreviewReleaseRequest {
     pub session_id: String,
 }
 
+/// Reads a peer device's workspace HTML over OBP on OpenBitFun Link (one
+/// cached `account-device` connection per preview, redialed once when it
+/// closed).
 struct PeerPreviewReader {
     device_id: String,
     account_generation: u64,
+    connection: tokio::sync::Mutex<Option<Arc<MeshObpConnection>>>,
 }
 
 impl PeerPreviewReader {
+    async fn connection(&self, fresh: bool) -> Result<Arc<MeshObpConnection>, HtmlPreviewError> {
+        let mut guard = self.connection.lock().await;
+        if fresh {
+            guard.take();
+        }
+        if let Some(connection) = guard.as_ref() {
+            return Ok(Arc::clone(connection));
+        }
+        let connection = Arc::new(
+            crate::mesh::connect_device(&self.device_id, MeshConnectOptions::default())
+                .await
+                .map_err(HtmlPreviewError::unavailable)?,
+        );
+        *guard = Some(Arc::clone(&connection));
+        Ok(connection)
+    }
+
     async fn invoke(
         &self,
         command: &str,
@@ -76,57 +95,44 @@ impl PeerPreviewReader {
                 "HTML preview account changed; reopen the preview",
             ));
         }
-        let command = serde_json::to_string(&RemoteCommand::HostInvoke {
-            command: command.to_string(),
-            args,
-        })
-        .map_err(|error| HtmlPreviewError::unavailable(error.to_string()))?;
-        let raw = account_device_rpc(self.device_id.clone(), command, None)
-            .await
-            .map_err(HtmlPreviewError::unavailable)?;
+        let connection = self.connection(false).await?;
+        let result = match connection.call(command, args.clone()).await {
+            // Code 0 is a transport failure (a cached connection that closed).
+            Err(error) if error.code == 0 => self
+                .connection(true)
+                .await?
+                .call(command, args)
+                .await
+                .map_err(|error| error.message),
+            other => other.map_err(|error| error.message),
+        };
         if !self.is_current() {
             return Err(HtmlPreviewError::unavailable(
                 "HTML preview account changed; reopen the preview",
             ));
         }
-        decode_peer_result(&raw)
+        result.map_err(HtmlPreviewError::unavailable)
     }
 
     async fn ensure_supported(&self) -> Result<(), HtmlPreviewError> {
-        let ping = self.invoke("peer_mode_ping", serde_json::json!({})).await?;
-        require_preview_capability(&ping)
+        let connection = self.connection(false).await?;
+        require_preview_capability(&connection.hello()["hostCapabilities"])
     }
 }
 
-fn require_preview_capability(ping: &serde_json::Value) -> Result<(), HtmlPreviewError> {
-    if ping
-        .get("capabilities")
-        .and_then(|caps| caps.get(PeerHostCapability::WorkspaceHtmlPreviewV1.key()))
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
+/// The peer's `hostCapabilities` (the hello's registry list) must name the
+/// HTML preview resource capability.
+fn require_preview_capability(
+    host_capabilities: &serde_json::Value,
+) -> Result<(), HtmlPreviewError> {
+    let key = PeerHostCapability::WorkspaceHtmlPreviewV1.key();
+    let supported = host_capabilities
+        .as_array()
+        .is_some_and(|list| list.iter().any(|value| value.as_str() == Some(key)));
+    if !supported {
         return Err(HtmlPreviewError::unavailable("This device does not support HTML preview resources; update OpenBitFun on the controlled device"));
     }
     Ok(())
-}
-
-fn decode_peer_result(raw: &str) -> Result<serde_json::Value, HtmlPreviewError> {
-    match serde_json::from_str::<RemoteResponse>(raw)
-        .map_err(|_| HtmlPreviewError::unavailable("Invalid peer HTML preview response"))?
-    {
-        RemoteResponse::HostInvokeResult {
-            ok: true,
-            value: Some(value),
-            ..
-        } => Ok(value),
-        RemoteResponse::HostInvokeResult { error, .. } => Err(HtmlPreviewError::unavailable(
-            error.unwrap_or_else(|| "Peer HTML preview failed".into()),
-        )),
-        RemoteResponse::Error { message } => Err(HtmlPreviewError::unavailable(message)),
-        _ => Err(HtmlPreviewError::unavailable(
-            "Invalid peer HTML preview response",
-        )),
-    }
 }
 
 #[async_trait::async_trait]
@@ -172,9 +178,7 @@ pub async fn html_preview_create(
     app_state: crate::host::State<'_, AppState>,
     request: HtmlPreviewCreateRequest,
 ) -> Result<HtmlPreviewCreateResponse, String> {
-    let is_peer = request.peer_device_mode
-        || request.peer_device_id.is_some()
-        || super::peer_host_invoke::is_peer_controller_active();
+    let is_peer = request.peer_device_mode || request.peer_device_id.is_some();
     let reader: Arc<dyn PreviewReader>;
     let workspace_id;
     if is_peer {
@@ -189,6 +193,7 @@ pub async fn html_preview_create(
         let peer = PeerPreviewReader {
             device_id,
             account_generation: account_context_generation(),
+            connection: tokio::sync::Mutex::new(None),
         };
         peer.ensure_supported()
             .await

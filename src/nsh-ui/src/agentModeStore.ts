@@ -33,6 +33,7 @@ import {
   onSessionSwitch,
   runStep,
   sessionAgentTypes,
+  sessionKey,
   sessionStarted,
   sessions,
 } from "./state";
@@ -233,7 +234,7 @@ async function bindSessionAgent(sessionId: string, modeId: string): Promise<bool
         ...(workspaceId ? { workspaceId } : {}),
         includeInternal: false,
       });
-      sessionAgentTypes.update(current => ({ ...current, [sessionId]: modeId }));
+      sessionAgentTypes.update(current => ({ ...current, [sessionKey(sessionId)]: modeId }));
       sessions.update(current =>
         current.map(row => (row.sessionId === sessionId ? { ...row, agentType: modeId } : row)));
       chosenAgentType.set(modeId);

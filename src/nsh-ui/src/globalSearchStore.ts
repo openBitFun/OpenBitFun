@@ -59,8 +59,8 @@ export interface SearchItem {
 
 /** The scenes a `>` command can reach, in the sidebar's own order. */
 const COMMAND_SCENES: ReadonlyArray<SceneId> = [
-  "home",
-  "sessions",
+  "openbitfun",
+  "all-sessions",
   "assistants",
   "agents",
   "skills",
@@ -95,7 +95,9 @@ let runTicket = 0;
 function commandLabel(scene: SceneId): { label: string; detail: string } {
   switch (scene) {
     case "home":
-      return { label: tr("search.cmdHome"), detail: tr("search.cmdHomeDetail") };
+    case "openbitfun":
+      return { label: tr("search.cmdOpenBitFun"), detail: tr("search.cmdOpenBitFunDetail") };
+    case "all-sessions":
     case "sessions":
       return { label: tr("search.cmdSessions"), detail: tr("search.cmdSessionsDetail") };
     case "assistants":

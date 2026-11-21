@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use openbitfun_core::agentic::tools::openbitfun_control_config::global_shared_product_control_executor;
 use openbitfun_core::service::config::settings_mutations::{
     self, AiModelUpsertRequest, ApprovalSettingsRequest, PermissionRuleInput,
-    PermissionRuleUpsertRequest, WebSearchProviderRequest,
+    PermissionRuleUpsertRequest, SuperagentSettingsRequest, WebSearchProviderRequest,
+    SUPERAGENT_PATH,
 };
 
 use crate::peer_host::args::request_value;
@@ -140,6 +141,14 @@ pub(crate) async fn set_web_search_provider(args: &Value) -> Result<Value, Strin
     let request: WebSearchProviderRequest = parse(args)?;
     mutate("ai.web_search", |current| {
         settings_mutations::set_web_search_provider(current, request)
+    })
+    .await
+}
+
+pub(crate) async fn set_superagent_settings(args: &Value) -> Result<Value, String> {
+    let request: SuperagentSettingsRequest = parse(args)?;
+    mutate(SUPERAGENT_PATH, |current| {
+        settings_mutations::set_superagent_settings(current, &request)
     })
     .await
 }

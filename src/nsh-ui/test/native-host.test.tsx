@@ -6,10 +6,8 @@
 import { expect, open, test } from "nsh/test";
 // @ts-ignore host.js is an untyped plain ES module loaded by the web player.
 import { createHost } from "../host.js";
-import { peerRouteFor } from "../src/peerRouting";
-import type { PeerScope } from "../src/peerState";
 import { createTextChunkCoalescer } from "../src/textChunkCoalescer";
-import { createBackend, createDeviceBackend, type Backend } from "./support";
+import { showAllSessions, openSession, createBackend, type Backend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -101,7 +99,7 @@ test("the native wire carries every command as its Tauri args and never touches 
   const wire = wireHost(backend);
   const app = await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
 
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   expect(wire.pageHostCalls).toEqual([]);
   expect(wire.invokes.length).toBeGreaterThan(0);
   // The simulated backend saw exactly the commands the wire carried.
@@ -116,8 +114,8 @@ test("seq-numbered events reach the scenes once, and positional commands stay un
   const wire = wireHost(backend);
   const app = await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSession(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   await app.host.send("openbitfun.wireEvents", wire.batch([{ seq: 7, ...question("tool-w1", "Deploy", "Ship it now?") }]));
@@ -153,7 +151,7 @@ test("the NSH desktop shell owns the window: menu shortcuts, close press, About 
   const wire = wireHost(backend);
   const app = await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
 
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   // macOS keeps the system's traffic lights; the page draws no window buttons.
   expect(app.shows("label:window-minimize")).toBe(false);
 
@@ -165,9 +163,9 @@ test("the NSH desktop shell owns the window: menu shortcuts, close press, About 
   await app.waitFor("label:nav-split-handle");
 
   // About reads this build's version from the backend's ready() answer.
-  await app.press("label:nav-footer-menu");
+  await app.press("label:account-row");
   await app.press("About OpenBitFun");
-  await app.waitFor("9.8.7");
+  await app.waitFor("Version 9.8.7");
 
   // The native backend runs the app's own update channel: the menu reads the staged update.
   await app.waitUntil(() => wire.invokes.some(call => call.command === "get_pending_update"));
@@ -242,68 +240,12 @@ test("the text-chunk merge matches host.js event for event", async () => {
   }
 });
 
-test("Peer Device Mode builds the same envelopes over any connection", () => {
-  const peer: PeerScope = {
-    deviceId: "device-linux",
-    label: "builder",
-    hostKind: "desktop",
-    capabilityCount: 0,
-    hostUiReady: true,
-    capabilities: {},
-  };
-  expect(peerRouteFor(null, "list_persisted_sessions", { request: {} }, false)).toBeNull();
-  // Controller-local commands stay on this machine (Product Operation Registry).
-  expect(peerRouteFor(peer, "account_device_rpc", { targetDeviceId: "x" }, true)).toBeNull();
-
-  const request = peerRouteFor(peer, "load_session_turns", { request: { session_id: "s1" } }, false);
-  expect(request).toEqual({
-    command: "account_device_rpc",
-    args: {
-      targetDeviceId: "device-linux",
-      commandJson: JSON.stringify({
-        cmd: "host_invoke",
-        command: "load_session_turns",
-        args: { request: { session_id: "s1" } },
-      }),
-      timeoutMs: null,
-    },
-  });
-  // No request body is `request: null`, as the page host always sent it.
-  const bare = peerRouteFor(peer, "get_opened_workspaces", undefined, false);
-  expect(JSON.parse(String(bare?.args.commandJson)).args).toEqual({ request: null });
-  // Positional arguments travel at `args`' top level, with no `request`.
-  const positional = peerRouteFor(peer, "submit_user_answers", { toolId: "t", answers: {}, sessionId: "s" }, true);
-  expect(JSON.parse(String(positional?.args.commandJson)).args).toEqual({ toolId: "t", answers: {}, sessionId: "s" });
-});
-
-test("driving a peer over the native wire sends the page host's exact device RPC", async () => {
-  const options = { onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }] };
-  const run = async (native: boolean) => {
-    const backend = createDeviceBackend(options);
-    const wire = wireHost(backend);
-    const app = native
-      ? await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } })
-      : await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-    await app.press("Devices");
-    await app.waitFor("builder");
-    await app.press("device-use-device-linux");
-    await app.waitFor("peer session on device-linux");
-    return backend.calls
-      .filter(call => call.action === "account_device_rpc")
-      .map(call => JSON.parse(String((call.request as { commandJson?: string }).commandJson)));
-  };
-  const viaPageHost = await run(false);
-  const viaWire = await run(true);
-  expect(viaWire.length).toBeGreaterThan(0);
-  expect(viaWire).toEqual(viaPageHost);
-});
-
 test("the native shell attaches to the backend and answers its shell requests", async () => {
   const backend = createBackend();
   const wire = wireHost(backend);
   const app = await open("./fixtures/nativeApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
 
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   // The shell announces exactly the operations it runs.
   await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_attach"));
   const attach = wire.invokes.find(call => call.command === "host_shell_attach");

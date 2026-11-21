@@ -7,6 +7,9 @@
 # as the issuer's user. Loopback listener only: browsers reach it as
 # https://<domain>/obp/ (domain-only over HTTPS: the provider's front end and
 # nginx forward it here).
+# It also keeps the web UI pool (`/app/cas/`, files of the devices' web UI
+# bundles by hash) in /var/lib/openbitfun-ui-pool (StateDirectory: a cache,
+# safe to delete; 4 GiB cap, files unused for 30 days deleted daily).
 # Install as /etc/systemd/system/openbitfun-link-gateway.service; see README.md.
 [Unit]
 Description=OpenBitFun browser gateway (Link)
@@ -21,12 +24,19 @@ WorkingDirectory=/opt/openbitfun-link-gateway
 Environment=LINK_GATEWAY_LISTEN=127.0.0.1:19730
 Environment=MESH_ISSUER_KEY_FILE=/opt/openbitfun-mesh-issuer/etc/issuer.key
 Environment=LINK_GATEWAY_RELAY_NODE=ws://127.0.0.1:11011/
-Environment=LINK_GATEWAY_DIRECTORY_URL=http://127.0.0.1:19702
+Environment=LINK_GATEWAY_DIRECTORY_URL=http://127.0.0.1:19750
+Environment=LINK_GATEWAY_SUPERAGENT_URL=http://127.0.0.1:19740
 Environment=LINK_GATEWAY_AUTH_URL=https://auth.openbitfun.com/api/v1
-Environment=LINK_GATEWAY_ORIGINS=https://remote.openbitfun.com
+Environment=LINK_GATEWAY_ORIGINS=https://super.openbitfun.com
 Environment=LINK_GATEWAY_MEMBER=obf-gateway-lwb
+Environment=LINK_GATEWAY_UI_POOL_DIR=/var/lib/openbitfun-ui-pool
+Environment=LINK_GATEWAY_UI_POOL_MAX_BYTES=4294967296
+Environment=LINK_GATEWAY_UI_POOL_MAX_AGE_DAYS=30
+Environment=LINK_GATEWAY_UI_POOL_PULLS_PER_MINUTE=240
 Environment=RUST_LOG=info,easytier=warn,easytier_core=warn
 ExecStart=/opt/openbitfun-link-gateway/bin/openbitfun-link-gateway
+StateDirectory=openbitfun-ui-pool
+StateDirectoryMode=0750
 Restart=always
 RestartSec=3
 LimitNOFILE=65536

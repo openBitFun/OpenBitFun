@@ -8,7 +8,6 @@
 
 import { signal } from "nsh";
 import { invokeCommand } from "./bridge";
-import { peerScope, peerSupports } from "./peerState";
 import { runStep } from "./state";
 
 export interface ModelPool {
@@ -75,14 +74,6 @@ let loading = false;
  */
 export function ensurePools(): void {
   if (poolsSupported() !== null || loading) return;
-  // Pools belong to the execution host, and a peer states whether it selects
-  // through them; asking one that did not is how a surface shows a feature that
-  // cannot work there.
-  if (peerScope() && peerSupports("model_pool_selection_v1") === false) {
-    poolsSupported.set(false);
-    poolsNotice.set(`${peerScope()?.label ?? "That device"} does not select models through pools`);
-    return;
-  }
   loading = true;
   void loadPools().finally(() => {
     loading = false;

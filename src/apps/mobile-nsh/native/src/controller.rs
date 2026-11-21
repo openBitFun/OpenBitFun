@@ -15,7 +15,12 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use openbitfun_link::session::{AccountIdentity, AccountSession, BoxFuture, Link, LinkOptions};
-use openbitfun_link::{MeshState, MeshStatus, NodeRole, MESH_OBP_PORT_FIRST, MESH_OBP_PORT_LAST};
+use openbitfun_link::{
+    LinkNode, MeshState, MeshStatus, NodeRole, MESH_OBP_PORT_FIRST, MESH_OBP_PORT_LAST,
+};
+use openbitfun_product_domains::fleet::{
+    rank_entry_candidates, FleetCursor, FleetEntryCandidate, FleetHello, FLEET_V1_CAPABILITY,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -114,6 +119,8 @@ pub(crate) struct Controller {
     next_connection: AtomicU32,
     /// Known OBP ports per device (`(virtual ip, port)`).
     ports: Mutex<HashMap<String, (Ipv4Addr, u16)>>,
+    /// What each device's `/obp/mesh/info` said lately (entry ranking).
+    infos: Mutex<HashMap<String, InfoFacts>>,
     /// This phone's name in the account's device lists (directory and Link).
     device_name: String,
     /// When Link last reached `Running` (its first route sync follows).
@@ -210,6 +217,7 @@ impl Controller {
             connections: Mutex::new(HashMap::new()),
             next_connection: AtomicU32::new(1),
             ports: Mutex::new(HashMap::new()),
+            infos: Mutex::new(HashMap::new()),
             device_name: crate::device::display_name(),
             joined_at: Arc::new(Mutex::new(None)),
         });
@@ -571,8 +579,14 @@ impl Controller {
         }
     }
 
-    /// Opens an OBP connection to `device_id`; returns its handle.
-    pub(crate) async fn connect(self: &Arc<Self>, device_id: String) -> Result<u32, String> {
+    /// Opens an OBP connection to `device_id`; returns its handle. With
+    /// `options.fleet` the hello carries the fleet member (`{protocol,
+    /// cursor}`), so a fleet entry resumes every origin from the cursor.
+    pub(crate) async fn connect(
+        self: &Arc<Self>,
+        device_id: String,
+        options: ConnectOptions,
+    ) -> Result<u32, String> {
         if !openbitfun_link::handshake::valid_device_id(&device_id) {
             return Err("invalid device id".to_string());
         }
@@ -581,6 +595,7 @@ impl Controller {
             controller: Arc::downgrade(self),
             current: tokio::sync::Mutex::new(None),
             resume: Mutex::new(obp::Resume::default()),
+            fleet: Mutex::new(options.fleet),
             closed: std::sync::atomic::AtomicBool::new(false),
         });
         let started = std::time::Instant::now();
@@ -652,49 +667,7 @@ impl Controller {
                 "mesh_controller: {device_id} is a phone or browser and serves no backend"
             ));
         }
-        let open = |port: u16| {
-            let node = Arc::clone(&node);
-            async move {
-                node.connect_addr(SocketAddr::from((ip, port)), obp::CONNECT_TIMEOUT)
-                    .await
-                    .map(|stream| Box::new(stream) as Box<dyn obp::Io>)
-            }
-        };
-        let known = lock(&self.ports)
-            .get(device_id)
-            .filter(|(known_ip, _)| *known_ip == ip)
-            .map(|(_, port)| *port);
-        let port = match known {
-            Some(port) => port,
-            None => {
-                let mut found = None;
-                let mut last_error =
-                    format!("mesh_unreachable: device {device_id} has no OBP listener");
-                for port in MESH_OBP_PORT_FIRST..=MESH_OBP_PORT_LAST {
-                    let probe = async {
-                        let stream = open(port).await?;
-                        obp::probe_info(stream, &format!("{ip}:{port}")).await
-                    };
-                    match tokio::time::timeout(obp::PROBE_TIMEOUT, probe).await {
-                        Ok(Ok(info)) if info.device_id == device_id => {
-                            found = Some(port);
-                            break;
-                        }
-                        Ok(Ok(info)) => {
-                            last_error =
-                                format!("port {port} at {ip} belongs to device {}", info.device_id)
-                        }
-                        Ok(Err(error)) => last_error = error,
-                        Err(_) => {
-                            last_error = format!("mesh_unreachable: {ip}:{port} did not answer")
-                        }
-                    }
-                }
-                let port = found.ok_or(last_error)?;
-                lock(&self.ports).insert(device_id.to_string(), (ip, port));
-                port
-            }
-        };
+        let port = self.locate(&node, ip, device_id).await?;
         let public = self
             .with_directory(|directory, token| {
                 let device_id = device_id.to_string();
@@ -704,7 +677,7 @@ impl Controller {
             .map_err(|error| format!("the device's key could not be read: {error}"))?;
         let secret = crypto::decode_secret(&account.device_secret)?;
         let pair_key = crypto::derive_pair_key(&secret, &crypto::parse_public_key(&public)?)?;
-        let stream = match open(port).await {
+        let stream = match open_stream(&node, ip, port).await {
             Ok(stream) => stream,
             Err(error) => {
                 lock(&self.ports).remove(device_id);
@@ -727,6 +700,256 @@ impl Controller {
                 "mesh_unreachable: connecting to device {device_id} timed out"
             )),
         }
+    }
+}
+
+impl Controller {
+    /// The OBP port of `device_id` at `ip`: the one it answered on before,
+    /// else the first port of the range whose `/obp/mesh/info` names it
+    /// (its facts are kept for the entry ranking).
+    async fn locate(
+        &self,
+        node: &Arc<LinkNode>,
+        ip: Ipv4Addr,
+        device_id: &str,
+    ) -> Result<u16, String> {
+        let known = lock(&self.ports)
+            .get(device_id)
+            .filter(|(known_ip, _)| *known_ip == ip)
+            .map(|(_, port)| *port);
+        if let Some(port) = known {
+            return Ok(port);
+        }
+        let mut last_error = format!("mesh_unreachable: device {device_id} has no OBP listener");
+        for port in MESH_OBP_PORT_FIRST..=MESH_OBP_PORT_LAST {
+            match probe_port(node, ip, port).await {
+                Ok(info) if info.device_id == device_id => {
+                    lock(&self.ports).insert(device_id.to_string(), (ip, port));
+                    lock(&self.infos).insert(device_id.to_string(), InfoFacts::of(&info));
+                    return Ok(port);
+                }
+                Ok(info) => {
+                    last_error = format!("port {port} at {ip} belongs to device {}", info.device_id)
+                }
+                Err(error) => last_error = error,
+            }
+        }
+        Err(last_error)
+    }
+
+    /// `device_id`'s `/obp/mesh/info` facts, reused for [`INFO_TTL`];
+    /// `None` when it cannot be probed now (it is then ranked without them).
+    async fn info_facts(&self, node: &Arc<LinkNode>, device_id: &str) -> Option<InfoFacts> {
+        if let Some(facts) = lock(&self.infos)
+            .get(device_id)
+            .filter(|facts| facts.at.elapsed() < INFO_TTL)
+        {
+            return Some(facts.clone());
+        }
+        let (ip, role) = node.resolve_member(device_id).await?;
+        if role.is_controller() {
+            return None;
+        }
+        let known = lock(&self.ports)
+            .get(device_id)
+            .filter(|(known_ip, _)| *known_ip == ip)
+            .map(|(_, port)| *port);
+        match known {
+            Some(port) => match probe_port(node, ip, port).await {
+                Ok(info) if info.device_id == device_id => {
+                    lock(&self.infos).insert(device_id.to_string(), InfoFacts::of(&info));
+                }
+                _ => {
+                    lock(&self.ports).remove(device_id);
+                    self.locate(node, ip, device_id).await.ok()?;
+                }
+            },
+            None => {
+                self.locate(node, ip, device_id).await.ok()?;
+            }
+        }
+        lock(&self.infos).get(device_id).cloned()
+    }
+
+    /// The account's runtime hosts this phone may enter the fleet through,
+    /// best first (`rank_entry_candidates`, the ranking the gateway applies
+    /// for browsers): `{ entryCandidates: [deviceId], candidates: [...] }`.
+    /// Only devices on the device network are listed; `fleet_v1`,
+    /// `fleetLoad` and the backend version come from each device's
+    /// `/obp/mesh/info` (probed at most every 30 s).
+    pub(crate) async fn entry_candidates(&self) -> Result<Value, String> {
+        let (own_device_id, _) = self.signed_in().await?;
+        let devices = self
+            .with_directory(|directory, token| async move { directory.devices(&token).await })
+            .await?;
+        let Some(link) = self.link() else {
+            return Ok(entry_answer(Vec::new()));
+        };
+        let status = link.refresh().await;
+        let routed = entry_rows(&own_device_id, &devices, &status);
+        let facts: Vec<Option<InfoFacts>> = match link.node() {
+            Some(node) => {
+                futures::future::join_all(
+                    routed
+                        .iter()
+                        .map(|candidate| self.info_facts(&node, &candidate.device_id)),
+                )
+                .await
+            }
+            None => vec![None; routed.len()],
+        };
+        let candidates = routed
+            .into_iter()
+            .zip(facts)
+            .map(|(candidate, facts)| match facts {
+                Some(facts) => facts.apply(candidate),
+                None => candidate,
+            })
+            .collect::<Vec<_>>();
+        Ok(entry_answer(rank_entry_candidates(&candidates)))
+    }
+}
+
+/// How long a device's `/obp/mesh/info` facts are reused for the ranking.
+const INFO_TTL: Duration = Duration::from_secs(30);
+
+/// What a device's `/obp/mesh/info` says about it as a fleet entry.
+#[derive(Debug, Clone)]
+struct InfoFacts {
+    at: std::time::Instant,
+    fleet_protocol: Option<u32>,
+    fleet_load: Option<u32>,
+    version: Option<String>,
+}
+
+impl InfoFacts {
+    fn of(info: &obp::MeshInfo) -> Self {
+        // `fleetLoad` (attached fleet clients) is read from the wire shape so
+        // a device info without it (older hosts) stays unknown.
+        let fleet_load = serde_json::to_value(info)
+            .ok()
+            .and_then(|value| value.get("fleetLoad").and_then(Value::as_u64))
+            .map(|load| load.min(u64::from(u32::MAX)) as u32);
+        Self {
+            at: std::time::Instant::now(),
+            fleet_protocol: info
+                .capabilities
+                .iter()
+                .any(|capability| capability == FLEET_V1_CAPABILITY)
+                .then_some(1),
+            fleet_load,
+            version: Some(info.backend_version.trim().to_string())
+                .filter(|version| !version.is_empty()),
+        }
+    }
+
+    fn apply(&self, candidate: FleetEntryCandidate) -> FleetEntryCandidate {
+        FleetEntryCandidate {
+            fleet_protocol: self.fleet_protocol,
+            fleet_load: self.fleet_load,
+            version: self.version.clone().or(candidate.version.clone()),
+            ..candidate
+        }
+    }
+}
+
+fn entry_answer(ranked: Vec<FleetEntryCandidate>) -> Value {
+    json!({
+        "entryCandidates": ranked.iter().map(|candidate| candidate.device_id.as_str()).collect::<Vec<_>>(),
+        "candidates": ranked,
+    })
+}
+
+/// The directory's runtime hosts that are on the device network now, as
+/// entry candidates before their `/obp/mesh/info` facts: online, a full
+/// host (a desktop; a row without a kind predates kinds and is one), the
+/// Link latency and the directory's version. This phone, controllers
+/// (phones, browser sessions) and the cloud agent (not a Link member) are
+/// left out.
+fn entry_rows(
+    own_device_id: &str,
+    devices: &[account::DirectoryDevice],
+    status: &MeshStatus,
+) -> Vec<FleetEntryCandidate> {
+    devices
+        .iter()
+        .filter(|device| device.device_id != own_device_id)
+        .filter(|device| !is_controller_kind(device))
+        .filter(|device| device.device_kind.as_deref() != Some(CLOUD_AGENT_KIND))
+        .filter_map(|device| {
+            let peer = status.peer(&device.device_id)?;
+            if peer.role.is_controller() {
+                return None;
+            }
+            Some(FleetEntryCandidate {
+                device_id: device.device_id.clone(),
+                online: true,
+                fleet_protocol: None,
+                full_host: matches!(device.device_kind.as_deref(), None | Some("desktop")),
+                latency_ms: peer
+                    .latency_ms
+                    .filter(|latency| latency.is_finite() && *latency >= 0.0)
+                    .map(|latency| latency.round().min(f64::from(u32::MAX)) as u32),
+                fleet_load: None,
+                version: device.client_version.clone(),
+            })
+        })
+        .collect()
+}
+
+/// The directory kind of the account's cloud agent node: reached through
+/// the server, never over the device network.
+const CLOUD_AGENT_KIND: &str = "cloud_agent";
+
+/// A stream to `ip:port` over the device network.
+async fn open_stream(
+    node: &Arc<LinkNode>,
+    ip: Ipv4Addr,
+    port: u16,
+) -> Result<Box<dyn obp::Io>, String> {
+    node.connect_addr(SocketAddr::from((ip, port)), obp::CONNECT_TIMEOUT)
+        .await
+        .map(|stream| Box::new(stream) as Box<dyn obp::Io>)
+}
+
+/// `/obp/mesh/info` of `ip:port`, bounded by the probe timeout.
+async fn probe_port(
+    node: &Arc<LinkNode>,
+    ip: Ipv4Addr,
+    port: u16,
+) -> Result<obp::MeshInfo, String> {
+    let probe = async {
+        let stream = open_stream(node, ip, port).await?;
+        obp::probe_info(stream, &format!("{ip}:{port}")).await
+    };
+    tokio::time::timeout(obp::PROBE_TIMEOUT, probe)
+        .await
+        .map_err(|_| format!("mesh_unreachable: {ip}:{port} did not answer"))?
+}
+
+/// How `connect` opens a device connection (`optionsJson` of the module's
+/// `connect`): `{ fleet: { protocol, cursor } }`. Read tolerantly: an
+/// unreadable or absent `fleet` connects plainly.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConnectOptions {
+    pub(crate) fleet: Option<FleetHello>,
+}
+
+impl ConnectOptions {
+    pub(crate) fn from_json(text: Option<&str>) -> Self {
+        let Some(text) = text.map(str::trim).filter(|text| !text.is_empty()) else {
+            return Self::default();
+        };
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            log::warn!("Unreadable connect options; connecting without the fleet hello");
+            return Self::default();
+        };
+        let fleet = value
+            .get("fleet")
+            .filter(|fleet| fleet.is_object())
+            .and_then(|fleet| serde_json::from_value::<FleetHello>(fleet.clone()).ok())
+            .filter(|fleet| fleet.protocol >= 1);
+        Self { fleet }
     }
 }
 
@@ -911,6 +1134,9 @@ pub(crate) struct DeviceLink {
     controller: Weak<Controller>,
     current: tokio::sync::Mutex<Option<Arc<obp::Connection>>>,
     resume: Mutex<obp::Resume>,
+    /// The fleet hello and the vector cursor it resumes from, advanced as
+    /// origin-tagged events are delivered; `None` for a plain connection.
+    fleet: Mutex<Option<FleetHello>>,
     closed: std::sync::atomic::AtomicBool,
 }
 
@@ -930,7 +1156,10 @@ impl DeviceLink {
             .controller
             .upgrade()
             .ok_or_else(|| "the controller stopped".to_string())?;
-        let resume = lock(&self.resume).clone();
+        let mut resume = lock(&self.resume).clone();
+        resume.fleet = lock(&self.fleet)
+            .as_ref()
+            .and_then(|fleet| serde_json::to_value(fleet).ok());
         let connection = Arc::new(controller.dial(&self.device_id, resume).await?);
         {
             let mut resume = lock(&self.resume);
@@ -944,18 +1173,11 @@ impl DeviceLink {
     }
 
     /// `{version, platform, dataDir}` of the device backend (the UI's
-    /// `ready()`); the hello also carries scope and capabilities.
+    /// `ready()`); the hello also carries scope and capabilities, and a
+    /// fleet entry's `fleet` answer (`{protocol, cursorState, deviceId}`).
     pub(crate) async fn hello(&self) -> Result<Value, String> {
         let connection = self.current().await?;
-        let hello = connection.hello();
-        Ok(json!({
-            "version": hello["backend"]["version"],
-            "platform": hello["backend"]["platform"],
-            "dataDir": Value::Null,
-            "scope": hello["scope"],
-            "capabilities": hello["capabilities"],
-            "deviceId": self.device_id,
-        }))
+        Ok(ready_info(&self.device_id, connection.hello()))
     }
 
     /// Runs one command on the device backend.
@@ -997,19 +1219,23 @@ impl DeviceLink {
                 }
             };
             let floor = after.or_else(|| lock(&self.resume).last_seq);
-            let fresh: Vec<&Value> = batch
+            let fresh = {
+                let mut fleet = lock(&self.fleet);
+                let cursor = fleet.as_mut().map(|fleet| &mut fleet.cursor);
+                fresh_events(&batch, floor, cursor)
+            };
+            if let Some(last) = batch
                 .iter()
-                .filter(|event| floor.is_none_or(|floor| event.seq > floor))
-                .map(|event| &event.json)
-                .collect();
-            if let Some(last) = batch.last() {
+                .rev()
+                .find(|event| origin_of(&event.json).is_none())
+            {
                 let mut resume = lock(&self.resume);
                 if resume.last_seq.is_none_or(|seq| last.seq > seq) {
                     resume.last_seq = Some(last.seq);
                 }
             }
             if !fresh.is_empty() {
-                return Ok(Value::Array(fresh.into_iter().cloned().collect()).to_string());
+                return Ok(Value::Array(fresh).to_string());
             }
         }
     }
@@ -1022,6 +1248,76 @@ impl DeviceLink {
             }
         }
     }
+}
+
+/// The UI's `ready()` info from a device's hello.
+fn ready_info(device_id: &str, hello: &Value) -> Value {
+    let mut info = json!({
+        "version": hello["backend"]["version"],
+        "platform": hello["backend"]["platform"],
+        "dataDir": Value::Null,
+        "scope": hello["scope"],
+        "capabilities": hello["capabilities"],
+        "deviceId": device_id,
+    });
+    // A fleet entry answers the fleet hello; an older entry has no `fleet`
+    // and the UI stays single-device.
+    if let Some(Value::Object(fleet)) = hello.get("fleet") {
+        let mut fleet = fleet.clone();
+        fleet
+            .entry("deviceId".to_string())
+            .or_insert_with(|| json!(device_id));
+        info["fleet"] = Value::Object(fleet);
+    }
+    info
+}
+
+/// `(origin, originInstance)` of a fleet frame; `None` for a plain one.
+fn origin_of(event: &Value) -> Option<(&str, &str)> {
+    let origin = event["origin"]
+        .as_str()
+        .filter(|origin| !origin.is_empty())?;
+    Some((origin, event["originInstance"].as_str().unwrap_or_default()))
+}
+
+/// The events of `batch` the UI has not seen: a fleet frame by its origin's
+/// cursor (which it advances; `backend://events-dropped` restarts the origin
+/// at the notice's seq), a plain one by `floor`.
+fn fresh_events(
+    batch: &[obp::Event],
+    floor: Option<u64>,
+    mut cursor: Option<&mut FleetCursor>,
+) -> Vec<Value> {
+    let mut fresh = Vec::new();
+    for event in batch {
+        match (origin_of(&event.json), cursor.as_deref_mut()) {
+            (Some((origin, instance)), Some(cursor)) => {
+                if event.json["event"] == "backend://events-dropped" {
+                    cursor.0.insert(
+                        origin.to_string(),
+                        openbitfun_product_domains::fleet::FleetOriginCursor {
+                            instance_id: instance.to_string(),
+                            seq: event.seq,
+                        },
+                    );
+                } else if cursor.has_seen(origin, instance, event.seq) {
+                    continue;
+                } else {
+                    cursor.advance(origin, instance, event.seq);
+                }
+            }
+            // A tagged frame on a connection opened without the fleet
+            // hello: the UI's wire dedups it per origin.
+            (Some(_), None) => {}
+            (None, _) => {
+                if floor.is_some_and(|floor| event.seq <= floor) {
+                    continue;
+                }
+            }
+        }
+        fresh.push(event.json.clone());
+    }
+    fresh
 }
 
 #[cfg(test)]
@@ -1098,6 +1394,184 @@ mod tests {
         assert!(rows
             .iter()
             .all(|row| row["unavailable"]["code"] == "network_down"));
+    }
+
+    #[test]
+    fn entry_candidates_rank_routed_runtime_hosts_with_their_info_facts() {
+        let devices: Vec<account::DirectoryDevice> = serde_json::from_value(json!([
+            {"device_id": "phone", "device_kind": "mobile"},
+            {"device_id": "mac", "device_kind": "desktop", "client_version": "1.0.0"},
+            {"device_id": "cli", "device_kind": "cli", "client_version": "1.0.0"},
+            {"device_id": "old", "client_version": "0.9.0"},
+            {"device_id": "busy", "device_kind": "desktop", "client_version": "1.0.0"},
+            {"device_id": "tablet", "device_kind": "mobile"},
+            {"device_id": "cloud-1", "device_kind": "cloud_agent"},
+            {"device_id": "off", "device_kind": "desktop", "online": false},
+        ]))
+        .unwrap();
+        let mut status = MeshStatus::new(MeshState::Running, None);
+        status.peers = vec![
+            peer("mac", NodeRole::Device, MeshRoute::DirectLan, None),
+            peer("cli", NodeRole::Device, MeshRoute::DirectLan, None),
+            peer("old", NodeRole::Device, MeshRoute::RelayedServer, None),
+            peer("busy", NodeRole::Device, MeshRoute::DirectLan, None),
+            peer(
+                "tablet",
+                NodeRole::Controller,
+                MeshRoute::RelayedServer,
+                None,
+            ),
+        ];
+        let rows = entry_rows("phone", &devices, &status);
+        let ids: Vec<&str> = rows.iter().map(|row| row.device_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["mac", "cli", "old", "busy"],
+            "routed runtime hosts only: no phone, controller, cloud agent or offline device"
+        );
+        assert!(rows[0].full_host && !rows[1].full_host && rows[2].full_host);
+        assert_eq!(rows[0].latency_ms, Some(13));
+
+        let facts = |capabilities: &[&str], load: Option<u64>, version: &str| {
+            let mut info = json!({
+                "deviceId": "x", "protocol": 1, "capabilities": capabilities,
+                "backendVersion": version, "fingerprint": "sha256:x",
+            });
+            if let Some(load) = load {
+                info["fleetLoad"] = json!(load);
+            }
+            InfoFacts::of(&serde_json::from_value::<obp::MeshInfo>(info).unwrap())
+        };
+        let fleet = facts(&["mesh_v1", FLEET_V1_CAPABILITY], Some(0), "1.1.0");
+        assert_eq!(fleet.fleet_protocol, Some(1));
+        let legacy = facts(&["mesh_v1"], None, "");
+        assert_eq!((legacy.fleet_protocol, legacy.fleet_load), (None, None));
+        let candidates = vec![
+            fleet.apply(rows[0].clone()),
+            fleet.apply(rows[1].clone()),
+            legacy.apply(rows[2].clone()),
+            facts(&[FLEET_V1_CAPABILITY], Some(4), "1.1.0").apply(rows[3].clone()),
+        ];
+        assert_eq!(
+            candidates[2].version.as_deref(),
+            Some("0.9.0"),
+            "the directory's version stays without one"
+        );
+        let answer = entry_answer(rank_entry_candidates(&candidates));
+        assert_eq!(
+            answer["entryCandidates"],
+            json!(["mac", "busy", "cli", "old"]),
+            "fleet_v1, then a desktop, then fewer attached clients; a legacy host last"
+        );
+        assert_eq!(answer["candidates"][1]["fleetLoad"], 4);
+        assert_eq!(entry_answer(Vec::new())["entryCandidates"], json!([]));
+    }
+
+    #[test]
+    fn connect_options_read_the_fleet_hello_tolerantly() {
+        let options = ConnectOptions::from_json(Some(
+            r#"{"fleet":{"protocol":1,"cursor":{"mac":{"instanceId":"i1","seq":7}}},"other":1}"#,
+        ));
+        let fleet = options.fleet.unwrap();
+        assert_eq!(fleet.protocol, 1);
+        assert!(fleet.cursor.has_seen("mac", "i1", 7));
+        assert_eq!(
+            serde_json::to_value(&fleet).unwrap(),
+            json!({"protocol": 1, "cursor": {"mac": {"instanceId": "i1", "seq": 7}}})
+        );
+        for plain in [
+            None,
+            Some(""),
+            Some("not json"),
+            Some("{}"),
+            Some(r#"{"fleet":{"protocol":0}}"#),
+            Some(r#"{"fleet":5}"#),
+        ] {
+            assert!(
+                ConnectOptions::from_json(plain).fleet.is_none(),
+                "{plain:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ready_info_carries_the_fleet_answer_of_a_fleet_entry() {
+        let hello = json!({
+            "scope": "account-device", "capabilities": ["mesh_v1", "fleet_v1"],
+            "backend": {"version": "1.1.0", "platform": "macos"},
+            "fleet": {"protocol": 1, "cursorState": {"mac": "resumed"}},
+        });
+        let info = ready_info("mac", &hello);
+        assert_eq!(info["fleet"]["cursorState"]["mac"], "resumed");
+        assert_eq!(info["fleet"]["deviceId"], "mac", "the entry is named");
+        assert_eq!(info["version"], "1.1.0");
+        let old = ready_info("old", &json!({"scope": "account-device", "backend": {}}));
+        assert!(
+            old.get("fleet").is_none(),
+            "an older entry leaves the UI single-device"
+        );
+    }
+
+    #[test]
+    fn fleet_frames_are_deduplicated_per_origin_and_plain_ones_by_seq() {
+        let event = |seq: u64, origin: Option<(&str, &str)>, name: &str| {
+            let mut json = json!({"seq": seq, "event": name, "payload": {}});
+            if let Some((origin, instance)) = origin {
+                json["origin"] = json!(origin);
+                json["originInstance"] = json!(instance);
+            }
+            obp::Event { seq, json }
+        };
+        let mut cursor: FleetCursor =
+            serde_json::from_value(json!({"mac": {"instanceId": "i1", "seq": 5}})).unwrap();
+        let batch = vec![
+            event(5, Some(("mac", "i1")), "agentic://text-chunk"),
+            event(6, Some(("mac", "i1")), "agentic://text-chunk"),
+            event(2, Some(("pc", "p1")), "agentic://text-chunk"),
+            event(1, Some(("mac", "i2")), "agentic://text-chunk"),
+            event(1, Some(("pc", "p1")), "agentic://text-chunk"),
+        ];
+        let fresh = fresh_events(&batch, Some(100), Some(&mut cursor));
+        let seen: Vec<(String, u64)> = fresh
+            .iter()
+            .map(|event| {
+                (
+                    event["origin"].as_str().unwrap().to_string(),
+                    event["seq"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [("mac".to_string(), 6), ("pc".to_string(), 2), ("mac".to_string(), 1)],
+            "a replayed frame is dropped, a new instance restarts its origin, a plain floor does not apply"
+        );
+        assert!(cursor.has_seen("mac", "i2", 1) && cursor.has_seen("pc", "p1", 2));
+
+        let dropped = vec![
+            event(40, Some(("pc", "p1")), "backend://events-dropped"),
+            event(41, Some(("pc", "p1")), "agentic://text-chunk"),
+            event(3, Some(("pc", "p1")), "agentic://text-chunk"),
+        ];
+        let fresh = fresh_events(&dropped, None, Some(&mut cursor));
+        assert_eq!(
+            fresh.len(),
+            2,
+            "the notice restarts the origin at its own seq"
+        );
+        assert!(cursor.has_seen("pc", "p1", 41));
+
+        let plain = vec![
+            event(3, None, "a"),
+            event(4, None, "b"),
+            event(9, Some(("mac", "i1")), "c"),
+        ];
+        let fresh = fresh_events(&plain, Some(3), None);
+        assert_eq!(
+            fresh.len(),
+            2,
+            "a plain connection floors plain frames and passes tagged ones"
+        );
     }
 
     #[test]
@@ -1209,7 +1683,10 @@ mod live {
                 tokio::time::sleep(Duration::from_secs(2)).await;
             };
             let started = Instant::now();
-            let handle = controller.connect(target.clone()).await.unwrap();
+            let handle = controller
+                .connect(target.clone(), ConnectOptions::default())
+                .await
+                .unwrap();
             println!("connected to {target} in {} ms", elapsed_ms(started));
             let link = controller.device_link(handle).unwrap();
             println!("hello: {}", link.hello().await.unwrap());

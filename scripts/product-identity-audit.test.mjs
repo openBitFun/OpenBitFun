@@ -344,14 +344,14 @@ test('rejects pre-1.0 minimum versions and OpenBitFun release assets', () => {
 });
 
 test('normalizes Windows separators and skips dependency and generated output roots', () => {
-  assert.equal(normalizeRepositoryPath('src\\mobile-web\\index.ts'), 'src/mobile-web/index.ts');
+  assert.equal(normalizeRepositoryPath('src\\nsh-ui\\index.ts'), 'src/nsh-ui/index.ts');
   assert.equal(shouldAuditPath('packages/ui/src/index.ts'), true);
   assert.equal(shouldAuditContent('packages/ui/src/index.ts'), true);
 
   for (const file of [
     'node_modules/example/index.js',
     'target/debug/generated.rs',
-    'src/mobile-web/dist/index.js',
+    'src/nsh-ui/dist/index.js',
     'docs/superpowers/archive.md',
   ]) {
     assert.equal(shouldAuditPath(file), false, file);

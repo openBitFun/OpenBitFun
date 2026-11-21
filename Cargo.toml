@@ -9,6 +9,7 @@ members = [
     "src/apps/relay-server",
     "src/apps/relay-server/link-node",
     "src/apps/relay-server/link-gateway",
+    "src/apps/relay-server/superagent",
     "src/apps/miniapp-market-server",
     "src/crates/interfaces/acp",
     "src/crates/interfaces/app-server",
@@ -68,7 +69,6 @@ exclude = [
     # The NSH phone app's native module (same reason; NSH builds it in its own
     # generated workspace).
     "src/apps/mobile-nsh/native",
-    "third_party/eioc",
     # OpenBitFun Link: the EasyTier fork keeps its own workspace (upstream
     # manifests inherit from it); consumed by path from openbitfun-link.
     "third_party/easytier",
@@ -80,7 +80,7 @@ resolver = "2"
 
 # Shared package metadata — single source of truth for version
 [workspace.package]
-version = "1.0.12" # x-release-please-version
+version = "2.0.0" # x-release-please-version
 authors = ["OpenBitFun Team"]
 edition = "2021"
 
@@ -289,7 +289,6 @@ qrcode = { version = "0.14", default-features = false }
 
 # WebSocket client
 tokio-tungstenite = { version = "0.29", default-features = false }
-sioc = { version = "0.5.0", default-features = false }
 
 # Local speech recognition
 sherpa-onnx = "1.13.4"
@@ -319,8 +318,6 @@ tokio-rustls = { version = "0.26", default-features = false }
 [patch.crates-io]
 # Restore compatibility with Rust's never-type fallback in the Linux D-Bus calls.
 screenshots = { path = "third_party/screenshots" }
-# Keep Socket.IO on the product-owned ring provider; see the patch note.
-eioc = { path = "third_party/eioc" }
 # Restore macOS traffic-light geometry after the queued native style reset.
 # See third_party/tao/OPENBITFUN-PATCH.md for the upstream source and removal condition.
 tao = { path = "third_party/tao" }

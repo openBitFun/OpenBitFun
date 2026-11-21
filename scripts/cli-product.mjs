@@ -7,10 +7,43 @@ import { fileURLToPath } from 'node:url';
 import { extractProductConfigArg } from './product-customization/cli.mjs';
 import { ensureProductOutputDirectory, productBuildEnvironment } from './product-customization/projections.mjs';
 import { ProductDefinitionError, resolveProductDefinition } from './product-customization/resolver.mjs';
+import { writeUiBundleManifest } from './write-ui-bundle-manifest.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const PLUGIN_HOST_DIST = join(ROOT, 'src', 'apps', 'extension-host', 'dist');
 const PLUGIN_HOST_ENTRIES = ['extension-host.js'];
+/** The build variable `src/apps/cli/build.rs` embeds the web UI bundle from. */
+export const CLI_WEB_UI_VARIABLE = 'OPENBITFUN_CLI_WEB_UI_DIR';
+
+/**
+ * Builds the NSH web UI of this tree into `outDir` and writes its manifest:
+ * the CLI embeds it (`src/apps/cli/src/ui_bundle.rs`) so a browser that
+ * controls this CLI runs the UI of the same commit. Returns the bundle dir.
+ * `OPENBITFUN_CLI_WEB_UI=off` builds a CLI without it on purpose (it then
+ * answers `ui_bundle_unavailable`); a failing web build fails the CLI build.
+ */
+export function prepareCliWebUi(plan, { spawn = spawnSync, write = writeUiBundleManifest } = {}) {
+  if (plan.environment[CLI_WEB_UI_VARIABLE]) return plan.environment[CLI_WEB_UI_VARIABLE];
+  if (plan.environment.OPENBITFUN_CLI_WEB_UI === 'off') {
+    console.warn('[product] OPENBITFUN_CLI_WEB_UI=off: this CLI ships no web UI; browsers cannot open it');
+    return null;
+  }
+  rmSync(plan.webUiOutPath, { recursive: true, force: true });
+  const built = spawn('nsh', ['package', 'src/nsh-ui', '--target', 'web', '-o', plan.webUiOutPath], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if (built.error || built.status !== 0) {
+    throw new Error(
+      `nsh package --target web failed (${built.error?.message ?? `status ${built.status}`}); install the NSH toolchain, or set OPENBITFUN_CLI_WEB_UI=off to build a CLI without the web UI`,
+    );
+  }
+  const { bundleDir, bundleId } = write(plan.webUiOutPath, { product: plan.resolution.assembly.productId });
+  plan.environment[CLI_WEB_UI_VARIABLE] = bundleDir;
+  console.log(`[product] embedding the web UI ${bundleId}: ${bundleDir}`);
+  return bundleDir;
+}
 
 export function stagePluginHostResources(destination, sourceDirectory = PLUGIN_HOST_DIST) {
   for (const entry of PLUGIN_HOST_ENTRIES) {
@@ -100,6 +133,7 @@ export function cliBuildPlan(resolution, mode, forwardArgs = [], platform = proc
       'resources',
       'ext-host',
     ),
+    webUiOutPath: join(resolution.outputDir, 'web-ui'),
   };
 }
 
@@ -110,6 +144,7 @@ export function selectedCliPlan(args, mode) {
 }
 
 function run(plan) {
+  if (plan.mode === 'build') prepareCliWebUi(plan);
   const result = spawnSync('cargo', plan.cargoArgs, { cwd: ROOT, env: plan.environment, stdio: 'inherit' });
   if (result.error || result.status !== 0) throw result.error ?? new Error(`cargo exited with status ${result.status}`);
   if (plan.mode === 'build') {

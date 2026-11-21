@@ -74,6 +74,7 @@ import {
   formatDuration,
   formatPercent,
   formatPlural,
+  formatTime,
   formatTimestamp,
   formatTokens,
   LARGE_MARKDOWN_CHARS,
@@ -99,7 +100,14 @@ import {
   answerPermissionBatch,
   answeringPermission,
   permissionsForSession,
+  type PermissionRequestView,
 } from "../permissionStore";
+import type { PromptAnswer } from "../attentionStore";
+import { fleetDeviceById, fleetSessionRow } from "../fleetStore";
+import type { FleetPrompt } from "../fleetTypes";
+import { activeConversationId } from "../superagentStore";
+import { PromptAttention, ReviewNotesBar, type AttentionDevice } from "../ui/attention";
+import { DeviceBadge, StateMark, type MarkState } from "../ui/fleet";
 import {
   type QuestionPrompt,
   type QuestionView,
@@ -175,8 +183,16 @@ import {
 } from "../mentionStore";
 import {
   activeSession,
+  activeSessionDevice,
   activeSessionId,
+  activeSessionKey,
   activeWorkspace,
+  auxPaneOpen,
+  auxPaneTab,
+  goBackScene,
+  navigateScene,
+  openAllSessions,
+  openDevicePage,
   activeWorkspaceId,
   agentTypeOf,
   archiveSessionRow,
@@ -209,12 +225,16 @@ import {
   turnsLoading,
 } from "../state";
 import {
+  compactLayout,
   controlHeight,
   fontMono,
+  layout,
   palette,
   radii,
+  space,
   textLineHeight,
   textSize,
+  textStyle,
   textTracking,
 } from "../theme";
 import { searchRevealTurn } from "../globalSearchStore";
@@ -241,12 +261,20 @@ import {
   tactileActiveStyle,
 } from "../ui/motion";
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import { sessionMenuItems } from "../ui/sessionActions";
 import { ReviewLauncherDialog } from "../ui/ReviewLauncher";
 import { VoiceDictationBar, VoiceInputButtons, type VoiceComposerActions } from "../ui/VoiceInput";
 import { GenUIToolItem } from "../genui/GenUIView";
 import { isGenUICall } from "../genui/genuiSource";
 import { ensureVoiceSettings } from "../voiceInputStore";
-import { isReviewCommand, launchReviewFromCommand, openReviewLauncher } from "../reviewStore";
+import {
+  isReviewCommand,
+  launchReviewFromCommand,
+  openReviewLauncher,
+  reviewNotesFor,
+  sendReviewNotes,
+  sendingReviewNotes,
+} from "../reviewStore";
 import {
   Badge,
   Button,
@@ -349,7 +377,19 @@ const IMAGE_EXTENSIONS = new Set([
   "avif",
 ]);
 
-const composerDisabled = computed(() => !activeSessionId());
+/** The open session's device when the index says it is offline (fleet only). A function: it is read before the header's computeds exist. */
+function sessionDeviceOffline(): { name: string; asOfMs: number } | null {
+  const device = fleetDeviceById(activeSessionDevice());
+  return device && device.state === "offline" ? { name: device.name, asOfMs: device.asOfMs } : null;
+}
+
+/** "{device} is offline. Showing what was saved at {time}." (spec §4.12). */
+function offlineNoticeText(): string {
+  const offline = sessionDeviceOffline();
+  return offline ? tr("session.offlineNotice", { device: offline.name, time: formatTime(offline.asOfMs) }) : "";
+}
+
+const composerDisabled = computed(() => !activeSessionId() || sessionDeviceOffline() !== null);
 
 function focusRingStyle(offset = 2): ViewStyle {
   return {
@@ -691,96 +731,353 @@ function handleComposerFileDrop(event: { uris: string[]; mimeTypes: string[] }):
   attachOrReferenceFileUris(event.uris, event.mimeTypes ?? []);
 }
 
-/** Calm borderless conversation header (`38px`) sitting directly on `palette().canvas`. */
-/** The header's one status mark: a running turn wins over an archived session. */
-const headerStatus = computed<"" | "running" | "archived">(() => {
-  if (runningTurnId() || isStreamDraining()) return "running";
-  const session = activeSession();
-  return session && isArchived(session) ? "archived" : "";
+const activePermissions = computed(() => permissionsForSession(activeSessionId()));
+const activeQuestions = computed(() => questionsForSession(activeSessionId()));
+
+/** The session's one header state: shown only when it is not idle (spec §4.5). */
+const headerState = computed<MarkState | null>(() => {
+  if (runningTurnId() || isStreamDraining()) return "working";
+  if (activePermissions().length > 0 || activeQuestions().length > 0) return "needs_you";
+  const id = activeSessionId();
+  const row = id ? fleetSessionRow(activeSessionDevice(), id) : null;
+  if (row?.status === "waiting" || row?.needsAttention) return row.status === "error" ? "failed" : "needs_you";
+  if (row?.status === "error") return "failed";
+  if (row?.status === "running") return "working";
+  return null;
 });
 
+/** The device the open session runs on, as a badge (fleet only; a single-device backend draws none). */
+const sessionDeviceLabel = computed<AttentionDevice | null>(() => {
+  const device = fleetDeviceById(activeSessionDevice());
+  if (!device) return null;
+  return {
+    name: device.name,
+    kind: device.hostKind,
+    exception: device.state === "offline" ? "offline" : device.state === "update_required" ? "update_required" : null,
+    onPress: () => openDevicePage(device.deviceId),
+  };
+});
+
+interface SessionOrigin {
+  conversationId: string;
+  title: string;
+}
+
+/** "Started by OpenBitFun": only when the backend says the session's origin is the superagent. */
+const sessionOrigin = computed<SessionOrigin | null>(() => {
+  const id = activeSessionId();
+  const row = id ? fleetSessionRow(activeSessionDevice(), id) : null;
+  if (row?.origin !== "superagent") return null;
+  const ref = (row as unknown as { jobRef?: { conversationId?: unknown; conversationTitle?: unknown } }).jobRef;
+  return {
+    conversationId: typeof ref?.conversationId === "string" ? ref.conversationId : "",
+    title: typeof ref?.conversationTitle === "string" ? ref.conversationTitle : "",
+  };
+});
+
+function openOrigin(origin: SessionOrigin): void {
+  if (origin.conversationId) activeConversationId.set(origin.conversationId);
+  navigateScene("openbitfun");
+}
+
+type ToolPaneId = "files" | "git" | "terminal" | "browser";
+
+const TOOL_TOGGLES: ReadonlyArray<{ id: ToolPaneId; icon: IconName; label: MessageKey }> = [
+  { id: "files", icon: "folder", label: "tools.files" },
+  { id: "git", icon: "git-branch", label: "tools.changes" },
+  { id: "terminal", icon: "terminal", label: "tools.terminal" },
+  { id: "browser", icon: "globe", label: "tools.browser" },
+];
+
+function toolActive(id: ToolPaneId): boolean {
+  return id === "browser" ? false : auxPaneOpen() && auxPaneTab() === id;
+}
+
+function toggleTool(id: ToolPaneId): void {
+  if (id === "browser") {
+    navigateScene("browser");
+    return;
+  }
+  if (toolActive(id)) auxPaneOpen.set(false);
+  else openInAuxPane(id);
+}
+
+/** A 28 tool toggle; active = `accentSoft` + `accent` (spec §3 Session header). */
+function ToolToggle(props: { id: ToolPaneId; icon: IconName; label: string }) {
+  return (
+    <View
+      role="button"
+      accessibilityLabel={`session-tool-${props.id}`}
+      accessibilityState={{ selected: toolActive(props.id) }}
+      tooltip={compactLayout() ? undefined : <TooltipBubble text={props.label} />}
+      onPress={() => toggleTool(props.id)}
+      style={{
+        width: controlHeight.sm,
+        height: controlHeight.sm,
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        backgroundColor: toolActive(props.id) ? palette().accentSoft : "transparent",
+        cursor: "pointer",
+        ...paintTransition(120),
+      }}
+      hoverStyle={{ backgroundColor: toolActive(props.id) ? palette().accentSoft : palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.96)}
+      focusVisibleStyle={focusRingStyle()}
+    >
+      <Icon name={props.icon} size={16} color={toolActive(props.id) ? palette().accent : palette().textSecondary} />
+    </View>
+  );
+}
+
+/** The workspace the open session belongs to: the device's index row, else the open workspace. */
+function sessionWorkspaceName(): string {
+  const id = activeSessionId();
+  const device = fleetDeviceById(activeSessionDevice());
+  const workspace = id ? device?.workspaces.find(item => item.sessions.some(session => session.sessionId === id)) : undefined;
+  return workspace?.name ?? activeWorkspace()?.name ?? "";
+}
+
+/**
+ * The permission mode, only when this session deviates from the device's
+ * default (spec §4.5): 20 high, radius 6, `chip`, 12 `textSecondary`.
+ */
+function DeviationChip() {
+  const mode = () => {
+    const id = activeSessionId();
+    if (!id || permissionModeSupported() === false || followsDefaultMode(id)) return null;
+    const current = effectivePermissionMode(id);
+    return current === permissionMode() ? null : current;
+  };
+  return (
+    <If when={mode()}>
+      {current => (
+        <View
+          accessibilityLabel="session-permission-deviation"
+          style={{
+            height: 20,
+            justifyContent: "center",
+            paddingHorizontal: space.chip,
+            borderRadius: radii.sm,
+            borderCurve: "continuous",
+            backgroundColor: palette().chip,
+            flexShrink: 0,
+          }}
+        >
+          <Text style={textStyle("caption", { color: palette().textSecondary })}>
+            {current() === "ask" ? tr("session.askFirst") : permissionModeLabel(current())}
+          </Text>
+        </View>
+      )}
+    </If>
+  );
+}
+
+/** Device › workspace, each segment pressable (spec §3 Session header). */
+function SessionBreadcrumb() {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0, flexShrink: 1 }}>
+      <If when={sessionDeviceLabel()}>
+        {device => (
+          <DeviceBadge
+            testID="session-breadcrumb-device"
+            name={device().name}
+            kind={device().kind}
+            exception={device().exception}
+            onPress={device().onPress}
+          />
+        )}
+      </If>
+      <If when={!compactLayout() ? sessionWorkspaceName() : ""}>
+        {name => (
+          <>
+            <If when={sessionDeviceLabel()}>
+              <Icon name="chevron-right" size={12} color={palette().textMuted} />
+            </If>
+            <Text
+              role="button"
+              accessibilityLabel="session-breadcrumb-workspace"
+              onPress={() => openAllSessions("by-device")}
+              style={{
+                ...textStyle("caption", { color: palette().textSecondary }),
+                fontWeight: "500",
+                minWidth: 0,
+                flexShrink: 1,
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+                cursor: "pointer",
+                ...paintTransition(120),
+              }}
+              hoverStyle={{ color: palette().text }}
+            >
+              {name()}
+            </Text>
+          </>
+        )}
+      </If>
+    </View>
+  );
+}
+
+function headerTitle(): string {
+  const session = activeSession();
+  if (session) return sessionTitle(session);
+  // A session of another device is in its device's index, not in this device's list.
+  const id = activeSessionId();
+  const row = id ? fleetSessionRow(activeSessionDevice(), id) : null;
+  return row?.title || activeWorkspace()?.name || tr("sessions.newConversation");
+}
+
+function ThreadMenuTrigger() {
+  return (
+    <View ref={el => threadMenuAnchor.set(el)} style={{ flexShrink: 0 }}>
+      <If
+        when={compactLayout()}
+        else={
+          <IconButton
+            icon="more"
+            size="sm"
+            active={threadMenuOpen()}
+            accessibilityLabel="thread-actions-trigger"
+            tooltip={tr("nav.threadActions")}
+            onPress={toggleThreadMenu}
+          />
+        }
+      >
+        <TouchTargetButton
+          icon="more"
+          tone={threadMenuOpen() ? "active" : "ghost"}
+          accessibilityLabel="thread-actions-trigger"
+          onPress={toggleThreadMenu}
+        />
+      </If>
+    </View>
+  );
+}
+
+/**
+ * The session header (spec §3, §4.5). Desktop: 44 (64 with the origin line),
+ * padding 0 24; title 16/600, the device › workspace breadcrumb, then on the
+ * right the state word (only when not idle), the tool toggles (≥ 720) and ⋯.
+ * Phone: 48, ‹ back, the title 15/600 over the device badge, ⋯.
+ */
 function ConversationHeader() {
   return (
     <View>
-      <View
-        style={{
-          minHeight: sessionsCompact() ? 44 : 38,
-          paddingHorizontal: sessionsCompact() ? 16 : 18,
-          paddingVertical: 5,
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-          backgroundColor: palette().canvas,
-          borderBottomWidth: 1,
-          borderColor: transcriptScrolled() ? palette().borderSubtle : "transparent",
-          ...paintTransition(MOTION_DURATION.fast),
-        }}
-      >
-        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text
+      <If
+        when={compactLayout()}
+        else={
+          <View
+            testID="session-header"
             style={{
-              minWidth: 0,
-              color: palette().text,
-              fontSize: textSize(14),
-              lineHeight: textLineHeight(14, 1.3),
-              fontWeight: "600",
-              letterSpacing: textTracking(14),
-              flexShrink: 1,
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
+              minHeight: sessionOrigin() ? 64 : layout.topBarHeight,
+              paddingHorizontal: sessionsCompact() ? space.lg : space.xxl,
+              justifyContent: "center",
+              gap: space.hair,
+              backgroundColor: palette().canvas,
+              borderBottomWidth: 1,
+              borderColor: transcriptScrolled() ? palette().borderSubtle : "transparent",
+              ...paintTransition(MOTION_DURATION.fast),
             }}
           >
-            {activeSession()
-              ? sessionTitle(activeSession()!)
-              : activeWorkspace()?.name || tr("sessions.newConversation")}
-          </Text>
-          <If when={headerStatus()}>
-            {status => (
-              <View
-                accessibilityLabel={`session-status-${status()}`}
-                tooltip={
-                  status() === "running"
-                    ? tr("chat.status.running")
-                    : tr("sessions.archivedBadge")
-                }
-                style={{ flexShrink: 0 }}
-              >
-                <StatusDot
-                  kind={status() === "running" ? "accent" : "warning"}
-                  size={6}
-                  pulse={status() === "running"}
-                />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: layout.topBarHeight - space.lg }}>
+              <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.md }}>
+                <Text
+                  testID="session-title"
+                  style={{
+                    ...textStyle("sectionTitle"),
+                    minWidth: 0,
+                    flexShrink: 1,
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {headerTitle()}
+                </Text>
+                <SessionBreadcrumb />
+                <DeviationChip />
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
+                <If when={headerState()}>
+                  {state => (
+                    <View accessibilityLabel={`session-status-${state()}`} style={{ marginRight: space.sm }}>
+                      <StateMark state={state()} withWord={true} />
+                    </View>
+                  )}
+                </If>
+                <If when={!sessionsCompact()}>
+                  <Each of={TOOL_TOGGLES} key={tool => tool.id}>
+                    {tool => <ToolToggle id={tool().id} icon={tool().icon} label={tr(tool().label)} />}
+                  </Each>
+                </If>
+                <ThreadMenuTrigger />
+              </View>
+            </View>
+            <If when={sessionOrigin()}>
+              {origin => (
+                <Text
+                  role="button"
+                  accessibilityLabel="session-origin"
+                  onPress={() => openOrigin(origin())}
+                  style={{
+                    ...textStyle("caption"),
+                    alignSelf: "flex-start",
+                    cursor: "pointer",
+                    ...paintTransition(120),
+                  }}
+                  hoverStyle={{ color: palette().textSecondary }}
+                >
+                  {`${origin().title ? tr("session.origin", { title: origin().title }) : tr("session.originPlain")} ›`}
+                </Text>
+              )}
+            </If>
+          </View>
+        }
+      >
+        <View
+          testID="session-header"
+          style={{
+            height: layout.phoneTopBarHeight,
+            paddingHorizontal: space.xs,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.xs,
+            backgroundColor: palette().canvas,
+            borderBottomWidth: 1,
+            borderColor: palette().borderSubtle,
+          }}
+        >
+          <TouchTargetButton icon="chevron-left" tone="ghost" accessibilityLabel="session-back" onPress={goBackScene} />
+          <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+            <Text
+              testID="session-title"
+              style={{
+                ...textStyle("prose"),
+                fontWeight: "600",
+                lineHeight: textLineHeight(15, 20 / 15),
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {headerTitle()}
+            </Text>
+            <If when={sessionDeviceLabel()}>
+              {device => (
+                <DeviceBadge name={device().name} kind={device().kind} exception={device().exception} onPress={device().onPress} />
+              )}
+            </If>
+          </View>
+          <If when={headerState()}>
+            {state => (
+              <View accessibilityLabel={`session-status-${state()}`}>
+                <StateMark state={state()} />
               </View>
             )}
           </If>
+          <ThreadMenuTrigger />
         </View>
-
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 2 }}>
-          <View ref={el => threadMenuAnchor.set(el)} style={{ flexShrink: 0 }}>
-            <If
-              when={sessionsCompact()}
-              else={
-                <IconButton
-                  icon="more"
-                  size="sm"
-                  active={threadMenuOpen()}
-                  accessibilityLabel="thread-actions-trigger"
-                  tooltip={tr("nav.threadActions")}
-                  onPress={toggleThreadMenu}
-                />
-              }
-            >
-              <TouchTargetButton
-                icon="more"
-                tone={threadMenuOpen() ? "active" : "ghost"}
-                accessibilityLabel="thread-actions-trigger"
-                onPress={toggleThreadMenu}
-              />
-            </If>
-          </View>
-        </View>
-      </View>
+      </If>
 
       {/* Anchored Thread Actions Dropdown Overlay */}
       <If when={threadMenuOpen()}>
@@ -1117,6 +1414,34 @@ function ThreadActionsSurface(props: { placement: Placement }) {
                 openReviewLauncher();
               }}
             />
+            {/* Copy session ID, Export as Markdown and Show storage folder: the same items as the All sessions ⋯. */}
+            <Each
+              of={sessionMenuItems(
+                {
+                  sessionId: session().sessionId,
+                  deviceId: activeSessionDevice(),
+                  workspaceId: activeWorkspaceId() ?? "",
+                  title: sessionTitle(session()),
+                  archived: isArchived(session()),
+                },
+                { omit: ["rename", "archive", "delete"] },
+              )}
+              key={item => item.id}
+            >
+              {item => (
+                <ThreadMenuAction
+                  icon={item().icon ?? "more"}
+                  label={item().label}
+                  hint={item().hint}
+                  disabled={item().disabled}
+                  accessibilityLabel={item().accessibilityLabel}
+                  onPress={() => {
+                    closeThreadMenu();
+                    item().onSelect?.();
+                  }}
+                />
+              )}
+            </Each>
             <ThreadMenuAction
               icon={isArchived(session()) ? "undo" : "layers"}
               label={isArchived(session()) ? tr("sessions.restore") : tr("sessions.archive")}
@@ -1334,7 +1659,7 @@ function CopyChip(props: { partKey: string; text: string }) {
 }
 
 /** User messages longer than this many lines start clamped behind "Show more". */
-const USER_MESSAGE_CLAMP_LINES = 8;
+const USER_MESSAGE_CLAMP_LINES = 12;
 const expandedUserMessages = signal<string[]>([]);
 
 interface UserImage {
@@ -1424,8 +1749,14 @@ function UserBubble(props: {
       onMouseLeave={() => hovered.set(false)}
       style={{
         alignSelf: "flex-end",
-        maxWidth: Math.min(768, Math.round(contentWidth() * 0.72)),
-        gap: 4,
+        // Spec §3 User: min(560, 72 %) of the column actually drawn (a phone's is narrower than `contentWidth()`).
+        maxWidth: Math.min(
+          560,
+          Math.round(
+            Math.min(contentWidth(), sessionsPaneWidth() > 0 ? sessionsPaneWidth() - 2 * sessionsPadX() : contentWidth()) * 0.72,
+          ),
+        ),
+        gap: space.xs,
         alignItems: "flex-end",
       }}
     >
@@ -1435,18 +1766,16 @@ function UserBubble(props: {
       <View
         style={{
           backgroundColor: palette().userBubble,
-          borderRadius: radii.md,
+          borderRadius: radii.lg,
           borderCurve: "continuous",
-          paddingHorizontal: 12,
-          paddingVertical: 8,
-          gap: 4,
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          gap: space.xs,
         }}
       >
         <Text
           style={{
-            color: palette().userBubbleText,
-            fontSize: textSize(14),
-            lineHeight: textLineHeight(14, 1.58),
+            ...textStyle("prose", { color: palette().userBubbleText }),
             userSelect: "text",
             numberOfLines: long() && !expanded() ? USER_MESSAGE_CLAMP_LINES : undefined,
             textOverflow: long() && !expanded() ? "ellipsis" : undefined,
@@ -1469,14 +1798,7 @@ function UserBubble(props: {
             }}
             style={{ alignSelf: "flex-start", cursor: "pointer" }}
           >
-            <Text
-              style={{
-                color: palette().accent,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
-                fontWeight: "500",
-              }}
-            >
+            <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}>
               {expanded() ? tr("chat.showLess") : tr("chat.showMore")}
             </Text>
           </View>
@@ -1494,14 +1816,7 @@ function UserBubble(props: {
       >
         <If when={props.timestamp ? formatTimestamp(props.timestamp) : ""}>
           {stamp => (
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.3),
-                fontVariant: ["tabular-nums"],
-              }}
-            >
+            <Text style={textStyle("caption", { tabular: true })}>
               {stamp()}
             </Text>
           )}
@@ -1625,10 +1940,10 @@ function ThinkingBlock(props: {
           alignSelf: "flex-start",
           flexDirection: "row",
           alignItems: "center",
-          gap: 6,
-          paddingHorizontal: 6,
-          paddingVertical: 3,
-          marginLeft: -6,
+          gap: space.chip,
+          minHeight: 24,
+          paddingHorizontal: space.chip,
+          marginLeft: -space.chip,
           borderRadius: radii.sm,
           borderCurve: "continuous",
           cursor: "pointer",
@@ -1638,35 +1953,16 @@ function ThinkingBlock(props: {
         focusVisibleStyle={focusRingStyle(-1)}
       >
         <If when={Boolean(props.live)} else={<Icon name="bulb" size={14} color={palette().textMuted} />}>
-          <BrandSpinner size={12} color={palette().accent} variant="bars" />
+          <BrandSpinner size={12} color={palette().accent} variant="matrix" />
         </If>
-        <Text
-          style={{
-            color: palette().textSecondary,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.35),
-            fontWeight: "500",
-          }}
-        >
-          {props.kind === "summary" ? tr("chat.thinkingSummary") : tr("chat.thinking")}
-        </Text>
-        <Text
-          style={{
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.35),
-            fontVariant: ["tabular-nums"],
-          }}
-        >
+        <Text style={textStyle("label", { color: palette().textMuted })}>
           {props.live
-            ? tr("sessions.thinkingStreaming")
-            : formatPlural(props.text.length, "format.characterOne", "format.characterOther")}
+            ? tr("state.thinking")
+            : props.kind === "summary"
+              ? tr("chat.thinkingSummary")
+              : tr("chat.thinking")}
         </Text>
-        <Icon
-          name={expanded() ? "chevron-down" : "chevron-right"}
-          size={14}
-          color={palette().textMuted}
-        />
+        <Icon name={expanded() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
       </View>
       <If when={expanded()}>
         <View
@@ -1927,14 +2223,24 @@ function turnTokenLabel(turn: unknown): string {
 }
 
 /** One footer per settled turn: copy the answer, fork from here, and what it cost. */
-function TurnFooter(props: { turn: unknown }) {
+/** Copy, fork and "{model} · {duration}": on hover only (spec §3 Assistant). */
+function TurnFooter(props: { turn: unknown; visible?: boolean }) {
   const answer = computed(() => turnAnswerText(props.turn));
   const turnId = computed(() => turnKeyOf(props.turn));
   const meta = computed(() =>
     [turnMetadataLabel(props.turn), turnTokenLabel(props.turn)].filter(Boolean).join(" · "),
   );
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 2, marginLeft: -4 }}>
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.hair,
+        marginLeft: -space.xs,
+        opacity: props.visible === false ? 0 : 1,
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+    >
       <If when={answer()}>
         {text => (
           <IconButton
@@ -1966,17 +2272,7 @@ function TurnFooter(props: { turn: unknown }) {
       </If>
       <If when={meta()}>
         {text => (
-          <Text
-            style={{
-              marginLeft: 6,
-              color: palette().textMuted,
-              fontSize: textSize(11),
-              lineHeight: textLineHeight(11, 1.3),
-              fontVariant: ["tabular-nums"],
-            }}
-          >
-            {text()}
-          </Text>
+          <Text style={{ ...textStyle("caption", { tabular: true }), marginLeft: space.chip }}>{text()}</Text>
         )}
       </If>
     </View>
@@ -2040,9 +2336,15 @@ async function resumeInterruptedTurn(turn: unknown): Promise<void> {
 }
 
 /** Why a settled turn stopped, inside that turn, with a retry that re-sends its prompt. */
+/**
+ * A failed turn (spec §3 Error): no box, a 2 px `danger` rail, "The turn
+ * stopped: {reason}" and a ghost "Try again" below. A stopped turn is a quiet
+ * notice: `info` 14 and 13 `textMuted`, no rail.
+ */
 function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
   const cancelled = computed(() => props.failure.status === "cancelled" || props.failure.status === "interrupted");
   const prompt = computed(() => userPartsOf(props.turn)[0]?.text ?? "");
+  const reason = computed(() => (props.failure.message ? localizeHostError(props.failure.message) : ""));
   const raw = computed(() => {
     try {
       return JSON.stringify({ error: props.failure.message, detail: props.failure.detail ?? null }, null, 2);
@@ -2053,43 +2355,44 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
   return (
     <View
       style={{
-        gap: 6,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: radii.md,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: cancelled() ? palette().borderSubtle : palette().dangerBorder,
-        backgroundColor: cancelled() ? palette().surfaceSubtle : palette().dangerSoft,
+        gap: space.sm,
+        paddingLeft: cancelled() ? 0 : space.md,
+        borderLeftWidth: cancelled() ? 0 : 2,
+        borderColor: palette().danger,
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Icon
-          name={cancelled() ? "info" : "alert-circle"}
-          size={14}
-          color={cancelled() ? palette().textMuted : palette().danger}
-        />
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
+        <View style={{ height: textLineHeight(14, 20 / 14), justifyContent: "center" }}>
+          <Icon name={cancelled() ? "info" : "close"} size={14} color={cancelled() ? palette().textMuted : palette().danger} />
+        </View>
         <Text
           style={{
+            ...textStyle(cancelled() ? "label" : "body", { color: cancelled() ? palette().textMuted : palette().text }),
+            fontWeight: "400",
             flex: 1,
             minWidth: 0,
-            color: cancelled() ? palette().textSecondary : palette().danger,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.4),
-            fontWeight: "500",
+            userSelect: "text",
           }}
         >
-          {cancelled() ? tr("chat.turnInterrupted") : tr("chat.turnFailed")}
+          {cancelled()
+            ? tr("chat.turnInterrupted")
+            : reason()
+              ? tr("session.turnStopped", { reason: reason() })
+              : tr("chat.turnFailed")}
         </Text>
         <If when={!cancelled() && props.failure.message ? "copy" : ""}>
           <CopyChip partKey={`failure-${turnKeyOf(props.turn)}`} text={raw()} />
         </If>
+      </View>
+      <If when={!cancelled() ? failureDetailLines(props.failure).join(" · ") : ""}>
+        {line => <Text style={{ ...textStyle("mono", { color: palette().textMuted }), userSelect: "text" }}>{line()}</Text>}
+      </If>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
         <If when={interruptedRecoveryOf(props.turn) && !runningTurnId() ? "resume" : ""}>
           <Button
             label={tr("chat.resume")}
-            variant="primary"
-            size="xs"
-            leadingIcon="play"
+            variant="ghost"
+            size="sm"
             loading={resumingTurn() === turnKeyOf(props.turn)}
             accessibilityLabel={`resume-turn-${turnKeyOf(props.turn)}`}
             onPress={() => void resumeInterruptedTurn(props.turn)}
@@ -2098,10 +2401,9 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
         <If when={prompt() && !runningTurnId() ? prompt() : ""}>
           {text => (
             <Button
-              label={tr("chat.retry")}
-              variant="secondary"
-              size="xs"
-              leadingIcon="refresh"
+              label={tr("common.tryAgain")}
+              variant="ghost"
+              size="sm"
               accessibilityLabel={`retry-turn-${turnKeyOf(props.turn)}`}
               onPress={() => {
                 jumpToTranscriptEnd();
@@ -2111,35 +2413,6 @@ function TurnFailureNotice(props: { turn: unknown; failure: TurnFailure }) {
           )}
         </If>
       </View>
-      <If when={props.failure.message ? localizeHostError(props.failure.message) : ""}>
-        {message => (
-          <Text
-            style={{
-              color: palette().textSecondary,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.45),
-              userSelect: "text",
-            }}
-          >
-            {message()}
-          </Text>
-        )}
-      </If>
-      <If when={failureDetailLines(props.failure).join(" · ")}>
-        {line => (
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontFamily: fontMono,
-              fontSize: textSize(11),
-              lineHeight: textLineHeight(11, 1.4),
-              userSelect: "text",
-            }}
-          >
-            {line()}
-          </Text>
-        )}
-      </If>
     </View>
   );
 }
@@ -2566,9 +2839,12 @@ function TranscriptTurn(props: { turn: () => unknown }) {
   const key = computed(() => turnKeyOf(props.turn()));
   const matches = computed(() => turnMatchesSearch(props.turn(), transcriptSearchQuery()));
   const items = computed(() => turnItems(props.turn()));
+  const hovered = signal(false);
   return (
     <View
       ref={el => registerTurnRef(key(), el)}
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
       style={{
         gap: 12,
         marginHorizontal: matches() ? -10 : 0,
@@ -2604,7 +2880,7 @@ function TranscriptTurn(props: { turn: () => unknown }) {
       </If>
 
       <If when={items().length > 0}>
-        <TurnFooter turn={props.turn()} />
+        <TurnFooter turn={props.turn()} visible={hovered() || compactLayout()} />
       </If>
     </View>
   );
@@ -2795,110 +3071,6 @@ function Transcript() {
 }
 
 /** The tool the running turn is in right now, as its row would title it. */
-const currentLiveToolLabel = computed(() => {
-  const rounds = liveTurn()?.rounds ?? [];
-  for (let r = rounds.length - 1; r >= 0; r -= 1) {
-    const tools = rounds[r].tools;
-    for (let t = tools.length - 1; t >= 0; t -= 1) {
-      const tool = tools[t];
-      if (tool.status === "running" || tool.status === "queued" || tool.status === "waiting" || tool.status === "confirmation") {
-        const call = liveToolToCallView(tool);
-        const state = persistedToolState(call);
-        const target = toolTargetOf(call);
-        const title = toolTitleOf(call, state);
-        return target ? `${title} ${target}` : title;
-      }
-    }
-  }
-  return "";
-});
-
-function RunningAmbientCard() {
-  const motion = enterMotion("fadeInUp", MOTION_DURATION.fast);
-  // Elapsed seconds since the host said the turn started, ticking while shown.
-  const now = signal(Date.now());
-  const timer = setInterval(() => now.set(Date.now()), 1000);
-  cleanup(() => clearInterval(timer));
-  const elapsed = computed(() => {
-    const sessionId = activeSessionId();
-    const started = sessionId ? turnStartedAt(sessionId) : undefined;
-    if (!started || !runningTurnId()) return "";
-    return formatDuration(Math.max(0, now() - started));
-  });
-  return (
-    <View
-      style={[
-        {
-          width: "100%",
-          maxWidth: contentWidth(),
-          alignSelf: "center",
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-          paddingHorizontal: 10,
-          paddingVertical: 5,
-          borderRadius: radii.md,
-          borderCurve: "continuous",
-          backgroundColor: palette().surfaceSubtle,
-        },
-        motion.style,
-      ]}
-    >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-        <StatusDot kind="accent" size={6} pulse={true} />
-        <Text
-          style={{
-            flexShrink: 1,
-            minWidth: 0,
-            color: palette().textSecondary,
-            fontSize: textSize(11.5),
-            lineHeight: textLineHeight(11.5, 1.32),
-            fontWeight: "500",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {currentLiveToolLabel()
-            ? currentLiveToolLabel()
-            : hasLiveTools() && !hasLiveText()
-            ? tr("sessions.runningTools")
-            : hasLiveThinking() && !hasLiveText()
-              ? tr("sessions.thinkingLive")
-              : hasLiveText() || isStreamDraining()
-                ? tr("sessions.streamingResponse")
-                : tr("sessions.workingOnTurn")}
-        </Text>
-      </View>
-      <Text
-        style={{
-          flexShrink: 0,
-          maxWidth: 200,
-          color: palette().textMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.25),
-          fontWeight: "500",
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {[elapsed(), activeModelLabel()].filter(Boolean).join(" · ")}
-      </Text>
-    </View>
-  );
-}
-
-/** Layer 1 Ambient streaming status strip directly above the composer while a turn runs or drains. */
-function RunningAmbientStrip() {
-  return (
-    <If when={Boolean(runningTurnId() || isStreamDraining() || hasLiveContent())}>
-      <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: 4 }}>
-        <RunningAmbientCard />
-      </View>
-    </If>
-  );
-}
-
 const slashMatches = computed(() => slashCommandsFor(composerText(), Boolean(runningTurnId())));
 
 async function executeSlashCommand(command: SlashCommand, arg = ""): Promise<void> {
@@ -3731,12 +3903,12 @@ function ComposerDock() {
               value={composerText()}
               placeholder={
                 composerDisabled()
-                  ? tr("sessions.noSessionSelected")
+                  ? offlineNoticeText() || tr("sessions.noSessionSelected")
                   : runningTurnId()
                     ? midTurnSendPolicy() === "queue"
                       ? tr("sessions.composerQueuePlaceholder")
-                      : tr("sessions.composerSteerPlaceholder")
-                    : tr("sessions.composerIdlePlaceholder")
+                      : tr("session.placeholderRunning")
+                    : tr("session.placeholder")
               }
               accessibilityLabel="composer"
               multiline={true}
@@ -3952,36 +4124,26 @@ function ComposerDock() {
           </View>
         </View>
 
-        {/* Quiet Single-Line Shortcut / Mode Hint Row (color locked to palette().textMuted) */}
-        <View
-          style={{
-            paddingHorizontal: 6,
-            flexDirection: "row",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          <Text
-            style={{
-              flex: 1,
-              minWidth: 0,
-              color: palette().textMuted,
-              fontSize: textSize(10.5),
-              lineHeight: textLineHeight(10.5, 1.3),
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {composerDisabled()
-              ? tr("sessions.noSessionSelected")
-              : runningTurnId()
-                ? midTurnSendPolicy() === "queue"
+        {/* The mode line shows only while it says something: no idle shortcut hint (spec §5); shortcuts live in the send tooltip. */}
+        <If when={composerDisabled() || Boolean(runningTurnId())}>
+          <View style={{ paddingHorizontal: space.chip, flexDirection: "row", alignItems: "center" }}>
+            <Text
+              style={{
+                ...textStyle("caption"),
+                flex: 1,
+                minWidth: 0,
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {composerDisabled()
+                ? offlineNoticeText() || tr("sessions.noSessionSelected")
+                : midTurnSendPolicy() === "queue"
                   ? tr("sessions.queuedUntilFinish")
-                  : tr("sessions.steeringRunning")
-                : tr("sessions.composerShortcutHint")}
-          </Text>
-        </View>
+                  : tr("sessions.steeringRunning")}
+            </Text>
+          </View>
+        </If>
       </View>
 
       <DropdownMenu
@@ -5022,100 +5184,84 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
   );
 }
 
-const activePermissions = computed(() => permissionsForSession(activeSessionId()));
 
 const rejectingPermission = signal<string | null>(null);
 const rejectFeedback = signal("");
 
+/** A pending request as the prompt the attention atoms draw (the session's own store keeps it). */
+function permissionAsPrompt(request: PermissionRequestView): FleetPrompt {
+  return {
+    deviceId: request.deviceId,
+    workspaceId: activeWorkspaceId() ?? "",
+    sessionId: request.sessionId,
+    kind: "permission",
+    promptId: request.requestId,
+    revision: 0,
+    title: request.action,
+    payload: { action: request.action, resources: request.resources },
+    payloadTruncated: false,
+    answerable: true,
+  };
+}
+
+/** Answers through `permissionStore`, which drops the request from its list. */
+async function sendSessionPermission(prompt: FleetPrompt, answer: PromptAnswer): Promise<void> {
+  if (answer.kind !== "permission") return;
+  await answerPermission(prompt.promptId, answer.reply);
+}
+
+/**
+ * The session's blocked prompts, above the composer: one `PromptAttention`
+ * per request in a radius-12 hairline box (spec §3 AttentionItem, composer
+ * placement). The reason field and "Allow all" stay for this session's own
+ * requests.
+ */
 function PermissionCard() {
   const motion = enterMotion("fadeInUp", MOTION_DURATION.fast);
   return (
     <View
       style={[
-        {
-          width: "100%",
-          maxWidth: contentWidth(),
-          alignSelf: "center",
-          padding: 14,
-          gap: 10,
-          borderRadius: radii.lg,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().warningBorder,
-          backgroundColor: palette().panelRaised,
-        },
+        { width: "100%", maxWidth: contentWidth(), alignSelf: "center", gap: space.sm },
         motion.style,
       ]}
     >
-      <Each of={activePermissions()} key={request => request.requestId}>
+      <Each of={activePermissions()} key={request => `${request.deviceId}/${request.requestId}`}>
         {(request, idx) => (
-          <View
-            style={{
-              gap: 9,
-              borderTopWidth: idx() > 0 ? 1 : 0,
-              borderColor: palette().borderSubtle,
-              paddingTop: idx() > 0 ? 10 : 0,
-            }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <View
-                style={{
-                  width: 22,
-                  height: 22,
-                  flexShrink: 0,
-                  borderRadius: radii.xs,
-                  borderCurve: "continuous",
-                  backgroundColor: palette().warningSoft,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Icon name="shield" size={13} color={palette().warning} />
-              </View>
-              <Text
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  color: palette().warning,
-                  fontSize: textSize(12.5),
-                  lineHeight: textLineHeight(12.5, 1.35),
-                  fontWeight: "600",
-                  numberOfLines: 1,
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {tr("sessions.approvalNeeded", { action: request().action })}
-              </Text>
-            </View>
-            <If when={request().resources.length > 0}>
-              <Scroll
-                style={{
-                  maxHeight: 96,
-                  minHeight: 0,
-                  borderRadius: radii.sm,
-                  borderCurve: "continuous",
-                  borderWidth: 1,
-                  borderColor: palette().borderSubtle,
-                  backgroundColor: palette().surfaceTertiary,
-                }}
-                scrollbar={true}
-                contentStyle={{ paddingHorizontal: 10, paddingVertical: 7 }}
-              >
-                <Text
-                  style={{
-                    color: palette().text,
-                    fontFamily: fontMono,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.5),
-                    userSelect: "text",
+          <PromptAttention
+            prompt={permissionAsPrompt(request())}
+            placement="composer"
+            source=""
+            device={sessionDeviceLabel()}
+            send={sendSessionPermission}
+            testID={`session-prompt-${request().requestId}`}
+            extraActions={
+              <>
+                <Button
+                  label={tr("chat.permission.rejectWithReason")}
+                  variant="ghost"
+                  size="sm"
+                  accessibilityLabel={`reject-with-reason-${request().requestId}`}
+                  onPress={() => {
+                    rejectFeedback.set("");
+                    rejectingPermission.set(rejectingPermission() === request().requestId ? null : request().requestId);
                   }}
-                >
-                  {request().resources.join(" · ")}
-                </Text>
-              </Scroll>
-            </If>
+                />
+                <If when={idx() === 0 && activePermissions().length > 1}>
+                  <Button
+                    label={tr("chat.permission.allowAll", { count: activePermissions().length })}
+                    variant="ghost"
+                    size="sm"
+                    accessibilityLabel="allow-all-permissions"
+                    loading={answeringPermission()?.reply === "batch-once"}
+                    disabled={Boolean(answeringPermission())}
+                    onPress={() => void answerPermissionBatch(request().requestId, "once")}
+                  />
+                </If>
+              </>
+            }
+          >
             <If when={rejectingPermission() === request().requestId}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
                 <InputBox
                   value={rejectFeedback()}
                   placeholder={tr("chat.permission.reasonPlaceholder")}
@@ -5134,9 +5280,8 @@ function PermissionCard() {
                 />
                 <Button
                   label={tr("chat.permission.sendReject")}
-                  variant="danger"
+                  variant="secondary"
                   size="sm"
-                  pill={true}
                   onPress={() => {
                     const id = request().requestId;
                     const reason = rejectFeedback().trim();
@@ -5147,75 +5292,63 @@ function PermissionCard() {
                 />
               </View>
             </If>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-              <Button
-                label={tr("sessions.allowOnce")}
-                variant="primary"
-                size="sm"
-                pill={true}
-                loading={answeringPermission()?.requestId === request().requestId && answeringPermission()?.reply === "once"}
-                disabled={Boolean(answeringPermission())}
-                onPress={() => void answerPermission(request().requestId, "once")}
-              />
-              <Button
-                label={tr("sessions.alwaysAllow")}
-                variant="secondary"
-                size="sm"
-                pill={true}
-                loading={answeringPermission()?.requestId === request().requestId && answeringPermission()?.reply === "always"}
-                disabled={Boolean(answeringPermission())}
-                onPress={() => void answerPermission(request().requestId, "always")}
-              />
-              <Button
-                label={tr("sessions.reject")}
-                variant="danger"
-                size="sm"
-                pill={true}
-                loading={answeringPermission()?.requestId === request().requestId && answeringPermission()?.reply === "reject"}
-                disabled={Boolean(answeringPermission())}
-                onPress={() => void answerPermission(request().requestId, "reject")}
-              />
-              <Button
-                label={tr("chat.permission.rejectWithReason")}
-                variant="ghost"
-                size="sm"
-                accessibilityLabel={`reject-with-reason-${request().requestId}`}
-                onPress={() => {
-                  rejectFeedback.set("");
-                  rejectingPermission.set(rejectingPermission() === request().requestId ? null : request().requestId);
-                }}
-              />
-              <If when={idx() === 0 && activePermissions().length > 1}>
-                <Button
-                  label={tr("chat.permission.allowAll", { count: activePermissions().length })}
-                  variant="outline"
-                  size="sm"
-                  pill={true}
-                  accessibilityLabel="allow-all-permissions"
-                  loading={answeringPermission()?.reply === "batch-once"}
-                  disabled={Boolean(answeringPermission())}
-                  onPress={() => void answerPermissionBatch(request().requestId, "once")}
-                />
-              </If>
-            </View>
-          </View>
+          </PromptAttention>
         )}
       </Each>
     </View>
   );
 }
 
+/** A transcript notice (spec §3 Notice): `info` 14 + 13 `textMuted`, no rail. */
+function SessionOfflineNotice() {
+  return (
+    <If when={offlineNoticeText()}>
+      {text => (
+        <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: space.sm }}>
+          <View
+            accessibilityLabel="session-offline-notice"
+            style={{ width: "100%", maxWidth: contentWidth(), alignSelf: "center", flexDirection: "row", alignItems: "center", gap: space.sm }}
+          >
+            <Icon name="info" size={14} color={palette().textMuted} />
+            <Text style={{ ...textStyle("label", { color: palette().textMuted }), fontWeight: "400", flex: 1, minWidth: 0 }}>{text()}</Text>
+          </View>
+        </View>
+      )}
+    </If>
+  );
+}
+
+/** "{count} notes · Send to agent" above the composer while this session has review notes. */
+function SessionReviewNotes() {
+  const notes = computed(() => reviewNotesFor(activeSessionKey()).filter(note => note.text.trim()));
+  return (
+    <If when={notes().length > 0}>
+      <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: space.sm }}>
+        <View style={{ width: "100%", maxWidth: contentWidth(), alignSelf: "center" }}>
+          <ReviewNotesBar
+            count={notes().length}
+            sending={sendingReviewNotes()}
+            onSend={() => {
+              const key = activeSessionKey();
+              if (key) void sendReviewNotes(key, text => sendTurn(text));
+            }}
+          />
+        </View>
+      </View>
+    </If>
+  );
+}
+
 function PermissionPrompts() {
   return (
     <If when={activePermissions().length > 0}>
-      <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: 6 }}>
+      <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: space.sm }}>
         <PermissionCard />
       </View>
     </If>
   );
 }
 
-const activeQuestions = computed(() => questionsForSession(activeSessionId()));
 
 function QuestionPrompts() {
   return (
@@ -5245,44 +5378,34 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
     <View
       style={[
         {
-          padding: 15,
-          gap: 12,
+          paddingVertical: space.md,
+          paddingHorizontal: space.lg,
+          gap: space.md,
           borderRadius: radii.lg,
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: palette().border,
-          backgroundColor: palette().panelRaised,
+          borderColor: palette().borderSubtle,
+          backgroundColor: palette().canvas,
         },
         motion.style,
       ]}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <View
-          style={{
-            width: 22,
-            height: 22,
-            flexShrink: 0,
-            borderRadius: radii.xs,
-            borderCurve: "continuous",
-            backgroundColor: palette().accentSoft,
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Icon name="help-circle" size={13} color={palette().accent} />
+      {/* Row 1 of the attention shell (spec §3 AttentionItem): mark, device, source. */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: 20 }}>
+        <StateMark state="needs_you" />
+        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <If when={sessionDeviceLabel()}>
+            {device => (
+              <>
+                <DeviceBadge name={device().name} kind={device().kind} exception={device().exception} onPress={device().onPress} />
+                <Text style={textStyle("caption")}>·</Text>
+              </>
+            )}
+          </If>
+          <Text style={{ ...textStyle("label", { color: palette().text }), flexShrink: 1, minWidth: 0 }}>
+            {tr("sessions.questionTitle")}
+          </Text>
         </View>
-        <Text
-          style={{
-            flex: 1,
-            minWidth: 0,
-            color: palette().accent,
-            fontSize: textSize(12.5),
-            lineHeight: textLineHeight(12.5, 1.35),
-            fontWeight: "600",
-          }}
-        >
-          {tr("sessions.questionTitle")}
-        </Text>
       </View>
       <Scroll style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
         <View style={{ gap: 12 }}>
@@ -5298,11 +5421,7 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
       <If when={prompt().error}>
         {message => (
           <Text
-            style={{
-              color: palette().warning,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.35),
-            }}
+            style={textStyle("caption", { color: palette().danger })}
           >
             {localizeHostError(message())}
           </Text>
@@ -5343,7 +5462,6 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
           label={prompt().submitting ? tr("common.sending") : tr("sessions.sendAnswer")}
           variant="primary"
           size="sm"
-          pill={true}
           loading={prompt().submitting}
           disabled={prompt().submitting}
           onPress={() => void submitQuestion(prompt().toolId)}
@@ -5382,22 +5500,11 @@ function QuestionBlock(props: {
   return (
     <View style={{ gap: 8 }}>
       <Text
-        style={{
-          color: palette().text,
-          fontSize: textSize(13),
-          lineHeight: textLineHeight(13, 1.4),
-          fontWeight: "600",
-        }}
+        style={textStyle("body", { color: palette().text })}
       >
         {question().header ? `${question().header}: ${question().question}` : question().question}
       </Text>
-      <Text
-        style={{
-          color: palette().textMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.3),
-        }}
-      >
+      <Text style={textStyle("caption")}>
         {question().multiSelect
           ? tr("sessions.questionChooseMulti")
           : tr("sessions.questionChooseOne")}
@@ -5694,9 +5801,10 @@ export function SessionsScene() {
     >
       <ConversationHeader />
       <Transcript />
-      <RunningAmbientStrip />
+      <SessionOfflineNotice />
       <PermissionPrompts />
       <QuestionPrompts />
+      <SessionReviewNotes />
       <ReviewLauncherDialog />
       <ComposerDock />
     </View>

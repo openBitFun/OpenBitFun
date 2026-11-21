@@ -16,7 +16,7 @@ import { tr } from "./i18n";
 import { Storage, computed, signal } from "nsh";
 import { markSessionSeenOnHost, type SessionSummary } from "./api";
 import { pendingPermissions } from "./permissionStore";
-import { activeSessionId, runningTurns, sessions } from "./state";
+import { activeSessionId, runningTurns, sessionKey, sessions } from "./state";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 
 export type SessionStatusKind = "running" | "approval" | "queued" | "unread" | "failed";
@@ -149,7 +149,7 @@ export const statusOfSession = computed<(sessionId: string, lastActivityMs?: num
     const acknowledged = acknowledgedAt();
     const rows = sessions();
     return sessionId => {
-      if (running[sessionId]) return { kind: "running", label: tr("chat.status.running") };
+      if (running[sessionKey(sessionId)]) return { kind: "running", label: tr("chat.status.running") };
       if (approvals.some(request => request.sessionId === sessionId)) {
         return { kind: "approval", label: tr("chat.status.approval") };
       }

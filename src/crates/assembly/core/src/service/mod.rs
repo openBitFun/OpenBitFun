@@ -17,6 +17,8 @@ pub mod decision_model; // Shared decision-model connection and credentials
 pub mod dispatch; // Outbound dispatch observer index and target contracts
 #[cfg(feature = "filesystem")]
 pub mod filesystem; // FileSystem management
+#[cfg(feature = "agent-runtime")]
+pub mod fleet; // This host's fleet digest (owner partition)
 #[cfg(feature = "git")]
 pub mod git; // Git service
 pub mod i18n; // I18n service
@@ -49,6 +51,8 @@ pub mod session_projection_store; // Durable append-only log of the executing Tu
 pub mod session_usage; // Session runtime usage reports
 #[cfg(feature = "agent-runtime")]
 pub mod snapshot; // Snapshot-based change tracking
+#[cfg(feature = "agent-runtime")]
+pub mod superagent_relay; // Device side of the cloud superagent (model relay, switches)
 #[cfg(feature = "agent-runtime")]
 pub mod token_usage; // Token usage tracking
 #[cfg(feature = "web-tools")]

@@ -91,51 +91,17 @@ impl DesktopRuntimeContext {
             loop {
                 match receiver.recv().await {
                     Ok(event) => {
-                        let fanout = crate::api::peer_host_invoke::track_permission_event(&event);
-                        if fanout {
-                            if let Ok(payload) = serde_json::to_value(&event) {
-                                crate::api::remote_connect_api::maybe_fanout_peer_ui_event(
-                                    "permission://event",
-                                    payload,
-                                );
-                            }
-                        }
                         let _ = app.emit("permission://event", event);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if let Ok(requests) = runtime.pending_permission_requests() {
                             for request in requests {
                                 let event = PermissionRequestEvent::Asked { request };
-                                let fanout =
-                                    crate::api::peer_host_invoke::track_permission_event(&event);
-                                if fanout {
-                                    if let Ok(payload) = serde_json::to_value(&event) {
-                                        crate::api::remote_connect_api::maybe_fanout_peer_ui_event(
-                                            "permission://event",
-                                            payload,
-                                        );
-                                    }
-                                }
                                 let _ = app.emit("permission://event", event);
                             }
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        let request_ids =
-                            crate::api::peer_host_invoke::take_tracked_permission_requests();
-                        if let Err(error) =
-                            crate::api::peer_host_invoke::fail_closed_permission_requests(
-                                request_ids,
-                                "Peer permission event stream closed",
-                            )
-                            .await
-                        {
-                            log::warn!(
-                                "Peer permission requests were not fully cancelled: {error}"
-                            );
-                        }
-                        break;
-                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
@@ -296,19 +262,6 @@ mod tests {
                 "retired cloud import {retired_mutation} must not mutate controller sessions"
             );
         }
-        let device_dispatch = remote_connect_api
-            .split_once("async fn execute_local_remote_command(")
-            .expect("device command dispatcher")
-            .1
-            .split_once("#[cfg(test)]")
-            .expect("device command dispatcher boundary")
-            .0;
-        assert!(
-            device_dispatch.contains("crate::api::peer_host_invoke::dispatch(command, args.clone())")
-                && device_dispatch.contains("server.dispatch(other).await"),
-            "device commands must reuse the host and RemoteServer dispatchers that own runtime access"
-        );
-
         for mutation in [
             "pub async fn rollback_session",
             "pub async fn rollback_session_to_turn",

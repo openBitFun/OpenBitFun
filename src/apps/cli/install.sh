@@ -6,7 +6,10 @@
 #   bash install.sh                 # when cwd is src/apps/cli
 #
 # What it does:
-#   1. cargo build -p openbitfun-cli --release (native host arch)
+#   1. cargo build -p openbitfun-cli --release (native host arch), with the
+#      NSH web UI of this tree compiled in when `nsh` is installed (browsers
+#      that control this CLI load exactly that UI; without it they get an
+#      explicit "update OpenBitFun on this device" state)
 #   2. Install openbitfun to ~/.local/bin (override with OPENBITFUN_CLI_BIN_DIR)
 #   3. Idempotently append a PATH block to ~/.bashrc and ~/.zshrc
 #   4. Print explicit current-shell and new-terminal instructions
@@ -20,6 +23,8 @@
 #   OPENBITFUN_CLI_SKIP_SHELLRC  Set to 1 to skip bashrc/zshrc edits
 #   CARGO_TARGET_DIR         Optional cargo target dir (e.g. $HOME/openbitfun-build/target)
 #   CARGO_BUILD_JOBS         Optional rustc parallelism limit for small VPS
+#   OPENBITFUN_CLI_WEB_UI_DIR    A prebuilt web UI bundle to embed (with ui-bundle.json)
+#   OPENBITFUN_CLI_WEB_UI        Set to off to build without the web UI
 
 set -euo pipefail
 
@@ -369,6 +374,24 @@ mkdir -p "$BIN_DIR"
 echo ""
 echo "[1/4] Building openbitfun (release)..."
 cd "$REPO_ROOT"
+# The web UI browsers load from this CLI (src/apps/cli/src/ui_bundle.rs),
+# built from this tree and embedded by build.rs.
+if [ -z "${OPENBITFUN_CLI_WEB_UI_DIR:-}" ] && [ "${OPENBITFUN_CLI_WEB_UI:-}" != "off" ]; then
+  if command -v nsh >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+    WEB_UI_OUT="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/cli-web-ui"
+    rm -rf "$WEB_UI_OUT"
+    nsh package src/nsh-ui --target web -o "$WEB_UI_OUT"
+    node scripts/write-ui-bundle-manifest.mjs "$WEB_UI_OUT"
+    for candidate in "$WEB_UI_OUT"/*/; do
+      if [ -f "${candidate}ui-bundle.json" ]; then
+        export OPENBITFUN_CLI_WEB_UI_DIR="${candidate%/}"
+      fi
+    done
+  else
+    echo "Note: nsh or node not found; this CLI is built without the web UI, so"
+    echo "      browsers cannot open it (install the NSH toolchain and re-run)."
+  fi
+fi
 # Build from workspace root so path deps resolve.
 cargo build -p openbitfun-cli --release --bin openbitfun
 

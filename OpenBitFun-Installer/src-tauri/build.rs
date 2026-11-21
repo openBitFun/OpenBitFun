@@ -8,12 +8,11 @@ use zip::{CompressionMethod, ZipWriter};
 // The native desktop package (`scripts/package-desktop-nsh-windows.mjs`): the
 // NSH runner under the legacy executable name, the backend library, the UI
 // bundle and the resources the backend looks up next to the executable.
-const REQUIRED_PAYLOAD_FILES: [&str; 8] = [
+const REQUIRED_PAYLOAD_FILES: [&str; 7] = [
     "openbitfun-desktop.exe",
     "openbitfun_desktop_lib.dll",
     "nsh/bundle.nshc",
     "nsh/app.json",
-    "mobile-web/dist/index.html",
     "resources/ext-host/extension-host.js",
     "resources/worker_host.js",
     "flashgrep/flashgrep-x86_64-pc-windows-msvc.exe",

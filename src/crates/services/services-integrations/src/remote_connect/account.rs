@@ -1,9 +1,11 @@
-//! GitHub-authenticated device credentials and pairwise encrypted relay messages.
+//! Account-authenticated device credentials and the account device directory
+//! (sign-in, device rows, pair keys). OpenBitFun 2.0 sends no messages over
+//! the 1.x relay; devices talk over OBP on OpenBitFun Link.
 
-use super::{device_crypto, relay_client::PeerEncodingOffer};
+use super::device_crypto;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, OnceCell};
 
@@ -99,57 +101,22 @@ fn is_retired_official_version_path(path: &str, current: &str) -> bool {
             .is_some_and(|version| !version.is_empty() && !version.contains('/'))
 }
 
-/// A host announced that one of its streams changed. Hints are lossy wake-ups;
-/// the subscriber always reads the authoritative page from the host.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StreamHint {
-    pub source_device_id: String,
-    pub stream_id: String,
-    pub epoch: u64,
-    pub cursor: u64,
-}
-
-// Capabilities live with the peer key for this connection generation. Clearing
-// the cell on reconnect/presence change also discards any late negotiation.
+/// The pair key derived from a directory row, cached per device.
 struct PeerCipher {
     key: [u8; 32],
-    host_accepts: AtomicBool,
-    // A device room can include several controllers. A legacy listener keeps
-    // events in JSON until presence invalidates this generation.
-    event_offers: AtomicU8,
+    /// The directory row kind the key lookup reported (`None` from a
+    /// directory that predates it, or for a row without one).
+    kind: Option<String>,
 }
 
-impl PeerCipher {
-    const ACCEPTED: u8 = 1;
-    const LEGACY: u8 = 2;
-
-    fn observe(&self, offer: PeerEncodingOffer) {
-        if let PeerEncodingOffer::Host(accepted) = offer {
-            self.host_accepts.store(accepted, Ordering::Relaxed);
-        }
-        let flag = if offer.accepts_zstd() {
-            Self::ACCEPTED
-        } else {
-            Self::LEGACY
-        };
-        self.event_offers.fetch_or(flag, Ordering::Relaxed);
-    }
-
-    fn accepts_events(&self) -> bool {
-        self.event_offers.load(Ordering::Relaxed) == Self::ACCEPTED
-    }
-}
-
-/// Device-scoped relay credentials and a locally owned X25519 private key.
+/// Device-scoped account credentials and a locally owned X25519 private key.
 #[derive(Clone)]
 pub struct AccountSession {
     pub token: String,
-    hints: tokio::sync::broadcast::Sender<Option<StreamHint>>,
     pub user_id: String,
     pub master_key: [u8; MASTER_KEY_LEN],
     peer_keys: Arc<Mutex<HashMap<String, Arc<OnceCell<Arc<PeerCipher>>>>>>,
     peer_generation: Arc<AtomicU64>,
-    transports: Arc<Mutex<HashMap<String, Arc<OnceCell<Arc<super::relay_client::RelayClient>>>>>>,
 }
 
 impl std::fmt::Debug for AccountSession {
@@ -164,59 +131,11 @@ impl AccountSession {
     pub fn new(token: String, user_id: String, device_secret: [u8; 32]) -> Self {
         Self {
             token,
-            hints: tokio::sync::broadcast::channel(64).0,
             user_id,
             master_key: device_secret,
             peer_keys: Arc::new(Mutex::new(HashMap::new())),
             peer_generation: Arc::new(AtomicU64::new(0)),
-            transports: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    // The receive loop shares the peer keys and hint channel. It must not
-    // retain the registry which owns its own socket after the account closes.
-    pub(super) fn for_peer_messages(&self) -> Self {
-        Self {
-            transports: Default::default(),
-            ..self.clone()
-        }
-    }
-
-    /// Stream change hints from hosts. `None` marks a (re)connect; receiver lag
-    /// means catch up every subscribed stream.
-    pub fn stream_hints(&self) -> tokio::sync::broadcast::Receiver<Option<StreamHint>> {
-        self.hints.subscribe()
-    }
-
-    /// Route an already-decrypted `DeviceEvent` from `source_device_id` to the
-    /// local stream subscribers. Returns true when the event was a stream hint.
-    pub fn deliver_device_event(
-        &self,
-        source_device_id: &str,
-        event: &str,
-        payload: &serde_json::Value,
-    ) -> bool {
-        if event == super::message_encoding::HELLO_EVENT {
-            // The receiver learned the peer's offer while opening the envelope.
-            return true;
-        }
-        if event != super::host_stream::HOST_STREAM_CHANGED_EVENT {
-            return false;
-        }
-        let (Some(stream_id), Some(epoch), Some(cursor)) = (
-            payload["stream_id"].as_str(),
-            payload["epoch"].as_u64(),
-            payload["cursor"].as_u64(),
-        ) else {
-            return true;
-        };
-        let _ = self.hints.send(Some(StreamHint {
-            source_device_id: source_device_id.to_owned(),
-            stream_id: stream_id.to_owned(),
-            epoch,
-            cursor,
-        }));
-        true
     }
 
     pub async fn clear_peer_keys(&self) {
@@ -225,25 +144,19 @@ impl AccountSession {
         keys.clear();
     }
 
-    /// Capture before preparing ciphertext and check immediately before wire
-    /// submission. Reconnect/presence changes retire previously learned offers.
-    pub fn peer_message_guard(&self) -> impl Fn(bool) -> Result<()> + Send + Sync + 'static {
-        let generation = self.peer_generation.clone();
-        let expected = generation.load(Ordering::SeqCst);
-        move |uses_zstd| {
-            // JSON needs no negotiated decoder. Presence may arrive during a
-            // first key lookup, so plain requests retain their working path.
-            if uses_zstd && generation.load(Ordering::SeqCst) != expected {
-                return Err(anyhow!(
-                    "Relay capabilities changed; request was not submitted"
-                ));
-            }
-            Ok(())
-        }
-    }
-
     pub async fn peer_message_key(&self, relay_url: &str, device_id: &str) -> Result<[u8; 32]> {
         Ok(self.peer_cipher(relay_url, device_id).await?.key)
+    }
+
+    /// The directory row kind of `device_id` (`desktop`, `cli`, `mobile`,
+    /// `cloud_agent`, …) from the same cached key lookup; `None` when the
+    /// relay predates the field or the row has no kind.
+    pub async fn peer_device_kind(
+        &self,
+        relay_url: &str,
+        device_id: &str,
+    ) -> Result<Option<String>> {
+        Ok(self.peer_cipher(relay_url, device_id).await?.kind.clone())
     }
 
     async fn peer_cipher(&self, relay_url: &str, device_id: &str) -> Result<Arc<PeerCipher>> {
@@ -272,6 +185,8 @@ impl AccountSession {
             struct PeerKey {
                 device_id: String,
                 public_key: String,
+                #[serde(default)]
+                device_kind: Option<String>,
             }
             let peer: PeerKey = response.json().await?;
             if peer.device_id != device_id {
@@ -281,116 +196,11 @@ impl AccountSession {
             let key = device_crypto::derive_message_key(&self.master_key, &public)?;
             Ok(Arc::new(PeerCipher {
                 key,
-                host_accepts: AtomicBool::new(false),
-                event_offers: AtomicU8::new(0),
+                kind: peer.device_kind.filter(|kind| !kind.trim().is_empty()),
             }))
         })
         .await
         .cloned()
-    }
-
-    pub async fn encrypt_for_peer(
-        &self,
-        relay_url: &str,
-        device_id: &str,
-        plaintext: &str,
-    ) -> Result<(String, String)> {
-        let (data, nonce, _) = self
-            .encrypt_for_peer_with_encoding(relay_url, device_id, plaintext)
-            .await?;
-        Ok((data, nonce))
-    }
-
-    pub async fn encrypt_for_peer_with_encoding(
-        &self,
-        relay_url: &str,
-        device_id: &str,
-        plaintext: &str,
-    ) -> Result<(String, String, bool)> {
-        let peer = self.peer_cipher(relay_url, device_id).await?;
-        super::encryption::encrypt_relay_message_with_encoding(
-            &peer.key,
-            plaintext,
-            peer.accepts_events(),
-        )
-    }
-
-    /// A reply belongs to one RPC caller even when old and new controllers
-    /// share a device identity. Use that request's offer for its response.
-    pub async fn encrypt_reply(
-        &self,
-        relay_url: &str,
-        device_id: &str,
-        plaintext: &str,
-        accepts_zstd: bool,
-    ) -> Result<(String, String)> {
-        let key = self.peer_message_key(relay_url, device_id).await?;
-        super::encryption::encrypt_relay_message(&key, plaintext, accepts_zstd)
-    }
-
-    pub async fn decrypt_from_peer(
-        &self,
-        relay_url: &str,
-        device_id: &str,
-        data: &str,
-        nonce: &str,
-    ) -> Result<String> {
-        let peer = self.peer_cipher(relay_url, device_id).await?;
-        self.open_peer_message(relay_url, device_id, peer, data, nonce, None)
-            .await
-    }
-
-    pub async fn decrypt_peer_message(
-        &self,
-        relay_url: &str,
-        device_id: &str,
-        data: &str,
-        nonce: &str,
-        offer: PeerEncodingOffer,
-    ) -> Result<String> {
-        let peer = self.peer_cipher(relay_url, device_id).await?;
-        self.open_peer_message(relay_url, device_id, peer, data, nonce, Some(offer))
-            .await
-    }
-
-    async fn open_peer_message(
-        &self,
-        relay_url: &str,
-        device_id: &str,
-        peer: Arc<PeerCipher>,
-        data: &str,
-        nonce: &str,
-        offer: Option<PeerEncodingOffer>,
-    ) -> Result<String> {
-        let (peer, bytes) = match super::encryption::open_relay_ciphertext(&peer.key, data, nonce) {
-            Ok(bytes) => (peer, bytes),
-            Err(_) => {
-                // A device can rotate its private key while a controller is
-                // disconnected. Refresh its authenticated key once on failure.
-                let endpoint = AccountClient::endpoint(
-                    relay_url,
-                    &format!("/api/devices/{}/key", urlencoding::encode(device_id)),
-                )?;
-                let mut keys = self.peer_keys.lock().await;
-                if keys
-                    .get(endpoint.as_str())
-                    .and_then(|cell| cell.get())
-                    .is_some_and(|cached| Arc::ptr_eq(cached, &peer))
-                {
-                    self.peer_generation.fetch_add(1, Ordering::SeqCst);
-                    keys.remove(endpoint.as_str());
-                }
-                drop(keys);
-                let peer = self.peer_cipher(relay_url, device_id).await?;
-                let bytes = super::encryption::open_relay_ciphertext(&peer.key, data, nonce)?;
-                (peer, bytes)
-            }
-        };
-        let plaintext = super::message_encoding::decode(bytes)?;
-        if let Some(offer) = offer {
-            peer.observe(offer);
-        }
-        Ok(plaintext)
     }
 }
 
@@ -794,6 +604,32 @@ impl AccountClient {
         Ok(entries.into_iter().map(project_device_list_entry).collect())
     }
 
+    /// [`Self::list_devices`] plus the account's cloud node row (kind
+    /// `cloud_agent`), which `/api/devices` lists only when asked with
+    /// `include=cloud_agent`. A relay that predates the parameter ignores it
+    /// and answers the plain list, so the cloud node is then simply absent.
+    pub async fn list_devices_with_cloud_agent(
+        &self,
+        relay_url: &str,
+        session: &AccountSession,
+    ) -> Result<Vec<DeviceInfo>> {
+        let mut url = Self::endpoint(relay_url, "/api/devices")?;
+        url.set_query(Some("include=cloud_agent"));
+        let resp = send_with_retry(
+            "list devices",
+            self.http
+                .get(url)
+                .header("Authorization", Self::auth_header(session)),
+            RelayHttpRetry::SafeRead,
+        )
+        .await?;
+        if !resp.status().is_success() {
+            return Err(Self::into_buffered_error(resp));
+        }
+        let entries: Vec<DeviceListEntry> = resp.json().await?;
+        Ok(entries.into_iter().map(project_device_list_entry).collect())
+    }
+
     /// Missing capabilities (including an old info endpoint) mean unsupported.
     pub async fn relay_capabilities(&self, relay_url: &str) -> Result<Vec<String>> {
         let response = self
@@ -906,132 +742,6 @@ impl AccountClient {
             return Err(Self::into_error(resp).await);
         }
         Ok(())
-    }
-
-    /// Send an encrypted RemoteCommand over the shared account connection.
-    /// The relay routes opaque ciphertext and returns the encrypted acknowledgement.
-    /// Pairwise device keys protect both directions; the shared account
-    /// Socket.IO connection owns acknowledgement and reconnect lifetimes.
-    pub async fn device_rpc(
-        &self,
-        relay_url: &str,
-        session: &AccountSession,
-        target_device_id: &str,
-        plaintext_command: &str,
-    ) -> Result<String> {
-        self.device_rpc_with_timeout(
-            relay_url,
-            session,
-            target_device_id,
-            plaintext_command,
-            super::realtime_client::DEFAULT_RPC_TIMEOUT,
-        )
-        .await
-    }
-
-    /// Like [`Self::device_rpc`], with an explicit end-to-end deadline that
-    /// the relay forwards to the target as its reply deadline.
-    pub async fn device_rpc_with_timeout(
-        &self,
-        relay_url: &str,
-        session: &AccountSession,
-        target_device_id: &str,
-        plaintext_command: &str,
-        timeout: std::time::Duration,
-    ) -> Result<String> {
-        let cell = {
-            let mut transports = session.transports.lock().await;
-            transports.entry(relay_url.to_string()).or_default().clone()
-        };
-        let transport = cell
-            .get_or_try_init(|| async {
-                let (transport, mut events) = super::relay_client::RelayClient::new_controller();
-                let transport = transport.with_account_session(session);
-                transport.connect(relay_url).await?;
-                tokio::try_join!(
-                    biased;
-                    transport.connect_authenticated(&session.token, "Controller"),
-                    session.peer_cipher(relay_url, target_device_id),
-                )?;
-                let event_session = session.for_peer_messages();
-                let event_relay = relay_url.to_string();
-                tokio::spawn(async move {
-                    while let Some(event) = events.recv().await {
-                        use super::relay_client::RelayEvent;
-                        match event {
-                            RelayEvent::DeviceMessageReceived {
-                                source_device_id,
-                                correlation_id,
-                                encoding_offer,
-                                encrypted_data,
-                                nonce,
-                            } if correlation_id.is_empty() => {
-                                // Stream hints arrive as encrypted DeviceEvents on
-                                // the controller transport; RPC requests to this
-                                // device are answered by its routing owner instead.
-                                let Ok(plaintext) = event_session
-                                    .decrypt_peer_message(
-                                        &event_relay,
-                                        &source_device_id,
-                                        &encrypted_data,
-                                        &nonce,
-                                        encoding_offer,
-                                    )
-                                    .await
-                                else {
-                                    continue;
-                                };
-                                let Ok(value) =
-                                    serde_json::from_str::<serde_json::Value>(&plaintext)
-                                else {
-                                    continue;
-                                };
-                                if value["cmd"] == "device_event" {
-                                    if let Some(event) = value["event"].as_str() {
-                                        event_session.deliver_device_event(
-                                            &source_device_id,
-                                            event,
-                                            &value["payload"],
-                                        );
-                                    }
-                                }
-                            }
-                            RelayEvent::Connected
-                            | RelayEvent::Reconnected
-                            | RelayEvent::AuthOk { .. } => {
-                                let _ = event_session.hints.send(None);
-                            }
-                            _ => {}
-                        }
-                    }
-                });
-                Ok::<_, anyhow::Error>(Arc::new(transport))
-            })
-            .await?;
-        // Re-resolve through the cache after authentication: a presence/key
-        // invalidation during setup must win over the speculative key read.
-        let before_send = session.peer_message_guard();
-        let peer = session.peer_cipher(relay_url, target_device_id).await?;
-        let (data, nonce, uses_zstd) = super::encryption::encrypt_relay_message_with_encoding(
-            &peer.key,
-            plaintext_command,
-            peer.host_accepts.load(Ordering::Relaxed),
-        )?;
-        let (encrypted_data, nonce, accepts_zstd) = transport
-            .request_device_message(target_device_id, &data, &nonce, timeout, true, || {
-                before_send(uses_zstd)
-            })
-            .await?;
-        session
-            .open_peer_message(
-                relay_url,
-                target_device_id,
-                peer,
-                &encrypted_data,
-                &nonce,
-                Some(PeerEncodingOffer::Host(accepts_zstd)),
-            )
-            .await
     }
 }
 
@@ -1381,158 +1091,6 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[test]
-    fn encoding_offers_are_scoped_to_the_rpc_host_and_event_recipients() {
-        let peer = PeerCipher {
-            key: [1; 32],
-            host_accepts: false.into(),
-            event_offers: 0.into(),
-        };
-        assert!(!peer.accepts_events());
-        peer.observe(PeerEncodingOffer::Controller(true));
-        assert!(peer.accepts_events());
-        assert!(!peer.host_accepts.load(Ordering::Relaxed));
-        peer.observe(PeerEncodingOffer::Controller(false));
-        peer.observe(PeerEncodingOffer::Host(true));
-        assert!(peer.host_accepts.load(Ordering::Relaxed));
-        assert!(
-            !peer.accepts_events(),
-            "a legacy controller shares the event room"
-        );
-        peer.observe(PeerEncodingOffer::Host(false));
-        assert!(!peer.host_accepts.load(Ordering::Relaxed));
-    }
-
-    #[tokio::test]
-    async fn peer_message_guard_retires_prepared_events_across_session_clones() {
-        let session = AccountSession::new("token".into(), "user".into(), [7; 32]);
-        let before_send = session.peer_message_guard();
-        before_send(true).unwrap();
-        session.for_peer_messages().clear_peer_keys().await;
-        assert!(before_send(true)
-            .unwrap_err()
-            .to_string()
-            .contains("request was not submitted"));
-        before_send(false).unwrap();
-        session.peer_message_guard()(true).unwrap();
-    }
-
-    #[tokio::test]
-    async fn cold_rpc_authenticates_and_fetches_the_peer_key_concurrently() {
-        use futures::{SinkExt, StreamExt};
-        use serde_json::json;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio_tungstenite::{accept_async, tungstenite::Message};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let key_pair = super::super::encryption::KeyPair::generate();
-        let public_key = key_pair.public_key_base64();
-        let message_key = device_crypto::derive_message_key(
-            &[7; 32],
-            &super::super::encryption::parse_public_key(&public_key).unwrap(),
-        )
-        .unwrap();
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
-        let completed = Arc::new(tokio::sync::Notify::new());
-        let server_completed = completed.clone();
-        let server = tokio::spawn(async move {
-            let mut handlers = tokio::task::JoinSet::new();
-            // Exactly one HTTP lookup and one socket serve both RPCs. Holding
-            // auth until the key request arrives proves the setup overlaps.
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let barrier = barrier.clone();
-                let completed = server_completed.clone();
-                let public_key = public_key.clone();
-                handlers.spawn(async move {
-                    let mut peek = [0; 4096];
-                    let length = stream.peek(&mut peek).await.unwrap();
-                    if String::from_utf8_lossy(&peek[..length]).starts_with("GET /api/devices/") {
-                        let mut request = Vec::new();
-                        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                            let length = stream.read(&mut peek).await.unwrap();
-                            assert!(length > 0);
-                            request.extend_from_slice(&peek[..length]);
-                        }
-                        assert!(String::from_utf8_lossy(&request)
-                            .starts_with("GET /api/devices/peer/key "));
-                        barrier.wait().await;
-                        let body = json!({"device_id":"peer", "public_key":public_key}).to_string();
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(), body,
-                        );
-                        stream.write_all(response.as_bytes()).await.unwrap();
-                        return;
-                    }
-                    let mut socket = accept_async(stream).await.unwrap();
-                    let handshake = json!({
-                        "sid": "fixture",
-                        "upgrades": [],
-                        "pingInterval": 25000,
-                        "pingTimeout": 5000,
-                        "maxPayload": 1000000,
-                    });
-                    socket.send(Message::Text(format!("0{handshake}").into())).await.unwrap();
-                    let auth = socket.next().await.unwrap().unwrap().into_text().unwrap();
-                    let auth: serde_json::Value =
-                        serde_json::from_str(auth.strip_prefix("40").unwrap()).unwrap();
-                    assert_eq!(auth["token"], "fixture");
-                    barrier.wait().await;
-                    socket.send(Message::Text("40{\"sid\":\"fixture\"}".into())).await.unwrap();
-                    let authenticated = json!([
-                        "auth-ok", {"userId":"account", "deviceId":"controller"},
-                    ]);
-                    socket.send(Message::Text(format!("42{authenticated}").into())).await.unwrap();
-                    for index in 0..2 {
-                        let request = socket.next().await.unwrap().unwrap().into_text().unwrap();
-                        let request = request.strip_prefix("42").unwrap();
-                        let event_start = request.find('[').unwrap();
-                        let event: serde_json::Value = serde_json::from_str(&request[event_start..]).unwrap();
-                        assert_eq!(event[0], "rpc-call");
-                        let envelope = &event[1]["params"];
-                        let command = super::super::encryption::decrypt_from_base64(
-                            &message_key,
-                            envelope["encrypted_data"].as_str().unwrap(),
-                            envelope["nonce"].as_str().unwrap(),
-                        ).unwrap();
-                        assert_eq!(command, format!("request-{index}"));
-                        let (data, nonce) = super::super::encryption::encrypt_relay_message(
-                            &message_key,
-                            &format!("reply-{index}"),
-                            true,
-                        ).unwrap();
-                        let reply = json!([{"ok":true, "result": {
-                            "encrypted_data":data, "nonce":nonce, "accept_encoding":"zstd-1",
-                        }}]);
-                        socket.send(Message::Text(format!("43{}{reply}", &request[..event_start]).into()))
-                            .await.unwrap();
-                    }
-                    completed.notified().await;
-                });
-            }
-            while let Some(result) = handlers.join_next().await {
-                result.unwrap();
-            }
-        });
-        let session = AccountSession::new("fixture".into(), "account".into(), [7; 32]);
-        let client = AccountClient::new();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            for index in 0..2 {
-                let reply = client
-                    .device_rpc(&url, &session, "peer", &format!("request-{index}"))
-                    .await
-                    .unwrap();
-                assert_eq!(reply, format!("reply-{index}"));
-            }
-            completed.notify_one();
-            server.await.unwrap();
-        })
-        .await
-        .expect("authentication and the key lookup must progress concurrently");
-    }
-
     #[tokio::test]
     async fn slow_peer_lookup_does_not_block_another_device_or_invalidation() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1590,6 +1148,53 @@ mod tests {
         );
     }
 
+    /// The key lookup carries the directory row kind when the relay reports
+    /// it; an older relay's answer (no field) reads as `None`, and the key and
+    /// kind come from one cached lookup.
+    #[tokio::test]
+    async fn peer_device_kind_reads_the_relay_row_kind_and_tolerates_old_relays() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let length = stream.read(&mut request).await.unwrap();
+                let line = String::from_utf8_lossy(&request[..length]).to_string();
+                let public_key = super::super::encryption::KeyPair::generate().public_key_base64();
+                let body = if line.starts_with("GET /api/devices/cloud-1/key ") {
+                    serde_json::json!({
+                        "device_id": "cloud-1",
+                        "public_key": public_key,
+                        "device_kind": "cloud_agent",
+                    })
+                } else {
+                    serde_json::json!({ "device_id": "old-host", "public_key": public_key })
+                }
+                .to_string();
+                let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        let session = AccountSession::new("fixture".into(), "fixture".into(), [7; 32]);
+        assert_eq!(
+            session
+                .peer_device_kind(&url, "cloud-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("cloud_agent")
+        );
+        // Served from the same cached lookup: no third request.
+        session.peer_message_key(&url, "cloud-1").await.unwrap();
+        assert_eq!(
+            session.peer_device_kind(&url, "old-host").await.unwrap(),
+            None
+        );
+        server.await.unwrap();
+    }
+
     #[test]
     fn relay_endpoint_accepts_http_servers_and_rejects_ambiguous_urls() {
         let endpoint =
@@ -1612,29 +1217,28 @@ mod tests {
     #[test]
     fn retired_official_endpoint_does_not_capture_custom_relays() {
         let current = openbitfun_product_domains::account::DEFAULT_RELAY_URL;
-        assert_eq!(current, "https://remote.openbitfun.com/relay?v=1.0.10");
-        for old in [
-            ["https://remote.openbitfun.com", "/v/1.0.0"].concat(),
-            ["https://remote.openbitfun.com", "/v/1.0.1"].concat(),
-        ] {
+        assert_eq!(current, "https://super.openbitfun.com/directory");
+        let origin = "https://super.openbitfun.com";
+        for old in [[origin, "/v/1.0.0"].concat(), [origin, "/v/1.0.1"].concat()] {
             assert!(is_retired_official_relay(&old), "{old}");
             assert!(is_retired_official_relay(&format!("{old}/")), "{old}/");
             assert!(!is_retired_official_relay(&format!("{old}?other=1")));
             assert!(!is_retired_official_relay(&format!("{old}#pair")));
         }
         for endpoint in [
-            current,
-            &format!("{current}/"),
-            "https://custom.example/v/1.0.0",
-            "http://127.0.0.1:9700",
-            "https://remote.openbitfun.com/relay",
-            "https://remote.openbitfun.com/v/",
-            "https://remote.openbitfun.com/v/1.0.0/p/alice/demo",
-            "https://user@remote.openbitfun.com/v/1.0.0",
-            "https://remote.openbitfun.com:444/v/1.0.0",
-            "http://remote.openbitfun.com/v/1.0.1",
+            current.to_string(),
+            format!("{current}/"),
+            "https://custom.example/v/1.0.0".to_string(),
+            "http://127.0.0.1:9700".to_string(),
+            // The 1.0 host is another deployment, never this build's.
+            "https://remote.openbitfun.com/v/1.0.0".to_string(),
+            format!("{origin}/v/"),
+            format!("{origin}/v/1.0.0/p/alice/demo"),
+            "https://user@super.openbitfun.com/v/1.0.0".to_string(),
+            "https://super.openbitfun.com:444/v/1.0.0".to_string(),
+            "http://super.openbitfun.com/v/1.0.1".to_string(),
         ] {
-            assert!(!is_retired_official_relay(endpoint), "{endpoint}");
+            assert!(!is_retired_official_relay(&endpoint), "{endpoint}");
         }
     }
 }

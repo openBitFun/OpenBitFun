@@ -38,8 +38,6 @@ pnpm run check:build-prereqs -- --fix  # attempt to fix missing prerequisites
 The check detects:
 
 - Missing `node_modules` (fix: `pnpm install`)
-- Missing `src/mobile-web/dist` (fix: `pnpm run prepare:mobile-web` — the native
-  desktop packages bundle it as the legacy relay mobile UI)
 - Missing sherpa-onnx prebuilt libs (the sherpa-onnx-sys build script
   downloads from GitHub at build time; if the download fails on poor
   connectivity, set `SHERPA_ONNX_LIB_DIR` to the prebuilt lib directory
@@ -184,7 +182,6 @@ Common local checks:
 | --- | --- |
 | Repository metadata or GitHub config | `pnpm run check:repo-hygiene && pnpm run check:github-config && git diff --check` |
 | Frontend runtime or UI | `pnpm run check:web`, plus the nearest focused test when behavior changed |
-| Mobile web | `pnpm --dir src/mobile-web run type-check` |
 | Rust shared runtime or services | Follow the nearest module `AGENTS.md`: one package/test target and the minimum required features |
 | Desktop backend / native host integration | `cargo check -p openbitfun-desktop` |
 | i18n resources | `pnpm run i18n:audit` |

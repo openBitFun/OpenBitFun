@@ -210,7 +210,7 @@ cargo test --locked -p openbitfun-cli --bin openbitfun goal_prompts_
 cargo test --locked -p openbitfun-cli --bin openbitfun -- modes::exec::tests:: dispatch::worker::tests::
 ```
 
-For daemon Remote Connect management, private IPC authentication/frame bounds,
+For daemon bot management, private IPC authentication/frame bounds,
 and daemon lifecycle regressions:
 
 ```bash
@@ -219,21 +219,27 @@ cargo test --locked -p openbitfun-cli --bin openbitfun daemon::
 
 Remote control over OpenBitFun Link (`obp_host.rs`): the process that serves
 this machine's device identity joins Link and serves OBP through the shared
-`openbitfun-obp` crate; calls go to `peer_host::handle_obp_call` (the same
-registry-derived handlers as relay `HostInvoke`) and events come from the Peer
-host fan-out. Keep protocol code in the crate and product behavior in the
-existing owners; `remote-control status` only presents the host's status
-document. Focused checks:
+`openbitfun-obp` crate; calls go to `peer_host::handle_obp_call` (the
+registry-derived handlers) and events are the Peer host's publication to the
+host's own OBP ring. Which process serves is a host-local claim
+(`account.rs`, `DeviceRoutingLease`: a desktop holds the primary tier, the CLI
+or daemon the secondary one). Bots and Detached Dispatch on a CLI host reach
+other devices only through `mesh_route.rs` (OBP over the fleet's Link node);
+there is no relay transport. Keep protocol code in the crate and product
+behavior in the existing owners; `remote-control status` only presents the
+host's status document. Focused checks:
 
 ```bash
 cargo test -p openbitfun-cli --bin openbitfun obp_host::
+cargo test -p openbitfun-cli --bin openbitfun mesh_route::
+cargo test -p openbitfun-cli --bin openbitfun account::
 cargo test -p openbitfun-obp --features server
 ```
 
 Bot listeners belong to the daemon. Chat/Shared/dispatch processes call its
 private, versioned endpoint and never replay a mutation after an unknown outcome.
 The executing account is checked before control requests reach the shared owner.
-These loopback fixtures do not establish live Relay or provider connectivity.
+These loopback fixtures do not establish live Link or provider connectivity.
 
 For the inline WeChat QR card, collapsed output, theme contrast and narrow terminals:
 

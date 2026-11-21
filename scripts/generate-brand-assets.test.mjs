@@ -203,7 +203,6 @@ test('the native desktop tray uses the bundled template mark', () => {
 
 test('browser entry points reference generated application favicons', () => {
   for (const [htmlPath, assetDir] of [
-    ['src/mobile-web/index.html', 'src/mobile-web/public/brand'],
     ['src/apps/relay-server/static/index.html', 'src/apps/relay-server/static/brand'],
     ['OpenBitFun-Installer/index.html', 'OpenBitFun-Installer/src/assets'],
   ]) {
@@ -229,7 +228,7 @@ test('ICNS canonicalization rejects malformed containers', () => {
 
 test('verification email reuses the current mark and the OpenBitFun reference palette', () => {
   const emailMark = readFileSync('src/miniapp-market-web/public/assets/openbitfun-email-app-icon.png');
-  assert.deepEqual(emailMark, readFileSync('src/mobile-web/public/brand/openbitfun-app-icon.png'));
+  assert.deepEqual(emailMark, readFileSync('src/apps/relay-server/static/brand/openbitfun-app-icon.png'));
   assert.deepEqual(emailMark, readFileSync('src/crates/services/miniapp-market-service/src/email/app-icon.png'));
   const html = readFileSync('src/crates/services/miniapp-market-service/src/email/sign-in.html', 'utf8');
   const tokens = JSON.parse(readFileSync('design-system/packages/theme-openbitfun/src/reference.tokens.json', 'utf8'));

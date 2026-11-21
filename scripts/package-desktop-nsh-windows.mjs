@@ -16,7 +16,6 @@
 //   nsh-web\                             the same UI for browsers/phones (OBP)
 //   resources\{worker_host.js,ext-host\extension-host.js,dsh-profile\}
 //   flashgrep\flashgrep-<triple>.exe     workspace search daemon
-//   mobile-web\dist                      legacy relay mobile UI, when built
 // `<Name>.package.json` next to the directory records the profile, target and
 // product it was built for (read by `OpenBitFun-Installer/scripts/build-installer.cjs`).
 //
@@ -45,6 +44,7 @@ import {
   root,
   run,
   writePackageInfo,
+  writeWebBundleManifest,
 } from "./desktop-nsh-package-common.mjs";
 
 const options = parseArgs();
@@ -80,6 +80,7 @@ const shell = miniAppShellBinary(options);
 if (shell) cpSync(shell, join(app, "openbitfun-miniapp-shell.exe"));
 else console.warn("MiniApp shell not built (pnpm run prepare:miniapp-shell); Spaces will not open windows");
 
+writeWebBundleManifest(join(webOut, "OpenBitFun"), identity);
 copyResources(
   backendResources({
     webSite: join(webOut, "OpenBitFun"),

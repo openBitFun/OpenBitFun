@@ -19,6 +19,7 @@ import {
   type Theme,
 } from "nsh";
 import { Scrollbar } from "nsh/base";
+import { currentLocale } from "./i18n";
 
 export type AppearanceId =
   | "openbitfun-dark"
@@ -261,7 +262,7 @@ const openbitfunDarkPalette: Palette = {
   chromeActive: "rgba(255, 255, 255, 0.1)",
   chromeBorder: "rgba(255, 255, 255, 0.1)",
   chromeInputBg: "#1c1c1f",
-  chromeAccent: "#60a5fa",
+  chromeAccent: "#3fb6c4",
   canvas: "#1c1c1f",
   canvasSubtle: "#18181b",
   segmentedTrackBg: "rgba(255, 255, 255, 0.08)",
@@ -279,8 +280,8 @@ const openbitfunDarkPalette: Palette = {
   scrimBg: "rgba(0, 0, 0, 0.56)",
   userBubble: "#2c2c31",
   userBubbleText: "#ededf0",
-  brandWarm: "#60a5fa",
-  brandWarmFg: "#0b1220",
+  brandWarm: "#3fb6c4",
+  brandWarmFg: "#062a2f",
   actionPrimaryBg: "rgba(255, 255, 255, 0.16)",
   actionPrimaryHover: "rgba(255, 255, 255, 0.24)",
   actionPrimaryPressed: "rgba(255, 255, 255, 0.2)",
@@ -289,13 +290,13 @@ const openbitfunDarkPalette: Palette = {
   buttonSecondaryBg: "rgba(255, 255, 255, 0.07)",
   buttonSecondaryHover: "rgba(255, 255, 255, 0.12)",
   buttonSecondaryPressed: "rgba(255, 255, 255, 0.15)",
-  actionSolid: "#2563eb",
-  actionSolidHover: "#1d4ed8",
+  actionSolid: "#0b7d8d",
+  actionSolidHover: "#0a6f7d",
   actionSolidFg: "#ffffff",
   border: "rgba(255, 255, 255, 0.12)",
   borderSubtle: "rgba(255, 255, 255, 0.08)",
   borderStrong: "rgba(255, 255, 255, 0.2)",
-  borderFocus: "#60a5fa",
+  borderFocus: "#3fb6c4",
   fieldFocusBorder: "rgba(255, 255, 255, 0.34)",
   innerHighlight: "inset 0 1px 0 rgba(255, 255, 255, 0.05)",
   text: "#e8e8e8",
@@ -304,10 +305,11 @@ const openbitfunDarkPalette: Palette = {
   // `accentSoft`, `surfaceSubtle`, `panelHover`, and `surfaceElevated` (#85).
   textMuted: "#94949c",
   textElevatedMuted: "#9c9ca4",
-  accent: "#60a5fa",
-  accentHover: "#93c5fd",
-  accentSoft: "rgba(96, 165, 250, 0.11)",
-  accentBorder: "rgba(96, 165, 250, 0.22)",
+  // One teal signal in both schemes (visual spec §2.4): 7.04:1 on canvas, 7.99:1 on chrome.
+  accent: "#3fb6c4",
+  accentHover: "#6fcbd6",
+  accentSoft: "rgba(63, 182, 196, 0.12)",
+  accentBorder: "rgba(63, 182, 196, 0.28)",
   chip: "#2a2a2f",
   warning: "#ff930f",
   warningSoft: "rgba(255, 140, 0, 0.10)",
@@ -323,7 +325,8 @@ const openbitfunDarkPalette: Palette = {
   skeletonBg: "rgba(255, 255, 255, 0.075)",
   toggleTrackOff: "#4a4a50",
   toggleThumbOff: "#d4d4d8",
-  switchOn: "#059cb0",
+  // Toggles follow the accent family: white on it is 4.85:1.
+  switchOn: "#0b7d8d",
   segmentedThumbBg: "rgba(255, 255, 255, 0.14)",
   diffAddBg: "rgba(45, 212, 191, 0.10)",
   diffAddRail: "#3ee3cd",
@@ -416,7 +419,7 @@ const openbitfunLightPalette: Palette = {
   skeletonBg: "rgba(15, 23, 42, 0.075)",
   toggleTrackOff: "rgba(0, 0, 0, 0.12)",
   toggleThumbOff: "#ffffff",
-  switchOn: "#059cb0",
+  switchOn: "#08798a",
   segmentedThumbBg: "#ffffff",
   diffAddBg: "rgba(11, 110, 101, 0.085)",
   diffAddRail: "#0b6e65",
@@ -442,6 +445,8 @@ const openbitfunLightPalette: Palette = {
 
 const openbitfunMonochromePalette: Palette = {
   ...openbitfunLightPalette,
+  // Kept from before the openbitfun presets moved to teal (visual spec §2.4).
+  switchOn: "#059cb0",
   chromeBg: "#121215",
   chromeText: "#f3f3f5",
   chromeTextMuted: "#a1a1aa",
@@ -486,6 +491,8 @@ const openbitfunMonochromePalette: Palette = {
 
 const openbitfunSlatePalette: Palette = {
   ...openbitfunDarkPalette,
+  // Kept from before the openbitfun presets moved to teal (visual spec §2.4).
+  switchOn: "#059cb0",
   chromeBg: "#1c1c1f",
   chromeTextMuted: "#9ba1ae",
   chromeAccent: "#a3b2c6",
@@ -533,6 +540,11 @@ const openbitfunSlatePalette: Palette = {
 
 const openbitfunMidnightPalette: Palette = {
   ...openbitfunDarkPalette,
+  // Kept from before the openbitfun presets moved to teal (visual spec §2.4).
+  switchOn: "#059cb0",
+  brandWarm: "#60a5fa",
+  actionSolid: "#2563eb",
+  actionSolidHover: "#1d4ed8",
   chromeBg: "#1c1c1f",
   chromeText: "#d4d4d4",
   chromeTextMuted: "#a8a8a8",
@@ -579,6 +591,8 @@ const openbitfunMidnightPalette: Palette = {
 
 const openbitfunChinaStylePalette: Palette = {
   ...openbitfunLightPalette,
+  // Kept from before the openbitfun presets moved to teal (visual spec §2.4).
+  switchOn: "#059cb0",
   chromeBg: "#ede9da",
   chromeText: "#1c242e",
   chromeTextMuted: "#525962",
@@ -654,6 +668,8 @@ const openbitfunChinaStylePalette: Palette = {
 
 const openbitfunChinaNightPalette: Palette = {
   ...openbitfunDarkPalette,
+  // Kept from before the openbitfun presets moved to teal (visual spec §2.4).
+  switchOn: "#059cb0",
   chromeBg: "#1c1c1f",
   chromeText: "#eceae4",
   chromeTextMuted: "#9e9e98",
@@ -703,6 +719,8 @@ const openbitfunChinaNightPalette: Palette = {
 
 const openbitfunCyberPalette: Palette = {
   ...openbitfunDarkPalette,
+  // Kept from before the openbitfun presets moved to teal (visual spec §2.4).
+  switchOn: "#059cb0",
   chromeBg: "#0b0d12",
   chromeText: "#e0f2ff",
   chromeTextMuted: "#86b4d2",
@@ -763,6 +781,8 @@ const openbitfunCyberPalette: Palette = {
 
 const openbitfunTokyoNightPalette: Palette = {
   ...openbitfunDarkPalette,
+  // Kept from before the openbitfun presets moved to teal (visual spec §2.4).
+  switchOn: "#059cb0",
   chromeBg: "#1a1b26",
   chromeText: "#c0caf5",
   chromeTextMuted: "#a2add6",
@@ -1034,6 +1054,10 @@ export function selectAppearancePreset(id: AppearanceId | null): void {
   syncGlobalNativeTheme();
 }
 
+/**
+ * @deprecated Use `space` (the 4-based scale) and `layout` (the shell
+ * rhythm). Kept so existing call sites compile; values unchanged.
+ */
 export const spacing = {
   rowPaddingX: 12,
   rowPaddingY: 8,
@@ -1044,36 +1068,205 @@ export const spacing = {
 } as const;
 
 /**
+ * The spacing scale (visual spec §2.2): 2, 4, 8, 12, 16, 20, 24, 32, 40, 48,
+ * 64. Off-scale values (3, 5, 7, 9, 10, 14, 18, 22) are retired; `chip` (6)
+ * survives only as the inset inside chips and code wells.
+ */
+export const space = {
+  hair: 2,
+  xs: 4,
+  chip: 6,
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 20,
+  xxl: 24,
+  x3l: 32,
+  x4l: 40,
+  x5l: 48,
+  x6l: 64,
+} as const;
+
+export type SpaceStep = keyof typeof space;
+
+/** The scale as numbers, for tests and for snapping a measured value. */
+export const SPACE_SCALE: ReadonlyArray<number> = [2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64];
+
+/** Shell, width and rhythm constants of visual spec §2.2. */
+export const layout = {
+  /** Wide (>= 1200): the sidebar docks at 264 (drag 232–360). */
+  wideMinWidth: 1200,
+  /** Medium (960–1199): the sidebar docks at 240. */
+  mediumDockMinWidth: 960,
+  /** Below 720 the phone layout (`compactLayout`) applies. */
+  phoneMaxWidth: 719,
+  navDefaultWidth: 264,
+  navMinWidth: 232,
+  navMaxWidth: 360,
+  navMediumWidth: 240,
+  /** 720–959: the sidebar is an overlay drawer this wide. */
+  navDrawerWidth: 264,
+  canvasInset: 8,
+  canvasRadius: 12,
+  inspectorWidth: 420,
+  inspectorMinWidth: 360,
+  inspectorMaxWidth: 640,
+  inspectorSheetWidth: 400,
+  /** The inspector becomes a sheet when the canvas would drop below this. */
+  canvasMinWidth: 560,
+  topBarHeight: 44,
+  phoneTopBarHeight: 48,
+  /** Left space kept for the macOS traffic lights while the sidebar is hidden. */
+  trafficLightInset: 76,
+  phoneTabBarHeight: 56,
+  phoneGutter: 16,
+  touchTarget: 44,
+  /** The conversation and session column default (`contentWidth()`). */
+  conversationWidth: 760,
+  pageWidth: 720,
+  settingsWidth: 680,
+  signInWidth: 360,
+  modalConfirmWidth: 400,
+  modalFormWidth: 480,
+  modalContentWidth: 640,
+  pagePaddingTop: 32,
+  phonePagePaddingTop: 16,
+  pageGutter: 32,
+  titleToSection: 24,
+  sectionGap: 32,
+  sectionHeaderGap: 8,
+} as const;
+
+/**
  * Unified interactive control height scale locking buttons, inputs, selects,
- * icon buttons, and segmented controls onto one razor-sharp toolbar baseline.
+ * icon buttons, and segmented controls onto one toolbar baseline.
  */
 export const controlHeight = {
   xs: 24,
   sm: 28,
   md: 32,
-  lg: 38,
+  lg: 40,
 } as const;
 
 export type ControlSize = keyof typeof controlHeight;
 
 /**
- * Standardized continuous-curve radius scale for concentric nesting
- * (`innerRadius = concentricRadius(outerRadius, insetPadding)`).
+ * The radius scale (visual spec §2.3). Nested shapes use
+ * `concentricRadius(outer, inset)`; no raw `borderRadius` numbers.
+ * - `xs` 4: inline code, key caps, diff word marks, focus inset
+ * - `sm` 6: chips, badges, small (24) buttons, code wells inside cards
+ * - `md` 8: buttons, inputs, menu items, row hover and selection
+ * - `lg` 12: cards, inset groups, menus, popovers, toasts, the canvas
+ * - `xl` 16: the composer, modals, phone sheets (top corners)
+ * - `pill`: status dots, avatars, segmented track and thumb, toggles, counts
  */
 export const radii = {
-  xs: 6,
-  sm: 8,
-  md: 10,
+  xs: 4,
+  sm: 6,
+  md: 8,
   lg: 12,
   xl: 16,
-  surface: 20,
   pill: 999,
+  /** @deprecated Retired (was 20). Reads as the canvas radius; use `layout.canvasRadius` or `radii.lg`. */
+  surface: 12,
 } as const;
 
 /** Computes an optically concentric inner border radius for nested rounded surfaces. */
 export function concentricRadius(outer: number, inset: number): number {
-  return Math.max(4, outer - inset);
+  return Math.max(radii.xs, outer - inset);
 }
+
+/**
+ * The three lifted levels (visual spec §2.3); everything else is level 0,
+ * flat with 1 px hairlines (`borderSubtle`).
+ * - 0: canvas, cards, rows, settings groups: no shadow
+ * - 1: the composer, the only lifted in-page surface (`shadowComposer`, focused `shadowComposerFocus`)
+ * - 2: menus, popovers, toasts (`shadowOverlay`); tooltips (`shadowTooltip`)
+ * - 3: modals and phone sheets (`shadowOverlay` over a `scrimBg` scrim)
+ */
+export type ElevationLevel = 0 | 1 | 2 | 3;
+
+export interface ElevationOptions {
+  /** Level 1: the composer has focus. */
+  focused?: boolean;
+  /** Level 2: a tooltip, which takes the compact shadow. */
+  tooltip?: boolean;
+}
+
+/** The `boxShadow` of a level in the active palette (`undefined` at level 0). */
+export function elevationShadow(level: ElevationLevel, opts?: ElevationOptions): string | undefined {
+  const p = palette();
+  if (level === 1) return opts?.focused ? p.shadowComposerFocus : p.shadowComposer;
+  if (level === 2) return opts?.tooltip ? p.shadowTooltip : p.shadowOverlay;
+  if (level === 3) return p.shadowOverlay;
+  return undefined;
+}
+
+/** The scrim drawn under a level-3 surface. */
+export function elevationScrim(): string {
+  return palette().scrimBg;
+}
+
+/**
+ * Motion tokens (visual spec §2.6). Springs are NSH's
+ * `transitionTimingFunction: "spring(stiffness, damping)"`, which times
+ * itself (no duration). Durations are milliseconds.
+ */
+export const springs = {
+  /** Job card enter, Inbox and history row insert/remove, modal entrance. */
+  snappy: "spring(420, 41)",
+  /** Toggle thumb. */
+  toggle: "spring(520, 36)",
+  /** Critically damped default for larger moves. */
+  standard: "spring(320, 36)",
+} as const;
+
+export const motionTiming = {
+  /** Hover and press tint (`paintTransition(120)`). */
+  hover: 120,
+  /** A state word, mark, count or diffstat change crossfades in place. */
+  crossfade: 160,
+  /** Sheets, drawers, the ⌘I Inbox sheet: in at 220 (drawer ease), out at 180. */
+  sheetIn: 220,
+  sheetOut: 180,
+  /** Menus and popovers: fade + 4 px rise. */
+  popover: 160,
+  popoverRise: 4,
+  /** Toasts: fade + 8 px rise in, faster out. */
+  toastIn: 220,
+  toastOut: 160,
+  toastRise: 8,
+  /** The working pulse: `animationName: "pulse"`, infinite. */
+  pulse: 1600,
+  /** OpenBitFun thinking: the matrix ring cells pulse with this stagger, looping. */
+  matrixStagger: 140,
+  matrixLoop: 680,
+  /** An answered prompt fades to `textMuted`, holds, then collapses (snappy spring). */
+  answeredFade: 160,
+  answeredHold: 1600,
+  /** A cited card's `accentSoft` fades out. */
+  citationFade: 600,
+  /** `SceneTransition` fade. */
+  scene: 160,
+  /** Under `reduceMotion()` only opacity crossfades this short remain. */
+  reducedMax: 120,
+} as const;
+
+/**
+ * What never animates (visual spec §2.6). Under `reduceMotion()` only opacity
+ * crossfades of `motionTiming.reducedMax` or less remain, and the pulse and
+ * the matrix ring freeze at full opacity.
+ */
+export const NEVER_ANIMATE: ReadonlyArray<string> = [
+  "scrolling, or anything driven by scroll",
+  "streamed text reflow (no per-token fade, no caret)",
+  "list reorder (rows swap in place with a crossfade)",
+  "number tickers",
+  "sidebar drag",
+  "window resize",
+  "skeleton shimmer (static skeletonBg)",
+  "anything looping while the window is hidden",
+];
 
 /**
  * The px every text size in this surface is written against. The host's font
@@ -1088,7 +1281,8 @@ export const uiFontBasePx = signal(BASE_FONT_SIZE);
 
 /**
  * True while the window is phone-sized (the shell measures it). Controls keep
- * their look but grow their touch target to the 44 pt minimum.
+ * their look but grow their touch target to the 44 pt minimum, and hover
+ * tooltips are off (a tap must not leave one behind).
  */
 export const compactLayout = signal(false);
 
@@ -1100,22 +1294,58 @@ export function touchSlop(height: number, desktopSlop?: number): number | undefi
 
 export const uiFontScale = computed(() => uiFontBasePx() / BASE_FONT_SIZE);
 
+/** True while the UI reads in Chinese: prose and body take a 1.7 leading and no tracking. */
+export const cjkTypography = computed(() => {
+  const locale = currentLocale();
+  return locale === "zh-CN" || locale === "zh-TW";
+});
+
 /**
- * Semantic typographic scale (base px at default 14px baseline) establishing
- * unmistakable hierarchy between page titles, section titles, rows, and metadata.
+ * The type scale in whole pixels at the 14 px baseline (visual spec §2.1).
+ * Weights are 400, 500 and 600 only.
  */
 export const typeScale = {
-  display: 26,
+  /** 28/600/34: one hero per screen. */
+  display: 28,
+  /** 22/600/28: page titles. */
   pageTitle: 22,
-  sectionTitle: 15,
-  cardTitle: 13.5,
+  /** 17/600/24: modal titles. */
+  modalTitle: 17,
+  /** 16/600/22: session and conversation titles in their header. */
+  sectionTitle: 16,
+  /** 15/400/24: transcript prose, the user bubble, composer text. */
+  prose: 15,
+  /** 14/400/20: rows, settings labels, card titles (500). */
   body: 14,
+  /** 13/500/18: sidebar rows, buttons, section headers (600), secondary lines (400). */
   label: 13,
-  control: 12.5,
+  /** 12/400/16: meta (device badge, age, branch, descriptions). */
   caption: 12,
-  meta: 11.5,
-  micro: 10.5,
+  /** 11/600/14: counts in badges and key caps only, never sentences. */
+  micro: 11,
+  /** @deprecated Was 13.5; card titles are `body` at weight 500. */
+  cardTitle: 14,
+  /** @deprecated Was 12.5; controls are `label`. */
+  control: 13,
+  /** @deprecated Was 11.5; meta is `caption`. */
+  meta: 12,
 } as const;
+
+/** Whole-pixel line heights of each size of the scale (Latin; CJK prose and body use 1.7). */
+const LINE_HEIGHTS: Readonly<Record<number, number>> = {
+  28: 34,
+  22: 28,
+  17: 24,
+  16: 22,
+  15: 24,
+  14: 20,
+  13: 18,
+  12: 16,
+  11: 14,
+};
+
+/** The leading ratio of CJK prose and body copy. */
+export const CJK_LINE_HEIGHT_RATIO = 1.7;
 
 /**
  * One text size, scaled to the preference. Read it inside a style, not into a
@@ -1128,38 +1358,52 @@ export function textSize(base: number): number {
 }
 
 /**
- * Scaled line height derived from `textSize(base)` so every multi-line text
- * stays optically balanced across all user font-scale preferences.
+ * Scaled line height derived from `textSize(base)`, rounded to whole pixels.
+ * In Chinese, multi-line prose and body copy (15 and 14 at a ratio of 1.4 or
+ * more) take the CJK leading of 1.7 (15 → 26, 14 → 24).
  */
 export function textLineHeight(base: number, ratio = 1.45): number {
-  return Math.round(textSize(base) * ratio);
+  const cjkCopy = (base === typeScale.prose || base === typeScale.body) && ratio >= 1.4 && cjkTypography();
+  return Math.round(textSize(base) * (cjkCopy ? Math.max(ratio, CJK_LINE_HEIGHT_RATIO) : ratio));
+}
+
+/** The line height a scale size takes in its role (`LINE_HEIGHTS`), scaled; other sizes use 1.45. */
+function roleLineHeight(base: number, line?: number): number {
+  const fixed = line ?? LINE_HEIGHTS[base];
+  return textLineHeight(base, fixed ? fixed / base : 1.45);
 }
 
 /**
- * Size-specific optical letter-spacing (in points) aligned with Apple typography:
- * tighter negative tracking on large display/scene titles, zero on body copy,
- * and positive tracking on uppercase micro-labels.
+ * Optical letter-spacing in points: display −0.4, page titles −0.3, section
+ * titles −0.1, zero for running text, and zero for every size in Chinese.
+ * Uppercase keeps a small positive tracking for the key caps that still use it.
  */
 export function textTracking(base: number, uppercase = false): number {
+  if (cjkTypography()) return 0;
   const px = textSize(base);
   if (uppercase) return px <= 11 ? 0.55 : 0.45;
-  // Tighten display sizes only; body and label text keep the font's own tracking.
-  if (px >= 22) return Number((-px * 0.02).toFixed(2));
-  if (px >= 17) return Number((-px * 0.01).toFixed(2));
+  if (base >= 26) return -0.4;
+  if (base >= 20) return -0.3;
+  if (base >= 16) return -0.1;
   return 0;
 }
 
 export type TextRole =
   | "display"
   | "pageTitle"
+  | "modalTitle"
   | "sectionTitle"
-  | "cardTitle"
+  | "prose"
   | "body"
   | "label"
   | "caption"
-  | "meta"
   | "micro"
-  | "mono";
+  | "mono"
+  | "monoBlock"
+  /** @deprecated Use `body` at weight 500. */
+  | "cardTitle"
+  /** @deprecated Use `caption`. */
+  | "meta";
 
 export interface TextStyleOptions {
   color?: string;
@@ -1167,105 +1411,59 @@ export interface TextStyleOptions {
   tabular?: boolean;
 }
 
+interface RoleSpec {
+  size: number;
+  weight: "400" | "500" | "600";
+  color: (p: Palette) => string;
+  mono?: boolean;
+  /** Tabular figures even when `tabular` is not asked for. */
+  tabular?: boolean;
+  /** A line height other than the size's own (`LINE_HEIGHTS`). */
+  line?: number;
+}
+
+const ROLE_SPECS: Readonly<Record<TextRole, RoleSpec>> = {
+  display: { size: typeScale.display, weight: "600", color: p => p.text },
+  pageTitle: { size: typeScale.pageTitle, weight: "600", color: p => p.text },
+  modalTitle: { size: typeScale.modalTitle, weight: "600", color: p => p.text },
+  sectionTitle: { size: typeScale.sectionTitle, weight: "600", color: p => p.text },
+  prose: { size: typeScale.prose, weight: "400", color: p => p.text },
+  body: { size: typeScale.body, weight: "400", color: p => p.text },
+  label: { size: typeScale.label, weight: "500", color: p => p.text },
+  caption: { size: typeScale.caption, weight: "400", color: p => p.textMuted },
+  micro: { size: typeScale.micro, weight: "600", color: p => p.textMuted, tabular: true },
+  mono: { size: 12, weight: "400", color: p => p.textSecondary, mono: true, tabular: true },
+  monoBlock: { size: 13, weight: "400", color: p => p.text, mono: true, tabular: true, line: 20 },
+  cardTitle: { size: typeScale.body, weight: "500", color: p => p.text },
+  meta: { size: typeScale.caption, weight: "400", color: p => p.textMuted, tabular: true },
+};
+
+/** The size (at the 14 px baseline) a role draws at. */
+export function roleSize(role: TextRole): number {
+  return ROLE_SPECS[role].size;
+}
+
 /**
- * Reactive semantic typography preset combining optical size, weight, leading,
- * tracking, and theme color. Call inside JSX style bindings so theme & font
- * baseline switches repaint instantaneously.
+ * Reactive semantic typography preset combining size, weight, leading,
+ * tracking, and theme color. Call inside JSX style bindings so theme, locale
+ * and font baseline switches repaint at once.
  */
 export function textStyle(role: TextRole, opts?: TextStyleOptions): TextStyle {
+  const spec = ROLE_SPECS[role];
   const uppercase = Boolean(opts?.uppercase);
-  const tabular = opts?.tabular ? (["tabular-nums"] as TextStyle["fontVariant"]) : undefined;
-  switch (role) {
-    case "display":
-      return {
-        color: opts?.color ?? palette().text,
-        fontSize: textSize(typeScale.display),
-        fontWeight: "600",
-        letterSpacing: textTracking(typeScale.display, uppercase),
-        lineHeight: textLineHeight(typeScale.display, 1.18),
-        fontVariant: tabular,
-      };
-    case "pageTitle":
-      return {
-        color: opts?.color ?? palette().text,
-        fontSize: textSize(typeScale.pageTitle),
-        fontWeight: "600",
-        letterSpacing: textTracking(typeScale.pageTitle, uppercase),
-        lineHeight: textLineHeight(typeScale.pageTitle, 1.24),
-        fontVariant: tabular,
-      };
-    case "sectionTitle":
-      return {
-        color: opts?.color ?? palette().text,
-        fontSize: textSize(typeScale.sectionTitle),
-        fontWeight: "600",
-        letterSpacing: textTracking(typeScale.sectionTitle, uppercase),
-        lineHeight: textLineHeight(typeScale.sectionTitle, 1.3),
-        fontVariant: tabular,
-      };
-    case "cardTitle":
-      return {
-        color: opts?.color ?? palette().text,
-        fontSize: textSize(typeScale.cardTitle),
-        fontWeight: "600",
-        letterSpacing: textTracking(typeScale.cardTitle, uppercase),
-        lineHeight: textLineHeight(typeScale.cardTitle, 1.32),
-        fontVariant: tabular,
-      };
-    case "body":
-      return {
-        color: opts?.color ?? palette().text,
-        fontSize: textSize(typeScale.body),
-        fontWeight: "400",
-        letterSpacing: textTracking(typeScale.body, uppercase),
-        lineHeight: textLineHeight(typeScale.body, 1.55),
-        fontVariant: tabular,
-      };
-    case "label":
-      return {
-        color: opts?.color ?? palette().text,
-        fontSize: textSize(typeScale.label),
-        fontWeight: "500",
-        letterSpacing: textTracking(typeScale.label, uppercase),
-        lineHeight: textLineHeight(typeScale.label, 1.36),
-        fontVariant: tabular,
-      };
-    case "caption":
-      return {
-        color: opts?.color ?? palette().textMuted,
-        fontSize: textSize(typeScale.caption),
-        fontWeight: "400",
-        letterSpacing: textTracking(typeScale.caption, uppercase),
-        lineHeight: textLineHeight(typeScale.caption, 1.44),
-        fontVariant: tabular,
-      };
-    case "meta":
-      return {
-        color: opts?.color ?? palette().textMuted,
-        fontSize: textSize(typeScale.meta),
-        fontWeight: "500",
-        letterSpacing: textTracking(typeScale.meta, uppercase),
-        lineHeight: textLineHeight(typeScale.meta, 1.38),
-        fontVariant: tabular ?? ["tabular-nums"],
-      };
-    case "micro":
-      return {
-        color: opts?.color ?? palette().textMuted,
-        fontSize: textSize(typeScale.micro),
-        fontWeight: uppercase ? "600" : "500",
-        letterSpacing: textTracking(typeScale.micro, uppercase),
-        lineHeight: textLineHeight(typeScale.micro, 1.32),
-        textTransform: uppercase ? "uppercase" : undefined,
-        fontVariant: tabular ?? ["tabular-nums"],
-      };
-    case "mono":
-      return {
-        color: opts?.color ?? palette().textSecondary,
-        fontFamily: fontMono,
-        fontSize: textSize(12),
-        fontWeight: "400",
-        lineHeight: textLineHeight(12, 1.5),
-        fontVariant: ["tabular-nums"],
-      };
+  const tabular = opts?.tabular || spec.tabular ? (["tabular-nums"] as TextStyle["fontVariant"]) : undefined;
+  const style: TextStyle = {
+    color: opts?.color ?? spec.color(palette()),
+    fontSize: textSize(spec.size),
+    fontWeight: spec.weight,
+    lineHeight: roleLineHeight(spec.size, spec.line),
+    fontVariant: tabular,
+  };
+  if (spec.mono) {
+    style.fontFamily = fontMono;
+  } else {
+    style.letterSpacing = textTracking(spec.size, uppercase);
   }
+  if (uppercase) style.textTransform = "uppercase";
+  return style;
 }

@@ -189,6 +189,8 @@ session-search = [
     "tokio/rt",
 ]
 dispatch-workspace = ["dep:anyhow", "dep:sha2"]
+# The detached-dispatch target request/response DTOs (`dispatch_contract::wire`).
+dispatch-wire = ["dep:openbitfun-core-types"]
 session-git = ["local-storage", "dep:git2"]
 workspace-text-runtime = ["dep:tokio", "tokio/rt"]
 

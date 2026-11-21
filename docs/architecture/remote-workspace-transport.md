@@ -8,7 +8,7 @@ describes this boundary and the remaining capability limits.
 
 ## Controller and runtime ownership
 
-Desktop and CLI are full OpenBitFun runtime hosts. Mobile apps and mobile-web
+Desktop and CLI are full OpenBitFun runtime hosts. Mobile apps and browsers
 are controllers: they select a host and invoke its product operations through
 the authenticated relay. They do not become a task runtime, filesystem owner,
 SSH credential store, or terminal process host.

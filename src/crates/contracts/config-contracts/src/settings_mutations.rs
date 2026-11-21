@@ -888,6 +888,78 @@ pub fn validate_memories_value(value: &Value) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Cloud agent device switches (`superagent`)
+// ---------------------------------------------------------------------------
+
+/// The config path of this device's cloud-agent switches.
+pub const SUPERAGENT_PATH: &str = "superagent";
+
+/// One switch intent; an absent field keeps the stored value.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct SuperagentSettingsRequest {
+    #[serde(alias = "accept_dispatch")]
+    pub accept_dispatch: Option<bool>,
+    #[serde(alias = "allow_auto_approval")]
+    pub allow_auto_approval: Option<bool>,
+}
+
+/// The `superagent` section rule: an object whose known switches are
+/// booleans (unknown fields from a newer build are kept).
+pub fn validate_superagent_value(value: &Value) -> Result<(), String> {
+    let Value::Object(section) = value else {
+        return Err("The cloud agent settings must be an object".to_string());
+    };
+    for (camel, snake) in [
+        ("acceptDispatch", "accept_dispatch"),
+        ("allowAutoApproval", "allow_auto_approval"),
+    ] {
+        for key in [camel, snake] {
+            if let Some(field) = section.get(key) {
+                if !field.is_boolean() {
+                    return Err(format!("superagent.{camel} must be true or false"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Applies a switch intent to the stored `superagent` value (`null` when
+/// absent) and returns the next value: the stored object with the switches
+/// written in their canonical spelling, every other field kept, and a
+/// missing switch filled with its default.
+pub fn set_superagent_settings(
+    current: &Value,
+    request: &SuperagentSettingsRequest,
+) -> Result<Value, String> {
+    let mut section = match current {
+        Value::Null => Map::new(),
+        Value::Object(section) => section.clone(),
+        _ => return Err("The stored cloud agent settings are not an object".to_string()),
+    };
+    validate_superagent_value(&Value::Object(section.clone()))?;
+    let stored: crate::types::SuperagentConfig =
+        serde_json::from_value(Value::Object(section.clone()))
+            .map_err(|error| format!("Invalid cloud agent settings: {error}"))?;
+    section.remove("accept_dispatch");
+    section.remove("allow_auto_approval");
+    section.insert(
+        "acceptDispatch".to_string(),
+        Value::Bool(request.accept_dispatch.unwrap_or(stored.accept_dispatch)),
+    );
+    section.insert(
+        "allowAutoApproval".to_string(),
+        Value::Bool(
+            request
+                .allow_auto_approval
+                .unwrap_or(stored.allow_auto_approval),
+        ),
+    );
+    Ok(Value::Object(section))
+}
+
+// ---------------------------------------------------------------------------
 // Settings descriptor
 // ---------------------------------------------------------------------------
 
@@ -944,6 +1016,58 @@ pub fn settings_descriptor(paths: &[String]) -> Result<Value, String> {
         "catalogDigest": catalog.digest,
         "fields": fields,
     }))
+}
+
+#[cfg(test)]
+mod superagent_settings_tests {
+    use super::*;
+
+    #[test]
+    fn switches_apply_over_the_stored_value_and_keep_unknown_fields() {
+        let request = |accept: Option<bool>, auto: Option<bool>| SuperagentSettingsRequest {
+            accept_dispatch: accept,
+            allow_auto_approval: auto,
+        };
+        // Nothing stored yet (a legacy document): the defaults, then the change.
+        assert_eq!(
+            set_superagent_settings(&Value::Null, &request(None, Some(false))).unwrap(),
+            json!({"acceptDispatch": true, "allowAutoApproval": false})
+        );
+        let stored = json!({"accept_dispatch": false, "futureSwitch": "x"});
+        assert_eq!(
+            set_superagent_settings(&stored, &request(None, None)).unwrap(),
+            json!({"acceptDispatch": false, "allowAutoApproval": true, "futureSwitch": "x"})
+        );
+        assert_eq!(
+            set_superagent_settings(&stored, &request(Some(true), Some(true))).unwrap(),
+            json!({"acceptDispatch": true, "allowAutoApproval": true, "futureSwitch": "x"})
+        );
+        assert!(set_superagent_settings(&json!(3), &request(None, None)).is_err());
+        assert!(
+            set_superagent_settings(&json!({"acceptDispatch": "no"}), &request(None, None))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn requests_and_values_are_validated() {
+        let parsed: SuperagentSettingsRequest =
+            serde_json::from_value(json!({"allowAutoApproval": false})).unwrap();
+        assert_eq!(parsed.allow_auto_approval, Some(false));
+        assert_eq!(parsed.accept_dispatch, None);
+        assert!(serde_json::from_value::<SuperagentSettingsRequest>(
+            json!({"acceptDispatch": "yes"})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<SuperagentSettingsRequest>(
+            json!({"acceptDispach": false})
+        )
+        .is_err());
+        assert!(validate_superagent_value(&json!({"acceptDispatch": true})).is_ok());
+        assert!(validate_superagent_value(&json!({"futureSwitch": 1})).is_ok());
+        assert!(validate_superagent_value(&json!({"allow_auto_approval": 0})).is_err());
+        assert!(validate_superagent_value(&json!(null)).is_err());
+    }
 }
 
 #[cfg(test)]

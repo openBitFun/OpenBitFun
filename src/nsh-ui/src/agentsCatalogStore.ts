@@ -10,7 +10,6 @@ import { reloadAgentModes } from "./agentModeStore";
 import { getConfig, setConfig } from "./api";
 import { invokeCommand, invokeRawCommand } from "./bridge";
 import { tr } from "./i18n";
-import { peerScope, peerSupports } from "./peerState";
 import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot, startQuickPromptInSession } from "./state";
 
 export type AgentKind = "mode" | "subagent";
@@ -87,11 +86,6 @@ export function modelTokenToSelection(token: string): Record<string, string> | n
   if (value === "inherit") return { kind: "inherit" };
   if (value.startsWith(POOL_TOKEN_PREFIX)) return { kind: "pool", pool_id: value.slice(POOL_TOKEN_PREFIX.length) };
   return { kind: "model", model_ref: value };
-}
-
-/** Whether the host stores built-in subagent models as `ai.agent_model_selections`. */
-function hostUsesModelSelections(): boolean {
-  return !peerScope() || peerSupports("model_pool_selection_v1") === true;
 }
 
 let initialRuntimeModel = "";
@@ -308,14 +302,12 @@ export async function loadAgentsCatalog(contextKey?: string): Promise<void> {
   const workspace = activeWorkspace();
   const workspaceId = workspace?.id ?? activeWorkspaceId() ?? undefined;
   const workspacePath = workspace?.rootPath || activeWorkspaceRoot() || undefined;
-  const key = contextKey ?? `${peerScope()?.deviceId ?? "local"}:${workspaceId ?? "none"}:${workspacePath ?? ""}`;
+  const key = contextKey ?? `local:${workspaceId ?? "none"}:${workspacePath ?? ""}`;
 
   agentsLoading.set(true);
   agentsCatalogError.set(null);
   toolCatalogError.set(null);
   confirmDeleteAgentUid.set(null);
-
-  const canQueryTools = peerScope() ? peerSupports("tool_catalog") !== false : true;
 
   const [modesRes, subagentsRes, toolsRes, profilesRes] = await Promise.allSettled([
     invokeCommand<Array<Record<string, unknown>>>("get_available_modes", {
@@ -326,7 +318,7 @@ export async function loadAgentsCatalog(contextKey?: string): Promise<void> {
       workspaceId,
       ...(workspacePath ? { workspacePath } : {}),
     }),
-    canQueryTools ? invokeRawCommand<string[]>("list_agent_tool_names", {}) : Promise.resolve([] as string[]),
+    invokeRawCommand<string[]>("list_agent_tool_names", {}),
     invokeRawCommand<Record<string, Record<string, unknown>>>("get_agent_profile_configs", {}),
   ]);
 
@@ -357,10 +349,7 @@ export async function loadAgentsCatalog(contextKey?: string): Promise<void> {
     errors.push(subagentsRes.reason instanceof Error ? subagentsRes.reason.message : String(subagentsRes.reason));
   }
 
-  if (!canQueryTools) {
-    agentToolNames.set([]);
-    toolCatalogError.set(tr("agents.store.noToolCatalog"));
-  } else if (toolsRes.status === "fulfilled") {
+  if (toolsRes.status === "fulfilled") {
     const names = Array.isArray(toolsRes.value)
       ? toolsRes.value.filter((name): name is string => typeof name === "string" && name.trim().length > 0)
       : [];
@@ -555,18 +544,16 @@ export async function openAgentInspector(item: AgentCatalogItem): Promise<void> 
     builderLoading.set(false);
     initialRuntimeModel = (item.model ?? "").trim();
     initialRuntimeEnabled = item.effectiveEnabled;
-    if (hostUsesModelSelections()) {
-      // The stored selection is the truth for a built-in (a pool has no model string).
-      void getConfig(`ai.agent_model_selections.subagents.builtin.${item.id}`, true)
-        .then(selection => {
-          const draft = builderDraft();
-          if (draft.mode !== "configure-subagent" || draft.id !== item.id) return;
-          const token = modelSelectionToToken(selection);
-          initialRuntimeModel = token;
-          builderDraft.update(current => ({ ...current, model: token }));
-        })
-        .catch(() => undefined);
-    }
+    // The stored selection is the truth for a built-in (a pool has no model string).
+    void getConfig(`ai.agent_model_selections.subagents.builtin.${item.id}`, true)
+      .then(selection => {
+        const draft = builderDraft();
+        if (draft.mode !== "configure-subagent" || draft.id !== item.id) return;
+        const token = modelSelectionToToken(selection);
+        initialRuntimeModel = token;
+        builderDraft.update(current => ({ ...current, model: token }));
+      })
+      .catch(() => undefined);
     builderDraft.set({
       mode: "configure-subagent",
       kind: "subagent",
@@ -879,7 +866,7 @@ export async function saveSubagentRuntimeConfig(): Promise<void> {
     return;
   }
   const isBuiltin = draft.source === "builtin";
-  if (modelChanged && token.startsWith(POOL_TOKEN_PREFIX) && !(isBuiltin && hostUsesModelSelections())) {
+  if (modelChanged && token.startsWith(POOL_TOKEN_PREFIX) && !isBuiltin) {
     builderError.set(tr("agents.poolUnsupportedForAgent"));
     return;
   }
@@ -896,7 +883,7 @@ export async function saveSubagentRuntimeConfig(): Promise<void> {
       initialRuntimeEnabled = draft.enabled;
     }
     if (modelChanged) {
-      if (isBuiltin && hostUsesModelSelections()) {
+      if (isBuiltin) {
         await setConfig(
           `ai.agent_model_selections.subagents.builtin.${draft.id}`,
           modelTokenToSelection(token),

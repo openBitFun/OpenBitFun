@@ -1,116 +1,43 @@
-//! HostInvoke / DeviceEvent dispatch for CLI Peer Host.
+//! OBP call dispatch for the CLI Peer Host.
 
 use openbitfun_core_types::agent_identity_wire::{
-    translate_agent_identity_command, translate_agent_identity_response, AgentIdentityDialect,
+    translate_agent_identity_command, AgentIdentityDialect,
 };
 
-use serde_json::{json, Value};
-
-use openbitfun_core::service::remote_connect::remote_server::RemoteResponse;
+use serde_json::Value;
 
 use super::commands;
-use super::control::{
-    attach_controller, detach_controller, parse_controller_device_id, peer_mode_ping_for_args,
-};
 use super::state::peer_host_state;
 use openbitfun_product_domains::remote_surface::{
     peer_host_verdict, PeerHostKind, PeerHostVerdict,
 };
 
-#[derive(Debug, Clone)]
-struct HostInvokeBridgeResult {
-    ok: bool,
-    value: Option<Value>,
-    error: Option<String>,
-}
-
-impl HostInvokeBridgeResult {
-    fn ok_value(value: Value) -> Self {
-        Self {
-            ok: true,
-            value: Some(value),
-            error: None,
-        }
-    }
-
-    fn err(message: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            value: None,
-            error: Some(message.into()),
-        }
-    }
-
-    fn into_remote_response(self) -> RemoteResponse {
-        RemoteResponse::HostInvokeResult {
-            ok: self.ok,
-            value: self.value,
-            error: self.error,
-        }
-    }
-}
-
-/// Handle `RemoteCommand::HostInvoke` and return a HostInvokeResult envelope.
-pub(crate) async fn handle_host_invoke(command: &str, args: Value) -> RemoteResponse {
-    handle_host_invoke_inner(command, args)
-        .await
-        .into_remote_response()
-}
-
-async fn handle_host_invoke_inner(command: &str, args: Value) -> HostInvokeBridgeResult {
-    // The Product Operation Registry decides what this host may run on a
-    // controller's behalf. The verdict order (empty, retired, control plane,
-    // controller-owned, unsupported here, execute, unknown) is the registry's,
-    // shared with the desktop peer host and the generated frontend tables.
-    match peer_host_verdict(command, PeerHostKind::Cli) {
-        PeerHostVerdict::Refuse(refusal) => {
-            return HostInvokeBridgeResult::err(refusal.message(command));
-        }
-        PeerHostVerdict::HostControlPlane => return handle_control_plane(command, args).await,
-        PeerHostVerdict::Execute => {}
-    }
-
-    let state = match peer_host_state() {
-        Ok(s) => s,
-        Err(e) => return HostInvokeBridgeResult::err(e),
-    };
-
-    let args =
-        match translate_agent_identity_command(command, args, AgentIdentityDialect::Canonical) {
-            Ok(args) => args,
-            Err(error) => return HostInvokeBridgeResult::err(error),
-        };
-    match commands::dispatch(command, &args, state).await {
-        Ok(value) => match translate_agent_identity_response(
-            command,
-            value,
-            &args,
-            AgentIdentityDialect::Legacy,
-        ) {
-            Ok(value) => HostInvokeBridgeResult::ok_value(value),
-            Err(error) => HostInvokeBridgeResult::err(error),
-        },
-        Err(error) => HostInvokeBridgeResult::err(error),
-    }
-}
-
 /// One OBP call on this host (an `account-device` connection over
-/// OpenBitFun Link, `crate::obp_host`): the same registry verdict and the
-/// same handlers as a relay `HostInvoke`, with OBP's conventions: arguments
-/// and results in the canonical agent-identity dialect (what every OBP host
-/// answers), and the registry's refusal text for a command this host does
-/// not run. There is no attach/detach/ping over OBP (the connection is the
-/// attachment); the detached-dispatch target verbs run here too.
+/// OpenBitFun Link, `crate::obp_host`): the registry verdict for
+/// `PeerHostKind::Cli`, arguments and results in the canonical agent-identity
+/// dialect (what every OBP host answers), and the registry's refusal text for
+/// a command this host does not run. There is no attach, detach or ping (the
+/// connection is the attachment); the detached-dispatch target verbs run here.
 pub(crate) async fn handle_obp_call(command: &str, args: Value) -> Result<Value, String> {
     match peer_host_verdict(command, PeerHostKind::Cli) {
         PeerHostVerdict::Refuse(refusal) => return Err(refusal.message(command)),
         PeerHostVerdict::HostControlPlane => {
             return match dispatch_target_verb(command) {
-                Some(verb) => crate::dispatch::run_dispatch_verb(verb, args)
-                    .await
-                    .map_err(|error| format!("{error:#}")),
+                Some(verb) => {
+                    let workspace_path = args
+                        .get("workspacePath")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let answer = crate::dispatch::run_dispatch_verb(verb, args)
+                        .await
+                        .map_err(|error| format!("{error:#}"))?;
+                    // The runner is another process: tell this host's
+                    // catalog and digest.
+                    crate::fleet_host::dispatch_target_answered(command, workspace_path).await;
+                    Ok(answer)
+                }
                 None => Err(format!(
-                    "command '{command}' belongs to the relay peer control plane; an OBP connection needs no attach or ping"
+                    "command '{command}' is a peer control-plane command; an OBP connection needs no attach or ping"
                 )),
             };
         }
@@ -126,42 +53,6 @@ pub(crate) fn is_dispatch_target_command(command: &str) -> bool {
     dispatch_target_verb(command).is_some()
 }
 
-/// Control-plane commands are answered before any product dispatch and never
-/// acquire a Peer controller lease for a product command.
-async fn handle_control_plane(command: &str, args: Value) -> HostInvokeBridgeResult {
-    // Detached dispatch is target-owned. Route the distinct target command
-    // family directly to the durable CLI runner.
-    if let Some(verb) = dispatch_target_verb(command) {
-        return match crate::dispatch::run_dispatch_verb(verb, args).await {
-            Ok(value) => HostInvokeBridgeResult::ok_value(value),
-            Err(error) => HostInvokeBridgeResult::err(format!("{error:#}")),
-        };
-    }
-
-    // Same special-case path as desktop execute_local_remote_command.
-    match command {
-        "peer_control_attach" => {
-            let controller_id = parse_controller_device_id(&args);
-            if controller_id.trim().is_empty() {
-                return HostInvokeBridgeResult::err("controller_device_id is required");
-            }
-            if let Err(error) = attach_controller(controller_id).await {
-                return HostInvokeBridgeResult::err(error);
-            }
-            HostInvokeBridgeResult::ok_value(json!({ "attached": true }))
-        }
-        "peer_control_detach" => {
-            let controller_id = parse_controller_device_id(&args);
-            detach_controller(&controller_id).await;
-            HostInvokeBridgeResult::ok_value(json!({ "detached": true }))
-        }
-        "peer_mode_ping" => HostInvokeBridgeResult::ok_value(peer_mode_ping_for_args(&args)),
-        other => HostInvokeBridgeResult::err(format!(
-            "command '{other}' is registered as peer host control plane but this CLI build has no handler for it"
-        )),
-    }
-}
-
 fn dispatch_target_verb(command: &str) -> Option<&'static str> {
     match command {
         "dispatch_target_probe" => Some("probe"),
@@ -174,6 +65,7 @@ fn dispatch_target_verb(command: &str) -> Option<&'static str> {
         "dispatch_target_continue" => Some("continue"),
         "dispatch_target_query" => Some("query"),
         "dispatch_target_workspace_provision" => Some("workspace-provision"),
+        "dispatch_target_workspace_provision_source" => Some("workspace-provision-source"),
         "dispatch_target_workspace_bundle_begin" => Some("workspace-bundle-begin"),
         "dispatch_target_workspace_bundle_chunk" => Some("workspace-bundle-chunk"),
         "dispatch_target_workspace_bundle_commit" => Some("workspace-bundle-commit"),
@@ -183,107 +75,43 @@ fn dispatch_target_verb(command: &str) -> Option<&'static str> {
     }
 }
 
-/// Peer-side DeviceEvent is a no-op ack (controller is the consumer).
-pub(crate) fn handle_device_event_command() -> RemoteResponse {
-    RemoteResponse::DeviceEventAccepted
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::deny::{is_cli_unsupported_command, is_local_only_command};
     use super::*;
+    use serde_json::json;
 
     #[tokio::test]
-    async fn peer_mode_ping_returns_ok_peer_payload() {
-        let resp = handle_host_invoke("peer_mode_ping", json!({})).await;
-        match resp {
-            RemoteResponse::HostInvokeResult {
-                ok: true,
-                value: Some(value),
-                error: None,
-            } => {
-                assert_eq!(value.get("ok"), Some(&json!(true)));
-                assert_eq!(value.get("peer"), Some(&json!(true)));
-                assert!(value.get("device_id").and_then(|v| v.as_str()).is_some());
-                assert_eq!(
-                    value.pointer("/capabilities/targeted_session_rollback"),
-                    Some(&json!(true))
-                );
-                assert_eq!(
-                    value.pointer("/capabilities/token_usage_statistics"),
-                    Some(&json!(true))
-                );
-                assert_eq!(
-                    value.pointer("/capabilities/product_control_v1"),
-                    Some(&json!(true))
-                );
-                assert_eq!(
-                    value.pointer("/capabilities/cancel_tool"),
-                    Some(&json!(true))
-                );
-                assert_eq!(
-                    value.pointer("/capabilities/tool_catalog"),
-                    Some(&json!(true))
-                );
-                assert_eq!(
-                    value.pointer("/capabilities/user_question_response"),
-                    Some(&json!(true))
-                );
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn peer_mode_ping_advertises_cli_host_type() {
-        // An older CLI did not advertise `cancel_tool`/`tool_catalog`; the
-        // `host_type: "cli"` field lets the controller resolve those missing
-        // capabilities as unsupported instead of optimistically invoking a
-        // command the CLI never implemented. See PR #2428 round 5 #1.
-        let resp = handle_host_invoke("peer_mode_ping", json!({})).await;
-        match resp {
-            RemoteResponse::HostInvokeResult {
-                ok: true,
-                value: Some(value),
-                error: None,
-            } => {
-                assert_eq!(value.get("host_type").and_then(|v| v.as_str()), Some("cli"));
-            }
-            other => panic!("unexpected response: {other:?}"),
+    async fn peer_control_plane_commands_are_not_obp_calls() {
+        for command in [
+            "peer_mode_ping",
+            "peer_control_attach",
+            "peer_control_detach",
+        ] {
+            assert!(
+                handle_obp_call(command, json!({})).await.is_err(),
+                "{command} must not run over OBP"
+            );
         }
     }
 
     #[tokio::test]
     async fn local_only_commands_are_denied() {
-        let resp = handle_host_invoke("account_logout", json!({})).await;
-        match resp {
-            RemoteResponse::HostInvokeResult {
-                ok: false,
-                error: Some(err),
-                ..
-            } => {
-                assert!(err.contains("local-only"));
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
+        let err = handle_obp_call("account_logout", json!({}))
+            .await
+            .expect_err("account_logout stays on the controller");
+        assert!(err.contains("local-only"), "{err}");
     }
 
     #[tokio::test]
     async fn retired_lsp_commands_fail_before_peer_state_or_command_dispatch() {
-        let resp = handle_host_invoke("lsp_open_workspace", json!({})).await;
-        match resp {
-            RemoteResponse::HostInvokeResult {
-                ok: false,
-                value: None,
-                error: Some(err),
-            } => {
-                assert_eq!(
-                    err,
-                    "command 'lsp_open_workspace' is unsupported because the OpenBitFun LSP runtime has been retired"
-                );
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
+        let err = handle_obp_call("lsp_open_workspace", json!({}))
+            .await
+            .expect_err("retired command");
+        assert_eq!(
+            err,
+            "command 'lsp_open_workspace' is unsupported because the OpenBitFun LSP runtime has been retired"
+        );
     }
 
     #[test]
@@ -317,56 +145,35 @@ mod tests {
 
     #[tokio::test]
     async fn cli_unsupported_commands_keep_the_legacy_prefix_and_add_a_reason() {
-        let resp = handle_host_invoke("worktree_list", json!({})).await;
-        match resp {
-            RemoteResponse::HostInvokeResult {
-                ok: false,
-                error: Some(err),
-                ..
-            } => {
-                assert!(
-                    err.starts_with("command 'worktree_list' is not supported on CLI peer host"),
-                    "{err}"
-                );
-                assert!(err.contains(": "), "reason must be appended: {err}");
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
+        let err = handle_obp_call("worktree_list", json!({}))
+            .await
+            .expect_err("unsupported on the CLI");
+        assert!(
+            err.starts_with("command 'worktree_list' is not supported on CLI peer host"),
+            "{err}"
+        );
+        assert!(err.contains(": "), "reason must be appended: {err}");
     }
 
     #[tokio::test]
     async fn browser_control_is_unsupported_not_local_only_on_cli() {
-        let resp = handle_host_invoke("browser_control_launch", json!({})).await;
-        match resp {
-            RemoteResponse::HostInvokeResult {
-                ok: false,
-                error: Some(err),
-                ..
-            } => {
-                assert!(err.contains("is not supported on CLI peer host"), "{err}");
-                assert!(!err.contains("local-only"), "{err}");
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
+        let err = handle_obp_call("browser_control_launch", json!({}))
+            .await
+            .expect_err("unsupported on the CLI");
+        assert!(err.contains("is not supported on CLI peer host"), "{err}");
+        assert!(!err.contains("local-only"), "{err}");
     }
 
     #[tokio::test]
     async fn unknown_command_reports_host_version_mismatch() {
-        let resp = handle_host_invoke("not_an_openbitfun_command", json!({})).await;
-        match resp {
-            RemoteResponse::HostInvokeResult {
-                ok: false,
-                error: Some(err),
-                ..
-            } => {
-                assert!(
-                    err.contains("is unknown to this OpenBitFun CLI peer host version"),
-                    "{err}"
-                );
-                assert!(!err.contains("is not supported on CLI peer host"), "{err}");
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
+        let err = handle_obp_call("not_an_openbitfun_command", json!({}))
+            .await
+            .expect_err("unknown command");
+        assert!(
+            err.contains("is unknown to this OpenBitFun CLI peer host version"),
+            "{err}"
+        );
+        assert!(!err.contains("is not supported on CLI peer host"), "{err}");
     }
 
     /// `cancel_tool` and `get_all_tools_info` were previously unimplemented on
@@ -422,25 +229,5 @@ mod tests {
                 "{command} must reach its implemented handler, not the unsupported gate"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn attach_detach_only_updates_delivery_subscribers() {
-        let _ = handle_host_invoke(
-            "peer_control_attach",
-            json!({ "controller_device_id": "ctrl-test-1" }),
-        )
-        .await;
-        assert!(super::super::control::attached_controllers()
-            .iter()
-            .any(|id| id == "ctrl-test-1"));
-        let _ = handle_host_invoke(
-            "peer_control_detach",
-            json!({ "controller_device_id": "ctrl-test-1" }),
-        )
-        .await;
-        assert!(!super::super::control::attached_controllers()
-            .iter()
-            .any(|id| id == "ctrl-test-1"));
     }
 }

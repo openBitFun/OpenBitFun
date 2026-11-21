@@ -19,6 +19,19 @@ so the updated `PATH` is visible.
 
 Official release archives contain the same `openbitfun` executable.
 
+The executable carries the web UI that browsers load when they control this
+CLI as a device (`https://super.openbitfun.com/`). The installer and
+`pnpm run cli:build` build it from the same tree with the NSH toolchain
+(`nsh package src/nsh-ui --target web`, then
+`scripts/write-ui-bundle-manifest.mjs`) and compile it in through
+`OPENBITFUN_CLI_WEB_UI_DIR`. It is embedded rather than installed next to the
+binary so it can never drift from the binary through self-update, `cargo
+install` or a copied executable. A build without it (a plain `cargo build`,
+`OPENBITFUN_CLI_WEB_UI=off`, or an installer run without `nsh`) still works
+from the terminal, desktops and phones; a browser gets an explicit "update
+OpenBitFun on this device" state (`ui_bundle_unavailable`) instead of a UI
+from another build.
+
 Installation and self-update share an OS-backed lock. On macOS/Linux without
 the `flock` command, the installer uses available Perl, Python, or the packaged
 CLI lock helper. A PID-file-only `shlock` is not sufficient. Installing an older
@@ -380,8 +393,11 @@ CLI does not add a Pages management screen or Peer HostInvoke page commands.
 
 ### Always-on account device host
 
-After signing in with `/login`, a server can keep its account device route
-online without an interactive TUI:
+After signing in with `/login`, a server can stay reachable by the account's
+other devices without an interactive TUI. The daemon joins OpenBitFun Link as
+this device and serves it like a desktop host (Peer Device Mode, the phone app,
+the browser controller, the fleet and Detached Dispatch); a desktop app on the
+same machine serves the device instead while it runs:
 
 ```bash
 openbitfun daemon install
@@ -399,20 +415,21 @@ currently install an auto-start service; use `openbitfun daemon run` under a
 supervisor instead. Run `openbitfun daemon --help` for lifecycle commands and
 platform diagnostics.
 
-The CLI and Desktop check the 30-day Relay device credential on startup and
+The CLI and Desktop check the 30-day account device credential on startup and
 then every seven days. When fewer than 15 days remain, the host uses its
 signed-in OpenBitFun account to request a fresh credential. It retries a
-failed check after an hour. If the Relay rejects the device credential or the
-host has lost its account login, sign in on that host again (`/login` in the CLI).
+failed check after an hour. If the account service rejects the device
+credential or the host has lost its account login, sign in on that host again
+(`/login` in the CLI).
 
 Bot chats share their 24-hour delegation with their running remote turns and
 renew it on use after 12 hours. A device-list request rejected with HTTP 401
 gets one retry with a fresh delegation.
 
-### Bots and Mobile Web from Claw
+### Bots from Claw
 
 In Claw chat, ask to start a WeChat, Telegram, or Feishu bot, inspect Remote
-Connect, stop a channel, or enable Mobile Web. Claw uses `OpenBitFunControl`
+Connect, or stop a channel. Claw uses `OpenBitFunControl`
 (`feature.remote-connect`) on the executing host. Starting a channel launches
 the local CLI daemon when needed; closing the chat leaves listeners running.
 Use `daemon install` if they should also return after a machine reboot.
@@ -435,14 +452,13 @@ product home; stop it in Desktop before starting it in the daemon, or vice
 versa. A listener reported as running may still be retrying its provider;
 check a real inbound message and reply to verify connectivity.
 
-Mobile Web uses the configured account Relay and returns a device URL. Sign in
-with the same OpenBitFun account on the phone. Stopping Mobile Web also stops
-Peer Device routing on this daemon until an explicit start or daemon restart;
-bot channels remain active. CLI does not host an embedded LAN Relay. All
-management targets the executing host, including Peer and detached jobs. Direct
-Peer RPC supports bot management; use a Claw conversation for Relay start/stop so
-the mutation does not hold the connection it replaces.
-remote workspace paths cannot be used as local credential-file paths. An older
+A bot reaches this account's other devices only over OpenBitFun Link, through
+the host that runs it; a device that is not on Link (offline, or an OpenBitFun
+version older than 2.0) answers `device_not_on_link`. There is no Mobile Web or
+LAN relay to start: phones and browsers control this host over Link while
+remote control is on (`openbitfun remote-control on|off`). All management
+targets the executing host, including Peer and detached jobs; remote workspace
+paths cannot be used as local credential-file paths. An older
 daemon must be upgraded and restarted before it supports these controls.
 
 ## Updates and troubleshooting

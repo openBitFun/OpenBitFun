@@ -52,7 +52,7 @@ export const optionalDependencyFeatureOwnerRules = [
       { depName: 'base64', ownerFeatures: ['pet-packages', 'credential-vault', 'filesystem', 'workspace-icons'] },
       {
         depName: 'openbitfun-core-types',
-        ownerFeatures: ['filesystem', 'local-storage', 'product-identity', 'workspace-persistence'],
+        ownerFeatures: ['dispatch-wire', 'filesystem', 'local-storage', 'product-identity', 'workspace-persistence'],
       },
       { depName: 'openbitfun-events', ownerFeatures: ['local-storage', 'session-event-format'] },
       { depName: 'openbitfun-runtime-ports', ownerFeatures: ['permission', 'workspace-runtime', 'workspace-persistence', 'workspace-transfer'] },

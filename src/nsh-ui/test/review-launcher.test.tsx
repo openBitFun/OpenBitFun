@@ -4,14 +4,13 @@
 // surface only sends the user's choices and opens the child it is given.
 
 import { expect, open, test } from "nsh/test";
-import { createBackend, withReviewLaunchFixtures } from "./support";
+import { createBackend, openSession as openSessionRowOf, withReviewLaunchFixtures } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
 async function openSession(backend: { handlers: Record<string, (data: unknown) => unknown> }) {
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSessionRowOf(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   return app;
 }
@@ -116,8 +115,7 @@ test("a remote workspace and an older host each say why there is no review", asy
     createBackend({ currentWorkspaceId: "workspace-2" }),
   );
   const first = await open("../App.tsx", { ...DESKTOP, host: { handlers: remote.handlers } });
-  await first.waitFor("NSH skeleton");
-  await first.press("NSH skeleton >> nth=0");
+  await openSessionRowOf(first, "NSH skeleton");
   await first.press("thread-actions-trigger");
   await first.press("review-launch-open");
   await first.waitFor(

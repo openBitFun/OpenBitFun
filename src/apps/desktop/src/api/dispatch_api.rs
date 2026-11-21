@@ -37,23 +37,14 @@ struct AccountDeviceDispatchRpc;
 
 #[async_trait]
 impl DeviceDispatchRpc for AccountDeviceDispatchRpc {
-    /// New targets on the account device mesh run the verb over OBP; older
-    /// targets get the `host_invoke` envelope over the relay RPC.
+    /// Targets run the verb over OBP on OpenBitFun Link; a device that is not
+    /// on Link gets an explicit `device_not_on_link` error.
     async fn invoke(&self, device_id: &str, command: &str, args: Value) -> anyhow::Result<Value> {
         invoke_device_dispatch(
             openbitfun_services_integrations::remote_connect::mesh_route::mesh_route(),
             device_id,
             command,
             args,
-            |command_json| async move {
-                super::remote_connect_api::account_device_rpc(
-                    device_id.to_string(),
-                    command_json,
-                    None,
-                )
-                .await
-                .map_err(anyhow::Error::msg)
-            },
         )
         .await
     }
@@ -501,30 +492,4 @@ pub async fn dispatch_save_transcript(
         .write_transcript(&request.job_id, &transcript)
         .await
         .map_err(|error| error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use openbitfun_core::service::dispatch::decode_device_dispatch_response;
-
-    fn decode_device_dispatch_rpc(raw: &str) -> anyhow::Result<serde_json::Value> {
-        decode_device_dispatch_response("dispatch_target_submit", raw)
-    }
-
-    #[test]
-    fn device_dispatch_requires_a_correlated_host_invoke_acknowledgement() {
-        let value = decode_device_dispatch_rpc(
-            r#"{"resp":"host_invoke_result","ok":true,"value":{"accepted":true,"jobId":"job-1","sessionId":"session-1"}}"#,
-        )
-        .expect("true acknowledgement");
-        assert_eq!(value["jobId"], "job-1");
-        assert_eq!(value["sessionId"], "session-1");
-
-        let rejected = decode_device_dispatch_rpc(
-            r#"{"resp":"host_invoke_result","ok":false,"error":"target rejected"}"#,
-        )
-        .expect_err("negative acknowledgement");
-        assert!(rejected.to_string().contains("target rejected"));
-        assert!(decode_device_dispatch_rpc(r#"{"sent":true}"#).is_err());
-    }
 }

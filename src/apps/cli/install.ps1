@@ -191,6 +191,27 @@ Write-Host "Install dir: $BinDir"
 
 Push-Location $repoRoot
 try {
+    # The web UI browsers load from this CLI (src\apps\cli\src\ui_bundle.rs),
+    # built from this tree and embedded by build.rs. Without nsh the CLI is
+    # built without it and browsers get an explicit "update" state.
+    if (-not $env:OPENBITFUN_CLI_WEB_UI_DIR -and $env:OPENBITFUN_CLI_WEB_UI -ne 'off') {
+        if ((Get-Command nsh -ErrorAction SilentlyContinue) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+            $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repoRoot 'target' }
+            $webUiOut = Join-Path $targetRoot 'cli-web-ui'
+            if (Test-Path -LiteralPath $webUiOut) { Remove-Item -LiteralPath $webUiOut -Recurse -Force }
+            & nsh package src/nsh-ui --target web -o $webUiOut
+            Assert-CommandSucceeded 'nsh package'
+            & node scripts/write-ui-bundle-manifest.mjs $webUiOut
+            Assert-CommandSucceeded 'write-ui-bundle-manifest'
+            $bundle = Get-ChildItem -LiteralPath $webUiOut -Directory |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'ui-bundle.json') } |
+                Select-Object -First 1
+            if ($bundle) { $env:OPENBITFUN_CLI_WEB_UI_DIR = $bundle.FullName }
+        }
+        else {
+            Write-Host 'Note: nsh or node not found; this CLI is built without the web UI, so browsers cannot open it.'
+        }
+    }
     Write-Host '[1/3] Building openbitfun...'
     & cargo build -p openbitfun-cli --release --bin openbitfun
     Assert-CommandSucceeded 'cargo build'

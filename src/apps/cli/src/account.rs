@@ -1,27 +1,34 @@
-//! CLI adapter for account-backed device routing.
+//! CLI adapter for account-backed device serving.
 //!
-//! Shared account identity, persistence and transitions are
-//! owned by [`AccountRuntime`]. This module contains only CLI Host effects:
-//! daemon retirement, Relay routing, and Peer Device Mode fan-out fencing.
+//! Shared account identity, persistence and transitions are owned by
+//! [`AccountRuntime`]. This module contains only CLI Host effects: daemon
+//! retirement and this process's claim on serving the machine's device
+//! identity over OpenBitFun Link.
+//!
+//! The claim is a host-local lock ([`DeviceRoutingLease`]): every OpenBitFun
+//! host on a machine shares one device identity, so only one of them joins
+//! Link as that device. A Desktop host holds the primary tier and always
+//! wins; this process takes the secondary tier and serves only while no
+//! primary host does (`crate::obp_host` re-checks on every routing change and
+//! every 15 seconds). The claim is held while an account is signed in and
+//! remote control is on, and released on sign-out, account change, daemon
+//! hand-off or when remote control is turned off.
 
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use openbitfun_product_domains::account::{AccountDevice, AccountInfo, AccountSnapshotProjection};
-use tokio::sync::RwLock;
 
-use openbitfun_core::service::remote_connect::account::AccountSession;
 use openbitfun_core::service::remote_connect::account_runtime::{
     AccountRoutingStartRequest, AccountRuntime, AccountRuntimeHost,
     BackgroundRoutingOwnerRetirementError,
 };
-use openbitfun_core::service::remote_connect::{
-    self, device, encryption,
-    relay_client::{ConnectionState, DeviceRoutingPriority, RelayClient, RelayEvent},
-    DeviceIdentity, RemoteServer,
+use openbitfun_core::service::remote_connect::routing_lease::{
+    DeviceRoutingLease, DeviceRoutingPriority,
 };
+use openbitfun_core::service::remote_connect::{device, DeviceIdentity};
 
 pub(crate) struct CliAccountRuntimeParts {
     pub(crate) runtime: Arc<AccountRuntime>,
@@ -80,29 +87,22 @@ pub(crate) fn account_login_status_message(
         )
     } else if result.routing_standby {
         format!(
-            "Logged in as user {} on {}. Another OpenBitFun host on this machine serves device routing; this one takes over when it exits.",
+            "Logged in as user {} on {}. Another OpenBitFun host on this machine serves this device; this one takes over when it exits.",
             result.user_id, result.relay_url
         )
     } else if result.routing_connected {
         format!(
-            "Logged in as user {} on {}. Device routing connected.",
+            "Logged in as user {} on {}. This host serves this device for remote control.",
             result.user_id, result.relay_url
         )
     } else if let Some(error) = &result.routing_error {
         tracing::warn!(
-            "Device routing failed for relay {}: {}",
-            result.relay_url,
+            "Device serving claim failed after sign-in: {}",
             bounded_account_error(error)
         );
-        // The endpoint that was used is known here, so a retired official
-        // release is reported as the sunset case even when the text is generic.
-        let (guidance, _) = crate::account_guidance::account_failure_guidance_for_endpoint(
-            error,
-            &result.relay_url,
-        );
         format!(
-            "Logged in as user {} on {}. Device routing failed: {}",
-            result.user_id, result.relay_url, guidance
+            "Logged in as user {} on {}. Remote control could not start on this host; see the log for details.",
+            result.user_id, result.relay_url
         )
     } else {
         format!(
@@ -131,19 +131,38 @@ pub(crate) fn bounded_account_error(message: &str) -> String {
         .collect()
 }
 
-/// CLI-owned routing effects injected into the shared Account Runtime.
+/// What this process does with the shared device identity now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeviceServingState {
+    /// No claim: signed out, remote control off, or handed to the daemon.
+    Stopped,
+    /// Claimed, but another OpenBitFun host on this machine serves the device.
+    Standby,
+    /// This process serves the device (joins Link as it).
+    Serving,
+}
+
+impl DeviceServingState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Standby => "standby",
+            Self::Serving => "serving",
+        }
+    }
+}
+
+/// CLI-owned device-serving effects injected into the shared Account Runtime.
 pub(crate) struct CliAccountRoutingHost {
-    host_stream_hub:
-        RwLock<Option<Arc<openbitfun_core::service::remote_connect::host_stream::HostStreamHub>>>,
     self_ref: Weak<CliAccountRoutingHost>,
     runtime: OnceLock<Weak<AccountRuntime>>,
     permission_monitor: OnceLock<tokio::task::AbortHandle>,
-    relay_client: RwLock<Option<Arc<RelayClient>>>,
-    /// Read leases cover one routing event through its response. Routing owner
-    /// changes take the write lease, so old events cannot escape through a new
-    /// account's Relay client.
-    lifecycle: Arc<RwLock<()>>,
-    routing_cancel: tokio::sync::watch::Sender<u64>,
+    /// This process's claim on serving the device; `None` while not claimed.
+    lease: Mutex<Option<DeviceRoutingLease>>,
+    /// Where test claims keep their lock files (the real claim sits next to
+    /// the device identity).
+    #[cfg(test)]
+    lease_dir: Option<std::path::PathBuf>,
 }
 
 impl Drop for CliAccountRoutingHost {
@@ -158,20 +177,12 @@ impl CliAccountRoutingHost {
     fn new() -> Arc<Self> {
         Arc::new_cyclic(|self_ref| Self {
             self_ref: self_ref.clone(),
-            host_stream_hub: RwLock::new(None),
             runtime: OnceLock::new(),
             permission_monitor: OnceLock::new(),
-            relay_client: RwLock::new(None),
-            lifecycle: Arc::new(RwLock::new(())),
-            routing_cancel: tokio::sync::watch::channel(0).0,
+            lease: Mutex::new(None),
+            #[cfg(test)]
+            lease_dir: None,
         })
-    }
-
-    /// Host streams served to controllers while this device's routing is alive.
-    pub(crate) async fn host_stream_hub(
-        &self,
-    ) -> Option<Arc<openbitfun_core::service::remote_connect::host_stream::HostStreamHub>> {
-        self.host_stream_hub.read().await.clone()
     }
 
     fn bind_runtime(&self, runtime: Weak<AccountRuntime>) {
@@ -197,7 +208,7 @@ impl CliAccountRoutingHost {
                     let Some(host) = host.upgrade() else { return };
                     let Ok(runtime) = host.runtime() else { return };
                     if !allowed {
-                        host.stop_routing().await;
+                        host.stop_routing();
                     }
                     if let Some(daemon) = crate::remote_control::daemon_host() {
                         if let Err(error) = daemon.apply_remote_control_permission(allowed).await {
@@ -212,7 +223,7 @@ impl CliAccountRoutingHost {
                             if let Err(error) =
                                 runtime.restore_device_routing(&info.device_name).await
                             {
-                                tracing::warn!("Failed to resume device routing: {error}");
+                                tracing::warn!("Failed to resume device serving: {error}");
                             }
                         }
                     }
@@ -222,531 +233,120 @@ impl CliAccountRoutingHost {
         });
     }
 
+    fn claim_lease(&self) -> Result<DeviceRoutingLease> {
+        #[cfg(test)]
+        if let Some(dir) = &self.lease_dir {
+            return Ok(DeviceRoutingLease::in_dir(
+                dir,
+                DeviceRoutingPriority::Secondary,
+            ));
+        }
+        // A Desktop host on this machine serves the shared device first; this
+        // process stands by and takes over once that host exits.
+        DeviceRoutingLease::for_device(DeviceRoutingPriority::Secondary)
+    }
+
+    fn lease_slot(&self) -> std::sync::MutexGuard<'_, Option<DeviceRoutingLease>> {
+        self.lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Holds a claim (keeps an existing one). Returns whether it was new.
+    fn hold_lease(&self) -> Result<bool> {
+        let mut slot = self.lease_slot();
+        if slot.is_some() {
+            return Ok(false);
+        }
+        *slot = Some(self.claim_lease()?);
+        Ok(true)
+    }
+
     async fn start_routing(&self, request: AccountRoutingStartRequest) -> Result<()> {
         self.monitor_remote_control();
         let runtime = self.runtime()?;
         if !runtime.device_routing_requested(request.account_generation) {
             return Err(anyhow!("account context changed"));
         }
-        self.stop_routing().await;
         if !device::remote_control_allowed()? {
+            self.stop_routing();
             return Ok(());
         }
-
-        // A Desktop host on this machine serves the shared device first; this
-        // client stands by and takes over once that host exits.
-        let (client, mut event_rx) = RelayClient::new_device_host(DeviceRoutingPriority::Secondary);
-        let client = client.with_account_session(&request.session);
-        client.connect(&request.relay_url).await?;
-        client
-            .connect_authenticated(&request.session.token, &request.device_name)
-            .await?;
-        if client.connection_state().await == ConnectionState::Standby {
-            tracing::info!(
-                "Another OpenBitFun host on this machine serves this device; device routing is standing by"
-            );
-        }
-        let client = Arc::new(client);
-        {
-            let _routing_guard = self.lifecycle.write().await;
-            if !runtime.device_routing_requested(request.account_generation) {
-                client.disconnect().await;
-                return Err(anyhow!("account context changed"));
-            }
-            device::require_remote_control()?;
-            *self.relay_client.write().await = Some(client.clone());
-        }
-        crate::obp_host::wake();
+        let claimed = self.hold_lease()?;
         if !runtime.device_routing_requested(request.account_generation) {
-            self.retire_routing_client_if_same(&client).await;
-            client.disconnect().await;
+            self.stop_routing();
             return Err(anyhow!("account context changed"));
         }
-
-        let routing = self
-            .self_ref
-            .upgrade()
-            .ok_or_else(|| anyhow!("account routing is unavailable"))?;
-        let expected_token = request.session.token;
-        let generation = request.account_generation;
-        tokio::spawn(async move {
-            loop {
-                if !routing.routing_loop_is_current(generation, &client).await {
-                    tracing::debug!("Stopping stale device routing event loop");
-                    break;
-                }
-                let Some(event) = event_rx.recv().await else {
-                    break;
-                };
-                if !routing.routing_loop_is_current(generation, &client).await {
-                    tracing::debug!("Stopping stale device routing event loop");
-                    break;
-                }
-                if matches!(&event, RelayEvent::DeviceMessageReceived { .. }) {
-                    let routing = routing.clone();
-                    let client = client.clone();
-                    let token = expected_token.clone();
-                    tokio::spawn(async move {
-                        routing
-                            .handle_relay_event(event, &client, generation, &token)
-                            .await;
-                    });
-                } else {
-                    routing
-                        .handle_relay_event(event, &client, generation, &expected_token)
-                        .await;
-                }
+        if claimed {
+            if self.serving_state() == DeviceServingState::Standby {
+                tracing::info!(
+                    "Another OpenBitFun host on this machine serves this device; standing by"
+                );
             }
-            routing.retire_routing_client_if_same(&client).await;
-            tracing::info!("Device routing event loop exited");
-        });
+            // The account directory shows this host's platform and build.
+            let generation = request.account_generation;
+            let runtime = Arc::downgrade(&runtime);
+            tokio::spawn(async move {
+                let Some(runtime) = runtime.upgrade() else {
+                    return;
+                };
+                let Ok(device) = DeviceIdentity::from_current_machine() else {
+                    return;
+                };
+                if let Err(error) = runtime
+                    .report_local_device_metadata(generation, &device.device_id)
+                    .await
+                {
+                    tracing::warn!("Failed to report device metadata: {error}");
+                }
+            });
+        }
+        crate::obp_host::wake();
         Ok(())
     }
 
-    async fn stop_routing(&self) {
-        // Wake and retire pending RPC futures before waiting for their leases.
-        // Cancellation does not imply rollback; an interrupted mutation is never replayed.
-        self.routing_cancel
-            .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
-        let _routing_guard = self.lifecycle.write().await;
-        self.stop_routing_locked().await;
-    }
-
-    pub(crate) async fn connection_state(
-        &self,
-    ) -> openbitfun_core::service::remote_connect::relay_client::ConnectionState {
-        let client = self.relay_client.read().await.clone();
-        match client {
-            Some(client) => client.connection_state().await,
-            None => openbitfun_core::service::remote_connect::relay_client::ConnectionState::Disconnected,
+    /// Releases the claim so the next host in line serves the device.
+    fn stop_routing(&self) {
+        let released = self.lease_slot().take().is_some();
+        if released {
+            crate::obp_host::wake();
         }
     }
 
-    /// Whether this process serves the shared device identity now: its
-    /// device routing runs and no primary host on this machine (a Desktop)
-    /// holds it (`Standby`). OpenBitFun Link follows the same owner, so one
-    /// machine never joins the account network twice as one device.
+    fn lease_serves(&self) -> Option<bool> {
+        let mut slot = self.lease_slot();
+        let lease = slot.as_mut()?;
+        Some(match lease.may_serve() {
+            Ok(serves) => serves,
+            Err(error) => {
+                tracing::warn!("Device serving claim could not be checked: {error}");
+                false
+            }
+        })
+    }
+
+    pub(crate) fn serving_state(&self) -> DeviceServingState {
+        match self.lease_serves() {
+            None => DeviceServingState::Stopped,
+            Some(false) => DeviceServingState::Standby,
+            Some(true) => DeviceServingState::Serving,
+        }
+    }
+
+    /// Whether this process serves the shared device identity now: it holds
+    /// the claim, remote control is on, and no primary host on this machine
+    /// (a Desktop) serves the device. OpenBitFun Link follows this answer, so
+    /// one machine never joins the account network twice as one device.
     pub(crate) async fn serves_device(&self) -> bool {
-        let client = self.relay_client.read().await.clone();
-        match client {
-            Some(client) => client.connection_state().await != ConnectionState::Standby,
-            None => false,
-        }
+        device::remote_control_allowed().unwrap_or(false)
+            && self.serving_state() == DeviceServingState::Serving
     }
 
     pub(crate) async fn stop_device_routing(&self) {
         if let Ok(runtime) = self.runtime() {
             runtime.cancel_device_routing();
         }
-        self.stop_routing().await;
-    }
-
-    async fn stop_routing_locked(&self) {
-        if let Some(hub) = self.host_stream_hub.write().await.take() {
-            hub.close();
-        }
-        if let Some(client) = self.relay_client.write().await.take() {
-            client.disconnect().await;
-        }
-        crate::obp_host::wake();
-        crate::peer_host::update_controller_presence(Vec::new()).await;
-    }
-
-    async fn is_current_routing_client(&self, client: &Arc<RelayClient>) -> bool {
-        same_routing_client(self.relay_client.read().await.as_ref(), client)
-    }
-
-    async fn routing_loop_is_current(
-        &self,
-        account_generation: u64,
-        client: &Arc<RelayClient>,
-    ) -> bool {
-        let Ok(runtime) = self.runtime() else {
-            return false;
-        };
-        if !runtime.account_context_is_current(account_generation) {
-            return false;
-        }
-        let matches = self.is_current_routing_client(client).await;
-        matches && runtime.account_context_is_current(account_generation)
-    }
-
-    async fn retire_routing_client_if_same(&self, client: &Arc<RelayClient>) -> bool {
-        {
-            let current = self.relay_client.read().await;
-            if !same_routing_client(current.as_ref(), client) {
-                return false;
-            }
-            self.routing_cancel
-                .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
-        }
-        let _routing_guard = self.lifecycle.write().await;
-        let mut current = self.relay_client.write().await;
-        if !take_routing_client_if_same(&mut current, client) {
-            return false;
-        }
-        drop(current);
-        crate::peer_host::update_controller_presence(Vec::new()).await;
-        true
-    }
-
-    async fn handle_relay_event(
-        self: &Arc<Self>,
-        event: RelayEvent,
-        relay_client: &Arc<RelayClient>,
-        account_generation: u64,
-        expected_token: &str,
-    ) {
-        if let RelayEvent::AuthError { message } = event {
-            self.handle_relay_auth_error(message, relay_client, account_generation, expected_token)
-                .await;
-            return;
-        }
-
-        let mut cancelled = self.routing_cancel.subscribe();
-        let _routing_lease = self.lifecycle.read().await;
-        if !self
-            .routing_loop_is_current(account_generation, relay_client)
-            .await
-        {
-            tracing::debug!("Ignoring event from a stale device routing client");
-            return;
-        }
-        let runtime = self.runtime().expect("bound account runtime");
-        let Ok((session, relay_url)) = runtime
-            .read_account_context_for_generation(account_generation)
-            .await
-        else {
-            return;
-        };
-        let fanout_owner = PeerFanoutOwner {
-            account_generation,
-            account_token: expected_token.to_string(),
-            relay_client: Arc::clone(relay_client),
-            runtime: Arc::downgrade(&runtime),
-            session,
-            relay_url,
-            cancellation: Some(cancelled.clone()),
-        };
-        let device_rpc = matches!(&event, RelayEvent::DeviceMessageReceived { .. });
-        if device_rpc && device::require_remote_control().is_err() {
-            return;
-        }
-        let mut event_cancellation = cancelled.clone();
-        let handling = ACTIVE_PEER_FANOUT_OWNER.scope(
-            fanout_owner,
-            self.handle_current_relay_event(
-                event,
-                relay_client,
-                account_generation,
-                expected_token,
-                &mut event_cancellation,
-            ),
-        );
-        if device_rpc {
-            // RPC execution has its own cancellation boundary. Do not drop an
-            // accepted model write or lose its task-local owner and routing lease.
-            handling.await;
-        } else {
-            let _ =
-                remote_connect::rpc_execution::run_rpc_stage(&mut cancelled, false, handling).await;
-        }
-    }
-
-    async fn handle_current_relay_event(
-        &self,
-        event: RelayEvent,
-        relay_client: &Arc<RelayClient>,
-        account_generation: u64,
-        expected_token: &str,
-        cancellation: &mut tokio::sync::watch::Receiver<u64>,
-    ) {
-        let runtime = match self.runtime() {
-            Ok(runtime) => runtime,
-            Err(_) => return,
-        };
-        match event {
-            RelayEvent::AuthOk { user_id, device_id } => {
-                tracing::info!("Device routing auth ok: user={user_id} device={device_id}");
-                if let Err(error) = DeviceIdentity::adopt_account_device_id(&device_id) {
-                    tracing::warn!("Failed to adopt AuthOk device_id: {error}");
-                    return;
-                }
-                if let Ok((session, _)) = runtime
-                    .read_account_context_for_generation(account_generation)
-                    .await
-                {
-                    // AuthOk is emitted on initial connection and every reconnect.
-                    // Use its authenticated id, never a controller's target id.
-                    if session.token != expected_token {
-                        return;
-                    }
-                    if let Err(error) = runtime
-                        .report_local_device_metadata(account_generation, &device_id)
-                        .await
-                    {
-                        tracing::warn!("Failed to report device metadata on connection: {error}");
-                    }
-                    if session.token == expected_token
-                        && self
-                            .routing_loop_is_current(account_generation, relay_client)
-                            .await
-                    {
-                        let hub = openbitfun_core::service::remote_connect::start_host_stream_hub(
-                            Arc::new(CliHostStreamNotifier {
-                                routing: self.self_ref.clone(),
-                            }),
-                        );
-                        if let Some(old) = self.host_stream_hub.write().await.replace(hub) {
-                            old.close();
-                        }
-                        if let Err(error) =
-                            runtime.record_authenticated_device(&session.token, &device_id)
-                        {
-                            tracing::warn!("Failed to persist AuthOk device_id: {error}");
-                        }
-                    }
-                }
-            }
-            RelayEvent::DevicePresence { devices } => {
-                tracing::info!("Device presence updated: {} online", devices.len());
-                if !self
-                    .routing_loop_is_current(account_generation, relay_client)
-                    .await
-                {
-                    return;
-                }
-                let online: Vec<String> =
-                    devices.into_iter().map(|device| device.device_id).collect();
-                // Presence is authoritative for who can still receive stream
-                // hints; a device that dropped off stops holding streams alive.
-                if let Some(hub) = self.host_stream_hub().await {
-                    hub.retain_online(&online);
-                }
-                crate::peer_host::update_controller_presence(online).await;
-            }
-            RelayEvent::DeviceMessageReceived {
-                source_device_id,
-                correlation_id,
-                encoding_offer,
-                encrypted_data,
-                nonce,
-            } => {
-                use remote_connect::remote_server::{RemoteCommand, RemoteResponse};
-                use remote_connect::rpc_execution::run_rpc_stage;
-
-                let prepare = async {
-                    let Ok((session, relay_url)) = runtime
-                        .read_account_context_for_generation(account_generation)
-                        .await
-                    else {
-                        return None;
-                    };
-                    if session.token != expected_token
-                        || !self
-                            .routing_loop_is_current(account_generation, relay_client)
-                            .await
-                    {
-                        return None;
-                    }
-                    let plaintext = match session
-                        .decrypt_peer_message(
-                            &relay_url,
-                            &source_device_id,
-                            &encrypted_data,
-                            &nonce,
-                            encoding_offer,
-                        )
-                        .await
-                    {
-                        Ok(plaintext) => plaintext,
-                        Err(error) => {
-                            tracing::warn!("Failed to decrypt device message: {error}");
-                            return None;
-                        }
-                    };
-                    let command: RemoteCommand = match serde_json::from_str(&plaintext) {
-                        Ok(command) => command,
-                        Err(error) => {
-                            tracing::warn!("Could not parse device command: {error}");
-                            return None;
-                        }
-                    };
-                    tracing::info!(
-                        "Device command received: source={source_device_id} corr={correlation_id}"
-                    );
-                    let peer_key = match session
-                        .peer_message_key(&relay_url, &source_device_id)
-                        .await
-                    {
-                        Ok(key) => key,
-                        Err(error) => {
-                            tracing::warn!("Failed to resolve peer message key: {error}");
-                            return None;
-                        }
-                    };
-                    Some((session, command, peer_key))
-                };
-                let Some((session, command, peer_key)) =
-                    run_rpc_stage(cancellation, false, prepare).await.flatten()
-                else {
-                    return;
-                };
-                let model_write = matches!(&command, RemoteCommand::SetSessionModel { .. });
-                let execute = async {
-                    let hub = self.host_stream_hub().await;
-                    match openbitfun_core::service::remote_connect::handle_host_stream_command(
-                        hub.as_ref(),
-                        &source_device_id,
-                        &command,
-                    )
-                    .await
-                    {
-                        Some(response) => response,
-                        None => match &command {
-                            RemoteCommand::HostInvoke { command, args } => {
-                                crate::peer_host::handle_host_invoke(command, args.clone()).await
-                            }
-                            RemoteCommand::DeviceEvent { event, payload } => {
-                                session.deliver_device_event(&source_device_id, event, payload);
-                                crate::peer_host::handle_device_event_command()
-                            }
-                            other => RemoteServer::new(peer_key).dispatch(other).await,
-                        },
-                    }
-                };
-                let Some(response) = run_rpc_stage(cancellation, model_write, execute).await else {
-                    return;
-                };
-                if correlation_id.is_empty() {
-                    return;
-                }
-                let reply = async {
-                    if !self
-                        .routing_loop_is_current(account_generation, relay_client)
-                        .await
-                    {
-                        return;
-                    }
-                    let response_json = serde_json::to_string(&response).unwrap_or_else(|error| {
-                        serde_json::to_string(&RemoteResponse::Error {
-                            message: format!("failed to serialize RPC response: {error}"),
-                        })
-                        .unwrap_or_else(|_| {
-                            r#"{"resp":"error","message":"serialize failed"}"#.to_string()
-                        })
-                    });
-                    let Ok((encrypted_response, response_nonce)) =
-                        encryption::encrypt_relay_message(
-                            &peer_key,
-                            &response_json,
-                            encoding_offer.accepts_zstd(),
-                        )
-                    else {
-                        tracing::warn!("Failed to encrypt RPC response");
-                        return;
-                    };
-                    let reply_target = if source_device_id == "rpc" {
-                        "rpc"
-                    } else {
-                        source_device_id.as_str()
-                    };
-                    if let Err(error) = relay_client
-                        .send_device_message(
-                            reply_target,
-                            &correlation_id,
-                            &encrypted_response,
-                            &response_nonce,
-                        )
-                        .await
-                    {
-                        tracing::warn!("Failed to send RPC response: {error}");
-                    }
-                };
-                let _ = run_rpc_stage(cancellation, false, reply).await;
-            }
-            RelayEvent::Disconnected => {
-                tracing::info!("Device routing disconnected");
-                crate::peer_host::update_controller_presence(Vec::new()).await;
-            }
-            RelayEvent::Reconnected => {
-                tracing::info!("Device routing reconnected");
-                // The following AuthOk reports metadata with the server-confirmed
-                // device id. Do not race it with a second PATCH using cached identity.
-            }
-            RelayEvent::Error { message } => {
-                tracing::warn!("Device routing error: {message}")
-            }
-            RelayEvent::AuthError { .. } => unreachable!("AuthError handled before routing lease"),
-            _ => {}
-        }
-    }
-
-    async fn handle_relay_auth_error(
-        &self,
-        message: String,
-        relay_client: &Arc<RelayClient>,
-        account_generation: u64,
-        expected_token: &str,
-    ) {
-        tracing::warn!("Device routing auth error: {message}");
-        {
-            let current = self.relay_client.read().await;
-            if !same_routing_client(current.as_ref(), relay_client) {
-                return;
-            }
-            self.routing_cancel
-                .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
-        }
-        {
-            let _routing_guard = self.lifecycle.write().await;
-            let mut current = self.relay_client.write().await;
-            if !take_routing_client_if_same(&mut current, relay_client) {
-                tracing::debug!("Ignoring auth error from a replaced routing client");
-                return;
-            }
-            drop(current);
-            relay_client.disconnect().await;
-        }
-        let Ok(runtime) = self.runtime() else {
-            return;
-        };
-        if runtime
-            .expire_rejected_context(account_generation, expected_token)
-            .await
-        {
-            crate::peer_host::update_controller_presence(Vec::new()).await;
-        }
-    }
-
-    pub(crate) async fn capture_peer_fanout_owner(&self) -> Result<PeerFanoutOwner> {
-        let runtime = self.runtime()?;
-        let generation = runtime.account_context_generation();
-        let _routing_lease = self.lifecycle.read().await;
-        let (session, relay_url) = runtime
-            .read_account_context_for_generation(generation)
-            .await?;
-        let relay_client = self
-            .relay_client
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| anyhow!("device routing not connected"))?;
-        if !self
-            .routing_loop_is_current(generation, &relay_client)
-            .await
-        {
-            return Err(anyhow!("account context changed"));
-        }
-        Ok(PeerFanoutOwner {
-            account_generation: generation,
-            account_token: session.token.clone(),
-            relay_client,
-            runtime: Arc::downgrade(&runtime),
-            session,
-            relay_url,
-            cancellation: Some(self.routing_cancel.subscribe()),
-        })
+        self.stop_routing();
     }
 }
 
@@ -797,257 +397,95 @@ impl AccountRuntimeHost for CliAccountRoutingHost {
 
     async fn stop_device_routing(&self) {
         crate::remote_control::retire_daemon_account().await;
-        self.stop_routing().await;
+        self.stop_routing();
     }
 
     async fn device_routing_is_active(&self) -> bool {
-        self.relay_client.read().await.is_some()
+        self.lease_slot().is_some()
     }
 
     async fn device_routing_is_standby(&self) -> bool {
-        self.connection_state().await == ConnectionState::Standby
+        self.serving_state() == DeviceServingState::Standby
     }
-}
-
-fn same_routing_client<T>(current: Option<&Arc<T>>, expected: &Arc<T>) -> bool {
-    current.is_some_and(|client| Arc::ptr_eq(client, expected))
-}
-
-fn take_routing_client_if_same<T>(current: &mut Option<Arc<T>>, expected: &Arc<T>) -> bool {
-    if !same_routing_client(current.as_ref(), expected) {
-        return false;
-    }
-    current.take();
-    true
-}
-
-/// Immutable routing owner captured when a Peer DeviceEvent enters the queue.
-#[derive(Clone)]
-pub(crate) struct PeerFanoutOwner {
-    account_generation: u64,
-    account_token: String,
-    relay_client: Arc<RelayClient>,
-    runtime: Weak<AccountRuntime>,
-    session: AccountSession,
-    relay_url: String,
-    // Captured at admission, not at dequeue: transitions that already happened
-    // must also cancel queued work.
-    cancellation: Option<tokio::sync::watch::Receiver<u64>>,
-}
-
-tokio::task_local! {
-    static ACTIVE_PEER_FANOUT_OWNER: PeerFanoutOwner;
-}
-
-pub(crate) fn inherited_peer_fanout_owner() -> Option<PeerFanoutOwner> {
-    ACTIVE_PEER_FANOUT_OWNER
-        .try_with(PeerFanoutOwner::clone)
-        .ok()
-}
-
-impl PeerFanoutOwner {
-    pub(crate) fn cancellation_receiver(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-        self.cancellation.clone()
-    }
-
-    fn matches(&self, generation: u64, token: &str, relay_client: &Arc<RelayClient>) -> bool {
-        self.account_generation == generation
-            && self.account_token == token
-            && Arc::ptr_eq(&self.relay_client, relay_client)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(account_generation: u64, account_token: &str) -> Self {
-        let (relay_client, _) = RelayClient::new();
-        Self {
-            account_generation,
-            account_token: account_token.to_string(),
-            relay_client: Arc::new(relay_client),
-            runtime: Weak::new(),
-            session: AccountSession::new(account_token.into(), "test".into(), [0; 32]),
-            relay_url: "http://localhost".into(),
-            cancellation: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_test_cancellation(
-        mut self,
-        cancellation: tokio::sync::watch::Receiver<u64>,
-    ) -> Self {
-        self.cancellation = Some(cancellation);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn generation_for_test(&self) -> u64 {
-        self.account_generation
-    }
-}
-
-/// Immutable credentials for one admitted delivery. Never holds a routing lock
-/// during encryption, directory lookup, or network acknowledgement.
-pub(crate) struct PeerFanoutLease {
-    pub(crate) session: AccountSession,
-    pub(crate) relay_url: String,
-    pub(crate) relay_client: Arc<RelayClient>,
-}
-
-/// Delivers host stream hints as encrypted `DeviceEvent`s to the one device
-/// that subscribed, attached Peer controller or not. Only the stream id, epoch
-/// and cursor travel; the controller reads content back over RPC.
-struct CliHostStreamNotifier {
-    routing: Weak<CliAccountRoutingHost>,
-}
-
-impl openbitfun_core::service::remote_connect::host_stream::HostStreamNotifier
-    for CliHostStreamNotifier
-{
-    fn notify(&self, target_device_id: &str, payload: serde_json::Value) {
-        let Some(routing) = self.routing.upgrade() else {
-            return;
-        };
-        let target = target_device_id.to_owned();
-        tokio::spawn(async move {
-            let owner = match routing.capture_peer_fanout_owner().await {
-                Ok(owner) => owner,
-                Err(error) => {
-                    tracing::debug!("Host stream hint skipped: {error}");
-                    return;
-                }
-            };
-            let lease = match acquire_peer_fanout_lease(&owner) {
-                Ok(lease) => lease,
-                Err(error) => {
-                    tracing::debug!("Host stream hint skipped: {error}");
-                    return;
-                }
-            };
-            use openbitfun_core::service::remote_connect::remote_server::RemoteCommand;
-            let envelope = match serde_json::to_string(&RemoteCommand::DeviceEvent {
-                event:
-                    openbitfun_core::service::remote_connect::host_stream::HOST_STREAM_CHANGED_EVENT
-                        .to_owned(),
-                payload,
-            }) {
-                Ok(envelope) => envelope,
-                Err(error) => {
-                    tracing::warn!("Host stream hint serialization failed: {error}");
-                    return;
-                }
-            };
-            let before_send = lease.session.peer_message_guard();
-            let (encrypted_data, nonce, uses_zstd) = match lease
-                .session
-                .encrypt_for_peer_with_encoding(&lease.relay_url, &target, &envelope)
-                .await
-            {
-                Ok(encrypted) => encrypted,
-                Err(error) => {
-                    tracing::warn!("Host stream hint encryption failed: {error}");
-                    return;
-                }
-            };
-            let correlation_id = uuid::Uuid::new_v4().to_string();
-            if let Err(error) = lease
-                .relay_client
-                .send_device_message_guarded(
-                    &target,
-                    &correlation_id,
-                    &encrypted_data,
-                    &nonce,
-                    || before_send(uses_zstd),
-                )
-                .await
-            {
-                tracing::debug!("Host stream hint to {target} failed: {error}");
-            }
-        });
-    }
-}
-
-pub(crate) fn acquire_peer_fanout_lease(owner: &PeerFanoutOwner) -> Result<PeerFanoutLease> {
-    let runtime = owner
-        .runtime
-        .upgrade()
-        .ok_or_else(|| anyhow!("account runtime stopped"))?;
-    if !runtime.account_context_is_current(owner.account_generation)
-        || owner
-            .cancellation
-            .as_ref()
-            .is_none_or(|cancel| cancel.has_changed().unwrap_or(true))
-    {
-        return Err(anyhow!("queued Peer event routing owner changed"));
-    }
-    Ok(PeerFanoutLease {
-        session: owner.session.clone(),
-        relay_url: owner.relay_url.clone(),
-        relay_client: owner.relay_client.clone(),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    fn host_in(dir: &std::path::Path) -> Arc<CliAccountRoutingHost> {
+        Arc::new_cyclic(|self_ref| CliAccountRoutingHost {
+            self_ref: self_ref.clone(),
+            runtime: OnceLock::new(),
+            permission_monitor: OnceLock::new(),
+            lease: Mutex::new(None),
+            lease_dir: Some(dir.to_path_buf()),
+        })
+    }
 
     #[test]
-    fn standby_login_does_not_claim_connected_routing() {
+    fn standby_login_does_not_claim_serving() {
         let result =
             openbitfun_core::service::remote_connect::account_runtime::AccountLoginResult {
                 user_id: "user".into(),
-                relay_url: "https://relay.example.test".into(),
+                relay_url: "https://account.example.test".into(),
                 routing_owner_replaced: false,
                 routing_connected: false,
                 routing_standby: true,
                 routing_error: None,
             };
         let message = account_login_status_message(&result);
-        assert!(message.contains("takes over when it exits"), "{message}");
-        assert!(!message.contains("Device routing connected"), "{message}");
+        if device::remote_control_allowed().ok() != Some(false) {
+            assert!(message.contains("takes over when it exits"), "{message}");
+        }
+        assert!(!message.contains("serves this device for"), "{message}");
+    }
+
+    /// A released OS lock can stay held for a moment while another test of
+    /// this process forks a child (the descriptor lives until its exec), so
+    /// take-overs are awaited briefly instead of asserted on the spot.
+    fn eventually_serving(host: &CliAccountRoutingHost) -> DeviceServingState {
+        for _ in 0..100 {
+            let state = host.serving_state();
+            if state == DeviceServingState::Serving {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        host.serving_state()
     }
 
     #[test]
-    fn stale_routing_loop_cannot_clear_replacement_client() {
-        let stale = Arc::new("stale");
-        let replacement = Arc::new("replacement");
-        let mut current = Some(Arc::clone(&replacement));
-        assert!(!take_routing_client_if_same(&mut current, &stale));
-        assert!(current
-            .as_ref()
-            .is_some_and(|client| Arc::ptr_eq(client, &replacement)));
+    fn a_desktop_host_wins_and_the_cli_takes_over_when_it_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = host_in(dir.path());
+        assert_eq!(host.serving_state(), DeviceServingState::Stopped);
+
+        let mut desktop = DeviceRoutingLease::in_dir(dir.path(), DeviceRoutingPriority::Primary);
+        assert!(desktop.may_serve().unwrap());
+        assert!(host.hold_lease().unwrap());
+        assert!(!host.hold_lease().unwrap(), "an existing claim is kept");
+        assert_eq!(host.serving_state(), DeviceServingState::Standby);
+
+        drop(desktop);
+        assert_eq!(eventually_serving(&host), DeviceServingState::Serving);
+
+        host.stop_routing();
+        assert_eq!(host.serving_state(), DeviceServingState::Stopped);
     }
 
     #[test]
-    fn queued_fanout_owner_requires_generation_token_and_client_identity() {
-        let owner = PeerFanoutOwner::for_test(11, "token-a");
-        let owned_client = Arc::clone(&owner.relay_client);
-        let replacement = PeerFanoutOwner::for_test(12, "token-b");
-        assert!(owner.matches(11, "token-a", &owned_client));
-        assert!(!owner.matches(12, "token-a", &owned_client));
-        assert!(!owner.matches(11, "token-b", &owned_client));
-        assert!(!owner.matches(11, "token-a", &replacement.relay_client));
-    }
+    fn a_second_cli_host_stands_by_until_the_first_releases_its_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = host_in(dir.path());
+        let second = host_in(dir.path());
+        first.hold_lease().unwrap();
+        second.hold_lease().unwrap();
+        assert_eq!(first.serving_state(), DeviceServingState::Serving);
+        assert_eq!(second.serving_state(), DeviceServingState::Standby);
 
-    #[tokio::test]
-    async fn routing_replacement_waits_for_an_in_flight_event_lease() {
-        let routing = CliAccountRoutingHost::new();
-        let event_lease = routing.lifecycle.read().await;
-        let lifecycle = routing.lifecycle.clone();
-        let (attempting_tx, attempting_rx) = tokio::sync::oneshot::channel();
-        let replacement = tokio::spawn(async move {
-            let _ = attempting_tx.send(());
-            let _replacement_lease = lifecycle.write().await;
-        });
-
-        attempting_rx.await.expect("replacement task started");
-        tokio::task::yield_now().await;
-        assert!(!replacement.is_finished());
-        drop(event_lease);
-
-        tokio::time::timeout(Duration::from_secs(1), replacement)
-            .await
-            .expect("replacement should acquire the lifecycle after event completion")
-            .expect("replacement task should finish");
+        // A daemon hand-off: the chat releases, the daemon serves.
+        first.stop_routing();
+        assert_eq!(eventually_serving(&second), DeviceServingState::Serving);
     }
 }

@@ -2,5 +2,6 @@
 
 pub mod api;
 pub mod auth;
+pub mod cloud_agent;
 pub mod devices;
 pub mod pages;

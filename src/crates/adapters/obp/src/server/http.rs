@@ -320,6 +320,8 @@ async fn upgrade(
         instance_id: server.instance_id.clone(),
         registry_digest: server.registry_digest.clone(),
         limits: server.options.limits.clone(),
+        ui_bundle_id: server.ui_bundle.cached_bundle_id(),
+        fleet_clients: Arc::clone(&server.fleet_clients),
         stop,
     };
     upgrade

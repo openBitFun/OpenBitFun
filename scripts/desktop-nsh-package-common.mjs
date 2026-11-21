@@ -7,14 +7,15 @@
 // The backend finds its resources relative to the executable, so each
 // platform script only chooses the directory these land in (the "resource
 // root": `Contents/Resources` on macOS, the package directory elsewhere):
-//   nsh-web/                          `backend_protocol/ws`
+//   nsh-web/                          `backend_protocol/ws` (with `ui-bundle.json`,
+//                                     `writeWebBundleManifest`: browsers load
+//                                     this exact UI from the device)
 //   resources/worker_host.js          `api/app_state.rs::resolve_worker_host_path`
 //   resources/ext-host/               OpenCode extension Host
 //   resources/dsh-profile/            DeepSeek Harness bridge
 //                                     (`acp/src/client/dsh_profile.rs::bundled_profile_source`)
 //   flashgrep/flashgrep-<triple>      workspace search daemon
 //                                     (`services-integrations/src/workspace_search/service.rs`)
-//   mobile-web/dist                   `native_host.rs`, legacy relay mobile UI
 //
 // Product customization: `--product-config <path>` selects a product
 // definition (default `products/openbitfun/product.jsonc`). The package takes
@@ -38,6 +39,7 @@ import {
   projectNshAppJson,
 } from "./product-customization/projections.mjs";
 import { resolveProductDefinition } from "./product-customization/resolver.mjs";
+import { writeUiBundleManifest } from "./write-ui-bundle-manifest.mjs";
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -213,7 +215,7 @@ export function miniAppShellBinary({ profileDir, target }) {
  * `flashgrep` and `dshProfile` come from `flashgrepResource` and
  * `dshProfileResource`.
  */
-export function backendResources({ webSite, mobileWebDest = "mobile-web/dist", flashgrep = null, dshProfile = null }) {
+export function backendResources({ webSite, flashgrep = null, dshProfile = null }) {
   const desktop = join(root, "src/apps/desktop");
   return [
     [webSite, "nsh-web"],
@@ -222,10 +224,27 @@ export function backendResources({ webSite, mobileWebDest = "mobile-web/dist", f
     [join(root, "THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md"],
     [join(root, "src/crates/services/services-integrations/assets/models-dev.LICENSE.txt"), "third-party/models.dev/LICENSE.txt"],
     [join(root, "src/crates/services/services-integrations/assets/models-dev.provenance.json"), "third-party/models.dev/provenance.json"],
-    [join(root, "src/mobile-web/dist"), mobileWebDest],
     ...(flashgrep ? [flashgrep] : []),
     ...(dshProfile ? [dshProfile] : []),
   ];
+}
+
+/**
+ * Writes the web bundle's `ui-bundle.json` (`write-ui-bundle-manifest.mjs`)
+ * over the untouched `nsh package` output, as the package ships it: a
+ * browser controlling this device loads exactly these files, so the id
+ * equals the one of every other package built from the same tree. Returns
+ * the bundle id, or null (reported) when there is no web bundle; the
+ * package then answers `ui_bundle_unavailable`.
+ */
+export function writeWebBundleManifest(webSite, identity, write = writeUiBundleManifest) {
+  if (!existsSync(join(webSite, "index.html"))) {
+    console.warn(`no web bundle at ${webSite}; browsers cannot load this device's UI`);
+    return null;
+  }
+  const { manifest, bundleId } = write(webSite, { product: identity?.productId });
+  console.log(`[ui-bundle] ${manifest.files.length} files, bundleId ${bundleId}`);
+  return bundleId;
 }
 
 /** Copies what exists; a missing optional resource is reported, not fatal. */

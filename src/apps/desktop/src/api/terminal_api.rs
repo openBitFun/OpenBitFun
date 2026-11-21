@@ -363,102 +363,14 @@ async fn is_remote_session(session_id: &str) -> bool {
     false
 }
 
-/// Coalesce PTY notifications; terminal bytes remain in the owning replay buffer.
-fn notify_terminal_replay(session_id: &str) {
-    use std::{
-        collections::HashSet,
-        sync::{Mutex as StdMutex, OnceLock},
-    };
-    static PENDING: OnceLock<(StdMutex<HashSet<String>>, tokio::sync::Notify)> = OnceLock::new();
-    let pending =
-        PENDING.get_or_init(|| (StdMutex::new(HashSet::new()), tokio::sync::Notify::new()));
-    static WORKER: std::sync::Once = std::sync::Once::new();
-    WORKER.call_once(|| {
-        tokio::spawn(async {
-            loop {
-                let pending = PENDING
-                    .get()
-                    .expect("Terminal notification state initialized");
-                pending.1.notified().await;
-                tokio::time::sleep(std::time::Duration::from_millis(75)).await;
-                let ids: Vec<_> = pending
-                    .0
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .drain()
-                    .collect();
-                let hubs = super::remote_connect_api::host_stream_hubs().await;
-                if hubs.is_empty() {
-                    continue;
-                }
-                for id in ids {
-                    let mut cursor = None;
-                    if let Some(state) = get_remote_workspace_manager() {
-                        if let Some(manager) = state.get_terminal_manager().await {
-                            cursor = manager.replay_cursor(&id).await;
-                        }
-                    }
-                    if cursor.is_none() {
-                        if let Ok(api) = TerminalApi::from_singleton() {
-                            cursor = api.session_manager().replay_cursor(&id).await;
-                        }
-                    }
-                    for hub in &hubs {
-                        if let Err(error) = hub
-                            .append(
-                                format!("terminal-{id}"),
-                                "terminal-output".into(),
-                                serde_json::json!({"terminal_id":id,"cursor":cursor}),
-                            )
-                            .await
-                        {
-                            warn!("Failed to publish terminal stream notification: {}", error);
-                        }
-                    }
-                }
-            }
-        });
-    });
-    pending
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(session_id.to_string());
-    pending.1.notify_one();
-}
-
-async fn register_terminal_stream(id: &str) -> Result<(), String> {
-    for hub in super::remote_connect_api::host_stream_hubs().await {
-        hub.append(
-            format!("terminal-{id}"),
-            "terminal-created".into(),
-            serde_json::json!({"terminal_id":id}),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 fn emit_terminal_event(app_handle: &HostHandle, event: &TerminalEvent) -> bool {
-    if let TerminalEvent::Data { session_id, .. } | TerminalEvent::Exit { session_id, .. } = event {
-        notify_terminal_replay(session_id);
-    }
-    let event_name = "terminal_event";
-    let local_emit_succeeded = match app_handle.emit(event_name, event) {
+    match app_handle.emit("terminal_event", event) {
         Ok(()) => true,
         Err(error) => {
             warn!("Failed to emit terminal event: {}", error);
             false
         }
-    };
-    // Only serialize the event for peer fanout when it will actually be sent.
-    if super::remote_connect_api::peer_ui_event_fanout_active(event_name) {
-        if let Ok(payload) = serde_json::to_value(event) {
-            super::remote_connect_api::maybe_fanout_peer_ui_event(event_name, payload);
-        }
     }
-    local_emit_succeeded
 }
 
 fn remote_terminal_signal_bytes(signal: &str) -> Option<&'static [u8]> {
@@ -560,7 +472,6 @@ async fn spawn_remote_pty_session(
         );
     });
 
-    register_terminal_stream(&session_id).await?;
     Ok(response)
 }
 
@@ -716,7 +627,6 @@ pub async fn terminal_create(
             .map_err(|e| e.to_string())?;
         session.workspace_id = Some(workspace_id);
     }
-    register_terminal_stream(&session.id).await?;
     Ok(SessionResponse::from(session))
 }
 

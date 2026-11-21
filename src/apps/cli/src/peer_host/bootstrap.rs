@@ -64,7 +64,6 @@ pub(crate) async fn ensure_peer_host_ready(runtime: &CliRuntimeContext) -> Resul
         local_workspace_snapshot: runtime.local_workspace_snapshot().clone(),
         compatibility: runtime.compatibility().clone(),
         account_runtime: runtime.account_runtime().clone(),
-        account_routing: runtime.account_routing().clone(),
         turns: PeerTurnTracker::new(),
         workspace_service,
         filesystem_service,
@@ -77,10 +76,10 @@ pub(crate) async fn ensure_peer_host_ready(runtime: &CliRuntimeContext) -> Resul
     }
 
     start_peer_event_fanout(state, agent_events);
-    // A mobile controller or IM bot that opens a workspace on this host changes
-    // the catalog an attached Desktop controller renders; mirror the hint.
+    // A controller or IM bot that opens a workspace on this host changes the
+    // catalog other controllers render; publish the hint.
     workspace::start_workspace_catalog_publication(Arc::new(PeerControllerEventEmitter));
-    // The file explorer on an attached controller refreshes from
+    // The file explorer on a controller refreshes from
     // `file-system-changed`, so this host must publish its own watch events
     // instead of leaving the tree stale after the first read.
     openbitfun_core::service::initialize_file_watch_service(Arc::new(PeerControllerEventEmitter));

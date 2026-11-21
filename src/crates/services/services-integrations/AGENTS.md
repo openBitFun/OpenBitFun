@@ -28,29 +28,21 @@ slices that are outside pure product logic but still platform-neutral.
   assembly, manifest filtering, `GetToolSpec` execution, and bridge
   presentation/validation behavior remain outside this crate unless a reviewed
   owner move proves behavior equivalence.
-- Remote-connect platform-neutral primitives belong here: device identity,
-  account device encryption, authenticated device invitation generation, relay client protocol, dialog/cancel
-  orchestration ports, LAN endpoint helpers, IM bot provider clients,
-  provider-private cursor caches, mobile-web relay upload, image-context adapter
+- Remote-connect platform-neutral primitives belong here: device identity, the
+  account device directory client (sign-in, device rows, pair keys), the host
+  device routing claim (`routing_lease::DeviceRoutingLease`: which local process
+  serves the device on Link), the `mesh_route` port (OBP over OpenBitFun Link,
+  `call_mesh`, explicit `device_not_on_link`), dialog/cancel orchestration ports,
+  IM bot provider clients, provider-private cursor caches, image-context adapter
   contracts, remote workspace helpers, and command/response assembly.
-- Device RPC requests, responses and one-way events share the optional
-  `accept_encoding: "zstd-1"` offer on their opaque encrypted envelope.
-  Machine hosts announce on presence. Hidden controllers offer on their first
-  ordinary request. Each reply uses its caller's offer. Connection and directory
-  changes expire learned capabilities. Relay-consumed fields keep their current
-  encoding.
-- Capable senders try Zstandard level 1 on UTF-8 bodies over 256 bytes, up to
-  64 MiB. Use the result only if the full frame is smaller. AES-GCM seals the
-  bytes `FF 4F 5A 01`, a little-endian u32 original length and one Zstandard
-  frame, or the original UTF-8 JSON. Receivers authenticate before decoding
-  and verify the size and frame boundary. The cross-client vector lives in
-  `src/shared/relay-protocol-contract-fixtures/relay-message-encoding.json`.
-- `remote_connect::host_stream` is the host-side owner of on-demand session,
-  terminal and catalog streams: an in-memory, byte-bounded per-stream log with
-  an epoch, `read_stream`/`unsubscribe_stream` handling, and `HostStreamNotifier`
-  hint leases. `remote_connect::host_stream_subscriber` is the Rust controller
-  reader. Neither the relay nor any client persists stream content; do not add
-  relay-stored history, `get_session_key`, or a durable stream cache here.
+- OpenBitFun 2.0 has no relay transport. The 1.x relay socket client
+  (`relay_client`, `realtime_client`), relay RPC (`AccountClient::device_rpc`),
+  the LAN relay helpers, the host-stream subscriber and the relay failure
+  classifier were removed; do not reintroduce a relay fallback. Still in the
+  tree and dead in 2.0 (to remove with a `RemoteCommand` wire change):
+  `host_stream` (the hub and `read_stream` types), `session_records`,
+  `rpc_execution`, `pairing`'s invitation helpers and `QrGenerator::build_device_url`,
+  `message_encoding` / `encryption::encrypt_relay_message`.
 - Compressed Relay ciphertext carries its peer capability generation through
   key lookup and bulk upload. Check that generation immediately before wire
   submission. A retired generation is an unsent failure. Preserve an already
@@ -198,9 +190,9 @@ cargo test -p openbitfun-services-integrations --no-default-features --features 
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-ssh-concrete --lib remote_ssh::relay_deploy::tests::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::message_encoding::tests
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::account::tests
-cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::relay_client::tests::
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::routing_lease::
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::mesh_route::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::host_stream::
-cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::host_stream_subscriber::tests::
 cargo test -p openbitfun-services-integrations --no-default-features --features file-watch --test file_watch_contracts
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features git,remote-ssh --test git_contracts tracked_change_count
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features workspace-search --test workspace_search_contracts

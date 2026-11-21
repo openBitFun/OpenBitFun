@@ -32,6 +32,9 @@ openbitfun-link = { path = "../../../crates/services/link" }
 # desktop's Peer Device Mode: one copy of the wire.
 openbitfun-obp = { path = "../../../crates/adapters/obp", features = ["client"] }
 openbitfun-services-core = { path = "../../../crates/services/services-core", features = ["tls-provider"] }
+# The fleet contract: the entry ranking (`rank_entry_candidates`, the one the
+# gateway applies for browsers) and the hello's vector cursor.
+openbitfun-product-domains = { path = "../../../crates/contracts/product-domains" }
 tokio = { version = "1.52", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }

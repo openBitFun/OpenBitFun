@@ -1,0 +1,60 @@
+[package]
+name = "openbitfun-superagent"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "OpenBitFun cloud agent: a per-account control-plane node that plans and dispatches work to the account's own devices"
+
+[[bin]]
+name = "openbitfun-superagent"
+path = "src/main.rs"
+
+[lib]
+name = "openbitfun_superagent"
+path = "src/lib.rs"
+
+[dependencies]
+# Joins account networks as the agent member and opens streams to devices.
+openbitfun-link = { path = "../../../crates/services/link" }
+# The OBP client (account-device handshake to devices) and the end-to-end
+# channel primitives (`obp-e2e-v1`) for the frontends that reach this node.
+openbitfun-obp = { path = "../../../crates/adapters/obp", features = ["client", "server"] }
+# The superagent contract: tools, job states, cards and the pure policy.
+openbitfun-product-domains = { path = "../../../crates/contracts/product-domains" }
+# The legacy agent-id dialect of the dispatch wire.
+openbitfun-core-types = { path = "../../../crates/contracts/core-types" }
+# Agent membership minted from the issuer key (network derivation, join tokens).
+openbitfun-relay-service = { path = "../../../crates/services/relay-service" }
+# The ring TLS provider for the HTTPS client (account device directory) and
+# the shared dispatch-target wire DTOs.
+openbitfun-services-core = { path = "../../../crates/services/services-core", features = ["tls-provider", "dispatch-wire"] }
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+log = { workspace = true }
+tracing-subscriber = { workspace = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+aes-gcm = { workspace = true }
+x25519-dalek = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+# Conversation date groups in the client's IANA time zone.
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Route tests drive the router in-process.
+tower = { version = "0.5", features = ["util"] }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

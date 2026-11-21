@@ -13,7 +13,6 @@ import { isCommandUnavailable } from "./hostCommands";
 /** The `IDENTITY.md` frontmatter fields the page edits; the host rewrites the document. */
 export type IdentityField = "name" | "avatar" | "emoji";
 import { formatTimestamp } from "./format";
-import { peerScope } from "./peerState";
 import { listSessions, setActiveWorkspace, type SessionSummary } from "./api";
 import {
   activeWorkspaceId,
@@ -85,7 +84,7 @@ export const selectedAssistantRoot = computed<string>(
 
 export const personaDirty = computed(() => personaDraft() !== personaOriginal());
 
-let lastScopePeerKey: string | undefined;
+let assistantsScopeSynced = false;
 let listTicket = 0;
 let fileReadTicket = 0;
 
@@ -179,7 +178,6 @@ function ensureAssistantInWorkspaces(assistant: AssistantWorkspaceView): void {
 }
 
 export async function loadAssistants(preferredSelectId?: string): Promise<void> {
-  const expectedPeerId = peerScope()?.deviceId ?? null;
   const ticket = ++listTicket;
   assistantsLoading.set(true);
   assistantsError.set("");
@@ -190,7 +188,7 @@ export async function loadAssistants(preferredSelectId?: string): Promise<void> 
       invokeCommand<Record<string, unknown> | null>("get_primary_assistant_workspace", {}),
     ]);
 
-    if (ticket !== listTicket || (peerScope()?.deviceId ?? null) !== expectedPeerId) return;
+    if (ticket !== listTicket) return;
 
     if (listRes.status === "rejected") {
       assistants.set([]);
@@ -245,26 +243,10 @@ export async function loadAssistants(preferredSelectId?: string): Promise<void> 
   }
 }
 
-export function syncAssistantsScope(peerId: string | null, force = false): void {
-  const peerKey = peerId ?? "__local__";
-  const peerChanged = lastScopePeerKey !== undefined && lastScopePeerKey !== peerKey;
-  if (!force && !peerChanged && lastScopePeerKey === peerKey && assistants().length > 0) return;
-  if (peerChanged) {
-    // Switching between local and Peer drops all host-specific assistant state.
-    assistants.set([]);
-    primaryAssistantId.set(null);
-    selectedAssistantId.set(null);
-    confirmingAssistantAction.set(null);
-    confirmingPersonaReset.set(false);
-    personaDraft.set("");
-    personaOriginal.set("");
-    personaError.set("");
-    personaNotice.set("");
-    assistantsNotice.set("");
-    newAssistantModalOpen.set(false);
-    newAssistantNameInput.set("");
-  }
-  lastScopePeerKey = peerKey;
+/** Reads the assistants once, or again when `force` (a new device context). */
+export function syncAssistantsScope(force = false): void {
+  if (!force && assistantsScopeSynced && assistants().length > 0) return;
+  assistantsScopeSynced = true;
   void loadAssistants();
 }
 
@@ -298,7 +280,6 @@ export async function loadPersonaFile(
   assistant: AssistantWorkspaceView,
   fileName: PersonaFileName,
 ): Promise<void> {
-  const expectedPeerId = peerScope()?.deviceId ?? null;
   const ticket = ++fileReadTicket;
   personaLoading.set(true);
   personaError.set("");
@@ -319,12 +300,12 @@ export async function loadPersonaFile(
       workspacePath: assistant.rootPath,
       filePath,
     });
-    if (ticket !== fileReadTicket || (peerScope()?.deviceId ?? null) !== expectedPeerId) return;
+    if (ticket !== fileReadTicket) return;
     const text = typeof content === "string" ? content : "";
     personaDraft.set(text);
     personaOriginal.set(text);
   } catch (error) {
-    if (ticket !== fileReadTicket || (peerScope()?.deviceId ?? null) !== expectedPeerId) return;
+    if (ticket !== fileReadTicket) return;
     if (isMissingFileError(error)) {
       personaDraft.set("");
       personaOriginal.set("");
@@ -782,13 +763,12 @@ export function closePersonaEditor(): void {
 
 /** Reads the assistant workspace's own sessions, newest first, as the desktop's page lists them. */
 export async function loadAssistantSessions(assistant: AssistantWorkspaceView): Promise<void> {
-  const expectedPeerId = peerScope()?.deviceId ?? null;
   const ticket = ++sessionsTicket;
   assistantSessionsState.set("loading");
   assistantSessionsError.set("");
   try {
     const page = await listSessions(assistant.id, 30);
-    if (ticket !== sessionsTicket || (peerScope()?.deviceId ?? null) !== expectedPeerId) return;
+    if (ticket !== sessionsTicket) return;
     assistantSessions.set(page.sessions ?? []);
     assistantSessionsState.set("ready");
   } catch (error) {

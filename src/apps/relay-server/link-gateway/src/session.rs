@@ -15,7 +15,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-/// Cookie name (host-only, `Path=/obp`).
+/// Cookie name (host-only, on `COOKIE_PATHS`).
 pub(crate) const COOKIE_NAME: &str = "obf_gw";
 /// How long a session lasts without a new sign-in.
 pub(crate) const SESSION_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -106,20 +106,37 @@ pub(crate) fn cookie_value(header: &str) -> Option<&str> {
         .map(|(_, value)| value)
 }
 
-/// `Set-Cookie` for a new session.
-pub(crate) fn set_cookie(value: &str, secure: bool) -> String {
-    format!(
-        "{COOKIE_NAME}={value}; Path=/obp; Max-Age={SESSION_SECONDS}; HttpOnly; SameSite=Strict{}",
-        if secure { "; Secure" } else { "" }
-    )
+/// The paths the session cookie is set on: the gateway API and pipes, and
+/// the web UI pool (`/cas/`, fetched by the device bundle's loader).
+/// Both carry the same sealed value.
+pub(crate) const COOKIE_PATHS: [&str; 2] = ["/obp", "/cas"];
+
+/// `Set-Cookie` headers for a session sealed as `value` that ends `max_age`
+/// seconds from now.
+pub(crate) fn set_cookies(value: &str, max_age: i64, secure: bool) -> Vec<String> {
+    COOKIE_PATHS
+        .iter()
+        .map(|path| {
+            format!(
+                "{COOKIE_NAME}={value}; Path={path}; Max-Age={}; HttpOnly; SameSite=Strict{}",
+                max_age.clamp(0, SESSION_SECONDS),
+                if secure { "; Secure" } else { "" }
+            )
+        })
+        .collect()
 }
 
-/// `Set-Cookie` that ends the session.
-pub(crate) fn clear_cookie(secure: bool) -> String {
-    format!(
-        "{COOKIE_NAME}=; Path=/obp; Max-Age=0; HttpOnly; SameSite=Strict{}",
-        if secure { "; Secure" } else { "" }
-    )
+/// `Set-Cookie` headers that end the session on every path.
+pub(crate) fn clear_cookies(secure: bool) -> Vec<String> {
+    COOKIE_PATHS
+        .iter()
+        .map(|path| {
+            format!(
+                "{COOKIE_NAME}=; Path={path}; Max-Age=0; HttpOnly; SameSite=Strict{}",
+                if secure { "; Secure" } else { "" }
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -163,9 +180,23 @@ mod tests {
     fn cookies_are_read_by_name_and_scoped() {
         assert_eq!(cookie_value("a=1; obf_gw=xyz; b=2"), Some("xyz"));
         assert_eq!(cookie_value("obf_gwx=1"), None);
-        let set = set_cookie("v", true);
-        assert!(set.contains("HttpOnly") && set.contains("Secure") && set.contains("Path=/obp"));
-        assert!(set.contains("SameSite=Strict"));
-        assert!(clear_cookie(false).contains("Max-Age=0"));
+        let set = set_cookies("v", SESSION_SECONDS, true);
+        assert_eq!(set.len(), 2);
+        assert!(set[0].contains("Path=/obp;") && set[1].contains("Path=/cas;"));
+        for cookie in &set {
+            assert!(cookie.starts_with("obf_gw=v;"));
+            assert!(cookie.contains("HttpOnly") && cookie.contains("Secure"));
+            assert!(cookie.contains("SameSite=Strict"));
+            assert!(cookie.contains(&format!("Max-Age={SESSION_SECONDS}")));
+        }
+        // Never longer than a session, never negative.
+        assert!(
+            set_cookies("v", i64::MAX, false)[0].contains(&format!("Max-Age={SESSION_SECONDS}"))
+        );
+        assert!(set_cookies("v", -5, false)[1].contains("Max-Age=0"));
+        let cleared = clear_cookies(false);
+        assert_eq!(cleared.len(), 2);
+        assert!(cleared.iter().all(|cookie| cookie.contains("Max-Age=0")));
+        assert!(cleared[1].contains("Path=/cas;"));
     }
 }

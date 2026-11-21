@@ -1,7 +1,7 @@
 //! Account-routed bot IO. The immutable target follows the submitted turn,
 //! independently of later menu selection on the bot host.
 use super::RemoteBotTarget;
-use crate::remote_connect::{account::AccountClient, RemoteToolStatus};
+use crate::remote_connect::RemoteToolStatus;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 
@@ -46,41 +46,21 @@ impl RemoteBotTarget {
             .ok_or_else(|| "Execution host omitted the attachment path".into())
     }
 
-    /// One `RemoteCommand` on the execution host. A new host on the account
-    /// device mesh answers over OBP (`obp_remote_command`); only an older host
-    /// (or a bot host without a mesh) uses the encrypted relay RPC.
+    /// One `RemoteCommand` on the execution host, over OBP on OpenBitFun
+    /// Link (`obp_remote_command`). A host that is not on Link gets an explicit
+    /// `device_not_on_link` refusal; 2.0 has no relay fallback.
     async fn rpc_response(&self, command: Value) -> Result<Value, String> {
         use crate::remote_connect::mesh_route::{
-            call_mesh_or_legacy, mesh_route, CAPABILITY_REMOTE_COMMAND_V1, OBP_REMOTE_COMMAND,
+            call_mesh, mesh_route, CAPABILITY_REMOTE_COMMAND_V1, OBP_REMOTE_COMMAND,
         };
-        let (reply, _transport) = call_mesh_or_legacy(
+        call_mesh(
             mesh_route(),
             &self.device_id,
             CAPABILITY_REMOTE_COMMAND_V1,
             OBP_REMOTE_COMMAND,
             json!({ "command": command }),
-            |args| self.legacy_rpc_response(args["command"].clone()),
         )
-        .await;
-        reply
-    }
-
-    async fn legacy_rpc_response(&self, command: Value) -> Result<Value, String> {
-        let session = self
-            .account
-            .session(&self.relay_url)
-            .await
-            .map_err(|e| e.to_string())?;
-        let reply = AccountClient::new()
-            .device_rpc(
-                &self.relay_url,
-                &session,
-                &self.device_id,
-                &command.to_string(),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        serde_json::from_str(&reply).map_err(|e| e.to_string())
+        .await
     }
 
     pub async fn start_question_interaction(&self, tool_id: &str) -> Result<(), String> {

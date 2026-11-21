@@ -11,8 +11,19 @@ import {
   type JSX,
   type ViewRef,
 } from "nsh";
-import { Input } from "nsh/base";
-import { windowShellId } from "../bridge";
+import { Input, TextView } from "nsh/base";
+import { STATIC_MARKDOWN_OPTIONS, createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
+import { fleetActive, invokeCommand, windowShellId } from "../bridge";
+import { fleetDeviceById, fleetDevices } from "../fleetStore";
+import { isCommandUnavailable } from "../hostCommands";
+import {
+  fetchUsageActivity,
+  UsageActivityUnavailable,
+  type UsageActivityCell,
+  type UsageActivityView,
+} from "../usageActivity";
+import { deviceGlyphIcon } from "../ui/fleet";
+import { AccountDevicesPage } from "./AccountDevicesPage";
 import { Bar, Cell, Grid, Plot, PlotAxis } from "nsh/base/plot";
 import {
   EXTERNAL_SESSION_NAMES,
@@ -43,10 +54,28 @@ import {
   type McpImportItem,
 } from "../externalImportStore";
 import {
+  INSIGHTS_DAY_OPTIONS,
   accountStatus,
+  activeInsightsReport,
+  cancelInsights,
+  closeInsightsModal,
+  generateInsightsReport,
   githubUser,
+  insightsDays,
+  insightsError,
+  insightsGenerating,
+  insightsLoading,
+  insightsMetas,
+  insightsModalOpen,
+  insightsModel,
+  insightsNotice,
+  insightsProgress,
   isAccountSignedIn,
   loadAccountState,
+  loadLatestInsights,
+  openInsightsReport,
+  revealInsightsHtml,
+  selectedInsightsPath,
 } from "../homeStore";
 import {
   ACP_PERMISSION_MODES,
@@ -269,7 +298,6 @@ import {
   updateDraft,
   updateModelLimitsDraft,
 } from "../modelSettingsStore";
-import { peerScope } from "../peerState";
 import {
   PERMISSION_ACTIONS,
   PERMISSION_EFFECTS,
@@ -406,11 +434,13 @@ import {
   controlHeight,
   fontMono,
   isLightAppearance,
+  layout,
   palette,
   radii,
   resolvedAppearanceId,
   resolvedScheme,
   selectAppearancePreset,
+  space,
   textLineHeight,
   textSize,
   textStyle,
@@ -427,7 +457,8 @@ import {
   Spinner,
   tactileActiveStyle,
 } from "../ui/motion";
-import { DropdownMenu, ModalDialog, SelectDropdown } from "../ui/overlays";
+import { DropdownMenu, ModalDialog, SelectDropdown, pushToast, type SelectDropdownOption } from "../ui/overlays";
+import { openSessionDelete } from "../ui/sessionActions";
 import {
   ActionButton,
   Badge,
@@ -445,7 +476,15 @@ import {
   ToggleSwitch,
   type StatusPillKind,
 } from "../ui/primitives";
-import { activeWorkspace } from "../state";
+import {
+  activeWorkspace,
+  archiveSessionRow,
+  deviceContext,
+  isSessionArchived,
+  loadSessions,
+  selectDeviceContext,
+  sessions,
+} from "../state";
 import {
   USAGE_DISTRIBUTIONS,
   USAGE_RANGES,
@@ -500,34 +539,38 @@ export interface SettingsPageEntry {
   keywords: readonly string[];
   /** The sections the page draws, in order, for the navigation's anchors. */
   anchors: ReadonlyArray<{ id: string; labelKey: MessageKey }>;
+  /** Drawn only in the native desktop window (the desktop pet). */
+  nativeOnly?: boolean;
 }
 
+/**
+ * The three scopes of Settings (visual spec §4.9): Preferences sync with the
+ * account, Account is the signed-in identity, Device is the device the scope
+ * chip names.
+ */
+export type SettingsScope = "preferences" | "account" | "device";
+
 export interface SettingsPageGroup {
-  id: "application" | "ai" | "development" | "tools" | "data";
+  id: SettingsScope;
   labelKey: MessageKey;
   pages: readonly SettingsPageEntry[];
 }
 
-/**
- * The five groups and their pages, in the desktop's order
- * (`settingsRegistry.ts`). The pet / desktop-cards page and the archived
- * sessions page are not drawn here: archived sessions have their own list in
- * the session navigation, and the companion settings are deferred.
- */
+/** The scopes and their pages, in the spec's order. */
 export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
   {
-    id: "application",
-    labelKey: "settings.group.application",
+    id: "preferences",
+    labelKey: "settings.scope.preferences",
     pages: [
       {
         id: "general",
         labelKey: "settings.page.general",
         descriptionKey: "settings.page.generalDesc",
         icon: "settings",
-        keywords: ["startup", "launch", "update", "sleep", "window", "notification", "language", "locale", "account"],
+        keywords: ["startup", "launch", "update", "sleep", "window", "notification", "language", "locale"],
         anchors: [
-          { id: "general-language", labelKey: "settings.language.title" },
-          { id: "general", labelKey: "settings.section.general" },
+          { id: "general-language", labelKey: "settings.section.language" },
+          { id: "general", labelKey: "settings.section.startup" },
         ],
       },
       {
@@ -543,18 +586,72 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         labelKey: "settings.page.input",
         descriptionKey: "settings.page.inputDesc",
         icon: "command",
-        keywords: ["voice", "speech", "keyboard", "shortcut", "keybinding", "hotkey", "selection", "send", "queue"],
+        keywords: ["voice", "speech", "selection", "send", "queue"],
         anchors: [
           { id: "input", labelKey: "settings.section.input" },
           { id: "send-policy", labelKey: "settings.sendPolicy.title" },
-          { id: "shortcuts", labelKey: "settings.shortcuts.title" },
         ],
+      },
+      {
+        id: "shortcuts",
+        labelKey: "settings.page.shortcuts",
+        descriptionKey: "settings.page.shortcutsDesc",
+        icon: "command",
+        keywords: ["keyboard", "shortcut", "keybinding", "hotkey"],
+        anchors: [{ id: "shortcuts", labelKey: "settings.shortcuts.title" }],
+      },
+      {
+        id: "pet",
+        labelKey: "settings.page.pet",
+        descriptionKey: "settings.page.petDesc",
+        icon: "bot",
+        keywords: ["pet", "companion", "desktop"],
+        anchors: [],
+        nativeOnly: true,
       },
     ],
   },
   {
-    id: "ai",
-    labelKey: "settings.group.ai",
+    id: "account",
+    labelKey: "settings.scope.account",
+    pages: [
+      {
+        id: "profile",
+        labelKey: "settings.page.profile",
+        descriptionKey: "settings.page.profileDesc",
+        icon: "user",
+        keywords: ["account", "sign in", "email", "profile"],
+        anchors: [],
+      },
+      {
+        id: "devices",
+        labelKey: "settings.page.devices",
+        descriptionKey: "settings.page.devicesDesc",
+        icon: "smartphone",
+        keywords: ["devices", "phone", "browser", "telegram", "feishu", "wechat", "bot", "chat"],
+        anchors: [],
+      },
+      {
+        id: "openbitfun",
+        labelKey: "settings.page.openbitfun",
+        descriptionKey: "settings.page.openbitfunDesc",
+        icon: "sparkles",
+        keywords: ["openbitfun", "cloud", "agent", "conversation"],
+        anchors: [],
+      },
+      {
+        id: "activity",
+        labelKey: "settings.page.activity",
+        descriptionKey: "settings.page.activityDesc",
+        icon: "activity",
+        keywords: ["activity", "heatmap", "tokens", "insights"],
+        anchors: [],
+      },
+    ],
+  },
+  {
+    id: "device",
+    labelKey: "settings.scope.device",
     pages: [
       {
         id: "models",
@@ -571,6 +668,25 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         ],
       },
       {
+        id: "permissions",
+        labelKey: "settings.page.permissions",
+        descriptionKey: "settings.page.permissionsDesc",
+        icon: "shield",
+        keywords: ["permission", "approval", "rules", "allow", "deny", "full access", "openbitfun"],
+        anchors: [],
+      },
+      {
+        id: "execution",
+        labelKey: "settings.page.execution",
+        descriptionKey: "settings.page.executionDesc",
+        icon: "play",
+        keywords: ["tool", "presentation", "ptc", "timeout", "parallel", "subagent", "swarm", "quick actions", "hooks", "automation"],
+        anchors: [
+          { id: "quick-actions", labelKey: "settings.quickActions.title" },
+          { id: "agent-hooks", labelKey: "settings.section.agentHooks" },
+        ],
+      },
+      {
         id: "session-memory",
         labelKey: "settings.page.sessionMemory",
         descriptionKey: "settings.page.sessionMemoryDesc",
@@ -582,28 +698,6 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
           { id: "memory", labelKey: "settings.section.memory" },
         ],
       },
-      {
-        id: "execution",
-        labelKey: "settings.page.execution",
-        descriptionKey: "settings.page.executionDesc",
-        icon: "play",
-        keywords: ["tool", "presentation", "ptc", "timeout", "parallel", "subagent", "swarm"],
-        anchors: [],
-      },
-      {
-        id: "permissions",
-        labelKey: "settings.page.permissions",
-        descriptionKey: "settings.page.permissionsDesc",
-        icon: "shield",
-        keywords: ["permission", "approval", "rules", "allow", "deny", "full access"],
-        anchors: [],
-      },
-    ],
-  },
-  {
-    id: "development",
-    labelKey: "settings.group.development",
-    pages: [
       {
         id: "editor",
         labelKey: "settings.page.editor",
@@ -632,19 +726,16 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
           { id: "git", labelKey: "settings.section.git" },
         ],
       },
-    ],
-  },
-  {
-    id: "tools",
-    labelKey: "settings.group.tools",
-    pages: [
       {
-        id: "external-import",
-        labelKey: "settings.page.externalImport",
-        descriptionKey: "settings.page.externalImportDesc",
-        icon: "download",
-        keywords: ["external import", "opencode", "claude code", "codex"],
-        anchors: [],
+        id: "mcp",
+        labelKey: "settings.page.mcp",
+        descriptionKey: "settings.page.mcpDesc",
+        icon: "plug",
+        keywords: ["mcp", "server", "tools", "oauth", "acp", "external agent", "claude code", "codex", "gemini"],
+        anchors: [
+          { id: "mcp", labelKey: "settings.page.mcp" },
+          { id: "acp", labelKey: "settings.page.externalAgents" },
+        ],
       },
       {
         id: "web-search",
@@ -663,44 +754,27 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
         anchors: [],
       },
       {
-        id: "mcp",
-        labelKey: "settings.page.mcp",
-        descriptionKey: "settings.page.mcpDesc",
-        icon: "plug",
-        keywords: ["mcp", "server", "tools", "oauth"],
+        id: "external-import",
+        labelKey: "settings.page.externalImport",
+        descriptionKey: "settings.page.externalImportDesc",
+        icon: "download",
+        keywords: ["external import", "opencode", "claude code", "codex"],
         anchors: [],
       },
-      {
-        id: "external-agents",
-        labelKey: "settings.page.externalAgents",
-        descriptionKey: "settings.page.externalAgentsDesc",
-        icon: "bot",
-        keywords: ["acp", "external agent", "claude code", "codex", "gemini"],
-        anchors: [],
-      },
-      {
-        id: "automation",
-        labelKey: "settings.page.automation",
-        descriptionKey: "settings.page.automationDesc",
-        icon: "zap",
-        keywords: ["quick actions", "hooks", "automation"],
-        anchors: [
-          { id: "quick-actions", labelKey: "settings.quickActions.title" },
-          { id: "agent-hooks", labelKey: "settings.section.agentHooks" },
-        ],
-      },
-    ],
-  },
-  {
-    id: "data",
-    labelKey: "settings.group.data",
-    pages: [
       {
         id: "usage",
         labelKey: "settings.page.usage",
         descriptionKey: "settings.page.usageDesc",
         icon: "bar-chart",
         keywords: ["usage", "tokens", "cost", "statistics"],
+        anchors: [],
+      },
+      {
+        id: "archived",
+        labelKey: "settings.page.archived",
+        descriptionKey: "settings.page.archivedDesc",
+        icon: "folder",
+        keywords: ["archived", "archive", "restore", "session"],
         anchors: [],
       },
       {
@@ -715,10 +789,36 @@ export const SETTINGS_PAGE_GROUPS: readonly SettingsPageGroup[] = [
   },
 ];
 
+/**
+ * Page ids older callers (the agent's "open this screen", the search) still
+ * name: automation lives on Execution and external agents on MCP servers now.
+ */
+const SETTINGS_PAGE_ALIASES: Partial<Record<SettingsPageId, { pageId: SettingsPageId; anchor: string }>> = {
+  automation: { pageId: "execution", anchor: "quick-actions" },
+  "external-agents": { pageId: "mcp", anchor: "acp" },
+};
+
+/** The page an id draws on (an alias resolves to the page that hosts it). */
+export function resolveSettingsPage(id: SettingsPageId): SettingsPageId {
+  return SETTINGS_PAGE_ALIASES[id]?.pageId ?? id;
+}
+
 const ALL_SETTINGS_PAGES: readonly SettingsPageEntry[] = SETTINGS_PAGE_GROUPS.flatMap(group => group.pages);
 
+/** The scope a page belongs to. */
+export function settingsScopeOf(id: SettingsPageId): SettingsScope {
+  const resolved = resolveSettingsPage(id);
+  return SETTINGS_PAGE_GROUPS.find(group => group.pages.some(page => page.id === resolved))?.id ?? "preferences";
+}
+
+/** The pages a scope lists on this window (the pet page only in the native desktop). */
+export function visibleSettingsPages(group: SettingsPageGroup): readonly SettingsPageEntry[] {
+  return group.pages.filter(page => !page.nativeOnly || windowShellId() === "nsh-desktop");
+}
+
 export function settingsPageEntry(id: SettingsPageId): SettingsPageEntry {
-  return ALL_SETTINGS_PAGES.find(page => page.id === id) ?? ALL_SETTINGS_PAGES[0];
+  const resolved = resolveSettingsPage(id);
+  return ALL_SETTINGS_PAGES.find(page => page.id === resolved) ?? ALL_SETTINGS_PAGES[0];
 }
 
 /** The page Settings shows; General when it opens, as on the desktop. */
@@ -750,6 +850,7 @@ export function settingsSearchResults(): SettingsSearchHit[] {
     texts.some(text => (text ?? "").toLowerCase().includes(needle));
   const hits: SettingsSearchHit[] = [];
   for (const page of ALL_SETTINGS_PAGES) {
+    if (page.nativeOnly && windowShellId() !== "nsh-desktop") continue;
     const pageLabel = tr(page.labelKey);
     if (matches(pageLabel, tr(page.descriptionKey), ...page.keywords)) {
       hits.push({ key: `page:${page.id}`, pageId: page.id, label: pageLabel, context: tr(page.descriptionKey) });
@@ -763,11 +864,12 @@ export function settingsSearchResults(): SettingsSearchHit[] {
   }
   for (const section of SETTINGS_SECTIONS) {
     const pageLabel = tr(settingsPageEntry(section.page).labelKey);
+    const sectionPage = resolveSettingsPage(section.page);
     for (const field of section.fields) {
       if (matches(fieldLabel(field), fieldHint(field), ...(field.keywords ?? []))) {
         hits.push({
           key: `field:${field.id}`,
-          pageId: section.page,
+          pageId: sectionPage,
           label: fieldLabel(field),
           context: sectionTitle(section) === pageLabel ? pageLabel : `${pageLabel} · ${sectionTitle(section)}`,
           anchor: section.id,
@@ -808,7 +910,10 @@ const pendingNavigation = signal<{ pageId: SettingsPageId; anchor?: string } | n
  * Opens a settings page. Text typed into a field and not saved yet would be lost
  * by the page change, so the change waits for Save / Discard / Keep editing.
  */
-export function requestSettingsPage(pageId: SettingsPageId, anchor?: string): void {
+export function requestSettingsPage(requested: SettingsPageId, requestedAnchor?: string): void {
+  const alias = SETTINGS_PAGE_ALIASES[requested];
+  const pageId = alias?.pageId ?? requested;
+  const anchor = requestedAnchor ?? alias?.anchor;
   if (pageId === selectedSettingsPage()) {
     compactPageOpen.set(true);
     if (anchor) revealSettingsSection(anchor);
@@ -860,8 +965,8 @@ const PERMISSION_MODE_META: Record<
   { labelKey: MessageKey; hintKey: MessageKey; icon: IconName }
 > = {
   ask: {
-    labelKey: "settings.permissions.modeAsk",
-    hintKey: "settings.permissions.modeAskHint",
+    labelKey: "perm.ask",
+    hintKey: "perm.askBody",
     icon: "shield",
   },
   auto: {
@@ -870,8 +975,8 @@ const PERMISSION_MODE_META: Record<
     icon: "sparkles",
   },
   full_access: {
-    labelKey: "settings.permissions.modeFull",
-    hintKey: "settings.permissions.modeFullHint",
+    labelKey: "perm.full",
+    hintKey: "perm.fullBody",
     icon: "zap",
   },
 };
@@ -1107,10 +1212,14 @@ function signedInAccountDisplay(): string {
 // (radius 12, panelRaised, hairline borderSubtle, no shadow) whose rows are at
 // least 44 tall with 0x16 padding and separators inset 16 from the left.
 
-const SETTINGS_CONTENT_MAX = 680;
-const SETTINGS_COMPACT_WIDTH = 600;
-const SETTINGS_ROW_MIN = 44;
-const SETTINGS_ROW_INSET = 16;
+const SETTINGS_CONTENT_MAX = layout.settingsWidth;
+/** Below this the scene shows the page list, then pushes a page (the phone layout). */
+const SETTINGS_COMPACT_WIDTH = layout.phoneMaxWidth + 1;
+const SETTINGS_ROW_MIN = layout.touchTarget;
+const SETTINGS_ROW_INSET = space.lg;
+/** The left list (visual spec §4.9): 240 wide, rows 30. */
+const SETTINGS_LIST_WIDTH = layout.navMediumWidth;
+const SETTINGS_LIST_ROW = controlHeight.sm + space.hair;
 
 /** The scene's own laid-out width (the nav panel and aux pane take part of the window). */
 const settingsSceneWidth = signal(0);
@@ -1122,7 +1231,7 @@ function trackSettingsWidth(event: { bounds: { size: { width: number } } }): voi
   if (width > 0 && width !== untracked(() => settingsSceneWidth())) settingsSceneWidth.set(width);
 }
 
-/** True when the settings scene is narrower than 600 pt. */
+/** True when the settings scene is narrower than the phone breakpoint (720). */
 export function settingsCompact(): boolean {
   const width = settingsSceneWidth();
   if (width > 0) return width < SETTINGS_COMPACT_WIDTH;
@@ -1130,7 +1239,7 @@ export function settingsCompact(): boolean {
 }
 
 function settingsGutter(): number {
-  return settingsCompact() ? 16 : 32;
+  return settingsCompact() ? layout.phoneGutter : layout.pageGutter;
 }
 
 /** A hairline separator inset 16 from the left, drawn over the top or bottom edge of a row. */
@@ -1773,9 +1882,6 @@ function fieldDescription(spec: FieldSpec): string {
   const hint = fieldHint(spec) ?? "";
   const isDefault = fieldMissing(spec) && spec.defaultValue !== undefined;
   if (isDefault) return hint ? `${hint} · ${tr("common.default")}` : tr("settings.field.defaultSetting");
-  if (fieldMissing(spec) && !spec.clearable && spec.defaultValue === undefined) {
-    return hint ? `${hint} · ${tr("common.notSet")}` : tr("common.notConfigured");
-  }
   return hint;
 }
 
@@ -1789,14 +1895,9 @@ function FieldRow(props: { spec: FieldSpec; first?: boolean }) {
   const spec = props.spec;
   const control = GENERAL_CONTROL_FOR[spec.id];
   const controlled = (): boolean => Boolean(control) && generalControlValue(control) !== undefined;
-  // The updater belongs to the machine this window runs on; while another
-  // device is driven, product commands go to that device, so this row says so
-  // instead of changing the other machine's updater.
-  const controllerOnly = (): boolean => spec.id === "auto-update" && peerScope() !== null;
   const checked = (): boolean => (controlled() ? generalControlValue(control) === true : fieldDisplay(spec) === true);
   const saving = (): boolean => fieldSaving(spec) || (Boolean(control) && generalControlSaving() === control);
-  const description = (): string =>
-    controllerOnly() ? tr("settings.field.autoUpdatePeer") : controlled() ? (fieldHint(spec) ?? "") : fieldDescription(spec);
+  const description = (): string => (controlled() ? (fieldHint(spec) ?? "") : fieldDescription(spec));
   return (
     <SettingsRow label={fieldLabel(spec)} description={description()} first={props.first}>
       <If when={spec.kind === "boolean"}>
@@ -1807,7 +1908,7 @@ function FieldRow(props: { spec: FieldSpec; first?: boolean }) {
           <ToggleSwitch
             value={checked()}
             accessibilityLabel={spec.id}
-            disabled={saving() || controllerOnly()}
+            disabled={saving()}
             onChange={next => void (controlled() ? setGeneralControl(control, next) : writeField(spec, next))}
           />
         </View>
@@ -5627,7 +5728,7 @@ function SubscriptionsSection() {
                         }
                         accessibilityLabel={`subscription-connect-${item().provider}`}
                         onPress={() =>
-                          void startSubscriptionSignIn(item().provider, peerScope() !== null, item().login_methods ?? [])
+                          void startSubscriptionSignIn(item().provider, false, item().login_methods ?? [])
                         }
                       />
                     </If>
@@ -5836,7 +5937,7 @@ function ModelSection() {
             <If when={testStatus().status === "error" && testStatus().errorDetails ? testStatus().errorDetails! : ""}>
               {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
             </If>
-            <If when={!modelDraft().editingId && peerScope() === null && modelCatalogLoaded() && modelCatalog().length > 0}>
+            <If when={!modelDraft().editingId && modelCatalogLoaded() && modelCatalog().length > 0}>
               <View
                 style={{
                   gap: 10,
@@ -7537,25 +7638,23 @@ function DesktopCompanionRow() {
 
 /**
  * The memory folder and the reset the desktop's memory section offers. The
- * folder opens in the file manager of the machine that stores it, so it is not
- * offered while another device is driven; a reset asks first.
+ * folder opens in the file manager of the machine that stores it; a reset asks
+ * first.
  */
 function MemoryActionsRow() {
   return (
     <View>
       <SettingsRow label={tr("settings.memory.actions")} description={tr("settings.memory.actionsDesc")}>
-        <If when={peerScope() === null}>
-          <Button
-            label={tr("settings.memory.openFolder")}
-            variant="secondary"
-            size="sm"
-            leadingIcon="folder-open"
-            loading={memoryActionBusy() === "open"}
-            disabled={memoryActionBusy() !== null}
-            accessibilityLabel="memory-open-folder"
-            onPress={() => void openMemoryFolder()}
-          />
-        </If>
+        <Button
+          label={tr("settings.memory.openFolder")}
+          variant="secondary"
+          size="sm"
+          leadingIcon="folder-open"
+          loading={memoryActionBusy() === "open"}
+          disabled={memoryActionBusy() !== null}
+          accessibilityLabel="memory-open-folder"
+          onPress={() => void openMemoryFolder()}
+        />
         <Button
           label={tr("settings.memory.reset")}
           variant="danger"
@@ -7619,9 +7718,7 @@ function SpeechModelsRow() {
         description={
           speechModels() === false
             ? tr("settings.speech.unavailable")
-            : peerScope() !== null
-              ? tr("settings.speech.thisMachine")
-              : tr("settings.speech.desc")
+            : tr("settings.speech.desc")
         }
       />
       <If when={speechNotice()}>
@@ -7682,13 +7779,670 @@ function SpeechModelsRow() {
 }
 
 /** States why a section is missing, instead of leaving a page silently empty. */
+/** How much an unsupported row fades (visual spec §3 Settings row). */
+const UNSUPPORTED_OPACITY = 0.4;
+
+/** The device Settings' Device scope reads (the scope chip's device). */
+function scopeDeviceName(): string {
+  const id = deviceContext();
+  return id ? (fleetDeviceById(id)?.name ?? "") : "";
+}
+
+/** "Not available on {device}" for the device the scope chip names. */
+function unsupportedOnDevice(): string {
+  const name = scopeDeviceName();
+  return name ? tr("settings.unsupported", { device: name }) : tr("settings.unsupportedHere");
+}
+
+/**
+ * A row the device cannot offer: the title at 40 % with the reason under it;
+ * an action that still applies (open another page) stays at full strength.
+ */
 function UnsupportedNote(props: { title: string; message: string; children?: JSX.Element }) {
   return (
-    <SettingsGroup id={`unsupported-${props.title}`} title={props.title}>
-      <SettingsRow label={tr("settings.unsupported.label")} description={props.message} first={true}>
-        {props.children}
-      </SettingsRow>
+    <SettingsGroup id={`unsupported-${props.title}`} title={props.title} hideTitle={true}>
+      <View style={{ opacity: UNSUPPORTED_OPACITY }} accessibilityLabel="settings-unsupported-row">
+        <SettingsRow label={props.title} description={props.message} first={true} />
+      </View>
+      <If when={Boolean(props.children)}>
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "flex-end",
+            paddingHorizontal: SETTINGS_ROW_INSET,
+            paddingBottom: space.md,
+          }}
+        >
+          {props.children}
+        </View>
+      </If>
     </SettingsGroup>
+  );
+}
+
+// ── Account › OpenBitFun (the cloud agent's switch, model, usage and data) ──
+
+interface SuperagentStatusView {
+  enabled: boolean;
+  model?: string;
+  usage?: string;
+}
+
+const obfStatus = signal<SuperagentStatusView | null>(null);
+const obfState = signal<"loading" | "ready" | "unsupported" | "failed">("loading");
+const obfNote = signal("");
+const obfBusy = signal(false);
+const obfDeleteOpen = signal(false);
+
+/** The cloud agent's device on a fleet connection (the navigator lists it). */
+function cloudTarget(): string {
+  return fleetDevices().find(device => device.hostKind === "cloud")?.deviceId ?? "cloud";
+}
+
+function readSuperagentStatus(raw: unknown): SuperagentStatusView {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() ? value : undefined;
+  return {
+    enabled: record.enabled === true,
+    model: text(record.model) ?? text(record.modelName),
+    usage: text(record.usageThisMonth) ?? text(record.usageLabel),
+  };
+}
+
+async function superagentCall(command: string, request: Record<string, unknown>): Promise<unknown> {
+  return invokeCommand<unknown>(command, request, { target: cloudTarget() });
+}
+
+function failSuperagent(error: unknown, command: string): void {
+  if (isCommandUnavailable(error, command)) {
+    obfState.set("unsupported");
+    obfNote.set("");
+  } else {
+    obfState.set("failed");
+    obfNote.set(error instanceof Error ? error.message : String(error ?? ""));
+  }
+}
+
+async function loadSuperagentStatus(): Promise<void> {
+  if (obfStatus() === null) obfState.set("loading");
+  try {
+    obfStatus.set(readSuperagentStatus(await superagentCall("superagent_status", {})));
+    obfState.set("ready");
+    obfNote.set("");
+  } catch (error) {
+    failSuperagent(error, "superagent_status");
+  }
+}
+
+async function setSuperagentEnabled(next: boolean): Promise<void> {
+  const command = next ? "superagent_enable" : "superagent_disable";
+  obfBusy.set(true);
+  try {
+    const answer = (await superagentCall(command, {})) as Record<string, unknown> | null;
+    const current = obfStatus();
+    // The node answers the state it stored; the switch shows that, not the press.
+    const enabled = typeof answer?.enabled === "boolean" ? answer.enabled : next;
+    if (current) obfStatus.set({ ...current, enabled });
+    await loadSuperagentStatus();
+  } catch (error) {
+    failSuperagent(error, command);
+  } finally {
+    obfBusy.set(false);
+  }
+}
+
+async function deleteSuperagentData(): Promise<void> {
+  obfBusy.set(true);
+  try {
+    await superagentCall("superagent_delete_data", { cancelJobs: true });
+    obfDeleteOpen.set(false);
+    await loadSuperagentStatus();
+  } catch (error) {
+    obfDeleteOpen.set(false);
+    failSuperagent(error, "superagent_delete_data");
+  } finally {
+    obfBusy.set(false);
+  }
+}
+
+function OpenBitFunSection() {
+  void loadSuperagentStatus();
+  return (
+    <View style={{ gap: layout.sectionGap }} accessibilityLabel="settings-openbitfun">
+      <If when={obfState() === "loading"}>
+        <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("settings.loading")}</Text>
+      </If>
+      <If when={obfState() === "unsupported"}>
+        <UnsupportedNote title={tr("obf.toggle")} message={tr("obf.unsupported")} />
+      </If>
+      <If when={obfState() === "failed"}>
+        <InlineBanner
+          tone="danger"
+          accessibilityLabel="obf-load-failed"
+          message={localizeHostError(obfNote())}
+          actionLabel={tr("common.retry")}
+          onAction={() => void loadSuperagentStatus()}
+        />
+      </If>
+      <If when={obfState() === "ready" && obfStatus() !== null}>
+        <View style={{ gap: layout.sectionGap }}>
+          <SettingsGroup id="openbitfun" title={tr("obf.toggle")} hideTitle={true}>
+            <SettingsRow label={tr("obf.toggle")} description={tr("obf.toggleBody")} first={true}>
+              <ToggleSwitch
+                value={obfStatus()?.enabled === true}
+                disabled={obfBusy()}
+                accessibilityLabel="obf-toggle"
+                onChange={next => void setSuperagentEnabled(next)}
+              />
+            </SettingsRow>
+            <If when={obfStatus()?.model ?? ""}>
+              {model => (
+                <SettingsRow label={tr("obf.model")}>
+                  <RowValue text={model()} />
+                </SettingsRow>
+              )}
+            </If>
+            <If when={obfStatus()?.usage ?? ""}>
+              {usage => (
+                <SettingsRow label={tr("obf.usage")}>
+                  <RowValue text={usage()} />
+                </SettingsRow>
+              )}
+            </If>
+          </SettingsGroup>
+          <SettingsGroup id="openbitfun-data" title={tr("obf.deleteData")} hideTitle={true}>
+            <SettingsRow label={tr("obf.deleteData")} description={tr("obf.deleteBody")} first={true}>
+              <Button
+                label={tr("common.delete")}
+                variant="secondary"
+                size="sm"
+                disabled={obfBusy()}
+                accessibilityLabel="obf-delete-data"
+                onPress={() => obfDeleteOpen.set(true)}
+              />
+            </SettingsRow>
+          </SettingsGroup>
+        </View>
+      </If>
+      <ModalDialog
+        open={obfDeleteOpen()}
+        title={tr("obf.deleteTitle")}
+        subtitle={tr("obf.deleteBody")}
+        size="sm"
+        accessibilityLabel="obf-delete-dialog"
+        onClose={() => obfDeleteOpen.set(false)}
+        footer={
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
+            <Button
+              label={tr("common.cancel")}
+              variant="secondary"
+              size="sm"
+              accessibilityLabel="obf-delete-cancel"
+              onPress={() => obfDeleteOpen.set(false)}
+            />
+            <Button
+              label={tr("common.delete")}
+              variant="danger"
+              size="sm"
+              loading={obfBusy()}
+              accessibilityLabel="obf-delete-confirm"
+              onPress={() => void deleteSuperagentData()}
+            />
+          </View>
+        }
+      />
+    </View>
+  );
+}
+
+// ── Account › Activity (the six-month heatmap the host computes) ──
+
+/** Cell and gap of the activity heatmap (visual spec §4.9: 10 px cells, 2 px gap). */
+const ACTIVITY_CELL = space.sm + space.hair;
+const ACTIVITY_GAP = space.hair;
+const ACTIVITY_CELL_RADIUS = radii.xs / 2;
+/** Accent opacity per level; a day without tokens is `heatmapZero`. */
+const ACTIVITY_STEPS = [0.12, 0.3, 0.5, 0.75, 1] as const;
+
+const activityView = signal<UsageActivityView | null>(null);
+const activityState = signal<"loading" | "ready" | "unsupported" | "failed">("loading");
+const activityNote = signal("");
+
+async function loadActivity(): Promise<void> {
+  if (activityView() === null) activityState.set("loading");
+  try {
+    activityView.set(await fetchUsageActivity());
+    activityState.set("ready");
+    activityNote.set("");
+  } catch (error) {
+    if (error instanceof UsageActivityUnavailable && error.reason === "host_outdated") {
+      activityState.set("unsupported");
+      activityNote.set("");
+    } else {
+      activityState.set("failed");
+      activityNote.set(error instanceof Error ? error.message : String(error ?? ""));
+    }
+  }
+}
+
+/** The week columns of the host's Monday-first grid, as the host sent them. */
+function activityWeeks(): UsageActivityCell[][] {
+  const view = activityView();
+  if (!view) return [];
+  const weeks: UsageActivityCell[][] = [];
+  for (let index = 0; index < view.days.length; index += 7) weeks.push(view.days.slice(index, index + 7));
+  return weeks;
+}
+
+function ActivityCellView(props: { cell: UsageActivityCell }) {
+  const empty = () => !props.cell.inRange;
+  const zero = () => props.cell.inRange && props.cell.tokens <= 0;
+  return (
+    <View
+      style={{
+        width: ACTIVITY_CELL,
+        height: ACTIVITY_CELL,
+        borderRadius: ACTIVITY_CELL_RADIUS,
+        backgroundColor: empty() ? "transparent" : zero() ? palette().heatmapZero : palette().accent,
+        opacity: empty() || zero() ? 1 : ACTIVITY_STEPS[props.cell.level],
+      }}
+    />
+  );
+}
+
+// ── Account › Activity › Insights (the reports the device's model writes from recent sessions) ──
+
+/** The report's HTML file lives on the device that wrote it; only that device's file manager can show it. */
+function insightsOnThisDevice(): boolean {
+  if (!fleetActive()) return true;
+  const id = deviceContext();
+  return !id || fleetDeviceById(id)?.isClientDevice === true;
+}
+
+function InsightsStatusLine() {
+  return (
+    <>
+      <If when={insightsGenerating()}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <Spinner size={12} color={palette().accent} />
+          <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), flex: 1, minWidth: 0 }}>
+            {insightsProgress() || tr("settings.insights.generating")}
+          </Text>
+        </View>
+      </If>
+      <If when={!insightsGenerating() && insightsNotice() ? insightsNotice() : ""}>
+        {notice => <Text style={textStyle("caption", { color: palette().textSecondary })}>{notice()}</Text>}
+      </If>
+      <If when={insightsError()}>
+        {error => (
+          <Text accessibilityLabel="activity-insights-error" style={textStyle("caption", { color: palette().danger })}>
+            {localizeHostError(error())}
+          </Text>
+        )}
+      </If>
+      <If when={!insightsGenerating() && !insightsError() && !insightsNotice() && insightsMetas().length === 0}>
+        <Text style={textStyle("caption", { color: palette().textMuted })}>
+          {insightsLoading() ? tr("settings.insights.loading") : tr("settings.insights.empty")}
+        </Text>
+      </If>
+    </>
+  );
+}
+
+function InsightsReportRow(props: { index: number; path: string; title: string; detail: string }) {
+  return (
+    <View
+      role="button"
+      accessibilityLabel={`activity-insight-report-${props.index}`}
+      onPress={() => void openInsightsReport(props.path, true)}
+      style={{
+        position: "relative",
+        minHeight: SETTINGS_ROW_MIN,
+        paddingHorizontal: SETTINGS_ROW_INSET,
+        paddingVertical: space.sm,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.md,
+        cursor: "pointer",
+        backgroundColor: selectedInsightsPath() === props.path ? palette().panelHover : undefined,
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ backgroundColor: palette().panelHover }}
+    >
+      <RowSeparator edge="top" />
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+        <Text style={{ ...textStyle("body"), numberOfLines: 1, textOverflow: "ellipsis" }}>{props.title}</Text>
+        <If when={props.detail}>
+          {detail => (
+            <Text style={{ ...textStyle("caption", { color: palette().textMuted }), numberOfLines: 1, textOverflow: "ellipsis" }}>
+              {detail()}
+            </Text>
+          )}
+        </If>
+      </View>
+      <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("settings.insights.read")}</Text>
+      <Icon name="chevron-right" size={12} color={palette().textMuted} />
+    </View>
+  );
+}
+
+function InsightsSection() {
+  return (
+    <SettingsSection
+      title={tr("settings.insights.title")}
+      subtitle={tr("settings.insights.body")}
+      flush={true}
+      extra={
+        <IconButton
+          icon="refresh"
+          size="xs"
+          disabled={insightsLoading()}
+          tooltip={tr("settings.insights.reload")}
+          accessibilityLabel="activity-reload-insights"
+          onPress={() => void loadLatestInsights()}
+        />
+      }
+    >
+      <View accessibilityLabel="activity-insights" style={{ minWidth: 0 }}>
+        <View
+          style={{
+            minHeight: SETTINGS_ROW_MIN,
+            paddingHorizontal: SETTINGS_ROW_INSET,
+            paddingVertical: space.sm,
+            flexDirection: "row",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: space.sm,
+          }}
+        >
+          <SelectDropdown
+            size="sm"
+            options={INSIGHTS_DAY_OPTIONS.map(days => ({
+              value: String(days),
+              label: tr("settings.insights.days", { count: days }),
+              accessibilityLabel: `activity-insights-days-${days}`,
+            }))}
+            value={String(insightsDays())}
+            disabled={insightsGenerating()}
+            accessibilityLabel="activity-insights-days"
+            onChange={value => insightsDays.set(Number(value))}
+          />
+          <SelectDropdown
+            size="sm"
+            options={[
+              { value: "primary", label: tr("settings.insights.modelPrimary"), accessibilityLabel: "activity-insights-model-primary" },
+              { value: "fast", label: tr("settings.insights.modelFast"), accessibilityLabel: "activity-insights-model-fast" },
+            ]}
+            value={insightsModel()}
+            disabled={insightsGenerating()}
+            accessibilityLabel="activity-insights-model"
+            onChange={value => insightsModel.set(value === "fast" ? "fast" : "primary")}
+          />
+          <View style={{ flex: 1 }} />
+          <If
+            when={insightsGenerating()}
+            else={
+              <Button
+                label={tr("settings.insights.generate")}
+                variant="secondary"
+                size="sm"
+                accessibilityLabel="activity-generate-insights"
+                onPress={() => void generateInsightsReport()}
+              />
+            }
+          >
+            <Button
+              label={tr("common.cancel")}
+              variant="ghost"
+              size="sm"
+              accessibilityLabel="activity-cancel-insights"
+              onPress={() => void cancelInsights()}
+            />
+          </If>
+        </View>
+        <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md, gap: space.xs }}>
+          <InsightsStatusLine />
+        </View>
+        <Each of={insightsMetas().slice(0, 4)} key={item => item.path}>
+          {(item, index) => (
+            <InsightsReportRow
+              index={index()}
+              path={item().path}
+              title={item().title}
+              detail={[
+                item().dateRangeLabel,
+                item().totalSessions > 0
+                  ? formatPlural(item().totalSessions, "format.sessionOne", "format.sessionOther")
+                  : "",
+                item().generatedAtText,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            />
+          )}
+        </Each>
+      </View>
+    </SettingsSection>
+  );
+}
+
+/** The report reader: the report's Markdown, generate again, and its HTML file on the device that wrote it. */
+function InsightsReader() {
+  return (
+    <If when={insightsModalOpen() ? activeInsightsReport() : null}>
+      {report => (
+        <ModalDialog
+          open={true}
+          size="lg"
+          title={report().title}
+          subtitle={report().subtitle || undefined}
+          accessibilityLabel="insights-reader-modal"
+          onClose={closeInsightsModal}
+          footer={
+            <>
+              <Button
+                label={tr("settings.insights.regenerate")}
+                variant="secondary"
+                size="sm"
+                disabled={insightsGenerating()}
+                accessibilityLabel="insights-regenerate"
+                onPress={() => void generateInsightsReport()}
+              />
+              <If when={report().htmlPath}>
+                <Button
+                  label={tr("settings.insights.showHtml")}
+                  variant="secondary"
+                  size="sm"
+                  disabled={!insightsOnThisDevice()}
+                  tooltip={insightsOnThisDevice() ? undefined : tr("settings.insights.htmlElsewhere")}
+                  accessibilityLabel="insights-show-html"
+                  onPress={() => void revealInsightsHtml(report().htmlPath)}
+                />
+              </If>
+              <Button label={tr("common.close")} variant="primary" size="sm" onPress={closeInsightsModal} />
+            </>
+          }
+        >
+          <View style={{ width: "100%", maxWidth: layout.conversationWidth, alignSelf: "center" }}>
+            <TextView
+              markdown={report().markdown}
+              selectable={true}
+              links="open"
+              options={STATIC_MARKDOWN_OPTIONS}
+              codeBlockActions={createMarkdownCodeActions()}
+              styles={createMarkdownStyles({ baseFontSize: 14 })}
+            />
+          </View>
+        </ModalDialog>
+      )}
+    </If>
+  );
+}
+
+function ActivityPage() {
+  void loadActivity();
+  void loadLatestInsights();
+  return (
+    <View style={{ gap: layout.sectionGap }} accessibilityLabel="settings-activity">
+      <If when={activityState() === "loading"}>
+        <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("settings.loading")}</Text>
+      </If>
+      <If when={activityState() === "unsupported"}>
+        <UnsupportedNote title={tr("settings.page.activity")} message={tr("settings.activity.updateNeeded")} />
+      </If>
+      <If when={activityState() === "failed"}>
+        <InlineBanner
+          tone="danger"
+          message={localizeHostError(activityNote())}
+          actionLabel={tr("common.retry")}
+          onAction={() => void loadActivity()}
+        />
+      </If>
+      <If when={activityState() === "ready"}>
+        <View style={{ gap: space.lg }}>
+          <Text accessibilityLabel="settings-activity-summary" style={textStyle("body", { color: palette().textSecondary })}>
+            {tr("settings.activity.summary", {
+              tokens: formatTokens(activityView()?.totalTokens ?? 0) || "0",
+              days: activityView()?.activeDays ?? 0,
+            })}
+          </Text>
+          <Scroll horizontal={true} style={{ width: "100%", minWidth: 0 }}>
+            <View
+              accessibilityLabel="settings-activity-heatmap"
+              style={{ flexDirection: "row", gap: ACTIVITY_GAP }}
+            >
+              <Each of={activityWeeks()} key="index">
+                {week => (
+                  <View style={{ flexDirection: "column", gap: ACTIVITY_GAP }}>
+                    <Each of={week()} key="index">
+                      {cell => <ActivityCellView cell={cell()} />}
+                    </Each>
+                  </View>
+                )}
+              </Each>
+            </View>
+          </Scroll>
+        </View>
+      </If>
+      <InsightsSection />
+      <InsightsReader />
+    </View>
+  );
+}
+
+// ── Device › Archived sessions ──
+
+const archivedRestoring = signal<string | null>(null);
+const archivedDeleteAllOpen = signal(false);
+const archivedDeletingAll = signal(false);
+
+/** `delete_all_archived_sessions` for the open workspace; the catalogue is read again after. */
+async function deleteAllArchived(): Promise<void> {
+  const workspace = activeWorkspace();
+  if (!workspace || archivedDeletingAll()) return;
+  archivedDeletingAll.set(true);
+  try {
+    const deleted = await invokeCommand<number>("delete_all_archived_sessions", {
+      workspace_id: workspace.id,
+      workspace_path: workspace.rootPath,
+    });
+    archivedDeleteAllOpen.set(false);
+    pushToast(tr("settings.archived.deletedAll", { count: typeof deleted === "number" ? deleted : 0 }), "success");
+    await loadSessions();
+  } catch (error) {
+    pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
+  } finally {
+    archivedDeletingAll.set(false);
+  }
+}
+
+function ArchivedSessionsSection() {
+  const rows = () => sessions().filter(item => isSessionArchived(item));
+  return (
+    <View accessibilityLabel="settings-archived" style={{ gap: space.md }}>
+      <If when={rows().length > 1}>
+        <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+          <Button
+            label={tr("settings.archived.deleteAll")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel="settings-archived-delete-all"
+            onPress={() => archivedDeleteAllOpen.set(true)}
+          />
+        </View>
+      </If>
+      <ModalDialog
+        open={archivedDeleteAllOpen()}
+        size="sm"
+        title={tr("settings.archived.deleteAllTitle")}
+        accessibilityLabel="settings-archived-delete-all-modal"
+        onClose={() => archivedDeleteAllOpen.set(false)}
+        footer={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+            <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => archivedDeleteAllOpen.set(false)} />
+            <Button
+              label={tr("common.delete")}
+              variant="danger"
+              size="sm"
+              loading={archivedDeletingAll()}
+              accessibilityLabel="settings-archived-delete-all-confirm"
+              onPress={() => void deleteAllArchived()}
+            />
+          </View>
+        }
+      >
+        <Text style={textStyle("body", { color: palette().textSecondary })}>
+          {tr("settings.archived.deleteAllBody", { count: rows().length })}
+        </Text>
+      </ModalDialog>
+      <If
+        when={rows().length > 0}
+        else={
+          <Text accessibilityLabel="settings-archived-empty" style={textStyle("body", { color: palette().textMuted })}>
+            {tr("settings.archived.empty")}
+          </Text>
+        }
+      >
+        <SettingsGroup id="archived" title={tr("settings.page.archived")} hideTitle={true}>
+          <Each of={rows()} key={row => row.sessionId}>
+            {(row, index) => (
+              <SettingsRow label={row().sessionName || row().sessionId} first={index() === 0}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                  <Button
+                    label={tr("session.delete")}
+                    variant="ghost"
+                    size="sm"
+                    accessibilityLabel={`settings-archived-delete-${row().sessionId}`}
+                    onPress={() =>
+                      openSessionDelete({
+                        sessionId: row().sessionId,
+                        deviceId: deviceContext(),
+                        workspaceId: activeWorkspace()?.id ?? "",
+                        title: row().sessionName || row().sessionId,
+                        archived: true,
+                      })
+                    }
+                  />
+                  <Button
+                    label={tr("settings.archived.restore")}
+                    variant="secondary"
+                    size="sm"
+                    loading={archivedRestoring() === row().sessionId}
+                    accessibilityLabel={`settings-archived-restore-${row().sessionId}`}
+                    onPress={() => {
+                      const id = row().sessionId;
+                      archivedRestoring.set(id);
+                      void archiveSessionRow(id, false).finally(() => archivedRestoring.set(null));
+                    }}
+                  />
+                </View>
+              </SettingsRow>
+            )}
+          </Each>
+        </SettingsGroup>
+      </If>
+    </View>
   );
 }
 
@@ -8022,8 +8776,6 @@ function RemovedExternalSessionsGroup() {
       case "idle":
       case "loading":
         return tr("common.loading");
-      case "unsupportedSurface":
-        return tr("settings.externalImports.removedUnsupportedSurface");
       case "unsupportedHost":
         return tr("settings.externalImports.removedUnsupportedHost");
       case "error":
@@ -8122,7 +8874,6 @@ function RemovedExternalSessionsGroup() {
  */
 function ExternalImportSection() {
   effect(() => {
-    void peerScope()?.deviceId;
     void activeWorkspace()?.id;
     untracked(() => syncExternalImportScope());
   });
@@ -8137,16 +8888,6 @@ function ExternalImportSection() {
   );
   return (
     <View style={{ gap: 36 }}>
-      <If when={peerScope()}>
-        {scope => (
-          <InlineBanner
-            tone="info"
-            icon="laptop"
-            accessibilityLabel="external-import-peer"
-            message={tr("settings.externalImports.peerNote", { label: scope().label })}
-          />
-        )}
-      </If>
       <If when={externalBlock() === "remoteWorkspace"}>
         <UnsupportedNote
           title={tr("settings.externalImports.title")}
@@ -8158,7 +8899,7 @@ function ExternalImportSection() {
       <If when={externalBlock() === "incompatible"}>
         <UnsupportedNote
           title={tr("settings.externalImports.title")}
-          message={tr("settings.externalImports.unsupportedHost")}
+          message={unsupportedOnDevice()}
         >
           {openAgents()}
         </UnsupportedNote>
@@ -8191,42 +8932,49 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   const page = props.pageId;
   if (page === "general") {
     return (
-      <View style={{ gap: 36 }}>
-        <SettingsGroup id="general-language" title={tr("settings.group.languageAccount")}>
+      <View style={{ gap: layout.sectionGap }}>
+        <SettingsGroup id="general-language" title={tr("settings.section.language")}>
           <LanguageRow />
-          <AccountRow />
         </SettingsGroup>
-        <FieldSection
-          sectionId="general"
-          leading={
-            <View>
-              <LaunchAtLoginRow />
-              <If when={windowShellId() === "nsh-desktop"}>
-                <DesktopCompanionRow />
-              </If>
-            </View>
-          }
-        />
+        <FieldSection sectionId="general" leading={<LaunchAtLoginRow />} />
       </View>
     );
   }
   if (page === "appearance") return <AppearanceSection />;
   if (page === "input") {
     return (
-      <View style={{ gap: 36 }}>
+      <View style={{ gap: layout.sectionGap }}>
         <FieldSection sectionId="input">
           <SpeechModelsRow />
         </FieldSection>
         <Anchor id="send-policy">
           <SendPolicySection />
         </Anchor>
-        <KeyboardRow />
       </View>
     );
   }
+  if (page === "shortcuts") return <KeyboardRow />;
+  if (page === "pet") {
+    return (
+      <SettingsGroup id="pet" title={tr("settings.page.pet")} hideTitle={true}>
+        <DesktopCompanionRow />
+      </SettingsGroup>
+    );
+  }
+  if (page === "profile") {
+    return (
+      <SettingsGroup id="profile" title={tr("settings.page.profile")} hideTitle={true}>
+        <AccountRow />
+      </SettingsGroup>
+    );
+  }
+  if (page === "devices") return <AccountDevicesPage />;
+  if (page === "openbitfun") return <OpenBitFunSection />;
+  if (page === "activity") return <ActivityPage />;
+  if (page === "archived") return <ArchivedSessionsSection />;
   if (page === "models") {
     return (
-      <View style={{ gap: 36 }}>
+      <View style={{ gap: layout.sectionGap }}>
         <DefaultModelsSection />
         <Anchor id="models">
           <ModelSection />
@@ -8243,7 +8991,7 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   }
   if (page === "session-memory") {
     return (
-      <View style={{ gap: 36 }}>
+      <View style={{ gap: layout.sectionGap }}>
         <FieldSection sectionId="session" />
         <Anchor id="task-models">
           <TaskModelsSection />
@@ -8254,14 +9002,25 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
       </View>
     );
   }
-  if (page === "execution") return <FieldSection sectionId="ai-execution" />;
+  if (page === "execution") {
+    return (
+      <View style={{ gap: layout.sectionGap }}>
+        <FieldSection sectionId="ai-execution" />
+        <Anchor id="quick-actions">
+          <QuickActionsSection />
+        </Anchor>
+        <FieldSection sectionId="agent-hooks" />
+      </View>
+    );
+  }
   if (page === "permissions") {
     return (
-      <View style={{ gap: 36 }}>
+      <View style={{ gap: layout.sectionGap }}>
         <PermissionsSection />
         <If when={permissionsSupported() === false}>
-          <UnsupportedNote title={tr("settings.page.permissions")} message={tr("settings.unsupported.permissions")} />
+          <UnsupportedNote title={tr("settings.page.permissions")} message={unsupportedOnDevice()} />
         </If>
+        <FieldSection sectionId="superagent-device" />
       </View>
     );
   }
@@ -8269,7 +9028,7 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   if (page === "terminal") return <FieldSection sectionId="terminal" leading={<DefaultShellRow />} />;
   if (page === "workspace") {
     return (
-      <View style={{ gap: 36 }}>
+      <View style={{ gap: layout.sectionGap }}>
         <FieldSection sectionId="workspace" />
         <FieldSection sectionId="workspace-search" />
         <FieldSection sectionId="git" />
@@ -8279,30 +9038,26 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   if (page === "external-import") return <ExternalImportSection />;
   if (page === "web-search") return <WebSearchSection />;
   if (page === "desktop-control") return <FieldSection sectionId="tools" />;
-  if (page === "mcp") return <McpSection />;
-  if (page === "external-agents") {
+  if (page === "mcp") {
     return (
-      <View style={{ gap: 36 }}>
-        <AcpSection />
-        <If when={acpSupported() === false}>
-          <UnsupportedNote title={tr("settings.page.externalAgents")} message={tr("settings.acp.unsupported")} />
-        </If>
-      </View>
-    );
-  }
-  if (page === "automation") {
-    return (
-      <View style={{ gap: 36 }}>
-        <Anchor id="quick-actions">
-          <QuickActionsSection />
+      <View style={{ gap: layout.sectionGap }}>
+        <Anchor id="mcp">
+          <McpSection />
         </Anchor>
-        <FieldSection sectionId="agent-hooks" />
+        <Anchor id="acp">
+          <View style={{ gap: layout.sectionGap }}>
+            <AcpSection />
+            <If when={acpSupported() === false}>
+              <UnsupportedNote title={tr("settings.page.externalAgents")} message={unsupportedOnDevice()} />
+            </If>
+          </View>
+        </Anchor>
       </View>
     );
   }
   if (page === "usage") return <UsageSection />;
   return (
-    <View style={{ gap: 36 }}>
+    <View style={{ gap: layout.sectionGap }}>
       <FieldSection sectionId="diagnostics" />
       <LogFilesSection />
     </View>
@@ -8427,35 +9182,53 @@ export function SettingsScene() {
   return (
     <View
       onLayout={trackSettingsWidth}
-      style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas }}
+      style={{ flex: 1, minHeight: 0, flexDirection: "row", backgroundColor: palette().canvas }}
     >
+      <If when={!settingsCompact()}>
+        <View
+          accessibilityLabel="settings-scope-list"
+          style={{
+            width: SETTINGS_LIST_WIDTH,
+            flexShrink: 0,
+            minHeight: 0,
+            backgroundColor: palette().canvasSubtle,
+          }}
+        >
+          <Scroll style={{ flex: 1, minHeight: 0 }}>
+            <View style={{ paddingHorizontal: space.md, paddingTop: space.lg, paddingBottom: space.x3l }}>
+              <SettingsNavigationList />
+            </View>
+          </Scroll>
+        </View>
+      </If>
+      {/* The page clips to its own column so a long unbroken value never draws over the list. */}
+      <View style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
       <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ alignItems: "center" }}>
         <View
           style={{
             width: "100%",
             maxWidth: SETTINGS_CONTENT_MAX + settingsGutter() * 2,
             paddingHorizontal: settingsGutter(),
-            paddingTop: settingsCompact() ? 16 : 28,
-            paddingBottom: 72,
-            gap: 28,
+            paddingTop: settingsCompact() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
+            paddingBottom: space.x6l,
+            gap: layout.titleToSection,
           }}
         >
           <If when={showList()}>
             <CompactSettingsList />
           </If>
           <If when={!showList()}>
-            <View style={{ gap: 28 }}>
-              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+            <View style={{ gap: layout.titleToSection }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
                 <If when={settingsCompact()}>
                   <View
                     role="button"
                     accessibilityLabel="settings-compact-back"
                     onPress={() => compactPageOpen.set(false)}
                     style={{
-                      minWidth: 44,
-                      minHeight: 44,
-                      marginLeft: -12,
-                      marginTop: -6,
+                      minWidth: layout.touchTarget,
+                      minHeight: layout.touchTarget,
+                      marginLeft: -space.md,
                       borderRadius: radii.pill,
                       alignItems: "center",
                       justifyContent: "center",
@@ -8465,44 +9238,19 @@ export function SettingsScene() {
                     hoverStyle={{ backgroundColor: palette().panelHover }}
                     focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
                   >
-                    <Icon name="chevron-left" size={18} color={palette().accent} />
+                    <Icon name="chevron-left" size={20} color={palette().accent} />
                   </View>
                 </If>
-                <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
-                  <Text
-                    role="header"
-                    style={{
-                      color: palette().text,
-                      fontSize: textSize(settingsCompact() ? 22 : 26),
-                      fontWeight: "600",
-                      letterSpacing: textTracking(settingsCompact() ? 22 : 26),
-                      lineHeight: textLineHeight(settingsCompact() ? 22 : 26, 1.22),
-                    }}
-                  >
+                <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
+                  <Text role="header" testID="settings-page-title" style={textStyle("pageTitle")}>
                     {tr(page().labelKey)}
                   </Text>
-                  <Text
-                    style={{
-                      color: palette().textSecondary,
-                      fontSize: textSize(14),
-                      lineHeight: textLineHeight(14, 1.45),
-                      maxWidth: 600,
-                    }}
-                  >
-                    {tr(page().descriptionKey)}
-                  </Text>
+                  <If when={settingsScopeOf(selectedSettingsPage()) === "preferences"}>
+                    <Text accessibilityLabel="settings-synced" style={textStyle("caption", { color: palette().textMuted })}>
+                      {tr("settings.synced")}
+                    </Text>
+                  </If>
                 </View>
-                <IconButton
-                  icon="refresh"
-                  size="sm"
-                  tooltip={tr("settings.reloadTooltip")}
-                  accessibilityLabel="settings-reload"
-                  onPress={() => {
-                    void loadAccountState();
-                    void loadSettingsValues();
-                    void loadModels();
-                  }}
-                />
               </View>
               <If when={settingsNotice()}>
                 {notice => (
@@ -8517,7 +9265,7 @@ export function SettingsScene() {
                 <Text style={textStyle("caption")}>{tr("settings.loading")}</Text>
               </If>
               <If when={settingsLoaded()}>
-                <View style={{ gap: 36 }}>
+                <View style={{ gap: layout.sectionGap }}>
                   <Each of={ALL_SETTINGS_PAGES.map(entry => entry.id)} key={id => id}>
                     {id => (
                       <If when={selectedSettingsPage() === id()}>
@@ -8531,16 +9279,16 @@ export function SettingsScene() {
           </If>
         </View>
       </Scroll>
+      </View>
       <UnsavedChangesDialog />
     </View>
   );
 }
 
-/** One page in the compact page list: a 44 pt row with icon, label and chevron. */
+/** One page in the compact page list: a 44 pt row with its label and a chevron. */
 function CompactListRow(props: {
   label: string;
   detail?: string;
-  icon?: IconName;
   first: boolean;
   accessibilityLabel: string;
   onPress: () => void;
@@ -8552,13 +9300,13 @@ function CompactListRow(props: {
       onPress={props.onPress}
       style={{
         position: "relative",
-        minHeight: SETTINGS_ROW_MIN,
+        minHeight: layout.touchTarget,
         paddingLeft: SETTINGS_ROW_INSET,
-        paddingRight: 12,
-        paddingVertical: 8,
+        paddingRight: space.md,
+        paddingVertical: space.sm,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
+        gap: space.md,
         cursor: "pointer",
         ...paintTransition(MOTION_DURATION.fast),
       }}
@@ -8567,33 +9315,14 @@ function CompactListRow(props: {
       focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
     >
       <If when={!props.first}>
-        <RowSeparator edge="top" inset={props.icon ? 44 : SETTINGS_ROW_INSET} />
+        <RowSeparator edge="top" inset={SETTINGS_ROW_INSET} />
       </If>
-      <If when={props.icon ?? ""}>
-        {icon => <Icon name={icon() as IconName} size={16} color={palette().textMuted} />}
-      </If>
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text
-          style={{
-            color: palette().text,
-            fontSize: textSize(14),
-            lineHeight: textLineHeight(14, 1.35),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.label}
-        </Text>
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+        <Text style={{ ...textStyle("body"), numberOfLines: 1, textOverflow: "ellipsis" }}>{props.label}</Text>
         <If when={props.detail ?? ""}>
           {detail => (
             <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
+              style={{ ...textStyle("caption", { color: palette().textMuted }), numberOfLines: 1, textOverflow: "ellipsis" }}
             >
               {detail()}
             </Text>
@@ -8605,23 +9334,19 @@ function CompactListRow(props: {
   );
 }
 
+/** The search hits, for either list. */
+function settingsHitLabel(hit: SettingsSearchHit, prefix: string): string {
+  return `${prefix}-${hit.key.replace(/:/g, "-")}`;
+}
+
 /**
- * The compact (under 600 pt) entry: the same search and five groups of pages
- * the navigation panel draws, as inset lists; a row pushes its page full width.
+ * The compact (phone) entry: search, then the three scopes as grouped lists; a
+ * row pushes its page full width with a back control.
  */
 function CompactSettingsList() {
   return (
-    <View style={{ gap: 28 }}>
-      <Text
-        role="header"
-        style={{
-          color: palette().text,
-          fontSize: textSize(22),
-          fontWeight: "600",
-          letterSpacing: textTracking(22),
-          lineHeight: textLineHeight(22, 1.22),
-        }}
-      >
+    <View style={{ gap: layout.titleToSection }}>
+      <Text role="header" style={textStyle("pageTitle")}>
         {tr("settings.title")}
       </Text>
       <SearchInput
@@ -8648,7 +9373,7 @@ function CompactSettingsList() {
                     label={hit().label}
                     detail={hit().context}
                     first={index() === 0}
-                    accessibilityLabel={`settings-compact-hit-${hit().key.replace(/:/g, "-")}`}
+                    accessibilityLabel={settingsHitLabel(hit(), "settings-compact-hit")}
                     onPress={() => openSettingsSearchHit(hit())}
                   />
                 )}
@@ -8658,17 +9383,19 @@ function CompactSettingsList() {
         </View>
       </If>
       <If when={settingsSearchQuery().trim() === ""}>
-        <View style={{ gap: 28 }}>
+        <View style={{ gap: layout.sectionGap }}>
           <Each of={SETTINGS_PAGE_GROUPS} key={group => group.id}>
             {group => (
               <View>
-                <SectionHeader title={tr(group().labelKey)} />
+                <SectionHeader
+                  title={tr(group().labelKey)}
+                  extra={group().id === "device" ? <DeviceScopeChip /> : undefined}
+                />
                 <View style={insetGroupStyle()}>
-                  <Each of={group().pages} key={entry => entry.id}>
+                  <Each of={visibleSettingsPages(group())} key={entry => entry.id}>
                     {(entry, index) => (
                       <CompactListRow
                         label={tr(entry().labelKey)}
-                        icon={entry().icon}
                         first={index() === 0}
                         accessibilityLabel={`settings-compact-page-${entry().id}`}
                         onPress={() => requestSettingsPage(entry().id)}
@@ -8685,11 +9412,10 @@ function CompactSettingsList() {
   );
 }
 
+/** One row of the left list: 30 high, 13/500, no icon; the open page is `chromeActive`. */
 function SettingsNavRow(props: {
   label: string;
-  icon?: IconName;
   active: boolean;
-  nested?: boolean;
   secondary?: string;
   accessibilityLabel: string;
   onPress: () => void;
@@ -8701,96 +9427,132 @@ function SettingsNavRow(props: {
       accessibilityState={{ selected: props.active }}
       onPress={props.onPress}
       style={{
-        minHeight: props.nested ? 26 : 30,
-        paddingLeft: props.nested ? 31 : 8,
-        paddingRight: 8,
-        paddingVertical: props.secondary ? 5 : 0,
-        borderRadius: radii.sm,
+        minHeight: SETTINGS_LIST_ROW,
+        paddingHorizontal: space.sm,
+        paddingVertical: props.secondary ? space.xs : 0,
+        borderRadius: radii.md,
         borderCurve: "continuous",
-        backgroundColor: props.active && !props.nested ? palette().chromeActive : "transparent",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
+        backgroundColor: props.active ? palette().chromeActive : "transparent",
+        justifyContent: "center",
+        gap: space.hair,
         cursor: "pointer",
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{
-        backgroundColor: props.active && !props.nested ? palette().chromeActive : palette().chromeHover,
-      }}
+      hoverStyle={{ backgroundColor: props.active ? palette().chromeActive : palette().panelHover }}
       activeStyle={{ backgroundColor: palette().chromeActive }}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().chromeAccent, outlineOffset: -1 }}
+      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -1 }}
     >
-      <If when={props.icon ?? ""}>
-        {icon => (
-          <Icon
-            name={icon() as IconName}
-            size={15}
-            color={props.active ? palette().chromeText : palette().chromeTextMuted}
-          />
+      <Text
+        style={{
+          ...textStyle("label", { color: props.active ? palette().text : palette().textSecondary }),
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+      <If when={props.secondary ?? ""}>
+        {secondary => (
+          <Text
+            style={{ ...textStyle("caption", { color: palette().textMuted }), numberOfLines: 1, textOverflow: "ellipsis" }}
+          >
+            {secondary()}
+          </Text>
         )}
       </If>
-      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
-        <Text
-          style={{
-            color: props.active ? palette().chromeText : palette().chromeTextMuted,
-            fontSize: textSize(props.nested ? 12 : 12.5),
-            lineHeight: textLineHeight(props.nested ? 12 : 12.5, 1.32),
-            fontWeight: props.active && !props.nested ? "600" : "500",
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.label}
-        </Text>
-        <If when={props.secondary ?? ""}>
-          {secondary => (
-            <Text
-              style={{
-                color: palette().chromeTextMuted,
-                fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.3),
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
-              }}
-            >
-              {secondary()}
-            </Text>
-          )}
-        </If>
-      </View>
     </View>
   );
 }
 
-function SettingsNavGroupLabel(props: { label: string }) {
+/** A scope's header in the left list: 13/600 `textSecondary`. */
+function SettingsNavGroupLabel(props: { label: string; extra?: JSX.Element }) {
   return (
-    <Text
+    <View
       style={{
-        paddingHorizontal: 8,
-        paddingTop: 10,
-        paddingBottom: 4,
-        color: palette().chromeTextMuted,
-        fontSize: textSize(11),
-        lineHeight: textLineHeight(11, 1.3),
-        fontWeight: "600",
-        letterSpacing: textTracking(11),
-        numberOfLines: 1,
-        textOverflow: "ellipsis",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.sm,
+        minHeight: SETTINGS_LIST_ROW,
+        paddingHorizontal: space.sm,
+        marginTop: space.lg,
       }}
     >
-      {props.label}
-    </Text>
+      <Text
+        role="header"
+        style={{
+          ...textStyle("label", { color: palette().textSecondary }),
+          fontWeight: "600",
+          flexShrink: 0,
+          numberOfLines: 1,
+        }}
+      >
+        {props.label}
+      </Text>
+      <If when={Boolean(props.extra)}>
+        <View style={{ flex: 1, minWidth: 0, alignItems: "flex-end" }}>{props.extra}</View>
+      </If>
+    </View>
+  );
+}
+
+/** The devices the Device scope may name: runtime devices, offline ones listed but disabled. */
+function scopeDeviceOptions(): SelectDropdownOption<string>[] {
+  return fleetDevices()
+    .filter(device => device.hostKind !== "cloud" && !device.isClientDevice)
+    .map(device => {
+      const offline = device.state === "offline" || device.state === "unreachable";
+      return {
+        value: device.deviceId,
+        label: device.name,
+        icon: deviceGlyphIcon(device.hostKind),
+        description: offline ? tr("settings.offline") : undefined,
+        disabled: offline,
+        accessibilityLabel: `settings-scope-device-${device.deviceId}`,
+      };
+    });
+}
+
+/**
+ * The Device scope chip: which device's settings the Device pages read. It is
+ * navigation inside Settings, not a "where should work run" choice. Without
+ * the fleet layer there is one device, named as this device.
+ */
+function DeviceScopeChip() {
+  return (
+    <If
+      when={fleetActive() && scopeDeviceOptions().length > 0}
+      else={
+        <View
+          accessibilityLabel="settings-scope-chip"
+          style={{ flexDirection: "row", alignItems: "center", gap: space.xs, height: controlHeight.sm }}
+        >
+          <Icon name="laptop" size={14} color={palette().textSecondary} />
+          <Text style={{ ...textStyle("label", { color: palette().text }), numberOfLines: 1 }}>
+            {tr("devices.thisDevice")}
+          </Text>
+        </View>
+      }
+    >
+      <SelectDropdown<string>
+        size="sm"
+        variant="ghost"
+        maxWidth={SETTINGS_LIST_WIDTH - space.x4l * 2}
+        value={deviceContext() || null}
+        options={scopeDeviceOptions()}
+        accessibilityLabel="settings-scope-chip"
+        onChange={deviceId => void selectDeviceContext(deviceId)}
+      />
+    </If>
   );
 }
 
 /**
- * The settings navigation the shell's side panel draws while Settings is open:
- * a search over every page, section and field label, then the five groups of
- * pages. The open page lists its sections, which reveal on press.
+ * The left list of the Settings canvas: search, then Preferences, Account and
+ * Device (with its scope chip). Rows carry no icons.
  */
-export function SettingsNavigation() {
+function SettingsNavigationList() {
   return (
-    <View style={{ gap: 2 }}>
+    <View style={{ gap: space.hair }}>
       <SearchInput
         value={settingsSearchQuery()}
         onChange={value => settingsSearchQuery.set(value)}
@@ -8799,13 +9561,11 @@ export function SettingsNavigation() {
           if (first) openSettingsSearchHit(first);
         }}
         placeholder={tr("settings.search.placeholder")}
-        size="sm"
-        surface="chrome"
+        size="md"
         accessibilityLabel="settings-search"
-        style={{ marginBottom: 4 }}
       />
       <If when={settingsSearchQuery().trim() !== ""}>
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: space.hair }}>
           <SettingsNavGroupLabel label={tr("settings.search.results")} />
           <Each of={settingsSearchResults()} key={hit => hit.key}>
             {hit => (
@@ -8813,56 +9573,35 @@ export function SettingsNavigation() {
                 label={hit().label}
                 secondary={hit().context}
                 active={false}
-                accessibilityLabel={`settings-search-hit-${hit().key.replace(/:/g, "-")}`}
+                accessibilityLabel={settingsHitLabel(hit(), "settings-search-hit")}
                 onPress={() => openSettingsSearchHit(hit())}
               />
             )}
           </Each>
           <If when={settingsSearchResults().length === 0}>
-            <Text
-              style={{
-                paddingHorizontal: 8,
-                paddingVertical: 6,
-                color: palette().chromeTextMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-              }}
-            >
+            <Text style={{ ...textStyle("caption", { color: palette().textMuted }), paddingHorizontal: space.sm }}>
               {tr("settings.search.empty")}
             </Text>
           </If>
         </View>
       </If>
       <If when={settingsSearchQuery().trim() === ""}>
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: space.hair }}>
           <Each of={SETTINGS_PAGE_GROUPS} key={group => group.id}>
             {group => (
-              <View style={{ gap: 2 }}>
-                <SettingsNavGroupLabel label={tr(group().labelKey)} />
-                <Each of={group().pages} key={page => page.id}>
+              <View style={{ gap: space.hair }}>
+                <SettingsNavGroupLabel
+                  label={tr(group().labelKey)}
+                  extra={group().id === "device" ? <DeviceScopeChip /> : undefined}
+                />
+                <Each of={visibleSettingsPages(group())} key={page => page.id}>
                   {page => (
-                    <View style={{ gap: 1 }}>
-                      <SettingsNavRow
-                        label={tr(page().labelKey)}
-                        icon={page().icon}
-                        active={selectedSettingsPage() === page().id}
-                        accessibilityLabel={`nav-settings-page-${page().id}`}
-                        onPress={() => requestSettingsPage(page().id)}
-                      />
-                      <If when={selectedSettingsPage() === page().id && page().anchors.length > 1}>
-                        <Each of={page().anchors} key={anchor => anchor.id}>
-                          {anchor => (
-                            <SettingsNavRow
-                              label={tr(anchor().labelKey)}
-                              active={false}
-                              nested={true}
-                              accessibilityLabel={`nav-settings-anchor-${anchor().id}`}
-                              onPress={() => revealSettingsSection(anchor().id)}
-                            />
-                          )}
-                        </Each>
-                      </If>
-                    </View>
+                    <SettingsNavRow
+                      label={tr(page().labelKey)}
+                      active={selectedSettingsPage() === page().id}
+                      accessibilityLabel={`nav-settings-page-${page().id}`}
+                      onPress={() => requestSettingsPage(page().id)}
+                    />
                   )}
                 </Each>
               </View>
@@ -8872,4 +9611,12 @@ export function SettingsNavigation() {
       </If>
     </View>
   );
+}
+
+/**
+ * Kept for the shell's import: the settings list now lives on the Settings
+ * canvas itself (visual spec §4.9), so the side panel draws nothing for it.
+ */
+export function SettingsNavigation() {
+  return <View />;
 }

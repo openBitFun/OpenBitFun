@@ -11,7 +11,6 @@
 
 import { signal } from "nsh";
 import { getConfig } from "./api";
-import { peerScope, peerSupports } from "./peerState";
 import { tr } from "./i18n";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { runStep } from "./state";
@@ -77,12 +76,6 @@ export function toWire(choice: TaskModelChoice): unknown {
 /** Reads the section once; the settings scene calls this on every render. */
 export function ensureTaskModels(): void {
   if (taskModelsSupported() !== null || loading) return;
-  if (peerScope() && peerSupports("model_pool_selection_v1") === false) {
-    // The section is model selection like the pools are; a peer that selects
-    // none of them has nothing to set here either.
-    taskModelsSupported.set(false);
-    return;
-  }
   loading = true;
   void loadTaskModels().finally(() => {
     loading = false;

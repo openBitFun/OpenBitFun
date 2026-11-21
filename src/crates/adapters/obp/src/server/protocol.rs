@@ -3,15 +3,29 @@
 //! Client to server (text frames, one JSON-RPC message each):
 //!
 //! - `hello` (request, first message): `{protocol, client?, lastSeq?,
-//!   instanceId?, ack?, creditBytes?}` → `{protocol, scope, capabilities,
-//!   registryDigest, backend: {version, platform, instanceId, dataDir?},
-//!   lastSeq, creditBytes}`;
+//!   instanceId?, ack?, creditBytes?, events?: {prefixes}, fleet?: {protocol,
+//!   cursor}}` → `{protocol, scope, capabilities, registryDigest, backend:
+//!   {version, platform, instanceId, dataDir?}, lastSeq, creditBytes,
+//!   hostCapabilities, hostKind, uiBundleId?, events?: {prefixes}, fleet?:
+//!   {protocol, deviceId, cursorState}}`;
 //! - `call` (request): `{command, args}` → the command's JSON value;
 //! - `ack` (notification): `{seq}`, grants event credit back.
 //!
 //! Server to client: responses, and `event` notifications
 //! `{seq, event, payload}` with payloads byte-identical to the in-process
 //! stream.
+//!
+//! Additive members (older peers ignore them, older clients never send them):
+//!
+//! - `events: {prefixes}` on the hello keeps only events whose name starts
+//!   with one of the prefixes (`backend://events-dropped` always passes); the
+//!   answer echoes the applied filter, so a client can tell an older server
+//!   that ignored it.
+//! - `fleet: {protocol, cursor}` on the hello asks a fleet entry for the
+//!   merged stream of every device the client follows: frames then carry
+//!   `origin` and `originInstance` and `seq` is the origin's own. A server
+//!   without the fleet layer answers without `fleet` and its frames are
+//!   unchanged.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -83,6 +97,59 @@ pub(crate) struct HelloParams {
     /// The client's event window in bytes (clamped by the server).
     #[serde(default)]
     pub credit_bytes: Option<u64>,
+    /// `{prefixes}`: an event-name prefix filter. Read tolerantly: an
+    /// unreadable value is no filter.
+    #[serde(default)]
+    pub events: Option<Value>,
+    /// `{protocol, cursor}`: the client speaks the fleet stream. Read
+    /// tolerantly: an unreadable value is an old client.
+    #[serde(default)]
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    pub fleet: Option<Value>,
+}
+
+impl HelloParams {
+    /// The prefix filter the client asked for (`None`: every event).
+    pub(crate) fn event_prefixes(&self) -> Option<Vec<String>> {
+        let filter: openbitfun_product_domains::fleet::FleetEventFilter =
+            serde_json::from_value(self.events.clone()?).ok()?;
+        let prefixes: Vec<String> = filter
+            .prefixes
+            .into_iter()
+            .map(|prefix| prefix.trim().to_string())
+            .filter(|prefix| !prefix.is_empty())
+            .take(MAX_EVENT_PREFIXES)
+            .collect();
+        (!prefixes.is_empty()).then_some(prefixes)
+    }
+
+    /// The fleet member, when the client speaks the fleet stream.
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    pub(crate) fn fleet_hello(&self) -> Option<openbitfun_product_domains::fleet::FleetHello> {
+        let fleet = self.fleet.clone()?;
+        if !fleet.is_object() {
+            return None;
+        }
+        serde_json::from_value(fleet).ok()
+    }
+}
+
+/// Most prefixes one filter keeps.
+const MAX_EVENT_PREFIXES: usize = 32;
+
+/// Whether `event` passes a prefix filter (`None`: no filter). The synthetic
+/// `backend://events-dropped` always passes: it is how a client learns it
+/// must re-hydrate.
+pub(crate) fn passes_prefixes(prefixes: Option<&[String]>, event: &str) -> bool {
+    match prefixes {
+        None => true,
+        Some(prefixes) => {
+            event == crate::EVENTS_DROPPED_EVENT
+                || prefixes
+                    .iter()
+                    .any(|prefix| event.starts_with(prefix.as_str()))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +162,11 @@ pub(crate) struct CallParams {
 #[derive(Debug, Deserialize)]
 pub(crate) struct AckParams {
     pub seq: u64,
+    /// On a fleet stream: the client's vector cursor
+    /// (`{[origin]: {instanceId, seq}}`), which names exactly the frames it
+    /// applied (`seq` alone is ambiguous across origins). Read tolerantly.
+    #[serde(default)]
+    pub cursor: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +200,19 @@ pub(crate) struct HelloResult {
     /// The kind of host behind this backend (`desktop`, `cli`), for display:
     /// features are gated on `hostCapabilities`. Additive.
     pub host_kind: &'static str,
+    /// The id of the web UI bundle this host ships, as a hint (additive,
+    /// absent when the host has none or has not loaded it yet). Browsers
+    /// trust only the manifest from `ui_bundle_manifest`, recomputing its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_bundle_id: Option<String>,
+    /// The prefix filter applied to this connection (`{prefixes}`), echoed
+    /// only when the client asked for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<Value>,
+    /// The fleet answer (`{protocol, deviceId, cursorState}`), only when the
+    /// client sent `fleet` and this host serves the fleet stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fleet: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -208,6 +293,53 @@ pub(crate) fn event_frame(seq: u64, event: &str, payload: &Value) -> String {
     .unwrap_or_else(|error| {
         log::error!(
             "Failed to encode OBP event frame: event={}, error={}",
+            event,
+            error
+        );
+        String::new()
+    })
+}
+
+/// An `event` notification frame of a fleet stream: the origin's own `seq`,
+/// its event and payload unchanged, tagged with the origin device and its
+/// backend instance.
+#[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+pub(crate) fn fleet_event_frame(
+    origin: &str,
+    origin_instance: &str,
+    seq: u64,
+    event: &str,
+    payload: &Value,
+) -> String {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Params<'a> {
+        seq: u64,
+        event: &'a str,
+        payload: &'a Value,
+        origin: &'a str,
+        origin_instance: &'a str,
+    }
+    #[derive(Serialize)]
+    struct Frame<'a> {
+        jsonrpc: &'static str,
+        method: &'static str,
+        params: Params<'a>,
+    }
+    serde_json::to_string(&Frame {
+        jsonrpc: "2.0",
+        method: "event",
+        params: Params {
+            seq,
+            event,
+            payload,
+            origin,
+            origin_instance,
+        },
+    })
+    .unwrap_or_else(|error| {
+        log::error!(
+            "Failed to encode OBP fleet event frame: event={}, error={}",
             event,
             error
         );

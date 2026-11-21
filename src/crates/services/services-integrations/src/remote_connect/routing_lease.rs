@@ -1,20 +1,20 @@
-//! Host-local arbitration of one device's machine-scoped Relay socket.
+//! Host-local arbitration of which OpenBitFun process serves this machine's
+//! device identity on OpenBitFun Link.
 //!
-//! Every OpenBitFun host on a machine shares `device_identity.json`, and the
-//! Relay keeps only the newest machine socket per `device_id`. Two hosts that
-//! both reconnect would therefore replace each other indefinitely. A host holds
-//! an OS advisory lock for its priority tier while it owns routing; the OS
+//! Every OpenBitFun host on a machine shares `device_identity.json`, so only
+//! one of them may join Link as that device at a time. A host holds an OS
+//! advisory lock for its priority tier while it serves the device; the OS
 //! releases it when the process exits, crashes or is killed, so no stale owner
-//! record survives and the Relay protocol is unchanged.
+//! record survives.
 //!
-//! - [`DeviceRoutingPriority::Primary`] (Desktop) connects whenever it holds the
+//! - [`DeviceRoutingPriority::Primary`] (Desktop) serves whenever it holds the
 //!   primary lock and never yields to a secondary host.
-//! - [`DeviceRoutingPriority::Secondary`] (CLI, TUI, daemon) connects only while
+//! - [`DeviceRoutingPriority::Secondary`] (CLI, TUI, daemon) serves only while
 //!   it holds the secondary lock and no primary host holds the primary lock. It
 //!   stands by otherwise and resumes once the primary host exits or signs out.
 //!
-//! Locks are keyed by Relay endpoint: sockets on different Relays do not
-//! replace each other.
+//! (OpenBitFun 1.x keyed the same locks by Relay endpoint under
+//! `relay-routing/`; 2.0 no longer uses the relay and keys them by device.)
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -33,6 +33,9 @@ pub enum DeviceRoutingPriority {
     Secondary,
 }
 
+/// The single arbitration scope: one device identity, one serving host.
+const DEVICE_ROUTING_KEY: &str = "openbitfun-device";
+
 #[derive(Debug, Clone)]
 pub(crate) struct RoutingLeasePaths {
     priority: DeviceRoutingPriority,
@@ -42,19 +45,19 @@ pub(crate) struct RoutingLeasePaths {
 
 impl RoutingLeasePaths {
     /// Lock files live next to the device identity: hosts that share it are
-    /// exactly the hosts that authenticate as the same device.
-    pub(crate) fn for_relay(relay_url: &str, priority: DeviceRoutingPriority) -> Result<Self> {
+    /// exactly the hosts that serve the same device.
+    pub(crate) fn for_device(priority: DeviceRoutingPriority) -> Result<Self> {
         let identity = super::device::identity_file_path()?;
         let dir = identity
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_default()
-            .join("relay-routing");
-        Ok(Self::in_dir(&dir, relay_url, priority))
+            .join("device-routing");
+        Ok(Self::in_dir(&dir, DEVICE_ROUTING_KEY, priority))
     }
 
-    pub(crate) fn in_dir(dir: &Path, relay_url: &str, priority: DeviceRoutingPriority) -> Self {
-        let digest = Sha256::digest(relay_url.trim_end_matches('/').as_bytes());
+    pub(crate) fn in_dir(dir: &Path, scope: &str, priority: DeviceRoutingPriority) -> Self {
+        let digest = Sha256::digest(scope.trim_end_matches('/').as_bytes());
         let key = hex::encode(&digest[..8]);
         let primary = dir.join(format!("{key}.primary.lock"));
         let own = match priority {
@@ -69,8 +72,8 @@ impl RoutingLeasePaths {
     }
 }
 
-/// One host's claim on routing for a Relay endpoint. Dropping it releases the
-/// claim so the next host in line can connect.
+/// One host's claim on serving the device. Dropping it releases the claim so
+/// the next host in line can serve.
 pub(crate) struct RoutingLease {
     paths: RoutingLeasePaths,
     held: Option<File>,
@@ -100,6 +103,40 @@ impl RoutingLease {
             DeviceRoutingPriority::Primary => Ok(true),
             DeviceRoutingPriority::Secondary => primary_is_free(&self.paths.primary),
         }
+    }
+}
+
+/// A host's claim on serving this machine's device identity (Link join).
+///
+/// Hold it for as long as the host wants to serve; dropping it hands the
+/// device to the next host in line.
+pub struct DeviceRoutingLease {
+    inner: RoutingLease,
+}
+
+impl DeviceRoutingLease {
+    /// A claim keyed by this machine's device identity.
+    pub fn for_device(priority: DeviceRoutingPriority) -> Result<Self> {
+        Ok(Self {
+            inner: RoutingLease::new(RoutingLeasePaths::for_device(priority)?),
+        })
+    }
+
+    /// A claim whose lock files live in `dir` (tests and scratch profiles).
+    pub fn in_dir(dir: &Path, priority: DeviceRoutingPriority) -> Self {
+        Self {
+            inner: RoutingLease::new(RoutingLeasePaths::in_dir(dir, DEVICE_ROUTING_KEY, priority)),
+        }
+    }
+
+    pub fn priority(&self) -> DeviceRoutingPriority {
+        self.inner.priority()
+    }
+
+    /// Whether this host serves the device now. A secondary host that stands
+    /// by keeps its tier lock, so it is the designated successor.
+    pub fn may_serve(&mut self) -> io::Result<bool> {
+        self.inner.may_connect()
     }
 }
 
@@ -145,19 +182,19 @@ fn primary_is_free(path: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
 
-    const RELAY: &str = "https://relay.example.test/v1";
+    const SCOPE: &str = DEVICE_ROUTING_KEY;
 
-    fn lease(dir: &Path, relay_url: &str, priority: DeviceRoutingPriority) -> RoutingLease {
-        RoutingLease::new(RoutingLeasePaths::in_dir(dir, relay_url, priority))
+    fn lease(dir: &Path, scope: &str, priority: DeviceRoutingPriority) -> RoutingLease {
+        RoutingLease::new(RoutingLeasePaths::in_dir(dir, scope, priority))
     }
 
     #[test]
     fn primary_host_preempts_a_connected_secondary_host() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cli = lease(dir.path(), RELAY, DeviceRoutingPriority::Secondary);
+        let mut cli = lease(dir.path(), SCOPE, DeviceRoutingPriority::Secondary);
         assert!(cli.may_connect().unwrap());
 
-        let mut desktop = lease(dir.path(), RELAY, DeviceRoutingPriority::Primary);
+        let mut desktop = lease(dir.path(), SCOPE, DeviceRoutingPriority::Primary);
         assert!(desktop.may_connect().unwrap());
         assert!(!cli.may_connect().unwrap());
     }
@@ -165,13 +202,13 @@ mod tests {
     #[test]
     fn secondary_host_resumes_after_the_primary_host_exits() {
         let dir = tempfile::tempdir().unwrap();
-        let mut desktop = lease(dir.path(), RELAY, DeviceRoutingPriority::Primary);
+        let mut desktop = lease(dir.path(), SCOPE, DeviceRoutingPriority::Primary);
         assert!(desktop.may_connect().unwrap());
 
-        let mut daemon = lease(dir.path(), RELAY, DeviceRoutingPriority::Secondary);
+        let mut daemon = lease(dir.path(), SCOPE, DeviceRoutingPriority::Secondary);
         assert!(!daemon.may_connect().unwrap());
         // The standing-by host keeps its tier, so another CLI cannot jump ahead.
-        let mut other_cli = lease(dir.path(), RELAY, DeviceRoutingPriority::Secondary);
+        let mut other_cli = lease(dir.path(), SCOPE, DeviceRoutingPriority::Secondary);
         assert!(!other_cli.may_connect().unwrap());
 
         drop(desktop);
@@ -182,8 +219,8 @@ mod tests {
     #[test]
     fn hosts_of_the_same_priority_take_turns() {
         let dir = tempfile::tempdir().unwrap();
-        let mut first = lease(dir.path(), RELAY, DeviceRoutingPriority::Primary);
-        let mut second = lease(dir.path(), RELAY, DeviceRoutingPriority::Primary);
+        let mut first = lease(dir.path(), SCOPE, DeviceRoutingPriority::Primary);
+        let mut second = lease(dir.path(), SCOPE, DeviceRoutingPriority::Primary);
         assert!(first.may_connect().unwrap());
         assert!(!second.may_connect().unwrap());
         drop(first);
@@ -191,22 +228,13 @@ mod tests {
     }
 
     #[test]
-    fn different_relays_do_not_contend() {
+    fn device_lease_hands_the_device_to_the_cli_after_the_desktop_exits() {
         let dir = tempfile::tempdir().unwrap();
-        let mut desktop = lease(dir.path(), RELAY, DeviceRoutingPriority::Primary);
-        assert!(desktop.may_connect().unwrap());
-        let mut lan_cli = lease(
-            dir.path(),
-            "http://192.168.1.2:9700",
-            DeviceRoutingPriority::Secondary,
-        );
-        assert!(lan_cli.may_connect().unwrap());
-        // A trailing slash names the same endpoint.
-        let mut cli = lease(
-            dir.path(),
-            &format!("{RELAY}/"),
-            DeviceRoutingPriority::Secondary,
-        );
-        assert!(!cli.may_connect().unwrap());
+        let mut desktop = DeviceRoutingLease::in_dir(dir.path(), DeviceRoutingPriority::Primary);
+        assert!(desktop.may_serve().unwrap());
+        let mut daemon = DeviceRoutingLease::in_dir(dir.path(), DeviceRoutingPriority::Secondary);
+        assert!(!daemon.may_serve().unwrap());
+        drop(desktop);
+        assert!(daemon.may_serve().unwrap());
     }
 }

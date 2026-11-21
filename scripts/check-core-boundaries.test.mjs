@@ -3970,33 +3970,29 @@ test('public event projection stays limited to current host needs', async () => 
   );
 });
 
-test('embedded LAN relay stays retired on the desktop', async () => {
-  const [coreManifest, corePort, desktopManifest, desktopRoutes] = await Promise.all([
+test('the 1.x relay transport stays removed from the 2.0 tree', async () => {
+  const [coreManifest, desktopManifest, coreRemoteConnect, servicesRemoteConnect] = await Promise.all([
     readFile(new URL('../src/crates/assembly/core/Cargo.toml', import.meta.url), 'utf8'),
-    readFile(
-      new URL(
-        '../src/crates/assembly/core/src/service/remote_connect/embedded_relay_host.rs',
-        import.meta.url,
-      ),
-      'utf8',
-    ),
     readFile(new URL('../src/apps/desktop/Cargo.toml', import.meta.url), 'utf8'),
-    readFile(
-      new URL('../src/apps/desktop/src/api/remote_connect_api/relay_routes.rs', import.meta.url),
-      'utf8',
-    ),
+    readFile(new URL('../src/crates/assembly/core/src/service/remote_connect/mod.rs', import.meta.url), 'utf8'),
+    readFile(new URL('../src/crates/services/services-integrations/src/remote_connect.rs', import.meta.url), 'utf8'),
   ]);
-
   assert.doesNotMatch(coreManifest, /openbitfun-relay-service/);
-  assert.doesNotMatch(corePort, /\b(?:axum|TcpListener|ServeDir|build_relay_router)\b/);
-  // The desktop runs the Relay router only as a test fixture.
+  // The desktop runs the directory router only as a test fixture.
   const desktopRuntimeDependencies = desktopManifest.split(/^\[dev-dependencies\]/m)[0];
   assert.doesNotMatch(desktopRuntimeDependencies, /openbitfun-relay-service/);
-  await assert.rejects(
-    access(new URL('../src/apps/desktop/src/embedded_relay_host.rs', import.meta.url)),
-  );
-  assert.match(desktopRoutes, /EmbeddedRelayHost\s+for DesktopEmbeddedRelayUnavailable/);
-  assert.doesNotMatch(desktopRoutes, /\b(?:TcpListener|ServeDir|build_relay_router)\b/);
+  for (const removed of [
+    '../src/apps/desktop/src/embedded_relay_host.rs',
+    '../src/apps/desktop/src/api/remote_connect_api/relay_routes.rs',
+    '../src/apps/desktop/src/api/peer_host_invoke.rs',
+    '../src/crates/assembly/core/src/service/remote_connect/embedded_relay_host.rs',
+    '../src/crates/services/services-integrations/src/remote_connect/relay_client.rs',
+    '../src/crates/services/services-integrations/src/remote_connect/realtime_client.rs',
+  ]) {
+    await assert.rejects(access(new URL(removed, import.meta.url)), undefined, removed);
+  }
+  assert.doesNotMatch(coreRemoteConnect, /\bpub mod (?:relay_client|embedded_relay_host|lan)\b/);
+  assert.doesNotMatch(servicesRemoteConnect, /\bpub mod (?:relay_client|realtime_client)\b/);
 });
 
 test('split core boundary check keeps self-test execution behavior', () => {
@@ -5025,9 +5021,9 @@ test('capability contract consumers cannot remove reviewed dependency edges', as
   assert.ok(messages.some((message) => /openbitfun-opencode-adapter.*missing reviewed.*dev.*edge/.test(message)));
 });
 
-test('vendored Engine.IO remains in resolved feature audits without becoming a product owner', () => {
+test('a vendored crate remains in resolved feature audits without becoming a product owner', () => {
   const owner = packageAt('owner', 'src/apps/example/Cargo.toml');
-  const vendor = { ...packageAt('eioc', 'third_party/eioc/Cargo.toml'), version: '0.5.0' };
+  const vendor = { ...packageAt('screenshots', 'third_party/screenshots/Cargo.toml'), version: '0.8.10' };
   const collect = members => collectCargoMetadataGraph({
     root: TEST_ROOT,
     manifestPaths: [join(TEST_ROOT, 'Cargo.toml')],
@@ -5038,8 +5034,8 @@ test('vendored Engine.IO remains in resolved feature audits without becoming a p
   });
   const graph = collect([owner.id]);
   assert.deepEqual(graph.packages.map(pkg => pkg.name), ['owner']);
-  assert.ok(graph.resolvedPackageFeatures.some(record => record.name === 'eioc'));
-  assert.ok(collect([owner.id, vendor.id]).packages.some(pkg => pkg.name === 'eioc'),
+  assert.ok(graph.resolvedPackageFeatures.some(record => record.name === 'screenshots'));
+  assert.ok(collect([owner.id, vendor.id]).packages.some(pkg => pkg.name === 'screenshots'),
     'a product workspace member cannot bypass ownership checks through a vendor path');
 });
 

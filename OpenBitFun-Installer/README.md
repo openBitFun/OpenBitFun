@@ -52,7 +52,7 @@ The installer installs the native desktop app: the Windows package directory
 that `pnpm run desktop-nsh:package:windows` writes to
 `target/desktop-nsh/windows/OpenBitFun/` (the NSH runner as
 `openbitfun-desktop.exe`, the backend `openbitfun_desktop_lib.dll`, the UI bundle
-in `nsh\`, and `resources\`, `flashgrep\`, `nsh-web\`, `mobile-web\`, `bin\`).
+in `nsh\`, and `resources\`, `flashgrep\`, `nsh-web\`, `bin\`).
 The runner keeps the executable name of the retired Tauri build, so shortcuts,
 the uninstall entry and earlier installs keep pointing at it; files an earlier
 install owned that the new package lacks (such as `frontend\`) are removed.

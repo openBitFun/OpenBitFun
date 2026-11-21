@@ -223,7 +223,7 @@ jobs:
       - name: Create Tauri resource directories
         shell: bash
         run: |
-          mkdir -p dist src/mobile-web/dist src/apps/extension-host/dist
+          mkdir -p dist src/apps/extension-host/dist
           touch src/apps/extension-host/dist/extension-host.js
 
       - name: Install Linux system dependencies (Tauri)
@@ -796,48 +796,6 @@ jobs:
       - name: Validate theme visual governance contract
         if: needs.build-impact.outputs.frontend_required != 'false'
         run: pnpm run theme:visual-contract
-
-      - name: Type-check mobile web
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm --dir src/mobile-web run type-check
-
-      - name: Validate mobile-web build cache contract
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: node --test scripts/mobile-web-build.test.mjs scripts/mobile-client-build.contract.test.mjs
-
-      - name: Test mobile web account login and reload
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm --dir src/mobile-web run test:account-login
-
-      - name: Test mobile web browser account persistence and concurrency
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        timeout-minutes: 5
-        run: pnpm --dir src/mobile-web run test:account-browser
-
-      - name: Test mobile web conversation and input layouts
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        timeout-minutes: 3
-        run: |
-          pnpm --dir src/mobile-web run test:prompt-suggestion-browser
-          pnpm --dir src/mobile-web run test:rollback-browser
-          pnpm --dir src/mobile-web run test:session-model-browser
-          pnpm --dir src/mobile-web run test:chat-transcript-browser
-
-      - name: Upload mobile input layout screenshots
-        if: always() && needs.build-impact.outputs.frontend_required != 'false'
-        uses: actions/upload-artifact@v6
-        with:
-          name: mobile-input-layout-screenshots
-          path: |
-            /tmp/mobile-prompt-suggestion-*.png
-            /tmp/mobile-edit-*.png
-            /tmp/mobile-rollback-*.png
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Build mobile web
-        if: needs.build-impact.outputs.frontend_required != 'false'
-        run: pnpm run build:mobile-web
 
       - name: Project a Nightly version
         if: needs.build-impact.outputs.frontend_required != 'false'

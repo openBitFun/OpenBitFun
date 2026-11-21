@@ -16,6 +16,7 @@
 // the shell compile against it.
 
 import type { BackendConnection } from "../backendConnection";
+import type { FleetHello } from "../fleetTypes";
 
 /** Which implementation a port is. */
 export type ControllerKind = "web" | "native";
@@ -81,6 +82,15 @@ export interface ControllerDevice {
   route: string | null;
 }
 
+/** How `connect` opens the connection. */
+export interface ControllerConnectOptions {
+  /**
+   * Hello as a fleet client with this vector cursor (shared: the connection
+   * advances it). A port that cannot pass it connects plainly.
+   */
+  fleet?: FleetHello;
+}
+
 /** A live backend connection to one device. */
 export interface ControllerConnection extends BackendConnection {
   /** The device this connection drives. */
@@ -106,18 +116,37 @@ export type ControllerErrorCode =
   /** The service is unavailable; retry later. */
   | "unavailable"
   /** The request never reached the server. */
-  | "network";
+  | "network"
+  /**
+   * The device ships no web UI, or is too old to hand one out
+   * (`ui_bundle_unavailable`, or no `ui_bundle_manifest` command).
+   */
+  | "device_ui_unavailable"
+  /** The device's UI manifest is newer than this page reads; reload the page. */
+  | "page_outdated"
+  /** A file of the device's UI failed verification (`detail` names it); nothing ran. */
+  | "ui_verification_failed"
+  /** A file of the device's UI could not be loaded (`detail` names it). */
+  | "ui_load_failed";
 
 /** The error every port method rejects with. `message` is the server's sentence. */
 export class ControllerError extends Error {
   readonly code: ControllerErrorCode;
   readonly retryAfterSeconds: number | null;
+  /** What the failure is about (the file of a UI that failed verification), when the code has one. */
+  readonly detail: string | null;
 
-  constructor(code: ControllerErrorCode, message: string, retryAfterSeconds: number | null = null) {
+  constructor(
+    code: ControllerErrorCode,
+    message: string,
+    retryAfterSeconds: number | null = null,
+    detail: string | null = null,
+  ) {
     super(message);
     this.name = "ControllerError";
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.detail = detail;
   }
 }
 
@@ -134,10 +163,31 @@ export function controllerErrorCode(error: unknown): ControllerErrorCode {
     case "unsupported":
     case "unavailable":
     case "network":
+    case "device_ui_unavailable":
+    case "page_outdated":
+    case "ui_verification_failed":
+    case "ui_load_failed":
       return code;
     default:
       return "unavailable";
   }
+}
+
+/**
+ * Where a connected device's UI runs. `here`: this page drives it (a native
+ * app, or a page that already runs the device's own UI). `away`: the device
+ * ships another UI, and `open()` leaves this page for it.
+ */
+export type ControllerUiPlacement = { kind: "here" } | { kind: "away"; open(): Promise<void> };
+
+/** How this page was started, beyond the signed-in session. */
+export interface ControllerLaunchState {
+  /** The device this page was opened for (the web handoff), to connect straight away. */
+  deviceId: string | null;
+  /** The user asked to see the device list (Switch device), so pick nothing. */
+  showDevices: boolean;
+  /** Why the previous page came back here (a UI file failed), to show first. */
+  failure: ControllerError | null;
 }
 
 export interface ControllerPort {
@@ -156,7 +206,27 @@ export interface ControllerPort {
    * Opens an authenticated OBP connection to `deviceId`. Resolves once the
    * device answered `hello`; rejects with a `ControllerError` otherwise.
    */
-  connect(deviceId: string): Promise<ControllerConnection>;
+  connect(deviceId: string, options?: ControllerConnectOptions): Promise<ControllerConnection>;
+  /**
+   * The account's runtime hosts this client may enter the fleet through, best
+   * first, as the server (the gateway's `entryCandidates`) or the native module
+   * ranked them. A port without it (an older server or module) connects to one
+   * device as before (`controller/fleetEntry.ts`).
+   */
+  entryCandidates?(): Promise<string[]>;
+  /** How this page was started; a port without one starts plainly. */
+  launchState?(): Promise<ControllerLaunchState>;
+  /**
+   * Where the UI of the device behind `connection` runs; a port without one
+   * always drives the device here. Rejects with a `ControllerError`
+   * (`device_ui_unavailable`, `page_outdated`, `unsupported`, ...).
+   */
+  placeUi?(connection: ControllerConnection): Promise<ControllerUiPlacement>;
+  /**
+   * Leaves the device for the device list. Resolves `true` when the page
+   * itself goes away for that (a device's UI page goes back to the launcher).
+   */
+  leave?(): Promise<boolean>;
 }
 
 let installed: ControllerPort | null = null;

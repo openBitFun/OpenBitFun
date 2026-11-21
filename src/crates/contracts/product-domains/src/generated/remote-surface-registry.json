@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:07ef1414647df5d6",
+  "digest": "fnv1a64:a5fbb00ca565a0cc",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -201,14 +201,15 @@
     },
     {
       "id": "account_connect_devices",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -225,26 +226,28 @@
     },
     {
       "id": "account_device_rpc",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
       "id": "account_execute_on_device",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -309,14 +312,15 @@
     },
     {
       "id": "account_load_older_session",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -345,26 +349,28 @@
     },
     {
       "id": "account_online_devices",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
       "id": "account_relay_capabilities",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -381,14 +387,15 @@
     },
     {
       "id": "account_subscribe_session",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -405,14 +412,15 @@
     },
     {
       "id": "account_unsubscribe_session",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)"
       }
     },
     {
@@ -2099,6 +2107,17 @@
       }
     },
     {
+      "id": "dispatch_target_workspace_provision_source",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "host_control_plane"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "dispatch_target_workspace_sync",
       "surface": "host_invoke_only",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -2329,6 +2348,183 @@
       "cliPeer": {
         "kind": "unsupported",
         "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "fleet_attention",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_attention_mark_read",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_call",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_device_detail",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_digest",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "fleet_events",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_model_cancel",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "host_control_plane"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "fleet_model_poll",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "host_control_plane"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "fleet_model_start",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "host_control_plane"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "fleet_navigator",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_prompts",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_recent_sessions",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_replay",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "operator_only"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "fleet_subscribe",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
+      }
+    },
+    {
+      "id": "fleet_ui_bundle",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "fleet_entry"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge"
       }
     },
     {
@@ -5809,60 +6005,67 @@
     },
     {
       "id": "peer_control_attach",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "host_control_plane"
+        "kind": "retired",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       },
       "cliPeer": {
-        "kind": "handled"
+        "kind": "unsupported",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       }
     },
     {
       "id": "peer_control_detach",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "host_control_plane"
+        "kind": "retired",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       },
       "cliPeer": {
-        "kind": "handled"
+        "kind": "unsupported",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       }
     },
     {
       "id": "peer_controller_set_active",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       }
     },
     {
       "id": "peer_host_bridge_ready",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       }
     },
     {
       "id": "peer_host_invoke_complete",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       }
     },
     {
@@ -5915,13 +6118,15 @@
     },
     {
       "id": "peer_mode_ping",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "host_control_plane"
+        "kind": "retired",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       },
       "cliPeer": {
-        "kind": "handled"
+        "kind": "unsupported",
+        "reason": "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)"
       }
     },
     {
@@ -7859,6 +8064,17 @@
       }
     },
     {
+      "id": "set_superagent_settings",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "set_task_model",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -8607,6 +8823,171 @@
       }
     },
     {
+      "id": "superagent_cancel_turn",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_delete_conversation",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_delete_data",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_disable",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_enable",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_get_conversation",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_job_action",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_list_conversations",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_rename_conversation",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_send",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "superagent_status",
+      "surface": "cloud_node",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target"
+      },
+      "cloudPeer": {
+        "kind": "handled"
+      }
+    },
+    {
       "id": "terminal_ack",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteRouted",
@@ -8811,6 +9192,17 @@
       "id": "touch_session_activity",
       "surface": "tauri_command",
       "remoteWorkspace": "LegacyUnaudited",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "handled"
+      }
+    },
+    {
+      "id": "ui_bundle_manifest",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
       },
@@ -9236,6 +9628,4873 @@
       },
       "cliPeer": {
         "kind": "handled"
+      }
+    }
+  ],
+  "fleetRouting": [
+    {
+      "id": "accept_file",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "accept_operation",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "accept_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "account_delete_device",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_get_credential_hint",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_github_info",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_github_poll",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_github_start",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_list_devices",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_login",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_logout",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_status",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_token_expired",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_update_device_alias",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "acknowledge_external_ecosystems_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "activate_session_goal",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "add_skill",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "workspaceId"
+      }
+    },
+    {
+      "id": "ai_model_delete",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ai_model_upsert",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "append_flow_chat_diagnostics",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "apply_external_hook_import_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "apply_external_mcp_import_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "apply_external_source_control_action_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "apply_patch",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "archive_all_sessions",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "archive_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "browser_control_disconnect",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "browser_control_enable_default_cdp",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "browser_control_get_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "browser_control_launch",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "browser_control_list_browsers",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "browser_control_restart_with_cdp",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "browser_get_url",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_capture_preview",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_create",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_eval",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_navigate",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_reload",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_report_page_load",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_set_agent_target_state",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "browser_webview_set_bounds",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "btw_ask_stream",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "btw_cancel",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "cancel_acp_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "cancel_app_update_download",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "cancel_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "cancel_insights_generation",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "cancel_mcp_remote_oauth",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "cancel_search",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "cancel_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "cancel_subscription_login",
+      "route": {
+        "kind": "by_target",
+        "reason": "the sessionId is a sign-in flow id on the chosen device, not an agent session"
+      }
+    },
+    {
+      "id": "cancel_tool",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "cancel_transfer",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "canonicalize_agent_profile_configs",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "check_command_exists",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "check_commands_exist",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "check_for_updates",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "check_git_isolation",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "check_path_exists",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "choose_external_mcp_conflict_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "choose_external_subagent_conflict_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "cleanup_invalid_workspaces",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "clear_decision_model_credential",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "clear_mcp_remote_auth",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "clear_project_permission_grants",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "clear_session_thread_goal",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "clear_web_search_credential",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "close_workspace",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "compact_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "compile_workspace_latex",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "compress_path",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "compute_diff",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_control_preview",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_control_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_control_stop",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_get_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_open_system_settings",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_request_permission",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_request_permissions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_control",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_forget_grant",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_grants",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_input",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_observe",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_request",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_start",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "computer_use_share_targets",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "control_background_command",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "control_deep_review_queue",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "copy_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.source_session_id"
+      }
+    },
+    {
+      "id": "create_acp_flow_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "create_assistant_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "create_control_conversation",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "create_cron_job",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "create_custom_agent",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "create_directory",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "create_file",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "create_miniapp",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "create_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "create_subagent",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "decompress_path",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "delete_agent_companion_pet_package",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "delete_all_archived_sessions",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "delete_assistant_workspace",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "delete_cron_job",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "delete_custom_agent",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "delete_directory",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "delete_file",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "delete_mcp_server",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "delete_miniapp",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "delete_model_pool",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "delete_permission_rule",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "delete_persisted_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "delete_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "delete_skill",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "workspaceId"
+      }
+    },
+    {
+      "id": "delete_subagent",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "delete_terminal_profile",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "dispatch_answer",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_append",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_cancel",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_continue",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_list_jobs",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_list_targets",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_load_transcript",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_probe_target",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_query",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_save_transcript",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_status",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_submit",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_sync_model_config",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "dispatch_sync_result",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "download_skill_market",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "download_update",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "editor_ai_cancel",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "editor_ai_stream",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ensure_assistant_bootstrap",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "ensure_control_conversation",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ensure_coordinator_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "execute_session_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "execute_tool",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "expand_external_prompt_command_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "explorer_get_children",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "explorer_get_children_paginated",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "explorer_get_file_tree",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "export_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "export_diagnostics_bundle",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "export_local_file_to_path",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "export_session_transcript",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "fetch_mcp_app_resource",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "fork_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.source_session_id"
+      }
+    },
+    {
+      "id": "generate_commit_message",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "generate_insights",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "generate_session_title",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_acp_clients",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_acp_session_commands",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_acp_session_options",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_agent_profile_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_agent_profile_configs",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_ai_model_catalog",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_all_modified_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_all_tools_info",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_app_state",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_app_version",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_assistant_workspaces",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_available_modes",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_available_tools",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_baseline_snapshot_diff",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_chat_mcp_catalog",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_clipboard_files",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_clipboard_image",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_configs",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_current_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_custom_agent_detail",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_decision_model_credential_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_default_review_team_definition",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_directory_children",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_directory_children_paginated",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_external_ecosystem_awareness_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_external_hook_catalog",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_external_hook_import_snapshot",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_external_source_control_snapshot",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_external_source_discovery_snapshot",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_external_source_snapshot",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_file_change_history",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_file_diff",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_file_editor_sync_hash",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_file_metadata",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_file_tree",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_file_watch_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_global_config_health",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_global_config_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_global_skill_settings",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_health_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_instruction_source_catalog",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_latest_insights",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "get_local_models_dev_catalogs",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "get_mcp_prompt",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_mcp_remote_oauth_session",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_mcp_server_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_mcp_servers",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_mcp_tool_ui_uri",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_memory_paths",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_miniapp",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_miniapp_draft_storage",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_miniapp_storage",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_miniapp_versions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_mode_skill_configs",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "workspaceId"
+      }
+    },
+    {
+      "id": "get_model_configs",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_model_pool_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_model_pools",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_model_routing_status",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_models_dev_catalog_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_native_prompt_command_conflicts_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_opened_workspaces",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_operation_diff",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_operation_summary",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_pending_update",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "get_permission_settings",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_personal_overview",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_prevent_sleep_enabled",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "get_primary_assistant_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_project_permission_rules",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_readonly_tools_info",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_recent_workspaces",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_runtime_capabilities",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_runtime_logging_info",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_session_file_diff_stats",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_session_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_session_interaction_mailbox",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_session_lineage",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_session_mode_catalog",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_session_model_target",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_session_operations",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_session_permission_mode",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_session_stats",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_session_thread_goal",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "get_session_transcript_view",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_session_turns",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_session_usage_report",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_settings_schema",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_skill_configs",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "workspaceId"
+      }
+    },
+    {
+      "id": "get_snapshot_sessions",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_snapshot_system_stats",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "get_startup_native_trace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_statistics",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_subagent_detail",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_subscription_account_quota",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_subscription_login_status",
+      "route": {
+        "kind": "by_target",
+        "reason": "the sessionId is a sign-in flow id on the chosen device, not an agent session"
+      }
+    },
+    {
+      "id": "get_system_info",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_terminal_profiles",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_token_usage_activity",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_token_usage_statistics",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_tool_info",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_turn_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "get_watched_paths",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_web_search_credential_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_workspace_icon",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "get_workspace_navigator",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "get_workspace_reference_snapshot",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_add_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_add_worktree",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_checkout_branch",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_cherry_pick",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_cherry_pick_abort",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_cherry_pick_continue",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_commit",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_commit_and_checkout",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_create_branch",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_delete_branch",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_discard_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_branches",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_changed_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_commits",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_diff",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_enhanced_branches",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_file_content",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_graph",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "workspaceId"
+      }
+    },
+    {
+      "id": "git_get_repository",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_repository_basic",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_repository_trust",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_status",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_get_tracked_change_count",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_is_repository",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_list_worktrees",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_pull",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_push",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_remove_worktree",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_reset_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_reset_to_commit",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_resolve_revision",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_trust_repository",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_unwatch_status",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "git_watch_status",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "grant_miniapp_path",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "grant_miniapp_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "has_insights_data",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "hide_main_window_after_close_request",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "host_shell_attach",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "host_shell_respond",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "html_preview_create",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "html_preview_read_resource",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "html_preview_release",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "i18n_get_config",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "i18n_get_current_language",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "i18n_get_supported_languages",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "i18n_set_config",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "i18n_set_language",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "import_agent_companion_pet_package",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "import_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "import_terminal_profiles",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "initialize_acp_clients",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "initialize_ai",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "initialize_mcp_servers",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "initialize_mcp_servers_non_destructive",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "initialize_tray_after_startup",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "initialize_workspace_startup_state",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "install_acp_client_cli",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "install_pending_update",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "install_update",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "interrupt_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "launch_review",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.parentSessionId"
+      }
+    },
+    {
+      "id": "list_agent_companion_pets",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "list_agent_tool_names",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_ai_models_by_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_archived_sessions",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "list_background_command_activities",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.agentSessionId"
+      }
+    },
+    {
+      "id": "list_cron_jobs",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "list_directory_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "list_manageable_subagents",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "list_mcp_prompts",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_mcp_resources",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_miniapps",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_pending_permission_requests",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_persisted_sessions",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "list_persisted_sessions_page",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "list_project_permission_audit",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "list_project_permission_grants",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "list_removed_external_sessions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_session_commands",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "list_sessions",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "list_skill_market",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_subagents",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "list_subscription_account_instances",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_subscription_accounts",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "list_visible_subagents",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "load_acp_json_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "load_git_repo_history",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "load_insights_report",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "load_mcp_json_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "load_persisted_session_metadata",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "load_session_event_backfill",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "load_session_trajectory",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "load_session_turn_window",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "load_session_turns",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "logout_subscription_account",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "logout_subscription_account_instance",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "manage_dialog_queue",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "mark_miniapp_web_surface_ready",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "mark_openbitfun_control_surface_ready",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "mark_openbitfun_control_surface_unready",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "mark_session_seen",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "mesh_list_devices",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "mesh_status",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "miniapp_agent_cancel",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "miniapp_agent_cancel_stale_runs",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_agent_ensure_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "miniapp_agent_run",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "miniapp_agent_turn_text",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "miniapp_ai_cancel",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_ai_chat",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_ai_complete",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_ai_list_models",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_apply_draft",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_create_draft",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_decline_builtin_update",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_dialog_message",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_discard_draft",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_draft_host_call",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_draft_worker_call",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_draft_worker_stop",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_get_customization_metadata",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_get_draft",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_host_call",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_import_from_path",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_install_deps",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_browse",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_get_listing",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_import_package",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_inspect_package",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_install",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_installed_origins",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_installed_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_list_submissions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_set_favorite",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_set_rating",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_market_withdraw_submission",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_permission_diff_for_draft",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_presentation",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "miniapp_recompile",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_runtime_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_set_draft_permissions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_shell_call",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "miniapp_sync_draft_from_fs",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_sync_from_fs",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_worker_call",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_worker_list_running",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "miniapp_worker_stop",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "minimize_to_tray",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "mutate_external_hook_import_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "notify_cron_host_ready",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "obp_create_pairing",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "obp_get_status",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "obp_revoke_paired_client",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "open_html_file_in_browser",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "open_remote_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "open_workspace",
+      "route": {
+        "kind": "by_target",
+        "reason": "opens or reopens a workspace on the chosen device; workspace ids are per device (the same root on two devices shares one), so the id cannot pick the device"
+      }
+    },
+    {
+      "id": "page_create_open_link",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_delete",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_delete_version",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_deploy",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_list",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_list_versions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_publish",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_save_version",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_unpublish",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "page_update",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "paste_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "peer_link_call",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "peer_link_connect",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "peer_link_disconnect",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "peer_link_events",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "plan_external_hook_import_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "plan_external_mcp_import_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "predownload_acp_client_adapter",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "preview_commit_message",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "preview_cron_occurrences",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "probe_acp_client_requirements",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "probe_magpie_gateway",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "product_control_invoke",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "project_ai_model_reasoning_catalog",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "quick_commit_message",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "quit_app",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "read_background_command_output",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "read_file_content",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "read_mcp_resource",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "record_voice_exchange",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "recover_interrupted_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "refresh_model_client",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "refresh_models_dev_catalog_now",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "refresh_subscription_account",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "refresh_subscription_account_instance",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "reject_file",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "reject_operation",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "reload_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "reload_custom_agents",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "reload_session_context",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "reload_subagents",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "remote_close_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_connect_configure_bot",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_get_bot_verbose_mode",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_get_device_info",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_get_form_state",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_get_methods",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_set_allowed",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_set_bot_verbose_mode",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_set_form_state",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_start",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_status",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_stop",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_stop_bot",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_weixin_qr_poll",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_connect_weixin_qr_start",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "remote_create_dir",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_download_to_local_path",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_execute",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_exists",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_get_tree",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_get_workspace_info",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_open_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_read_dir",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_read_file",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_remove",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_remove_workspace",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_rename",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_upload_from_local_path",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_workspace_ensure_connected",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "remote_workspace_link_states",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remote_write_file",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "remove_project_permission_grant",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "remove_recent_workspace",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "rename_file",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "reorder_opened_workspaces",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "replace_mode_skill_selection",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "report_ide_control_result",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "report_miniapp_web_result",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "report_openbitfun_control_result",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "reset_agent_profile_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "reset_assistant_workspace",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "reset_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "reset_memory",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "reset_mode_skill_selection",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "reset_workspace_persona_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "resolve_ai_model_request_url",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "respond_permission",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "respond_permission_batch",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "restart_app",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "restart_mcp_server",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "restore_removed_external_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "restore_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "restore_session_view",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "restore_session_with_turns",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "retry_file_watch",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "retry_model_pool_member",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "reveal_external_source_location",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "reveal_in_explorer",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "reveal_models_dev_cache_directory",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "reveal_session_storage_directory",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "review_platform_clear_auth_token",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "review_platform_get_issue",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_get_pull_request_ci_log",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_get_pull_request_detail",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_get_pull_request_detail_page",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_get_pull_request_review_target",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_get_pull_request_review_target_by_identity",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_get_workspace_context",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_get_workspace_snapshot",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "review_platform_update_auth_token",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "rollback_miniapp",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "rollback_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "rollback_session_to_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "run_init_agents_md",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "run_system_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "save_acp_json_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "save_cloud_speech_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "save_decision_model_credential",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "save_git_repo_history",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "save_mcp_json_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "save_merged_diff_content",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "save_model_pool",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "save_project_permission_rules",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "save_session_metadata",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "save_session_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspace_id"
+      }
+    },
+    {
+      "id": "save_web_search_credential",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "scan_workspace_info",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_build_index",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_file_contents",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_filenames",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_files",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_get_repo_status",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_rebuild_index",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_referenceable_sessions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "search_session_content",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "search_skill_market",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "send_background_command_input",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "send_mcp_app_message",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "send_system_notification",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_acp_client_permission_mode",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_acp_session_config_option",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "set_acp_session_model",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "set_active_workspace",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_agent_profile_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_approval_settings",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_assistant_identity",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_external_mcp_server_decision_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_mcp_servers_enabled_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_source_conflict_choice_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_source_enabled_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_subagent_activation_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_subagent_model_binding_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_subagents_enabled_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_tool_conflict_choice_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_tool_target_decision_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_external_tool_targets_enabled_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_global_skill_disabled",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_miniapp_draft_storage",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_miniapp_storage",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_mode_skill_disabled",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "workspaceId"
+      }
+    },
+    {
+      "id": "set_native_prompt_command_conflict_choice_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_permission_mode",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_prevent_sleep_enabled",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "set_primary_assistant_workspace",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "set_session_memory_mode",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "set_session_thread_goal_status",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "set_subagent_timeout",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "set_subscription_account_enabled",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_superagent_settings",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_task_model",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_tray_unread_count",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "set_web_search_provider",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "set_workspace_icon",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "show_main_window",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_append_audio_chunk",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_append_realtime_audio",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_cancel_input_session",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_cancel_model_download",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_cancel_realtime_response",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_close_realtime_session",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_commit_realtime_audio",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_delete_model",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_download_model",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_finish_input_session",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_get_realtime_config",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_list_models",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_save_realtime_config",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_send_realtime_tool_result",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_speak_realtime_text",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_start_input_session",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_start_realtime_session",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "speech_verify_model",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "ssh_connect",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_delete_connection",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_disconnect",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_disconnect_all",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_get_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_get_server_info",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_has_stored_password",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_is_connected",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_list_config_hosts",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_list_docker_containers",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_list_port_forwards",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_list_remote_listening_ports",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_list_saved_connections",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_list_wsl_distributions",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_save_connection",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_start_port_forward",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_stop_port_forward",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "ssh_test_connection",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "start_acp_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "start_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "start_file_watch",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "start_mcp_remote_oauth",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "start_mcp_server",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "start_search_file_contents_stream",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "start_search_filenames_stream",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "start_subscription_account_login",
+      "route": {
+        "kind": "by_target",
+        "reason": "the sessionId is a sign-in flow id on the chosen device, not an agent session"
+      }
+    },
+    {
+      "id": "start_subscription_login",
+      "route": {
+        "kind": "by_target",
+        "reason": "the sessionId is a sign-in flow id on the chosen device, not an agent session"
+      }
+    },
+    {
+      "id": "start_user_question_interaction",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "steer_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "stop_acp_client",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "stop_dialog_turn",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "stop_file_watch",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "stop_mcp_server",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "submit_acp_permission_response",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "submit_mcp_interaction_response",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "submit_user_answers",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "submit_user_message",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "subscribe_permission_requests",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_cancel_turn",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_delete_conversation",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_delete_data",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_disable",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_enable",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_get_conversation",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_job_action",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_list_conversations",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_rename_conversation",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_send",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "superagent_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "terminal_ack",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "terminal_close",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "terminal_create",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "terminal_execute",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "terminal_get",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "sessionId"
+      }
+    },
+    {
+      "id": "terminal_get_history",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "sessionId"
+      }
+    },
+    {
+      "id": "terminal_get_shells",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "terminal_has_shell_integration",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "sessionId"
+      }
+    },
+    {
+      "id": "terminal_list",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "terminal_resize",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "terminal_send_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "terminal_shutdown_all",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "terminal_signal",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "terminal_write",
+      "route": {
+        "kind": "by_owner",
+        "entity": "terminal",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "test_ai_config_connection",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "test_ai_connection",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "test_image_generation_service",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "toggle_main_window_fullscreen",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "touch_session_activity",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "ui_bundle_manifest",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "unarchive_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.session_id"
+      }
+    },
+    {
+      "id": "update_active_turn_permission_mode",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "update_app_status",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "update_cron_job",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "update_custom_agent",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "update_external_integration_policy_command",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "update_mcp_remote_auth",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "update_miniapp",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "update_session_mode",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "update_session_model",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "update_session_model_target",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "update_session_permission_mode",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "update_session_thread_goal_objective",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "update_session_title",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "update_subagent",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "update_subagent_config",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "update_workspace_info",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "upload_image_contexts",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "upsert_permission_rule",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "upsert_terminal_profile",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "validate_config",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "validate_cron_job_draft",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "validate_skill_path",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "workspaceId"
+      }
+    },
+    {
+      "id": "validate_tool_input",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "workspace_file_upload",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
+      }
+    },
+    {
+      "id": "worktree_bind_session",
+      "route": {
+        "kind": "by_owner",
+        "entity": "session",
+        "path": "request.sessionId"
+      }
+    },
+    {
+      "id": "worktree_create",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.projectWorkspaceId"
+      }
+    },
+    {
+      "id": "worktree_create_branch",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.projectWorkspaceId"
+      }
+    },
+    {
+      "id": "worktree_list",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.projectWorkspaceId"
+      }
+    },
+    {
+      "id": "worktree_list_projects",
+      "route": {
+        "kind": "by_target"
+      }
+    },
+    {
+      "id": "worktree_promote",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.projectWorkspaceId"
+      }
+    },
+    {
+      "id": "worktree_recreate",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.projectWorkspaceId"
+      }
+    },
+    {
+      "id": "worktree_remove",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.projectWorkspaceId"
+      }
+    },
+    {
+      "id": "write_clipboard_image",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "write_file_content",
+      "route": {
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
       }
     }
   ],

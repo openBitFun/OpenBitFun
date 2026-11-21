@@ -53,7 +53,6 @@ function repositoryPath(root, path) {
 // Reviewed crates.io copies remain external dependencies, not product owners.
 // Resolved feature checks still include them and their full dependency closure.
 const VENDORED_EXTERNAL_PACKAGES = new Map([
-  ['third_party/eioc/Cargo.toml', { name: 'eioc', version: '0.5.0' }],
   ['third_party/screenshots/Cargo.toml', { name: 'screenshots', version: '0.8.10' }],
   ['third_party/tao/Cargo.toml', { name: 'tao', version: '0.36.0' }],
   ['third_party/wry/Cargo.toml', { name: 'wry', version: '0.56.0' }],
@@ -384,6 +383,13 @@ const REQWEST_PACKAGE_PROFILES = new Map([
     optional: false,
     tlsProviderDependency: 'openbitfun-services-core',
   }],
+  // The cloud agent verifies identity tokens and reads the account device
+  // directory: bounded JSON requests over HTTPS.
+  ['openbitfun-superagent', {
+    dependencyFeatures: ['json', 'rustls-no-provider'],
+    optional: false,
+    tlsProviderDependency: 'openbitfun-services-core',
+  }],
   // The phone app's native module signs in (identity service) and reads the
   // account device directory: bounded JSON requests over HTTPS.
   ['openbitfun-mobile-native', {
@@ -559,6 +565,8 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       ['openbitfun-desktop', dependencyProfile(['json', 'ws'])],
       // Browser gateway: sign-in JSON API and the WebSocket byte pipe.
       ['openbitfun-link-gateway', dependencyProfile(['json', 'ws'])],
+      // Cloud agent: health and first-use JSON routes, the entries' WebSocket.
+      ['openbitfun-superagent', dependencyProfile(['json', 'ws'])],
       // The shared OBP crate's listeners (feature `server`): JSON routes and
       // the WebSocket upgrade, for the desktop backend and the CLI host.
       ['openbitfun-obp', dependencyProfile(['json', 'ws'], { optional: true })],

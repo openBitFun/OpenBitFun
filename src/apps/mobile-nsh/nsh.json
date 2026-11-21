@@ -1,7 +1,7 @@
 {
   "name": "OpenBitFun",
   "id": "com.openbitfun.mobile",
-  "version": "1.0.11",
+  "version": "2.0.0",
   "build": 1,
   "rust": "./native",
   "icon": "../../../assets/brand/exports/openbitfun-app-icon-1024.png",

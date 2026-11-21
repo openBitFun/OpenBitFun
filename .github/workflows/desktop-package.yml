@@ -386,13 +386,10 @@ jobs:
       - name: Resolve release channel build environment
         run: node scripts/ci/desktop-release-env.mjs
 
-      # Optional resources of the package: the OpenCode extension Host and the
-      # legacy relay mobile UI. The packaging scripts copy what exists.
+      # Optional resource of the package: the OpenCode extension Host. The
+      # packaging scripts copy what exists.
       - name: Build plugin Host resources
         run: pnpm run plugin-host:prepare
-
-      - name: Build mobile web resources
-        run: pnpm run prepare:mobile-web
 
       - name: Build desktop app
         run: ${{ matrix.platform.build_command }}

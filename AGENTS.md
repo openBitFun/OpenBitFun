@@ -2,7 +2,7 @@
 
 # AGENTS.md
 
-OpenBitFun is a Rust workspace plus TypeScript frontends, delivered through several hosts (the native NSH desktop app, CLI/TUI, server, mobile, mobile-web, installer).
+OpenBitFun is a Rust workspace plus TypeScript frontends, delivered through several hosts (the native NSH desktop app, CLI/TUI, server, mobile, installer).
 
 Repository rule: **keep product logic platform-agnostic, then expose it through platform adapters**.
 
@@ -17,7 +17,7 @@ Dependencies point downward: a crate may depend on lower layers, not on higher o
 
 | # | Layer | Path | Owns | Must not | Guide |
 |---|---|---|---|---|---|
-| 1 | Interfaces and entrypoints | `src/apps/*`, `src/nsh-ui`, `src/mobile-web`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | Product hosts, commands, UI entrypoints, protocol interfaces, and cross-surface tests | Keep reusable behavior; move it down | nearest local `AGENTS.md`; [interfaces](src/crates/interfaces/AGENTS.md) |
+| 1 | Interfaces and entrypoints | `src/apps/*`, `src/nsh-ui`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | Product hosts, commands, UI entrypoints, protocol interfaces, and cross-surface tests | Keep reusable behavior; move it down | nearest local `AGENTS.md`; [interfaces](src/crates/interfaces/AGENTS.md) |
 | 2 | Product assembly | `src/crates/assembly` | Compatibility exports, product capability selection, product-full wiring, immutable built-in Agent content, adapter/service registration, and ecosystem-neutral source coordination | Implement concrete adapter, OS, or service details | [AGENTS.md](src/crates/assembly/AGENTS.md) |
 | 3 | Adapters | `src/crates/adapters` | Protocol, transport, local IPC, WebDriver, AI-provider, and external AI work-source adapters; external-provider translation | Own product capability selection or reusable OS service behavior | [AGENTS.md](src/crates/adapters/AGENTS.md) |
 | 4 | Services | `src/crates/services` | Reusable OS, filesystem, terminal, MCP, remote, git, watch, process, network, session persistence, and MiniApp runtime IO implementations | Own protocol/transport projection or product capability selection | [AGENTS.md](src/crates/services/AGENTS.md) |
@@ -100,7 +100,7 @@ Logs are English-only, with no emojis. Frontend (`src/nsh-ui`): the same rules (
 
 - `src/shared/i18n/contract/locales.json` owns locale ids, aliases, fallback rules, and surface defaults. Run `pnpm run i18n:generate` after editing it.
 - Shared stable labels live in `src/shared/i18n/resources/shared/<locale>/terms.json`; workflow copy stays in the owning product surface.
-- No surface imports another surface's locale catalog. Desktop UI (`src/nsh-ui`) locale resources must not be imported by `src/mobile-web`, `OpenBitFun-Installer`, or static pages; static self-contained pages use generated page-scoped shared-term files.
+- No surface imports another surface's locale catalog. Desktop UI (`src/nsh-ui`) locale resources must not be imported by `OpenBitFun-Installer` or static pages; static self-contained pages use generated page-scoped shared-term files.
 - Format user-visible dates, times, and numbers with the shared i18n helpers, not direct `Intl.*` or `toLocale*` calls.
 - Run `pnpm run i18n:audit` after changing locale resources or user-visible copy. It enforces key/placeholder parity, static and dynamic key proofs, and no-growth baselines for literal fallbacks, direct locale formatting, and hard-coded CJK source text.
 - Details: [`docs/architecture/i18n.md`](docs/architecture/i18n.md).
@@ -125,12 +125,20 @@ Do not add hard-coded limits or pattern checks to the agent loop as a first resp
 
 The workspace, the runtime that executes a turn, and the person driving it can each sit on a different machine. Treat these four scenarios as first-class targets of every change, not as a later port.
 
+Product model: OpenBitFun is a distributed Agent runtime with one display-and-control surface.
+
+- **Runtime nodes** (backend + frontend) are the desktop and the CLI. Each runs an Agent runtime, executes work, and can be the fleet entry other clients connect through.
+- **Every other client** (browser, phone app, IM bots) is frontend-only.
+- **Any frontend displays and operates any runtime on the account.** Which device executes is a label, never a mode. See the fleet layer in [unified-client-architecture.md](docs/architecture/unified-client-architecture.md#fleet-every-runtime-of-the-account-in-one-surface).
+- **The account's cloud superagent ("OpenBitFun") is the main entry**: one input box, a model, and the management tools, with no fixed workflow. It is on by default, and full access is the default: jobs it dispatches auto-approve, and the per-device switches `superagent.acceptDispatch` and `superagent.allowAutoApproval` fence a device off or turn auto-approval off. It is a control-plane node that owns no workspace runtime ([agent-runtime-deployment-design.md](docs/architecture/agent-runtime-deployment-design.md#10-cloud-superagent-control-plane-node)).
+- The OpenBitFun server is reachable only through its domain over HTTPS.
+
 | Scenario | What it means | Design entry point |
 |---|---|---|
 | Remote workspace | The active workspace lives on an SSH host, a jump-host chain, or a Docker container; files, terminal, search, and Agent subprocesses must execute there | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md), [remote-workspaces.md](docs/features/remote-workspaces.md) |
-| Remote control | A phone or browser signs in with the account (email code) and runs the same NSH UI against a new desktop host: the phone app over the account device mesh (the only multi-device transport of the new version; same-network devices connect directly through it), a browser through the server gateway (`https://<domain>/app/`, end-to-end encrypted to the device); a Feishu / Telegram / WeChat bot drives a session over OBP on the mesh (new hosts) or the Remote Connect relay (older hosts, and `mobile-web` for older clients) | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md) (device mesh, browser gateway), [`src/mobile-web`](src/mobile-web/AGENTS.md), `remote_connect` in [services-integrations](src/crates/services/services-integrations/AGENTS.md), [relay-service](src/crates/services/relay-service/AGENTS.md) |
-| Peer Device Mode | One same-account device becomes the data plane of another: the controller shell stays local, invokes and events come from the peer, over OBP on the device mesh (new hosts) or relay HostInvoke (older hosts) | [peer-device-mode.md](docs/architecture/peer-device-mode.md), [NSH peer routing](src/nsh-ui/AGENTS.md) |
-| Detached Dispatch | A controller submits a durable job to another OpenBitFun host and may then disconnect; the target owns the job, session, worktree, event log, and permission mailbox | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
+| Remote control | A frontend-only client signs in with the account (email code) and operates every runtime of the account through one fleet entry (a desktop or CLI host, picked and failed over automatically): the NSH phone app over OpenBitFun Link, a browser through the server gateway (`https://<domain>/app/`, end-to-end encrypted to the device, running the web UI bundle the device ships); a Feishu / Telegram / WeChat bot drives a session over OBP on the device network (`mesh_route`), with no relay fallback | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md) (fleet, device network, browser gateway), `remote_connect` in [services-integrations](src/crates/services/services-integrations/AGENTS.md) |
+| Device context (formerly Peer Device Mode) | Any frontend operates any runtime of the account: commands carry their target device and the fleet routes them to the owner (`fleet_call`), while window chrome, updater and local OS automation stay on the client's own backend. The whole-UI swap to one peer is retired in 2.0 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md) (fleet), [peer-device-mode.md](docs/architecture/peer-device-mode.md) (invariants and history) |
+| Detached Dispatch | A controller (a desktop, a CLI, or the account's cloud superagent) submits a durable job to another OpenBitFun host and may then disconnect; the target owns the job, session, worktree, event log, and permission mailbox | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
 
 Rules for all four:
 
@@ -144,8 +152,9 @@ Rules for all four:
 Per-scenario obligations:
 
 - **Remote workspace**: every registered backend command has exactly one row in the Product Operation Registry ([`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)) declaring its remote-workspace stance. The desktop closure test and the capability generator reject a command without a row, and new rows may not use `Unaudited` (that backlog only shrinks); a removed command keeps a `retired(...)` row so older clients get its reason. Run `pnpm run capabilities:generate` after editing the table. See [remote-surface-contract.md](docs/architecture/remote-surface-contract.md).
-- **Remote control**: mobile web and IM bots reach sessions through the `RemoteCommand` wire protocol and the bot command router / menu, not through the desktop UI. When a session-level capability is added or moved (workspace or assistant selection, session lifecycle, mode, model, approval, attachment), extend those surfaces or make them answer with an explicit unsupported reply.
-- **Peer Device Mode**: product commands are proxied to the peer by default. A command that must stay on the controller (window chrome, updater, account identity, local OS automation) is declared `ControllerLocal` in the same registry row; the desktop peer host, the CLI peer host, and the NSH UI routing (`src/nsh-ui/src/generated/peerSurface.ts`) derive their deny sets from it, and `pnpm run check:core-boundaries` rejects a hand-written table. A command the CLI host runs needs a handler plus `cli_peer: HANDLED` in its row; the closure test in `src/apps/cli/src/peer_host/commands/mod.rs` keeps both in step. Peer capabilities are typed (`PeerHostCapability`) and advertised from the registry. Read the Peer Device Mode invariants in [peer-device-mode.md](docs/architecture/peer-device-mode.md) before changing session, account, or hydrate paths.
+- **Remote control**: IM bots reach sessions through the `RemoteCommand` wire protocol (`obp_remote_command` over Link) and the bot command router / menu, not through the desktop UI. When a session-level capability is added or moved (workspace or assistant selection, session lifecycle, mode, model, approval, attachment), extend those surfaces or make them answer with an explicit unsupported reply.
+- **Fleet**: through a fleet entry every product command travels as `fleet_call {target, command, args}` and runs on the device that owns it. A forwarded command whose request carries a session, workspace or terminal id needs a `ByOwner` row in [`remote_surface/fleet_routing.rs`](src/crates/contracts/product-domains/src/remote_surface/fleet_routing.rs); `pnpm run desktop-nsh:check-dispatch` rejects one without it. Fleet shapes cross versions: read them tolerantly and add fields with defaults.
+- **Device context (fleet routing)**: product commands are routed to the owning device by default. A command that must stay on the controller (window chrome, updater, account identity, local OS automation) is declared `ControllerLocal` in the same registry row (the fleet routes it `EntryLocal`); the desktop peer host, the CLI peer host, and the NSH UI routing (`src/nsh-ui/src/generated/peerSurface.ts`) derive their deny sets from it, and `pnpm run check:core-boundaries` rejects a hand-written table. A command the CLI host runs needs a handler plus `cli_peer: HANDLED` in its row; the closure test in `src/apps/cli/src/peer_host/commands/mod.rs` keeps both in step. Peer capabilities are typed (`PeerHostCapability`) and advertised from the registry. Read the Peer Device Mode invariants in [peer-device-mode.md](docs/architecture/peer-device-mode.md) before changing session, account, or hydrate paths.
 - **Detached Dispatch**: jobs run headless on the target under the CLI delivery profile, with no interactive host and no guaranteed controller connection. The controller is an observer, never a runtime or filesystem proxy. Do not add behavior that requires a live submitter. The dispatch protocol version and required target capabilities are a compatibility contract: a new target-side requirement needs a negotiated capability, not an assumption.
 
 State which remote scenarios a change was exercised in. Local-only tests are not evidence of remote behavior.
@@ -154,9 +163,11 @@ State which remote scenarios a change was exercised in. Local-only tests are not
 
 Users upgrade in place, and the remote scenarios above routinely put two different OpenBitFun versions on the same connection. Every change must keep existing installs working without manual repair.
 
+OpenBitFun 2.0 (this tree) is compatible with 1.0 for **session records and config** only: persisted sessions, transcripts, workspace records, connection profiles and settings files written by 1.x must still read. Frontends, remote control, peers and accounts do not interoperate with 1.x clients or hosts; the 1.x relay (`remote.openbitfun.com/relay`, pairing invitations, relay RPC and HostInvoke, `mobile-web`) belongs to the released 1.x clients only, and no 2.0 component uses it. Peer and remote compatibility below means 2.0 against another 2.0 build, still negotiated by capability.
+
 - **Persisted shapes are read by older and newer code.** For config, settings, sessions, connection profiles, worktree and dispatch records: add fields with defaults, keep deserialization tolerant, never repurpose or narrow the meaning of a field already on disk, and never make required a field that old data cannot supply.
 - **Never delete or reset user data to recover from something you cannot parse.** Keep the record, degrade the feature, and surface a clear state. Missing credentials, an unreadable profile, a timeout, or an offline host are not reasons to drop a session, workspace, or connection. Destructive removal stays an explicit user action.
-- **Cross-version boundaries negotiate; they do not assume.** Peer HostInvoke, the dispatch protocol, relay and mobile web, and IM bots all talk to a build you do not control. Advertise a capability and check it before using it (package version equality is not evidence of behavior), and keep the older side on a working path instead of failing it.
+- **Cross-version boundaries negotiate; they do not assume.** OBP peers and the fleet, the dispatch protocol, the browser gateway, the phone app, and IM bots all talk to a 2.0 build you do not control. Advertise a capability and check it before using it (package version equality is not evidence of behavior), and keep the older side on a working path instead of failing it.
 - **A rename is a migration.** Keep reading the old name, id, or record shape until no supported peer can still send it, and migrate referenced data (vault entries, workspace pointers) together with the thing being renamed.
 - **Prove it with tests.** Cover legacy deserialization and an old-payload round trip, not just the new shape. A test that only exercises data written by the current code is not upgrade coverage.
 
@@ -200,4 +211,4 @@ controller of the account's devices over OpenBitFun Link) lives here in
 [`src/apps/mobile-nsh`](src/apps/mobile-nsh/README.md). The legacy Kotlin and
 HarmonyOS apps, their Kotlin shared core, native WebView assets and mobile design
 tooling stay in [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile).
-`src/mobile-web` and host-side mobile/Relay protocol contracts remain here.
+Host-side protocol contracts for the phone app (OBP, Link) remain here.

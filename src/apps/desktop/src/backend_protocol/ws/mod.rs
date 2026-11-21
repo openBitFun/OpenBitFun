@@ -20,7 +20,7 @@ pub use openbitfun_obp::server::{
     check_command, event_visible, ConnectionLimits, MeshAcceptFuture, MeshAuthority, MeshIncoming,
     MeshInfo, MeshIo, ObpBackend, ObpDispatchFuture, ObpServer, ObpServerOptions, ObpStatus,
     PairKeyFuture, PairedClientStatus, PairingOffer, PeerHostKind, Scope, StopReason,
-    DEFAULT_LOOPBACK_PORT, OBP_PROTOCOL_VERSION,
+    UiBundleSource, DEFAULT_LOOPBACK_PORT, OBP_PROTOCOL_VERSION,
 };
 
 use std::path::{Path, PathBuf};
@@ -60,7 +60,25 @@ impl ObpBackend for BackendService {
     }
 
     fn mesh_capabilities(&self) -> Vec<&'static str> {
-        mesh_verbs::CAPABILITIES.to_vec()
+        mesh_verbs::capabilities()
+    }
+
+    fn fleet_mux(&self) -> Option<Arc<openbitfun_obp::fleet::mux::FleetMux>> {
+        crate::fleet::mux()
+    }
+
+    fn serves_cloud_agent(&self) -> bool {
+        true
+    }
+
+    fn cloud_agent_policy(&self) -> openbitfun_obp::server::CloudAgentPolicyFuture {
+        Box::pin(async {
+            let settings = openbitfun_core::service::superagent_relay::device_settings().await;
+            openbitfun_obp::server::CloudAgentPolicy {
+                accept_dispatch: settings.accept_dispatch,
+                allow_auto_approval: settings.allow_auto_approval,
+            }
+        })
     }
 }
 
@@ -117,6 +135,9 @@ pub async fn start_for_native_host(service: BackendService, data_dir: &Path) {
         log::info!("OBP listener disabled by OPENBITFUN_OBP_LISTENER");
         return;
     }
+    // The fleet layer runs with this backend once the device network serves
+    // an account (`crate::mesh`).
+    crate::fleet::install(service.clone(), data_dir.to_path_buf());
     let mut options = ObpServerOptions::new(data_dir.join("obp"));
     options.web_root = default_web_root();
     options.loopback_port = env_port("OPENBITFUN_OBP_PORT", DEFAULT_LOOPBACK_PORT);

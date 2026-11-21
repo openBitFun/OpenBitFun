@@ -8,10 +8,21 @@
 //! `Proxied`, and never receive owner-only events (account, window, tray,
 //! updater, mesh). See
 //! `docs/architecture/unified-client-architecture.md` ("Scopes").
+//!
+//! `cloud-agent` is the account's cloud superagent (directory kind
+//! `cloud_agent`). It authenticates with the same device handshake and has
+//! the `account-device` allowlist (full access, like any of the user's
+//! frontends); the label only tells it apart in logs and adds two things:
+//! the model relay `fleet_model_*`, which only it may call, and this device's
+//! switches, read per call: `superagent.acceptDispatch` (default on; off
+//! fences the device off) and `superagent.allowAutoApproval` (default on;
+//! off refuses `approvalPolicy: auto`, answering prompts and loosening
+//! approval rules).
 
 use openbitfun_product_domains::remote_surface::{
     event_stance, operation, retired_reason, EventStance, OperationSurface, PeerStance,
 };
+use serde_json::Value;
 
 /// The authority one connection was granted at its upgrade.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +35,86 @@ pub enum Scope {
     AccountDevice {
         device_id: String,
     },
+    /// The account's cloud superagent (directory row kind `cloud_agent`),
+    /// over the same device handshake: the `account-device` allowlist plus
+    /// the model relay, under this device's superagent switches.
+    CloudAgent {
+        device_id: String,
+    },
+}
+
+/// The directory row kind that selects [`Scope::CloudAgent`].
+pub const CLOUD_AGENT_DEVICE_KIND: &str = "cloud_agent";
+/// Advertised (on `hello` and `/obp/mesh/info`) by a host that serves the
+/// cloud agent (its switches and the model relay); the superagent never
+/// dials a device without it.
+pub const CLOUD_AGENT_SCOPE_CAPABILITY: &str = "cloud_agent_scope_v1";
+
+/// The model relay: completions run on this device for the cloud agent.
+pub const FLEET_MODEL_COMMANDS: &[&str] = &[
+    "fleet_model_start",
+    "fleet_model_poll",
+    "fleet_model_cancel",
+];
+/// What the cloud agent may still call while `superagent.acceptDispatch` is
+/// off: enough to show why the device is fenced and to stop what it started
+/// (and the model relay, which runs no work on the device).
+const CLOUD_AGENT_FENCED_COMMANDS: &[&str] = &[
+    "dispatch_target_probe",
+    "dispatch_target_status",
+    "dispatch_target_list",
+    "dispatch_target_cancel",
+    "fleet_digest",
+    "fleet_replay",
+    "fleet_model_start",
+    "fleet_model_poll",
+    "fleet_model_cancel",
+];
+/// Calls that answer this device's prompts or loosen its approval rules:
+/// refused while `superagent.allowAutoApproval` is off, so the switch
+/// cannot be bypassed through the ordinary product commands.
+const CLOUD_AGENT_ANSWER_COMMANDS: &[&str] = &[
+    "dispatch_target_answer",
+    "respond_permission",
+    "respond_permission_batch",
+    "submit_user_answers",
+    "submit_acp_permission_response",
+    "set_permission_mode",
+    "update_session_permission_mode",
+    "update_active_turn_permission_mode",
+    "set_approval_settings",
+    "set_acp_client_permission_mode",
+    "upsert_permission_rule",
+    "save_project_permission_rules",
+];
+
+/// The device's switches for the cloud agent (`superagent.acceptDispatch`,
+/// `superagent.allowAutoApproval`), read per call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloudAgentPolicy {
+    /// Whether the cloud agent may work on this device at all.
+    pub accept_dispatch: bool,
+    /// Whether it may submit with `approvalPolicy: auto` and answer prompts.
+    pub allow_auto_approval: bool,
+}
+
+impl Default for CloudAgentPolicy {
+    /// The settings' defaults: both on.
+    fn default() -> Self {
+        Self {
+            accept_dispatch: true,
+            allow_auto_approval: true,
+        }
+    }
+}
+
+/// The scope a verified device handshake gets from its directory row kind
+/// (`None`: a directory that predates the kind, or a row without one).
+pub fn scope_for_device(device_id: String, kind: Option<&str>) -> Scope {
+    match kind {
+        Some(CLOUD_AGENT_DEVICE_KIND) => Scope::CloudAgent { device_id },
+        _ => Scope::AccountDevice { device_id },
+    }
 }
 
 impl Scope {
@@ -32,7 +123,13 @@ impl Scope {
             Self::Owner => "owner",
             Self::PairedClient { .. } => "paired-client",
             Self::AccountDevice { .. } => "account-device",
+            Self::CloudAgent { .. } => "cloud-agent",
         }
+    }
+
+    /// A connection over the account device network (closed with it).
+    pub fn is_mesh_device(&self) -> bool {
+        matches!(self, Self::AccountDevice { .. } | Self::CloudAgent { .. })
     }
 
     pub fn is_owner(&self) -> bool {
@@ -54,6 +151,19 @@ pub fn check_command(
     if command.is_empty() {
         return Err("forbidden_for_scope: the command name is empty".to_string());
     }
+    // The model relay serves the cloud agent only (whatever the registry
+    // says about it later), and only on a host that runs it.
+    if FLEET_MODEL_COMMANDS.contains(&command) {
+        return match scope {
+            Scope::CloudAgent { .. } if host_verb(command) => Ok(()),
+            Scope::CloudAgent { .. } => Err(format!(
+                "superagent_requires_update: command '{command}' is not served by this OpenBitFun host; update it"
+            )),
+            _ => Err(format!(
+                "forbidden_for_scope: command '{command}' runs only for the account's cloud agent"
+            )),
+        };
+    }
     if let Some(reason) = retired_reason(command) {
         return Err(format!(
             "command '{command}' is unsupported because {reason}"
@@ -69,7 +179,7 @@ pub fn check_command(
     // legacy relay `host_invoke`: another device of this account only, never
     // a paired client. `obp_remote_command` is `OperatorOnly` in the registry
     // because legacy peer hosts refuse it; only this listener admits it.
-    if matches!(scope, Scope::AccountDevice { .. })
+    if scope.is_mesh_device()
         && definition.surface == OperationSurface::HostInvokeOnly
         && matches!(
             definition.peer,
@@ -78,6 +188,16 @@ pub fn check_command(
         && host_verb(command)
     {
         return Ok(());
+    }
+    // The account's cloud node serves these (`superagent_*`); a desktop or
+    // CLI host answers them unsupported, never forbidden, so a frontend that
+    // addressed the wrong device learns where the command lives.
+    if definition.surface == OperationSurface::CloudNode {
+        return Err(format!(
+            "{}: command '{command}' is not supported on this device: {}",
+            crate::UNSUPPORTED_IN_NATIVE_HOST,
+            openbitfun_product_domains::remote_surface::CLOUD_NODE_ONLY_REASON
+        ));
     }
     if definition.surface != OperationSurface::TauriCommand {
         return Err(format!(
@@ -94,7 +214,57 @@ pub fn check_command(
         PeerStance::Retired { reason } => Err(format!(
             "command '{command}' is unsupported because {reason}"
         )),
+        // Fleet verbs: answered by this host's fleet layer for the owner and
+        // the account's own devices and frontends (account-device,
+        // cloud-agent); never for a paired client.
+        PeerStance::FleetEntry if scope.is_mesh_device() => Ok(()),
+        PeerStance::FleetEntry => Err(format!(
+            "forbidden_for_scope: command '{command}' is a fleet command and this backend does not serve it for this connection"
+        )),
     }
+}
+
+/// The cloud agent's per-call verdict from this device's switches and the
+/// call's arguments (after [`check_command`] admitted the name).
+pub fn check_cloud_agent_call(
+    command: &str,
+    args: &Value,
+    policy: &CloudAgentPolicy,
+) -> Result<(), String> {
+    if !policy.accept_dispatch && !CLOUD_AGENT_FENCED_COMMANDS.contains(&command) {
+        return Err(format!(
+            "superagent_dispatch_disabled: this device does not accept work from the cloud agent (superagent.acceptDispatch is off); command '{command}' is refused"
+        ));
+    }
+    if !policy.allow_auto_approval {
+        if CLOUD_AGENT_ANSWER_COMMANDS.contains(&command) {
+            return Err(format!(
+                "superagent_auto_approval_refused: on this device the user answers prompts and sets approval rules (superagent.allowAutoApproval is off); command '{command}' is refused"
+            ));
+        }
+        if command.starts_with("dispatch_target_") && requests_auto_approval(args) {
+            return Err(
+                "superagent_auto_approval_refused: automatic approval for the cloud agent is off on this device (superagent.allowAutoApproval)"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether a target call asks for `approvalPolicy: auto` (submit, or a
+/// continue that overrides the policy), in the `{request: …}` or the flat
+/// form, under either key spelling.
+fn requests_auto_approval(args: &Value) -> bool {
+    let is_auto = |object: &Value| {
+        ["approvalPolicy", "approval_policy"].iter().any(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|policy| policy.trim().eq_ignore_ascii_case("auto"))
+        })
+    };
+    is_auto(args) || args.get("request").is_some_and(is_auto)
 }
 
 /// Whether `scope` receives `event`.
@@ -165,5 +335,240 @@ mod tests {
         assert!(!event_visible(&paired, "account://login-state"));
         assert!(!event_visible(&paired, "window://fullscreen-chrome"));
         assert!(event_visible(&paired, "agentic://text-chunk"));
+    }
+
+    /// A host serving the cloud agent: dispatch targets, the bot lane and
+    /// the model relay.
+    fn cloud_host_verbs(command: &str) -> bool {
+        desktop_verbs(command) || FLEET_MODEL_COMMANDS.contains(&command)
+    }
+
+    fn cloud() -> Scope {
+        Scope::CloudAgent {
+            device_id: "cloud-0123".into(),
+        }
+    }
+
+    #[test]
+    fn cloud_scope_has_the_account_device_allowlist_and_the_model_relay() {
+        let cloud = cloud();
+        let device = Scope::AccountDevice {
+            device_id: "d1".into(),
+        };
+        assert_eq!(cloud.wire_name(), "cloud-agent");
+        assert!(cloud.is_mesh_device());
+        for command in [
+            "open_workspace",
+            "get_config",
+            "dispatch_target_probe",
+            "dispatch_target_submit",
+            "dispatch_target_answer",
+            "obp_remote_command",
+            "obp_set_lan_enabled",
+            "mesh_status",
+            "account_delete_device",
+            "peer_mode_ping",
+            "no_such_command",
+        ] {
+            assert_eq!(
+                check_command(&cloud, command, &cloud_host_verbs).is_ok(),
+                check_command(&device, command, &cloud_host_verbs).is_ok(),
+                "{command}"
+            );
+        }
+        for command in FLEET_MODEL_COMMANDS {
+            assert!(
+                check_command(&cloud, command, &cloud_host_verbs).is_ok(),
+                "{command}"
+            );
+        }
+        // A host that does not run the relay answers with a stable reason.
+        let error = check_command(&cloud, "fleet_model_start", &desktop_verbs).unwrap_err();
+        assert!(error.starts_with("superagent_requires_update:"), "{error}");
+        // The same events as any account device.
+        assert!(event_visible(&cloud, "agentic://text-chunk"));
+        assert!(!event_visible(&cloud, "account://login-state"));
+    }
+
+    #[test]
+    fn cloud_scope_answer_and_auto_allowed_by_default_refused_when_the_device_turns_it_off() {
+        let policy = CloudAgentPolicy::default();
+        assert!(policy.accept_dispatch && policy.allow_auto_approval);
+        let submit = |policy_value: &str| serde_json::json!({ "request": { "jobId": "j1", "approvalPolicy": policy_value } });
+        let answer = serde_json::json!({ "request": { "jobId": "j1", "promptId": "p" } });
+        assert!(check_cloud_agent_call("dispatch_target_submit", &submit("auto"), &policy).is_ok());
+        assert!(check_cloud_agent_call("dispatch_target_answer", &answer, &policy).is_ok());
+
+        let off = CloudAgentPolicy {
+            allow_auto_approval: false,
+            ..policy
+        };
+        let error =
+            check_cloud_agent_call("dispatch_target_submit", &submit("auto"), &off).unwrap_err();
+        assert!(
+            error.starts_with("superagent_auto_approval_refused:"),
+            "{error}"
+        );
+        for command in [
+            "dispatch_target_answer",
+            "respond_permission",
+            "submit_user_answers",
+            "update_session_permission_mode",
+        ] {
+            let error = check_cloud_agent_call(command, &answer, &off).unwrap_err();
+            assert!(
+                error.starts_with("superagent_auto_approval_refused:"),
+                "{command}: {error}"
+            );
+            assert!(
+                check_cloud_agent_call(command, &answer, &policy).is_ok(),
+                "{command}"
+            );
+        }
+        // The flat form and a continue that overrides the policy.
+        let flat = serde_json::json!({ "approval_policy": "AUTO" });
+        assert!(check_cloud_agent_call("dispatch_target_submit", &flat, &off).is_err());
+        assert!(check_cloud_agent_call("dispatch_target_continue", &submit("auto"), &off).is_err());
+        for allowed in ["remote", "reject-and-report"] {
+            assert!(
+                check_cloud_agent_call("dispatch_target_submit", &submit(allowed), &off).is_ok(),
+                "{allowed}"
+            );
+        }
+    }
+
+    #[test]
+    fn device_switch_off_refuses() {
+        let fenced = CloudAgentPolicy {
+            accept_dispatch: false,
+            allow_auto_approval: true,
+        };
+        let args = serde_json::json!({ "request": {} });
+        for refused in [
+            "dispatch_target_submit",
+            "dispatch_target_continue",
+            "dispatch_target_append",
+            "dispatch_target_answer",
+            "dispatch_target_query",
+            "dispatch_target_workspace_provision",
+            "open_workspace",
+            "obp_remote_command",
+        ] {
+            let error = check_cloud_agent_call(refused, &args, &fenced).unwrap_err();
+            assert!(
+                error.starts_with("superagent_dispatch_disabled:"),
+                "{refused}: {error}"
+            );
+        }
+        // The agent can still see why, stop what it started, and relay a
+        // model round (no work runs on the device).
+        for allowed in [
+            "dispatch_target_probe",
+            "dispatch_target_status",
+            "dispatch_target_list",
+            "dispatch_target_cancel",
+            "fleet_digest",
+            "fleet_model_poll",
+        ] {
+            assert!(
+                check_cloud_agent_call(allowed, &args, &fenced).is_ok(),
+                "{allowed}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_directory_rows_without_a_kind_keep_the_account_device_scope() {
+        assert_eq!(
+            scope_for_device("d1".into(), None),
+            Scope::AccountDevice {
+                device_id: "d1".into()
+            }
+        );
+        for kind in ["desktop", "cli", "mobile", "something_newer"] {
+            assert!(matches!(
+                scope_for_device("d1".into(), Some(kind)),
+                Scope::AccountDevice { .. }
+            ));
+        }
+        assert_eq!(
+            scope_for_device("cloud-1".into(), Some(CLOUD_AGENT_DEVICE_KIND)),
+            Scope::CloudAgent {
+                device_id: "cloud-1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn the_model_relay_is_refused_for_every_other_scope() {
+        let device = Scope::AccountDevice {
+            device_id: "d1".into(),
+        };
+        let paired = Scope::PairedClient {
+            client_id: "c1".into(),
+        };
+        for scope in [&device, &paired] {
+            for command in FLEET_MODEL_COMMANDS {
+                let error = check_command(scope, command, &cloud_host_verbs).unwrap_err();
+                assert!(error.contains("cloud agent"), "{command}: {error}");
+            }
+        }
+        assert!(check_command(&Scope::Owner, "fleet_model_start", &cloud_host_verbs).is_ok());
+    }
+
+    #[test]
+    fn fleet_entry_verbs_admit_account_devices_and_refuse_paired_clients() {
+        let no_verbs = |_: &str| false;
+        let device = Scope::AccountDevice {
+            device_id: "d1".into(),
+        };
+        let cloud = Scope::CloudAgent {
+            device_id: "cloud-1".into(),
+        };
+        let paired = Scope::PairedClient {
+            client_id: "c1".into(),
+        };
+        for command in openbitfun_product_domains::remote_surface::fleet_entry_commands() {
+            assert!(
+                check_command(&Scope::Owner, command, &no_verbs).is_ok(),
+                "{command}"
+            );
+            // Admitted once the host registers the row as a backend command.
+            let registered = operation(command)
+                .is_some_and(|definition| definition.surface == OperationSurface::TauriCommand);
+            if registered {
+                assert!(
+                    check_command(&device, command, &no_verbs).is_ok(),
+                    "{command}"
+                );
+                assert!(
+                    check_command(&cloud, command, &no_verbs).is_ok(),
+                    "{command}"
+                );
+            }
+            let refused = check_command(&paired, command, &no_verbs).unwrap_err();
+            assert!(
+                refused.starts_with("forbidden_for_scope:"),
+                "{command}: {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_node_commands_are_unsupported_on_a_device() {
+        let device = Scope::AccountDevice {
+            device_id: "d1".into(),
+        };
+        let paired = Scope::PairedClient {
+            client_id: "c1".into(),
+        };
+        for scope in [&device, &paired] {
+            let error = check(scope, "superagent_send").unwrap_err();
+            assert!(
+                error.starts_with(crate::UNSUPPORTED_IN_NATIVE_HOST),
+                "{error}"
+            );
+            assert!(error.contains("cloud node"), "{error}");
+        }
     }
 }

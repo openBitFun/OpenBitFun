@@ -16,6 +16,12 @@
 //! Requests without the device handshake get the paired-client routes
 //! (`http::ListenerKind::Mesh`: the web UI bundle, QR pairing and the
 //! `paired-client` scope) for phones and browsers on the device network.
+//!
+//! A stream's first byte picks one of three openings on the same port: 0x16
+//! (a TLS `ClientHello`: everything above), `O` (the end-to-end channel of
+//! browsers behind the server gateway, `e2e`), `G` (a plain
+//! `GET /obp-ui/v1/<sha256>`: the server's pool fetching web UI bundle files
+//! by hash, `ui_fetch`).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -68,15 +74,23 @@ struct MeshTlsListener {
 }
 
 /// Takes the streams that open with the end-to-end channel's magic instead of
-/// a TLS `ClientHello` (browser controllers through the server gateway).
+/// a TLS `ClientHello` (browser controllers through the server gateway), and
+/// the plain web UI fetches by hash (the server's pool).
 type E2eHandler = Arc<dyn Fn(Box<dyn MeshIo>, SocketAddr) + Send + Sync>;
+
+/// The non-TLS openings of a mesh stream.
+#[derive(Clone)]
+struct PlainHandlers {
+    e2e: E2eHandler,
+    ui_fetch: E2eHandler,
+}
 
 impl MeshTlsListener {
     fn new(
         incoming: Arc<dyn MeshIncoming>,
         local: SocketAddr,
         config: Arc<rustls::ServerConfig>,
-        e2e: E2eHandler,
+        plain: PlainHandlers,
     ) -> Self {
         let acceptor = TlsAcceptor::from(config);
         let (sender, ready) = mpsc::channel(ACCEPT_QUEUE);
@@ -87,12 +101,16 @@ impl MeshTlsListener {
                 }
                 let acceptor = acceptor.clone();
                 let sender = sender.clone();
-                let e2e = Arc::clone(&e2e);
+                let plain = plain.clone();
                 tokio::spawn(async move {
                     let stream =
                         match tokio::time::timeout(HANDSHAKE_TIMEOUT, e2e::sniff(stream)).await {
                             Ok(Ok(e2e::Sniffed::E2e(stream))) => {
-                                e2e(stream, peer);
+                                (plain.e2e)(stream, peer);
+                                return;
+                            }
+                            Ok(Ok(e2e::Sniffed::UiFetch(stream))) => {
+                                (plain.ui_fetch)(stream, peer);
                                 return;
                             }
                             Ok(Ok(e2e::Sniffed::Tls(stream))) => stream,
@@ -242,7 +260,24 @@ impl ObpServer {
                 tokio::spawn(e2e::serve(server, stream, peer));
             }
         });
-        let listener = MeshTlsListener::new(Arc::clone(&incoming), local, config, e2e);
+        let weak = Arc::downgrade(self);
+        let ui_fetch: E2eHandler = Arc::new(move |stream, peer| {
+            if let Some(server) = weak.upgrade() {
+                tokio::spawn(super::ui_fetch::serve(server, stream, peer));
+            }
+        });
+        // Load (and check) the web UI bundle now, so the first `hello`
+        // already carries its id and the first fetch does not wait.
+        let source = Arc::clone(&self.ui_bundle);
+        tokio::task::spawn_blocking(move || {
+            let _ = source.current();
+        });
+        let listener = MeshTlsListener::new(
+            Arc::clone(&incoming),
+            local,
+            config,
+            PlainHandlers { e2e, ui_fetch },
+        );
         let (shutdown, stopped) = tokio::sync::oneshot::channel::<()>();
         let router = super::http::router(
             Arc::clone(self),
@@ -308,7 +343,7 @@ impl ObpServer {
         }
     }
 
-    fn mesh_info(&self) -> Option<MeshInfo> {
+    pub(super) fn mesh_info(&self) -> Option<MeshInfo> {
         let authority = lock(&self.mesh.authority).clone()?;
         Some(MeshInfo {
             device_id: authority.local_device_id()?,
@@ -322,7 +357,23 @@ impl ObpServer {
                 .unwrap_or_default()
                 .to_string(),
             fingerprint: lock(&self.mesh.fingerprint).clone()?,
+            fleet_load: self
+                .serves_fleet()
+                .then(|| u32::try_from(self.fleet_load()).unwrap_or(u32::MAX)),
         })
+    }
+
+    /// Whether this host attaches fleet clients (a fleet mux; feature
+    /// `fleet`).
+    fn serves_fleet(&self) -> bool {
+        #[cfg(feature = "fleet")]
+        {
+            self.backend.fleet_mux().is_some()
+        }
+        #[cfg(not(feature = "fleet"))]
+        {
+            false
+        }
     }
 
     /// Records `nonce` as used; false when it was already used.
@@ -419,12 +470,13 @@ pub(super) struct ClientClaims<'a> {
     pub proof: &'a str,
 }
 
-/// A verified client: its device id, the handshake key and the claims both
-/// proofs cover.
+/// A verified client: its device id, the handshake key, the claims both
+/// proofs cover, and the scope its directory row kind selects.
 pub(super) struct VerifiedClient {
     pub device: String,
     pub key: [u8; 32],
     pub claims: Claims,
+    pub scope: Scope,
 }
 
 /// Verifies a client's device proof against this account's directory.
@@ -496,6 +548,24 @@ pub(super) async fn verify_client(
             "the account-device proof is invalid",
         ));
     }
+    // The directory row kind picks the scope: the account's cloud agent
+    // (`cloud_agent`) gets its closed allowlist, never the account-device
+    // set. A directory that cannot answer refuses rather than guessing.
+    let kind = authority
+        .device_kind(claims.device)
+        .await
+        .map_err(|error| {
+            log::warn!(
+                "OBP mesh handshake refused: device kind lookup failed: device={}, error={}",
+                claims.device,
+                error
+            );
+            HandshakeRefusal::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "directory_unavailable",
+                "the account device directory could not be read; try again shortly",
+            )
+        })?;
     if !server.consume_mesh_nonce(claims.nonce, now) {
         return Err(HandshakeRefusal::unauthorized(
             "the handshake was already used",
@@ -505,14 +575,15 @@ pub(super) async fn verify_client(
         device: claims.device.to_string(),
         key,
         claims: verified,
+        scope: super::scope::scope_for_device(claims.device.to_string(), kind.as_deref()),
     })
 }
 
-/// The verified client device and the server proof for its `101`.
+/// The verified client's scope and the server proof for its `101`.
 async fn authenticate(
     server: &ObpServer,
     headers: &HeaderMap,
-) -> Result<(String, String), Response> {
+) -> Result<(Scope, String), Response> {
     if headers.contains_key(header::ORIGIN) {
         // Only native clients speak the device handshake; a browser page
         // must never reach this listener (browsers come through the server
@@ -552,7 +623,7 @@ async fn authenticate(
     .await
     .map_err(HandshakeRefusal::into_response)?;
     Ok((
-        verified.device,
+        verified.scope,
         handshake::prove(&verified.key, Role::Server, &verified.claims),
     ))
 }
@@ -564,12 +635,13 @@ pub(super) async fn account_device_upgrade(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let (device_id, server_proof) = match authenticate(&server, &headers).await {
+    let (scope, server_proof) = match authenticate(&server, &headers).await {
         Ok(verified) => verified,
         Err(response) => return response,
     };
-    let scope = Scope::AccountDevice {
-        device_id: device_id.clone(),
+    let device_id = match &scope {
+        Scope::AccountDevice { device_id } | Scope::CloudAgent { device_id } => device_id.clone(),
+        Scope::Owner | Scope::PairedClient { .. } => String::new(),
     };
     let (id, stop) = server.register_connection(scope.clone());
     let context = ConnectionContext {
@@ -578,9 +650,15 @@ pub(super) async fn account_device_upgrade(
         instance_id: server.instance_id.clone(),
         registry_digest: server.registry_digest.clone(),
         limits: server.options.limits.clone(),
+        ui_bundle_id: server.ui_bundle.cached_bundle_id(),
+        fleet_clients: Arc::clone(&server.fleet_clients),
         stop,
     };
-    log::info!("OBP mesh connection accepted: device={}", device_id);
+    log::info!(
+        "OBP mesh connection accepted: device={}, scope={}",
+        device_id,
+        context.scope.wire_name()
+    );
     let served = Arc::clone(&server);
     let mut response =
         upgrade

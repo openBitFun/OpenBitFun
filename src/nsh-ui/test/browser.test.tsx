@@ -7,7 +7,7 @@
 // none.
 
 import { expect, open, test } from "nsh/test";
-import { createBackend } from "./support";
+import { createBackend, openSession, openToolScene } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const BROWSER_COMMANDS = new Set([
@@ -122,7 +122,7 @@ function reports(wire: Wire, label: string) {
 test("the Browser scene opens its page through the backend and the shell actuates an agent sequence", async () => {
   const wire = browserBackendHost();
   const app = await open("./fixtures/browserApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
-  await app.waitFor("NSH skeleton");
+  await openSession(app, "NSH skeleton");
 
   // The shell announces the browser operations with the others.
   await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_attach"));
@@ -132,7 +132,7 @@ test("the Browser scene opens its page through the backend and the shell actuate
     expect(ops).toContain(op);
   }
 
-  await app.press("Browser");
+  await openToolScene(app, "browser");
   await app.waitFor("browser-toolbar");
   // The user's page is created by the backend command, as the React scene does.
   await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
@@ -214,7 +214,7 @@ test("the Browser scene opens its page through the backend and the shell actuate
 test("an agent's page lives hidden, takes DOM input instead of trusted input, and can be presented", async () => {
   const wire = browserBackendHost();
   const app = await open("./fixtures/browserApp.tsx", { ...DESKTOP, host: { handlers: wire.handlers } });
-  await app.waitFor("NSH skeleton");
+  await openSession(app, "NSH skeleton");
   await app.waitUntil(() => wire.invokes.some(call => call.command === "host_shell_attach"));
 
   // The backend opens an agent page while the Browser scene is not shown.
@@ -238,7 +238,7 @@ test("an agent's page lives hidden, takes DOM input instead of trusted input, an
     "openbitfun.wireEvents",
     wire.event("agentic://open-built-in-browser", { targetId: agent, sessionId: "session-1" }),
   );
-  await app.press("Browser");
+  await openToolScene(app, "browser");
   await app.waitFor("browser-toolbar");
   await app.waitUntil(() => wire.invokes.some(call => call.command === "browser_webview_create"));
   await pump(app, wire);
@@ -266,12 +266,10 @@ test("an agent's page lives hidden, takes DOM input instead of trusted input, an
 test("a window without web views shows the browser as unavailable and creates no page", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("Browser");
+  await openSession(app, "NSH skeleton");
+  await openToolScene(app, "browser");
   await app.waitFor("browser-unavailable");
-  expect(app.texts()).toContain("The browser is not available here");
-  expect(app.texts()).toContain(
-    "The embedded browser runs in the OpenBitFun desktop app. Pages cannot be shown in this window.",
-  );
+  // Visual spec §4.10: one short line names where the browser runs.
+  expect(app.texts()).toContain("The browser runs only in the desktop app.");
   expect(backend.actions()).not.toContain("browser_webview_create");
 });

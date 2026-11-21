@@ -13,7 +13,6 @@
 //   Contents/Resources/resources/{worker_host.js,ext-host/extension-host.js}
 //   Contents/Resources/resources/dsh-profile/        DeepSeek Harness bridge
 //   Contents/Resources/flashgrep/flashgrep-<triple>  workspace search daemon
-//   Contents/Resources/mobile-web/dist               legacy relay mobile UI, when built
 //
 // Usage: node scripts/package-desktop-nsh-macos.mjs [--profile release|release-fast] [--skip-build]
 //          [--updater-archive] [--product-config <product.jsonc>]
@@ -43,6 +42,7 @@ import {
   run,
   signUpdaterArchive,
   writePackageInfo,
+  writeWebBundleManifest,
 } from "./desktop-nsh-package-common.mjs";
 
 if (process.platform !== "darwin") {
@@ -90,6 +90,7 @@ copyUiBundle(nshOut, join(contents, "Resources/nsh"), identity);
 
 const webSite = join(webOut, "OpenBitFun");
 if (!existsSync(webSite)) console.warn("no web bundle; browsers and phones will get the build hint page");
+writeWebBundleManifest(webSite, identity);
 const flashgrep = flashgrepResource(options.target);
 copyResources(
   [

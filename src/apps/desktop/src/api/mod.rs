@@ -1,5 +1,6 @@
 //! API layer module
 
+pub mod account_directory;
 pub mod account_identity_api;
 pub mod acp_client_api;
 pub mod agentic_api;
@@ -36,7 +37,6 @@ pub mod miniapp_market_api;
 pub mod native_shell_api;
 pub mod pages_api;
 pub mod path_target;
-pub mod peer_host_invoke;
 pub mod remote_connect_api;
 pub mod remote_workspace_policy;
 pub mod review_launch_api;

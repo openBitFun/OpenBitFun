@@ -60,11 +60,11 @@ import {
 } from "../agentsCatalogStore";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { peerScope, peerSupports } from "../peerState";
 import { loadModels, modelSettingsLoaded, storedModels } from "../modelSettingsStore";
 import { ensurePools, pools } from "../poolStore";
 import { activeWorkspace, activeWorkspaceId } from "../state";
-import { palette, textLineHeight, textSize, textTracking } from "../theme";
+import { palette, space, textLineHeight, textSize, textTracking } from "../theme";
+import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import { BotCharacter, type BotVariant } from "../ui/icons";
 import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
 import {
@@ -459,8 +459,6 @@ function FilterMenu<T extends string>(props: {
 }
 
 function ToolMultiSelect() {
-  const peerReadOnly = () => Boolean(peerScope() && peerSupports("tool_catalog") === false);
-
   return (
     <ConfigSection
       title={tr("agents.toolPermissionsTitle", {
@@ -468,11 +466,9 @@ function ToolMultiSelect() {
         total: formatCount(selectableToolNames().length),
       })}
       subtitle={
-        peerReadOnly()
-          ? tr("agents.toolPermissionsPeerReadOnly")
-          : toolCatalogError()
-            ? tr("agents.toolPermissionsCatalogUnavailable")
-            : tr("agents.toolPermissionsSubtitle")
+        toolCatalogError()
+          ? tr("agents.toolPermissionsCatalogUnavailable")
+          : tr("agents.toolPermissionsSubtitle")
       }
       extra={
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
@@ -489,7 +485,7 @@ function ToolMultiSelect() {
             label={tr("common.all")}
             variant="ghost"
             size="xs"
-            disabled={peerReadOnly() || selectableToolNames().length === 0}
+            disabled={selectableToolNames().length === 0}
             accessibilityLabel="builder-tools-select-all"
             onPress={selectAllBuilderTools}
           />
@@ -497,7 +493,7 @@ function ToolMultiSelect() {
             label={tr("common.clear")}
             variant="ghost"
             size="xs"
-            disabled={peerReadOnly() || builderDraft().tools.length === 0}
+            disabled={builderDraft().tools.length === 0}
             accessibilityLabel="builder-tools-clear"
             onPress={() => {
               toolShowSelectedOnly.set(false);
@@ -570,7 +566,6 @@ function ToolMultiSelect() {
                 <PillChip
                   label={tool()}
                   active={builderDraft().tools.includes(tool())}
-                  disabled={peerReadOnly()}
                   maxWidth={240}
                   accessibilityLabel={`builder-tool-${tool()}`}
                   onPress={() => toggleBuilderTool(tool())}
@@ -1248,17 +1243,16 @@ function SectionCount(props: { count: number }) {
   );
 }
 
-export function AgentsScene() {
+export function AgentsScene(props: { embedded?: boolean }) {
   if (!modelSettingsLoaded()) void loadModels();
   ensurePools();
   // The catalogue does not need a workspace (the host answers user-level
   // entries without one, as the desktop asks). It reloads on every scene entry,
-  // when the workspace or Peer changes, and when the window regains focus.
+  // when the workspace changes, and when the window regains focus.
   let enteredScene = false;
   effect(() => {
     const workspace = activeWorkspace();
-    const peer = peerScope();
-    const key = `${peer?.deviceId ?? "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     if (!enteredScene || untracked(() => agentsLoadedKey()) !== key) {
       enteredScene = true;
       void loadAgentsCatalog(key);
@@ -1271,8 +1265,7 @@ export function AgentsScene() {
     lastLifecycle = state;
     if (!regained) return;
     const workspace = untracked(() => activeWorkspace());
-    const peer = untracked(() => peerScope());
-    const key = `${peer?.deviceId ?? "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     void loadAgentsCatalog(key);
   });
 
@@ -1281,108 +1274,115 @@ export function AgentsScene() {
     openCreateBotBuilder("mode");
   };
 
+  const kindTabs = () => (
+    <SegmentedTabs
+      size="sm"
+      options={[
+        { value: "all", label: tr("common.all"), accessibilityLabel: "agents-tab-all" },
+        { value: "mode", label: tr("agents.tabPrimary"), accessibilityLabel: "agents-tab-mode" },
+        { value: "subagent", label: tr("agents.subagents"), accessibilityLabel: "agents-tab-subagent" },
+      ]}
+      value={agentKindFilter()}
+      onChange={next => agentKindFilter.set(next)}
+    />
+  );
+  const filterControls = () => (
+    <>
+      <SearchInput
+        size="md"
+        value={agentSearchQuery()}
+        placeholder={tr("agents.searchPlaceholder")}
+        countLabel={
+          hasActiveFilter()
+            ? `${formatCount(filteredAgents().length)}/${formatCount(allCatalogAgents().length)}`
+            : undefined
+        }
+        accessibilityLabel="agents-search-input"
+        style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
+        onChange={val => agentSearchQuery.set(val)}
+      />
+      <FilterMenu
+        value={agentSourceFilter()}
+        defaultValue="all"
+        options={sourceOptions()}
+        accessibilityLabel="agents-source-select"
+        tooltip={tr("agents.sourceFilter")}
+        onChange={next => agentSourceFilter.set(next)}
+      />
+      <If when={hasActiveFilter()}>
+        <Button
+          label={tr("common.clear")}
+          variant="ghost"
+          size="sm"
+          accessibilityLabel="agents-filters-clear"
+          onPress={resetCatalogFilters}
+        />
+      </If>
+    </>
+  );
+  const reloadButton = () => (
+    <IconButton
+      icon="refresh"
+      size="md"
+      accessibilityLabel="agents-reload"
+      tooltip={tr("agents.reload")}
+      disabled={agentsLoading()}
+      onPress={() => void reloadAgentsCatalog()}
+    />
+  );
+  const createButton = () => (
+    <Button
+      label={tr("agents.newAgent")}
+      leadingIcon="plus"
+      variant="primary"
+      size="md"
+      accessibilityLabel="agents-create-bot"
+      disabled={isRemoteAgentWorkspace()}
+      tooltip={isRemoteAgentWorkspace() ? tr("agents.unavailableRemote") : undefined}
+      onPress={openCreate}
+    />
+  );
+
   return (
     <View
       onLayout={trackStudioWidth}
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
     >
       <Scroll style={{ flex: 1, minHeight: 0 }}>
-        <StudioHeader
-          title={tr("agents.title")}
-          subtitle={tr("agents.pageSubtitle")}
-          actions={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <IconButton
-                icon="refresh"
-                size="md"
-                accessibilityLabel="agents-reload"
-                tooltip={tr("agents.reload")}
-                disabled={agentsLoading()}
-                onPress={() => void reloadAgentsCatalog()}
-              />
-              <Button
-                label={tr("agents.createBot")}
-                leadingIcon="plus"
-                variant="primary"
-                size="md"
-                accessibilityLabel="agents-create-bot"
-                disabled={isRemoteAgentWorkspace()}
-                tooltip={isRemoteAgentWorkspace() ? tr("agents.unavailableRemote") : undefined}
-                onPress={openCreate}
-              />
-            </View>
-          }
-          extra={
-            <StudioToolbar
-              leading={
-                <SegmentedTabs
-                  size="sm"
-                  options={[
-                    { value: "all", label: tr("common.all"), accessibilityLabel: "agents-tab-all" },
-                    { value: "mode", label: tr("agents.tabPrimary"), accessibilityLabel: "agents-tab-mode" },
-                    { value: "subagent", label: tr("agents.subagents"), accessibilityLabel: "agents-tab-subagent" },
-                  ]}
-                  value={agentKindFilter()}
-                  onChange={next => agentKindFilter.set(next)}
-                />
+        <If
+          when={props.embedded}
+          else={
+            <StudioHeader
+              title={tr("agents.title")}
+              subtitle={tr("agents.subtitle")}
+              actions={
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                  {reloadButton()}
+                  {createButton()}
+                </View>
               }
-              trailing={
-                <>
-                  <SearchInput
-                    size="md"
-                    value={agentSearchQuery()}
-                    placeholder={tr("agents.searchPlaceholder")}
-                    countLabel={
-                      hasActiveFilter()
-                        ? `${formatCount(filteredAgents().length)}/${formatCount(allCatalogAgents().length)}`
-                        : undefined
-                    }
-                    accessibilityLabel="agents-search-input"
-                    style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
-                    onChange={val => agentSearchQuery.set(val)}
-                  />
-                  <FilterMenu
-                    value={agentSourceFilter()}
-                    defaultValue="all"
-                    options={sourceOptions()}
-                    accessibilityLabel="agents-source-select"
-                    tooltip={tr("agents.sourceFilter")}
-                    onChange={next => agentSourceFilter.set(next)}
-                  />
-                  <If when={hasActiveFilter()}>
-                    <Button
-                      label={tr("common.clear")}
-                      variant="ghost"
-                      size="sm"
-                      accessibilityLabel="agents-filters-clear"
-                      onPress={resetCatalogFilters}
-                    />
-                  </If>
-                </>
-              }
+              extra={<StudioToolbar leading={kindTabs()} trailing={filterControls()} />}
             />
           }
-        />
+        >
+          <LibraryToolbar
+            accessibilityLabel="agents-toolbar"
+            leading={
+              <>
+                {kindTabs()}
+                {filterControls()}
+                {reloadButton()}
+              </>
+            }
+            primary={createButton()}
+          />
+        </If>
 
-        <StudioBody>
-          <If when={isRemoteAgentWorkspace() || Boolean(peerScope()) || Boolean(agentsCatalogError()) || Boolean(agentsNotice())}>
+        <StudioBody style={props.embedded ? libraryBodyStyle() : undefined}>
+          <If when={isRemoteAgentWorkspace() || Boolean(agentsCatalogError()) || Boolean(agentsNotice())}>
             <View style={{ gap: 8 }}>
               <If when={isRemoteAgentWorkspace()}>
                 <InlineBanner tone="warning" message={tr("agents.remoteUnsupportedBanner")} />
-              </If>
-
-              <If when={peerScope()}>
-                {scope => (
-                  <InlineBanner
-                    tone="info"
-                    icon="laptop"
-                    message={
-                      peerSupports("tool_catalog") === false
-                        ? tr("agents.peerNoToolCatalog", { label: scope().label })
-                        : tr("agents.peerCatalogNotice", { label: scope().label })
-                    }
-                  />
-                )}
               </If>
 
               <If when={agentsCatalogError() ?? ""}>
@@ -1421,9 +1421,9 @@ export function AgentsScene() {
                   />
                 ) : isRemoteAgentWorkspace() ? undefined : (
                   <Button
-                    label={tr("agents.createBot")}
+                    label={tr("agents.newAgent")}
                     variant="secondary"
-                    size="sm"
+                    size="md"
                     leadingIcon="plus"
                     onPress={openCreate}
                   />

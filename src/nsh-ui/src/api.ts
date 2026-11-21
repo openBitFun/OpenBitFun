@@ -43,6 +43,8 @@ export interface SessionSummary {
   unread?: boolean;
   /** Host-derived: that unread result is a failed turn. */
   failed?: boolean;
+  /** The device that owns the session (fleet index rows); absent from a single host's catalogue. */
+  deviceId?: string;
 }
 
 /**
@@ -137,24 +139,9 @@ export const setActiveWorkspace = (workspaceId: string) =>
 export const getCurrentWorkspace = () =>
   invokeCommand<WorkspaceRecord | null>("get_current_workspace", {});
 
-/**
- * Reopens a recent workspace by its id, as the desktop's `switchWorkspace` does.
- * A peer that never advertised `workspace_id_references_v1` predates id requests,
- * so it gets the legacy root path and connection instead.
- */
-export const openWorkspaceById = (
-  record: { id: string; rootPath: string; connectionId?: string },
-  legacyPathOnly = false,
-) =>
-  invokeCommand<WorkspaceRecord>(
-    "open_workspace",
-    legacyPathOnly
-      ? {
-          path: record.rootPath,
-          ...(record.connectionId ? { remoteConnectionId: record.connectionId } : {}),
-        }
-      : { workspaceId: record.id },
-  );
+/** Reopens a recent workspace by its id, as the desktop's `switchWorkspace` does. */
+export const openWorkspaceById = (record: { id: string }) =>
+  invokeCommand<WorkspaceRecord>("open_workspace", { workspaceId: record.id });
 
 export const removeRecentWorkspace = (workspaceId: string) =>
   invokeCommand<unknown>("remove_recent_workspace", { workspaceId });

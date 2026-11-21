@@ -28,10 +28,12 @@ import { tr } from "../i18n";
 import {
   concentricRadius,
   controlHeight,
+  elevationShadow,
   fontMono,
   isLightAppearance,
   palette,
   radii,
+  space,
   textLineHeight,
   textSize,
   textTracking,
@@ -41,6 +43,7 @@ import {
   MOTION_DURATION,
   MOTION_EASE_STANDARD_BEZIER,
   enterMotion,
+  modalEnterMotion,
   paintTransition,
   popoverEnterMotion,
   popoverOrigin,
@@ -71,20 +74,20 @@ export function ModalHeader(props: ModalHeaderProps) {
         flexDirection: "row",
         alignItems: "center",
         flexShrink: 0,
-        gap: 12,
-        paddingHorizontal: 24,
-        paddingTop: 22,
-        paddingBottom: 6,
+        gap: space.md,
+        paddingHorizontal: space.xxl,
+        paddingTop: space.xxl,
+        paddingBottom: space.sm,
       }}
     >
-      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
         <Text
           style={{
             color: palette().text,
-            fontSize: textSize(18),
+            fontSize: textSize(17),
             fontWeight: "600",
-            letterSpacing: textTracking(18),
-            lineHeight: textLineHeight(18, 1.25),
+            letterSpacing: textTracking(17),
+            lineHeight: textLineHeight(17, 24 / 17),
           }}
         >
           {props.title}
@@ -194,7 +197,7 @@ export interface ModalDialogProps {
 
 function ModalCard(props: ModalDialogProps) {
   // Modals are viewport-centered (never trigger-anchored), so center origin is intentional.
-  const motion = enterMotion("zoomIn", MOTION_DURATION.base);
+  const motion = modalEnterMotion();
   return (
     <View
       role="dialog"
@@ -204,12 +207,12 @@ function ModalCard(props: ModalDialogProps) {
           width: "100%",
           maxWidth: modalMaxWidth(props.size ?? "md"),
           maxHeight: "90%",
-          borderRadius: 22,
+          borderRadius: radii.xl,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: palette().border,
           backgroundColor: palette().surfaceElevated,
-          boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+          boxShadow: elevationShadow(3),
           overflow: "hidden",
           flexDirection: "column",
           transformOrigin: "center",
@@ -306,8 +309,8 @@ export interface DropdownMenuProps {
   onClose: () => void;
 }
 
-const MENU_OUTER_RADIUS = 14;
-const MENU_PADDING = 6;
+const MENU_OUTER_RADIUS = radii.lg;
+const MENU_PADDING = space.xs;
 const MENU_ITEM_RADIUS = concentricRadius(MENU_OUTER_RADIUS, MENU_PADDING);
 
 function MenuSurface(props: {
@@ -334,7 +337,7 @@ function MenuSurface(props: {
           borderColor: palette().border,
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(16px) saturate(1.2)",
-          boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+          boxShadow: elevationShadow(2),
           transformOrigin: popoverOrigin(props.placement, props.align),
           gap: 2,
         },
@@ -375,11 +378,11 @@ function MenuSurface(props: {
                     <Text
                       style={{
                         color: palette().textElevatedMuted,
-                        fontSize: textSize(10),
+                        fontSize: textSize(11),
                         fontWeight: "600",
-                        letterSpacing: textTracking(10, true),
+                        letterSpacing: textTracking(11, true),
                         textTransform: "uppercase",
-                        lineHeight: textLineHeight(10, 1.24),
+                        lineHeight: textLineHeight(11, 1.24),
                         numberOfLines: 1,
                         textOverflow: "ellipsis",
                       }}
@@ -457,7 +460,7 @@ function MenuSurface(props: {
                           color: item().danger ? palette().danger : palette().text,
                           fontSize: textSize(13),
                           fontWeight: item().active ? "500" : "400",
-                          lineHeight: textLineHeight(12.5, 1.24),
+                          lineHeight: textLineHeight(13, 1.24),
                           numberOfLines: 1,
                           textOverflow: "ellipsis",
                         }}
@@ -469,8 +472,8 @@ function MenuSurface(props: {
                           <Text
                             style={{
                               color: palette().textElevatedMuted,
-                              fontSize: textSize(10.5),
-                              lineHeight: textLineHeight(10.5, 1.35),
+                              fontSize: textSize(11),
+                              lineHeight: textLineHeight(11, 1.35),
                               numberOfLines: 2,
                               textOverflow: "ellipsis",
                             }}
@@ -505,10 +508,10 @@ function MenuSurface(props: {
                             flexShrink: 0,
                             color: palette().textElevatedMuted,
                             fontFamily: fontMono,
-                            fontSize: textSize(10.5),
+                            fontSize: textSize(11),
                             fontWeight: "500",
                             fontVariant: ["tabular-nums"],
-                            lineHeight: textLineHeight(10.5, 1.24),
+                            lineHeight: textLineHeight(11, 1.24),
                           }}
                         >
                           {shortcutText()}
@@ -667,8 +670,8 @@ export interface SelectDropdownProps<T extends string = string> {
   onChange: (value: T) => void;
 }
 
-const SELECT_OUTER_RADIUS = 14;
-const SELECT_PADDING = 6;
+const SELECT_OUTER_RADIUS = radii.lg;
+const SELECT_PADDING = space.xs;
 const SELECT_INNER_RADIUS = concentricRadius(SELECT_OUTER_RADIUS, SELECT_PADDING);
 
 function SelectPopoverSurface<T extends string>(props: {
@@ -704,7 +707,7 @@ function SelectPopoverSurface<T extends string>(props: {
           borderColor: palette().border,
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(16px) saturate(1.2)",
-          boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+          boxShadow: elevationShadow(2),
           transformOrigin: popoverOrigin(props.placement, props.align),
           gap: 6,
         },
@@ -832,7 +835,7 @@ function SelectPopoverSurface<T extends string>(props: {
                           : palette().textSecondary,
                       fontSize: textSize(13),
                       fontWeight: opt().value === props.value ? "500" : "400",
-                      lineHeight: textLineHeight(12.5, 1.24),
+                      lineHeight: textLineHeight(13, 1.24),
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
                     }}
@@ -844,8 +847,8 @@ function SelectPopoverSurface<T extends string>(props: {
                       <Text
                         style={{
                           color: palette().textElevatedMuted,
-                          fontSize: textSize(10.5),
-                          lineHeight: textLineHeight(10.5, 1.35),
+                          fontSize: textSize(11),
+                          lineHeight: textLineHeight(11, 1.35),
                           numberOfLines: 2,
                           textOverflow: "ellipsis",
                         }}
@@ -865,8 +868,8 @@ function SelectPopoverSurface<T extends string>(props: {
             <Text
               style={{
                 color: palette().textElevatedMuted,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.4),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.4),
                 paddingHorizontal: 9,
                 paddingVertical: 8,
               }}
@@ -1026,8 +1029,8 @@ export function SelectDropdown<T extends string = string>(props: SelectDropdownP
             color: props.options.some(opt => opt.value === props.value)
               ? palette().text
               : palette().textMuted,
-            fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 12.5),
-            lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 12.5, 1.15),
+            fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
+            lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 13, 1.15),
             fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
@@ -1290,7 +1293,7 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           borderColor: toastToneTokens(props.entry.tone).border,
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(16px) saturate(1.2)",
-          boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+          boxShadow: elevationShadow(2),
           maxWidth: 380,
         },
         motion.style,
@@ -1308,9 +1311,9 @@ function ToastCard(props: { entry: InternalToastEntry }) {
           flex: 1,
           minWidth: 0,
           color: palette().text,
-          fontSize: textSize(12.5),
+          fontSize: textSize(13),
           fontWeight: "500",
-          lineHeight: textLineHeight(12.5, 1.4),
+          lineHeight: textLineHeight(13, 1.4),
           numberOfLines: 3,
           textOverflow: "ellipsis",
         }}

@@ -20,12 +20,17 @@ import { Input, Tooltip } from "nsh/base";
 import { tr, type MessageKey } from "../i18n";
 import { activeScene, type SceneId } from "../state";
 import {
+  compactLayout,
   concentricRadius,
   controlHeight,
+  elevationShadow,
   fontMono,
   isLightAppearance,
+  motionTiming,
   palette,
   radii,
+  space,
+  springs,
   textLineHeight,
   textSize,
   textTracking,
@@ -106,6 +111,8 @@ export interface TooltipBubbleProps {
  * Styled floating micro-tooltip backed by `nsh/base` `<Tooltip>`, with
  * trigger-aligned transform origin, warm-window instant subsequent hovers,
  * whisper-quiet hairline framing, compact shadow, and reduced-motion fade.
+ * Off while `compactLayout()` is set: on a phone a tap leaves the pointer
+ * where it was, so a hover tooltip would stay up after the tap.
  */
 export function TooltipBubble(props: TooltipBubbleProps) {
   return (
@@ -116,6 +123,7 @@ export function TooltipBubble(props: TooltipBubbleProps) {
       delay={props.delay !== undefined ? props.delay : tooltipWarm() ? 0 : 420}
       onOpen={markTooltipOpened}
       onClose={markTooltipClosed}
+      disabled={compactLayout()}
       startingStyle={tooltipStartingStyle(props.placement ?? "top", tooltipWarm())}
       endingStyle={{
         opacity: 0,
@@ -123,10 +131,10 @@ export function TooltipBubble(props: TooltipBubbleProps) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 5,
-        paddingHorizontal: 9,
-        paddingVertical: 5,
-        borderRadius: radii.xs,
+        gap: space.xs,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.xs,
+        borderRadius: radii.sm,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: palette().border,
@@ -142,15 +150,15 @@ export function TooltipBubble(props: TooltipBubbleProps) {
       <If
         when={Boolean(props.children)}
         else={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
             <Text
               style={{
                 flexShrink: 1,
                 minWidth: 0,
                 color: palette().text,
-                fontSize: textSize(11.5),
+                fontSize: textSize(12),
                 fontWeight: "400",
-                lineHeight: textLineHeight(11.5, 1.35),
+                lineHeight: textLineHeight(12, 16 / 12),
               }}
             >
               {props.text ?? ""}
@@ -162,10 +170,10 @@ export function TooltipBubble(props: TooltipBubbleProps) {
                     flexShrink: 0,
                     color: palette().textElevatedMuted,
                     fontFamily: fontMono,
-                    fontSize: textSize(10),
+                    fontSize: textSize(11),
                     fontWeight: "500",
                     fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(10, 1.2),
+                    lineHeight: textLineHeight(11, 14 / 11),
                   }}
                 >
                   {keys()}
@@ -190,7 +198,7 @@ function resolveTooltip(
   tip?: string | JSX.Element,
   redundantLabel?: string,
 ): JSX.Element | undefined {
-  if (!tip) return undefined;
+  if (!tip || compactLayout()) return undefined;
   if (typeof tip === "string") {
     const trimmed = tip.trim();
     if (!trimmed) return undefined;
@@ -306,39 +314,34 @@ function btnShadow(_variant: ButtonVariant): string | undefined {
 }
 
 function btnPadX(size: ButtonSize): number {
-  if (size === "xs") return 9;
+  if (size === "xs") return 8;
   if (size === "sm") return 12;
   if (size === "lg") return 20;
   return 16;
 }
 
 function btnGap(size: ButtonSize): number {
-  if (size === "xs") return 4.5;
-  if (size === "sm") return 5.5;
-  if (size === "lg") return 7;
-  return 6;
+  if (size === "xs" || size === "sm") return space.xs;
+  return space.chip;
 }
 
 function btnFontPx(size: ButtonSize): number {
-  if (size === "xs") return 11;
-  if (size === "sm") return 12.5;
-  if (size === "lg") return 13.5;
+  if (size === "xs") return 12;
+  if (size === "lg") return 14;
   return 13;
 }
 
 function btnIconPx(size: ButtonSize): number {
   if (size === "xs") return 12;
-  if (size === "sm") return 13.5;
-  if (size === "lg") return 15;
-  return 14;
+  if (size === "sm") return 14;
+  return 16;
 }
 
 function btnRadius(size: ButtonSize, pill?: boolean): number {
-  // Buttons are pills by default, as in the desktop's design system; `pill={false}` opts out.
-  if (pill !== false) return radii.pill;
-  if (size === "xs") return radii.xs;
-  if (size === "lg") return radii.md;
-  return radii.sm;
+  // Visual spec §2.3: buttons are `md` (8), small (24) buttons `sm` (6); `pill` opts into a pill.
+  if (pill === true) return radii.pill;
+  if (size === "xs") return radii.sm;
+  return radii.md;
 }
 
 export function Button(props: ButtonProps) {
@@ -490,7 +493,7 @@ export function IconButton(props: IconButtonProps) {
           width: iconBtnBox(props.size ?? "sm"),
           height: iconBtnBox(props.size ?? "sm"),
           flexShrink: 0,
-          borderRadius: (props.size ?? "sm") === "xs" ? radii.xs : 6,
+          borderRadius: (props.size ?? "sm") === "xs" ? radii.sm : radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: props.active
@@ -635,7 +638,7 @@ export function ConfigSection(props: ConfigSectionProps) {
             borderWidth: 1,
             borderColor: palette().border,
             backgroundColor: palette().panelRaised,
-            boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
+            boxShadow: elevationShadow(0),
             padding: effectiveInset(),
             overflow: "hidden",
           },
@@ -878,9 +881,9 @@ export function KbdHint(props: KbdHintProps) {
     <View
       style={{
         flexShrink: 0,
-        paddingHorizontal: 5,
+        paddingHorizontal: space.xs,
         paddingVertical: 1,
-        borderRadius: 5,
+        borderRadius: radii.xs,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: props.surface === "chrome" ? palette().chromeBorder : palette().border,
@@ -893,10 +896,10 @@ export function KbdHint(props: KbdHintProps) {
           color:
             props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
           fontFamily: fontMono,
-          fontSize: textSize(10),
+          fontSize: textSize(11),
           fontWeight: "500",
           fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(10, 1.3),
+          lineHeight: textLineHeight(11, 14 / 11),
           numberOfLines: 1,
         }}
       >
@@ -992,7 +995,7 @@ export function Badge(props: BadgeProps) {
           maxWidth: "100%",
           paddingHorizontal: isXs() ? 5 : 7,
           paddingVertical: isXs() ? 1 : 2,
-          borderRadius: props.pill ? radii.pill : isXs() ? 4 : 5,
+          borderRadius: props.pill ? radii.pill : isXs() ? radii.xs : radii.sm,
           borderCurve: "continuous",
           borderWidth: hasBorder() ? 1 : 0,
           borderColor: hasBorder()
@@ -1006,10 +1009,10 @@ export function Badge(props: BadgeProps) {
       <Text
         style={{
           color: badgeColors(props.tone ?? "neutral", props.surface ?? "canvas").fg,
-          fontSize: textSize(isXs() ? 10 : 11),
+          fontSize: textSize(11),
           fontWeight: "500",
           fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(isXs() ? 10 : 11, 1.22),
+          lineHeight: textLineHeight(11, 14 / 11),
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -1292,10 +1295,10 @@ export function PillChip(props: PillChipProps) {
             <Text
               style={{
                 color: props.active ? palette().actionSolidFg : palette().textMuted,
-                fontSize: textSize(10),
+                fontSize: textSize(11),
                 fontWeight: "600",
                 fontVariant: ["tabular-nums"],
-                lineHeight: textLineHeight(10, 1.3),
+                lineHeight: textLineHeight(11, 1.3),
                 numberOfLines: 1,
               }}
             >
@@ -1324,7 +1327,7 @@ export interface SegmentedTabsProps<T extends string> {
   onChange: (value: T) => void;
 }
 
-const SEGMENT_OUTER_RADIUS = 9;
+const SEGMENT_OUTER_RADIUS = radii.md;
 const SEGMENT_PADDING = 3;
 const SEGMENT_INNER_RADIUS = concentricRadius(SEGMENT_OUTER_RADIUS, SEGMENT_PADDING);
 
@@ -1375,7 +1378,7 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                 option().value === props.value ? palette().segmentedThumbBg : "transparent",
               boxShadow:
                 option().value === props.value && isLightAppearance()
-                  ? "0 1px 2px rgba(0, 0, 0, 0.08)"
+                  ? palette().shadowCard
                   : undefined,
               cursor: "pointer",
               ...pressTransition(MOTION_DURATION.fast),
@@ -1406,9 +1409,9 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                 minWidth: 0,
                 color:
                   option().value === props.value ? palette().text : palette().textSecondary,
-                fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 12.5),
+                fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
                 fontWeight: option().value === props.value ? "500" : "400",
-                lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 11.5 : 12, 1.24),
+                lineHeight: textLineHeight(12, 1.24),
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
               }}
@@ -1430,10 +1433,10 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
                       option().value === props.value
                         ? palette().accent
                         : palette().textMuted,
-                    fontSize: textSize(10.5),
+                    fontSize: textSize(11),
                     fontWeight: "600",
                     fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(10.5, 1.24),
+                    lineHeight: textLineHeight(11, 1.24),
                   }}
                 >
                   {badgeText()}
@@ -1505,13 +1508,13 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
             height: 14,
             borderRadius: radii.pill,
             backgroundColor: isChecked() ? "#ffffff" : palette().toggleThumbOff,
-            boxShadow: "0 1px 2px rgba(0, 0, 0, 0.18)",
+            boxShadow: palette().shadowCard,
             transform: [{ translateX: isChecked() ? 12 : 0 }],
             transitionProperty: reduceMotion() ? "background-color" : "transform",
             transitionDuration: reduceMotion() ? 100 : 160,
             transitionTimingFunction: reduceMotion()
               ? MOTION_EASE_STANDARD
-              : "spring(520, 36)",
+              : springs.toggle,
           }}
         />
       </View>
@@ -1522,9 +1525,9 @@ export function ToggleSwitch(props: ToggleSwitchProps) {
               flexShrink: 1,
               minWidth: 0,
               color: palette().text,
-              fontSize: textSize(12.5),
+              fontSize: textSize(13),
               fontWeight: "500",
-              lineHeight: textLineHeight(12.5, 1.36),
+              lineHeight: textLineHeight(13, 1.36),
             }}
           >
             {labelText()}
@@ -1554,7 +1557,7 @@ export function SectionCard(props: SectionCardProps) {
           borderWidth: 1,
           borderColor: palette().border,
           backgroundColor: palette().panelRaised,
-          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
+          boxShadow: elevationShadow(0),
           padding: 16,
           gap: 14,
         },
@@ -1606,12 +1609,18 @@ export function SectionCard(props: SectionCardProps) {
 
 export type StatusDotKind = "accent" | "warning" | "danger" | "success" | "muted";
 
+/** `solid` fills the dot; `ring` is a 1.5 outline (idle, stopped); `half` is the ring with its left half filled (needs you). */
+export type StatusDotVariant = "solid" | "ring" | "half";
+
 export interface StatusDotProps {
   kind?: StatusDotKind;
   size?: number;
+  /** The working pulse: the dot itself breathes (`pulse`, 1600 ms); frozen at full opacity under reduced motion. */
   pulse?: boolean;
+  variant?: StatusDotVariant;
   surface?: ControlSurface;
   accessibilityLabel?: string;
+  testID?: string;
 }
 
 function dotColor(kind: StatusDotKind, surface: ControlSurface = "canvas"): string {
@@ -1624,43 +1633,41 @@ function dotColor(kind: StatusDotKind, surface: ControlSurface = "canvas"): stri
   return surface === "chrome" ? palette().chromeAccent : palette().accent;
 }
 
+const DOT_RING_WIDTH = 1.5;
+
+/**
+ * A state dot (visual spec §2.4). The pulse replaced the old `ping` ripple:
+ * the dot breathes in place and never grows past its box.
+ */
 export function StatusDot(props: StatusDotProps) {
+  const size = () => props.size ?? 6;
+  const color = () => dotColor(props.kind ?? "accent", props.surface ?? "canvas");
+  const variant = () => props.variant ?? "solid";
+  const pulsing = () => Boolean(props.pulse) && !reduceMotion();
   return (
     <View
+      testID={props.testID}
       accessibilityLabel={props.accessibilityLabel}
       style={{
-        position: "relative",
-        width: props.size ?? 6,
-        height: props.size ?? 6,
+        boxSizing: "border-box",
+        width: size(),
+        height: size(),
         flexShrink: 0,
-        alignItems: "center",
-        justifyContent: "center",
+        overflow: "hidden",
+        borderRadius: radii.pill,
+        borderWidth: variant() === "solid" ? 0 : DOT_RING_WIDTH,
+        borderColor: color(),
+        backgroundColor: variant() === "solid" ? color() : "transparent",
+        flexDirection: "row",
+        animationName: pulsing() ? "pulse" : "none",
+        animationDuration: motionTiming.pulse,
+        animationTimingFunction: "ease-in-out",
+        animationIterationCount: pulsing() ? "infinite" : 1,
       }}
     >
-      <If when={Boolean(props.pulse) && !reduceMotion()}>
-        <View
-          style={{
-            position: "absolute",
-            width: props.size ?? 6,
-            height: props.size ?? 6,
-            borderRadius: radii.pill,
-            backgroundColor: dotColor(props.kind ?? "accent", props.surface ?? "canvas"),
-            opacity: 0.55,
-            animationName: "ping",
-            animationDuration: 1450,
-            animationTimingFunction: "cubic-bezier(0, 0, 0.2, 1)",
-            animationIterationCount: "infinite",
-          }}
-        />
+      <If when={variant() === "half"}>
+        <View style={{ width: "50%", height: "100%", backgroundColor: color() }} />
       </If>
-      <View
-        style={{
-          width: props.size ?? 6,
-          height: props.size ?? 6,
-          borderRadius: radii.pill,
-          backgroundColor: dotColor(props.kind ?? "accent", props.surface ?? "canvas"),
-        }}
-      />
     </View>
   );
 }
@@ -1736,10 +1743,10 @@ export function StatusPill(props: StatusPillProps) {
           flexShrink: 1,
           minWidth: 0,
           color: statusColors(props.kind ?? "neutral").fg,
-          fontSize: textSize(isXs() ? 10 : 11),
+          fontSize: textSize(11),
           fontWeight: "500",
           fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(isXs() ? 10 : 11, 1.22),
+          lineHeight: textLineHeight(11, 14 / 11),
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -1871,7 +1878,7 @@ export function FloatingPill(props: FloatingPillProps) {
           borderWidth: 1,
           borderColor: palette().borderStrong,
           backgroundColor: palette().popoverBg,
-          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
+          boxShadow: elevationShadow(2),
           cursor: props.onPress ? "pointer" : "default",
           ...(props.onPress ? pressTransition(MOTION_DURATION.fast) : paintTransition(MOTION_DURATION.fast)),
         },
@@ -2096,58 +2103,46 @@ export interface EmptyStateCardProps {
   icon?: IconName;
   actionLabel?: string;
   onAction?: () => void;
+  /** A ready-made action in place of `actionLabel` (`StudioEmpty`'s). */
+  action?: JSX.Element;
+  accessibilityLabel?: string;
   style?: StyleProp<ViewStyle>;
 }
 
+/**
+ * The empty state (visual spec §3): centered and never boxed. Icon 28
+ * `textMuted`, 12, title 16/600, 4, body 13/20 `textSecondary` (max 360), 16,
+ * one md button.
+ */
 export function EmptyStateCard(props: EmptyStateCardProps) {
   return (
     <View
+      accessibilityLabel={props.accessibilityLabel}
       style={[
         {
-          borderRadius: radii.lg,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().panelRaised,
-          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
-          paddingHorizontal: 24,
-          paddingVertical: 26,
+          paddingHorizontal: space.xxl,
+          paddingVertical: space.x3l,
           alignItems: "center",
           justifyContent: "center",
-          gap: 8,
         },
         props.style,
       ]}
     >
       <If when={props.icon ?? ""}>
         {iconName => (
-          <View
-            style={{
-              width: 38,
-              height: 38,
-              flexShrink: 0,
-              borderRadius: radii.md,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().surfaceSubtle,
-              alignItems: "center",
-              justifyContent: "center",
-              marginBottom: 2,
-            }}
-          >
-            <Icon name={iconName() as IconName} size={17} color={palette().textMuted} />
+          <View style={{ marginBottom: space.md }}>
+            <Icon name={iconName() as IconName} size={28} color={palette().textMuted} />
           </View>
         )}
       </If>
       <Text
         style={{
           color: palette().text,
-          fontSize: textSize(14),
+          fontSize: textSize(16),
           fontWeight: "600",
-          letterSpacing: textTracking(14),
+          letterSpacing: textTracking(16),
           textAlign: "center",
-          lineHeight: textLineHeight(14, 1.32),
+          lineHeight: textLineHeight(16, 22 / 16),
         }}
       >
         {props.title}
@@ -2156,11 +2151,12 @@ export function EmptyStateCard(props: EmptyStateCardProps) {
         {subtitleText => (
           <Text
             style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
+              marginTop: space.xs,
+              color: palette().textSecondary,
+              fontSize: textSize(13),
               textAlign: "center",
-              maxWidth: 420,
-              lineHeight: textLineHeight(12, 1.48),
+              maxWidth: 360,
+              lineHeight: textLineHeight(13, 20 / 13),
             }}
           >
             {subtitleText()}
@@ -2169,15 +2165,18 @@ export function EmptyStateCard(props: EmptyStateCardProps) {
       </If>
       <If when={props.actionLabel && props.onAction ? props.actionLabel : ""}>
         {labelText => (
-          <View style={{ marginTop: 6 }}>
+          <View style={{ marginTop: space.lg }}>
             <Button
               label={labelText()}
-              variant="primary"
-              size="sm"
+              variant="secondary"
+              size="md"
               onPress={() => props.onAction?.()}
             />
           </View>
         )}
+      </If>
+      <If when={Boolean(props.action)}>
+        <View style={{ marginTop: space.lg }}>{props.action}</View>
       </If>
     </View>
   );
@@ -2423,8 +2422,8 @@ export function TextField(props: TextFieldProps) {
           <Text
             style={{
               color: palette().danger,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.4),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.4),
             }}
           >
             {errText()}
@@ -2436,8 +2435,8 @@ export function TextField(props: TextFieldProps) {
           <Text
             style={{
               color: palette().textMuted,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.4),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.4),
             }}
           >
             {hintText()}
@@ -2536,7 +2535,7 @@ export function SearchInput(props: SearchInputProps) {
           placeholderColor:
             props.surface === "chrome" ? palette().chromeTextMuted : palette().textMuted,
           caretColor: palette().accent,
-          fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 12.5),
+          fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
         }}
       />
       <If when={props.countLabel ?? ""}>
@@ -2548,10 +2547,10 @@ export function SearchInput(props: SearchInputProps) {
                 props.surface === "chrome"
                   ? palette().chromeTextMuted
                   : palette().textMuted,
-              fontSize: textSize(10.5),
+              fontSize: textSize(11),
               fontWeight: "500",
               fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(10.5, 1.3),
+              lineHeight: textLineHeight(11, 1.3),
             }}
           >
             {count()}
@@ -2665,9 +2664,9 @@ export function SceneHeader(props: SceneHeaderProps) {
             <Text
               style={{
                 color: palette().textMuted,
-                fontSize: textSize(12.5),
+                fontSize: textSize(13),
                 maxWidth: 620,
-                lineHeight: textLineHeight(12.5, 1.44),
+                lineHeight: textLineHeight(13, 1.44),
                 numberOfLines: 2,
                 textOverflow: "ellipsis",
               }}
@@ -2775,7 +2774,7 @@ export function InlineBanner(props: InlineBannerProps) {
       <View
         style={{
           flexShrink: 0,
-          height: textLineHeight(12.5, 1.38),
+          height: textLineHeight(13, 1.38),
           alignItems: "center",
           justifyContent: "center",
         }}
@@ -2792,9 +2791,9 @@ export function InlineBanner(props: InlineBannerProps) {
             <Text
               style={{
                 color: palette().text,
-                fontSize: textSize(12.5),
+                fontSize: textSize(13),
                 fontWeight: "600",
-                lineHeight: textLineHeight(12.5, 1.38),
+                lineHeight: textLineHeight(13, 1.38),
               }}
             >
               {t()}
@@ -2804,8 +2803,8 @@ export function InlineBanner(props: InlineBannerProps) {
         <Text
           style={{
             color: props.title ? palette().textSecondary : palette().text,
-            fontSize: textSize(props.title ? 12 : 12.5),
-            lineHeight: textLineHeight(props.title ? 12 : 12.5, 1.44),
+            fontSize: textSize(props.title ? 12 : 13),
+            lineHeight: textLineHeight(props.title ? 12 : 13, 1.44),
           }}
         >
           {props.message}
@@ -3036,9 +3035,9 @@ export function KpiCell(props: KpiCellProps) {
             style={{
               maxWidth: "100%",
               color: palette().textMuted,
-              fontSize: textSize(10),
+              fontSize: textSize(11),
               fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(10, 1.35),
+              lineHeight: textLineHeight(11, 1.35),
               textAlign: props.align === "center" ? "center" : "left",
               numberOfLines: 1,
               textOverflow: "ellipsis",
@@ -3063,88 +3062,59 @@ export type DeviceKind =
 
 export interface DeviceGlyphProps {
   kind?: DeviceKind | (string & {});
+  /** 16 (rows, badges) or 20 (phone bars, the device page header); other values snap to the nearer one. */
   size?: number;
+  /** Overrides `textSecondary`. */
+  color?: string;
+  /** @deprecated Ignored: a device glyph draws no status (visual spec §3). Use a `StateMark` beside it. */
   status?: string;
+  /** @deprecated Ignored: a device is never a selected tile. */
   active?: boolean;
+  /** @deprecated Ignored: there is no status ring. */
   ringColor?: string;
 }
 
-function deviceKindIcon(kind?: string): IconName {
+/**
+ * The lucide glyph of a device's form factor (visual spec §2.5): `laptop`
+ * (laptops, macOS clients, the default), `monitor` (desktops), `server` (CLI,
+ * headless), `container`, `smartphone` (phones), `globe` (browsers). It reads
+ * whatever kind the caller has (a form factor, a `hostKind`, an OS name) and
+ * only picks a glyph; it never decides a state.
+ */
+export function deviceGlyphIcon(kind?: string): IconName {
   const k = (kind ?? "").trim().toLowerCase();
-  if (k.includes("server") || k.includes("ssh") || k.includes("linux") || k.includes("build")) {
+  if (k === "cli" || k.includes("server") || k.includes("ssh") || k.includes("linux") || k.includes("build") || k.includes("headless")) {
     return "server";
   }
   if (k.includes("docker") || k.includes("container")) return "container";
-  if (k.includes("mobile") || k.includes("phone") || k.includes("ios") || k.includes("android")) {
+  if (k.includes("mobile") || k.includes("phone") || k.includes("ios") || k.includes("android") || k.includes("harmony")) {
     return "smartphone";
   }
+  if (k.includes("browser") || k === "web") return "globe";
   if (k.includes("cloud") || k.includes("relay")) return "cloud";
-  if (k.includes("desktop") || k.includes("workstation") || k.includes("monitor")) {
+  if (k.includes("desktop") || k.includes("workstation") || k.includes("monitor") || k.includes("tower")) {
     return "monitor";
   }
   return "laptop";
 }
 
-function deviceStatusKind(status?: string): StatusDotKind {
-  const s = (status ?? "").trim().toLowerCase();
-  if (s === "online" || s === "connected" || s === "ready" || s === "active") return "success";
-  if (s === "connecting" || s === "syncing" || s === "running") return "accent";
-  if (s === "warning" || s === "degraded" || s === "idle") return "warning";
-  if (s === "error" || s === "failed" || s === "offline") return "danger";
-  return "muted";
-}
-
-function deviceStatusIsTransient(status?: string): boolean {
-  const s = (status ?? "").trim().toLowerCase();
-  return s === "connecting" || s === "syncing" || s === "running";
-}
-
 /**
- * Clean hardware glyph emblem (`laptop`, `monitor`, `server`, `container`,
- * `smartphone`, `cloud`) for peer devices, SSH hosts, and workstations.
+ * A device's form factor as a plain lucide glyph, 16 or 20, `textSecondary`:
+ * no tile, no border, no status overlay. Devices are labels, not places.
  */
 export function DeviceGlyph(props: DeviceGlyphProps) {
+  const size = () => ((props.size ?? 16) >= 18 ? 20 : 16);
   return (
     <View
       style={{
-        position: "relative",
-        width: props.size ?? 34,
-        height: props.size ?? 34,
+        width: size(),
+        height: size(),
         flexShrink: 0,
-        borderRadius: Math.round((props.size ?? 34) * 0.28),
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: props.active ? palette().accentBorder : palette().border,
-        backgroundColor: props.active ? palette().accentSoft : palette().surfaceTertiary,
         alignItems: "center",
         justifyContent: "center",
       }}
     >
-      <Icon
-        name={deviceKindIcon(props.kind)}
-        size={Math.max(14, Math.round((props.size ?? 34) * 0.52))}
-        color={props.active ? palette().accent : palette().textSecondary}
-      />
-      <If when={(props.status ?? "").trim()}>
-        {st => (
-          <View
-            style={{
-              position: "absolute",
-              right: -2,
-              bottom: -2,
-              padding: 1.5,
-              borderRadius: radii.pill,
-              backgroundColor: props.ringColor ?? palette().canvas,
-            }}
-          >
-            <StatusDot
-              size={Math.max(6, Math.round((props.size ?? 34) * 0.22))}
-              kind={deviceStatusKind(st())}
-              pulse={deviceStatusIsTransient(st())}
-            />
-          </View>
-        )}
-      </If>
+      <Icon name={deviceGlyphIcon(props.kind)} size={size()} color={props.color ?? palette().textSecondary} />
     </View>
   );
 }

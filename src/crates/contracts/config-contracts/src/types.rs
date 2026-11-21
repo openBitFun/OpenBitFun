@@ -72,6 +72,12 @@ pub struct GlobalConfig {
     pub tool_permissions: ToolPermissionConfig,
     #[serde(default)]
     pub memories: MemoriesConfig,
+    /// This device's switches for the account's cloud agent (OpenBitFun
+    /// superagent). Always serialized (the settings surface reads the path
+    /// through the dot-path getter); a document without it reads the
+    /// defaults, and builds that predate it ignore it.
+    #[serde(default)]
+    pub superagent: SuperagentConfig,
     /// Project-scoped overlays stored in the shared config document.
     #[serde(default, skip_serializing_if = "ProjectConfig::is_empty")]
     pub project: ProjectConfig,
@@ -1621,6 +1627,32 @@ pub enum MemoryExternalContextPolicy {
     SkipSession,
 }
 
+/// The device switches for the account's cloud agent (config path
+/// `superagent`). Both are on by default; a user fences a machine off by
+/// turning `accept_dispatch` off, and keeps prompts for themself with
+/// `allow_auto_approval` off. The device enforces them on every cloud-agent
+/// call (`obp::server::scope::check_cloud_agent_call`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SuperagentConfig {
+    /// The cloud agent may dispatch work to this device.
+    #[serde(alias = "accept_dispatch")]
+    pub accept_dispatch: bool,
+    /// The cloud agent may submit jobs with automatic approval and answer
+    /// this device's prompts.
+    #[serde(alias = "allow_auto_approval")]
+    pub allow_auto_approval: bool,
+}
+
+impl Default for SuperagentConfig {
+    fn default() -> Self {
+        Self {
+            accept_dispatch: true,
+            allow_auto_approval: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct MemoriesConfig {
@@ -2215,6 +2247,7 @@ impl Default for GlobalConfig {
             ai: AIConfig::default(),
             media: MediaConfig::default(),
             memories: MemoriesConfig::default(),
+            superagent: SuperagentConfig::default(),
             project: ProjectConfig::default(),
             tool_permissions: ToolPermissionConfig::default(),
             mcp_servers: None,
@@ -2601,6 +2634,60 @@ impl AIModelConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn superagent_switches_default_on_and_a_legacy_document_round_trips() {
+        let defaults = super::SuperagentConfig::default();
+        assert!(defaults.accept_dispatch && defaults.allow_auto_approval);
+
+        // A document written before the section existed.
+        let mut legacy = serde_json::to_value(super::GlobalConfig::default()).unwrap();
+        assert!(legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("superagent")
+            .is_some());
+        let read: super::GlobalConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(read.superagent, defaults);
+        let saved = serde_json::to_value(&read).unwrap();
+        assert_eq!(
+            saved["superagent"],
+            serde_json::json!({"acceptDispatch": true, "allowAutoApproval": true}),
+            "always written, so the dot-path getter finds it"
+        );
+
+        // A user's choice survives a save; a partial section keeps the other
+        // default; the snake_case spelling reads too; fields a newer build
+        // adds are ignored.
+        for (section, accept, auto) in [
+            (
+                serde_json::json!({"acceptDispatch": false, "allowAutoApproval": false}),
+                false,
+                false,
+            ),
+            (serde_json::json!({"allowAutoApproval": false}), true, false),
+            (serde_json::json!({"accept_dispatch": false}), false, true),
+            (
+                serde_json::json!({"acceptDispatch": false, "futureSwitch": 3}),
+                false,
+                true,
+            ),
+            (serde_json::json!({}), true, true),
+        ] {
+            let mut document = legacy.clone();
+            document["superagent"] = section.clone();
+            let read: super::GlobalConfig = serde_json::from_value(document).unwrap();
+            assert_eq!(read.superagent.accept_dispatch, accept, "{section}");
+            assert_eq!(read.superagent.allow_auto_approval, auto, "{section}");
+            let again: super::GlobalConfig =
+                serde_json::from_value(serde_json::to_value(&read).unwrap()).unwrap();
+            assert_eq!(again.superagent, read.superagent, "{section}");
+        }
+        // A wrongly typed write is refused rather than silently flipped.
+        let mut document = legacy;
+        document["superagent"] = serde_json::json!({"acceptDispatch": "no"});
+        assert!(serde_json::from_value::<super::GlobalConfig>(document).is_err());
+    }
+
     #[test]
     fn decision_model_name_defaults_under_ai_configuration() {
         let config: super::AIConfig = serde_json::from_value(serde_json::json!({

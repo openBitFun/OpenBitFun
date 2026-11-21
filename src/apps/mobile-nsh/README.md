@@ -27,7 +27,7 @@ The native module is a transport and identity adapter, not a product backend:
   (`/auth/email/send`, `/auth/email/verify`); `/auth/desktop/poll` then hands
   this phone its token pair (`/auth/refresh` keeps it fresh). The phone
   registers its X25519 public key with the account directory
-  (`/relay/api/auth/login`, kind `mobile`) and reads the other devices' names
+  (`https://super.openbitfun.com/directory/api/auth/login`, kind `mobile`) and reads the other devices' names
   and keys there. The directory is never a transport.
 - `keystore.rs`: the device key, the token pair and the directory token as one
   record. iOS: Keychain, `AfterFirstUnlockThisDeviceOnly`; the iOS simulator

@@ -1,8 +1,8 @@
-// Controller-local Remote Connect and IM Bot connectors state.
+// Controller-local IM bot connectors state (Telegram, Feishu, WeChat).
 //
 // All `remote_connect_*` commands are declared `ControllerLocal` in the Product
 // Operation Registry (`peerSurface.ts`), so `bridge.ts` always routes them to
-// this controller machine even while Peer Device Mode drives another device.
+// this machine whichever device the UI shows.
 
 import { Clipboard, Storage, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
@@ -15,37 +15,11 @@ export interface ConnectorMethodInfo {
   description: string;
 }
 
-export interface RelayRouteStatus {
-  method: string;
-  relayConnected: boolean;
-  relayUrl: string;
-  clientCount: number;
-}
-
-export interface ConnectorClient {
-  id: string;
-  name: string;
-}
-
 export interface ConnectorStatus {
-  connections: RelayRouteStatus[];
-  relayConnected: boolean;
-  relayUrl: string;
-  activeMethod: string;
-  clients: ConnectorClient[];
   botConnected: string | null;
   botVerboseMode: boolean;
   /** `undefined` when the host does not report it (an older build). */
   remoteControlAllowed?: boolean;
-}
-
-export interface RelayPairingInfo {
-  method: string;
-  qrUrl: string;
-  qrData: string;
-  botPairingCode: string;
-  botLink: string;
-  pairingState: string;
 }
 
 export interface WeixinQrState {
@@ -74,7 +48,6 @@ export const weixinQr = signal<WeixinQrState | null>(null);
 /** The number WeChat shows on the phone when the login asks for it (`need_verify_code`). */
 export const weixinVerifyCode = signal("");
 
-export const relayPairing = signal<RelayPairingInfo | null>(null);
 export const botVerboseMode = signal(false);
 
 let loaded = false;
@@ -87,61 +60,9 @@ function readStr(record: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
-function readActiveMethod(raw: unknown): string {
-  if (typeof raw === "string") return raw;
-  if (raw && typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
-    const firstKey = Object.keys(obj)[0];
-    return firstKey ?? "";
-  }
-  return "";
-}
-
-function readPairingState(raw: unknown): string {
-  if (typeof raw === "string") return raw;
-  if (raw && typeof raw === "object" && "failed" in (raw as Record<string, unknown>)) {
-    const failed = (raw as { failed?: { reason?: string } }).failed;
-    return failed?.reason ? `failed: ${failed.reason}` : "failed";
-  }
-  return "";
-}
-
-function parseClients(raw: unknown): ConnectorClient[] {
-  if (!Array.isArray(raw)) return [];
-  const rows: ConnectorClient[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const id = readStr(rec, ["id", "client_id", "clientId"]);
-    const name = readStr(rec, ["name", "display_name", "displayName"]) || id;
-    if (id || name) rows.push({ id: id || name, name: name || id });
-  }
-  return rows;
-}
-
 function parseStatus(raw: Record<string, unknown>): ConnectorStatus {
-  const connections: RelayRouteStatus[] = [];
-  if (Array.isArray(raw.connections)) {
-    for (const entry of raw.connections) {
-      if (!entry || typeof entry !== "object") continue;
-      const rec = entry as Record<string, unknown>;
-      const method = readStr(rec, ["method"]);
-      if (!method) continue;
-      connections.push({
-        method,
-        relayConnected: rec.relay_connected === true || rec.relayConnected === true,
-        relayUrl: readStr(rec, ["relay_url", "relayUrl"]),
-        clientCount: Array.isArray(rec.clients) ? rec.clients.length : 0,
-      });
-    }
-  }
   const botConnectedRaw = raw.bot_connected ?? raw.botConnected;
   return {
-    connections,
-    relayConnected: raw.relay_connected === true || raw.relayConnected === true,
-    relayUrl: readStr(raw, ["relay_url", "relayUrl"]),
-    activeMethod: readActiveMethod(raw.active_method ?? raw.activeMethod),
-    clients: parseClients(raw.clients),
     botConnected: typeof botConnectedRaw === "string" && botConnectedRaw ? botConnectedRaw : null,
     botVerboseMode: raw.bot_verbose_mode === true || raw.botVerboseMode === true,
     remoteControlAllowed:
@@ -169,33 +90,6 @@ function parseMethods(raw: unknown): ConnectorMethodInfo[] {
     });
   }
   return rows;
-}
-
-/**
- * The relay routes this surface starts. The LAN relay was retired (devices on
- * one network reach each other directly through the device mesh), so only the
- * official server relay for older phones and hosts is left.
- */
-export type RelayRouteMethod = "openbitfun_server";
-
-export function isRelayRouteConnected(method: RelayRouteMethod): boolean {
-  const status = connectorStatus();
-  if (!status) return false;
-  const route = status.connections.find(item => item.method === method);
-  if (route) return route.relayConnected;
-  return status.relayConnected && status.activeMethod === method;
-}
-
-export function relayUrlForMethod(method: RelayRouteMethod): string {
-  const status = connectorStatus();
-  const route = status?.connections.find(item => item.method === method);
-  if (route?.relayUrl) return route.relayUrl;
-  const pairing = relayPairing();
-  if (pairing && pairing.method === method) {
-    return pairing.qrUrl || pairing.botLink || pairing.qrData;
-  }
-  if (status?.activeMethod === method && status.relayUrl) return status.relayUrl;
-  return "";
 }
 
 export function ensureConnectors(): void {
@@ -302,18 +196,6 @@ async function saveFormState(): Promise<void> {
   });
 }
 
-function capturePairingResult(method: string, raw: Record<string, unknown> | null | undefined): void {
-  if (!raw || typeof raw !== "object") return;
-  const qrUrl = readStr(raw, ["qr_url", "qrUrl"]);
-  const qrData = readStr(raw, ["qr_data", "qrData"]);
-  const botPairingCode = readStr(raw, ["bot_pairing_code", "botPairingCode"]);
-  const botLink = readStr(raw, ["bot_link", "botLink"]);
-  const pairingState = readPairingState(raw.pairing_state ?? raw.pairingState);
-  if (qrUrl || qrData || botPairingCode || botLink || pairingState) {
-    relayPairing.set({ method, qrUrl, qrData, botPairingCode, botLink, pairingState });
-  }
-}
-
 /** The desktop's key, so agreeing on either surface counts for both. */
 export const REMOTE_CONNECT_DISCLAIMER_KEY = "openbitfun:remote-connect:disclaimer-agreed:v1";
 export const remoteDisclaimerAgreed = signal(false);
@@ -390,11 +272,7 @@ export async function saveAndConnectTelegram(): Promise<void> {
       weixin_base_url: null,
       weixin_bot_account_id: null,
     });
-    const result = await invokeCommand<Record<string, unknown>>("remote_connect_start", {
-      method: "bot_telegram",
-      lan_ip: null,
-    });
-    capturePairingResult("bot_telegram", result);
+    await invokeCommand<Record<string, unknown>>("remote_connect_start", { method: "bot_telegram" });
     await refreshConnectorStatus();
     connectorNotice.set(tr("devices.store.telegramConnected"));
   } catch (error) {
@@ -426,11 +304,7 @@ export async function saveAndConnectFeishu(): Promise<void> {
       weixin_base_url: null,
       weixin_bot_account_id: null,
     });
-    const result = await invokeCommand<Record<string, unknown>>("remote_connect_start", {
-      method: "bot_feishu",
-      lan_ip: null,
-    });
-    capturePairingResult("bot_feishu", result);
+    await invokeCommand<Record<string, unknown>>("remote_connect_start", { method: "bot_feishu" });
     await refreshConnectorStatus();
     connectorNotice.set(tr("devices.store.feishuConnected"));
   } catch (error) {
@@ -514,55 +388,12 @@ export async function pollWeixinQr(): Promise<void> {
         weixin_base_url: baseUrl || null,
         weixin_bot_account_id: botAccountId || null,
       });
-      await invokeCommand<Record<string, unknown>>("remote_connect_start", {
-        method: "bot_weixin",
-        lan_ip: null,
-      });
+      await invokeCommand<Record<string, unknown>>("remote_connect_start", { method: "bot_weixin" });
       await refreshConnectorStatus();
       connectorNotice.set(tr("devices.store.weixinConnected"));
     } else if (message) {
       connectorNotice.set(message);
     }
-  } catch (error) {
-    connectorError.set(error instanceof Error ? error.message : String(error));
-  } finally {
-    connectorBusy.set(false);
-  }
-}
-
-export async function startRelayConnector(method: RelayRouteMethod): Promise<void> {
-  if (!(await ensureRemoteDisclaimer(() => startRelayConnector(method)))) return;
-  connectorBusy.set(true);
-  connectorError.set("");
-  connectorNotice.set("");
-  try {
-    const res = await invokeCommand<Record<string, unknown>>("remote_connect_start", {
-      method,
-      lan_ip: null,
-    });
-    capturePairingResult(method, res);
-    await refreshConnectorStatus();
-    connectorNotice.set(tr("devices.store.serverStarted"));
-  } catch (error) {
-    connectorError.set(error instanceof Error ? error.message : String(error));
-  } finally {
-    connectorBusy.set(false);
-  }
-}
-
-export async function stopRelayConnector(method?: RelayRouteMethod): Promise<void> {
-  connectorBusy.set(true);
-  connectorError.set("");
-  connectorNotice.set("");
-  try {
-    await invokeCommand<unknown>("remote_connect_stop", method ? { method } : undefined);
-    if (!method || relayPairing()?.method === method) {
-      relayPairing.set(null);
-    }
-    await refreshConnectorStatus();
-    connectorNotice.set(
-      method === "openbitfun_server" ? tr("devices.store.serverStopped") : tr("devices.store.relayStopped"),
-    );
   } catch (error) {
     connectorError.set(error instanceof Error ? error.message : String(error));
   } finally {

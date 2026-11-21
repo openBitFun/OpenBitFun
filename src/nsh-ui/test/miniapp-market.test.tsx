@@ -10,10 +10,18 @@ function marketCalls(backend: ReturnType<typeof createMiniAppMarketBackend>, act
   return backend.calls.filter(call => call.action === action);
 }
 
+/** Spaces is a Library tab (visual spec §4.8): open the Library, then the tab. */
+async function openSpaces(app: Awaited<ReturnType<typeof open>>): Promise<void> {
+  await app.waitFor("toggle-drawer");
+  // A medium window keeps the sidebar as an overlay drawer: open it first.
+  if (!app.shows("nav-library") && !app.shows("phone-tab-library")) await app.press("toggle-drawer");
+  if (!app.shows("library-tab-spaces")) await app.press(app.shows("nav-library") ? "nav-library" : "phone-tab-library");
+  await app.press("library-tab-spaces");
+}
+
 async function openMarket(backend: ReturnType<typeof createMiniAppMarketBackend>) {
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Spaces");
-  await app.press("Spaces");
+  await openSpaces(app);
   await app.waitFor("label:spaces-view-market");
   await app.press("label:spaces-view-market");
   return app;
@@ -202,8 +210,7 @@ test("market: a host without the market says so instead of showing an empty cata
 test("submissions: lists the account's submissions and withdraws one after confirmation", async () => {
   const backend = createMiniAppMarketBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Spaces");
-  await app.press("Spaces");
+  await openSpaces(app);
   await app.press("label:spaces-view-submissions");
 
   await app.waitFor("Focus Timer");
@@ -230,8 +237,7 @@ test("submissions: lists the account's submissions and withdraws one after confi
 test("submissions: signed out shows a sign-in state and reads nothing", async () => {
   const backend = createMiniAppMarketBackend({}, { signedIn: false });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Spaces");
-  await app.press("Spaces");
+  await openSpaces(app);
   await app.press("label:spaces-view-submissions");
   await app.waitFor("label:submissions-sign-in");
   expect(marketCalls(backend, "miniapp_market_list_submissions")).toHaveLength(0);
@@ -240,8 +246,7 @@ test("submissions: signed out shows a sign-in state and reads nothing", async ()
 test("package import: the host inspects the package before it installs it", async () => {
   const backend = createMiniAppMarketBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Spaces");
-  await app.press("Spaces");
+  await openSpaces(app);
   await app.waitFor("label:spaces-import-package");
   await app.press("label:spaces-import-package");
   await app.waitFor("label:package-import-path");
@@ -272,8 +277,7 @@ test("package import: the host inspects the package before it installs it", asyn
 test("market: a narrower window keeps the toolbar, catalogue and detail usable", async () => {
   const backend = createMiniAppMarketBackend();
   const app = await open("../App.tsx", { width: 800, height: 860, platform: "macos" as const, host: { handlers: backend.handlers } });
-  await app.waitFor("Spaces");
-  await app.press("Spaces");
+  await openSpaces(app);
   await app.waitFor("label:spaces-view-market");
   await app.press("label:spaces-view-market");
   await app.waitFor("label:market-card-standup-board");

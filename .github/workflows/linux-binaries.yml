@@ -181,6 +181,12 @@ jobs:
       - name: Verify projected Cargo metadata
         run: cargo metadata --locked --no-deps
 
+      - name: Build the CLI's web UI
+        # Browsers load the web UI from the device they control, so the CLI
+        # embeds the one built from this commit (src/apps/cli/build.rs).
+        shell: bash
+        run: node scripts/ci/build-cli-web-ui.mjs
+
       - name: Build CLI and Relay Server
         shell: bash
         env:

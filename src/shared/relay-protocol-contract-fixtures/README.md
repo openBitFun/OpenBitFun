@@ -1,9 +1,10 @@
 # Relay protocol contract fixtures
 
-The relay wire format is currently hand-decoded in four places: the HarmonyOS
-app ([src/apps/mobile/harmonyos](https://github.com/openBitFun/OpenBitFun-Mobile/tree/main/src/apps/mobile/harmonyos)), the mobile web client (`src/mobile-web`), the
+The relay wire format is hand-decoded in three places: the HarmonyOS
+app ([src/apps/mobile/harmonyos](https://github.com/openBitFun/OpenBitFun-Mobile/tree/main/src/apps/mobile/harmonyos)), the
 Kotlin shared core ([src/apps/mobile/shared](https://github.com/openBitFun/OpenBitFun-Mobile/tree/main/src/apps/mobile/shared)), and the desktop peer that
-produces the payloads. Nothing but review has kept those four in agreement.
+produces the payloads. Nothing but review has kept those three in agreement.
+(The 1.0 phone web UI, `src/mobile-web`, was the fourth; it was removed in 2.0.)
 
 These fixtures are the shared reference. Each file pairs a captured payload with
 the normalized result every client must produce from it:
@@ -29,7 +30,7 @@ wrong for whichever client changes first.
 |---|---|
 | Kotlin shared core | `core-protocol` `commonTest`, via generated `RelayContractFixtures` |
 
-HarmonyOS and mobile-web adopt these incrementally; a client is listed here only
+HarmonyOS adopts these incrementally; a client is listed here only
 once its tests actually read the files.
 
 ## Adding a case

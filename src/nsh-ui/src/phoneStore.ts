@@ -12,7 +12,7 @@ import { signal } from "nsh";
 import { invokeCommand } from "./bridge";
 
 /** The web controller's address on the OpenBitFun domain. */
-export const WEB_CONTROLLER_URL = "https://remote.openbitfun.com/app/";
+export const WEB_CONTROLLER_URL = "https://super.openbitfun.com/";
 
 /** The address as the panel prints it (no scheme, no trailing slash). */
 export function webControllerLabel(url: string = WEB_CONTROLLER_URL): string {

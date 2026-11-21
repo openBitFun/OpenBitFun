@@ -443,6 +443,21 @@ impl WorkspaceService {
         .await
     }
 
+    /// Makes a Detached Dispatch job's workspace (the managed worktree the
+    /// `openbitfun dispatch` runner works in, a separate process) one of this
+    /// host's recent workspaces, without opening it or changing the current
+    /// one. The runner records it in its own process only, so without this
+    /// the host's catalog, its fleet digest and every client's index miss the
+    /// job's workspace and session until the host restarts.
+    pub async fn track_dispatch_workspace(&self, path: PathBuf) -> OpenBitFunResult<WorkspaceInfo> {
+        self.track_workspace_activity(
+            path,
+            WorkspaceCreateOptions::default(),
+            WorkspaceActivityMode::TouchOnly,
+        )
+        .await
+    }
+
     async fn register_worktree_project(
         &self,
         mut tree: Option<WorkspaceWorktreeInfo>,
@@ -3556,6 +3571,38 @@ mod tests {
             saved.recent_workspaces,
             vec![project.id, "offline-remote".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_job_workspace_becomes_recent_without_being_opened() {
+        let env = TestEnvironment::new();
+        let service = build_test_workspace_service(env.path_manager.clone()).await;
+        let current_root = env.create_workspace_dir("project");
+        let current = service.open_workspace(current_root).await.unwrap();
+        let job_root = env.create_workspace_dir("project-54957b04");
+
+        let job = service
+            .track_dispatch_workspace(job_root.clone())
+            .await
+            .expect("the job workspace is tracked");
+
+        assert!(service
+            .get_recent_workspaces()
+            .await
+            .iter()
+            .any(|workspace| workspace.id == job.id));
+        assert!(!service
+            .get_opened_workspaces()
+            .await
+            .iter()
+            .any(|workspace| workspace.id == job.id));
+        assert_eq!(
+            service.get_current_workspace().await.map(|w| w.id),
+            Some(current.id)
+        );
+        // Tracking it again (every job of the worktree) keeps one record.
+        let again = service.track_dispatch_workspace(job_root).await.unwrap();
+        assert_eq!(again.id, job.id);
     }
 
     #[tokio::test]

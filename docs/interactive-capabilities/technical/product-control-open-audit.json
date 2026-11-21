@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "8c7c7efeebc00dc169740b5321b981c9bd229525167eaf6d1388436ee4fcfb2d",
-  "count": 220,
+  "catalogDigest": "111f8eba88e117defacc127be88915b4344b785e72d1ddb74208d7f2a9b21f74",
+  "count": 221,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 6,
-    "unstructuredInteraction": 184,
+    "unstructuredInteraction": 185,
     "visualSelection": 26
   },
   "entries": [
@@ -23,8 +23,8 @@
         "sceneId": "personal-overview"
       },
       "evidence": [
-        "source:src/nsh-ui/src/homeStore.ts#PersonalOverview",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"home.activityHeatmapTitle\""
+        "source:src/nsh-ui/src/homeStore.ts#loadAccountActivity",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.activity.summary\""
       ]
     },
     {
@@ -2089,19 +2089,18 @@
     {
       "capabilityId": "feature.remote-connect",
       "itemId": "connection-methods",
-      "titleZh": "使用免部署的官方 Relay",
-      "titleEn": "Use the zero-setup official Relay",
+      "titleZh": "经 OpenBitFun Link 在任何网络连接你的设备",
+      "titleEn": "Reach your devices on any network over OpenBitFun Link",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「使用免部署的官方 Relay」需要结合你当前的网络环境确认连接入口；官方 Relay 开箱即用，私有 Relay 仅面向配套定制客户端构建，界面不提供自定义服务器地址输入。",
-      "reasonEn": "\"Use the zero-setup official Relay\" depends on your current network setup and host confirmation; the official Relay needs no deployment, while private Relays require matching custom builds rather than a custom URL field.",
+      "reasonZh": "「经 OpenBitFun Link 在任何网络连接你的设备」由登录与本机可被控制开关决定，没有需要智能体选择的连接入口。",
+      "reasonEn": "\"Reach your devices on any network over OpenBitFun Link\" follows sign-in and the Allow control switch; there is no connection entry for the Agent to choose.",
       "presentationTarget": {
         "kind": "event",
         "eventName": "openbitfun:open-remote-connect"
       },
       "evidence": [
         "command:remote_connect_get_methods",
-        "source:src/apps/desktop/src/api/remote_connect_api/relay_routes_tests.rs#official_relay_rpc_persistence_and_teardown",
-        "source:src/crates/services/relay-service/src/identity.rs#IDENTITY_ME_URL"
+        "source:src/crates/services/services-integrations/src/remote_connect/mesh_route.rs#DEVICE_NOT_ON_LINK"
       ]
     },
     {
@@ -2174,32 +2173,26 @@
       },
       "evidence": [
         "command:account_list_devices",
-        "command:account_relay_capabilities",
         "command:account_update_device_alias",
-        "command:account_connect_devices",
-        "command:account_online_devices",
-        "command:account_delete_device",
-        "command:account_device_rpc",
-        "command:account_execute_on_device"
+        "command:account_delete_device"
       ]
     },
     {
       "capabilityId": "feature.remote-connect",
       "itemId": "peer-device",
-      "titleZh": "开启 Peer Device Mode，在当前窗口无缝接管另一台电脑的工作区",
-      "titleEn": "Use Peer Device Mode to operate another computer’s workspaces in your current window",
+      "titleZh": "在当前窗口直接操作同账号另一台电脑的工作区",
+      "titleEn": "Operate another computer’s workspaces in your current window",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "「开启 Peer Device Mode，在当前窗口无缝接管另一台电脑的工作区」会切换当前窗口所绑定的远端主机数据面，需要你在侧边栏或设备面板明确点击目标设备确认切换。",
-      "reasonEn": "\"Use Peer Device Mode to operate another computer’s workspaces in your current window\" switches the active window’s live data plane to another host and requires an explicit device selection in the sidebar or device switcher.",
+      "reasonZh": "「在当前窗口直接操作同账号另一台电脑的工作区」会切换当前窗口显示的设备，需要你在「所有会话 › 按设备」或设备页明确选择目标设备。",
+      "reasonEn": "\"Operate another computer’s workspaces in your current window\" changes which device the window shows and requires an explicit device choice in All sessions › By device or on the device page.",
       "presentationTarget": {
         "kind": "event",
         "eventName": "openbitfun:open-remote-connect"
       },
       "evidence": [
-        "command:peer_control_attach",
-        "command:peer_control_detach",
-        "command:peer_controller_set_active",
-        "command:peer_mode_ping"
+        "command:fleet_navigator",
+        "command:fleet_call",
+        "command:fleet_events"
       ]
     },
     {
@@ -2858,7 +2851,25 @@
       },
       "evidence": [
         "source:src/nsh-ui/src/permissionPolicyStore.ts#auto_approve_ask",
-        "source:src/nsh-ui/src/locales/zh-CN.ts#\"settings.permissions.modeAsk\""
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"perm.ask\""
+      ]
+    },
+    {
+      "capabilityId": "setting.ai.permissions",
+      "itemId": "openbitfun-device-switches",
+      "titleZh": "决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求",
+      "titleEn": "Decide whether OpenBitFun may start work on this device and approve requests from the jobs it started",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“决定 OpenBitFun 能否在本设备上开展工作、能否代你批准请求”会改变这台设备的安全边界；智能体会打开权限页交由你亲自切换。",
+      "reasonEn": "“Decide whether OpenBitFun may start work on this device and approve requests” changes this device's safety boundary; the Agent opens Permissions so you switch it yourself.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "ai.permissions"
+      },
+      "evidence": [
+        "command:set_superagent_settings",
+        "source:src/nsh-ui/src/settingsStore.ts#superagent-accept-dispatch",
+        "source:src/nsh-ui/src/locales/zh-CN.ts#\"perm.acceptJobs\""
       ]
     },
     {

@@ -15,7 +15,9 @@ import {
   productIcon,
   resolvePackageProduct,
   root,
+  writeWebBundleManifest,
 } from './desktop-nsh-package-common.mjs';
+import { bundleIdOf, readUiBundleManifest } from './write-ui-bundle-manifest.mjs';
 
 const ACME = join(root, 'products', 'fixtures', 'acme', 'product.jsonc');
 
@@ -126,4 +128,20 @@ test('products without declared icons use the committed OpenBitFun icons', () =>
     assert.ok(existsSync(productIcon(identity, platform)), platform);
   }
   assert.equal(productIcon({ icons: { macos: '/brand/app.icns' } }, 'macos'), '/brand/app.icns');
+});
+
+test('the packaged web bundle carries its ui-bundle.json, over the untouched files and the product id', () => {
+  const site = mkdtempSync(join(tmpdir(), 'nsh-web-'));
+  writeFileSync(join(site, 'index.html'), '<!doctype html>');
+  writeFileSync(join(site, 'index.html.br'), 'br');
+  const bundleId = writeWebBundleManifest(site, { productId: 'acme' });
+  const { manifest, bundleId: read } = readUiBundleManifest(site);
+  assert.equal(read, bundleId);
+  assert.equal(bundleIdOf(manifest), bundleId);
+  assert.equal(manifest.product, 'acme');
+  assert.equal(readFileSync(join(site, 'index.html'), 'utf8'), '<!doctype html>');
+  // No web bundle: reported, nothing written, the package answers ui_bundle_unavailable.
+  const empty = mkdtempSync(join(tmpdir(), 'nsh-web-empty-'));
+  assert.equal(writeWebBundleManifest(empty, { productId: 'openbitfun' }), null);
+  assert.equal(existsSync(join(empty, 'ui-bundle.json')), false);
 });

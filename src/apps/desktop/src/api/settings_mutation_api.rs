@@ -10,7 +10,8 @@ use crate::host::{HostHandle, State};
 use crate::openbitfun_control_host::mutate_config_from_gui;
 use openbitfun_core::service::config::settings_mutations::{
     self, AiModelUpsertRequest, ApprovalSettingsRequest, PermissionRuleInput,
-    PermissionRuleUpsertRequest, WebSearchProviderRequest,
+    PermissionRuleUpsertRequest, SuperagentSettingsRequest, WebSearchProviderRequest,
+    SUPERAGENT_PATH,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -209,6 +210,21 @@ pub async fn set_web_search_provider(
     .await
 }
 
+/// This device's switches for the account's cloud agent
+/// (`superagent.acceptDispatch`, `superagent.allowAutoApproval`); the
+/// response is the stored section. The device enforces them on every
+/// cloud-agent call.
+// @backend-command
+pub async fn set_superagent_settings(
+    app: HostHandle,
+    request: SuperagentSettingsRequest,
+) -> Result<Value, String> {
+    mutate_config_from_gui(&app, SUPERAGENT_PATH, |current| {
+        settings_mutations::set_superagent_settings(current, &request)
+    })
+    .await
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GetSettingsSchemaRequest {
@@ -286,6 +302,10 @@ mod tests {
         let search: WebSearchProviderRequest =
             serde_json::from_value(json!({"provider": "tavily"})).unwrap();
         assert_eq!(search.provider.as_deref(), Some("tavily"));
+
+        let superagent: SuperagentSettingsRequest =
+            serde_json::from_value(json!({"allowAutoApproval": false})).unwrap();
+        assert_eq!(superagent.allow_auto_approval, Some(false));
 
         let schema: GetSettingsSchemaRequest = serde_json::from_value(json!({})).unwrap();
         assert!(schema.paths.is_empty());

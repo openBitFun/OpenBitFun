@@ -16,7 +16,6 @@ import { invokeCommand, invokeRawCommand } from "./bridge";
 import { isCommandUnavailable } from "./hostCommands";
 import { isAuthRequiredError, tr } from "./i18n";
 import { isAccountSignedIn, loadAccountState } from "./homeStore";
-import { peerScope } from "./peerState";
 import { loadSpaces, openSpaceWindow, spaceWindowBlockedReason } from "./spacesStore";
 import { activeWorkspace } from "./state";
 import { pushToast } from "./ui/overlays";
@@ -511,13 +510,9 @@ export async function refreshMarketListing(): Promise<void> {
   }
 }
 
-/**
- * Whether the user must sign in before a personal action. Only this machine's
- * account is known here: while a peer is driven its own account answers, so the
- * request goes through and the peer's refusal (if any) is shown.
- */
+/** Whether the user must sign in before a personal action. */
 function needsLocalSignIn(): boolean {
-  return !peerScope() && !isAccountSignedIn();
+  return !isAccountSignedIn();
 }
 
 function applyListingPatch(patch: Partial<MarketListing>): void {
@@ -712,13 +707,11 @@ export async function loadSubmissions(): Promise<void> {
   submissionsError.set("");
   submissionsSignInRequired.set(false);
   try {
-    if (!peerScope()) {
-      await loadAccountState().catch(() => undefined);
-      if (!isAccountSignedIn()) {
-        submissions.set([]);
-        submissionsSignInRequired.set(true);
-        return;
-      }
+    await loadAccountState().catch(() => undefined);
+    if (!isAccountSignedIn()) {
+      submissions.set([]);
+      submissionsSignInRequired.set(true);
+      return;
     }
     const raw = await invokeRawCommand<unknown>("miniapp_market_list_submissions", {});
     submissions.set((Array.isArray(raw) ? raw : []).map(normalizeSubmission).filter(item => item.submissionId));
@@ -766,16 +759,6 @@ export async function withdrawSubmission(submissionId: string): Promise<void> {
 
 // ── Package import ────────────────────────────────────────────────────────────
 
-/**
- * Why a package cannot be imported here, or "". The package path is read by the
- * backend; while a peer is driven that is the peer's filesystem, which the
- * desktop refuses rather than resolve a controller path there.
- */
-export function packageImportBlockedReason(): string {
-  if (peerScope()) return tr("market.import.peerUnsupported");
-  return "";
-}
-
 export function openPackageImport(): void {
   packageImportOpen.set(true);
   packageImportPath.set("");
@@ -800,11 +783,6 @@ export function setPackageImportPath(value: string): void {
 export async function inspectPackage(): Promise<void> {
   const path = packageImportPath().trim();
   if (!path || packageImportBusy()) return;
-  const blocked = packageImportBlockedReason();
-  if (blocked) {
-    packageImportError.set(blocked);
-    return;
-  }
   packageImportBusy.set(true);
   packageImportError.set("");
   try {

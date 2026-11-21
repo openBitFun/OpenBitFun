@@ -22,26 +22,38 @@ mod protocol;
 mod scope;
 mod store;
 mod tls;
+mod ui_fetch;
 
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(test)]
+mod fleet_tests;
 #[cfg(test)]
 mod mesh_tests;
 #[cfg(test)]
 mod test_http;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ui_fetch_tests;
 
+#[cfg(feature = "fleet")]
+pub(crate) use connection::{coalesce as coalesce_events, Outgoing};
 pub use connection::{ConnectionLimits, StopReason};
 pub use link::{serve_on_link, LinkIncoming};
 #[cfg(any(test, feature = "test-support"))]
 pub use mesh::LoopbackIncoming;
 pub use mesh::{MeshAcceptFuture, MeshIncoming};
 pub use openbitfun_product_domains::remote_surface::PeerHostKind;
+#[cfg(feature = "fleet")]
+pub(crate) use protocol::passes_prefixes;
 pub use protocol::{BASE_MESH_CAPABILITIES, SERVER_CAPABILITIES};
-pub use scope::{check_command, event_visible, Scope};
+pub use scope::{
+    check_cloud_agent_call, check_command, event_visible, scope_for_device, CloudAgentPolicy,
+    Scope, CLOUD_AGENT_DEVICE_KIND, CLOUD_AGENT_SCOPE_CAPABILITY, FLEET_MODEL_COMMANDS,
+};
 
-pub use crate::authority::{MeshAuthority, MeshInfo, MeshIo, PairKeyFuture};
+pub use crate::authority::{DeviceKindFuture, MeshAuthority, MeshInfo, MeshIo, PairKeyFuture};
 pub use crate::OBP_PROTOCOL_VERSION;
 
 use std::collections::HashMap;
@@ -49,7 +61,7 @@ use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -57,6 +69,7 @@ use serde_json::Value;
 use tokio::sync::{oneshot, watch};
 
 use crate::events::EventHub;
+pub use crate::ui_bundle::UiBundleSource;
 
 /// Default loopback port (falls back to an ephemeral one when taken).
 pub const DEFAULT_LOOPBACK_PORT: u16 = 47610;
@@ -97,7 +110,31 @@ pub trait ObpBackend: Send + Sync + 'static {
     fn is_unsupported_error(&self, message: &str) -> bool {
         message.starts_with(crate::UNSUPPORTED_IN_NATIVE_HOST)
     }
+    /// The fleet event mux of this host, once its fleet layer runs: a hello
+    /// with `fleet` on the owner or account-device scope then gets the
+    /// merged, origin-tagged stream and the connection answers
+    /// `fleet_subscribe` itself. `None` (the default): such a hello is
+    /// answered as an old entry's, frames unchanged.
+    #[cfg(feature = "fleet")]
+    fn fleet_mux(&self) -> Option<Arc<crate::fleet::mux::FleetMux>> {
+        None
+    }
+    /// Whether this host serves the account's cloud agent (its device
+    /// switches and the model relay): advertises `cloud_agent_scope_v1`.
+    /// The superagent never dials a host that does not.
+    fn serves_cloud_agent(&self) -> bool {
+        false
+    }
+    /// The device's cloud-agent switches, read for each `cloud-agent` call
+    /// (`superagent.acceptDispatch`, `superagent.allowAutoApproval`; both
+    /// default on).
+    fn cloud_agent_policy(&self) -> CloudAgentPolicyFuture {
+        Box::pin(async { CloudAgentPolicy::default() })
+    }
 }
+
+/// A boxed future yielding the device's cloud-agent switches.
+pub type CloudAgentPolicyFuture = Pin<Box<dyn Future<Output = CloudAgentPolicy> + Send>>;
 
 /// How a server is set up.
 #[derive(Debug, Clone)]
@@ -106,6 +143,10 @@ pub struct ObpServerOptions {
     pub state_dir: PathBuf,
     /// The NSH web bundle (`index.html` and its files), if this build has it.
     pub web_root: Option<PathBuf>,
+    /// The web UI bundle browsers load from this host by hash
+    /// (`ui_bundle_manifest`, `GET /obp-ui/v1/<sha256>` on the mesh
+    /// listener). `None`: the bundle under `web_root`, or none.
+    pub ui_bundle: Option<Arc<UiBundleSource>>,
     /// Preferred loopback port; `0` asks for an ephemeral one.
     pub loopback_port: u16,
     pub limits: ConnectionLimits,
@@ -116,6 +157,7 @@ impl ObpServerOptions {
         Self {
             state_dir,
             web_root: None,
+            ui_bundle: None,
             loopback_port: DEFAULT_LOOPBACK_PORT,
             limits: ConnectionLimits::default(),
         }
@@ -216,6 +258,13 @@ pub struct ObpServer {
     connections: Mutex<HashMap<u64, ConnectionEntry>>,
     next_connection: AtomicU64,
     mesh: mesh::MeshListenerState,
+    ui_bundle: Arc<UiBundleSource>,
+    /// Concurrent by-hash fetches of web UI files (`ui_fetch`).
+    ui_fetch_slots: Arc<tokio::sync::Semaphore>,
+    /// Connections attached as fleet clients now (their hello carried
+    /// `fleet` and was answered with a fleet stream): `fleetLoad` on
+    /// `/obp/mesh/info`, which entry rankings use to spread clients.
+    fleet_clients: Arc<AtomicUsize>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -247,6 +296,14 @@ impl ObpServer {
         options: ObpServerOptions,
     ) -> std::io::Result<Arc<Self>> {
         let store = store::ObpStore::open(options.state_dir.clone())?;
+        let ui_bundle = options.ui_bundle.clone().unwrap_or_else(|| {
+            Arc::new(match &options.web_root {
+                Some(root) => UiBundleSource::directory(root.clone()),
+                None => UiBundleSource::unavailable(
+                    "this build ships no web UI bundle; update OpenBitFun on this device",
+                ),
+            })
+        });
         Ok(Arc::new(Self {
             backend,
             options,
@@ -257,6 +314,9 @@ impl ObpServer {
             connections: Mutex::new(HashMap::new()),
             next_connection: AtomicU64::new(1),
             mesh: mesh::MeshListenerState::default(),
+            ui_bundle,
+            ui_fetch_slots: Arc::new(tokio::sync::Semaphore::new(ui_fetch::MAX_CONCURRENT)),
+            fleet_clients: Arc::new(AtomicUsize::new(0)),
         }))
     }
 
@@ -269,8 +329,24 @@ impl ObpServer {
         &self.instance_id
     }
 
+    /// Connections attached as fleet clients now (`fleetLoad`).
+    pub fn fleet_load(&self) -> usize {
+        self.fleet_clients.load(Ordering::Relaxed)
+    }
+
     pub fn web_root(&self) -> Option<&Path> {
         self.options.web_root.as_deref()
+    }
+
+    /// The web UI bundle this host hands to browsers.
+    pub fn ui_bundle(&self) -> &Arc<UiBundleSource> {
+        &self.ui_bundle
+    }
+
+    /// `ui_bundle_manifest`: `{manifest, bundleId}`, or
+    /// `ui_bundle_unavailable: <reason>` (loads off the async workers).
+    pub async fn ui_bundle_manifest(&self) -> Result<Value, String> {
+        ui_bundle_manifest(Arc::clone(&self.ui_bundle)).await
     }
 
     /// The loopback listener's address, once started.
@@ -327,7 +403,7 @@ impl ObpServer {
             .values()
             .filter_map(|entry| match &entry.scope {
                 Scope::PairedClient { client_id } => Some(client_id.as_str()),
-                Scope::Owner | Scope::AccountDevice { .. } => None,
+                Scope::Owner | Scope::AccountDevice { .. } | Scope::CloudAgent { .. } => None,
             })
             .collect();
         let owner_connections = connections
@@ -418,7 +494,7 @@ impl ObpServer {
     }
 
     fn register_connection(&self, scope: Scope) -> (u64, watch::Receiver<Option<StopReason>>) {
-        let via_mesh = matches!(scope, Scope::AccountDevice { .. });
+        let via_mesh = scope.is_mesh_device();
         self.register_connection_via(scope, via_mesh)
     }
 
@@ -458,6 +534,19 @@ impl ObpServer {
         }
         lock(&self.store).remove_owner_token();
     }
+}
+
+/// `ui_bundle_manifest` of `source` on a blocking thread (the first load
+/// hashes every file of the bundle).
+pub async fn ui_bundle_manifest(source: Arc<UiBundleSource>) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || source.manifest_response())
+        .await
+        .unwrap_or_else(|error| {
+            Err(format!(
+                "{}: the bundle check failed: {error}",
+                crate::ui_bundle::UNAVAILABLE
+            ))
+        })
 }
 
 /// Status for a host whose listener is not running.

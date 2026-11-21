@@ -48,7 +48,6 @@ import {
   marketWorkspaceBlockedReason,
   openInstalledMarketApp,
   openMarketListing,
-  packageImportBlockedReason,
   packageImportBusy,
   packageImportError,
   packageImportOpen,
@@ -74,7 +73,6 @@ import {
   type MarketSort,
   type MarketSubmission,
 } from "../miniAppMarketStore";
-import { peerScope } from "../peerState";
 import { spaceWindowBlockedReason } from "../spacesStore";
 import { fontMono, palette, radii, textLineHeight, textSize } from "../theme";
 import { openAccountAuthModal } from "./AccountAuthModal";
@@ -247,35 +245,6 @@ function categoryOptions(): ReadonlyArray<SelectDropdownOption<MarketCategory>> 
   }));
 }
 
-/** While a peer is driven, the market runs there and Spaces install there. */
-function MarketPeerNote() {
-  return (
-    <If when={peerScope()?.label ?? ""}>
-      {label => (
-        <View
-          accessibilityLabel="market-peer-note"
-          style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 4 }}
-        >
-          <View style={{ paddingTop: 2 }}>
-            <Icon name="info" size={13} color={palette().textMuted} />
-          </View>
-          <Text
-            style={{
-              flex: 1,
-              minWidth: 0,
-              color: palette().textSecondary,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.5),
-            }}
-          >
-            {tr("market.peerNote", { label: label() })}
-          </Text>
-        </View>
-      )}
-    </If>
-  );
-}
-
 // ── Market view ───────────────────────────────────────────────────────────────
 
 function MarketCard(props: { item: () => MarketListing }) {
@@ -414,7 +383,6 @@ function MarketToolbar() {
 export function MiniAppMarketView() {
   return (
     <View style={{ gap: 20, minWidth: 0 }}>
-      <MarketPeerNote />
       <MarketToolbar />
 
       <StudioSection
@@ -935,7 +903,6 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
 export function MiniAppSubmissionsView() {
   return (
     <View style={{ gap: 20, minWidth: 0 }}>
-      <MarketPeerNote />
       <StudioSection
         title={tr("market.submissions.title")}
         accessibilityLabel="market-submissions"
@@ -1045,7 +1012,7 @@ export function PackageImportModal() {
                 variant="primary"
                 size="md"
                 loading={packageImportBusy()}
-                disabled={!packageImportPath().trim() || Boolean(packageImportBlockedReason())}
+                disabled={!packageImportPath().trim()}
                 accessibilityLabel="package-import-inspect"
                 onPress={() => void inspectPackage()}
               />
@@ -1065,9 +1032,6 @@ export function PackageImportModal() {
       }
     >
       <View style={{ gap: 16 }}>
-        <If when={packageImportBlockedReason()}>
-          {reason => <InlineBanner tone="warning" message={reason()} accessibilityLabel="package-import-blocked" />}
-        </If>
         <InputBox
           value={packageImportPath()}
           placeholder={tr("market.import.pathPlaceholder")}

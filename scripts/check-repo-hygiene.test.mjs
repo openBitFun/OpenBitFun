@@ -10,7 +10,6 @@ const checker = fileURLToPath(new URL('./check-repo-hygiene.mjs', import.meta.ur
 const localOnlyPaths = [
   'package-lock.json',
   'OpenBitFun-Installer/package-lock.json',
-  'src/mobile-web/package-lock.json',
   'tests/e2e/package-lock.json',
   'OpenBitFun-Installer/src-tauri/Cargo.lock',
   'OpenBitFun-Installer/src-tauri/gen/schemas/capabilities.json',

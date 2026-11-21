@@ -12,7 +12,6 @@
 //   nsh-web/                             the same UI for browsers/phones (OBP)
 //   resources/{worker_host.js,ext-host/extension-host.js,dsh-profile/}
 //   flashgrep/flashgrep-<triple>-musl    workspace search daemon
-//   mobile-web/dist                      legacy relay mobile UI, when built
 //   <productId>.desktop, <productId>.png desktop entry and icon for an installer
 //
 // Usage: node scripts/package-desktop-nsh-linux.mjs [--profile release|release-fast]
@@ -40,6 +39,7 @@ import {
   root,
   run,
   writePackageInfo,
+  writeWebBundleManifest,
 } from "./desktop-nsh-package-common.mjs";
 
 const options = parseArgs();
@@ -77,6 +77,7 @@ if (shell) {
   console.warn("MiniApp shell not built (pnpm run prepare:miniapp-shell); Spaces will not open windows");
 }
 
+writeWebBundleManifest(join(webOut, "OpenBitFun"), identity);
 copyResources(
   backendResources({
     webSite: join(webOut, "OpenBitFun"),

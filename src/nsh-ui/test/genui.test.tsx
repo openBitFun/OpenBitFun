@@ -3,7 +3,7 @@
 import { expect, open, test } from "nsh/test";
 import { Evaluator, initialState, parseOpenUi, type GenElement } from "../src/genui/openuiLang";
 import { callBuiltin } from "../src/genui/genuiFunctions";
-import { createBackend } from "./support";
+import { createBackend, openSession } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -109,8 +109,7 @@ test("a settled GenerativeUI answer is an interactive interface in the transcrip
   const backend = createBackend();
   withTurns(backend, genuiTurn(STEPPER));
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Pasta night for 4 guests");
   expect(app.texts()).toContain("400 g spaghetti");
   // Not drawn as a generic tool row.
@@ -134,8 +133,7 @@ test("a settled GenerativeUI answer is an interactive interface in the transcrip
 test("a GenerativeUI source streamed live renders as it arrives", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   const send = (event: string, payload: Record<string, unknown>) =>
     app.host.send("openbitfun.event", { event, payload: { sessionId: "session-1", turnId: "turn-gen", ...payload } });
@@ -183,8 +181,7 @@ test("a failed GenerativeUI candidate leaves no card; an unknown component is na
     },
   ]);
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Mostly works");
   await app.waitFor("Let me fix that.");
   expect(app.texts().join("\n")).toContain("Not drawn in this view: Hologram");

@@ -109,10 +109,6 @@ test('maps representative changes to the smallest predictive validation', () => 
       }),
     },
     {
-      paths: ['src/mobile-web/src/App.tsx'],
-      result: expected({ rustRequired: false, reason: 'frontend-only' }),
-    },
-    {
       paths: ['design-system/packages/ui/src/components/Input/Input.tsx'],
       result: expected({ rustRequired: false, reason: 'frontend-only' }),
     },
@@ -192,20 +188,6 @@ test('maps representative changes to the smallest predictive validation', () => 
         reason: 'platform-package-input',
       }),
     })),
-    {
-      paths: ['src/mobile-web/package.json'],
-      result: expected({
-        rustRequired: false,
-        reason: 'frontend-only',
-      }),
-    },
-    {
-      paths: ['scripts/mobile-web-build.cjs'],
-      result: expected({
-        rustRequired: false,
-        reason: 'frontend-only',
-      }),
-    },
     {
       paths: ['src/apps/relay-server/Dockerfile.release'],
       result: expected({
@@ -291,10 +273,10 @@ test('maps representative changes to the smallest predictive validation', () => 
   }
 });
 
-test('combines mobile-web with other surfaces without native-mobile noise', () => {
+test('combines frontend-only surfaces with others without native-mobile noise', () => {
   assert.deepEqual(
     classifyBuildImpact([
-      'src/mobile-web/src/App.tsx',
+      'design-system/packages/ui/src/components/Input/Input.tsx',
       'src/apps/mobile/android/app/src/main/kotlin/com/openbitfun/MainActivity.kt',
     ]),
     expected({
@@ -306,7 +288,7 @@ test('combines mobile-web with other surfaces without native-mobile noise', () =
 
   assert.deepEqual(
     classifyBuildImpact([
-      'src/mobile-web/src/App.tsx',
+      'design-system/packages/ui/src/components/Input/Input.tsx',
       'src/crates/services/services-core/src/lib.rs',
     ]),
     expected({
@@ -318,7 +300,7 @@ test('combines mobile-web with other surfaces without native-mobile noise', () =
 
   assert.deepEqual(
     classifyBuildImpact([
-      'src/mobile-web/src/App.tsx',
+      'design-system/packages/ui/src/components/Input/Input.tsx',
       'src/apps/mobile/shared/core-feature/src/commonMain/kotlin/Feature.kt',
       'src/apps/relay-server/Dockerfile.release',
     ]),

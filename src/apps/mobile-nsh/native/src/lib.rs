@@ -173,12 +173,26 @@ impl Controller {
         .await
     }
 
-    /// Opens an authenticated OBP connection to the device `deviceId` over the device network; resolves with the connection's handle once the device answered `hello`.
-    pub async fn connect(device_id: String) -> Result<u32, String> {
+    /// Opens an authenticated OBP connection to the device `deviceId` over the device network; resolves with the connection's handle once the device answered `hello`. `optionsJson` (JSON `{ fleet: { protocol, cursor } }`) makes the hello a fleet hello with that vector cursor; a redial resumes from the cursor of what was delivered since.
+    pub async fn connect(device_id: String, options_json: Option<String>) -> Result<u32, String> {
         let inner = controller().map_err(port_error)?;
-        run(async move { inner.connect(device_id).await })
+        let options = controller::ConnectOptions::from_json(options_json.as_deref());
+        run(async move { inner.connect(device_id, options).await })
             .await
             .map_err(port_error)
+    }
+
+    /// The account's runtime hosts this phone may enter the fleet through, best first (JSON `{ entryCandidates: [deviceId], candidates: [{ deviceId, online, fleetProtocol, fullHost, latencyMs, fleetLoad, version }] }`): online, then `fleet_v1`, then a desktop, then lowest latency, then fewest attached clients, then newest version.
+    pub async fn entry_candidates() -> Result<String, String> {
+        let inner = controller().map_err(port_error)?;
+        run(async move {
+            inner
+                .entry_candidates()
+                .await
+                .map(|value| value.to_string())
+        })
+        .await
+        .map_err(port_error)
     }
 
     /// The device backend of a connection: JSON `{ version, platform, dataDir, scope, capabilities, deviceId }`.

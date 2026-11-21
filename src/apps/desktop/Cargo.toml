@@ -22,7 +22,7 @@ openbitfun-core = { path = "../../crates/assembly/core", features = ["product-fu
 openbitfun-link = { path = "../../crates/services/link" }
 # The backend protocol (OBP): listeners, scopes, the Link handshake and the
 # controller client, shared with the CLI host and the phone app.
-openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server"] }
+openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "fleet"] }
 openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
 openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = ["agent-api", "permission", "workspace-ports"] }
 openbitfun-product-domains = { path = "../../crates/contracts/product-domains" }
@@ -80,7 +80,7 @@ tokio = { workspace = true, features = ["test-util"] }
 # Remote Connect route tests run the real Relay router as a loopback fixture.
 openbitfun-relay-service = { path = "../../crates/services/relay-service" }
 # OBP over the mesh: loopback stand-ins for Link in the desktop's mesh tests.
-openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "test-support"] }
+openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "fleet", "test-support"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }

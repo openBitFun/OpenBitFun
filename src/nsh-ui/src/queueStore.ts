@@ -14,7 +14,6 @@
 
 import { Storage, signal } from "nsh";
 import { invokeCommand } from "./bridge";
-import { peerScope, peerSupports } from "./peerState";
 import { queuedCounts } from "./sessionStatusStore";
 import { tr } from "./i18n";
 import { activeSessionId, agentTypeOf, runningTurnId } from "./state";
@@ -122,12 +121,7 @@ function markQueueUnavailable(sessionId: string): void {
   queuedMessages.update(current => current.filter(item => !item.id.startsWith(`${sessionId}\u0000`)));
   queuedCounts.update(current => ({ ...current, [sessionId]: 0 }));
   hostSessionId = sessionId;
-  const peer = peerScope();
-  queueFallbackReason.set(
-    peer
-      ? tr("chat.queue.peerNoQueue", { device: peer.label ?? tr("chat.queue.thatDevice") })
-      : tr("chat.queue.hostUpdateRequired"),
-  );
+  queueFallbackReason.set(tr("chat.queue.hostUpdateRequired"));
 }
 
 /**
@@ -137,12 +131,6 @@ function markQueueUnavailable(sessionId: string): void {
 export async function loadQueueForSession(sessionId: string | null, force = false): Promise<void> {
   if (!sessionId) return;
   if (!force && sessionId === hostSessionId) return;
-  // A peer that did not advertise its dialog queue has none; say so instead of
-  // drawing an empty queue.
-  if (peerScope() && peerSupports("dialog_queue_v1") === false) {
-    markQueueUnavailable(sessionId);
-    return;
-  }
   try {
     adoptSnapshot(sessionId, await callQueue(sessionId, { action: "list" }));
     hostQueueAvailable.set(true);

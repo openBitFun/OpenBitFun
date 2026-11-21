@@ -17,8 +17,8 @@ and the Tauri desktop shell were retired.
 Two rules follow:
 
 - **The host contract is the backend's command vocabulary.** Action names and
-  request shapes are the wire format every backend serves, including older hosts a
-  peer may run (`{ request: ... }`, sessions use `workspace_id`, workspace and file
+  request shapes are the wire format every backend serves, including older hosts
+  (`{ request: ... }`, sessions use `workspace_id`, workspace and file
   commands use `workspaceId`). Do not invent parallel command names. A command that
   takes positional arguments instead of a `request` struct is called through
   `invokeRawCommand`; both shapes exist in the same backend area, so read the
@@ -26,6 +26,59 @@ Two rules follow:
 - **A scene uses the backend's state, not an approximation.** A feature counts when
   its scene calls the host commands for the same state; a placeholder scene never
   counts.
+
+The product model it draws: OpenBitFun is a distributed Agent runtime with one
+display-and-control surface. Desktop and CLI hosts are runtimes; this UI, in every
+client, displays and operates all of them through one fleet entry. Which device runs
+something is a label (`DeviceBadge`, "on {device}"), never a mode, a device picker or a
+switcher in the main flow.
+
+## Information architecture
+
+- **OpenBitFun** (`openbitfun`, the default scene; `scenes/OpenBitFunScene.tsx`): the
+  account's cloud superagent. One input box, the conversation, and live job cards where
+  the model dispatched work; no device picker, mode or model chip.
+- **Inbox** (`inbox`, and the ⌘I sheet; `scenes/InboxScene.tsx`): everything that waits
+  on the user from every device, answered in place.
+- **All sessions** (`all-sessions`; `scenes/AllSessionsScene.tsx`): every agent session
+  on every device, Recent or By device; the browse path. A session opens in `sessions`.
+  The device page (`device`; `scenes/DeviceScene.tsx`) opens from a device badge.
+- **Library** (`library`; `scenes/LibraryScene.tsx` + `LibraryChrome.tsx`): Assistants,
+  Agents, Skills, Spaces and Routines of the device in context ("On {device}"), one tab
+  each (`libraryTab`).
+- **Settings** (`settings`; `scenes/SettingsScene.tsx`): three scopes. Preferences
+  (General, Appearance, Input, Shortcuts; labelled "Synced with your account"),
+  Account (Profile, Devices and chat apps in `scenes/AccountDevicesPage.tsx`,
+  OpenBitFun over the cloud agent's commands, Activity), and Device (Models,
+  Permissions with this device's `superagent` switches, Execution, Session and memory,
+  Editor, Terminal, Workspace, MCP, ...) for the device the scope chip names.
+- Tools: `files`, `git`, `terminal`, `browser`, full width with "{workspace} on
+  {device}" (`ui/toolPane.tsx`) or in the inspector beside a session. The older ids
+  (`home`, `assistants`, `agents`, `skills`, `routines`, `spaces`, `devices`) resolve
+  onto these in `navigateScene`.
+- Sign-in: `ui/SignInView.tsx`, one column shared by the desktop's first run and account
+  dialog and the browser launcher; the caller owns the flow.
+
+## Foundations
+
+- `src/theme.ts` owns every scale (visual spec §2): `typeScale` and `textStyle(role)`
+  (display 28, pageTitle 22, modalTitle 17, sectionTitle 16, prose 15, body 14, label 13,
+  caption 12, micro 11; weights 400/500/600; CJK prose 1.7), `space` (2, 4, 8, 12, 16, 20,
+  24, 32, 40, 48, 64; `chip` 6 only inside chips and code wells; `spacing` is
+  deprecated), `layout` (sidebar 264/240, breakpoints 1200/960/720, canvas inset 8 and
+  radius 12, conversation 760, page 720, settings 680), `radii` (4, 6, 8, 12, 16, pill;
+  nested shapes through `concentricRadius`), `elevationShadow(0-3)` (only the composer is
+  lifted in a page), and `springs` / `motionTiming` / `NEVER_ANIMATE`. Use the scale; no
+  raw sizes, radii or off-scale gaps, and no new color tokens.
+- `src/ui/fleet.tsx` is the only place a state takes a color: `StateMark`, `StateLabel`,
+  `stateColor` / `stateWord` over `MarkState`, `DeviceBadge` (exceptions `offline`,
+  `update_required` only), `InboxCountPill`, `PhoneTabBar`. Screens compose these atoms and
+  never pick a state color; the backend owns every state and the atoms derive nothing.
+  `ui/jobs.tsx` (`jobMarkState`) and `ui/attention.tsx` map onto this vocabulary.
+- Fleet stores keep backend answers and never sort, merge or count: `fleetStore.ts`
+  (`fleet_navigator`, `fleet_prompts`), `attentionStore.ts` (`fleet_attention`),
+  `superagentStore.ts` (the cloud node's `superagent_*`), with the wire shapes mirrored by
+  hand in `fleetTypes.ts` (no generator yet; keep fields optional, enums open).
 
 ## Layout
 
@@ -49,11 +102,29 @@ Two rules follow:
   re-hydrates on `backend://events-dropped` for every connection. A connection is generic: Tauri
   args in, seq-numbered event batches out, `ready()` and a connection state —
   nothing in it may assume NSH-native, Tauri or where the backend runs. Window,
-  menu, tray, notification and picker work belongs to the shell. Peer envelope
-  routing and the peer event tag filter live in `src/peerRouting.ts`
-  (`backend-owned`: to be replaced by connecting to the peer's backend), and
+  menu, tray, notification and picker work belongs to the shell. Fleet routing
+  lives in `src/peerRouting.ts`, and
   `src/textChunkCoalescer.ts` is `host.js`'s per-frame text-chunk merge for every
   other wire (`test/native-host.test.tsx` holds the two to the same output).
+- Fleet: a backend whose hello (or native ready info) answers `fleet` is a fleet
+  entry, and every account device is reached through it. `bridge.ts` then sends
+  each command as `fleet_call {target, command, args}` (target: the caller's
+  `{target}`, else the owner of the id at the `FLEET_OWNER_KEYS` path, else the
+  device context); `FLEET_ENTRY_COMMANDS` and controller-local commands stay plain;
+  listeners get `(payload, {origin, originInstance, seq})`. `src/fleetStore.ts`
+  keeps `fleet_navigator` / `fleet_prompts` as the backend answers them (no
+  sorting, merging or counting). `state.ts` keys sessions, turns, drafts and agent
+  types by `"<deviceId>/<sessionId>"` and selects `activeWorkspaceKey {deviceId,
+  workspaceId}`; prompts and terminals are keyed by origin; `backendResync.ts`
+  re-hydrates only the origin a gap names. Picking a device moves the device
+  context (`selectDeviceContext` in `state.ts`). There is no Peer Device Mode:
+  the 1.x relay path and the non-fleet mesh path were removed in 2.0, because
+  every 2.0 backend serves `fleet` (the client stays 1.x-compatible for session
+  records and config only). Browsers and
+  the phone walk the backend-ranked `entryCandidates` with
+  `src/controller/fleetEntry.ts` (`entry_lost` for calls in flight, the vector
+  cursor in the next hello). An older backend keeps plain calls and `""` device
+  keys. Tests: `test/fleet-routing`, `test/fleet-store`, `test/fleet-failover`.
 - `src/api.ts`: typed command wrappers. Keep the wire names and their casing.
 - `src/controller/`: the controller shell of clients without a backend of their own (a
   browser on the OpenBitFun domain, the NSH phone app): `controllerPort.ts` is the
@@ -62,7 +133,22 @@ Two rules follow:
   (gateway API, and the page realm's end-to-end channel `openbitfun.controller.*` in
   `host.js` via `controllerSocket.ts`); the phone app installs its native one.
   `ControllerShell.tsx` draws the port's answers only. A page whose `#nsh-params`
-  carries `{controller}` installs it from `servedBackend.ts`.
+  carries `{controller}` installs it from `servedBackend.ts`. After sign-in the device
+  opens by itself (`pickUiSourceDevice`, next candidate on failure); the device list
+  shows only for the failure states.
+- `web/ui-loader.js`: the browser runs the exact web UI a device ships. The launcher
+  reads the device's manifest over the end-to-end channel (`ui_bundle_manifest`) and
+  drives the device in place when the bundleId is its own (`#nsh-params`
+  `controller.uiBundleId`). Otherwise it opens `/app/b/<bundleId>/`, which this Service
+  Worker serves from the server's pool (`/app/cas/<sha256>`) after checking every byte
+  against the manifest. `host.js` keeps the page-realm half (`prepareBundle`, `launch`,
+  `page`, `leave`, handoff v1 in sessionStorage `obf.controller.handoff.v1`; frozen,
+  add fields only). On a `/app/b/` page it also runs the NSH realm iframe through the
+  loader (`prepareBundleRealm`; Chrome gives the runtime's own `about:blank` iframe no
+  worker). `scripts/build-web-controller.mjs` ships `ui-loader.js` and `ui-boot.html`
+  (nginx's answer for `/app/b/` requests that bypass the worker). Tests:
+  `node --test src/nsh-ui/web/*.test.mjs` (loader and handoff) and
+  `test/controller-shell.test.tsx`.
 - `src/browserStore.ts` + `src/scenes/BrowserScene.tsx`: the embedded browser of the
   native desktop. The backend owns targets and agent semantics (`native_browser.rs`); the
   store is the shell's actuator for `browser.*` shell requests over NSH `WebView` refs and
@@ -80,12 +166,22 @@ Two rules follow:
   `cursor`); they never parse persisted turn records, re-order or filter items.
   `agentEvents.ts` replaces a live turn with its record only when a view read
   reports that turn `settled`; a host without the view gets `transcriptNotice`.
+- `src/attentionStore.ts` + `src/ui/attention.tsx` + `src/scenes/InboxScene.tsx`: the
+  Inbox and every prompt answered in place. The store keeps `fleet_attention`
+  (groups, order, badge) as the entry answers it; an entry without it falls back to
+  `fleet_prompts` as one "Needs you" group with the navigator's `waiting` total as the
+  badge. `answerPrompt` sends to the device that asked (`respond_permission` /
+  `submit_user_answers`, or `dispatch_target_answer {jobId, requestId, reply}` for a
+  Detached Dispatch prompt), holds answers while the connection is down and re-checks
+  the prompt's `revision` before sending them. `PromptAttention` is the one prompt
+  component: the Inbox, a job card (`placement="card"`) and the session composer draw
+  it. Tests: `test/inbox.test.tsx`, `test/session-view.test.tsx`.
 - `src/usageStore.ts`: the usage dashboard, one command read twice, as the desktop
   reads it. The range read decides the bucketing (`last24Hours` / `today` bucket by
   hour, the rest by day) and the resolved IANA zone travels with both reads, because
   the host aligns calendar ranges and buckets with it. Every number comes from the
   host: a failed read clears the totals to `null` instead of rendering zeroes, and the
-  `token_usage_statistics_unsupported` marker an older Peer sends becomes its own
+  `token_usage_statistics_unsupported` marker an older host sends becomes its own
   sentence. The activity read asks the same command for `timeRange: "custom"` over a
   fixed six-calendar-month window at day granularity, then projects the host's buckets
   onto a Monday-first week grid: days outside the window stay empty padding, a day the
@@ -107,15 +203,19 @@ Two rules follow:
   identity key would drop rows the host did report.
 - `src/contentWidthStore.ts`: the conversation column's width, the one appearance
   preference the desktop keeps in the page's local storage rather than the config
-  (`openbitfun:appearance:flowChatWidth`, 900 px default, 600 px floor, 10 px step).
+  (`openbitfun:appearance:flowChatWidth`, 760 px default (visual spec §2.2; a stored
+  value keeps its width), 600 px floor, 10 px step).
   The transcript and the composer both read `contentWidth()`, so the column stops
   there and centres itself; a stored value below the floor reads as unset, the way
   the desktop falls back instead of honouring a number its own stepper cannot reach.
   It is read once at launch, not when the settings page opens.
 - `src/state.ts`: signals and loaders. NSH components run once, so state lives in
-  signals, not in component state. It owns the 12-scene `SceneId` union
-  (`home`, `sessions`, `assistants`, `agents`, `skills`, `routines`, `files`,
-  `git`, `terminal`, `spaces`, `devices`, `settings`), workspace opening via
+  signals, not in component state. It owns the `SceneId` routes (`openbitfun`,
+  `inbox`, `sessions`, `all-sessions`, `device`, `library`, `settings`, and the tools
+  `files` / `git` / `terminal` / `browser`; the older ids `home`, `assistants`,
+  `agents`, `skills`, `routines`, `spaces` and `devices` resolve onto them in
+  `navigateScene`), `libraryTab`, `allSessionsView`, `devicePageId` with
+  `openLibrary` / `openAllSessions` / `openDevicePage`, workspace opening via
   `openPathWorkspace`, collapsible/resizable `NavPanel` & right `AuxPane`
   state (`drawerOpen`, `toggleDrawer`, `auxPaneOpen`, `auxPaneTab`,
   `auxPaneSide`, `auxPaneWidth`, `auxPaneMaximized`, `openInAuxPane`,
@@ -128,21 +228,22 @@ Two rules follow:
   `sessionStarted` reads the host's `messageCount`, because that is the only
   proof a persisted session is not empty, and a row without a count counts as
   started.
-- `App.tsx`: OpenBitFun Tauri 1:1 desktop shell featuring the collapsible and
-  resizable `NavPanel` (back/forward navigation, `Search everything… ⌘K`,
-  primary studio links `Home`/`Sessions`/`Assistants`, collapsible
-  `STUDIO & WORKBENCH` group, unified `Workspaces` + grouped/flat `Sessions` +
-  `SSH HOSTS` tree, `New workspace`, footer `Devices`/`Settings`, Appearance
-  preset switcher, Remote/SSH menu), `SceneTopBar` + `SceneBar` open-scene tabs + right
-  `AuxPane` toggles, inset rounded `SceneSurface` wrapping `<SceneTransition>`,
-  resizable/swappable/maximizable right `AuxPane` (`Files`/`Git`/`Terminal`
-  compact split), `BackendConnectionBanner`, `PeerBanner`, `SearchPanel`
-  (`keymap.bind` `mod+k`, `mod+b`, `mod+j`, `mod+,`, `mod+n`), and mounted
-  `<SshWorkspaceModals />`. The title bars take their drag behaviour from the
-  shell (`titlebarDragRegionProps`: `desktop={{ windowDrag }}` in a native NSH
-  window, a press-started drag in the Tauri webview); the menu and tray come
-  from `startShellIntegration`, and shortcuts the native application menu
-  carries (`shellMenuShortcutIds`) are not bound again with `keymap`.
+- `App.tsx`: the shell (visual spec §4.2, wave 15). Desktop: a sidebar (264 wide on
+  wide windows, 240 on medium ones, an overlay drawer at 720–959) holding OpenBitFun
+  (✎ new conversation), Inbox (the backend's count as a pill), Search (⌘K), the
+  conversation history (`ConversationHistory` from `ui/jobs.tsx`), then All sessions,
+  Library and the account row (menu: Settings, update, About, sign in/out); the canvas
+  is inset 8 with radius 12 and a 44 title bar carrying nothing scene-specific. Phone
+  (< 720): a 48 top bar (☰ history drawer | title | avatar on OpenBitFun), the scene,
+  and a 56 tab bar (`PhoneTabBar` in `ui/fleet.tsx`) on OpenBitFun / Inbox / All
+  sessions / Library; a session draws its own header instead. The sidebar never lists
+  sessions or devices: sessions open from All sessions (Recent, By device), Inbox,
+  job cards and ⌘K. The inspector (`AuxPane`) has text tabs Changes / Files /
+  Terminal and an Expand control to the full-width tool. One quiet line at the top
+  of the canvas states a failed connection or a non-fleet entry reached from a
+  browser or phone.
+  `⌘N` new conversation, `⌘I` the Inbox sheet. Tests reach sessions through
+  `openSession` / `showAllSessions` / `showDevices` / `openToolScene` in `test/support.ts`.
 - `src/ui/icons.tsx`: native `<Canvas>` + `Path2D` crisp 1.6 px vector icon library
   (`Icon`) and 5-variant expressive companion faces (`BotCharacter`: `"grok"`,
   `"muse"`, `"amber"`, `"mint"`, `"violet"`), reading `palette()` dynamically inside
@@ -268,6 +369,20 @@ Two rules follow:
   `hydrateRunningTurn`, which replays it through the live handlers; live events
   at or below the cursor are dropped (`admitLiveEvent`), using the chunk spans the
   text merge records.
+- `src/superagentStore.ts` + `src/scenes/OpenBitFunScene.tsx` + `src/ui/jobs.tsx`:
+  the OpenBitFun conversation (visual spec §4.2–§4.3), the default scene
+  (`openbitfun`, alias `home`). Every `superagent_*` command goes to the cloud
+  node (the navigator's `hostKind: "cloud"` device, as `fleet_call`; plain on a
+  backend without the fleet layer, where an unknown command reads as "this
+  device needs an update"). The store keeps the cloud node's answers and applies
+  `superagent://turn-delta` / `superagent://card-changed`; it never sorts, groups
+  or counts: the history groups, row roll-ups, Working now, suggestions, job
+  cards, their states, reasons and allowed actions are all projected by the
+  cloud node. A send keeps its `clientMessageId` when the same text is sent
+  again after a failure. `jobMarkState` only names the job enum in the mark
+  vocabulary of `ui/fleet.tsx`. A card's pending prompt is UI-C's
+  `PromptAttention` (answered on the origin device, never through the model).
+  There is no device picker, mode or model chip in the composer.
 - `src/quickActionStore.ts`: `app.ai_experience.quick_actions`, the list the
   composer's `Actions` menu runs. Every write re-reads `app.ai_experience` and merges,
   because other sections write `voice_input` and the neighbouring switches into the
@@ -279,7 +394,7 @@ Two rules follow:
   reorders, because `supportsReorder` is answered per reply and never inferred from a
   version, and it names that read's `revision` so a queue another surface changed in
   between is refused instead of overwritten. Rows the host holds back keep the host's
-  `status` and `reason`. There is no local fallback: a host or peer without the
+  `status` and `reason`. There is no local fallback: a host without the
   queue gets an explicit "update the host" line while a turn runs. Rows older builds
   kept under `openbitfun.nsh.pending-queue.v1` are submitted to the host queue once
   and the key is removed only when every row was taken.
@@ -384,8 +499,8 @@ Two rules follow:
   instead of restarting. The streaming caret stays off because it is a placeholder
   character inside the text, which a copied selection would carry.
 - `src/theme.ts`: the app's own palette as a `computed` signal (`palette().text`
-  in a binding, never destructured once). Mirrors OpenBitFun Tauri's 5-plane
-  surface hierarchy (`chromeBg`, `chromeText`, `chromeTextMuted`, `chromeHover`,
+  in a binding, never destructured once), and the scales of "Foundations" above. The
+  palette keeps the 5-plane surface hierarchy (`chromeBg`, `chromeText`, `chromeTextMuted`, `chromeHover`,
   `chromeActive`, `chromeBorder`, `chromeInputBg`, `chromeAccent` for `NavPanel`,
   plus `canvas`, `canvasSubtle`, `panelRaised`, `surfaceElevated`, `popoverBg`,
   `inputBg`, `shadowScene`, and semantic tokens for the inset `SceneSurface`) and
@@ -404,27 +519,15 @@ Two rules follow:
   inside the style binding. **Every text size in this surface goes through
   `textSize`, never a raw px** — a literal opts that text out of the setting, and
   the surface would then grow unevenly.
-- `src/peerState.ts` + `src/peerStore.ts`: Peer Device Mode. The signals live
-  apart so `bridge.ts` reads the selected device without importing the store
-  that calls it. `invokeCommand` routes product commands to that device over
-  `account_device_rpc` (positional camelCase args `targetDeviceId`, `commandJson`,
-  `timeoutMs` matching Tauri v2's default command parameter mapping), wrapping them
-  in a HostInvoke envelope with `args.request`;
-  `invokeRawCommand` takes the same route with its positional arguments at `args`'
-  top level and no `request` — a positional command must never fall back to this
-  machine while a peer is selected. The scope keeps the
-  capability map the ping advertised, and `peerSupports` is the only reader of it:
-  `undefined` means the host never stated that capability, which is not a `false`,
-  so a store probes once instead of assuming either way. `reconnectPeer` re-runs
-  the handshake for the device already being driven and never leaves peer mode.
+- `src/meshPath.ts`: the one line that says how OpenBitFun Link reaches a device
+  or a signed-in phone, from `mesh_list_devices`' generic `route` / `path` fields.
 - `src/generated/peerSurface.ts`: generated by `pnpm run capabilities:generate`
   from the Product Operation Registry. It lists the commands that stay on this
-  machine while a peer is driven — never edit it by hand, and regenerate after
-  changing `remote_surface/table.rs`.
+  machine (plain, never `fleet_call`) and the fleet owner keys — never edit it by
+  hand, and regenerate after changing `remote_surface/table.rs`.
 - `test/support.ts`: the simulated backend the headless tests play as host; file
   mutations act on a mutable directory map, so a create, rename or delete changes
-  what the next `explorer_get_children` returns, and `account_device_rpc` answers
-  as a second host whose workspace and session names differ from the local ones.
+  what the next `explorer_get_children` returns.
   A command a surface reads more than once can be answered per request shape:
   `get_token_usage_statistics` returns `usage` for a range and `usageActivity` for
   the `custom` six-month window, where `usage: null` means this host offers the
@@ -442,25 +545,40 @@ Two rules follow:
   Muse 3-layer transcript timeline/thinking/progress/ambient states, elevated
   permission trust card interactions, floating composer controls, close-tab
   `"×"` invariant, and dark/light scheme repainting.
-- `test/personal-hub.test.tsx`: `HomeScene` ecosystem pulse counts, live
-  attention feed, 30-day usage, quick prompt launch, GitHub device-flow auth,
-  AI Insights loading/generation, partial pulse failure degradation,
-  `AssistantsScene` CRUD + Persona Studio (`IDENTITY.md`/`SOUL.md`/`USER.md`)
-  editing/preview/reset, and Peer Device Mode boundaries.
+- `test/personal-hub.test.tsx`: `AssistantsScene` CRUD + Persona Studio
+  (`IDENTITY.md`/`SOUL.md`/`USER.md`) editing/preview/reset; the account and insights probes the retired Home screen held wait
+  (skipped) for Settings › Account › Activity.
+- `test/superagent-conversation.test.tsx` (fixture `test/fixtures/openbitfunApp.tsx`
+  over `test/fixtures/superagentFixtures.ts`): the OpenBitFun conversation — the
+  backend's suggestions and Working now, the idempotent send (`clientMessageId`
+  kept across a retry), live job cards where the model dispatched them, Steer and
+  Stop through `superagent_job_action`, a card's prompt answered on its origin
+  device, the "OpenBitFun allowed it" line, citations, signed-out / off /
+  unavailable, the history slot, and no device picker in the composer.
+- IA and foundations tests: `test/inbox.test.tsx`, `test/all-sessions.test.tsx`,
+  `test/device-page.test.tsx`, `test/library.test.tsx`, `test/settings-scopes.test.tsx`,
+  `test/sign-in.test.tsx`, `test/session-view.test.tsx`, `test/compact-layout.test.tsx`
+  (phone shell), `test/theme-foundations.test.tsx` and `test/foundations-atoms.test.tsx`
+  (scales and `ui/fleet.tsx` atoms; gallery fixture `test/fixtures/foundationsGallery.tsx`).
 - `test/agents-skills.test.tsx`: `AgentsScene` & `SkillsScene` command-shape
   assertions (`raw: true` vs `raw: false`), custom mode/subagent CRUD, built-in
   profile tool configuration/reset, `Start Thread` handoff, global skill
   toggles, `SKILL.md` inspection, local folder validation/install/delete,
-  marketplace search/download, and remote/Peer local-install gating.
+  marketplace search/download, and remote local-install gating.
 - `test/routines-git-spaces.test.tsx`: `RoutinesScene` cron CRUD +
-  `cron://jobs-changed` event refresh + Peer `reportPolicy` omission,
+  `cron://jobs-changed` event refresh,
   `GitScene` trust/init recovery, working copy staging/unstaging/AI commit,
   branches CRUD, history graph local vs remote `git_get_graph` skip, and
-  `SpacesScene` list/inspect/stop-worker/delete/create + Peer notice.
+  `SpacesScene` list/inspect/stop-worker/delete/create.
+- `test/parity-actions.test.tsx`: the session ⋯ (All sessions rows and the session
+  header: rename, archive, copy ID, export, storage folder, delete with a confirmation,
+  routed to the session's device), the workspace ⋯ in By device, recently closed
+  workspaces, Archived sessions delete / delete all, and the Inbox of a backend without
+  the fleet layer (this window's approvals and finished / stopped turns).
 - `test/workbench-connectors.test.tsx`: `FilesScene` live edit + `write_file_content`
   persistence, open file tabs & `file-actions-menu`, `AuxPane` compact mode,
-  `DevicesScene` Telegram/Feishu/WeChat QR/LAN & Server Relay modals + Peer
-  `Controller local` badge, `SettingsScene` `NavPanel` category filtering, live URL
+  Account › Devices and chat apps (Telegram/Feishu/WeChat QR modals; no 1.x relay row),
+  `SettingsScene` `NavPanel` category filtering, live URL
   resolution, `list_ai_models_by_config` discovery + 40% `max_tokens` batch save,
   `test_ai_config_connection`, subscriptions, 9 `APPEARANCE_PRESETS`, and
   `TerminalScene` light-scheme canvas background + shell/profile modals.
@@ -472,7 +590,7 @@ Two rules follow:
 - `test/external-import.test.tsx`: `Settings → External import` request shapes
   (discovery snapshot, switch mutation and revision, MCP plan/apply with the
   `stale` outcome, removed-session list and restore), the older-host fallback,
-  a failed read, the remote-workspace refusal and Peer Device Mode.
+  a failed read and the remote-workspace refusal.
 - `test/assistants-studio.test.tsx`: the assistants gallery and config page
   (avatar picker, in-place name edit preserving the other frontmatter fields,
   failed identity write, the assistant's sessions) and primary-first ordering.

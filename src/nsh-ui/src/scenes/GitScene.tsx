@@ -1,3 +1,4 @@
+import { ToolPaneHeader } from "../ui/toolPane";
 import { Canvas, cleanup, Clipboard, computed, effect, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
 import { ensureWorkspaceWatch, openFileAt } from "../fileStore";
 import { DiffView, Input } from "nsh/base";
@@ -103,7 +104,6 @@ import {
   setCommitAmend,
   switchCommitMessage,
 } from "../gitWorkbenchStore";
-import { peerScope } from "../peerState";
 import { activeWorkspace, navigateScene, openInAuxPane } from "../state";
 import {
   fontMono,
@@ -1028,8 +1028,8 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             <View style={{ alignItems: "center", justifyContent: "center", paddingVertical: 16 }}>
               <QuietGitEmpty
                 icon="check-circle"
-                title={tr("git.cleanTitle")}
-                subtitle={tr("git.cleanSubtitle")}
+                title={tr("pane.changes.none")}
+                subtitle={tr("pane.changes.clean")}
               />
             </View>
           </If>
@@ -2923,9 +2923,7 @@ export function GitScene(props: GitSceneProps = {}) {
   const narrow = () => Boolean(props.compact) || sceneWidth.stacked();
   effect(() => {
     const ws = activeWorkspace();
-    const peer = peerScope();
-    void peer;
-    // Only the workspace and the device re-run this; the probe's own state does not.
+    // Only the workspace re-runs this; the probe's own state does not.
     untracked(() => void syncGitWorkspace(ws));
   });
   // Live status while the scene is on screen: the host publishes every status
@@ -2949,6 +2947,9 @@ export function GitScene(props: GitSceneProps = {}) {
         backgroundColor: palette().canvas,
       }}
     >
+      <If when={!props.compact}>
+        <ToolPaneHeader />
+      </If>
       <RemoteWorkspaceStatusBanner compact={props.compact} />
       <BranchSwitchBlockerBar compact={narrow()} />
       <If

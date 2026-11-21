@@ -11,11 +11,21 @@
 // - Connection: `wss://<domain>/obp/<deviceId>`, a byte pipe into the account's
 //   Link network; inside it the page realm runs OBP's end-to-end channel, so the
 //   gateway sees only ciphertext. `webSocketConnection.ts` runs on top unchanged.
+// - The device's own UI: once connected, `placeUi` asks the device for its web
+//   UI manifest over that channel (`ui_bundle_manifest`). The device key
+//   authenticates it. The page realm hands it to the UI loader
+//   (`web/ui-loader.js`, a Service Worker), which recomputes its bundleId. When
+//   that id is this page's own (`uiBundleId`), the page drives the device in
+//   place. Otherwise it writes the handoff and opens
+//   `/b/<bundleId>/index.html#device=<deviceId>`, where the loader serves
+//   the device's files from the server's pool after verifying every byte.
 
 import { createWebSocketConnection } from "../webSocketConnection";
 import { callController, controllerSocketFactory } from "./controllerSocket";
 import {
   ControllerError,
+  type ControllerLaunchState,
+  type ControllerUiPlacement,
   type ControllerAccount,
   type ControllerCodeChallenge,
   type ControllerConnection,
@@ -30,6 +40,14 @@ export interface WebControllerParams {
   api: string;
   /** `wss://<domain>/obp` (or a path resolved against the page). */
   gateway: string;
+  /**
+   * The bundleId of the UI this page runs: the launcher's build writes it,
+   * and a device UI page has it from its address. `null`: unknown, so every
+   * device's UI opens as its own page.
+   */
+  uiBundleId?: string | null;
+  /** This page is a device's UI that the loader serves (`/b/<bundleId>/`), not the launcher. */
+  bundlePage?: boolean;
 }
 
 interface FetchResponse {
@@ -65,6 +83,16 @@ export function resolveControllerUrl(value: string, socket: boolean, base: strin
     else if (url.protocol === "http:") url.protocol = "ws:";
   }
   return url.href.replace(/\/$/, "");
+}
+
+/** Where the gateway says the account's cloud node is reached (`GET /devices` `cloudNode`). */
+let cloudNode: { deviceId: string; path: string } | null = null;
+
+function rememberCloudNode(value: unknown): void {
+  const node = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  const deviceId = typeof node?.deviceId === "string" ? node.deviceId : "";
+  const path = typeof node?.path === "string" ? node.path : "";
+  cloudNode = deviceId && path.startsWith("/") ? { deviceId, path } : null;
 }
 
 const API_CODES: Record<string, ControllerErrorCode> = {
@@ -131,6 +159,50 @@ function deviceOf(value: unknown): ControllerDevice {
         : null,
     route: asString(record.route),
   };
+}
+
+/** The `ControllerError` a failed `ui_bundle_manifest` call stands for. */
+export function uiManifestError(error: unknown): ControllerError {
+  const message = error instanceof Error ? error.message : String(error);
+  // No web UI on the device, or a build before the command (`forbidden_for_scope:
+  // ... is unknown to this OpenBitFun backend version`, an older peer host's
+  // "unsupported"): both need OpenBitFun updated there.
+  if (/ui_bundle_unavailable|unknown to this OpenBitFun|unsupported|unknown (command|method)|not found/i.test(message)) {
+    return new ControllerError("device_ui_unavailable", message.replace(/^[a-z_]+:\s*/, ""));
+  }
+  return new ControllerError("unavailable", message);
+}
+
+/** The `ControllerError` a failed page-realm bundle step stands for. */
+export function uiPrepareError(error: unknown): ControllerError {
+  const message = error instanceof Error ? error.message : String(error);
+  const text = message.replace(/^[a-z_]+:\s*/, "");
+  if (message.startsWith("ui_bundle_schema:")) return new ControllerError("page_outdated", text);
+  if (message.startsWith("controller_unsupported:")) return new ControllerError("unsupported", text);
+  if (message.startsWith("ui_bundle_invalid:")) return new ControllerError("device_ui_unavailable", text);
+  return new ControllerError("unavailable", text);
+}
+
+interface PageLaunchState {
+  handoff?: { deviceId?: unknown } | null;
+  showDevices?: unknown;
+  uiError?: { reason?: unknown; file?: unknown } | null;
+}
+
+/** The launch state for what the page realm read (`openbitfun.controller.page`). */
+export function launchStateOf(page: PageLaunchState | null | undefined): ControllerLaunchState {
+  const deviceId = asString(page?.handoff?.deviceId);
+  const reason = asString(page?.uiError?.reason);
+  const file = asString(page?.uiError?.file);
+  let failure: ControllerError | null = null;
+  if (reason === "verification") {
+    failure = new ControllerError("ui_verification_failed", `${file ?? "A file"} failed verification`, null, file);
+  } else if (reason === "signed_out") {
+    failure = new ControllerError("signed_out", "The session ended");
+  } else if (reason) {
+    failure = new ControllerError("ui_load_failed", `${file ?? "A file"} could not be loaded`, null, file);
+  }
+  return { deviceId, showDevices: page?.showDevices === true, failure };
 }
 
 export function createWebController(options: WebControllerOptions): ControllerPort {
@@ -212,9 +284,17 @@ export function createWebController(options: WebControllerOptions): ControllerPo
     },
     async listDevices() {
       const answer = await request("/devices");
+      rememberCloudNode(answer.cloudNode);
       return Array.isArray(answer.devices) ? answer.devices.map(deviceOf) : [];
     },
-    async connect(deviceId) {
+    async entryCandidates() {
+      const answer = await request("/devices");
+      rememberCloudNode(answer.cloudNode);
+      return Array.isArray(answer.entryCandidates)
+        ? answer.entryCandidates.filter((item): item is string => typeof item === "string" && item.length > 0)
+        : [];
+    },
+    async connect(deviceId, connectOptions) {
       const key = await request(`/devices/${encodeURIComponent(deviceId)}/key`);
       const devicePublicKey = asString(key.publicKey);
       if (!devicePublicKey) throw new ControllerError("unreachable", "This device has no key in your account");
@@ -225,8 +305,15 @@ export function createWebController(options: WebControllerOptions): ControllerPo
       });
       refused.catch(() => undefined);
       const connection = createWebSocketConnection({
-        url: `${gateway}/${encodeURIComponent(deviceId)}`,
+        // The account's cloud node is reached at its own path (`cloudNode.path`,
+        // `/agent/obp`), not through the device pipe under `/obp/<id>`.
+        url:
+          cloudNode && cloudNode.deviceId === deviceId
+            ? resolveControllerUrl(cloudNode.path, true)
+            : `${gateway}/${encodeURIComponent(deviceId)}`,
         client: "openbitfun-web-controller",
+        // The fleet entry walker shares its vector cursor across entries.
+        ...(connectOptions?.fleet ? { fleet: { cursor: connectOptions.fleet.cursor } } : {}),
         createSocket: controllerSocketFactory({
           deviceId,
           devicePublicKey,
@@ -253,6 +340,57 @@ export function createWebController(options: WebControllerOptions): ControllerPo
       }
       const controllerConnection: ControllerConnection = { ...connection, deviceId, close: () => connection.close() };
       return controllerConnection;
+    },
+    async launchState() {
+      try {
+        return launchStateOf(await callController<PageLaunchState>("page"));
+      } catch {
+        return launchStateOf(null);
+      }
+    },
+    async placeUi(connection): Promise<ControllerUiPlacement> {
+      let answer: { manifest?: unknown; bundleId?: unknown } | null;
+      try {
+        answer = (await connection.invoke("ui_bundle_manifest", { request: {} })) as typeof answer;
+      } catch (error) {
+        throw uiManifestError(error);
+      }
+      if (!answer || typeof answer.manifest !== "object" || answer.manifest === null) {
+        throw new ControllerError("device_ui_unavailable", "The device answered no web UI manifest");
+      }
+      let prepared: { bundleId: string };
+      try {
+        prepared = await callController<{ bundleId: string }>("prepareBundle", {
+          manifest: answer.manifest,
+          deviceId: connection.deviceId,
+        });
+      } catch (error) {
+        throw uiPrepareError(error);
+      }
+      // The device's stated id is a hint only; the loader's own count decides.
+      if (typeof answer.bundleId === "string" && answer.bundleId !== prepared.bundleId) {
+        console.warn("The device stated another UI bundle id than its manifest has");
+      }
+      if (options.uiBundleId && prepared.bundleId === options.uiBundleId) return { kind: "here" };
+      // The pool's cookie path (`/cas`) is re-issued with the session.
+      const session = await request("/session");
+      if (session.signedIn !== true) throw new ControllerError("signed_out", "The session ended");
+      const deviceId = connection.deviceId;
+      return {
+        kind: "away",
+        open: async () => {
+          try {
+            await callController("launch", { bundleId: prepared.bundleId, deviceId });
+          } catch (error) {
+            throw uiPrepareError(error);
+          }
+        },
+      };
+    },
+    async leave() {
+      if (!options.bundlePage) return false;
+      await callController("leave");
+      return true;
     },
   };
 }

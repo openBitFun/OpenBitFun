@@ -572,6 +572,20 @@ pub fn is_valid_device_kind(kind: &str) -> bool {
     DEVICE_KINDS.contains(&kind)
 }
 
+/// The account's cloud agent (`openbitfun-superagent`): a server-side node
+/// with its own directory key, so devices can verify its handshake and give
+/// it their narrow cloud-agent scope. Not a kind a client may report
+/// ([`DEVICE_KINDS`] leaves it out), and never a host: older clients list
+/// hosts with [`device_kind_is_host`], so they never see or dial it. Only
+/// [`DeviceRow::register_cloud_agent`] writes it, and client logins can
+/// neither take over such a row nor change its kind or key.
+pub const DEVICE_KIND_CLOUD_AGENT: &str = "cloud_agent";
+
+/// Whether a stored row belongs to the account's cloud agent.
+pub fn device_kind_is_cloud_agent(kind: Option<&str>) -> bool {
+    kind == Some(DEVICE_KIND_CLOUD_AGENT)
+}
+
 /// Whether a row is an OpenBitFun host this account can reach and drive, as
 /// opposed to a controller (a phone or a watch).
 ///
@@ -700,10 +714,18 @@ impl DeviceRow {
         metadata: &DeviceMetadata,
     ) -> Result<()> {
         let now = Utc::now().timestamp();
+        if device_kind_is_cloud_agent(device_kind) {
+            return Err(anyhow!(
+                "the cloud_agent kind is registered only by the account's cloud agent"
+            ));
+        }
         // `device_kind` is only overwritten when the caller actually reported
         // one. A client build that predates the field would otherwise erase a
         // known kind on every login and put the device back in the list.
-        sqlx::query(
+        // A cloud agent row is sticky: a client login naming its id changes
+        // nothing (not the kind, the key or the name), so no client can
+        // become the cloud agent or turn it into a host.
+        let result = sqlx::query(
             "INSERT INTO devices \
                (device_id, user_id, device_name, device_kind, public_key, last_seen_at, device_model, device_os, device_os_version, online) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0) \
@@ -714,7 +736,8 @@ impl DeviceRow {
                device_os = COALESCE(excluded.device_os, devices.device_os), \
                device_os_version = COALESCE(excluded.device_os_version, devices.device_os_version), \
                public_key = COALESCE(excluded.public_key, devices.public_key), \
-               last_seen_at = excluded.last_seen_at",
+               last_seen_at = excluded.last_seen_at \
+             WHERE devices.device_kind IS NOT 'cloud_agent'",
         )
         .bind(device_id)
         .bind(user_id)
@@ -728,7 +751,159 @@ impl DeviceRow {
         .execute(pool)
         .await
         .map_err(|e| anyhow!("upsert device: {e}"))?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow!(
+                "this device id belongs to the account's cloud agent"
+            ));
+        }
         Ok(())
+    }
+
+    /// Registers (or re-registers) the account's cloud agent row and issues
+    /// its device token. Idempotent: the same key keeps a valid token; a new
+    /// key replaces the row's key and revokes the old tokens. Refuses an id
+    /// that already belongs to a client device of the account.
+    pub async fn register_cloud_agent(
+        pool: &DbPool,
+        user_id: &str,
+        device_id: &str,
+        device_name: &str,
+        public_key: &str,
+    ) -> Result<AuthToken> {
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|error| anyhow!("begin cloud agent registration: {error}"))?;
+        let now = Utc::now().timestamp();
+        let existing = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT device_kind, public_key FROM devices WHERE user_id = ? AND device_id = ?",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| anyhow!("read cloud agent row: {error}"))?;
+        match &existing {
+            Some((kind, _)) if !device_kind_is_cloud_agent(kind.as_deref()) => {
+                return Err(anyhow!(
+                    "this device id belongs to another device of the account"
+                ));
+            }
+            Some((_, key)) if key.as_deref() == Some(public_key) => {
+                if let Some(token) = sqlx::query_as::<_, AuthToken>(
+                    "SELECT token, user_id, device_id, token_kind, request_id, created_at, expires_at \
+                     FROM auth_tokens WHERE user_id = ? AND device_id = ? AND token_kind = 'device' \
+                       AND expires_at > ? ORDER BY expires_at DESC LIMIT 1",
+                )
+                .bind(user_id)
+                .bind(device_id)
+                .bind(now + DEVICE_TOKEN_TTL_SECS / 2)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|error| anyhow!("read cloud agent token: {error}"))?
+                {
+                    tx.commit()
+                        .await
+                        .map_err(|error| anyhow!("commit cloud agent registration: {error}"))?;
+                    return Ok(token);
+                }
+            }
+            _ => {}
+        }
+        sqlx::query("DELETE FROM auth_tokens WHERE user_id = ? AND device_id = ?")
+            .bind(user_id)
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| anyhow!("revoke cloud agent tokens: {error}"))?;
+        sqlx::query(
+            "INSERT INTO devices \
+               (device_id, user_id, device_name, device_kind, public_key, last_seen_at, online) \
+             VALUES (?, ?, ?, 'cloud_agent', ?, ?, 0) \
+             ON CONFLICT(user_id, device_id) DO UPDATE SET \
+               device_name = excluded.device_name, \
+               public_key = excluded.public_key, \
+               last_seen_at = excluded.last_seen_at \
+             WHERE devices.device_kind = 'cloud_agent'",
+        )
+        .bind(device_id)
+        .bind(user_id)
+        .bind(device_name)
+        .bind(public_key)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| anyhow!("register cloud agent row: {error}"))?;
+        let token = generate_token();
+        let expires_at = now + DEVICE_TOKEN_TTL_SECS;
+        sqlx::query(
+            "INSERT INTO auth_tokens (token, user_id, device_id, token_kind, created_at, expires_at) \
+             VALUES (?, ?, ?, 'device', ?, ?)",
+        )
+        .bind(&token)
+        .bind(user_id)
+        .bind(device_id)
+        .bind(now)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| anyhow!("issue cloud agent token: {error}"))?;
+        tx.commit()
+            .await
+            .map_err(|error| anyhow!("commit cloud agent registration: {error}"))?;
+        Ok(AuthToken {
+            token,
+            user_id: user_id.to_string(),
+            device_id: device_id.to_string(),
+            token_kind: "device".to_string(),
+            request_id: None,
+            created_at: now,
+            expires_at,
+        })
+    }
+
+    /// Removes the account's cloud agent row and its tokens (turning the
+    /// agent off, deleting its data, or deleting the account). Never removes
+    /// a row of another kind.
+    pub async fn unregister_cloud_agent(
+        pool: &DbPool,
+        user_id: &str,
+        device_id: &str,
+    ) -> Result<bool> {
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|error| anyhow!("begin cloud agent removal: {error}"))?;
+        let kind = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT device_kind FROM devices WHERE user_id = ? AND device_id = ?",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| anyhow!("read cloud agent row: {error}"))?;
+        let Some(kind) = kind else {
+            return Ok(false);
+        };
+        if !device_kind_is_cloud_agent(kind.as_deref()) {
+            return Err(anyhow!("this device id is not the account's cloud agent"));
+        }
+        sqlx::query("DELETE FROM auth_tokens WHERE user_id = ? AND device_id = ?")
+            .bind(user_id)
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| anyhow!("revoke cloud agent tokens: {error}"))?;
+        sqlx::query("DELETE FROM devices WHERE user_id = ? AND device_id = ?")
+            .bind(user_id)
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| anyhow!("remove cloud agent row: {error}"))?;
+        tx.commit()
+            .await
+            .map_err(|error| anyhow!("commit cloud agent removal: {error}"))?;
+        Ok(true)
     }
 
     pub async fn set_online(
@@ -869,6 +1044,11 @@ impl AuthToken {
         public_key: &str,
         metadata: &DeviceMetadata,
     ) -> Result<Option<AuthToken>> {
+        if device_kind_is_cloud_agent(device_kind) {
+            return Err(anyhow!(
+                "the cloud_agent kind is registered only by the account's cloud agent"
+            ));
+        }
         let mut tx = pool
             .begin()
             .await
@@ -2878,6 +3058,112 @@ mod tests {
                 "{controller:?} is a controller"
             );
         }
+    }
+
+    #[test]
+    fn a_cloud_agent_row_is_never_a_host_nor_a_client_kind() {
+        assert!(!device_kind_is_host(Some(DEVICE_KIND_CLOUD_AGENT)));
+        assert!(!is_valid_device_kind(DEVICE_KIND_CLOUD_AGENT));
+        assert!(device_kind_is_cloud_agent(Some(DEVICE_KIND_CLOUD_AGENT)));
+        assert!(!device_kind_is_cloud_agent(None));
+    }
+
+    #[tokio::test]
+    async fn the_cloud_agent_kind_is_sticky_against_client_logins() {
+        let pool = setup().await;
+        UserRow::create(&pool, "u1", "alice").await.unwrap();
+        let first =
+            DeviceRow::register_cloud_agent(&pool, "u1", "cloud-abc", "OpenBitFun", "key-1")
+                .await
+                .unwrap();
+        // Idempotent with the same key: the same valid token comes back.
+        let again =
+            DeviceRow::register_cloud_agent(&pool, "u1", "cloud-abc", "OpenBitFun", "key-1")
+                .await
+                .unwrap();
+        assert_eq!(first.token, again.token);
+        // A client login naming the cloud agent's id changes nothing.
+        for kind in [None, Some(DEVICE_KIND_DESKTOP), Some(DEVICE_KIND_CLI)] {
+            assert!(
+                DeviceRow::upsert(&pool, "cloud-abc", "u1", "Laptop", kind, Some("evil-key"))
+                    .await
+                    .is_err()
+            );
+        }
+        // No client path writes the kind.
+        assert!(DeviceRow::upsert(
+            &pool,
+            "d2",
+            "u1",
+            "x",
+            Some(DEVICE_KIND_CLOUD_AGENT),
+            Some("k")
+        )
+        .await
+        .is_err());
+        assert!(AuthToken::provision_new_device(
+            &pool,
+            "u1",
+            "d3",
+            "x",
+            Some(DEVICE_KIND_CLOUD_AGENT),
+            "request-cloud-1",
+            "k",
+            &DeviceMetadata::default(),
+        )
+        .await
+        .is_err());
+        let rows = DeviceRow::list_by_user(&pool, "u1").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].device_kind.as_deref(),
+            Some(DEVICE_KIND_CLOUD_AGENT)
+        );
+        assert_eq!(rows[0].public_key.as_deref(), Some("key-1"));
+        assert_eq!(rows[0].device_name.as_deref(), Some("OpenBitFun"));
+        // A new key rotates the row and revokes the old token.
+        let rotated =
+            DeviceRow::register_cloud_agent(&pool, "u1", "cloud-abc", "OpenBitFun", "key-2")
+                .await
+                .unwrap();
+        assert_ne!(rotated.token, first.token);
+        assert!(AuthToken::find(&pool, &first.token)
+            .await
+            .unwrap()
+            .is_none());
+        // A client row cannot be taken over by the cloud agent either.
+        DeviceRow::upsert(
+            &pool,
+            "laptop",
+            "u1",
+            "Laptop",
+            Some(DEVICE_KIND_DESKTOP),
+            Some("k"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            DeviceRow::register_cloud_agent(&pool, "u1", "laptop", "OpenBitFun", "key-3")
+                .await
+                .is_err()
+        );
+        assert!(DeviceRow::unregister_cloud_agent(&pool, "u1", "laptop")
+            .await
+            .is_err());
+        // Unregistering removes the row and its tokens; it is then gone.
+        assert!(DeviceRow::unregister_cloud_agent(&pool, "u1", "cloud-abc")
+            .await
+            .unwrap());
+        assert!(AuthToken::find(&pool, &rotated.token)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!DeviceRow::unregister_cloud_agent(&pool, "u1", "cloud-abc")
+            .await
+            .unwrap());
+        let rows = DeviceRow::list_by_user(&pool, "u1").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device_id, "laptop");
     }
 
     #[tokio::test]

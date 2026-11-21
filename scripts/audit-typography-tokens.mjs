@@ -15,7 +15,6 @@ const SOURCE_GROUPS = Object.freeze({
   // Product web surfaces outside the design system. The React desktop UI (src/web-ui)
   // was retired; the native desktop client (src/nsh-ui) styles through NSH, not CSS.
   products: [
-    'src/mobile-web/src',
     'OpenBitFun-Installer/src',
   ],
 });
@@ -38,13 +37,11 @@ const SEMANTIC_ROLE_COMPONENT_STYLE_EXCEPTIONS = new Set([
 
 const SEMANTIC_ROLE_PRODUCT_STYLE_ROOTS = [
   'packages/flow-chat-presentation/src/',
-  'src/mobile-web/src/',
   'OpenBitFun-Installer/src/',
   'design-system/apps/design-lab/src/',
 ];
 
 const COMPLETE_PRODUCT_STYLE_ROOTS = [
-  'src/mobile-web/src/',
   'OpenBitFun-Installer/src/',
 ];
 

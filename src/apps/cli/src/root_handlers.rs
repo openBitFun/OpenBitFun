@@ -73,6 +73,8 @@ pub(crate) async fn handle_dispatch_action(action: DispatchAction) -> Result<()>
         DispatchAction::Continue => "continue",
         DispatchAction::Query => "query",
         DispatchAction::WorkspaceProvision => "workspace-provision",
+        DispatchAction::WorkspaceProvisionSource => "workspace-provision-source",
+        DispatchAction::PendingPrompts => "pending-prompts",
         DispatchAction::WorkspaceBundleBegin => "workspace-bundle-begin",
         DispatchAction::WorkspaceBundleChunk => "workspace-bundle-chunk",
         DispatchAction::WorkspaceBundleCommit => "workspace-bundle-commit",

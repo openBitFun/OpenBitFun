@@ -1,7 +1,14 @@
 import { expect, open, test } from "nsh/test";
-import { createBackend, createDeviceBackend, type BackendOptions } from "./support";
+import { openSession, openToolScene, showDevices, createBackend, type BackendOptions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
+
+/** Routines and Spaces are Library tabs (visual spec §4.8): open the Library, then the tab. */
+async function openLibraryTab(app: Awaited<ReturnType<typeof open>>, tab: "routines" | "spaces"): Promise<void> {
+  await app.waitFor("Library");
+  if (!app.shows(`library-tab-${tab}`)) await app.press("Library");
+  await app.press(`library-tab-${tab}`);
+}
 
 interface WorkbenchFixtures {
   cronReadyRejects?: boolean;
@@ -26,9 +33,8 @@ interface WorkbenchFixtures {
 function createWorkbenchBackend(
   baseOptions: BackendOptions = {},
   fx: WorkbenchFixtures = {},
-  useDeviceBackend = false,
 ) {
-  const base = useDeviceBackend ? createDeviceBackend(baseOptions) : createBackend(baseOptions);
+  const base = createBackend(baseOptions);
   const originalInvoke = base.handlers["openbitfun.invoke"];
 
   const now = Date.now();
@@ -641,33 +647,6 @@ function createWorkbenchBackend(
     const isRaw = Object.prototype.hasOwnProperty.call(args, "raw");
     const payload = ((isRaw ? args.raw : args.request) ?? {}) as Record<string, unknown>;
 
-    if (action === "account_device_rpc") {
-      const envelope = JSON.parse(String(payload.commandJson ?? payload.command_json ?? "{}")) as {
-        cmd?: string;
-        command?: string;
-        args?: Record<string, unknown>;
-      };
-      const peerAction = envelope.command ?? "";
-      const peerArgs = (envelope.args ?? {}) as Record<string, unknown>;
-      const hasRequest = Object.prototype.hasOwnProperty.call(peerArgs, "request");
-      const peerPayload = ((hasRequest ? peerArgs.request : peerArgs) ?? {}) as Record<string, unknown>;
-      const res = handleWorkbenchAction(peerAction, peerPayload, !hasRequest);
-      if (res.handled) {
-        base.calls.push({ action, request: payload, raw: isRaw });
-        base.peerInvocations.push({ action: peerAction, args: peerArgs });
-        return {
-          ok: true,
-          value: JSON.stringify({
-            resp: "host_invoke_result",
-            ok: !res.error,
-            ...(res.error ? { error: res.error } : { value: res.value }),
-          }),
-          transport: "dev",
-        };
-      }
-      return originalInvoke(data);
-    }
-
     const res = handleWorkbenchAction(action, payload, isRaw);
     if (res.handled) {
       base.calls.push({ action, request: isRaw ? args.raw : args.request, raw: isRaw });
@@ -695,8 +674,7 @@ test("routines: loads schedules, renders 24h & calendar, creates/edits/toggles/d
   const backend = createWorkbenchBackend({}, { cronReadyRejects: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Routines");
-  await app.press("Routines");
+  await openLibraryTab(app, "routines");
   await app.waitFor("Daily PR Triage");
 
   expect(backend.actions()).toContain("notify_cron_host_ready");
@@ -809,44 +787,10 @@ test("routines: loads schedules, renders 24h & calendar, creates/edits/toggles/d
   await app.waitFor("Agent Created Cron");
 });
 
-test("routines: Peer Device Mode omits reportPolicy when background_result_delivery_v1 is false", async () => {
-  const backend = createWorkbenchBackend(
-    {
-      onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-      peerCapabilities: { background_result_delivery_v1: false },
-    },
-    {},
-    true,
-  );
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.waitFor("Devices");
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("device-use-device-linux");
-  await app.waitFor("Driving builder (desktop): sessions, files, terminals and settings come from that device");
-
-  await app.press("Routines");
-  await app.waitFor("Daily PR Triage");
-  expect(app.texts().some(t => t.includes("background_result_delivery_v1"))).toBe(true);
-
-  await app.press("label:routines-new");
-  await app.type("label:routine-name-input", "Peer Routine");
-  await app.type("label:routine-prompt-input", "Check peer health.");
-  await app.press("label:routine-save");
-  await app.waitFor("Peer Routine");
-
-  const peerCreate = backend.peerInvocations.find(inv => inv.action === "create_cron_job");
-  expect(peerCreate).toBeDefined();
-  const req = (peerCreate?.args as { request?: Record<string, unknown> })?.request ?? {};
-  expect(Object.prototype.hasOwnProperty.call(req, "reportPolicy")).toBe(false);
-});
-
 test("git: trust_required recovery and not_a_repository initialize with agent", async () => {
   const trustBackend = createWorkbenchBackend({}, { gitTrustState: "trust_required" });
   const app1 = await open("../App.tsx", { ...DESKTOP, host: { handlers: trustBackend.handlers } });
-  await app1.waitFor("Git");
-  await app1.press("Git");
+  await openToolScene(app1, "git");
   await app1.waitFor("Repository Trust Required");
   expect(app1.texts()).toContain("git config --global --add safe.directory /repo");
 
@@ -857,8 +801,7 @@ test("git: trust_required recovery and not_a_repository initialize with agent", 
 
   const emptyBackend = createWorkbenchBackend({}, { gitIsRepo: false });
   const app2 = await open("../App.tsx", { ...DESKTOP, host: { handlers: emptyBackend.handlers } });
-  await app2.waitFor("Git");
-  await app2.press("Git");
+  await openToolScene(app2, "git");
   await app2.waitFor("Not a Git repository");
 
   await app2.press("Initialize with Agent");
@@ -870,8 +813,7 @@ test("git: trust_required recovery and not_a_repository initialize with agent", 
     { gitTrustState: "trust_required", gitTrustOutcomeState: "trust_required" },
   );
   const app3 = await open("../App.tsx", { ...DESKTOP, host: { handlers: readonlyTrustBackend.handlers } });
-  await app3.waitFor("Git");
-  await app3.press("Git");
+  await openToolScene(app3, "git");
   await app3.waitFor("Repository Trust Required");
   await app3.press("label:git-trust-repo");
   await app3.waitFor("Read-only gitconfig");
@@ -882,8 +824,7 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
   const backend = createWorkbenchBackend({}, { quickCommitFails: true, enhancedBranchesFails: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Git");
-  await app.press("Git");
+  await openToolScene(app, "git");
   await app.waitFor("Working Copy");
   expect(app.texts()).toContain("docs/guide.md");
   expect(app.texts()).toContain("main.rs");
@@ -1033,7 +974,9 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
   expect(localWorktreeCalls).toBeGreaterThan(0);
 
   // Switch to remote workspace: NEVER call git_get_graph or git_list_worktrees for remote-host!
+  await showDevices(app);
   await app.press("label:workspace-row-workspace-2");
+  await openToolScene(app, "git");
   await app.waitFor("Commit lane graphs are available on local workspaces only. Showing linear commit history for this remote workspace.");
   expect(backend.calls.filter(c => c.action === "git_get_graph").length).toBe(localGraphCalls);
   expect(app.texts()).toContain("feat(nsh): wire studio workbench");
@@ -1043,10 +986,11 @@ test("git: working copy stage/unstage/discard/AI commit, branches, worktrees, hi
   expect(backend.calls.filter(c => c.action === "git_list_worktrees").length).toBe(localWorktreeCalls);
 
   // Switch back to local workspace + Sessions and open GitScene inside AuxPane compact split
+  await showDevices(app);
+  await app.press("label:workspace-row-workspace-2");
   await app.press("label:workspace-row-workspace-1");
-  await app.press("Sessions");
-  await app.waitFor("label:topbar-aux-git");
-  await app.press("label:topbar-aux-git");
+  await openSession(app, "NSH skeleton");
+  await app.press("label:session-tool-git");
   await app.waitFor("label:git-branch-switcher");
   expect(app.texts()).toContain("Changes");
   expect(app.texts()).toContain("Worktrees");
@@ -1056,8 +1000,7 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Spaces");
-  await app.press("Spaces");
+  await openLibraryTab(app, "spaces");
   await app.waitFor("Release Tracker");
   expect(app.texts()).toContain("Focus Pad");
   expect(app.texts().some(t => t.includes("1 active workers"))).toBe(true);
@@ -1128,8 +1071,7 @@ test("spaces: follows miniapp catalogue events and guards Create with Agent on r
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Spaces");
-  await app.press("Spaces");
+  await openLibraryTab(app, "spaces");
   await app.waitFor("Release Tracker");
   expect(app.shows("label:space-running-space-board")).toBe(true);
 
@@ -1147,37 +1089,11 @@ test("spaces: follows miniapp catalogue events and guards Create with Agent on r
   );
 
   // Remote workspace: creation is refused loudly, nothing is started.
+  await showDevices(app);
   await app.press("label:workspace-row-workspace-2");
-  await app.press("Spaces");
+  await openLibraryTab(app, "spaces");
   await app.waitFor("Creating Spaces is not supported in remote workspaces. Switch to a local workspace to create one.");
   expect(app.enabled("label:spaces-create-agent")).toBe(false);
-});
-
-test("spaces: shows Peer Device Mode notice when driving a peer", async () => {
-  const backend = createWorkbenchBackend(
-    { onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }] },
-    {},
-    true,
-  );
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.waitFor("Devices");
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("device-use-device-linux");
-  await app.waitFor("Driving builder (desktop): sessions, files, terminals and settings come from that device");
-
-  await app.press("Spaces");
-  await app.waitFor("Release Tracker");
-  expect(app.texts().some(t => t.includes("Driving peer device builder"))).toBe(true);
-  // A peer's Space never opens as a window on this computer: the scene says why.
-  await app.waitFor("label:spaces-run-unsupported");
-  expect(
-    app.texts().some(t => t.includes("belongs to the device you are driving")),
-  ).toBe(true);
-  await app.press("label:space-inspect-space-board");
-  await app.waitFor("Create a release readiness tracker Space.");
-  expect(app.shows("label:space-inspector-open")).toBe(false);
 });
 
 test("git: live status refresh, commit inspection, untracked additions, batch staging, upstream publish and commit & switch", async () => {
@@ -1187,7 +1103,7 @@ test("git: live status refresh, commit inspection, untracked additions, batch st
   );
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Git");
+  await openToolScene(app, "git");
   await app.waitFor("Working Copy");
 
   // The scene leases live status from the host instead of polling.
@@ -1305,7 +1221,7 @@ test("git: live status refresh, commit inspection, untracked additions, batch st
 test("git: an older host without live status says so instead of polling, and refuses compound operations loudly", async () => {
   const backend = createWorkbenchBackend({}, { gitHostOutdated: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.press("Git");
+  await openToolScene(app, "git");
   await app.waitFor("Working Copy");
   await app.waitFor("This host does not push Git changes, so the status here is not live. Update OpenBitFun on it; use Refresh meanwhile.");
   const reads = backend.calls.filter(c => c.action === "git_get_status").length;
@@ -1327,8 +1243,7 @@ test("routines: a routine can run in an existing session of the active workspace
     sessions: [{ sessionId: "session-standup", sessionName: "Standup thread", messageCount: 3 }],
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Routines");
-  await app.press("Routines");
+  await openLibraryTab(app, "routines");
   await app.press("label:routines-new");
   await app.waitFor("label:routine-name-input");
   await app.type("label:routine-name-input", "Standup nudge");
@@ -1357,8 +1272,7 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   // Routines: at desktop width the calendar sits beside the list; at 390 pt it stacks under it.
-  await app.waitFor("Routines");
-  await app.press("Routines");
+  await openLibraryTab(app, "routines");
   await app.waitFor("Daily PR Triage");
   expect(app.shows("label:routines-calendar-panel")).toBe(true);
   await app.setViewport(390, 844);
@@ -1374,9 +1288,8 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
 
   // Spaces: the gallery collapses to one column and Create with Agent stays reachable.
   await app.setViewport(1440, 900);
-  // The shell folds its sidebar away at phone width; bring it back to navigate.
-  if (!app.shows("Spaces")) await app.press("toggle-drawer");
-  await app.press("Spaces");
+  // The Library stays open across the resize; its tabs switch the scene.
+  await app.press("library-tab-spaces");
   await app.waitFor("Release Tracker");
   await app.setViewport(390, 844);
   await app.waitFor("label:spaces-create-agent");
@@ -1384,24 +1297,17 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   await app.type("label:spaces-prompt-input", "A tiny habit tracker");
   expect(app.enabled("label:spaces-create-agent")).toBe(true);
 
-  // Devices: the inset lists render and the dispatch form opens at phone width.
-  await app.setViewport(1440, 900);
-  if (!app.shows("Devices")) await app.press("toggle-drawer");
-  await app.press("Devices");
-  await app.waitFor("Your devices");
+  // Devices: All sessions › By device keeps its rows at phone width (the dispatch form is retired:
+  // OpenBitFun starts jobs).
   await app.setViewport(390, 844);
-  await app.waitFor("Messaging channels");
-  expect(app.texts()).toContain("Driving another device");
-  await app.waitFor("label:dispatch-form-toggle");
-  await app.press("label:dispatch-form-toggle");
-  await app.waitFor("label:dispatch-prompt");
+  await showDevices(app);
+  await app.waitFor("text:This device");
 });
 
 test("routines: the editor previews and validates through the host scheduler", async () => {
   const backend = createWorkbenchBackend({}, {});
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Routines");
-  await app.press("Routines");
+  await openLibraryTab(app, "routines");
   await app.waitFor("Daily PR Triage");
   // The calendar and the due list are read from the host, not parsed here.
   await app.waitFor("Due in the next 24 hours");
@@ -1438,8 +1344,7 @@ test("routines: the editor previews and validates through the host scheduler", a
 test("routines: an older host without run previews says so and shows only the runs it reports", async () => {
   const backend = createWorkbenchBackend({}, { cronPreviewMissing: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Routines");
-  await app.press("Routines");
+  await openLibraryTab(app, "routines");
   await app.waitFor("Daily PR Triage");
   await app.waitFor("label:routines-preview-unavailable");
   // The host-reported next run of the enabled routine still lists as due.

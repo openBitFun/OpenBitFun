@@ -41,7 +41,6 @@ const LEGACY_APPLICATION_ASSETS = [
   'src/apps/desktop/icons/Square284x284Logo.png',
   'src/apps/desktop/icons/Square310x310Logo.png',
   'src/apps/desktop/icons/StoreLogo.png',
-  'src/mobile-web/src/assets/Logo-ICON.png',
   'OpenBitFun-Installer/src/Logo-ICON.png',
   'OpenBitFun-Installer/src-tauri/icons/icon.png',
   'OpenBitFun-Installer/src-tauri/icons/icon.ico',
@@ -266,13 +265,6 @@ async function generateBrandAssets() {
     );
   }
 
-  const mobileWebAssetDir = outputPath('src', 'mobile-web', 'src', 'assets');
-  await writePng(path.join(mobileWebAssetDir, 'openbitfun-mark-dark.png'), darkMark);
-  await writePng(path.join(mobileWebAssetDir, 'openbitfun-mark-light.png'), lightMark);
-  await writePng(
-    outputPath('src', 'mobile-web', 'public', 'brand', 'openbitfun-app-icon.png'),
-    applicationIcon,
-  );
   await writePng(
     outputPath('src', 'apps', 'relay-server', 'static', 'brand', 'openbitfun-app-icon.png'),
     applicationIcon,
@@ -288,7 +280,6 @@ async function generateBrandAssets() {
   await writePng(path.join(installerIconDir, 'openbitfun-app-icon.icns'), macosFallback);
 
   for (const directory of [installerBrandDir,
-    outputPath('src', 'mobile-web', 'public', 'brand'),
     outputPath('src', 'apps', 'relay-server', 'static', 'brand')]) {
     for (const size of [16, 32]) {
       await writePng(path.join(directory, `openbitfun-app-icon-${size}.png`), await renderIcon(size));

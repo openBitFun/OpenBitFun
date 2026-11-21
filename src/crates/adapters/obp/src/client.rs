@@ -30,6 +30,10 @@ use tokio_tungstenite::tungstenite::Message;
 pub use crate::authority::{MeshAuthority, MeshInfo, MeshIo};
 use crate::{sha256_hex, OBP_PROTOCOL_VERSION};
 
+#[cfg(feature = "fleet")]
+pub mod cloud;
+pub mod links;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 /// The event window a controller asks for by default.
@@ -39,7 +43,27 @@ pub const MAX_EVENT_BATCH: usize = 512;
 
 /// A TLS stream to a device.
 pub type TlsSocket = TlsStream<Box<dyn MeshIo>>;
-type WsStream = tokio_tungstenite::WebSocketStream<TlsSocket>;
+type WsError = tokio_tungstenite::tungstenite::Error;
+
+/// A message transport an OBP connection runs over: a WebSocket to a
+/// device, or the end-to-end channel to the account's cloud node
+/// ([`cloud`]).
+pub(crate) trait ObpSocket:
+    futures::Stream<Item = Result<Message, WsError>>
+    + futures::Sink<Message, Error = WsError>
+    + Unpin
+    + Send
+    + 'static
+{
+}
+impl<T> ObpSocket for T where
+    T: futures::Stream<Item = Result<Message, WsError>>
+        + futures::Sink<Message, Error = WsError>
+        + Unpin
+        + Send
+        + 'static
+{
+}
 
 /// The `client` a controller names in its `hello` by default.
 pub fn default_client_name() -> String {
@@ -183,6 +207,14 @@ pub struct MeshConnectOptions {
     pub instance_id: Option<String>,
     /// Event window in bytes (default 1 MiB).
     pub credit_bytes: Option<u64>,
+    /// Only events whose name starts with one of these (hello
+    /// `events: {prefixes}`; `backend://events-dropped` always passes). A
+    /// server that applies the filter echoes it in its hello answer; older
+    /// servers ignore it and send everything.
+    pub event_prefixes: Option<Vec<String>>,
+    /// The fleet member of the hello (`{protocol, cursor}`): a fleet entry
+    /// then tags every event with `origin` and `originInstance`.
+    pub fleet: Option<Value>,
 }
 
 /// Opens an authenticated OBP connection over `stream` (no timeout: callers
@@ -317,12 +349,25 @@ pub struct MeshObpEvent {
     pub seq: u64,
     pub event: String,
     pub payload: Value,
+    /// The device the event comes from, on a fleet stream (hello `fleet`);
+    /// `seq` is then that origin's own.
+    pub origin: Option<String>,
+    /// The backend instance of `origin`, on a fleet stream.
+    pub origin_instance: Option<String>,
 }
 
 impl MeshObpEvent {
-    /// The event as the in-process stream shapes it: `{seq, event, payload}`.
+    /// The event as the in-process stream shapes it: `{seq, event, payload}`
+    /// (plus `origin` and `originInstance` on a fleet stream).
     pub fn to_wire(&self) -> Value {
-        json!({"seq": self.seq, "event": self.event, "payload": self.payload})
+        let mut wire = json!({"seq": self.seq, "event": self.event, "payload": self.payload});
+        if let Some(origin) = &self.origin {
+            wire["origin"] = json!(origin);
+        }
+        if let Some(instance) = &self.origin_instance {
+            wire["originInstance"] = json!(instance);
+        }
+        wire
     }
 }
 
@@ -446,7 +491,8 @@ enum Outgoing {
         args: Value,
         reply: oneshot::Sender<Result<Value, MeshCallError>>,
     },
-    Ack(u64),
+    /// `{seq}`, plus the vector cursor on a fleet stream.
+    Ack(u64, Option<Value>),
     Close,
 }
 
@@ -483,6 +529,8 @@ impl MeshCaller {
 #[derive(Default)]
 struct Inbox {
     events: Mutex<VecDeque<MeshObpEvent>>,
+    /// Fleet streams: `{[origin]: {instanceId, seq}}` of the events taken.
+    cursor: Mutex<serde_json::Map<String, Value>>,
     closed: Mutex<Option<String>>,
     notify: Notify,
 }
@@ -515,8 +563,8 @@ pub struct MeshObpConnection {
 }
 
 impl MeshObpConnection {
-    async fn start(
-        mut socket: WsStream,
+    pub(crate) async fn start<S: ObpSocket>(
+        mut socket: S,
         device_id: String,
         options: MeshConnectOptions,
         client: String,
@@ -531,6 +579,12 @@ impl MeshObpConnection {
         if let (Some(seq), Some(instance)) = (options.last_seq, options.instance_id) {
             params["lastSeq"] = json!(seq);
             params["instanceId"] = json!(instance);
+        }
+        if let Some(prefixes) = options.event_prefixes {
+            params["events"] = json!({ "prefixes": prefixes });
+        }
+        if let Some(fleet) = options.fleet {
+            params["fleet"] = fleet;
         }
         let hello = json!({"jsonrpc": "2.0", "id": 0, "method": "hello", "params": params});
         socket
@@ -628,7 +682,8 @@ impl MeshObpConnection {
                     drop(events);
                     if self.acks {
                         if let Some(last) = batch.last() {
-                            let _ = self.outgoing.send(Outgoing::Ack(last.seq));
+                            let cursor = self.advance_cursor(&batch);
+                            let _ = self.outgoing.send(Outgoing::Ack(last.seq, cursor));
                         }
                     }
                     return Ok(batch);
@@ -639,6 +694,33 @@ impl MeshObpConnection {
             }
             notified.await;
         }
+    }
+
+    /// Moves the fleet cursor past `batch`; the cursor to ack with, on a
+    /// fleet stream (events tagged with their origin).
+    fn advance_cursor(&self, batch: &[MeshObpEvent]) -> Option<Value> {
+        let mut cursor = self.inbox.cursor.lock().unwrap_or_else(|p| p.into_inner());
+        let mut tagged = false;
+        for event in batch {
+            let (Some(origin), Some(instance)) = (&event.origin, &event.origin_instance) else {
+                continue;
+            };
+            tagged = true;
+            let same = cursor
+                .get(origin)
+                .is_some_and(|position| position["instanceId"] == json!(instance));
+            if !same
+                || cursor[origin]["seq"]
+                    .as_u64()
+                    .is_none_or(|seq| event.seq > seq)
+            {
+                cursor.insert(
+                    origin.clone(),
+                    json!({ "instanceId": instance, "seq": event.seq }),
+                );
+            }
+        }
+        (tagged || !cursor.is_empty()).then(|| Value::Object(cursor.clone()))
     }
 
     /// The next event (acknowledged as it is taken); `None` once closed.
@@ -671,11 +753,13 @@ fn parse_event(params: &Value) -> Option<MeshObpEvent> {
         seq: params["seq"].as_u64()?,
         event: params["event"].as_str()?.to_string(),
         payload: params["payload"].clone(),
+        origin: params["origin"].as_str().map(str::to_string),
+        origin_instance: params["originInstance"].as_str().map(str::to_string),
     })
 }
 
-async fn pump(
-    socket: WsStream,
+async fn pump<S: ObpSocket>(
+    socket: S,
     mut requests: mpsc::UnboundedReceiver<Outgoing>,
     inbox: Arc<Inbox>,
 ) {
@@ -697,8 +781,12 @@ async fn pump(
                     }
                     pending.insert(id, reply);
                 }
-                Some(Outgoing::Ack(seq)) => {
-                    let frame = json!({"jsonrpc": "2.0", "method": "ack", "params": {"seq": seq}});
+                Some(Outgoing::Ack(seq, cursor)) => {
+                    let mut params = json!({"seq": seq});
+                    if let Some(cursor) = cursor {
+                        params["cursor"] = cursor;
+                    }
+                    let frame = json!({"jsonrpc": "2.0", "method": "ack", "params": params});
                     if sink.send(Message::Text(frame.to_string().into())).await.is_err() {
                         break "the mesh connection failed".to_string();
                     }

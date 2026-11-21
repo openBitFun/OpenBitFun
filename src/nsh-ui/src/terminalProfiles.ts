@@ -19,7 +19,6 @@ import { Storage, signal } from "nsh";
 import { invokeCommand } from "./bridge";
 import { isCommandUnavailable } from "./hostCommands";
 import { tr } from "./i18n";
-import { peerScope } from "./peerState";
 import { activeWorkspaceId, activeWorkspaceRoot, onWorkspaceChanged } from "./state";
 
 export interface TerminalProfile {
@@ -68,7 +67,7 @@ let workspaceHookBound = false;
 const loadsInFlight = new Map<string, Promise<void>>();
 
 function scopeKey(): string {
-  return peerScope()?.deviceId ?? "local";
+  return "local";
 }
 
 function listKey(workspaceId: string): string {

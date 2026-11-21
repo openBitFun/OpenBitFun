@@ -12,8 +12,6 @@
  *   without content, and nested tools fail with a confusing "Cannot find
  *   module .../bin/<tool>" error, for example
  *   ".../design-system/packages/ui/node_modules/typescript/bin/tsc"
- * - src/mobile-web/dist missing → native desktop packages ship without the
- *   legacy relay mobile UI that older OpenBitFun-Mobile clients load
  * - OpenCode extension Host dist missing → Desktop, CLI, and app-server
  *   builds cannot bundle or launch the Bun plugin Host resources
  * - sherpa-onnx prebuilt libs missing → sherpa-onnx-sys build script attempts
@@ -139,17 +137,7 @@ function runChecks(rootDir) {
     });
   }
 
-  // --- Check 3: mobile-web dist (bundled by the native desktop packages) ---
-  if (!existsSync(join(rootDir, 'src', 'mobile-web', 'dist', 'index.html'))) {
-    errors.push({
-      name: 'mobile-web dist',
-      message:
-        "src/mobile-web/dist is missing. The native desktop packages bundle it as the legacy relay mobile UI for older OpenBitFun-Mobile clients; a package built without it serves only the relay-hosted mobile web.",
-      fix: ['pnpm', 'run', 'prepare:mobile-web'],
-    });
-  }
-
-  // --- Check 4: OpenCode extension Host dist (product runtime resource) ---
+  // --- Check 3: OpenCode extension Host dist (product runtime resource) ---
   const pluginHostDist = join(
     rootDir,
     'src',
@@ -167,7 +155,7 @@ function runChecks(rootDir) {
     });
   }
 
-  // --- Check 5: sherpa-onnx prebuilt libs ---
+  // --- Check 4: sherpa-onnx prebuilt libs ---
   // sherpa-onnx-sys build.rs auto-detects target/sherpa-onnx-prebuilt/<version>/lib/
   // and returns immediately without downloading. Only warn for the first-build
   // scenario where no prebuilt cache exists yet.

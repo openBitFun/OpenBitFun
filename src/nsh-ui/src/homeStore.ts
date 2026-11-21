@@ -1,33 +1,24 @@
-// State and backend actions for the Personal Hub Home overview (`PersonalOverview`).
+// Account state and Account › Activity: the signed-in identity and its
+// sign-in/sign-out actions (`account_*`), the usage totals and six-month
+// heatmap from `get_personal_overview` (its `usage` and `activity` sections),
+// and AI Insights (`*_insights*`). The Personal Hub Home screen that used to
+// draw these was replaced by the OpenBitFun conversation (wave 15); its
+// ecosystem pulse, quick prompt and shortcuts are gone.
 //
-// Account identity (`account_*`) and AI Insights (`*_insights*`) are
-// controller-local on this machine even while driving a Peer. Ecosystem pulse
-// calls (`get_assistant_workspaces`, `get_available_modes`, `list_subagents`,
-// `get_skill_configs`, `list_cron_jobs`, `list_miniapps`, `ssh_list_saved_connections`,
-// `get_token_usage_statistics`) target the active host (or Peer) and catch
-// errors independently so older hosts degrade gracefully.
+// Account identity and Insights are controller-local on this machine even
+// while driving a Peer; the overview read targets the active host and degrades
+// per section, so an older host costs only the part it lacks.
 
 import { Clipboard, computed, openUrl, signal } from "nsh";
 import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { formatCount, formatTimestamp, formatTokens } from "./format";
 import { localizeHostError, tr } from "./i18n";
-import { peerScope } from "./peerState";
-import { pendingPermissions } from "./permissionStore";
-import { savedConnections, type SavedConnection } from "./sshRemoteStore";
 import { isCommandUnavailable } from "./hostCommands";
 import {
   readUsageActivity,
   type UsageActivityCell,
   type UsageActivityView,
 } from "./usageActivity";
-import {
-  activeWorkspaceId,
-  navigateScene,
-  runningTurns,
-  selectSession,
-  sessions,
-  startQuickPromptInSession,
-} from "./state";
 
 const MONTH_NAMES = [
   "Jan",
@@ -59,15 +50,6 @@ export interface GitHubDeviceFlowState {
   transactionId: string;
   intervalSeconds: number;
   status: "pending" | "authorized" | "expired";
-}
-
-export interface DueRoutineView {
-  id: string;
-  name: string;
-  scheduleSummary: string;
-  nextRunAtMs: number;
-  nextRunText: string;
-  lastRunStatus: string;
 }
 
 export interface UsageTrendPointView {
@@ -105,14 +87,6 @@ export interface UsageActivityGridData {
   monthHeaders: Array<{ weekIndex: number; label: string }>;
 }
 
-export interface HomeSpaceItemView {
-  id: string;
-  name: string;
-  description: string;
-  icon: string;
-  running: boolean;
-}
-
 export interface InsightsReportMetaView {
   path: string;
   title: string;
@@ -141,38 +115,12 @@ export const insightsDays = signal<number>(30);
 /** `primary` or `fast`, the model slot the generator runs on. */
 export const insightsModel = signal<"primary" | "fast">("primary");
 
-export const homeQuickPrompt = signal("");
-export const homeQuickBusy = signal(false);
-
 export const accountStatus = signal<{ loggedIn: boolean; userId: string | null } | null>(null);
 export const githubUser = signal<GitHubIdentityView | null>(null);
 export const githubAuthFlow = signal<GitHubDeviceFlowState | null>(null);
 export const authLoading = signal(false);
 export const authNotice = signal("");
 export const authError = signal("");
-
-export const homePulseLoading = signal(false);
-export const assistantsCount = signal<number | null>(null);
-export const assistantsPulseNote = signal("");
-export const agentsCount = signal<number | null>(null);
-export const modesCount = signal<number | null>(null);
-export const subagentsCount = signal<number>(0);
-export const agentsPulseNote = signal("");
-export const skillsCount = signal<number | null>(null);
-export const skillsEnabledCount = signal<number | null>(null);
-export const skillsPulseNote = signal("");
-export const routinesCount = signal<number | null>(null);
-export const routinesEnabledCount = signal<number | null>(null);
-export const dueSoonRoutines = signal<DueRoutineView[]>([]);
-export const routinesPulseNote = signal("");
-
-export const spacesCount = signal<number | null>(null);
-export const spacesRunningCount = signal<number>(0);
-export const installedSpaces = signal<HomeSpaceItemView[]>([]);
-export const spacesPulseNote = signal("");
-
-export const homeSavedSshConnections = signal<SavedConnection[]>([]);
-export const homeSshNote = signal("");
 
 export const usageSummary = signal<HomeUsageSummary | null>(null);
 export const usagePulseNote = signal("");
@@ -194,10 +142,6 @@ export const insightsModalOpen = signal(false);
 
 export const isAccountSignedIn = computed(
   () => githubUser() !== null || accountStatus()?.loggedIn === true,
-);
-
-export const homeSshList = computed<SavedConnection[]>(() =>
-  savedConnections().length > 0 ? savedConnections() : homeSavedSshConnections(),
 );
 
 export const overviewUsageMetrics = computed<OverviewUsageMetrics>(() => {
@@ -225,10 +169,8 @@ export const usageActivityGrid = computed<UsageActivityGridData>(() => {
   };
 });
 
-let lastPulsePeerKey: string | undefined;
-let lastModesKey: string | undefined;
-let pulseTicket = 0;
-let modesTicket = 0;
+let activityLoaded = false;
+let activityTicket = 0;
 let insightsTicket = 0;
 let subscribedEvents = false;
 let silentPollInFlight = false;
@@ -239,7 +181,7 @@ const accountAuthListeners = new Set<AccountAuthChangeListener>();
 
 /**
  * Subscribes to account sign-in, sign-out, and host identity-changed events so
- * scenes (DevicesScene, SidebarDeviceSwitcher, etc.) can refresh device lists
+ * scenes (the device page, All sessions, etc.) can refresh device lists
  * cleanly without circular imports.
  */
 export function onAccountAuthChanged(listener: AccountAuthChangeListener): () => void {
@@ -536,62 +478,6 @@ export async function signOutAccount(): Promise<void> {
   }
 }
 
-function summarizeCronSchedule(scheduleRaw: unknown): string {
-  const schedule = asRecord(scheduleRaw);
-  const kind = readString(schedule, ["kind"]).toLowerCase();
-  if (kind === "every") {
-    const everyMs = readNumber(schedule, ["everyMs", "every_ms"]) ?? 0;
-    if (everyMs >= 86_400_000 && everyMs % 86_400_000 === 0) {
-      return tr("routines.scheduleEveryDay", { count: Math.round(everyMs / 86_400_000) });
-    }
-    if (everyMs >= 3_600_000) {
-      return tr("routines.scheduleEveryHour", { count: Math.round(everyMs / 3_600_000) });
-    }
-    if (everyMs >= 60_000) {
-      return tr("routines.scheduleEveryMin", { count: Math.round(everyMs / 60_000) });
-    }
-    if (everyMs > 0) {
-      return tr("routines.scheduleEverySec", { count: Math.max(1, Math.round(everyMs / 1000)) });
-    }
-    return tr("routines.scheduleRepeating");
-  }
-  if (kind === "cron") {
-    const expr = readString(schedule, ["expr"]);
-    return expr ? tr("routines.scheduleCron", { expr }) : tr("routines.scheduleCronFallback");
-  }
-  if (kind === "at") {
-    const at = readString(schedule, ["at"]);
-    const parsed = at ? Date.parse(at) : Number.NaN;
-    return at
-      ? tr("routines.scheduleOnce", { time: Number.isFinite(parsed) ? formatTimestamp(parsed) : at })
-      : tr("routines.scheduleOnceFallback");
-  }
-  return tr("routines.scheduleGeneric");
-}
-
-/** The host's due-soon routines (enabled, due within the last hour or next day, soonest first). */
-function readDueRoutines(raw: unknown): DueRoutineView[] {
-  const list = Array.isArray(raw) ? raw : [];
-  return list.map((entry, index) => {
-    const job = asRecord(entry);
-    const id = readString(job, ["id"]) || `routine-${index + 1}`;
-    const nextRunAtMs = readNumber(job, ["nextRunAtMs"]) ?? 0;
-    const rawSchedule = job.schedule;
-    return {
-      id,
-      name: readString(job, ["name"]) || id,
-      get scheduleSummary() {
-        return summarizeCronSchedule(rawSchedule);
-      },
-      nextRunAtMs,
-      get nextRunText() {
-        return formatTimestamp(nextRunAtMs) || tr("common.soon");
-      },
-      lastRunStatus: readString(job, ["lastRunStatus"]),
-    };
-  });
-}
-
 /** `{status, value?, error?}` of one overview section. */
 function readSection(raw: unknown): { ready: boolean; value: Record<string, unknown>; error: string } {
   const section = asRecord(raw);
@@ -603,79 +489,20 @@ function readSection(raw: unknown): { ready: boolean; value: Record<string, unkn
   };
 }
 
-export async function loadAgentModesPulse(
-  workspaceId: string | null,
-  expectedPeerId: string | null = peerScope()?.deviceId ?? null,
-): Promise<void> {
-  const ticket = ++modesTicket;
-  if (!workspaceId) {
-    agentsCount.set(null);
-    modesCount.set(null);
-    subagentsCount.set(0);
-    agentsPulseNote.set("Open a workspace to inspect agents");
-    return;
-  }
-  try {
-    const [modesRes, subagentsRes] = await Promise.allSettled([
-      invokeCommand<unknown[]>("get_available_modes", { workspaceId }),
-      invokeCommand<unknown[]>("list_subagents", { workspaceId }),
-    ]);
-    if (ticket !== modesTicket || (peerScope()?.deviceId ?? null) !== expectedPeerId) return;
-
-    if (modesRes.status === "rejected") {
-      agentsCount.set(null);
-      modesCount.set(null);
-      subagentsCount.set(0);
-      agentsPulseNote.set(errorMessage(modesRes.reason));
-      return;
-    }
-
-    const modeList = Array.isArray(modesRes.value) ? modesRes.value : [];
-    let visibleSubagents = 0;
-    if (subagentsRes.status === "fulfilled" && Array.isArray(subagentsRes.value)) {
-      visibleSubagents = subagentsRes.value.filter(raw => {
-        const rec = asRecord(raw);
-        const src = readString(rec, ["subagentSource", "source"]);
-        const vis = asRecord(rec.visibility);
-        return src !== "external" && vis.showInGlobalRegistry !== false;
-      }).length;
-    }
-    modesCount.set(modeList.length);
-    subagentsCount.set(visibleSubagents);
-    agentsCount.set(modeList.length + visibleSubagents);
-    agentsPulseNote.set("");
-  } catch (error) {
-    if (ticket !== modesTicket || (peerScope()?.deviceId ?? null) !== expectedPeerId) return;
-    agentsCount.set(null);
-    modesCount.set(null);
-    subagentsCount.set(0);
-    agentsPulseNote.set(errorMessage(error));
-  }
-}
-
 /**
- * Reads Home's overview in one call. The host counts, filters and keys every
- * section (`get_personal_overview`); each section carries its own status, so a
- * failing owner leaves its note and the others still draw. A host older than
- * the command gets one "update the host" note instead of eight client reads.
+ * Reads Account › Activity in one call: the `usage` totals and the six-month
+ * `activity` heatmap of `get_personal_overview`. The host counts and keys
+ * every section and each carries its own status, so one failing section
+ * leaves its note and the other still draws. A host older than the command
+ * gets one "update the host" note.
  */
-export async function loadEcosystemPulse(force = false): Promise<void> {
-  const peerId = peerScope()?.deviceId ?? null;
-  const peerKey = peerId ?? "__local__";
-  if (!force && lastPulsePeerKey === peerKey) return;
-  lastPulsePeerKey = peerKey;
-
-  const ticket = ++pulseTicket;
-  homePulseLoading.set(true);
-
+export async function loadAccountActivity(force = false): Promise<void> {
+  if (!force && activityLoaded) return;
+  activityLoaded = true;
+  const ticket = ++activityTicket;
   if (force) {
-    assistantsPulseNote.set("");
-    skillsPulseNote.set("");
-    routinesPulseNote.set("");
-    spacesPulseNote.set("");
     usagePulseNote.set("");
     usageActivityNote.set("");
-    homeSshNote.set("");
   }
 
   const timeZone = resolveTimeZone();
@@ -691,55 +518,11 @@ export async function loadEcosystemPulse(force = false): Promise<void> {
     outdated = isCommandUnavailable(error, "get_personal_overview");
   }
 
-  if (ticket !== pulseTicket || (peerScope()?.deviceId ?? null) !== peerId) {
-    return;
-  }
+  if (ticket !== activityTicket) return;
 
   const unreadable = outdated ? tr("home.overviewHostOutdated") : failure;
   const section = (key: string) =>
     overview ? readSection(overview[key]) : { ready: false, value: {}, error: unreadable };
-
-  const assistants = section("assistants");
-  assistantsCount.set(assistants.ready ? readNumber(assistants.value, ["count"]) ?? 0 : null);
-  assistantsPulseNote.set(assistants.error);
-
-  const skills = section("skills");
-  skillsCount.set(skills.ready ? readNumber(skills.value, ["count"]) ?? 0 : null);
-  skillsEnabledCount.set(skills.ready ? readNumber(skills.value, ["enabled"]) ?? 0 : null);
-  skillsPulseNote.set(skills.error);
-
-  const routines = section("routines");
-  routinesCount.set(routines.ready ? readNumber(routines.value, ["count"]) ?? 0 : null);
-  routinesEnabledCount.set(routines.ready ? readNumber(routines.value, ["enabled"]) ?? 0 : null);
-  dueSoonRoutines.set(routines.ready ? readDueRoutines(routines.value.dueSoon) : []);
-  routinesPulseNote.set(routines.error);
-
-  const spaces = section("spaces");
-  const spaceItems: HomeSpaceItemView[] = spaces.ready
-    ? (Array.isArray(spaces.value.items) ? spaces.value.items : []).map((item, index) => {
-        const rec = asRecord(item);
-        const id = readString(rec, ["id"]) || `space-${index + 1}`;
-        return {
-          id,
-          name: readString(rec, ["name"]) || id,
-          description: readString(rec, ["description"]),
-          icon: readString(rec, ["icon"]) || "shapes",
-          running: rec.running === true,
-        };
-      })
-    : [];
-  spacesCount.set(spaces.ready ? readNumber(spaces.value, ["count"]) ?? spaceItems.length : null);
-  spacesRunningCount.set(spaces.ready ? readNumber(spaces.value, ["running"]) ?? 0 : 0);
-  installedSpaces.set(spaceItems);
-  spacesPulseNote.set(spaces.error);
-
-  const ssh = section("ssh");
-  homeSavedSshConnections.set(
-    ssh.ready && Array.isArray(ssh.value.connections)
-      ? (ssh.value.connections as SavedConnection[])
-      : [],
-  );
-  homeSshNote.set(ssh.error);
 
   const usage = section("usage");
   if (usage.ready) {
@@ -779,8 +562,12 @@ export async function loadEcosystemPulse(force = false): Promise<void> {
         : activity.error,
     );
   }
+}
 
-  homePulseLoading.set(false);
+/** Reads everything Account › Activity draws: the identity, the totals and heatmap, and the latest insights. */
+export async function refreshAccountActivity(): Promise<void> {
+  ensureHomeEventSubscriptions();
+  await Promise.all([loadAccountState(), loadAccountActivity(true), loadLatestInsights()]);
 }
 
 function parseInsightsMeta(raw: unknown, index: number): InsightsReportMetaView {
@@ -1054,10 +841,6 @@ export async function generateInsightsReport(
  */
 export async function revealInsightsHtml(path: string): Promise<void> {
   if (!path) return;
-  if (peerScope()) {
-    insightsError.set(tr("home.insightsHtmlPeerUnsupported"));
-    return;
-  }
   try {
     await invokeCommand<unknown>("reveal_in_explorer", { path });
   } catch (error) {
@@ -1078,75 +861,6 @@ export async function cancelInsights(): Promise<void> {
   }
 }
 
-export async function refreshHomeAll(): Promise<void> {
-  const wsId = activeWorkspaceId();
-  const peerId = peerScope()?.deviceId ?? null;
-  await Promise.all([
-    loadAccountState(),
-    loadEcosystemPulse(true),
-    loadAgentModesPulse(wsId, peerId),
-    loadLatestInsights(),
-  ]);
-}
-
-/** Called from HomeScene mount/scope effect so peer or workspace switches refresh cleanly. */
-export function syncHomeScope(
-  peerId: string | null,
-  workspaceId: string | null,
-  force = false,
-): void {
-  ensureHomeEventSubscriptions();
-  const peerKey = peerId ?? "__local__";
-  const modesKey = `${peerKey}::${workspaceId ?? ""}`;
-  if (force || lastPulsePeerKey !== peerKey) {
-    if (lastPulsePeerKey !== peerKey) {
-      assistantsCount.set(null);
-      agentsCount.set(null);
-      modesCount.set(null);
-      subagentsCount.set(0);
-      skillsCount.set(null);
-      skillsEnabledCount.set(null);
-      routinesCount.set(null);
-      routinesEnabledCount.set(null);
-      dueSoonRoutines.set([]);
-      spacesCount.set(null);
-      spacesRunningCount.set(0);
-      installedSpaces.set([]);
-      homeSavedSshConnections.set([]);
-      usageSummary.set(null);
-      homeUsageActivity.set(null);
-      usageActivityStatus.set("loading");
-      selectedActivityCell.set(null);
-    }
-    void loadAccountState();
-    void loadLatestInsights();
-    void loadEcosystemPulse(true);
-  }
-  if (force || lastModesKey !== modesKey) {
-    lastModesKey = modesKey;
-    void loadAgentModesPulse(workspaceId, peerId);
-  }
-}
-
-export async function submitHomeQuickPrompt(): Promise<void> {
-  const prompt = homeQuickPrompt().trim();
-  if (!prompt || homeQuickBusy()) return;
-  homeQuickBusy.set(true);
-  try {
-    homeQuickPrompt.set("");
-    await startQuickPromptInSession(prompt);
-  } finally {
-    homeQuickBusy.set(false);
-  }
-}
-
-export function jumpToSessions(sessionId?: string): void {
-  if (sessionId && sessions().some(item => item.sessionId === sessionId)) {
-    selectSession(sessionId);
-  }
-  navigateScene("sessions");
-}
-
 export function formatHomeUsageLine(summary: HomeUsageSummary): string {
   const tokensText = formatTokens(summary.totalTokens) || "0";
   const reqText = formatCount(summary.totalRequests) || "0";
@@ -1154,17 +868,4 @@ export function formatHomeUsageLine(summary: HomeUsageSummary): string {
   const outText = formatTokens(summary.outputTokens) || "0";
   const cachedText = formatTokens(summary.cachedTokens) || "0";
   return `${tokensText} tokens · ${reqText} requests · ${inText} in / ${outText} out · ${cachedText} cached`;
-}
-
-export function activeTurnEntries(): Array<{ sessionId: string; turnId: string; sessionName: string }> {
-  const known = sessions();
-  return Object.entries(runningTurns()).map(([sessionId, turnId]) => ({
-    sessionId,
-    turnId,
-    sessionName: known.find(item => item.sessionId === sessionId)?.sessionName || sessionId,
-  }));
-}
-
-export function pendingPermissionCount(): number {
-  return pendingPermissions().length;
 }

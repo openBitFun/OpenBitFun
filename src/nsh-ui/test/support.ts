@@ -58,7 +58,6 @@ export interface BackendOptions {
   /** A host older than the typed settings commands (wave 3 config): they are unknown. */
   legacySettingsHost?: boolean;
   devices?: Array<Record<string, unknown>>;
-  onlineDevices?: Array<Record<string, unknown>>;
   /** The host answers `manage_dialog_queue`; without it the surface keeps its own list. */
   hostQueue?: boolean;
   /**
@@ -68,8 +67,6 @@ export interface BackendOptions {
   hostQueueReorder?: boolean | null;
   /** Rows the fixture host reports as held back, by turn id, with the reason. */
   hostQueueBlocked?: Record<string, string>;
-  /** What a peer advertises in `peer_mode_ping`; the default is a desktop with a queue. */
-  peerCapabilities?: Record<string, boolean>;
   /** The host answers `get_web_search_credential_status` with this. */
   searchCredentialConfigured?: boolean;
   /** What `get_runtime_logging_info` answers; `null` means the host has no such command. */
@@ -121,8 +118,6 @@ export interface BackendOptions {
   usageActivityCommand?: false;
   /** `false` makes the host older than `get_personal_overview`. */
   personalOverview?: false;
-  /** `false` makes `account_list_devices` answer directory presence only, as an older host does. */
-  devicePresenceMerged?: false;
 }
 
 // transcript view (wave 4)
@@ -601,8 +596,6 @@ export interface Backend {
   questionStarts: Array<{ sessionId: string; toolId: string }>;
   /** Every `submit_user_answers` request, in order. */
   userAnswers: Array<{ toolId: string; answers: Record<string, unknown>; sessionId: string }>;
-  /** Every command a Device RPC envelope carried, with its arguments. */
-  peerInvocations: Array<{ action: string; args: Record<string, unknown> }>;
   /** Every `manage_dialog_queue` reorder the host accepted, in order. */
   queueReorders: Array<{ turnId: string; beforeTurnId: string | null; expectedRevision: number }>;
   // session policy (wave 3)
@@ -1139,130 +1132,6 @@ function buildVirtualFs(
   return byDirectory;
 }
 
-/**
- * Answers a Peer Device Mode HostInvoke envelope the way a target host does:
- * the handshake first, then whatever command the controller routes. The peer's
- * own workspace and session names are deliberately unlike the local fixtures, so
- * a test can tell which machine answered.
- */
-function answerPeerHostInvoke(
-  targetDeviceId: string,
-  command: { cmd?: string; command?: string; args?: Record<string, unknown> },
-  capabilities: Record<string, boolean> = { dialog_queue_v1: true, cancel_tool: true },
-  record?: (action: string, args: Record<string, unknown>) => void,
-): string {
-  const action = command?.command ?? "";
-  const args = (command?.args ?? {}) as Record<string, unknown>;
-  // A peer host reads `request` when it exists and the top-level object otherwise,
-  // which is how a positional command arrives here.
-  const request = (args.request ?? args) as Record<string, unknown>;
-  record?.(action, args);
-  const envelope = (value: unknown) =>
-    JSON.stringify({ resp: "host_invoke_result", ok: true, value });
-  switch (action) {
-    case "peer_mode_ping":
-      return envelope({
-        host_type: "desktop",
-        host_ui_ready: true,
-        capabilities,
-      });
-    case "peer_control_attach":
-    case "peer_control_detach":
-      return envelope(null);
-    case "get_opened_workspaces":
-    case "get_recent_workspaces":
-      return envelope([
-        {
-          id: `${targetDeviceId}-workspace`,
-          name: `peer workspace on ${targetDeviceId}`,
-          rootPath: "/srv/peer",
-          workspaceKind: "local",
-        },
-      ]);
-    // view models (wave 4)
-    case "get_workspace_navigator": {
-      const peerWorkspace = {
-        id: `${targetDeviceId}-workspace`,
-        name: `peer workspace on ${targetDeviceId}`,
-        rootPath: "/srv/peer",
-        workspaceKind: "local",
-      };
-      return envelope(
-        projectWorkspaceNavigator([peerWorkspace], [peerWorkspace], peerWorkspace.id, String(request.selectedId ?? "")),
-      );
-    }
-    case "get_current_workspace":
-      return envelope({
-        id: `${targetDeviceId}-workspace`,
-        name: `peer workspace on ${targetDeviceId}`,
-        rootPath: "/srv/peer",
-        workspaceKind: "local",
-      });
-    case "set_active_workspace":
-      return envelope(null);
-    case "list_persisted_sessions_page":
-      return envelope({
-        sessions: [
-          {
-            sessionId: `${targetDeviceId}-session`,
-            sessionName: `peer session on ${targetDeviceId}`,
-            lastUpdated: 1763200000000,
-            messageCount: 1,
-            workspaceId: `${targetDeviceId}-workspace`,
-          },
-        ],
-        totalTopLevelCount: 1,
-        loadedTopLevelCount: 1,
-        hasMore: false,
-      });
-    case "load_session_turns":
-    case "get_session_transcript_view": {
-      const persisted = [
-        {
-          id: `${targetDeviceId}-turn`,
-          turnId: `${targetDeviceId}-turn`,
-          userMessage: { id: "peer-user", content: `question asked on ${targetDeviceId}` },
-          modelRounds: [
-            { assistantMessage: { id: "peer-assistant", content: `answer from ${targetDeviceId}` } },
-          ],
-        },
-      ];
-      // transcript view (wave 4): the peer projects its own turns.
-      return envelope(
-        action === "load_session_turns"
-          ? persisted
-          : fakeTranscriptView(String(request.session_id ?? request.sessionId ?? ""), persisted, request),
-      );
-    }
-    case "explorer_get_children":
-      return envelope([{ name: "peer.txt", path: "/srv/peer/peer.txt", isDirectory: false }]);
-    case "get_available_modes":
-      // The peer's own catalogue: a profile the local host also has, and one only
-      // it resolves, so a test can tell whose agents the composer is showing.
-      return envelope([
-        { id: "Standard", name: "Standard", description: "The default profile." },
-        { id: "peer-agent", name: `peer agent on ${targetDeviceId}`, description: "Runs on the peer." },
-      ]);
-    case "get_session_interaction_mailbox":
-      // The peer owns the mailbox of the session it runs.
-      return envelope({
-        sessionId: String(request.sessionId ?? ""),
-        userQuestions: { revision: 1, questions: [] },
-        permissions: { requests: [] },
-      });
-    case "start_user_question_interaction":
-    case "submit_user_answers":
-      // Positional on the peer too; `request` above already fell back to `args`.
-      return envelope(null);
-    default:
-      return JSON.stringify({
-        resp: "host_invoke_result",
-        ok: false,
-        error: `${targetDeviceId} does not implement ${action}`,
-      });
-  }
-}
-
 // settings mutations (wave 3 config): what `get_settings_schema` answers on the
 // host, as generated from the product-control catalog and `GlobalConfig`'s
 // defaults for the paths the settings page draws.
@@ -1398,9 +1267,6 @@ export function createBackend(options: BackendOptions = {}): Backend {
   // Per-session permission mode overrides (`null` follows the default), as the host keeps them.
   const sessionPermissionModes: Record<string, string | null> = {};
   const turnPermissionModes: Record<string, string | null> = {};
-  // Everything sent inside a Device RPC envelope, with the arguments as the peer
-  // received them: the shape a positional command must not get wrong.
-  const peerInvocations: Array<{ action: string; args: Record<string, unknown> }> = [];
   let acpJsonText = '{\n  "acpClients": {}\n}';
   let acpRows = [...(options.acpClients ?? DEFAULT_ACP_CLIENTS)];
   let terminalCount = 0;
@@ -2671,25 +2537,6 @@ export function createBackend(options: BackendOptions = {}): Backend {
       case "list_mcp_resources":
       case "read_mcp_resource":
         return answerMcp(action, request, positional);
-      case "account_device_rpc": {
-        // Real Rust `account_device_rpc(target_device_id, command_json, timeout_ms)` uses
-        // default Tauri v2 camelCase positional args (`targetDeviceId`, `commandJson`).
-        const targetDeviceId = String(payload.targetDeviceId ?? payload.target_device_id ?? "");
-        const envelope = JSON.parse(String(payload.commandJson ?? payload.command_json ?? "{}")) as {
-          cmd?: string;
-          command?: string;
-          args?: Record<string, unknown>;
-        };
-        if (envelope.cmd !== "host_invoke") {
-          throw new Error(`unsupported device command ${envelope.cmd ?? "none"}`);
-        }
-        return answerPeerHostInvoke(
-          targetDeviceId,
-          envelope,
-          options.peerCapabilities,
-          (action, args) => peerInvocations.push({ action, args }),
-        );
-      }
       case "dispatch_list_targets":
         return [
           { kind: "local", displayName: "Local" },
@@ -2901,6 +2748,15 @@ export function createBackend(options: BackendOptions = {}): Backend {
       case "unarchive_session":
       case "delete_persisted_session":
       case "account_update_device_alias":
+        return null;
+      // P-UI parity (wave 17): session and workspace row actions on any device.
+      case "update_session_title":
+        return String(payload.title ?? "");
+      case "delete_all_archived_sessions":
+        return 1;
+      case "close_workspace":
+      case "reset_assistant_workspace":
+      case "delete_assistant_workspace":
         return null;
       // The desktop window's own commands (tray, close, notifications, reveal),
       // which a native window answers with nothing to report.
@@ -3275,7 +3131,6 @@ export function createBackend(options: BackendOptions = {}): Backend {
     reveals,
     questionStarts,
     userAnswers,
-    peerInvocations,
     queueReorders,
     userMessages,
     setRunningTurn: (sessionId: string, turnId: string | null) => {
@@ -3300,31 +3155,16 @@ export function createDeviceBackend(options: BackendOptions = {}): Backend {
           { deviceId: "device-mac", deviceName: "studio", platform: "macos", alias: "Studio" },
           { deviceId: "device-linux", deviceName: "builder", platform: "linux" },
         ];
-      // view models (wave 4): the host merges its live relay presence into the
-      // directory rows; an older host returns directory presence only.
-      if (options.devicePresenceMerged === false) {
-        return { ok: true, value: listed, transport: "dev" };
-      }
-      const live = new Set(
-        (options.onlineDevices ?? [{ deviceId: "device-mac" }]).map(entry => String(entry.deviceId ?? "")),
-      );
+      // The 2.0 directory: `presence` is `directory` or `offline` (no live relay presence).
       return {
         ok: true,
         value: listed.map(device => {
           const id = String(device.deviceId ?? "");
-          const liveNow = live.has(id);
-          return {
-            ...device,
-            online: liveNow || device.online === true,
-            presence: liveNow ? "live" : device.online === true ? "directory" : "offline",
-            is_local: id === "device-mac",
-          };
+          const online = id === "device-mac" || device.online === true;
+          return { ...device, online, presence: online ? "directory" : "offline", is_local: id === "device-mac" };
         }),
         transport: "dev",
       };
-    }
-    if (args.action === "account_online_devices") {
-      return { ok: true, value: options.onlineDevices ?? [{ deviceId: "device-mac" }], transport: "dev" };
     }
     if (args.action === "remote_connect_get_device_info") {
       // The default order puts this machine first; "device-mac" is it in the fixtures.
@@ -3393,7 +3233,7 @@ export function withPhoneFixtures(
         return answer({
           networkName: "obf-0123456789abcdef",
           networkSecret: "fixture-mesh-secret-0123456789",
-          peers: ["wss://remote.openbitfun.com:443/mesh/et/"],
+          peers: ["wss://super.openbitfun.com:443/mesh/et/"],
           easytierVersion: "2.6.4",
           deviceId: "device-mac",
           virtualIp: "10.126.126.3",
@@ -3407,114 +3247,19 @@ export function withPhoneFixtures(
   return { backend, phoneCalls };
 }
 
-// peer device mode over the mesh (wave 4)
-export interface MeshPeerFixtureOptions {
-  /** `mesh_list_devices` rows; `"unavailable"` makes the command fail (no local mesh). */
-  meshDevices?: ReadonlyArray<object> | "unavailable";
-  /** The peer backend instance `peer_link_connect` reports. */
-  instanceId?: string;
-}
-
-export interface MeshPeerFixture {
-  /** Every `peer_link_call` the controller made, as `{command, args}`. */
-  peerCalls: Array<{ command: string; args: Record<string, unknown> }>;
-  /** Every `peer_link_events` request (cursor and instance). */
-  eventPolls: Array<Record<string, unknown>>;
-  /** Queues peer events (numbered with the peer's own `seq`) for the long poll. */
-  pushPeerEvents(events: Array<{ event: string; payload: unknown }>): void;
-  /** The device ids `peer_link_disconnect` closed. */
-  disconnected: string[];
-}
-
+// OpenBitFun Link device list (wave 4)
 /**
- * Plays this machine's backend for Peer Device Mode over OBP on the mesh:
- * `mesh_list_devices`, and the `peer_link_*` commands, whose calls are
- * answered by the same simulated peer host the legacy relay fixture uses (so
- * the two transports render the same peer data) and whose event stream is a
- * long poll over `pushPeerEvents`.
+ * Answers `mesh_list_devices` with `rows` in front of `backend` (the device
+ * list the Use on phone panel reads for signed-in phones and browsers).
  */
-export function withMeshPeerFixtures(backend: Backend, options: MeshPeerFixtureOptions = {}): MeshPeerFixture {
+export function withMeshDevices(backend: Backend, rows: ReadonlyArray<object>): void {
   const invoke = backend.handlers["openbitfun.invoke"];
-  const instanceId = options.instanceId ?? "peer-instance-1";
-  const queue: Array<{ seq: number; event: string; payload: unknown }> = [];
-  let seq = 100;
-  let wake: (() => void) | null = null;
-  const fixture: MeshPeerFixture = {
-    peerCalls: [],
-    eventPolls: [],
-    disconnected: [],
-    pushPeerEvents(events) {
-      for (const item of events) {
-        seq += 1;
-        queue.push({ seq, event: item.event, payload: item.payload });
-      }
-      wake?.();
-    },
-  };
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
-    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> | null; raw?: unknown };
-    const request = (args.request ?? {}) as Record<string, unknown>;
-    const answer = (value: unknown) => ({ ok: true, value, transport: "dev" });
-    const record = () => backend.calls.push({ action: args.action ?? "", request: args.request, raw: false });
-    switch (args.action) {
-      case "mesh_list_devices":
-        record();
-        if (options.meshDevices === "unavailable") {
-          return { ok: false, error: "mesh_unavailable: this desktop host does not run the device mesh" };
-        }
-        return answer(options.meshDevices ?? []);
-      case "peer_link_connect":
-        record();
-        return answer({
-          deviceId: request.deviceId,
-          transport: "mesh",
-          state: "connected",
-          scope: "account-device",
-          capabilities: ["obp_v1", "resume", "credit_ack", "coalesce_text", "mesh_v1"],
-          hostCapabilities: ["dialog_queue_v1", "cancel_tool", "tool_catalog"],
-          protocol: 1,
-          backend: { version: "1.0.11", platform: "linux", instanceId },
-          meshPath: "p2p",
-          latencyMs: 2.4,
-        });
-      case "peer_link_call": {
-        record();
-        const command = String(request.command ?? "");
-        const callArgs = (request.args ?? {}) as Record<string, unknown>;
-        fixture.peerCalls.push({ command, args: callArgs });
-        const reply = JSON.parse(
-          answerPeerHostInvoke(String(request.deviceId ?? ""), { cmd: "host_invoke", command, args: callArgs }),
-        ) as { ok?: boolean; value?: unknown; error?: string };
-        return reply.ok ? answer(reply.value ?? null) : { ok: false, error: reply.error ?? `${command} failed` };
-      }
-      case "peer_link_events": {
-        record();
-        fixture.eventPolls.push({ ...request });
-        const after = typeof request.afterSeq === "number" ? request.afterSeq : -1;
-        const ready = () => queue.filter(item => item.seq > after);
-        const reply = () => answer({ instanceId, state: "connected", events: ready() });
-        if (ready().length > 0) return reply();
-        return new Promise(resolve => {
-          const timer = setTimeout(() => {
-            wake = null;
-            resolve(reply());
-          }, 120);
-          wake = () => {
-            clearTimeout(timer);
-            wake = null;
-            resolve(reply());
-          };
-        });
-      }
-      case "peer_link_disconnect":
-        record();
-        fixture.disconnected.push(String(request.deviceId ?? ""));
-        return answer({ closed: true });
-      default:
-        return invoke(data);
-    }
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> | null };
+    if (args.action !== "mesh_list_devices") return invoke(data);
+    backend.calls.push({ action: args.action, request: args.request, raw: false });
+    return { ok: true, value: rows, transport: "dev" };
   };
-  return fixture;
 }
 
 // miniapp market (wave 5) ────────────────────────────────────────────────────
@@ -3877,3 +3622,315 @@ export function withReviewLaunchFixtures(
   };
   return Object.assign(backend, { reviewRequests });
 }
+
+// ── fleet (wave 13 UI-0) ─────────────────────────────────────────────────────
+//
+// A fleet entry behind the OBP socket of `fixtures/obpApp.tsx`: the hello
+// answers `fleet` (or not, for an older entry), `fleet_navigator` and
+// `fleet_prompts` answer from the test's rows, and `fleet_call` runs the
+// wrapped command on the simulated backend, recording the target it named.
+
+export interface FleetObpHostOptions {
+  /** The hello's `fleet` answer; `null` makes the backend an older entry without the fleet layer. */
+  fleet: Record<string, unknown> | null;
+  /** The `fleet_navigator` answer. */
+  navigator?: Record<string, unknown>;
+  /** The `fleet_prompts` answer. */
+  prompts?: Record<string, unknown>;
+  /**
+   * The `fleet_recent_sessions` answer (P-UI, wave 17). Unset projects the
+   * navigator's rows in the order it lists them, with their device and
+   * workspace labels (the UI never sorts); `false` makes the entry older than
+   * the command.
+   */
+  recentSessions?: Record<string, unknown> | false;
+  /**
+   * `fleet_device_detail` answers by device id (P-UI, wave 17). A device
+   * without one is projected from its navigator row (no running work, its
+   * capabilities as user-facing ids); `false` makes the entry older than the
+   * command.
+   */
+  deviceDetails?: Record<string, Record<string, unknown>> | false;
+}
+
+/** The user-facing capability ids `fleet_device_detail` sends, from a navigator row's host capabilities. */
+const FLEET_DETAIL_CAPABILITIES: Record<string, string> = {
+  terminal: "terminal",
+  git: "git",
+  browser: "browser",
+  browser_control: "browser",
+  desktop: "desktop",
+  desktop_control: "desktop",
+  computer_use: "desktop",
+  jobs: "jobs",
+  superagent_jobs: "jobs",
+  dispatch: "jobs",
+};
+
+type FleetFixtureDevice = Record<string, unknown> & {
+  deviceId?: string;
+  name?: string;
+  hostKind?: string;
+  state?: string;
+  isClientDevice?: boolean;
+  hostCapabilities?: string[];
+  workspaces?: Array<Record<string, unknown> & { workspaceId?: string; name?: string; sessions?: Array<Record<string, unknown>> }>;
+};
+
+function fixtureDevices(navigator: Record<string, unknown> | undefined): FleetFixtureDevice[] {
+  return Array.isArray(navigator?.devices) ? (navigator!.devices as FleetFixtureDevice[]) : [];
+}
+
+/** `fleet_recent_sessions` projected from a navigator: runtime devices, top-level sessions, navigator order. */
+export function fleetRecentSessionsFrom(navigator: Record<string, unknown> | undefined): Record<string, unknown> {
+  const sessions: Array<Record<string, unknown>> = [];
+  for (const device of fixtureDevices(navigator)) {
+    if (device.hostKind === "cloud") continue;
+    for (const workspace of device.workspaces ?? []) {
+      for (const session of workspace.sessions ?? []) {
+        if (session.parentSessionId) continue;
+        sessions.push({
+          ...session,
+          deviceId: device.deviceId,
+          workspaceId: workspace.workspaceId,
+          deviceName: device.name ?? "",
+          hostKind: device.hostKind ?? "desktop",
+          deviceState: device.state ?? "online",
+          isClientDevice: device.isClientDevice === true,
+          workspaceName: workspace.name ?? "",
+        });
+      }
+    }
+  }
+  return { revision: Number(navigator?.revision ?? 1), sessions, truncated: false };
+}
+
+/** `fleet_device_detail` projected from a navigator row: nothing running, its capabilities as ids. */
+export function fleetDeviceDetailFrom(device: FleetFixtureDevice, revision = 1): Record<string, unknown> {
+  const capabilities: string[] = [];
+  for (const id of device.hostCapabilities ?? []) {
+    const mapped = FLEET_DETAIL_CAPABILITIES[id];
+    if (mapped && !capabilities.includes(mapped)) capabilities.push(mapped);
+  }
+  return {
+    revision,
+    device,
+    runningSessions: 0,
+    runningJobs: 0,
+    waitingJobs: 0,
+    running: { sessions: [], jobs: [] },
+    waiting: { jobs: [] },
+    capabilities,
+    ...(device.state === "update_required" ? { update: { available: true, canUpdateRemotely: false } } : {}),
+  };
+}
+
+export interface FleetObpHost {
+  handlers: Record<string, (data: unknown) => unknown>;
+  /** Every call frame, as sent (`fleet_call` stays wrapped). */
+  calls: Array<{ command: string; args: Record<string, unknown> }>;
+  /** Every `fleet_call`, unwrapped. */
+  fleetCalls: Array<{ target: string | null; command: string; args: Record<string, unknown> }>;
+  /** Every hello's params. */
+  hellos: Array<Record<string, unknown>>;
+  /** Calls that reached the page host's fixtures (must stay empty). */
+  pageHostCalls: unknown[];
+}
+
+export function fleetObpHost(backend: Backend, options: FleetObpHostOptions): FleetObpHost {
+  const calls: FleetObpHost["calls"] = [];
+  const fleetCalls: FleetObpHost["fleetCalls"] = [];
+  const hellos: FleetObpHost["hellos"] = [];
+  const pageHostCalls: unknown[] = [];
+  const reply = (id: unknown, body: Record<string, unknown>) => JSON.stringify({ jsonrpc: "2.0", id, ...body });
+  const runOnBackend = (command: string, args: Record<string, unknown>): Record<string, unknown> => {
+    const keys = Object.keys(args);
+    const requestShape = keys.length === 0 || (keys.length === 1 && keys[0] === "request");
+    const answer = backend.handlers["openbitfun.invoke"](
+      requestShape ? { action: command, request: args.request ?? null } : { action: command, raw: args },
+    ) as { ok: boolean; value?: unknown; error?: string };
+    return answer.ok
+      ? { result: answer.value ?? null }
+      : { error: { code: -32000, message: answer.error ?? `${command} failed` } };
+  };
+  const handlers: Record<string, (data: unknown) => unknown> = {
+    "openbitfun.obpSend": (data: unknown) => {
+      const frame = JSON.parse((data as { frame: string }).frame) as Record<string, unknown>;
+      if (frame.method === "hello") {
+        hellos.push((frame.params ?? {}) as Record<string, unknown>);
+        return [
+          reply(0, {
+            result: {
+              protocol: 1,
+              scope: "account-device",
+              capabilities: ["obp_v1", "resume", "credit_ack"],
+              registryDigest: "fnv1a64:test",
+              lastSeq: 0,
+              creditBytes: 1048576,
+              backend: { version: "9.9.9", platform: "linux", instanceId: "entry-a", dataDir: "/data" },
+              ...(options.fleet ? { fleet: options.fleet } : {}),
+            },
+          }),
+        ];
+      }
+      if (frame.method !== "call") return [];
+      const params = frame.params as { command: string; args: Record<string, unknown> };
+      calls.push(params);
+      if (options.fleet && params.command === "fleet_navigator") {
+        return [reply(frame.id, { result: options.navigator ?? { revision: 1, full: true, devices: [], removedDeviceIds: [], totals: { running: 0, waiting: 0, unread: 0 } } })];
+      }
+      if (options.fleet && params.command === "fleet_subscribe") {
+        return [reply(frame.id, { result: { applied: true } })];
+      }
+      if (options.fleet && params.command === "fleet_prompts") {
+        return [reply(frame.id, { result: options.prompts ?? { revision: 1, prompts: [] } })];
+      }
+      if (
+        options.fleet &&
+        ((params.command === "fleet_recent_sessions" && options.recentSessions === false) ||
+          (params.command === "fleet_device_detail" && options.deviceDetails === false))
+      ) {
+        return [reply(frame.id, { error: { code: -32601, message: `unknown command: ${params.command}` } })];
+      }
+      if (options.fleet && params.command === "fleet_recent_sessions" && options.recentSessions !== false) {
+        return [reply(frame.id, { result: options.recentSessions ?? fleetRecentSessionsFrom(options.navigator) })];
+      }
+      if (options.fleet && params.command === "fleet_device_detail" && options.deviceDetails !== false) {
+        const request = (params.args.request ?? {}) as { deviceId?: string };
+        const deviceId = String(request.deviceId ?? "") || String((options.fleet as { deviceId?: string }).deviceId ?? "");
+        const served = options.deviceDetails ? options.deviceDetails[deviceId] : undefined;
+        const row = fixtureDevices(options.navigator).find(device => device.deviceId === deviceId);
+        if (served) return [reply(frame.id, { result: served })];
+        if (row) return [reply(frame.id, { result: fleetDeviceDetailFrom(row, Number(options.navigator?.revision ?? 1)) })];
+        return [reply(frame.id, { error: { code: -32000, message: `fleet_device_unknown: ${deviceId}` } })];
+      }
+      if (options.fleet && params.command === "fleet_call") {
+        const request = (params.args.request ?? {}) as { target?: string; command?: string; args?: Record<string, unknown> };
+        const command = String(request.command ?? "");
+        const args = (request.args ?? {}) as Record<string, unknown>;
+        fleetCalls.push({ target: typeof request.target === "string" ? request.target : null, command, args });
+        return [reply(frame.id, runOnBackend(command, args))];
+      }
+      if (!options.fleet && params.command.startsWith("fleet_")) {
+        return [reply(frame.id, { error: { code: -32601, message: `unknown command: ${params.command}` } })];
+      }
+      return [reply(frame.id, runOnBackend(params.command, params.args))];
+    },
+    "openbitfun.invoke": (data: unknown) => {
+      pageHostCalls.push(data);
+      return { ok: false, error: "the page host must not be used" };
+    },
+    "openbitfun.listen": (data: unknown) => {
+      pageHostCalls.push(data);
+      return { ok: true };
+    },
+  };
+  return { handlers, calls, fleetCalls, hellos, pageHostCalls };
+}
+
+/** A fleet session row, with the fields the navigator always carries. */
+export function fleetSessionRow(
+  deviceId: string,
+  workspaceId: string,
+  sessionId: string,
+  title: string,
+  lastActivityMs = 1763000000000,
+): Record<string, unknown> {
+  return {
+    deviceId,
+    workspaceId,
+    sessionId,
+    title,
+    agentType: "Standard",
+    status: "idle",
+    unread: false,
+    needsAttention: false,
+    lastActivityMs,
+  };
+}
+
+/** A fleet device row with one workspace per entry of `workspaces`. */
+export function fleetDeviceRow(
+  deviceId: string,
+  name: string,
+  workspaces: Array<{ workspaceId: string; name: string; rootPath: string; sessions: Array<Record<string, unknown>>; isHostCurrent?: boolean }>,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    deviceId,
+    name,
+    hostKind: "desktop",
+    isClientDevice: false,
+    state: "online",
+    asOfMs: 1763000000000,
+    version: "9.9.9",
+    fleetProtocol: 1,
+    hostCapabilities: ["fleet_v1"],
+    actions: { createWorkspace: { allowed: true } },
+    sessionsTruncated: false,
+    workspaces: workspaces.map(workspace => ({
+      deviceId,
+      kind: "local",
+      isHostCurrent: workspace.isHostCurrent ?? false,
+      sessionTotal: workspace.sessions.length,
+      hasMore: false,
+      ...workspace,
+    })),
+    ...extra,
+  };
+}
+
+// ── shell navigation (wave 15 UI-A) ──────────────────────────────────────────
+//
+// The sidebar holds OpenBitFun conversations, not sessions: a session opens
+// from All sessions (Recent lists the host's rows by title). These helpers walk
+// that path so a test reads the way a user gets there.
+
+/** The part of `nsh/test`'s app handle the helpers press. */
+export interface ShellNavigator {
+  press(target: string): Promise<unknown>;
+  waitFor(target: string, options?: unknown): Promise<unknown>;
+  shows(target: string): boolean;
+}
+
+/** Opens All sessions › Recent and waits for `title` (a session row) to show. */
+export async function showAllSessions(app: ShellNavigator, title?: string): Promise<void> {
+  // The sidebar row on a desktop, the tab bar on a phone.
+  await app.press(app.shows("nav-all-sessions") ? "nav-all-sessions" : "phone-tab-all-sessions");
+  await app.press("all-sessions-tab-recent");
+  if (title) await app.waitFor(title);
+}
+
+/** Opens a session by its row title through All sessions (`"Title >> nth=0"` works too). */
+export async function openSessionRow(app: ShellNavigator, title: string): Promise<void> {
+  await showAllSessions(app);
+  await app.press(title);
+}
+/**
+ * Opens a session the way a user does: All sessions › Recent › its row (the
+ * first row with that title; `"Title >> nth=1"` picks another). `deviceId` is
+ * accepted for call sites that name the device; Recent rows are matched by
+ * title, so keep titles unique across devices in a fixture.
+ */
+export async function openSession(app: ShellNavigator, title: string, _options: { deviceId?: string } = {}): Promise<void> {
+  const base = title.split(" >> ")[0]!;
+  await showAllSessions(app, base);
+  await app.press(title.includes(" >> ") ? title : `${title} >> nth=0`);
+}
+
+/** Opens All sessions › By device: the account's devices (and, on an older backend, the way into one). */
+export async function showDevices(app: ShellNavigator): Promise<void> {
+  await app.press(app.shows("nav-all-sessions") ? "nav-all-sessions" : "phone-tab-all-sessions");
+  await app.press("all-sessions-tab-by-device");
+}
+
+/** Opens a workspace tool full width through ⌘K's commands (Files, Git, Terminal, Browser). */
+export async function openToolScene(
+  app: ShellNavigator & { type(target: string, text: string): Promise<unknown> },
+  tool: "files" | "git" | "terminal" | "browser",
+): Promise<void> {
+  await app.press("global-search-trigger");
+  await app.type("global-search-input", `>${tool}`);
+  await app.press(`label:global-search-item-command:${tool}`);
+}
+// end shell navigation (wave 15 UI-A)

@@ -17,13 +17,16 @@ import { join } from 'path';
  *    `LOCAL_ONLY_COMMANDS = ...[` declaration in any of these files is a fork
  *    of the registry and fails the check.
  * 2. The committed registry export still says what the surfaces rely on: the
- *    control plane, the dispatch outbound verbs, and every account command
- *    stay controller-owned; `git_trust_repository` stays operator-only.
+ *    dispatch outbound verbs and every live account command stay
+ *    controller-owned, the retired relay control plane stays retired, and
+ *    `git_trust_repository` stays operator-only.
  */
 
 const FE_ADAPTER = 'src/nsh-ui/src/peerRouting.ts';
 const FE_GENERATED = 'src/nsh-ui/src/generated/peerSurface.ts';
-const DESKTOP_HOST = 'src/apps/desktop/src/api/peer_host_invoke.rs';
+// The desktop serves account-device peers over OBP; the scope check derives its
+// verdicts from the registry (the relay HostInvoke host was removed in 2.0).
+const DESKTOP_HOST = 'src/crates/adapters/obp/src/server/scope.rs';
 const CLI_HOST = 'src/apps/cli/src/peer_host/deny.rs';
 const REGISTRY_EXPORT =
   'src/crates/contracts/product-domains/src/generated/remote-surface-registry.json';
@@ -132,15 +135,16 @@ export function checkPeerCommandPolicySync(root) {
     }
   };
 
+  // The relay control plane was retired with the 1.x relay transport (2.0).
   for (const command of ['peer_control_attach', 'peer_control_detach', 'peer_mode_ping']) {
-    expectStance(command, ['host_control_plane'], 'the peer control plane is answered before dispatch');
+    expectStance(command, ['retired'], 'the relay peer control plane was retired in OpenBitFun 2.0');
   }
   for (const operation of registry.operations ?? []) {
     if (operation.id.startsWith('dispatch_target_')) {
       expectStance(operation.id, ['host_control_plane'], 'dispatch target verbs route to the durable CLI runner before the peer bridge');
     } else if (operation.id.startsWith('dispatch_')) {
       expectStance(operation.id, ['controller_local'], 'outbound dispatch is controller-owned');
-    } else if (operation.id.startsWith('account_')) {
+    } else if (operation.id.startsWith('account_') && operation?.peer?.kind !== 'retired') {
       expectStance(operation.id, ['controller_local'], 'account identity and cloud session APIs stay on the controller');
     }
   }

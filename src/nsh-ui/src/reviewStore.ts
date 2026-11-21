@@ -291,3 +291,78 @@ export async function launchReviewFromCommand(text: string): Promise<boolean> {
   }
   return true;
 }
+
+// ── Review notes (wave 15 UI-C, visual spec §4.5) ────────────────────────────
+//
+// Line notes the user leaves on a diff, batched back to the session's agent with
+// "Send to agent" as one message (the Orca pattern). Notes belong to one session
+// on one device (`sessionKey`); they live only on this client until sent.
+
+export interface ReviewNote {
+  id: string;
+  /** `"<deviceId>/<sessionId>"` (`state.sessionKey`). */
+  sessionKey: string;
+  path: string;
+  side: "old" | "new";
+  /** First and last line, from 0 (as `DiffView` numbers them). */
+  start: number;
+  end: number;
+  text: string;
+}
+
+export const reviewNotes = signal<ReviewNote[]>([]);
+/** The note being written (its field has focus). */
+export const editingReviewNote = signal<string | null>(null);
+export const sendingReviewNotes = signal(false);
+let noteSeq = 0;
+
+export function reviewNotesFor(sessionKey: string | null): ReviewNote[] {
+  if (!sessionKey) return [];
+  return reviewNotes().filter(note => note.sessionKey === sessionKey);
+}
+
+/** Adds an empty note on lines `start`–`end` of `path` and opens it for writing. */
+export function addReviewNote(note: Omit<ReviewNote, "id" | "text">): string {
+  const id = `note-${++noteSeq}`;
+  reviewNotes.update(current => [...current, { ...note, id, text: "" }]);
+  editingReviewNote.set(id);
+  return id;
+}
+
+export function updateReviewNote(id: string, text: string): void {
+  reviewNotes.update(current => current.map(note => (note.id === id ? { ...note, text } : note)));
+}
+
+export function removeReviewNote(id: string): void {
+  reviewNotes.update(current => current.filter(note => note.id !== id));
+  if (editingReviewNote() === id) editingReviewNote.set(null);
+}
+
+/** The message the notes become: one line per note, `path:line` then the note. */
+export function reviewNotesMessage(notes: ReviewNote[]): string {
+  return notes
+    .filter(note => note.text.trim())
+    .map(note => {
+      const lines = note.start === note.end ? `${note.start + 1}` : `${note.start + 1}-${note.end + 1}`;
+      return `${note.path}:${lines} ${note.text.trim()}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Sends a session's notes to its agent as one message (`send` is the session's
+ * own `sendTurn`, so the host decides whether it steers or queues), then clears
+ * them. Notes without text stay.
+ */
+export async function sendReviewNotes(sessionKey: string, send: (text: string) => Promise<unknown>): Promise<void> {
+  const notes = reviewNotesFor(sessionKey).filter(note => note.text.trim());
+  if (notes.length === 0 || sendingReviewNotes()) return;
+  sendingReviewNotes.set(true);
+  try {
+    await send(reviewNotesMessage(notes));
+    const sent = new Set(notes.map(note => note.id));
+    reviewNotes.update(current => current.filter(note => !sent.has(note.id)));
+  } finally {
+    sendingReviewNotes.set(false);
+  }
+}

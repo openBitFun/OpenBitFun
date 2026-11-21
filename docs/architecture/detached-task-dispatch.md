@@ -19,13 +19,16 @@ There are three roles:
   worktree, submits a job, and observes it by cursor.
 - The **target host** owns the job, worker process, local session, workspace
   lease, event log, permission mailbox, and terminal state.
-- A **transport adapter** moves the same narrow JSON protocol over SSH or an
-  end-to-end encrypted account-device RPC.
+- A **transport adapter** moves the same narrow JSON protocol over SSH or over
+  OBP on OpenBitFun Link (the `dispatch_target_*` verbs, `dispatch_target_v1`).
 
 Desktop (`dispatch_*` commands) and the CLI (`openbitfun dispatch outbound`) are
-both controllers over the same Core controller. The account-device `host_invoke`
-envelope is shared through `AccountRuntimeDeviceDispatchRpc` and its
-encode/decode helpers, so the two hosts cannot drift.
+both controllers over the same Core controller. The account-device call and its
+agent-identity translation are shared through `invoke_device_dispatch` /
+`AccountRuntimeDeviceDispatchRpc`, so the two hosts cannot drift. OpenBitFun 2.0
+has no relay transport: a device target that is not on Link (offline, or an
+OpenBitFun 1.x device) answers `device_not_on_link: …`; the 1.x `host_invoke`
+envelope over the relay RPC was removed.
 
 The Agent reaches the same controller through the `detached-dispatch`
 product-control provider on `feature.detached-dispatch` (`list-targets`,
@@ -267,6 +270,47 @@ available, probe reports the missing runner and submission remains disabled
 rather than falling back to local execution. Device dispatch never performs
 SSH-style installation through the Relay.
 
+## Cloud controller and superagent target capabilities
+
+The account's cloud superagent (`openbitfun-superagent`, see
+[unified-client-architecture.md](unified-client-architecture.md#the-cloud-superagent-node))
+is a controller with no checkout and no local session store. It reaches targets
+over the account's Link network with the `cloud-agent` OBP scope and speaks the
+same target verbs, built from the shared wire DTOs
+(`services-core::dispatch_contract::wire`, feature `dispatch-wire`). It keeps a
+write-ahead ledger: a job id (deterministic per turn, tool call and target) is
+recorded before the submit leaves, so a crash reconciles through `status` /
+`list` instead of a second submit. Jobs for an offline device wait in that
+ledger (the relay never queues) and are submitted once, with the same id, when
+the device returns.
+
+Because it has no baseline to push, the target resolves the source. Four
+optional capabilities serve this; protocol version 6 is unchanged, none is
+required of a target by an ordinary controller, and the cloud controller sends a
+new field only after the target advertised it (target requests reject unknown
+fields). The CLI dispatch probe advertises them (`DISPATCH_SUPERAGENT_TARGET_CAPABILITIES`),
+`workspace_target_source_v1` only while the registry has the verb's row; a
+desktop target delegates to its installed CLI.
+
+| Capability | Adds |
+| --- | --- |
+| `workspace_target_source_v1` | Verb `dispatch_target_workspace_provision_source {protocolVersion, jobId, source, branch}` (registry row `HostControlPlane`, CLI handled). `source` is `{kind: "workspace", workspaceId, ref?}` (one of the target's own workspaces by fleet workspace id, looked up in its own catalog, never a path from the wire; `ref` defaults to `HEAD`, uncommitted changes excluded) or `{kind: "remote", remoteUrl, ref}` (fetched with the target's own credentials; credentials in the URL are stripped). The source is pinned to one commit and recorded per job, so every poll and retry provisions the same baseline; the existing worktree provisioning does the rest. `probe` also accepts `workspaceId` |
+| `query_result_summary_v1` | `query` kind `resultSummary`: state, branch, base and head commits, commit count, uncommitted changes, `git diff --numstat` of the job worktree (50 files listed, the rest counted), timing, last error, and the job's last reply bounded to 16 KiB. Never file contents or event payloads |
+| `status_summary_only_v1` | `status {summaryOnly: true}`: state and pending prompt summaries without the event log |
+| `job_submitter_v1` | `submit {submitter}` (1-32 bytes of `[a-z0-9_-]`; the cloud controller sends `cloud`), and `list {submitter}` filters by it |
+
+The cloud controller submits with `approvalPolicy: auto` by default (full
+access); the target refuses it with `superagent_auto_approval_refused` when its
+user turned `superagent.allowAutoApproval` off, and refuses all new work with
+`superagent_dispatch_disabled` when `superagent.acceptDispatch` is off. With
+`remote`, prompts wait in the target's mailbox: the fleet digest carries them
+(`answerRoute: "dispatch"`, the job id), the Inbox answers them on the owner with
+`dispatch_target_answer`, and the agent may answer them itself
+(`answeredBy: superagent`). The job appears in the target's fleet partition like
+any session. Windows targets have no detached runner yet: their probe lacks
+`detached_worker`, and the cloud controller reports
+`detached_worker_unsupported`.
+
 ## Conversation model
 
 A dispatch session is a conversation, not a single exchange. One job owns one
@@ -351,7 +395,8 @@ claim before normal worktree retention can consider that worktree.
 
 Every submit requires an explicit policy:
 
-- `auto` uses the shared Runtime auto-approval metadata.
+- `auto` uses the shared Runtime auto-approval metadata. It is the cloud
+  superagent's default (see above).
 - `reject-and-report` fails closed when confirmation is required.
 - `remote` disables inherited auto-approval and supports remote permission
   decisions. The worker persists the safe presentation DTO, status exposes it,

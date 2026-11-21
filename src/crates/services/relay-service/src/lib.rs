@@ -1193,6 +1193,10 @@ pub fn build_relay_router_with_page_data_origins_and_page_auth(
             post(routes::auth::provision_device),
         )
         .merge(routes::devices::device_router())
+        .merge(routes::cloud_agent::cloud_agent_router(
+            routes::cloud_agent::CloudAgentKey::from_env(),
+            Arc::clone(&state.db),
+        ))
         .merge(routes::pages::pages_router());
     let router = realtime::mount(router, state.clone())
         .layer(axum::middleware::from_fn_with_state(

@@ -2,7 +2,6 @@ import { cleanup, effect, Scroll, Text, View } from "nsh";
 import { Editor } from "nsh/base";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { peerScope } from "../peerState";
 import {
   cancelDeleteSpace,
   closeSpaceInspector,
@@ -25,7 +24,6 @@ import {
   spacesError,
   spacesNotice,
   spaceSourceTab,
-  spacesPeerNotice,
   spaceCreating,
   spaceCreationBlockedReason,
   spacesInitialLoad,
@@ -38,7 +36,9 @@ import {
   spaceOpening,
   spaceWindowBlockedReason,
 } from "../spacesStore";
-import { fontMono, palette, radii, textLineHeight, textSize } from "../theme";
+import { fontMono, palette, radii, space, textLineHeight, textSize } from "../theme";
+import { deviceContext } from "../state";
+import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import { Icon } from "../ui/icons";
 import { createEditorStyles, inferCodeLanguage } from "../ui/markdown";
 import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
@@ -55,7 +55,6 @@ import {
   loadSubmissions,
   marketOrigins,
   openPackageImport,
-  packageImportBlockedReason,
   spacesView,
   type SpacesView,
 } from "../miniAppMarketStore";
@@ -785,9 +784,31 @@ function installedSummary(): string {
   return running > 0 ? `${installed} · ${tr("spaces.activeWorkers", { count: running })}` : installed;
 }
 
-export function SpacesScene() {
+/** The Library's Spaces gallery: `minmax(280, 1fr)` columns (visual spec §4.8). */
+const SPACE_GALLERY_MIN_COLUMN = 280;
+
+export function SpacesScene(props: { embedded?: boolean }) {
+  const refreshControls = () => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+      <If when={spacesBusy() && !spacesInitialLoad()}>
+        <Spinner size={14} />
+      </If>
+      <IconButton
+        icon="refresh"
+        size="md"
+        accessibilityLabel="spaces-refresh"
+        tooltip={tr("spaces.refreshTooltip")}
+        disabled={spacesBusy()}
+        onPress={() => refreshCurrentView()}
+      />
+    </View>
+  );
+  const spaceViewTabs = () => (
+    <SegmentedTabs size="sm" options={viewTabs()} value={spacesView()} onChange={next => spacesView.set(next)} />
+  );
   effect(() => {
-    const scopeKey = peerScope()?.deviceId ?? "local";
+    // The device the Library looks at (fleet) or the driven peer (older backends).
+    const scopeKey = `local:${deviceContext()}`;
     void scopeKey;
     void loadSpaces();
     void loadMarketOrigins();
@@ -795,7 +816,8 @@ export function SpacesScene() {
   // Each view reads its own host state when it is shown (and again when the
   // driven device changes), so a hidden view costs nothing.
   effect(() => {
-    const scopeKey = peerScope()?.deviceId ?? "local";
+    // The device the Library looks at (fleet) or the driven peer (older backends).
+    const scopeKey = `local:${deviceContext()}`;
     void scopeKey;
     const view = spacesView();
     if (view === "market") enterMarket();
@@ -810,34 +832,20 @@ export function SpacesScene() {
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
     >
       <Scroll style={{ flex: 1, minHeight: 0 }}>
-        <StudioHeader
-          title={tr("spaces.title")}
-          subtitle={tr("spaces.subtitleStudio")}
-          actions={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <If when={spacesBusy() && !spacesInitialLoad()}>
-                <Spinner size={14} />
-              </If>
-              <IconButton
-                icon="refresh"
-                size="md"
-                accessibilityLabel="spaces-refresh"
-                tooltip={tr("spaces.refreshTooltip")}
-                disabled={spacesBusy()}
-                onPress={() => refreshCurrentView()}
-              />
-            </View>
-          }
-          extra={
-            <SegmentedTabs
-              size="sm"
-              options={viewTabs()}
-              value={spacesView()}
-              onChange={next => spacesView.set(next)}
+        <If
+          when={props.embedded}
+          else={
+            <StudioHeader
+              title={tr("spaces.title")}
+              subtitle={tr("spaces.subtitle")}
+              actions={refreshControls()}
+              extra={spaceViewTabs()}
             />
           }
-        />
-        <StudioBody>
+        >
+          <LibraryToolbar wide accessibilityLabel="spaces-toolbar" leading={spaceViewTabs()} primary={refreshControls()} />
+        </If>
+        <StudioBody style={props.embedded ? libraryBodyStyle(true) : undefined}>
           <If when={spacesError()}>
             {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
           </If>
@@ -847,9 +855,6 @@ export function SpacesScene() {
               message={localizeHostError(spacesNotice() ?? "")}
               onDismiss={() => spacesNotice.set("")}
             />
-          </If>
-          <If when={spacesPeerNotice()}>
-            {notice => <InlineBanner tone="warning" message={notice()} />}
           </If>
 
           <If when={spacesView() === "market"}>
@@ -881,8 +886,6 @@ export function SpacesScene() {
                   variant="ghost"
                   size="sm"
                   leadingIcon="upload"
-                  disabled={Boolean(packageImportBlockedReason())}
-                  tooltip={packageImportBlockedReason() || undefined}
                   accessibilityLabel="spaces-import-package"
                   onPress={() => openPackageImport()}
                 />
@@ -900,7 +903,7 @@ export function SpacesScene() {
               />
             </If>
             <If when={spaces().length > 0}>
-              <GalleryGrid>
+              <GalleryGrid minColumn={props.embedded ? SPACE_GALLERY_MIN_COLUMN : undefined} gap={space.md}>
                 <Each of={spaces()} key={item => item.id}>
                   {item => <SpaceCard space={item} />}
                 </Each>

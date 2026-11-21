@@ -469,6 +469,9 @@ async fn phones_on_the_mesh_pair_like_the_lan_and_devices_still_handshake() {
         .await
         .unwrap();
     assert_eq!(info["deviceId"], "dana-device");
+    // A host without the fleet layer attaches no fleet clients: no
+    // `fleetLoad` (older readers never saw one either).
+    assert!(info.get("fleetLoad").is_none(), "{info}");
 
     // The mesh pairing QR names the virtual IP and pins the listener's cert.
     assert!(server.create_mesh_pairing(None, "not-an-ip").is_err());
@@ -604,4 +607,349 @@ fn handshake_nonces_are_single_use() {
             now + 3 * openbitfun_link::handshake::MAX_CLOCK_SKEW_MS
         ));
     });
+}
+
+/// A device whose directory names the kind of each row (a directory that
+/// predates kinds is `TestAuthority`, whose `device_kind` is the default).
+struct KindedAuthority {
+    inner: Arc<TestAuthority>,
+    kinds: HashMap<String, String>,
+}
+
+impl MeshAuthority for KindedAuthority {
+    fn local_device_id(&self) -> Option<String> {
+        self.inner.local_device_id()
+    }
+
+    fn pair_key<'a>(&'a self, device_id: &'a str) -> PairKeyFuture<'a> {
+        self.inner.pair_key(device_id)
+    }
+
+    fn device_kind<'a>(&'a self, device_id: &'a str) -> crate::DeviceKindFuture<'a> {
+        Box::pin(async move { Ok(self.kinds.get(device_id).cloned()) })
+    }
+}
+
+/// `EchoBackend` that serves the cloud agent with fixed device switches.
+struct CloudServingBackend {
+    echo: EchoBackend,
+    policy: CloudAgentPolicy,
+}
+
+impl ObpBackend for CloudServingBackend {
+    fn dispatch(&self, command: String, args: Value) -> ObpDispatchFuture {
+        if command.starts_with("dispatch_target_") || command.starts_with("fleet_model_") {
+            return Box::pin(async move { Ok(json!({ "routed": command, "args": args })) });
+        }
+        self.echo.dispatch(command, args)
+    }
+
+    fn events(&self) -> Arc<EventHub> {
+        self.echo.events()
+    }
+
+    fn info(&self) -> Value {
+        self.echo.info()
+    }
+
+    fn is_account_device_host_verb(&self, command: &str) -> bool {
+        self.echo.is_account_device_host_verb(command) || command.starts_with("fleet_model_")
+    }
+
+    fn mesh_capabilities(&self) -> Vec<&'static str> {
+        vec!["dispatch_target_v1", "fleet_model_v1"]
+    }
+
+    fn serves_cloud_agent(&self) -> bool {
+        true
+    }
+
+    fn cloud_agent_policy(&self) -> CloudAgentPolicyFuture {
+        let policy = self.policy;
+        Box::pin(async move { policy })
+    }
+}
+
+const CLOUD: [u8; 32] = [41; 32];
+
+/// A server whose backend serves the cloud agent with `policy`, on a device
+/// whose directory knows `cloud_id` as `cloud_agent` and `laptop_id` as a
+/// desktop.
+async fn cloud_server(
+    target_id: &str,
+    cloud_id: &str,
+    laptop_id: &str,
+    policy: CloudAgentPolicy,
+) -> (Arc<ObpServer>, Arc<EventHub>, tempfile::TempDir) {
+    let target = device(target_id, BOB, &[(cloud_id, CLOUD), (laptop_id, ALICE)]);
+    let authority = Arc::new(KindedAuthority {
+        inner: target,
+        kinds: [
+            (cloud_id.to_string(), CLOUD_AGENT_DEVICE_KIND.to_string()),
+            (laptop_id.to_string(), "desktop".to_string()),
+        ]
+        .into(),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let hub = EventHub::new(256);
+    let mut options = ObpServerOptions::new(dir.path().join("obp"));
+    options.loopback_port = 0;
+    let server = ObpServer::new(
+        Arc::new(CloudServingBackend {
+            echo: EchoBackend {
+                hub: Arc::clone(&hub),
+            },
+            policy,
+        }),
+        options,
+    )
+    .unwrap();
+    server.start_mesh(authority).await.unwrap();
+    (server, hub, dir)
+}
+
+/// The account's cloud agent authenticates with the device handshake, is
+/// labelled `cloud-agent` from its directory kind, and has the full
+/// account-device allowlist plus the model relay (answer and automatic
+/// approval allowed by default); an ordinary device on the same listener
+/// stays `account-device` and cannot reach the relay.
+#[tokio::test]
+async fn cloud_agent_handshake_gets_full_access_and_the_model_relay() {
+    let (server, hub, _dir) = cloud_server(
+        "cloud-scope-target",
+        "cloud-abc",
+        "cloud-peer-laptop",
+        CloudAgentPolicy::default(),
+    )
+    .await;
+    let target = MeshTarget {
+        device_id: "cloud-scope-target".into(),
+        virtual_ip: Ipv4Addr::new(10, 126, 126, 2),
+        port: None,
+    };
+    let cloud = MeshDialer {
+        connector: Arc::new(LoopbackConnector),
+        authority: device("cloud-abc", CLOUD, &[("cloud-scope-target", BOB)]),
+    };
+    let (_, info) = cloud.locate(&target).await.unwrap();
+    assert!(info
+        .capabilities
+        .contains(&CLOUD_AGENT_SCOPE_CAPABILITY.to_string()));
+    let connection = cloud
+        .connect(&target, MeshConnectOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(connection.hello()["scope"], "cloud-agent");
+    assert!(connection.hello()["capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(CLOUD_AGENT_SCOPE_CAPABILITY)));
+    for (command, args) in [
+        ("open_workspace", json!({ "request": { "path": "/w" } })),
+        ("dispatch_target_probe", json!({ "request": {} })),
+        (
+            "dispatch_target_answer",
+            json!({ "request": { "jobId": "j" } }),
+        ),
+        (
+            "dispatch_target_submit",
+            json!({ "request": { "approvalPolicy": "auto" } }),
+        ),
+        (
+            "fleet_model_start",
+            json!({ "request": { "requestId": "r1" } }),
+        ),
+    ] {
+        connection
+            .call(command, args)
+            .await
+            .unwrap_or_else(|error| panic!("{command}: {error}"));
+    }
+    // Owner-only commands stay with the owner, as for any account device.
+    let refused = connection.call("mesh_status", json!({})).await.unwrap_err();
+    assert_eq!(refused.code, -32003, "{refused}");
+    // The same events as any account device.
+    connection
+        .call("page_list", json!({ "count": 1 }))
+        .await
+        .unwrap();
+    let mut names = Vec::new();
+    while names.len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(5), connection.next_event())
+            .await
+            .unwrap()
+            .unwrap();
+        names.push(event.event);
+    }
+    assert_eq!(names, ["agentic://text-chunk", "agentic://tool-event"]);
+    drop(hub);
+    connection.close().await;
+
+    // A desktop row on the same listener stays account-device and cannot
+    // reach the model relay.
+    let laptop = MeshDialer {
+        connector: Arc::new(LoopbackConnector),
+        authority: device("cloud-peer-laptop", ALICE, &[("cloud-scope-target", BOB)]),
+    };
+    let connection = laptop
+        .connect(&target, MeshConnectOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(connection.hello()["scope"], "account-device");
+    let refused = connection
+        .call(
+            "fleet_model_start",
+            json!({ "request": { "requestId": "r1" } }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, -32003, "{refused}");
+    connection.close().await;
+    server.stop_mesh();
+}
+
+/// The device switches, read per call: answer and automatic approval are
+/// refused once `superagent.allowAutoApproval` is off, and everything but
+/// status, cancel and the relay once `superagent.acceptDispatch` is off.
+#[tokio::test]
+async fn cloud_agent_device_switches_refuse_per_call() {
+    for (policy, refused, allowed) in [
+        (
+            CloudAgentPolicy {
+                accept_dispatch: true,
+                allow_auto_approval: false,
+            },
+            vec![
+                (
+                    "dispatch_target_answer",
+                    json!({ "request": {} }),
+                    "superagent_auto_approval_refused:",
+                ),
+                (
+                    "dispatch_target_submit",
+                    json!({ "request": { "approvalPolicy": "auto" } }),
+                    "superagent_auto_approval_refused:",
+                ),
+            ],
+            vec![
+                (
+                    "dispatch_target_submit",
+                    json!({ "request": { "approvalPolicy": "remote" } }),
+                ),
+                ("open_workspace", json!({ "request": { "path": "/w" } })),
+            ],
+        ),
+        (
+            CloudAgentPolicy {
+                accept_dispatch: false,
+                allow_auto_approval: true,
+            },
+            vec![
+                (
+                    "dispatch_target_submit",
+                    json!({ "request": {} }),
+                    "superagent_dispatch_disabled:",
+                ),
+                (
+                    "open_workspace",
+                    json!({ "request": { "path": "/w" } }),
+                    "superagent_dispatch_disabled:",
+                ),
+            ],
+            vec![
+                ("dispatch_target_probe", json!({ "request": {} })),
+                ("dispatch_target_cancel", json!({ "request": {} })),
+                (
+                    "fleet_model_poll",
+                    json!({ "request": { "requestId": "r1" } }),
+                ),
+            ],
+        ),
+    ] {
+        let suffix = if policy.accept_dispatch {
+            "auto"
+        } else {
+            "fenced"
+        };
+        let target_id = format!("cloud-switch-{suffix}");
+        let cloud_id = format!("cloud-switch-agent-{suffix}");
+        let (server, _hub, _dir) = cloud_server(
+            &target_id,
+            &cloud_id,
+            &format!("cloud-switch-laptop-{suffix}"),
+            policy,
+        )
+        .await;
+        let target = MeshTarget {
+            device_id: target_id.clone(),
+            virtual_ip: Ipv4Addr::new(10, 126, 126, 2),
+            port: server.mesh_addr().map(|addr| addr.port()),
+        };
+        let cloud = MeshDialer {
+            connector: Arc::new(LoopbackConnector),
+            authority: device(&cloud_id, CLOUD, &[(target_id.as_str(), BOB)]),
+        };
+        let connection = cloud
+            .connect(&target, MeshConnectOptions::default())
+            .await
+            .unwrap();
+        for (command, args, expected) in refused {
+            let error = connection.call(command, args).await.unwrap_err();
+            assert_eq!(error.code, -32003, "{command}: {error}");
+            assert!(error.message.starts_with(expected), "{command}: {error}");
+        }
+        for (command, args) in allowed {
+            connection
+                .call(command, args)
+                .await
+                .unwrap_or_else(|error| panic!("{command}: {error}"));
+        }
+        connection.close().await;
+        server.stop_mesh();
+    }
+}
+
+/// A host that does not serve the cloud agent (an older build, or one
+/// without the relay) never advertises `cloud_agent_scope_v1`, and answers
+/// the relay with a stable reason.
+#[tokio::test]
+async fn a_host_without_the_cloud_agent_does_not_advertise_it() {
+    let target = device("cloud-unserved-target", BOB, &[("cloud-def", CLOUD)]);
+    let authority = Arc::new(KindedAuthority {
+        inner: Arc::clone(&target),
+        kinds: [("cloud-def".to_string(), CLOUD_AGENT_DEVICE_KIND.to_string())].into(),
+    });
+    let (server, _hub, _dir) = server(target).await;
+    server.start_mesh(authority).await.unwrap();
+    let mesh_target = MeshTarget {
+        device_id: "cloud-unserved-target".into(),
+        virtual_ip: Ipv4Addr::new(10, 126, 126, 2),
+        port: server.mesh_addr().map(|addr| addr.port()),
+    };
+    let cloud = MeshDialer {
+        connector: Arc::new(LoopbackConnector),
+        authority: device("cloud-def", CLOUD, &[("cloud-unserved-target", BOB)]),
+    };
+    let (_, info) = cloud.locate(&mesh_target).await.unwrap();
+    assert!(!info
+        .capabilities
+        .contains(&CLOUD_AGENT_SCOPE_CAPABILITY.to_string()));
+    let connection = cloud
+        .connect(&mesh_target, MeshConnectOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(connection.hello()["scope"], "cloud-agent");
+    let refused = connection
+        .call(
+            "fleet_model_start",
+            json!({ "request": { "requestId": "r" } }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.message.starts_with("superagent_requires_update:"),
+        "{refused}"
+    );
+    connection.close().await;
+    server.stop_mesh();
 }

@@ -52,6 +52,14 @@ fn open_entry() -> Result<keyring_core::Entry, String> {
 #[cfg(target_os = "macos")]
 fn macos_credential_vault(
 ) -> Result<openbitfun_services_core::credential_vault::CredentialVault, String> {
+    profile_credential_vault()
+}
+
+/// The profile's prompt-free local credential vault (`<user root>/data`). The
+/// account sign-in uses it on macOS; host credentials that must follow the
+/// profile (the account directory session) use it on every OS.
+pub(crate) fn profile_credential_vault(
+) -> Result<openbitfun_services_core::credential_vault::CredentialVault, String> {
     // A profile with its own user root (`OPENBITFUN_USER_ROOT`, as the path
     // manager resolves it) keeps its account sign-in there, so a scratch or
     // test profile never reads, replaces or deletes the default profile's.

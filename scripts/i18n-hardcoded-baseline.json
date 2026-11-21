@@ -2,10 +2,6 @@
   "version": 1,
   "budgets": [
     {
-      "id": "mobile-web-source",
-      "maxCjkLines": 0
-    },
-    {
       "id": "installer-source",
       "maxCjkLines": 0
     },

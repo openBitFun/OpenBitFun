@@ -193,7 +193,7 @@ block-beta
 | Development area | Repository scope | Current modules |
 |---|---|---|
 | Apps | `src/apps/*` | `desktop`、`cli`、`server`、`relay-server`、`sdk-host`、`miniapp-shell`、`data-tools`、`miniapp-market-server`、`extension-host`（Bun Plugin Host 进程） |
-| Web and delivery | product roots | `src/nsh-ui`（桌面 UI，原生 NSH 应用与 web target）、`src/apps/desktop-nsh`、`src/mobile-web`、`src/miniapp-market-web`、[OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)、`OpenBitFun-Installer`、`website`、`tests/e2e` |
+| Web and delivery | product roots | `src/nsh-ui`（桌面 UI，原生 NSH 应用与 web target）、`src/apps/desktop-nsh`、`src/miniapp-market-web`、[OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)、`OpenBitFun-Installer`、`website`、`tests/e2e` |
 | SDK | `sdk/*` | `typescript` |
 | Shared frontend | `src/shared`、`packages/flow-chat-presentation` | `shared`、`flow-chat-presentation` |
 | Design system | `design-system/*` | `packages/design-tokens`、`packages/theme-openbitfun`、`packages/ui`、`tooling/package-contract`、`tooling/token-engine`、`apps/design-lab` |

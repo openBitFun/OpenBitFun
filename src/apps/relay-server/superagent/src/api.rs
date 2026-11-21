@@ -1,0 +1,946 @@
+//! The cloud node's commands for frontends (`superagent_*`), and account
+//! provisioning.
+//!
+//! On by default: the first sign-in (or first use) of an account creates its
+//! cloud node key and registers the node's directory row
+//! ([`Service::ensure`]). `superagent_disable` turns it off and
+//! `superagent_delete_data` deletes everything in one step.
+
+use std::sync::Arc;
+
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use openbitfun_product_domains::superagent::{
+    CLOUD_DEVICE_DISPLAY_NAME, SUPERAGENT_CARD_CHANGED_EVENT,
+};
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use crate::conversation::{ConversationSummary, Message, Role};
+use crate::crypto;
+use crate::directory::{Directory, DirectoryError};
+use crate::engine::Engine;
+use crate::slots::{AccountMeta, Slot, SlotError};
+use openbitfun_product_domains::superagent::SuperagentJobState;
+
+/// The commands this node serves.
+pub const COMMANDS: &[&str] = &[
+    "superagent_status",
+    "superagent_enable",
+    "superagent_disable",
+    "superagent_list_conversations",
+    "superagent_get_conversation",
+    "superagent_send",
+    "superagent_cancel_turn",
+    "superagent_job_action",
+    "superagent_rename_conversation",
+    "superagent_delete_conversation",
+    "superagent_delete_data",
+    // Fleet owner verbs: the cloud node's index partition.
+    "fleet_digest",
+    "fleet_replay",
+];
+
+/// The cloud node's one virtual workspace (its sessions are conversations).
+pub const CLOUD_WORKSPACE_ID: &str = "cloud-conversations";
+
+/// The surface's message catalogs (`locales/<locale>.json`, registered as
+/// the `superagent` surface in `src/shared/i18n/contract/locales.json`).
+const CATALOGS: [(&str, &str); 3] = [
+    ("en-US", include_str!("../locales/en-US.json")),
+    ("zh-CN", include_str!("../locales/zh-CN.json")),
+    ("zh-TW", include_str!("../locales/zh-TW.json")),
+];
+/// The contract's aliases for these locales (input boundary only).
+const LOCALE_ALIASES: [(&str, &[&str]); 3] = [
+    ("en-US", &["en", "en-us"]),
+    ("zh-CN", &["zh", "zh-hans", "zh-cn", "zh-sg"]),
+    ("zh-TW", &["zh-tw", "zh-hant", "zh-hk", "zh-mo"]),
+];
+const FALLBACK_LOCALE: &str = "en-US";
+
+/// A canonical locale id for an input (aliases, `_` separators, any case);
+/// unknown ids fall back to `en-US`.
+pub fn resolve_locale(locale: Option<&str>) -> &'static str {
+    let normalized = locale
+        .unwrap_or(FALLBACK_LOCALE)
+        .trim()
+        .replace('_', "-")
+        .to_ascii_lowercase();
+    LOCALE_ALIASES
+        .iter()
+        .find(|(_, aliases)| aliases.contains(&normalized.as_str()))
+        .map(|(id, _)| *id)
+        .unwrap_or(FALLBACK_LOCALE)
+}
+
+fn catalog(locale: &str) -> std::collections::BTreeMap<String, String> {
+    let text = CATALOGS
+        .iter()
+        .find(|(id, _)| *id == locale)
+        .or_else(|| CATALOGS.iter().find(|(id, _)| *id == FALLBACK_LOCALE))
+        .map(|(_, text)| *text)
+        .unwrap_or("{}");
+    serde_json::from_str(text).unwrap_or_default()
+}
+
+/// The composer's starter prompts (three) and placeholder for a locale.
+pub fn composer_copy(locale: Option<&str>) -> (&'static str, Vec<String>, String) {
+    let id = resolve_locale(locale);
+    let messages = catalog(id);
+    let fallback = catalog(FALLBACK_LOCALE);
+    let get = |key: &str| {
+        messages
+            .get(key)
+            .or_else(|| fallback.get(key))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let suggestions = (1..=3)
+        .map(|n| get(&format!("composer.suggestion.{n}")))
+        .collect();
+    (id, suggestions, get("composer.placeholder"))
+}
+
+/// Local midnights (Unix ms) of today, yesterday and six days before today
+/// in `time_zone` (IANA); UTC when absent or unknown. Returns the zone used.
+pub fn day_bounds(now_ms: u64, time_zone: Option<&str>) -> (String, [u64; 3]) {
+    use chrono::{Duration, TimeZone};
+    let zone: chrono_tz::Tz = time_zone
+        .and_then(|name| name.trim().parse().ok())
+        .unwrap_or(chrono_tz::UTC);
+    let now = zone
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .unwrap_or_else(|| zone.timestamp_millis_opt(0).unwrap());
+    let today = now.date_naive();
+    let midnight = |days_back: i64| -> u64 {
+        let date = today - Duration::days(days_back);
+        let start = date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight exists as a naive time");
+        // A zone that skips midnight (DST): take the earliest valid instant.
+        let local = zone.from_local_datetime(&start).earliest().or_else(|| {
+            zone.from_local_datetime(&(start + Duration::hours(1)))
+                .earliest()
+        });
+        local
+            .map(|t| t.timestamp_millis().max(0) as u64)
+            .unwrap_or(0)
+    };
+    (
+        zone.name().to_string(),
+        [midnight(0), midnight(1), midnight(6)],
+    )
+}
+
+/// Cards per list in `workingNow`.
+const WORKING_NOW_MAX: usize = 3;
+/// Conversation list page size.
+const LIST_PAGE: usize = 50;
+
+/// Host capabilities the node advertises on its OBP hello.
+pub const HOST_CAPABILITIES: &[&str] = &[
+    "superagent_v1",
+    openbitfun_product_domains::fleet::FLEET_V1_CAPABILITY,
+];
+
+const PAGE: usize = 100;
+
+pub struct Service {
+    pub engine: Arc<Engine>,
+    pub directory: Arc<dyn Directory>,
+}
+
+fn args_of<T: for<'de> Deserialize<'de>>(args: &Value) -> Result<T, String> {
+    // Commands take one structured `request`; a bare object is accepted too.
+    let request = args.get("request").cloned().unwrap_or_else(|| args.clone());
+    let request = if request.is_null() {
+        json!({})
+    } else {
+        request
+    };
+    serde_json::from_value(request).map_err(|error| format!("invalid_request: {error}"))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SendRequest {
+    #[serde(default)]
+    conversation_id: Option<String>,
+    message: String,
+    client_message_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationRequest {
+    #[serde(alias = "id")]
+    conversation_id: String,
+    #[serde(default)]
+    cursor: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JobActionRequest {
+    job_id: String,
+    action: String,
+    #[serde(default)]
+    text: Option<String>,
+    /// Idempotency key of a `message` action (a retry sends once).
+    #[serde(default)]
+    client_message_id: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct ListRequest {
+    cursor: Option<u64>,
+    limit: Option<usize>,
+    /// Accepted for symmetry with status (rows carry no copy today).
+    #[allow(dead_code)]
+    locale: Option<String>,
+    /// IANA zone the date groups use (UTC when absent or unknown).
+    time_zone: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct StatusRequest {
+    locale: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameRequest {
+    conversation_id: String,
+    title: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct DeleteRequest {
+    /// The frontend asked the user; `true` cancels live jobs on their
+    /// devices first, `false` leaves them running there.
+    cancel_jobs: bool,
+}
+
+impl Service {
+    pub fn new(engine: Arc<Engine>, directory: Arc<dyn Directory>) -> Arc<Self> {
+        Arc::new(Self { engine, directory })
+    }
+
+    /// Creates the account's cloud node on first use (key, directory row,
+    /// encrypted store) and returns its slot. Idempotent.
+    pub async fn ensure(&self, account_id: &str) -> Result<Arc<Slot>, String> {
+        let now = self.engine.now();
+        let master = *self.engine.slots.store().master();
+        let device_id = crypto::cloud_device_id(&master, account_id);
+        let created = AccountMeta {
+            version: 1,
+            account_id: account_id.to_string(),
+            device_id: device_id.clone(),
+            device_secret: BASE64.encode(crypto::random_bytes::<32>()),
+            directory_token: None,
+            enabled: true,
+            created_ms: now,
+            updated_ms: now,
+            pinned_holder: None,
+        };
+        let slot = self
+            .engine
+            .slots
+            .load(account_id, now, Some(created))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut state = slot.state.lock().await;
+        if state.meta.directory_token.is_none() {
+            let secret = decode_secret(&state.meta.device_secret)?;
+            let token = self
+                .directory
+                .register(
+                    account_id,
+                    &device_id,
+                    CLOUD_DEVICE_DISPLAY_NAME,
+                    &crypto::public_key_base64(&secret),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            state.meta.directory_token = Some(token);
+            state.meta.updated_ms = now;
+            slot.save_meta(&state).map_err(|e| e.to_string())?;
+            log::info!("Superagent node registered: device={}", device_id);
+        }
+        drop(state);
+        Ok(slot)
+    }
+
+    /// Runs one command for a frontend of `account_id`.
+    pub async fn dispatch(
+        &self,
+        account_id: &str,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, String> {
+        let now = self.engine.now();
+        let slot = match self.engine.slots.load(account_id, now, None).await {
+            Ok(slot) => slot,
+            Err(SlotError::NotProvisioned) => {
+                return Err(
+                    "superagent_not_provisioned: sign in again to set up the OpenBitFun agent"
+                        .into(),
+                )
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        slot.touch(now);
+        match command {
+            "superagent_status" => {
+                let request: StatusRequest = args_of(&args)?;
+                self.status(&slot, request.locale.as_deref()).await
+            }
+            "superagent_enable" | "superagent_disable" => {
+                let enabled = command == "superagent_enable";
+                let mut state = slot.state.lock().await;
+                state.meta.enabled = enabled;
+                state.meta.updated_ms = now;
+                slot.save_meta(&state).map_err(|e| e.to_string())?;
+                Ok(json!({ "enabled": enabled }))
+            }
+            "superagent_list_conversations" => {
+                let request: ListRequest = args_of(&args)?;
+                self.list_conversations(&slot, request).await
+            }
+            "fleet_digest" => {
+                let request: openbitfun_product_domains::fleet::FleetDigestRequest =
+                    args_of(&args)?;
+                let _ = request;
+                self.digest(&slot).await
+            }
+            "fleet_replay" => {
+                let request: openbitfun_product_domains::fleet::FleetReplayRequest =
+                    args_of(&args)?;
+                Ok(replay(&slot, &request))
+            }
+            "superagent_rename_conversation" => {
+                let request: RenameRequest = args_of(&args)?;
+                let title = request.title.trim();
+                if title.is_empty() || title.chars().count() > 120 {
+                    return Err("invalid_request: the title must be 1-120 characters".into());
+                }
+                let mut state = slot.state.lock().await;
+                if !slot
+                    .rename_conversation(&mut state, &request.conversation_id, title)
+                    .map_err(|e| e.to_string())?
+                {
+                    return Err("not_found: no such conversation".into());
+                }
+                drop(state);
+                self.engine.digest_changed(&slot);
+                Ok(json!({ "conversationId": request.conversation_id, "title": title }))
+            }
+            "superagent_delete_conversation" => {
+                let request: ConversationRequest = args_of(&args)?;
+                // The turn ends; its jobs keep running on their devices.
+                let _ = self
+                    .engine
+                    .cancel_turn(&slot, &request.conversation_id)
+                    .await;
+                let mut state = slot.state.lock().await;
+                let deleted = slot
+                    .delete_conversation(&mut state, &request.conversation_id)
+                    .map_err(|e| e.to_string())?;
+                let jobs_kept = state
+                    .ledger
+                    .live_jobs()
+                    .filter(|job| job.conversation_id == request.conversation_id)
+                    .count();
+                drop(state);
+                self.engine.digest_changed(&slot);
+                Ok(json!({ "deleted": deleted, "jobsLeftRunning": jobs_kept }))
+            }
+            "superagent_get_conversation" => {
+                let request: ConversationRequest = args_of(&args)?;
+                self.conversation(&slot, &request.conversation_id, request.cursor)
+                    .await
+            }
+            "superagent_send" => {
+                let request: SendRequest = args_of(&args)?;
+                self.engine
+                    .send(
+                        &slot,
+                        request.conversation_id.as_deref(),
+                        &request.message,
+                        &request.client_message_id,
+                    )
+                    .await
+            }
+            "superagent_cancel_turn" => {
+                let request: ConversationRequest = args_of(&args)?;
+                self.engine
+                    .cancel_turn(&slot, &request.conversation_id)
+                    .await
+            }
+            "superagent_job_action" => {
+                let request: JobActionRequest = args_of(&args)?;
+                match request.action.as_str() {
+                    "cancel" => Ok(self.engine.job_cancel(&slot, &request.job_id).await),
+                    "refresh" => {
+                        self.engine
+                            .refresh_jobs(&slot, &[request.job_id.clone()])
+                            .await;
+                        let state = slot.state.lock().await;
+                        let job = state
+                            .ledger
+                            .jobs
+                            .get(&request.job_id)
+                            .cloned()
+                            .ok_or("not_found: no such job")?;
+                        drop(state);
+                        let devices = self.engine.devices(account_id).await;
+                        Ok(json!({ "card": self.engine.job_card(&job, Some(&devices)) }))
+                    }
+                    "message" => {
+                        let text = request.text.unwrap_or_default();
+                        let op_id = crate::engine::derived_job_id(
+                            "frontend",
+                            request
+                                .client_message_id
+                                .as_deref()
+                                .unwrap_or(&uuid::Uuid::new_v4().to_string()),
+                            &request.job_id,
+                        );
+                        match self
+                            .engine
+                            .message_job(
+                                &slot,
+                                &request.job_id,
+                                &text,
+                                openbitfun_product_domains::superagent::JobMessageMode::Auto,
+                                &op_id,
+                            )
+                            .await
+                        {
+                            Ok((outcome, _)) => {
+                                Ok(json!({ "jobId": request.job_id, "outcome": outcome }))
+                            }
+                            Err(error) => Err(format!(
+                                "{}: {}",
+                                error["error"]["code"].as_str().unwrap_or("device_error"),
+                                error["error"]["message"]
+                                    .as_str()
+                                    .unwrap_or("the message was not delivered")
+                            )),
+                        }
+                    }
+                    other => Err(format!("invalid_request: unknown job action '{other}'")),
+                }
+            }
+            "superagent_delete_data" => {
+                let request: DeleteRequest = args_of(&args)?;
+                self.delete_data(slot, request.cancel_jobs).await
+            }
+            other => Err(format!(
+                "{}: command '{other}' is not served by the OpenBitFun cloud agent",
+                openbitfun_obp::UNSUPPORTED_IN_NATIVE_HOST
+            )),
+        }
+    }
+
+    async fn status(&self, slot: &Arc<Slot>, locale: Option<&str>) -> Result<Value, String> {
+        let (locale, suggestions, placeholder) = composer_copy(locale);
+        let devices = self.engine.devices(&slot.account_id).await;
+        let state = slot.state.lock().await;
+        let holder =
+            devices.iter().any(|device| {
+                device.facts.online
+                    && device.facts.model_configured
+                    && device.facts.host_capabilities.iter().any(|c| {
+                        c == openbitfun_product_domains::superagent::FLEET_MODEL_CAPABILITY
+                    })
+            });
+        let cards = |wanted: &dyn Fn(SuperagentJobState) -> bool| -> Vec<Value> {
+            let mut jobs: Vec<&crate::ledger::JobRecord> = state
+                .ledger
+                .live_jobs()
+                .filter(|job| wanted(job.state))
+                .collect();
+            jobs.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+            jobs.into_iter()
+                .take(WORKING_NOW_MAX)
+                .map(|job| self.engine.job_card(job, Some(&devices)))
+                .collect()
+        };
+        let needs_you = cards(&|state| state == SuperagentJobState::Blocked);
+        let working = cards(&|state| {
+            matches!(
+                state,
+                SuperagentJobState::Working | SuperagentJobState::Queued
+            )
+        });
+        Ok(json!({
+            "locale": locale,
+            "suggestions": suggestions,
+            "placeholder": placeholder,
+            // A frontend reaches this node only through a signed-in account.
+            "signedIn": true,
+            "workingNow": { "needsYou": needs_you, "working": working },
+            "enabled": state.meta.enabled,
+            "deviceId": state.meta.device_id,
+            "name": CLOUD_DEVICE_DISPLAY_NAME,
+            "hostKind": "cloud",
+            "conversations": state.summaries.len(),
+            "liveJobs": state.ledger.live_jobs().count(),
+            "holderAvailable": holder,
+            "devicesOnline": devices.iter().filter(|d| d.facts.online).count(),
+        }))
+    }
+
+    async fn conversation(
+        &self,
+        slot: &Arc<Slot>,
+        id: &str,
+        cursor: Option<u64>,
+    ) -> Result<Value, String> {
+        let (conversation, history) = {
+            let mut state = slot.state.lock().await;
+            let conversation = slot
+                .conversation(&mut state, id)
+                .map_err(|e| e.to_string())?
+                .cloned()
+                .ok_or_else(|| "not_found: no such conversation".to_string())?;
+            let history = if cursor.is_some_and(|c| {
+                c < conversation.history_count + conversation.messages.len() as u64
+            }) {
+                Some(slot.history(id).map_err(|e| e.to_string())?)
+            } else {
+                None
+            };
+            (conversation, history)
+        };
+        let total = conversation.history_count + conversation.messages.len() as u64;
+        let end = cursor.unwrap_or(total).min(total);
+        let start = end.saturating_sub(PAGE as u64);
+        let mut messages: Vec<Message> = Vec::new();
+        let first_kept = history
+            .as_ref()
+            .map(|h| h.dropped)
+            .unwrap_or(conversation.history_count);
+        for index in start.max(first_kept)..end {
+            let message = if index < conversation.history_count {
+                history
+                    .as_ref()
+                    .and_then(|h| h.messages.get((index - h.dropped) as usize))
+                    .cloned()
+            } else {
+                conversation
+                    .messages
+                    .get((index - conversation.history_count) as usize)
+                    .cloned()
+            };
+            messages.extend(message);
+        }
+        let devices = self.engine.devices(&slot.account_id).await;
+        let now = self.engine.now();
+        let mut state = slot.state.lock().await;
+        let seen_before = state
+            .summaries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.seen_ms);
+        let cards: Vec<Value> = state
+            .ledger
+            .jobs
+            .values()
+            .filter(|job| job.conversation_id == id)
+            .map(|job| self.engine.job_card_seen(job, Some(&devices), seen_before))
+            .collect();
+        let job_labels: Vec<(String, String)> = state
+            .ledger
+            .jobs
+            .values()
+            .filter(|job| job.conversation_id == id)
+            .map(|job| {
+                (
+                    job.job_id.clone(),
+                    job.label.clone().unwrap_or_else(|| job.title.clone()),
+                )
+            })
+            .collect();
+        let _ = slot.mark_seen(&mut state, id, now);
+        drop(state);
+        let messages = project_messages(messages, &job_labels);
+        Ok(json!({
+            "conversation": {
+                "id": conversation.id,
+                "title": conversation.title,
+                "updatedMs": conversation.updated_ms,
+                "turn": conversation.turn.as_ref().map(|turn| json!({ "id": turn.id, "step": turn.step.name(), "rounds": turn.rounds })),
+            },
+            "messages": messages,
+            "cursor": start.max(first_kept),
+            "hasMore": start > first_kept,
+            "cards": cards,
+        }))
+    }
+
+    /// The conversation list, newest first, paged, with each row's rollup
+    /// and the date groups (today, yesterday, the six days before, older) in
+    /// the client's IANA `timeZone`, or UTC days without one.
+    async fn list_conversations(
+        &self,
+        slot: &Arc<Slot>,
+        request: ListRequest,
+    ) -> Result<Value, String> {
+        let now = self.engine.now();
+        let state = slot.state.lock().await;
+        let offset = request.cursor.unwrap_or(0) as usize;
+        let limit = request.limit.unwrap_or(LIST_PAGE).clamp(1, 200);
+        let page: Vec<&ConversationSummary> =
+            state.summaries.iter().skip(offset).take(limit).collect();
+        let rows: Vec<Value> = page
+            .iter()
+            .map(|summary| {
+                let jobs: Vec<&crate::ledger::JobRecord> = state
+                    .ledger
+                    .jobs
+                    .values()
+                    .filter(|job| job.conversation_id == summary.id)
+                    .collect();
+                let unread = summary.updated_ms > summary.seen_ms
+                    || jobs.iter().any(|job| job.updated_ms > summary.seen_ms);
+                let rollup = if jobs
+                    .iter()
+                    .any(|job| job.state == SuperagentJobState::Blocked)
+                {
+                    "needs_you"
+                } else if summary.status == "running"
+                    || summary.status == "parked"
+                    || jobs.iter().any(|job| job.is_live())
+                {
+                    "working"
+                } else if unread {
+                    "unread"
+                } else {
+                    "none"
+                };
+                let mut row = serde_json::to_value(summary).unwrap_or(Value::Null);
+                row["rollup"] = Value::String(rollup.into());
+                row["unread"] = Value::Bool(unread);
+                row
+            })
+            .collect();
+        let (zone, [today_start, yesterday_start, week_start]) =
+            day_bounds(now, request.time_zone.as_deref());
+        let mut groups: Vec<(&str, Vec<Value>)> = Vec::new();
+        for (row, summary) in rows.iter().zip(page.iter()) {
+            let at = summary.updated_ms;
+            let group = if at >= today_start {
+                "today"
+            } else if at >= yesterday_start {
+                "yesterday"
+            } else if at >= week_start {
+                "week"
+            } else {
+                "older"
+            };
+            match groups.last_mut() {
+                Some((id, rows)) if *id == group => rows.push(row.clone()),
+                _ => groups.push((group, vec![row.clone()])),
+            }
+        }
+        let next = offset + page.len();
+        Ok(json!({
+            "conversations": rows,
+            "groups": groups.into_iter().map(|(id, rows)| json!({ "id": id, "rows": rows })).collect::<Vec<_>>(),
+            "nextCursor": (next < state.summaries.len()).then_some(next as u64),
+            "timeZone": zone,
+        }))
+    }
+
+    /// `fleet_digest`: the cloud node's index partition, always a full
+    /// snapshot (it is small and bounded): one assistant workspace whose
+    /// sessions are the conversations. Prompts stay in their job devices'
+    /// partitions.
+    async fn digest(&self, slot: &Arc<Slot>) -> Result<Value, String> {
+        use openbitfun_product_domains::fleet::{
+            FleetDigest, FleetSession, FleetSessionStatus, FleetWorkspace, FleetWorkspaceKind,
+            MAX_SESSIONS_PER_DEVICE,
+        };
+        let state = slot.state.lock().await;
+        let device_id = state.meta.device_id.clone();
+        let revision = slot
+            .digest_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        let sessions: Vec<FleetSession> = state
+            .summaries
+            .iter()
+            .take(MAX_SESSIONS_PER_DEVICE)
+            .map(|summary| {
+                let jobs: Vec<&crate::ledger::JobRecord> = state
+                    .ledger
+                    .jobs
+                    .values()
+                    .filter(|job| job.conversation_id == summary.id)
+                    .collect();
+                let blocked = jobs
+                    .iter()
+                    .any(|job| job.state == SuperagentJobState::Blocked);
+                let unread = summary.updated_ms > summary.seen_ms
+                    || jobs.iter().any(|job| job.updated_ms > summary.seen_ms);
+                FleetSession {
+                    device_id: device_id.clone(),
+                    workspace_id: CLOUD_WORKSPACE_ID.into(),
+                    session_id: summary.id.clone(),
+                    parent_session_id: None,
+                    title: summary.title.clone(),
+                    agent_type: "superagent".into(),
+                    status: if blocked {
+                        FleetSessionStatus::Waiting
+                    } else {
+                        match summary.status.as_str() {
+                            "running" | "parked" => FleetSessionStatus::Running,
+                            "failed" => FleetSessionStatus::Error,
+                            _ => FleetSessionStatus::Idle,
+                        }
+                    },
+                    unread,
+                    needs_attention: blocked,
+                    last_activity_ms: summary.updated_ms,
+                    origin: None,
+                }
+            })
+            .collect();
+        // No prompts here: the job's own device publishes each dispatch
+        // prompt (`answerRoute: dispatch`, `jobId`) in its partition, and the
+        // index pins a partition's prompts to its owner, so a copy here would
+        // show twice and route answers to this node. Cards carry
+        // `pendingPrompt` for jobs whose device is not indexed yet.
+        let prompts: Vec<openbitfun_product_domains::fleet::FleetPrompt> = Vec::new();
+        let digest = FleetDigest {
+            device_id: device_id.clone(),
+            instance_id: slot.instance_id.clone(),
+            revision,
+            full: true,
+            workspaces: vec![FleetWorkspace {
+                device_id,
+                workspace_id: CLOUD_WORKSPACE_ID.into(),
+                name: CLOUD_DEVICE_DISPLAY_NAME.into(),
+                root_path: String::new(),
+                kind: FleetWorkspaceKind::Assistant,
+                ssh_host: None,
+                link_state: None,
+                is_host_current: true,
+                sessions: Vec::new(),
+                session_total: state.summaries.len() as u32,
+                has_more: state.summaries.len() > MAX_SESSIONS_PER_DEVICE,
+            }],
+            sessions_truncated: state.summaries.len() > MAX_SESSIONS_PER_DEVICE,
+            sessions,
+            prompts,
+            removed: Default::default(),
+        };
+        serde_json::to_value(digest).map_err(|e| e.to_string())
+    }
+
+    async fn delete_data(&self, slot: Arc<Slot>, cancel_jobs: bool) -> Result<Value, String> {
+        let account_id = slot.account_id.clone();
+        let (live, meta) = {
+            let state = slot.state.lock().await;
+            let live: Vec<String> = state
+                .ledger
+                .live_jobs()
+                .map(|job| job.job_id.clone())
+                .collect();
+            (live, state.meta.clone())
+        };
+        let mut cancelled = 0usize;
+        if cancel_jobs {
+            for job_id in &live {
+                let result = self.engine.job_cancel(&slot, job_id).await;
+                if result.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                    cancelled += 1;
+                }
+            }
+        }
+        match self.directory.unregister(&account_id, &meta.device_id, meta.directory_token.as_deref()).await {
+            Ok(()) | Err(DirectoryError::NotFound) => {}
+            Err(error) => return Err(format!("directory_unavailable: the agent's device row could not be removed ({error}); nothing was deleted")),
+        }
+        slot.events
+            .publish(SUPERAGENT_CARD_CHANGED_EVENT, json!({ "deleted": true }));
+        drop(slot);
+        self.engine.slots.forget(&account_id);
+        self.engine.forget_account(&account_id);
+        let shredded = self
+            .engine
+            .slots
+            .store()
+            .shred(&account_id)
+            .map_err(|e| e.to_string())?;
+        log::info!(
+            "Superagent data deleted: jobs_cancelled={}, live_jobs={}",
+            cancelled,
+            live.len()
+        );
+        Ok(
+            json!({ "deleted": shredded, "jobsCancelled": cancelled, "jobsLeftRunning": live.len() - cancelled }),
+        )
+    }
+}
+
+/// `fleet_replay`: events of this slot load after `afterSeq`. Another
+/// instance (the slot reloaded) or a cursor older than the ring answers
+/// `historyGone`.
+fn replay(slot: &Slot, request: &openbitfun_product_domains::fleet::FleetReplayRequest) -> Value {
+    use openbitfun_product_domains::fleet::{FleetReplayEvent, FleetReplayResponse};
+    let gone = |instance: &str| FleetReplayResponse {
+        instance_id: instance.to_string(),
+        events: Vec::new(),
+        history_gone: true,
+    };
+    if request.instance_id != slot.instance_id {
+        return serde_json::to_value(gone(&slot.instance_id)).unwrap_or(Value::Null);
+    }
+    let max = (request.max.max(1) as usize).min(4096);
+    let batch = slot.events.events_after(request.after_seq, max);
+    let gap = batch
+        .events
+        .first()
+        .is_some_and(|first| first.seq > request.after_seq + 1);
+    if gap {
+        return serde_json::to_value(gone(&slot.instance_id)).unwrap_or(Value::Null);
+    }
+    serde_json::to_value(FleetReplayResponse {
+        instance_id: slot.instance_id.clone(),
+        events: batch
+            .events
+            .iter()
+            .map(|event| FleetReplayEvent {
+                seq: event.seq,
+                event: event.event.clone(),
+                payload: event.payload.clone(),
+            })
+            .collect(),
+        history_gone: false,
+    })
+    .unwrap_or(Value::Null)
+}
+
+/// What a frontend draws: user, assistant and card messages; a dispatch
+/// becomes a `jobs` message with its job ids (where the cards render); other
+/// tool messages are not drawn. Assistant messages cite the jobs they name.
+fn project_messages(messages: Vec<Message>, jobs: &[(String, String)]) -> Vec<Value> {
+    messages
+        .into_iter()
+        .filter_map(|message| match message.role {
+            Role::Tool => {
+                let result: Value = serde_json::from_str(&message.text).unwrap_or(Value::Null);
+                let job_ids: Vec<String> = result
+                    .get("jobId")
+                    .and_then(Value::as_str)
+                    .filter(|_| message.tool_name.as_deref() == Some("fleet_dispatch"))
+                    .map(|id| vec![id.to_string()])
+                    .unwrap_or_default();
+                (!job_ids.is_empty()).then(|| {
+                    json!({
+                        "id": message.id,
+                        "role": "jobs",
+                        "jobIds": job_ids,
+                        "turnId": message.turn_id,
+                        "atMs": message.at_ms,
+                    })
+                })
+            }
+            Role::Assistant => {
+                let mut value = serde_json::to_value(&message).unwrap_or(Value::Null);
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("toolCalls");
+                }
+                if message.text.trim().is_empty() {
+                    return None;
+                }
+                let citations: Vec<Value> = jobs
+                    .iter()
+                    .filter(|(job_id, _)| message.text.contains(job_id.as_str()))
+                    .map(|(job_id, label)| json!({ "jobId": job_id, "label": label }))
+                    .collect();
+                if !citations.is_empty() {
+                    value["citations"] = Value::Array(citations);
+                }
+                Some(value)
+            }
+            Role::Unknown => None,
+            _ => serde_json::to_value(&message).ok(),
+        })
+        .collect()
+}
+
+fn decode_secret(value: &str) -> Result<[u8; 32], String> {
+    BASE64
+        .decode(value)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| "the stored node key is unreadable".to_string())
+}
+
+pub fn node_secret(meta: &AccountMeta) -> Result<[u8; 32], String> {
+    decode_secret(&meta.device_secret)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn day_bounds_follow_the_client_zone() {
+        // 2026-11-21 01:00 in Shanghai is 2026-11-20 17:00 UTC.
+        let now = 1_795_194_000_000u64; // 2026-11-20T17:00:00Z
+        let (zone, [today, yesterday, week]) = day_bounds(now, Some("Asia/Shanghai"));
+        assert_eq!(zone, "Asia/Shanghai");
+        assert_eq!(today, 1_795_190_400_000); // 2026-11-21T00:00+08:00
+        assert_eq!(today - yesterday, 24 * 3600 * 1000);
+        assert_eq!(today - week, 6 * 24 * 3600 * 1000);
+        let (zone, [utc_today, ..]) = day_bounds(now, None);
+        assert_eq!(zone, "UTC");
+        assert_eq!(utc_today, 1_795_132_800_000); // 2026-11-20T00:00Z
+        assert_eq!(day_bounds(now, Some("Not/AZone")).0, "UTC");
+        assert_eq!(composer_copy(Some("zh_CN")).0, "zh-CN");
+        assert_eq!(composer_copy(Some("zh-Hant")).0, "zh-TW");
+        assert_eq!(composer_copy(None).0, "en-US");
+        assert_eq!(composer_copy(Some("fr-FR")).0, "en-US");
+        assert_eq!(composer_copy(Some("zh-CN")).1.len(), 3);
+    }
+
+    #[test]
+    fn every_catalog_has_the_same_keys_and_no_empty_values() {
+        let keys = |text: &str| {
+            let map: std::collections::BTreeMap<String, String> =
+                serde_json::from_str(text).unwrap();
+            assert!(map.values().all(|v| !v.trim().is_empty()));
+            map.into_keys().collect::<Vec<_>>()
+        };
+        let reference = keys(CATALOGS[0].1);
+        for (id, text) in CATALOGS {
+            assert_eq!(keys(text), reference, "{id}");
+        }
+        // The contract lists this surface with these locales.
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/i18n/contract/locales.json"
+        ))
+        .unwrap();
+        let order: Vec<&str> = contract["surfaceOrders"]["superagent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(order, CATALOGS.map(|(id, _)| id).to_vec());
+        for locale in contract["locales"].as_array().unwrap() {
+            let id = locale["id"].as_str().unwrap();
+            for alias in locale["aliases"].as_array().unwrap() {
+                assert_eq!(resolve_locale(alias.as_str()), id, "{alias}");
+            }
+        }
+    }
+}

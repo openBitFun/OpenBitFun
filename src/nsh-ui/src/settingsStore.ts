@@ -84,6 +84,11 @@ export interface FieldSpec {
    * creates the path.
    */
   defaultValue?: string | number | boolean;
+  /**
+   * A typed settings command that writes this value instead of a leaf
+   * `set_config` (`{ [requestKey]: value }`, sent to the device in context).
+   */
+  mutation?: { command: string; requestKey: string };
 }
 
 /** The settings pages, mirroring the desktop's settings registry. */
@@ -91,6 +96,13 @@ export type SettingsPageId =
   | "general"
   | "appearance"
   | "input"
+  | "shortcuts"
+  | "pet"
+  | "profile"
+  | "devices"
+  | "openbitfun"
+  | "activity"
+  | "archived"
   | "models"
   | "session-memory"
   | "execution"
@@ -140,9 +152,43 @@ export const APP_LANGUAGE_FIELD: FieldSpec = {
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
+    // This device's switches for the OpenBitFun cloud agent (config path
+    // `superagent`); both are on unless they are exactly `false`.
+    id: "superagent-device",
+    title: "OpenBitFun",
+    titleKey: "obf.toggle",
+    page: "permissions",
+    fields: [
+      {
+        id: "superagent-allow-auto-approval",
+        label: "Let OpenBitFun answer for me",
+        labelKey: "perm.agentAnswers",
+        descriptionKey: "perm.agentAnswersBody",
+        path: "superagent.allowAutoApproval",
+        kind: "boolean",
+        mutation: { command: "set_superagent_settings", requestKey: "allowAutoApproval" },
+        optional: true,
+        defaultValue: true,
+        keywords: ["openbitfun", "approve", "superagent"],
+      },
+      {
+        id: "superagent-accept-dispatch",
+        label: "Accept jobs from OpenBitFun",
+        labelKey: "perm.acceptJobs",
+        descriptionKey: "perm.acceptJobsBody",
+        path: "superagent.acceptDispatch",
+        kind: "boolean",
+        mutation: { command: "set_superagent_settings", requestKey: "acceptDispatch" },
+        optional: true,
+        defaultValue: true,
+        keywords: ["openbitfun", "jobs", "superagent"],
+      },
+    ],
+  },
+  {
     id: "general",
-    title: "Application",
-    titleKey: "settings.section.general",
+    title: "Startup",
+    titleKey: "settings.section.startup",
     page: "general",
     fields: [
       {
@@ -1251,7 +1297,12 @@ export async function writeField(spec: FieldSpec, value: unknown): Promise<boole
   try {
     await runStep(async () => {
       try {
-        await setConfig(path, value);
+        if (spec.mutation) {
+          // The device applies its own rule and stores the section; the row shows what was asked.
+          await invokeSettingsMutation(spec.mutation.command, { [spec.mutation.requestKey]: value });
+        } else {
+          await setConfig(path, value);
+        }
         settingsValues.update(values => ({ ...values, [path]: value }));
         noticeFor(spec, tr("settings.notice.savedField", { label: fieldLabel(spec) }));
         ok = true;

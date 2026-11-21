@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>OpenBitFun</title>
+<!-- nginx answers every /b/... request that reached the network (a hard
+     reload, or no UI loader yet) with this page: it installs the loader and
+     reloads once, so the loader serves the device's verified UI. -->
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+  #status { max-width: 28rem; padding: 1rem; text-align: center; }
+</style>
+</head>
+<body>
+<div id="status" role="status" aria-live="polite">Opening your device's interface…</div>
+<script src="/ui-loader.js"></script>
+</body>
+</html>

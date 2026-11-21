@@ -113,10 +113,22 @@ export function readDevices(value: unknown): ControllerDevice[] {
   return out;
 }
 
-async function connect(deviceId: string): Promise<ControllerConnection> {
+/** The module's entry ranking, present on modules with the fleet layer. */
+interface NativeEntryRanking {
+  entryCandidates(): Promise<string>;
+}
+
+/** The module answers the ranked device ids, best first. */
+export function readEntryCandidates(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : Array.isArray(record(value).entryCandidates) ? (record(value).entryCandidates as unknown[]) : [];
+  return list.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+async function connect(deviceId: string, options?: { fleet?: unknown }): Promise<ControllerConnection> {
   let handle: number;
   try {
-    handle = await Controller.connect(deviceId);
+    // The fleet entry walker passes its vector cursor; the module sends it in the hello.
+    handle = await Controller.connect(deviceId, options?.fleet ? JSON.stringify({ fleet: options.fleet }) : null);
   } catch (reason) {
     throw nativePortError(reason);
   }
@@ -170,6 +182,11 @@ export const nativeController: ControllerPort = {
   },
   listDevices: () => portCall(() => Controller.listDevices(), readDevices),
   connect,
+  // The module ranks the account's runtime hosts (`rank_entry_candidates`); an
+  // older module has no ranking and the app connects to one device as before.
+  ...(typeof (Controller as { entryCandidates?: unknown }).entryCandidates === "function"
+    ? { entryCandidates: () => portCall(() => (Controller as unknown as NativeEntryRanking).entryCandidates(), readEntryCandidates) }
+    : {}),
 };
 
 installControllerPort(nativeController);

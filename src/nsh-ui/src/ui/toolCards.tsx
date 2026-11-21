@@ -7,8 +7,8 @@
  * card shows. Every expanded card ends with the tool's result (or its error), so
  * nothing the host sent back is hidden.
  *
- * Edits, writes, commands and subagent tasks are bordered cards because they are
- * what a reader checks; reads, searches and the rest are quiet ambient rows.
+ * Every call is one quiet 28 row (visual spec §3 Tool): icon 14, verb 13/500,
+ * target mono 12, duration on the right; it expands into a mono well.
  */
 
 import { Clipboard, computed, Image, openUrl, Scroll, signal, Text, View } from "nsh";
@@ -27,8 +27,9 @@ import {
   type ToolCallView,
 } from "../format";
 import { tr, type MessageKey } from "../i18n";
-import { openInAuxPane, selectSession } from "../state";
-import { fontMono, palette, radii, textLineHeight, textSize } from "../theme";
+import { addReviewNote, editingReviewNote, removeReviewNote, reviewNotesFor, updateReviewNote, type ReviewNote } from "../reviewStore";
+import { activeSessionKey, openInAuxPane, selectSession } from "../state";
+import { fontMono, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { Icon, type IconName } from "./icons";
 import { createDiffViewStyles, inferCodeLanguage } from "./markdown";
 import {
@@ -39,7 +40,7 @@ import {
   pressTransition,
   tactileActiveStyle,
 } from "./motion";
-import { StatusDot } from "./primitives";
+import { IconButton, InputBox, StatusDot } from "./primitives";
 
 export type ToolRunState = "completed" | "running" | "failed" | "cancelled" | "confirmation";
 
@@ -124,14 +125,6 @@ export function toolKindOf(call: ToolCallView): ToolKind {
   if (diffOf(call.input) !== null) return "edit";
   if (commandOf(call.input)) return "exec";
   return "generic";
-}
-
-/** Kinds drawn as a card: what a reader checks. A command is a card only once it has output. */
-const BORDERED_KINDS = new Set<ToolKind>(["write", "edit"]);
-
-function isBorderedCall(call: ToolCallView, kind: ToolKind): boolean {
-  if (BORDERED_KINDS.has(kind)) return true;
-  return kind === "exec" && Boolean(call.error || resultTextOf(call));
 }
 
 const VERB_KEYS: Record<Exclude<ToolKind, "mcp" | "generic">, { done: MessageKey; running: MessageKey }> = {
@@ -485,25 +478,25 @@ function MonoBlock(props: { copyKey: string; label: string; text: string; danger
       </SectionLabel>
       <View
         style={{
-          borderRadius: radii.sm,
+          borderRadius: radii.md,
           borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: props.danger ? palette().dangerBorder : palette().borderSubtle,
-          backgroundColor: props.danger ? palette().dangerSoft : palette().canvasSubtle,
+          borderLeftWidth: props.danger ? 2 : 0,
+          borderColor: palette().danger,
+          backgroundColor: palette().surfaceTertiary,
           overflow: "hidden",
         }}
       >
         <Scroll
-          style={{ maxHeight: props.maxHeight ?? 240, minHeight: 0 }}
+          style={{ maxHeight: Math.min(props.maxHeight ?? 240, 240), minHeight: 0 }}
           scrollbar={true}
-          contentStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}
+          contentStyle={{ paddingHorizontal: space.md, paddingVertical: space.sm }}
         >
           <Text
             style={{
               color: props.danger ? palette().danger : palette().textSecondary,
               fontFamily: fontMono,
               fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.55),
+              lineHeight: textLineHeight(12, 18 / 12),
               userSelect: "text",
             }}
           >
@@ -598,6 +591,56 @@ function ChecklistBody(props: { call: ToolCallView }) {
   );
 }
 
+/** One review note under a diff line: a field while written, then its text (spec §4.5). */
+function ReviewNoteView(props: { note: ReviewNote }) {
+  return (
+    <View
+      testID={`review-note-${props.note.id}`}
+      style={{
+        marginVertical: space.xs,
+        marginHorizontal: space.sm,
+        padding: space.sm,
+        gap: space.xs,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().canvas,
+      }}
+    >
+      <If
+        when={editingReviewNote() === props.note.id}
+        else={
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
+            <Text
+              role="button"
+              accessibilityLabel={`edit-review-note-${props.note.id}`}
+              onPress={() => editingReviewNote.set(props.note.id)}
+              style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 18 / 13), cursor: "text" }}
+            >
+              {props.note.text || tr("reviewNotes.add")}
+            </Text>
+            <IconButton icon="close" size="xs" accessibilityLabel={`remove-review-note-${props.note.id}`} onPress={() => removeReviewNote(props.note.id)} />
+          </View>
+        }
+      >
+        <InputBox
+          value={props.note.text}
+          placeholder={tr("reviewNotes.add")}
+          size="sm"
+          autoFocus={true}
+          accessibilityLabel={`review-note-input-${props.note.id}`}
+          onChange={value => updateReviewNote(props.note.id, value)}
+          onSubmit={() => {
+            if (!props.note.text.trim()) removeReviewNote(props.note.id);
+            else editingReviewNote.set(null);
+          }}
+        />
+      </If>
+    </View>
+  );
+}
+
 function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
   const filePath = computed(() => pathOf(props.call.input));
   const change = computed(() => {
@@ -607,17 +650,18 @@ function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
     }
     return diffOf(props.call.input);
   });
+  const notes = computed(() =>
+    reviewNotesFor(activeSessionKey()).filter(note => note.path === (filePath() ?? "")),
+  );
   return (
     <If when={change()}>
       {value => (
         <View
           style={{
-            borderRadius: radii.sm,
+            borderRadius: radii.md,
             borderCurve: "continuous",
             overflow: "hidden",
-            borderWidth: 1,
-            borderColor: palette().borderSubtle,
-            backgroundColor: palette().canvasSubtle,
+            backgroundColor: palette().surfaceTertiary,
           }}
         >
           <View style={{ height: 240 }}>
@@ -632,8 +676,42 @@ function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
               lineNumbers={true}
               fontFamily={fontMono}
               fontSize={textSize(12)}
-              lineHeight={textLineHeight(12, 1.55)}
+              lineHeight={textLineHeight(12, 18 / 12)}
               styles={createDiffViewStyles()}
+              annotations={notes().map(note => ({ id: note.id, side: note.side, line: note.end }))}
+              renderAnnotation={annotation => {
+                const note = notes().find(item => item.id === annotation.id);
+                return note ? <ReviewNoteView note={note} /> : <View />;
+              }}
+              renderAddAnnotation={range => (
+                <View
+                  role="button"
+                  accessibilityLabel={tr("reviewNotes.add")}
+                  tooltip={tr("reviewNotes.add")}
+                  onPress={() => {
+                    const key = activeSessionKey();
+                    if (!key) return;
+                    addReviewNote({
+                      sessionKey: key,
+                      path: filePath() ?? "",
+                      side: range.side === "old" ? "old" : "new",
+                      start: range.start,
+                      end: range.end,
+                    });
+                  }}
+                  style={{
+                    width: 16,
+                    height: 16,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: radii.xs,
+                    backgroundColor: palette().accentSoft,
+                    cursor: "pointer",
+                  }}
+                >
+                  <Icon name="message-circle" size={12} color={palette().accent} />
+                </View>
+              )}
               style={{ flex: 1 }}
             />
           </View>
@@ -1106,7 +1184,6 @@ function stateLabel(state: ToolRunState, call: ToolCallView): string {
 export function ToolCard(props: { call: ToolCallView; cardId: string; status?: ToolRunState }) {
   const kind = computed(() => toolKindOf(props.call));
   const state = computed<ToolRunState>(() => props.status ?? "completed");
-  const bordered = computed(() => isBorderedCall(props.call, kind()));
   const expandable = computed(() => hasBody(props.call, kind()));
   const expanded = computed(() => isCardExpanded(props.cardId));
   const filePath = computed(() =>
@@ -1144,37 +1221,22 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
     state() === "failed" ? palette().danger : muted() ? palette().textMuted : palette().text,
   );
 
+  // Visual spec §3 Tool: every call is one quiet 28 row; nothing is boxed.
   const rowStyle = (): ViewStyle => ({
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    minHeight: bordered() ? 40 : 28,
-    paddingHorizontal: bordered() ? 12 : 6,
-    paddingVertical: bordered() ? 6 : 3,
-    borderRadius: bordered() ? radii.lg : radii.sm,
+    gap: space.sm,
+    minHeight: 28,
+    paddingHorizontal: space.chip,
+    paddingVertical: 0,
+    borderRadius: radii.md,
     borderCurve: "continuous",
     cursor: expandable() ? "pointer" : "default",
     ...paintTransition(MOTION_DURATION.fast),
   });
 
   return (
-    <View
-      style={{
-        borderRadius: radii.lg,
-        borderCurve: "continuous",
-        borderWidth: bordered() ? 1 : 0,
-        borderColor:
-          state() === "failed"
-            ? palette().dangerBorder
-            : state() === "confirmation"
-              ? palette().warningBorder
-              : palette().border,
-        backgroundColor: bordered() ? palette().panelRaised : "transparent",
-        overflow: "hidden",
-        ...paintTransition(MOTION_DURATION.fast),
-      }}
-      hoverStyle={bordered() ? { borderColor: palette().borderStrong } : undefined}
-    >
+    <View style={{ borderRadius: radii.md, borderCurve: "continuous" }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <View
           role={expandable() ? "button" : undefined}
@@ -1184,27 +1246,15 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
             if (expandable()) toggleCard(props.cardId);
           }}
           style={{ flex: 1, minWidth: 0, ...rowStyle() }}
-          hoverStyle={expandable() && !bordered() ? { backgroundColor: palette().surfaceSubtle } : undefined}
+          hoverStyle={expandable() ? { backgroundColor: palette().surfaceSubtle } : undefined}
         >
           <If
             when={state() === "running"}
             else={
-              <Icon
-                name={ICON_BY_KIND[kind()]}
-                size={16}
-                color={
-                  state() === "failed"
-                    ? palette().danger
-                    : state() === "confirmation"
-                      ? palette().warning
-                      : muted()
-                        ? palette().textMuted
-                        : palette().textSecondary
-                }
-              />
+              <Icon name={ICON_BY_KIND[kind()]} size={14} color={palette().textMuted} />
             }
           >
-            <BrandSpinner size={14} color={palette().accent} variant="bars" />
+            <BrandSpinner size={12} color={palette().accent} variant="matrix" />
           </If>
           <Text
             style={{
@@ -1212,7 +1262,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
               maxWidth: "50%",
               color: titleColor(),
               fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.35),
+              lineHeight: textLineHeight(13, 18 / 13),
               fontWeight: "500",
               numberOfLines: 1,
               textOverflow: "ellipsis",
@@ -1225,9 +1275,9 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
               flex: 1,
               minWidth: 0,
               color: palette().textMuted,
-              fontSize: textSize(kind() === "exec" || kind() === "grep" || kind() === "glob" ? 12 : 13),
-              lineHeight: textLineHeight(13, 1.35),
-              fontFamily: kind() === "exec" || kind() === "grep" || kind() === "glob" ? fontMono : undefined,
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 16 / 12),
+              fontFamily: fontMono,
               textDecorationLine: muted() ? "line-through" : "none",
               numberOfLines: 1,
               textOverflow: filePath() ? "ellipsis-middle" : "ellipsis",
@@ -1241,8 +1291,8 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
                 style={{
                   flexShrink: 0,
                   color: palette().textMuted,
-                  fontSize: textSize(11),
-                  lineHeight: textLineHeight(11, 1.3),
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 16 / 12),
                   fontVariant: ["tabular-nums"],
                 }}
               >
@@ -1252,33 +1302,56 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
           </If>
           <If when={stats()}>
             {value => (
-              <View style={{ flexDirection: "row", gap: 4, flexShrink: 0 }}>
-                <Text style={{ color: palette().success, fontSize: textSize(11), lineHeight: textLineHeight(11, 1.3), fontFamily: fontMono }}>
-                  {`+${value().added}`}
-                </Text>
-                <Text style={{ color: palette().danger, fontSize: textSize(11), lineHeight: textLineHeight(11, 1.3), fontFamily: fontMono }}>
-                  {`−${value().removed}`}
-                </Text>
-              </View>
+              <Text
+                style={{
+                  flexShrink: 0,
+                  color: palette().textMuted,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 16 / 12),
+                  fontFamily: fontMono,
+                  fontVariant: ["tabular-nums"],
+                }}
+              >
+                {`+${value().added} −${value().removed}`}
+              </Text>
             )}
           </If>
           <If when={statusText()}>
             {text => (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+                <If when={statusColor() === palette().danger}>
+                  <Icon name="close" size={12} color={palette().danger} />
+                </If>
+                <Text
+                  style={{
+                    color: statusColor(),
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 16 / 12),
+                    fontVariant: ["tabular-nums"],
+                  }}
+                >
+                  {text()}
+                </Text>
+              </View>
+            )}
+          </If>
+          <If when={!statusText() && state() === "completed" ? formatDuration(props.call.durationMs) : ""}>
+            {duration => (
               <Text
                 style={{
                   flexShrink: 0,
-                  color: statusColor(),
+                  color: palette().textMuted,
                   fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.3),
+                  lineHeight: textLineHeight(12, 16 / 12),
                   fontVariant: ["tabular-nums"],
                 }}
               >
-                {text()}
+                {duration()}
               </Text>
             )}
           </If>
           <If when={expandable()}>
-            <Icon name={expanded() ? "chevron-down" : "chevron-right"} size={14} color={palette().textMuted} />
+            <Icon name={expanded() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
           </If>
         </View>
         <If when={filePath() ?? ""}>
@@ -1293,7 +1366,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
                 alignItems: "center",
                 flexShrink: 0,
                 gap: 4,
-                marginRight: bordered() ? 8 : 0,
+                marginRight: 0,
                 paddingHorizontal: 6,
                 paddingVertical: 3,
                 borderRadius: radii.xs,
@@ -1310,15 +1383,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
         </If>
       </View>
       <If when={expanded()}>
-        <View
-          style={{
-            paddingHorizontal: bordered() ? 12 : 6,
-            paddingTop: bordered() ? 4 : 6,
-            paddingBottom: bordered() ? 12 : 6,
-            borderTopWidth: bordered() ? 1 : 0,
-            borderColor: palette().borderSubtle,
-          }}
-        >
+        <View style={{ paddingLeft: space.xxl, paddingRight: space.chip, paddingTop: space.xs, paddingBottom: space.sm }}>
           <ToolBody call={props.call} cardId={props.cardId} kind={kind()} />
         </View>
       </If>

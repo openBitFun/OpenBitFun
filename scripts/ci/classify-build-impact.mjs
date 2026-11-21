@@ -84,13 +84,8 @@ const DESKTOP_PACKAGE_PREFIXES = [
 // as neutral below because it has no supported CI toolchain or producer here.
 const FRONTEND_ONLY_PREFIXES = [
   'design-system/',
-  'src/mobile-web/',
   'src/nsh-ui/',
 ];
-
-const FRONTEND_ONLY_INPUTS = new Set([
-  'scripts/mobile-web-build.cjs',
-]);
 
 function collectLocalModuleInputs(entryPaths) {
   const inputs = new Set();
@@ -307,8 +302,7 @@ function isDesktopPackageInput(file) {
 }
 
 function isFrontendOnlyInput(file) {
-  return FRONTEND_ONLY_INPUTS.has(file)
-    || FRONTEND_ONLY_PREFIXES.some((prefix) => file.startsWith(prefix));
+  return FRONTEND_ONLY_PREFIXES.some((prefix) => file.startsWith(prefix));
 }
 
 function isWindowsPackageInput(file) {

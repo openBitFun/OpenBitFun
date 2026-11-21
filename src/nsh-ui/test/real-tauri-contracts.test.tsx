@@ -8,7 +8,7 @@ import {
   turnParts,
 } from "../src/format";
 import { getAppearancePreset } from "../src/theme";
-import { createBackend, fakeTranscriptTurns } from "./support";
+import { createBackend, fakeTranscriptTurns, openSession, showAllSessions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -123,6 +123,7 @@ test("sending a message never flashes back to Welcome Studio and survives the co
   };
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "New session");
   await app.waitFor("How can I help today?");
 
   // Send message: start_dialog_turn resolves BEFORE first token arrives.
@@ -339,6 +340,7 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
   };
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Primary check");
   // Must resolve symbolic "primary" to "Claude Sonnet 4.5" instead of showing "Model: primary"!
   await app.waitFor("Model: Claude Sonnet 4.5");
 
@@ -365,8 +367,7 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
 test("real Rust snake_case ToolAwaitingUserInput renders live prompt and submits answers", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
   // Real Rust `BackendEvent::ToolAwaitingUserInput` has NO rename_all -> snake_case!
@@ -430,12 +431,12 @@ test("real Rust SessionMetadata (status: archived, lastActiveAt) drives archive 
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Live Rust session");
+  // All sessions lists the active row only; the archived one is in Settings › Archived sessions.
+  await showAllSessions(app, "Live Rust session");
   expect(app.texts()).not.toContain("Archived Rust session");
 
-  await app.press("drawer-more");
-  await app.waitFor("Archived 1");
-  await app.press("Archived 1");
+  await app.press("Settings");
+  await app.press("Archived sessions");
   await app.waitFor("Archived Rust session");
 });
 
@@ -581,6 +582,7 @@ test("markdown TextView repaints from Dark to Light + 16px after unmounting Sess
     colorScheme: "dark",
   });
 
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Rendered with a virtualized list.");
   const darkReplyStyle = app.spanStyle("Rendered with a virtualized list.");
   expect(darkReplyStyle.color).toBe(`${getAppearancePreset("openbitfun-dark").palette.text}ff`);
@@ -593,7 +595,8 @@ test("markdown TextView repaints from Dark to Light + 16px after unmounting Sess
   await app.waitFor("appearance-light");
   await app.press("appearance-light");
   await app.press("font-level-large");
-  await app.press("settings-nav-back");
+  // Back to the session the way the new shell reaches it (All sessions › Recent).
+  await openSession(app, "NSH skeleton");
 
   await app.waitFor("Rendered with a virtualized list.");
   const lightReplyStyle = app.spanStyle("Rendered with a virtualized list.");

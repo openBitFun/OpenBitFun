@@ -1,7 +1,21 @@
 import { expect, open, test } from "nsh/test";
-import { composePersonalOverview, createBackend, createDeviceBackend } from "./support";
+import { showDevices, composePersonalOverview, createBackend, createDeviceBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
+
+/** Settings › Account › Activity: the old Home heatmap, totals and insights (visual spec §4.9). */
+async function openActivity(app: Awaited<ReturnType<typeof open>>): Promise<void> {
+  await app.press("Settings");
+  await app.press("nav-settings-page-activity");
+  await app.waitFor("activity-insights");
+}
+
+/** Assistants is a Library tab (visual spec §4.8): open the Library, then the tab. */
+async function openAssistants(app: Awaited<ReturnType<typeof open>>): Promise<void> {
+  await app.waitFor("Library");
+  if (!app.shows("library-tab-assistants")) await app.press("Library");
+  await app.press("library-tab-assistants");
+}
 
 interface HandlerOverrideContext {
   baseInvoke: (data: unknown) => unknown;
@@ -57,195 +71,8 @@ function wrapBackend(
   return { backend: base, recorded };
 }
 
-test("home displays ecosystem counts, 5-metric bar, 6-month heatmap, spaces, ssh shortcuts, starters, and launches quick prompt", async () => {
-  const base = createBackend();
-  const dueSoonAt = Date.now() + 2 * 60 * 60 * 1000;
-  const { recorded } = wrapBackend(base, (action, payload, isRaw) => {
-    if (action === "account_status") {
-      expect(isRaw).toBe(true);
-      return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
-    }
-    if (action === "account_github_info") {
-      expect(isRaw).toBe(true);
-      return { ok: true, value: null, transport: "dev" };
-    }
-    if (action === "get_latest_insights") {
-      expect(isRaw).toBe(true);
-      return { ok: true, value: [], transport: "dev" };
-    }
-    if (action === "get_assistant_workspaces") {
-      expect(isRaw).toBe(true);
-      return {
-        ok: true,
-        value: [
-          { id: "asst-1", name: "Muse", rootPath: "/tmp/assistants/asst-1" },
-          { id: "asst-2", name: "Scout", rootPath: "/tmp/assistants/asst-2" },
-        ],
-        transport: "dev",
-      };
-    }
-    if (action === "list_subagents") {
-      expect(isRaw).toBe(false);
-      return {
-        ok: true,
-        value: [
-          { id: "researcher", name: "Researcher", subagentSource: "user" },
-        ],
-        transport: "dev",
-      };
-    }
-    if (action === "get_skill_configs") {
-      expect(isRaw).toBe(true);
-      expect(payload).toEqual({
-        forceRefresh: false,
-        includeDiagnostics: false,
-        workspaceId: null,
-        workspacePath: null,
-      });
-      return {
-        ok: true,
-        value: [
-          { key: "skill-a", name: "Skill A", enabled: true },
-          { key: "skill-b", name: "Skill B", enabled: true },
-          { key: "skill-c", name: "Skill C", enabled: false },
-        ],
-        transport: "dev",
-      };
-    }
-    if (action === "list_cron_jobs") {
-      expect(isRaw).toBe(false);
-      return {
-        ok: true,
-        value: [
-          {
-            id: "cron-due",
-            name: "Morning Digest",
-            enabled: true,
-            schedule: { kind: "every", everyMs: 3600_000 },
-            state: { nextRunAtMs: dueSoonAt, lastRunStatus: "ok" },
-          },
-          {
-            id: "cron-paused",
-            name: "Weekly Cleanup",
-            enabled: false,
-            schedule: { kind: "cron", expr: "0 2 * * 0" },
-            state: {},
-          },
-        ],
-        transport: "dev",
-      };
-    }
-    if (action === "list_miniapps") {
-      expect(isRaw).toBe(true);
-      return {
-        ok: true,
-        value: [{ id: "space-focus", name: "Focus Board", description: "Daily sprint tracker" }],
-        transport: "dev",
-      };
-    }
-    if (action === "miniapp_worker_list_running") {
-      expect(isRaw).toBe(true);
-      return { ok: true, value: ["space-focus"], transport: "dev" };
-    }
-    if (action === "ssh_list_saved_connections") {
-      expect(isRaw).toBe(true);
-      return {
-        ok: true,
-        value: [
-          {
-            id: "ssh-build",
-            name: "Build Linux",
-            host: "10.0.0.8",
-            port: 22,
-            username: "dev",
-            authType: { type: "Agent" },
-          },
-        ],
-        transport: "dev",
-      };
-    }
-    if (action === "ssh_list_config_hosts") {
-      return { ok: true, value: [], transport: "dev" };
-    }
-    if (action === "ssh_list_wsl_distributions") {
-      return { ok: true, value: { supported: false, distributions: [] }, transport: "dev" };
-    }
-    return undefined;
-  });
-
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
-
-  await app.press("Home");
-  await app.waitFor("Personal Agent Studio");
-  await app.waitFor("Morning Digest");
-  await app.waitFor("Build Linux");
-  await app.waitFor("Focus Board");
-
-  const texts = app.texts();
-  expect(texts).toContain("Personal Assistants");
-  expect(texts).toContain("Agent Team");
-  expect(texts).toContain("8");
-  expect(texts).toContain("Skills");
-  expect(texts).toContain("Routines");
-  expect(texts).toContain("Spaces");
-  expect(texts).toContain("2 enabled");
-  expect(texts).toContain("1 active schedules");
-  expect(texts).toContain("1 running");
-  expect(texts).toContain("Total Tokens");
-  expect(texts).toContain("Peak Daily Tokens");
-  expect(texts).toContain("Requests (30d)");
-  expect(texts).toContain("Longest Streak");
-  expect(texts).toContain("Current Streak");
-  expect(texts).toContain("6-Month Activity");
-  expect(texts).toContain("120K");
-  expect(texts).toContain("42");
-  expect(texts).toContain("run_command");
-
-  // One overview read: the host counts, filters and keys every section.
-  const overviewCall = recorded.find(c => c.action === "get_personal_overview");
-  expect(overviewCall).toBeDefined();
-  expect(overviewCall?.raw).toBe(false);
-  expect(typeof overviewCall?.payload.timeZone).toBe("string");
-  expect(overviewCall?.payload.activityMonths).toBe(6);
-  // The heatmap is the host's day-keyed grid, never trend buckets keyed here.
-  expect(
-    recorded.some(c => c.action === "get_token_usage_statistics" && c.payload.timeRange === "last30Days"),
-  ).toBe(false);
-
-  // Home Workspace & SSH shortcuts open the real Tauri workspace / SSH modals.
-  await app.press("home-new-workspace");
-  await app.waitFor("new-workspace-modal");
-  await app.press("modal-close");
-  await app.waitFor("new-workspace-modal", { state: "gone" });
-
-  await app.press("home-connect-ssh");
-  await app.waitFor("ssh-connection-modal");
-  await app.press("modal-close");
-  await app.waitFor("ssh-connection-modal", { state: "gone" });
-
-  // Starter SelectDropdown populates quick prompt input, then user edits and asks.
-  await app.press("home-starter-select");
-  await app.waitFor("home-starter-changes");
-  await app.press("home-starter-changes");
-  expect(app.value("home-quick-prompt")).toBe(
-    "Summarize the recent changes and open tasks in this workspace.",
-  );
-
-  await app.clear("home-quick-prompt");
-  await app.type("home-quick-prompt", "Summarize recent commits");
-  await app.press("home-quick-ask");
-  await app.waitUntil(() => recorded.some(c => c.action === "submit_user_message"));
-
-  const turnCall = recorded.find(c => c.action === "submit_user_message");
-  expect(turnCall?.payload).toMatchObject({
-    sessionId: "session-1",
-    text: "Summarize recent commits",
-    workspaceId: "workspace-1",
-  });
-});
-
-test("home github auth runs device flow in modal with openUrl, poll status, and sign out", async () => {
+// Sign-in lives on the sidebar account row now (Home is gone).
+test("account sign-in runs the host's browser flow in the dialog, polls its status, and signs out", async () => {
   const base = createBackend();
   let pollStep = 0;
   let signedIn = false;
@@ -320,32 +147,28 @@ test("home github auth runs device flow in modal with openUrl, poll status, and 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor("OpenBitFun");
 
-  await app.press("Home");
-  await app.waitFor("home-github-sign-in");
-  await app.press("home-github-sign-in");
+  await app.press("label:account-row");
+  await app.press("label:sidebar-account-sign-in");
+  await app.press("label:account-auth-continue");
 
-  // Opens GitHub Device Auth ModalDialog.
+  // The host's browser sign-in shows its code in the dialog and opens the page.
   await app.waitFor("WXYZ-5678");
   expect(app.openedUrls()).toContain("https://github.com/login/device");
 
-  // First poll stays pending inside modal.
+  // The first check stays pending; the second authorizes and the account row names the account.
   await app.press("home-github-poll");
-  await app.waitFor("Authorization is pending. Finish confirming in GitHub, then poll again.");
-
-  // Second poll authorizes, closes modal, and loads GitHub profile.
+  await app.waitUntil(() => recorded.filter(c => c.action === "account_github_poll").length >= 1);
   await app.press("home-github-poll");
-  await app.waitFor("Welcome back, octocat");
-  expect(app.texts()).toContain("@octocat");
+  await app.waitFor("text:octocat");
 
-  // Sign out lives in the quiet account menu and returns to unauthenticated state.
-  await app.press("home-account-menu");
-  await app.waitFor("home-github-sign-out");
-  await app.press("home-github-sign-out");
-  await app.waitFor("home-github-sign-in");
+  // Sign out lives in the account menu and returns to the signed-out row.
+  await app.press("label:account-row");
+  await app.press("label:account-menu-sign-out");
+  await app.waitFor("text:Sign in");
   expect(recorded.some(c => c.action === "account_logout" && c.raw)).toBe(true);
 });
 
-test("home insights studio lists reports, opens markdown reader modal, and generates 30-day insights", async () => {
+test("Account › Activity lists insights reports, opens the reader, and generates a 30-day report", async () => {
   const base = createBackend();
   let generationAttempt = 0;
 
@@ -434,69 +257,32 @@ test("home insights studio lists reports, opens markdown reader modal, and gener
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor("OpenBitFun");
 
-  await app.press("Home");
+  await openActivity(app);
   await app.waitFor("30-Day Insights");
 
   // Load existing report from list -> opens full Markdown ModalDialog reader.
-  await app.press("home-insight-report-0");
+  await app.press("activity-insight-report-0");
   await app.waitFor("At a Glance");
   const loadedText = app.texts().join("\n");
   expect(loadedText).toContain("Fast iteration across NSH scenes.");
   expect(loadedText).toContain("Unified Tokens");
 
-  // Close Markdown modal before triggering generation on the Home surface.
+  // Close the reader before generating from the Activity page.
   await app.press("modal-close");
   await app.waitFor("At a Glance", { state: "gone" });
 
   // Failed generation surfaces error loudly without losing report list.
-  await app.press("home-generate-insights");
+  await app.press("activity-generate-insights");
   await app.waitFor("No chat model configured for insights");
+  expect(app.shows("activity-insight-report-0")).toBe(true);
 
   // Generate again and verify fresh Markdown opens cleanly in reader modal.
-  await app.press("home-generate-insights");
+  await app.press("activity-generate-insights");
   await app.waitFor("Fresh 30-Day Synthesis");
   const allText = app.texts().join("\n");
   expect(allText).toContain("Velocity improved across");
   expect(allText).not.toContain("# Fresh 30-Day Synthesis");
   expect(recorded.filter(c => c.action === "generate_insights")).toHaveLength(2);
-});
-
-test("home degrades gracefully when one ecosystem pulse command fails", async () => {
-  const base = createBackend({ usage: null });
-  wrapBackend(base, action => {
-    if (action === "account_status") {
-      return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
-    }
-    if (action === "account_github_info") {
-      return { ok: true, value: null, transport: "dev" };
-    }
-    if (action === "get_latest_insights") {
-      return { ok: true, value: [], transport: "dev" };
-    }
-    if (action === "get_assistant_workspaces") {
-      return { ok: true, value: [{ id: "a1", name: "Muse", rootPath: "/tmp/a1" }], transport: "dev" };
-    }
-    if (action === "get_skill_configs") {
-      return { ok: false, error: "Command not found: get_skill_configs" };
-    }
-    if (action === "list_cron_jobs") {
-      return { ok: true, value: [], transport: "dev" };
-    }
-    return undefined;
-  });
-
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
-
-  await app.press("Home");
-  await app.waitFor("Personal Agent Studio");
-  await app.waitFor("This host does not support usage statistics.");
-
-  const texts = app.texts();
-  expect(texts).toContain("Unavailable");
-  // Agent Team & Assistants still show real counts despite Skills, Spaces & Usage failing.
-  expect(texts).toContain("1");
-  expect(texts).toContain("7");
 });
 
 test("assistants scene supports modal creation, dropdown CRUD, persona studio edit/preview/save/reset, and quick chat", async () => {
@@ -586,7 +372,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.waitFor("OpenBitFun");
 
   // The list sits beside the selected assistant's persona studio.
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
   expect(app.texts()).toContain("Calm & precise");
   await app.press("assistant-card-asst-1");
@@ -641,7 +427,8 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.waitFor("Persona files reset to defaults.");
   expect(app.value("persona-editor-input")).toBe("# User Profile\n\nRestored user.");
 
-  // A new assistant is created and its studio opens.
+  // A new assistant is created from the list's primary button and its studio opens.
+  await app.press("assistants-back");
   await app.press("assistants-new");
   await app.waitFor("assistants-create-confirm");
   await app.press("assistants-create-confirm");
@@ -658,6 +445,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   await app.keyboard.press("escape");
   await app.waitFor("assistant-delete-asst-2", { state: "gone" });
 
+  await app.press("assistants-back");
   await app.press("assistant-card-asst-1");
   await app.waitFor("assistant-actions-asst-1");
 
@@ -699,134 +487,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   });
 });
 
-test("home and assistants handle peer device mode boundaries and degrade loudly when peer lacks commands", async () => {
-  const base = createDeviceBackend({
-    devices: [
-      { deviceId: "device-mac", deviceName: "studio", platform: "macos", alias: "Studio" },
-      { deviceId: "device-linux", deviceName: "builder", platform: "linux" },
-    ],
-    onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-  });
-
-  const { recorded } = wrapBackend(base, (action, payload, _isRaw, ctx) => {
-    if (action === "account_status") {
-      return { ok: true, value: { logged_in: true, user_id: "local-user" }, transport: "dev" };
-    }
-    if (action === "account_github_info") {
-      return {
-        ok: true,
-        value: { user: { githubId: 7, login: "local-dev", avatarUrl: "" }, isAdmin: false },
-        transport: "dev",
-      };
-    }
-    if (action === "get_latest_insights") {
-      return { ok: true, value: [], transport: "dev" };
-    }
-    if (action === "account_device_rpc") {
-      const env = JSON.parse(String(payload.commandJson ?? payload.command_json ?? "{}")) as {
-        cmd?: string;
-        command?: string;
-        args?: Record<string, unknown>;
-      };
-      if (env.command === "get_personal_overview") {
-        // The peer composes its own overview; two owners refuse on that host.
-        return {
-          ok: true,
-          value: JSON.stringify({
-            resp: "host_invoke_result",
-            ok: true,
-            value: {
-              assistants: { status: "failed", error: "device-linux does not implement get_assistant_workspaces" },
-              skills: { status: "failed", error: "device-linux does not implement get_skill_configs" },
-              routines: { status: "ready", value: { count: 1, enabled: 1, dueSoon: [] } },
-              spaces: { status: "unsupported", error: "Spaces is not available on this host" },
-              ssh: { status: "ready", value: { connections: [] } },
-              usage: { status: "failed", error: "token_usage_statistics_unsupported" },
-              activity: { status: "failed", error: "token_usage_statistics_unsupported" },
-            },
-          }),
-          transport: "dev",
-        };
-      }
-      if (env.command === "list_cron_jobs") {
-        return {
-          ok: true,
-          value: JSON.stringify({
-            resp: "host_invoke_result",
-            ok: true,
-            value: [
-              {
-                id: "peer-cron-1",
-                name: "Peer Sync",
-                enabled: true,
-                schedule: { kind: "every", everyMs: 60000 },
-                state: {},
-              },
-            ],
-          }),
-          transport: "dev",
-        };
-      }
-      if (env.command === "get_skill_configs") {
-        return {
-          ok: true,
-          value: JSON.stringify({
-            resp: "host_invoke_result",
-            ok: false,
-            error: "device-linux does not implement get_skill_configs",
-          }),
-          transport: "dev",
-        };
-      }
-      if (env.command === "get_assistant_workspaces") {
-        return {
-          ok: true,
-          value: JSON.stringify({
-            resp: "host_invoke_result",
-            ok: false,
-            error: "device-linux does not implement get_assistant_workspaces",
-          }),
-          transport: "dev",
-        };
-      }
-      return ctx.baseInvoke({ action, raw: payload });
-    }
-    return undefined;
-  });
-
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
-
-  // Enter Peer Device Mode targeting builder.
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("Use >> nth=0");
-  await app.waitFor("Driving builder (desktop): sessions, files, terminals and settings come from that device");
-
-  // Home keeps account & insights on controller while ecosystem reads from Peer.
-  await app.press("Home");
-  await app.waitFor("Welcome back, local-dev");
-  await app.waitFor(
-    "Personal account and local AI insights belong to this machine; ecosystem counts and sessions below read from builder.",
-  );
-
-  // Peer routed routines (1) and modes (2), while unsupported skills/assistants degrade cleanly.
-  expect(app.texts()).toContain("1 active schedules");
-  expect(app.texts()).toContain("Unavailable");
-  const peerActions = base.peerInvocations.map(item => item.action);
-  expect(peerActions).not.toContain("account_status");
-  expect(peerActions).not.toContain("account_github_info");
-  expect(peerActions).not.toContain("get_latest_insights");
-  expect(recorded.some(c => c.action === "account_github_info")).toBe(true);
-
-  // Assistants degrades loudly in Peer mode when peer refuses get_assistant_workspaces.
-  await app.press("Assistants");
-  await app.waitFor("Peer: builder");
-  await app.waitFor("Assistants unavailable");
-  expect(app.texts()).toContain("device-linux does not implement get_assistant_workspaces");
-});
-
-test("home and assistants repaint when switching between dark and light color schemes", async () => {
+test("assistants repaint when switching between dark and light color schemes", async () => {
   const base = createBackend();
   wrapBackend(base, action => {
     if (action === "account_status") {
@@ -874,14 +535,13 @@ test("home and assistants repaint when switching between dark and light color sc
   });
   await app.waitFor("OpenBitFun");
 
-  await app.press("Home");
-  await app.waitFor("Personal Agent Studio");
-  const darkHomeHeadingColor = app.spanStyle("Welcome back").color;
-
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
   const darkAssistantsRailColor = app.spanStyle("An assistant waiting to be defined").color;
-  const darkAssistantsHeadingColor = app.spanStyle("Muse >> nth=1").color;
+  // In the Library an open assistant replaces the list.
+  await app.press("assistant-card-asst-1");
+  await app.waitFor("assistants-back");
+  const darkAssistantsHeadingColor = app.spanStyle("Muse").color;
 
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
@@ -891,15 +551,13 @@ test("home and assistants repaint when switching between dark and light color sc
   await app.waitFor("Showing the light scheme");
 
   // Settings swaps the navigation panel for its own page list; its Back returns to the app's.
-  if (!app.shows("Home")) await app.press("Back");
-  await app.press("Home");
-  await app.waitFor("Personal Agent Studio");
-  expect(app.spanStyle("Welcome back").color).not.toBe(darkHomeHeadingColor);
-
-  await app.press("Assistants");
+  if (!app.shows("Library")) await app.press("Back");
+  await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
   expect(app.spanStyle("An assistant waiting to be defined").color).not.toBe(darkAssistantsRailColor);
-  expect(app.spanStyle("Muse >> nth=1").color).not.toBe(darkAssistantsHeadingColor);
+  await app.press("assistant-card-asst-1");
+  await app.waitFor("assistants-back");
+  expect(app.spanStyle("Muse").color).not.toBe(darkAssistantsHeadingColor);
 });
 
 test("creating a named assistant rewrites only the IDENTITY.md frontmatter name and keeps the seeded body", async () => {
@@ -953,7 +611,7 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.waitFor("assistants-new");
   await app.press("assistants-new");
   await app.waitFor("new-assistant-name-input");
@@ -973,7 +631,7 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
   expect(recorded.some(c => c.action === "write_file_content")).toBe(false);
 });
 
-test("home insights take the day range and model the desktop offers and reveal the HTML report", async () => {
+test("Account › Activity insights take the day range and model the desktop offers and reveal the HTML report", async () => {
   const base = createBackend();
   const { recorded } = wrapBackend(base, action => {
     if (action === "account_status") {
@@ -998,13 +656,13 @@ test("home insights take the day range and model the desktop offers and reveal t
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Home");
-  await app.waitFor("home-generate-insights");
-  await app.press("home-insights-days");
-  await app.press("home-insights-days-7");
-  await app.press("home-insights-model");
-  await app.press("home-insights-model-fast");
-  await app.press("home-generate-insights");
+  await openActivity(app);
+  await app.waitFor("activity-generate-insights");
+  await app.press("activity-insights-days");
+  await app.press("activity-insights-days-7");
+  await app.press("activity-insights-model");
+  await app.press("activity-insights-model-fast");
+  await app.press("activity-generate-insights");
   await app.waitFor("insights-show-html");
   expect(recorded.find(c => c.action === "generate_insights")?.payload).toEqual({
     days: 7,
@@ -1037,10 +695,12 @@ test("an assistant workspace opens and closes on the host from its studio header
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
-  await app.waitFor("assistant-open-asst-7");
+  await openAssistants(app);
+  await app.waitFor("assistant-card-asst-7");
   // The saved emoji is the avatar, as on the desktop.
   expect(app.texts()).toContain("🦉");
+  await app.press("assistant-card-asst-7");
+  await app.waitFor("assistant-open-asst-7");
   await app.press("assistant-open-asst-7");
   await app.waitUntil(() => recorded.some(c => c.action === "set_active_workspace"));
   expect(recorded.find(c => c.action === "set_active_workspace")?.payload).toMatchObject({ workspaceId: "asst-7" });
@@ -1050,7 +710,7 @@ test("an assistant workspace opens and closes on the host from its studio header
   expect(recorded.find(c => c.action === "close_workspace")?.payload).toMatchObject({ workspaceId: "asst-7" });
 });
 
-test("home and assistants switch to the compact single-column layout at phone width", async () => {
+test("assistants switch to the compact single-column layout at phone width", async () => {
   const base = createBackend();
   const { recorded } = wrapBackend(base, action => {
     if (action === "account_status") {
@@ -1077,26 +737,13 @@ test("home and assistants switch to the compact single-column layout at phone wi
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Home");
-  await app.waitFor("Personal Agent Studio");
-  const desktopTitle = Number(app.spanStyle("Welcome back").fontSize);
 
-  // Phone width: the shell's sidebar is put away and Home reads its own laid-out width.
+  // Phone width: the shell's sidebar is put away.
   await app.setViewport(390, 844);
-  // The shell folds its sidebar away at phone width (or overlays it); make sure Home is uncovered.
   if (app.shows("compact-drawer-scrim")) await app.press("compact-drawer-scrim");
-  await app.waitUntil(() => Number(app.spanStyle("Welcome back").fontSize) < desktopTitle);
-  await app.waitFor("Your studio");
-  // Studio rows stay reachable and navigate; the launchpad keeps its one primary action.
-  await app.type("home-quick-prompt", "Plan my day");
-  expect(app.enabled("home-quick-ask")).toBe(true);
-  await app.press("home-new-workspace");
-  await app.waitFor("new-workspace-modal");
-  await app.press("modal-close");
-  await app.waitFor("new-workspace-modal", { state: "gone" });
 
   // Assistants: the list is the landing; a row opens the persona studio with a back control.
-  await app.press("home-card-assistants");
+  await openAssistants(app);
   await app.waitFor("assistant-card-asst-2");
   expect(app.shows("persona-editor-input")).toBe(false);
   await app.press("assistant-card-asst-2");
@@ -1109,8 +756,8 @@ test("home and assistants switch to the compact single-column layout at phone wi
 
 // view models (wave 4)
 
-test("home asks for a host update when the host is older than the overview view model", async () => {
-  const base = createBackend({ personalOverview: false });
+test("Account › Activity asks for an update when the device is older than the activity view model", async () => {
+  const base = createBackend({ personalOverview: false, usageActivityCommand: false });
   const { recorded } = wrapBackend(base, action => {
     if (action === "account_status") {
       return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
@@ -1121,11 +768,13 @@ test("home asks for a host update when the host is older than the overview view 
     return undefined;
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.press("Home");
-  await app.waitFor("Personal Agent Studio");
-  await app.waitFor("Update OpenBitFun on this host to see its overview.");
-  // No client copy of the eight section reads runs against an older host.
-  for (const command of ["get_assistant_workspaces", "list_cron_jobs", "get_token_usage_statistics"]) {
+  await app.waitFor("OpenBitFun");
+  await openActivity(app);
+  await app.waitFor("Update OpenBitFun on this device to see its activity.");
+  expect(app.shows("settings-activity-heatmap")).toBe(false);
+  expect(recorded.some(call => call.action === "get_token_usage_activity")).toBe(true);
+  // No client copy of the host's activity runs against an older device.
+  for (const command of ["get_token_usage_statistics", "get_personal_overview"]) {
     expect(recorded.some(call => call.action === command)).toBe(false);
   }
 });
@@ -1139,6 +788,8 @@ test("the workspace navigator selection comes from the host projection", async (
     currentWorkspaceId: "workspace-3",
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  // The workspaces are listed under this device in All sessions › By device.
+  await showDevices(app);
   await app.waitFor("Docs");
   const reads = base.calls.filter(call => call.action === "get_workspace_navigator");
   expect(reads.length).toBeGreaterThan(0);

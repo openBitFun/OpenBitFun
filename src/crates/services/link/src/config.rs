@@ -268,7 +268,7 @@ mod tests {
                 version: 1,
                 network_name: "obf-ff0a7d2cfa2526e8cdf8e6a2".into(),
                 network_secret: "a\"b\\c-secret-0123456789".into(),
-                peers: vec!["wss://remote.openbitfun.com:443/mesh/et/".into()],
+                peers: vec!["wss://super.openbitfun.com:443/mesh/et/".into()],
                 easytier_version: None,
                 issued_at: None,
                 join_token: Some("obfjt1.x.y".into()),

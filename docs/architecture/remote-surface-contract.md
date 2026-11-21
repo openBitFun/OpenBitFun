@@ -32,7 +32,8 @@ contracts 层模块，不执行任何操作，也不依赖运行时 crate。
 
 ```text
                  Product Operation Registry
-                 OperationDefinition { id, surface, remote_workspace, peer, cli_peer }
+                 OperationDefinition { id, surface, remote_workspace, peer, cli_peer, cloud_peer }
+                 + FleetRouting side table (fleet_routing.rs)
                  + PeerHostCapability + advertised_by(host) + digest
                          |
         +----------------+--------------------+--------------------+
@@ -54,10 +55,11 @@ contracts 层模块，不执行任何操作，也不依赖运行时 crate。
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `surface` | `TauriCommand` / `HostInvokeOnly` | 是否为 Desktop 注册的 Tauri command；后者是 CLI peer host 为旧控制端保留的别名或 dispatch target verb |
+| `surface` | `TauriCommand` / `HostInvokeOnly` / `CloudNode` | 是否为 Desktop 注册的 Tauri command；`HostInvokeOnly` 是 CLI peer host 为旧控制端保留的别名或 dispatch target verb；`CloudNode`: a command only the account's cloud node serves (`superagent_*`, see §9) |
 | `remote_workspace` | `Routed` / `Unsupported` / `LocalOnly` / `Agnostic` / `Unaudited` | 活动工作区是远程 SSH/Docker 工作区时的行为。序列化名保持历史策略名（`RemoteRouted` 等） |
-| `peer` | `Proxied` / `ControllerLocal` / `OperatorOnly` / `HostControlPlane` / `Retired` | Peer Device Mode 立场 |
+| `peer` | `Proxied` / `ControllerLocal` / `OperatorOnly` / `HostControlPlane` / `FleetEntry` / `Retired` | Peer Device Mode 立场 |
 | `cli_peer` | `Handled` / `Unsupported{reason}` / `SoftEmpty{reason}` | CLI peer host 的支持情况；Desktop 支持由 `surface` 推导 |
+| `cloud_peer` | `Handled` / `Unsupported{reason}` | Support on the account's cloud node (`PeerHostKind::Cloud`). `Handled` only on `cloud_node(...)` rows; every other row is `CLOUD_NOT_SERVED`. Exported only where handled, so the artifact of every other row is unchanged |
 
 Peer 立场语义：
 
@@ -68,6 +70,7 @@ Peer 立场语义：
   （`git_trust_repository`：授信必须在拥有仓库的机器上决定，控制端展示 `manualCommand`）。
 - `HostControlPlane`：宿主在 deny 检查之前应答（`peer_control_attach/detach`、
   `peer_mode_ping`、`dispatch_target_*`）。
+- `FleetEntry`: a `fleet_*` verb answered by the fleet layer of the runtime host the client is connected through (the entry), for the `owner`, `account-device` and `cloud-agent` scopes; never forwarded to another device, refused for paired clients and over the relay HostInvoke bridge (cell `FLEET_LAYER_ONLY`).
 - `Retired`：运行时 owner 已移除后的协议墓碑；`lsp_` 前缀由 `RETIRED_COMMAND_PREFIXES` 覆盖。
 
 宿主裁决 `peer_host_verdict(command, host)` 的顺序固定为：空 → retired → control plane →
@@ -148,6 +151,50 @@ provider 不可用时返回类型化错误，绝不获取本地 provider。
 | 阶段 | 内容 | 入口 |
 |---|---|---|
 | P2 执行域类型化 | `ExecutionDomain` 作为唯一"是否远程"判定，替换 18 个 Rust 谓词与 5 个 TS 谓词；`WorkspacePath`（POSIX）newtype；`path_target.rs` / `terminal_api.rs` 表驱动；CLI ad-hoc 守卫改查表 | `assembly/core/src/agentic/workspace.rs`、`services-core/src/workspace_identity.rs`、`web-ui/src/shared/utils/remoteSessionScope.ts` |
-| P3 Remote Control 契约 | `RemoteCommand`/`RemoteResponse` schema 导出与 codegen，全变体 fixtures 由 mobile-web/HarmonyOS/Kotlin 测试消费；协议版本与能力字段；`InteractionKind` 注册表，远程客户端在握手声明可答种类；mobile-web `confirm_tool`/`reject_tool`；bot 对权限请求显式不支持而不是挂起 | `services-integrations/src/remote_connect.rs`、`src/shared/relay-protocol-contract-fixtures/` |
+| P3 Remote Control 契约 | `RemoteCommand`/`RemoteResponse` schema 导出与 codegen，全变体 fixtures 由 HarmonyOS/Kotlin 测试消费（mobile-web 已在 2.0 移除）；协议版本与能力字段；`InteractionKind` 注册表，远程客户端在握手声明可答种类；mobile-web `confirm_tool`/`reject_tool`；bot 对权限请求显式不支持而不是挂起 | `services-integrations/src/remote_connect.rs`、`src/shared/relay-protocol-contract-fixtures/` |
 | P4 投影合同推广 | Remote Connect poll 改为 `(streamId, cursor)` 位置化增量，复用 `SessionEventJournal`；bot 消费 journal 而非 broadcast | `docs/architecture/session-projection.md` |
 | P5 Dispatch | device dispatch 解绑 `ssh-remote` feature；capability 校验器下沉 | `assembly/core/src/service/dispatch/` |
+
+## 9. Fleet routing and the cloud node
+
+Through a fleet entry every product command travels as `fleet_call {target,
+command, args}` and runs on the device that owns it
+([unified-client-architecture.md](unified-client-architecture.md#fleet-every-runtime-of-the-account-in-one-surface)).
+The registry carries what the fleet needs:
+
+- **`PeerStance::FleetEntry` rows**: `fleet_call`, `fleet_navigator`,
+  `fleet_prompts`, `fleet_attention`, `fleet_attention_mark_read`,
+  `fleet_subscribe`, `fleet_events`, `fleet_ui_bundle`. The owner verbs
+  `fleet_digest` and `fleet_replay` are `HostInvokeOnly` + `OperatorOnly` rows
+  admitted on the mesh listener as same-account host verbs (`fleet_v1`). The
+  model relay `fleet_model_start` / `_poll` / `_cancel` are `HostInvokeOnly` +
+  `HostControlPlane` rows, admitted by the OBP scope for the `cloud-agent`
+  connection only.
+- **The fleet routing side table** (`remote_surface/fleet_routing.rs`, exported as
+  `fleetRouting` in the registry JSON): one row per registered backend command
+  and per cloud-node command, sorted by id. `ByOwner {entity: Session |
+  Workspace | Terminal, path}` names where the owner id sits in `args`; the entry
+  checks the target against the index and refuses a mismatch
+  (`fleet_owner_mismatch`) instead of rerouting. `ByTarget {reason?}` is a
+  device-scoped command that takes the UI's device context (`reason` explains a
+  row whose args carry an id that is not an owner key). `EntryLocal` covers the
+  `ControllerLocal` and `HostControlPlane` rows, which run on the client's own
+  backend. The `fleet_*` verbs have no row: wrapping one in `fleet_call` is
+  refused (`fleet_nested_call`).
+- **Gates.** `pnpm run desktop-nsh:check-dispatch` proves every `ByOwner` path
+  against the handler's parameters and rejects a forwarded command whose request
+  carries a session or workspace id without a `ByOwner` row (or a `ByTarget`
+  reason). `pnpm run capabilities:generate` writes `FLEET_ENTRY_COMMANDS` and
+  `FLEET_OWNER_KEYS` into `src/nsh-ui/src/generated/peerSurface.ts`, which
+  `bridge.ts` reads to address `fleet_call`.
+- **The cloud node surface.** `cloud_node(id)` rows (`OperationSurface::CloudNode`,
+  `Agnostic`, `Proxied`, CLI `Unsupported`, `cloud_peer: Handled`, fleet route
+  `ByTarget`) are the `superagent_*` commands: `superagent_status`, `_enable`,
+  `_disable`, `_list_conversations`, `_get_conversation`,
+  `_rename_conversation`, `_delete_conversation`, `_send`, `_cancel_turn`,
+  `_job_action`, `_delete_data`. A desktop or CLI host answers them
+  `unsupported_in_native_host: ... (CLOUD_NODE_ONLY_REASON)`, never forbidden,
+  so a frontend that addressed the wrong device learns where the command lives.
+  The device-side switches are an ordinary row (`set_superagent_settings`,
+  `Proxied`, CLI handled).
+

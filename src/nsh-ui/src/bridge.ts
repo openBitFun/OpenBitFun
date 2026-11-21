@@ -8,7 +8,7 @@
 // - the window shell (`installWindowShell`): by default the Tauri webview's;
 //   the native desktop installs the NSH desktop shell.
 
-import { computed, signal } from "nsh";
+import { computed, effect, signal, untracked } from "nsh";
 import {
   errorMessageOf,
   type BackendConnection,
@@ -16,17 +16,17 @@ import {
   type ConnectionState,
   type TransportKind,
 } from "./backendConnection";
-import { createHostPageConnection } from "./hostPageConnection";
 import {
-  DROP_EVENT,
-  decodePeerReply,
-  isOwnerOnlyEvent,
-  peerRouteFor,
-  scopeEventToSurface,
-  staysOnController,
-} from "./peerRouting";
-import { peerScope } from "./peerState";
-import { createTextChunkCoalescer, TEXT_CHUNK_EVENT } from "./textChunkCoalescer";
+  advanceFleetCursor,
+  EVENTS_DROPPED_EVENT as FLEET_EVENTS_DROPPED,
+  fleetCursorHasSeen,
+  type FleetCursor,
+  type FleetHelloAnswer,
+} from "./fleetTypes";
+import type { FleetOwnerEntity } from "./generated/peerSurface";
+import { createHostPageConnection } from "./hostPageConnection";
+import { fleetRouteFor } from "./peerRouting";
+import { createTextChunkCoalescer, TEXT_CHUNK_EVENT, type TextChunkCoalescer } from "./textChunkCoalescer";
 import {
   createHostPageShell,
   type ShellActions,
@@ -36,14 +36,40 @@ import {
 
 export type { TransportKind, ConnectionState } from "./backendConnection";
 export type { WindowChromeState, ShellActions } from "./windowShell";
-export { decodePeerReply, PEER_EVENT_SOURCE_KEY, PEER_EVENT_WRAPPED_PAYLOAD_KEY } from "./peerRouting";
 
 // ── Backend connection ───────────────────────────────────────────────────────
 
 const pageConnection = createHostPageConnection();
 const activeConnection = signal<BackendConnection>(pageConnection);
+// (The page host is never a fleet entry; `watchReadyFleet` runs for installed connections.)
 
-const eventListeners = new Map<string, Set<(payload: unknown) => void>>();
+/** What an event listener learns besides the payload. */
+export interface EventMeta {
+  /**
+   * The device the event comes from: the frame's origin on a fleet stream, the
+   * entry's own device id for its untagged events, and `""` on a connection
+   * without the fleet layer (one backend, one device).
+   */
+  origin: string;
+  /** The origin's backend instance, when the stream names it. */
+  originInstance: string | null;
+  /** The origin's own seq, when the stream numbers events. */
+  seq: number | null;
+}
+
+/** Options of one command call. */
+export interface InvokeCommandOptions {
+  /**
+   * The device that runs the command on a fleet connection. Omitted, the owner
+   * of the id the command acts on is used, else the device context. Ignored on
+   * a connection without the fleet layer.
+   */
+  target?: string | null;
+}
+
+type EventListener = (payload: unknown, meta: EventMeta) => void;
+
+const eventListeners = new Map<string, Set<EventListener>>();
 let channelOpen = false;
 let stopEvents: (() => void) | null = null;
 
@@ -63,6 +89,112 @@ export function backendConnection(): BackendConnection {
   return activeConnection();
 }
 
+// ── Fleet ────────────────────────────────────────────────────────────────────
+//
+// A backend whose handshake answered `fleet` is a fleet entry: every account
+// device is reached through it (`fleet_call`), and its stream tags events with
+// their origin device. A backend without it is an older host, and the UI keeps
+// today's single-device behavior.
+
+/** The `fleet` member of a connection's ready info (for wires without a live hello). */
+const readyFleet = signal<FleetHelloAnswer | null>(null);
+/** The entry device id other code learned (the navigator's own row, the entry candidate). */
+const entryDeviceHint = signal<string | null>(null);
+
+/** The fleet answer of the installed connection, or `null` (an older backend). */
+export const fleetHello = computed<FleetHelloAnswer | null>(() => {
+  const connection = activeConnection();
+  return connection.fleet?.() ?? readyFleet();
+});
+
+/** True while the installed connection is a fleet entry. */
+export const fleetActive = computed<boolean>(() => fleetHello() !== null);
+
+/** The entry's own device id: its hello's, else what the fleet index or the entry walker said. */
+export const entryDeviceId = computed<string | null>(() => fleetHello()?.deviceId ?? entryDeviceHint());
+
+/** Records the entry's device id when the handshake did not name it (fleet store, entry walker). */
+export function noteFleetEntryDevice(deviceId: string | null): void {
+  if (entryDeviceHint() !== deviceId) entryDeviceHint.set(deviceId);
+}
+
+let readDeviceContext: () => string | null = () => null;
+const ownerLookups: Partial<Record<FleetOwnerEntity, (id: string) => string | null>> = {};
+
+function resolveOwner(entity: FleetOwnerEntity, id: string): string | null {
+  return ownerLookups[entity]?.(id) ?? null;
+}
+
+/** The state module tells the bridge which device the UI is looking at (the default target). */
+export function setFleetDeviceContextReader(reader: () => string | null): void {
+  readDeviceContext = reader;
+}
+
+/**
+ * Tells the bridge which device owns an id of one entity kind (the fleet store
+ * for sessions and workspaces, the terminal store for terminals), so a command
+ * acting on it is addressed to that device.
+ */
+export function setFleetOwnerLookup(entity: FleetOwnerEntity, lookup: (id: string) => string | null): void {
+  ownerLookups[entity] = lookup;
+}
+
+/** The device a command runs on by default: the device context, else the entry. */
+export function fleetDeviceContext(): string | null {
+  return readDeviceContext() || entryDeviceId();
+}
+
+let readyFleetSettled = false;
+
+function watchReadyFleet(connection: BackendConnection): void {
+  readyFleet.set(null);
+  readyFleetSettled = false;
+  if (connection.fleet) return;
+  void connection.ready().then(
+    info => {
+      if (activeConnection() !== connection) return;
+      readyFleet.set(info.fleet ?? null);
+      readyFleetSettled = true;
+    },
+    () => {
+      if (activeConnection() === connection) readyFleetSettled = true;
+    },
+  );
+}
+
+const HANDSHAKE_WAIT_MS = 30_000;
+
+/**
+ * Whether the installed connection has yet to say if it is a fleet entry, so a
+ * command is addressed the right way from the first call. Only connections
+ * whose calls wait for their handshake anyway are waited for (a WebSocket or
+ * entry walker before its hello, the native host before its ready info); the
+ * page host and an idle controller connection answer at once, as before.
+ */
+export function fleetHandshakePending(): boolean {
+  const connection = activeConnection();
+  return connection.fleet
+    ? connection.fleet() === null && connection.state() === "connecting"
+    : connection.kind === "native" && !readyFleetSettled;
+}
+
+/** Resolves once `fleetHandshakePending()` is over (or after the handshake wait). */
+export async function settleFleetHandshake(): Promise<void> {
+  if (!fleetHandshakePending()) return;
+  const connection = activeConnection();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  await Promise.race([
+    connection.ready().then(
+      () => undefined,
+      () => undefined,
+    ),
+    new Promise<void>(resolve => {
+      timer = setTimeout(resolve, HANDSHAKE_WAIT_MS);
+    }),
+  ]);
+  if (timer !== null) clearTimeout(timer);
+}
+
 /**
  * Replaces the backend connection. Call it before the app mounts (the native
  * desktop entry does); an already open event channel moves to the new one.
@@ -72,95 +204,72 @@ export function installBackendConnection(connection: BackendConnection): void {
   if (previous === connection) return;
   stopEvents?.();
   stopEvents = null;
+  stopFleetEventPoll();
   for (const event of eventListeners.keys()) previous.unwatch?.(event);
   activeConnection.set(connection);
-  textChunks.clear();
+  entryDeviceHint.set(null);
+  watchReadyFleet(connection);
+  clearTextChunks();
   if (channelOpen) {
     stopEvents = connection.subscribe(deliverBatch);
     for (const event of eventListeners.keys()) connection.watch?.(event);
+    startFleetEventPollIfNeeded();
   }
   // Starting is the connection's; reading it here moves its state off `connecting`.
   void connection.ready().catch(() => undefined);
 }
 
-// ── Peer Device Mode over OBP (mesh) ─────────────────────────────────────────
-//
-// While a mesh peer is driven, its backend is a second connection: registry
-// `Proxied` commands and every non-owner event go there, `ControllerLocal`
-// commands and owner-only events stay on `activeConnection`.
-
-const peerConnection = signal<BackendConnection | null>(null);
-let stopPeerEvents: (() => void) | null = null;
-
-/** The connection to the driven mesh peer's backend, or `null`. */
-export function activePeerConnection(): BackendConnection | null {
-  return peerConnection();
-}
-
-/**
- * Makes `connection` the data backend for every `Proxied` command and event
- * (`null` returns this surface to this machine's backend). The caller sets the
- * peer scope in the same step.
- */
-export function installPeerConnection(connection: BackendConnection | null): void {
-  if (peerConnection() === connection) return;
-  stopPeerEvents?.();
-  stopPeerEvents = null;
-  peerTextChunks.clear();
-  peerConnection.set(connection);
-  if (connection && channelOpen) stopPeerEvents = connection.subscribe(deliverPeerBatch);
-}
-
-/** True while this surface's data backend is a mesh peer. */
-function drivingMeshPeer(): boolean {
-  return peerConnection() !== null && peerScope()?.transport === "mesh";
+async function invokeOn(
+  connection: BackendConnection,
+  command: string,
+  args: Record<string, unknown> | undefined,
+  positional: boolean,
+  failure: string,
+): Promise<unknown> {
+  try {
+    return await connection.invoke(command, args, { positional });
+  } catch (error) {
+    if (errorMessageOf(error)) throw error;
+    throw new Error(failure);
+  }
 }
 
 async function runCommand<T>(
   action: string,
   args: Record<string, unknown> | undefined,
   positional: boolean,
+  options: InvokeCommandOptions | undefined,
 ): Promise<T> {
-  const peer = peerConnection();
-  if (peer && peerScope()?.transport === "mesh" && !staysOnController(action)) {
-    try {
-      return (await peer.invoke(action, args, { positional })) as T;
-    } catch (error) {
-      if (errorMessageOf(error)) throw error;
-      throw new Error(`${action} failed on the peer`);
-    }
-  }
+  if (fleetHandshakePending()) await settleFleetHandshake();
   const connection = activeConnection();
-  // backend-owned: Peer Device Mode is a routing decision the UI still makes (`peerRouting.ts`).
-  const route = peerRouteFor(peerScope(), action, args, positional);
-  if (route) {
-    let raw: unknown;
-    try {
-      raw = await connection.invoke(route.command, route.args, { positional: true });
-    } catch (error) {
-      if (errorMessageOf(error)) throw error;
-      throw new Error(`${route.command} failed for ${action}`);
-    }
-    return decodePeerReply<T>(action, raw);
+  if (fleetActive()) {
+    const route = fleetRouteFor(action, args, {
+      target: options?.target ?? null,
+      ownerOf: resolveOwner,
+      deviceContext: fleetDeviceContext,
+    });
+    if (route) return (await invokeOn(connection, route.command, route.args, false, `${action} failed`)) as T;
+    return (await invokeOn(connection, action, args, positional, `${action} failed`)) as T;
   }
-  try {
-    return (await connection.invoke(action, args, { positional })) as T;
-  } catch (error) {
-    if (errorMessageOf(error)) throw error;
-    throw new Error(`${action} failed`);
-  }
+  return (await invokeOn(connection, action, args, positional, `${action} failed`)) as T;
 }
 
 /**
  * Runs one backend command. Every desktop command takes a single `request`
  * object, so callers pass the request body and never the transport envelope.
  *
- * While this surface drives a peer, the command goes to that device unless the
- * Product Operation Registry keeps it on the controller (account, relay, window
- * and updater work). Peer Device Mode never falls back to local product data.
+ * On a fleet connection the command is addressed to a device (`options.target`,
+ * else the owner of the id it acts on, else the device context) and sent as
+ * `fleet_call`; the entry's own fleet verbs and controller-local commands go
+ * plain. Without the fleet layer there is one backend and one device. The
+ * command never falls back to local product data.
  */
-export function invokeCommand<T>(action: string, request?: Record<string, unknown>): Promise<T> {
-  return runCommand<T>(action, request === undefined || request === null ? undefined : { request }, false);
+export function invokeCommand<T>(
+  action: string,
+  request?: Record<string, unknown>,
+  options?: InvokeCommandOptions,
+): Promise<T> {
+  return runCommand<T>(action, request === undefined || request === null ? undefined : { request }, false, options);
 }
 
 /**
@@ -170,87 +279,172 @@ export function invokeCommand<T>(action: string, request?: Record<string, unknow
  *
  * The positional commands that drive a session belong to whichever host runs the
  * turn — `submit_user_answers` must reach the tool future that is waiting, and an
- * MCP or ACP server is started where its files are. So this takes the same peer
- * route as `invokeCommand`, only with the arguments unwrapped: a peer host reads
- * `request` when it exists and the top-level object otherwise.
+ * MCP or ACP server is started where its files are. So this takes the same
+ * routes as `invokeCommand`, only with the arguments unwrapped.
  */
-export function invokeRawCommand<T>(action: string, params?: Record<string, unknown>): Promise<T> {
-  return runCommand<T>(action, params ?? undefined, true);
+export function invokeRawCommand<T>(
+  action: string,
+  params?: Record<string, unknown>,
+  options?: InvokeCommandOptions,
+): Promise<T> {
+  return runCommand<T>(action, params ?? undefined, true, options);
 }
 
-function deliverToListeners(event: string, payload: unknown): void {
+function metaOf(origin: string | undefined, originInstance?: string, seq?: number): EventMeta {
+  return {
+    origin: origin || (fleetActive() ? (entryDeviceId() ?? "") : ""),
+    originInstance: originInstance ?? null,
+    seq: typeof seq === "number" ? seq : null,
+  };
+}
+
+function deliverToListeners(event: string, payload: unknown, meta: EventMeta): void {
   const listeners = eventListeners.get(event);
   if (!listeners) return;
   for (const listener of [...listeners]) {
     try {
-      listener(payload);
+      listener(payload, meta);
     } catch (error) {
       console.error(`event listener failed for ${event}`, error);
     }
   }
 }
 
-function dispatchEvent(event: string, payload: unknown, peerDeviceId?: string): void {
-  if (drivingMeshPeer()) {
-    // This machine's backend keeps only what belongs to its owner; the peer's
-    // stream carries the product state the surface renders.
-    if (isOwnerOnlyEvent(event)) deliverToListeners(event, payload);
+function dispatchEvent(event: string, payload: unknown, item?: Omit<BackendEvent, "event" | "payload">): void {
+  if (fleetActive()) {
+    // A fleet stream is attributed by origin; nothing is filtered out here.
+    deliverToListeners(event, payload, metaOf(item?.origin, item?.originInstance, item?.seq));
     return;
   }
-  const listeners = eventListeners.get(event);
-  if (!listeners) return;
-  // backend-owned: local and peer streams are told apart by the source tag.
-  const scoped = scopeEventToSurface(
-    event,
-    payload,
-    peerDeviceId,
-    peerScope()?.deviceId ?? null,
-    transport() !== "dev",
-  );
-  if (scoped === DROP_EVENT) return;
-  for (const listener of [...listeners]) {
-    try {
-      listener(scoped);
-    } catch (error) {
-      console.error(`event listener failed for ${event}`, error);
-    }
-  }
+  deliverToListeners(event, payload, metaOf(undefined, undefined, item?.seq));
 }
 
-// Wires that deliver every chunk as emitted get the same per-frame merge `host.js` does.
-const textChunks = createTextChunkCoalescer((event, payload) => dispatchEvent(event, payload));
+// Wires that deliver every chunk as emitted get the same per-frame merge `host.js`
+// does, one merge per origin (a fleet stream has no order across origins).
+const textChunksByOrigin = new Map<string, TextChunkCoalescer>();
+
+function textChunksFor(origin: string, originInstance: string | undefined): TextChunkCoalescer {
+  const key = `${origin}\u0000${originInstance ?? ""}`;
+  let coalescer = textChunksByOrigin.get(key);
+  if (!coalescer) {
+    coalescer = createTextChunkCoalescer((event, payload) =>
+      dispatchEvent(event, payload, origin ? { origin, ...(originInstance ? { originInstance } : {}) } : undefined),
+    );
+    textChunksByOrigin.set(key, coalescer);
+  }
+  return coalescer;
+}
+
+function clearTextChunks(): void {
+  for (const coalescer of textChunksByOrigin.values()) coalescer.clear();
+  textChunksByOrigin.clear();
+}
+
+/**
+ * Text chunks go through the per-origin merge; every other event releases that
+ * origin's pending chunks first and is delivered with its own seq and origin.
+ */
+function deliverItem(item: BackendEvent, merge: boolean): void {
+  if (!merge) {
+    dispatchEvent(item.event, item.payload, item);
+    return;
+  }
+  if (item.event === TEXT_CHUNK_EVENT) {
+    textChunksFor(item.origin ?? "", item.originInstance).push(item.event, item.payload);
+    return;
+  }
+  textChunksByOrigin.get(`${item.origin ?? ""}\u0000${item.originInstance ?? ""}`)?.flush();
+  dispatchEvent(item.event, item.payload, item);
+}
 
 function deliverBatch(batch: readonly BackendEvent[]): void {
   const merge = activeConnection().coalescesTextChunks !== true;
-  for (const item of batch) {
-    if (merge) textChunks.push(item.event, item.payload);
-    else dispatchEvent(item.event, item.payload, item.peerDeviceId);
-  }
+  for (const item of batch) deliverItem(item, merge);
 }
 
-/** A mesh peer's events: never owner-only (its backend withholds them), never tagged. */
-function dispatchPeerEvent(event: string, payload: unknown): void {
-  if (!drivingMeshPeer() || isOwnerOnlyEvent(event)) return;
-  deliverToListeners(event, payload);
+// ── Peer origins on the native desktop ───────────────────────────────────────
+//
+// The native desktop's in-process stream carries only its own events. On a
+// fleet entry it long-polls `fleet_events {cursor, waitMs}` for every other
+// origin; the cursor is per origin and drops what was already delivered.
+
+const FLEET_EVENTS_WAIT_MS = 25_000;
+let fleetPoll: { stop(): void } | null = null;
+
+function stopFleetEventPoll(): void {
+  fleetPoll?.stop();
+  fleetPoll = null;
 }
 
-const peerTextChunks = createTextChunkCoalescer(dispatchPeerEvent);
-
-function deliverPeerBatch(batch: readonly BackendEvent[]): void {
-  for (const item of batch) peerTextChunks.push(item.event, item.payload);
+function startFleetEventPollIfNeeded(): void {
+  const connection = activeConnection();
+  if (fleetPoll || !channelOpen || connection.kind !== "native" || connection.fleet || !fleetActive()) return;
+  let stopped = false;
+  fleetPoll = { stop: () => (stopped = true) };
+  const cursor: FleetCursor = {};
+  void (async () => {
+    let backoffMs = 250;
+    while (!stopped && activeConnection() === connection && fleetActive()) {
+      let answer: { events?: unknown };
+      try {
+        answer = ((await connection.invoke(
+          "fleet_events",
+          { request: { cursor, waitMs: FLEET_EVENTS_WAIT_MS } },
+          { positional: false },
+        )) ?? {}) as { events?: unknown };
+        backoffMs = 250;
+      } catch (error) {
+        if (stopped) return;
+        console.warn(`Fleet event poll failed: ${errorMessageOf(error)}`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        backoffMs = Math.min(10_000, backoffMs * 2);
+        continue;
+      }
+      if (stopped || activeConnection() !== connection) return;
+      const self = entryDeviceId();
+      const frames: BackendEvent[] = [];
+      for (const raw of Array.isArray(answer.events) ? answer.events : []) {
+        const frame = (raw ?? {}) as Record<string, unknown>;
+        const origin = typeof frame.origin === "string" ? frame.origin : "";
+        const instance = typeof frame.originInstance === "string" ? frame.originInstance : "";
+        if (!origin || typeof frame.event !== "string" || origin === self) continue;
+        const seq = typeof frame.seq === "number" ? frame.seq : undefined;
+        if (seq !== undefined && frame.event === FLEET_EVENTS_DROPPED) {
+          // The origin skipped ahead: its cursor restarts at the notice's own seq.
+          cursor[origin] = { instanceId: instance, seq };
+        } else if (seq !== undefined) {
+          if (fleetCursorHasSeen(cursor, origin, instance, seq)) continue;
+          advanceFleetCursor(cursor, origin, instance, seq);
+        }
+        frames.push({ event: frame.event, payload: frame.payload ?? null, origin, originInstance: instance, seq });
+      }
+      for (const item of frames) deliverItem(item, true);
+    }
+  })();
 }
+
+// The poll follows the fleet answer, which a native connection reports through `ready()`.
+effect(() => {
+  const active = fleetActive();
+  untracked(() => {
+    if (active) startFleetEventPollIfNeeded();
+    else stopFleetEventPoll();
+  });
+});
 
 /** Opens the single backend event channel. Safe to call more than once. */
 export function openHostEventChannel(): void {
   if (channelOpen) return;
   channelOpen = true;
   stopEvents = activeConnection().subscribe(deliverBatch);
-  const peer = peerConnection();
-  if (peer && !stopPeerEvents) stopPeerEvents = peer.subscribe(deliverPeerBatch);
+  startFleetEventPollIfNeeded();
 }
 
-/** Subscribes one backend event; the returned function unsubscribes. */
-export function listenEvent<T>(event: string, listener: (payload: T) => void): () => void {
+/**
+ * Subscribes one backend event; the returned function unsubscribes. The
+ * listener's second argument says which device the event comes from.
+ */
+export function listenEvent<T>(event: string, listener: (payload: T, meta: EventMeta) => void): () => void {
   openHostEventChannel();
   let listeners = eventListeners.get(event);
   if (!listeners) {
@@ -258,7 +452,7 @@ export function listenEvent<T>(event: string, listener: (payload: T) => void): (
     eventListeners.set(event, listeners);
     activeConnection().watch?.(event);
   }
-  const entry = listener as (payload: unknown) => void;
+  const entry = listener as EventListener;
   listeners.add(entry);
   return () => {
     const current = eventListeners.get(event);
@@ -266,7 +460,7 @@ export function listenEvent<T>(event: string, listener: (payload: T) => void): (
     current.delete(entry);
     if (current.size === 0) {
       eventListeners.delete(event);
-      if (event === TEXT_CHUNK_EVENT) textChunks.clear();
+      if (event === TEXT_CHUNK_EVENT) clearTextChunks();
       activeConnection().unwatch?.(event);
     }
   };

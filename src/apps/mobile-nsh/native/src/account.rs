@@ -6,7 +6,7 @@
 //!   takes the email code (`/auth/email/send`, `/auth/email/verify`), then
 //!   `/auth/desktop/poll` hands this device its token pair; `/auth/refresh`,
 //!   `/me`, `/auth/logout`.
-//! - the account directory (`https://remote.openbitfun.com/relay`): the
+//! - the account directory (`https://super.openbitfun.com/directory`): the
 //!   device registers its public key with the identity token
 //!   (`/api/auth/login`, kind `mobile`), lists the account's devices and
 //!   reads their public keys. The directory is never a transport here.
@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const DEFAULT_AUTH_API_URL: &str = "https://auth.openbitfun.com/api/v1";
-pub(crate) const DEFAULT_DIRECTORY_URL: &str = "https://remote.openbitfun.com/relay";
+pub(crate) const DEFAULT_DIRECTORY_URL: &str = "https://super.openbitfun.com/directory";
 /// The directory's device kind for phones.
 pub(crate) const DEVICE_KIND_MOBILE: &str = "mobile";
 /// The relay client protocol the directory expects (`product-domains`

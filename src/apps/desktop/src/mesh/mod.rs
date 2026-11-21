@@ -19,6 +19,9 @@ pub mod mesh_api;
 pub mod peer_link;
 pub mod route;
 
+#[cfg(test)]
+mod directory_tests;
+
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -66,15 +69,38 @@ impl MeshAuthority for AccountMeshAuthority {
             if !openbitfun_link::handshake::valid_device_id(device_id) {
                 return Err("invalid device id".to_string());
             }
-            let (session, relay_url) =
-                crate::api::remote_connect_api::read_account_context().await?;
-            if session.user_id != self.account.user_id {
-                return Err("the signed-in account changed".to_string());
-            }
-            session
-                .peer_message_key(&relay_url, device_id)
-                .await
-                .map_err(|error| format!("device key lookup failed: {error}"))
+            // The new-version account directory, never the legacy relay.
+            crate::api::account_directory::with_directory_session(
+                |session, directory_url| async move {
+                    if session.user_id != self.account.user_id {
+                        return Err("the signed-in account changed".to_string());
+                    }
+                    session
+                        .peer_message_key(&directory_url, device_id)
+                        .await
+                        .map_err(|error| format!("device key lookup failed: {error}"))
+                },
+            )
+            .await
+        })
+    }
+
+    /// The directory row kind (the same cached key lookup): `cloud_agent`
+    /// gives the account's cloud agent its narrow scope.
+    fn device_kind<'a>(&'a self, device_id: &'a str) -> openbitfun_obp::DeviceKindFuture<'a> {
+        Box::pin(async move {
+            crate::api::account_directory::with_directory_session(
+                |session, directory_url| async move {
+                    if session.user_id != self.account.user_id {
+                        return Err("the signed-in account changed".to_string());
+                    }
+                    session
+                        .peer_device_kind(&directory_url, device_id)
+                        .await
+                        .map_err(|error| format!("device kind lookup failed: {error}"))
+                },
+            )
+            .await
         })
     }
 }
@@ -243,6 +269,8 @@ impl MeshRuntime {
         });
         if changed {
             emit_status(&self.status.borrow());
+            // Devices came, left, or changed route: the fleet re-reads presence.
+            crate::fleet::presence_changed();
         }
     }
 
@@ -252,7 +280,7 @@ impl MeshRuntime {
     }
 
     async fn account() -> Option<AccountKey> {
-        let (session, _) = crate::api::remote_connect_api::read_account_context()
+        let (session, _) = crate::api::account_directory::read_directory_context()
             .await
             .ok()?;
         let device_id = crate::api::remote_connect_api::current_device_id_for_peer().ok()?;
@@ -279,7 +307,9 @@ impl MeshRuntime {
             return;
         }
         if serving.take().is_some() {
-            // Peer Device Mode links ride the network; they end with it.
+            // The fleet and Peer Device Mode links ride the network; they end
+            // with it.
+            crate::fleet::stop();
             peer_link::shutdown_global().await;
             if let Some(server) = &self.obp {
                 server.stop_mesh();
@@ -294,6 +324,12 @@ impl MeshRuntime {
             let authority: Arc<dyn MeshAuthority> = Arc::new(AccountMeshAuthority {
                 account: account.clone(),
             });
+            // The fleet first, so the first hello already advertises it.
+            crate::fleet::start(
+                account.device_id.clone(),
+                Arc::clone(&authority),
+                Arc::clone(&self.link),
+            );
             let local = SocketAddr::from((
                 Ipv4Addr::UNSPECIFIED,
                 status
@@ -309,6 +345,7 @@ impl MeshRuntime {
                 .await
             {
                 log::warn!("OBP mesh listener not started: {}", error);
+                crate::fleet::stop();
                 return;
             }
         }
@@ -402,10 +439,10 @@ impl MeshRuntime {
                 return names.clone();
             }
         }
-        let names = match crate::api::remote_connect_api::read_account_context().await {
-            Ok((session, relay_url)) => {
+        let names = match crate::api::account_directory::read_directory_context().await {
+            Ok((session, directory_url)) => {
                 match openbitfun_core::service::remote_connect::AccountClient::new()
-                    .list_devices(&relay_url, &session)
+                    .list_devices(&directory_url, &session)
                     .await
                 {
                     Ok(devices) => devices
@@ -544,6 +581,32 @@ impl MeshRuntime {
         dialer.connect(&target, options).await
     }
 
+    /// Opens an OBP connection to the account's cloud node (`cloud-…`) at
+    /// `wss://<account server>/agent/obp` over the end-to-end channel, with
+    /// this device's account-device proof. The cloud node is not on the
+    /// device network; only the account session is needed.
+    pub async fn connect_cloud_node(
+        &self,
+        device_id: &str,
+        options: MeshConnectOptions,
+    ) -> Result<MeshObpConnection, String> {
+        let account =
+            self.serving.lock().await.clone().ok_or_else(|| {
+                "mesh_signed_out: sign in to reach the OpenBitFun agent".to_string()
+            })?;
+        let url = openbitfun_obp::client::cloud::cloud_node_url(
+            &crate::api::account_directory::directory_url(),
+        )
+        .unwrap_or_else(|| openbitfun_obp::client::cloud::DEFAULT_CLOUD_NODE_URL.to_string());
+        openbitfun_obp::client::cloud::CloudNodeConnector::new(
+            openbitfun_obp::client::cloud::WssCloudStream::new(url),
+            Arc::new(AccountMeshAuthority { account }),
+            openbitfun_obp::client::default_client_name(),
+        )
+        .connect(device_id, options)
+        .await
+    }
+
     /// What `device_id` advertises on its OBP mesh listener, for transport
     /// selection (`mesh::route`): `None` when this host's mesh is not running
     /// or the device is not in the account mesh (an older device that never
@@ -616,6 +679,7 @@ pub async fn shutdown_global() {
     let Some(runtime) = RUNTIME.get() else {
         return;
     };
+    crate::fleet::stop();
     peer_link::shutdown_global().await;
     if let Some(server) = &runtime.obp {
         server.stop_mesh();
@@ -635,5 +699,19 @@ pub async fn connect_device(
                 .to_string()
         })?
         .connect_device(device_id, options)
+        .await
+}
+
+/// [`MeshRuntime::connect_cloud_node`] of this process.
+pub async fn connect_cloud_node(
+    device_id: &str,
+    options: MeshConnectOptions,
+) -> Result<MeshObpConnection, String> {
+    global()
+        .ok_or_else(|| {
+            "mesh_unavailable: this host does not run the device mesh (native desktop app only)"
+                .to_string()
+        })?
+        .connect_cloud_node(device_id, options)
         .await
 }

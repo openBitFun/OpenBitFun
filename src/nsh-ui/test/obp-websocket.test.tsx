@@ -8,7 +8,7 @@ import { expect, open, test } from "nsh/test";
 import { endpointUrl, servedBackendParams } from "../src/servedBackend";
 import { createWebSocketConnection, type ObpSocket } from "../src/webSocketConnection";
 import type { BackendEvent } from "../src/backendConnection";
-import { createBackend, createDeviceBackend } from "./support";
+import { showAllSessions, openSession, createBackend, createDeviceBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -273,13 +273,13 @@ test("a backend-served page drives the backend over OBP and never the page host'
   const host = obpHost(backend);
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
 
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   expect(host.pageHostCalls).toEqual([]);
   expect(host.calls.length).toBeGreaterThan(0);
   expect(backend.actions()).toEqual(host.calls.filter(call => !call.command.startsWith("obp_")).map(call => call.command));
 
   // Streamed events reach the scenes.
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
   await app.host.send("openbitfun.obpFrames", [
     JSON.stringify({
@@ -309,8 +309,10 @@ test("Devices lists paired devices and revokes one; no LAN switch", async () => 
   const host = obpHost(backend);
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("Devices");
+  await showAllSessions(app, "NSH skeleton");
+  // Browsers that drive this computer are listed in Settings › Account › Devices and chat apps.
+  await app.press("Settings");
+  await app.press("Devices and chat apps");
   await app.waitFor("label:obp-pairing-card");
   await app.waitFor("Browser on this computer");
   await app.waitFor("text:http://127.0.0.1:47610/");

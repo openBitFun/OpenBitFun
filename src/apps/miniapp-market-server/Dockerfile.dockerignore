@@ -58,4 +58,3 @@
 !src/crates/contracts/product-domains/src/miniapp/builtin/assets/ppt-live/dist/
 !src/crates/contracts/product-domains/src/miniapp/builtin/assets/ppt-live/dist/ui.bundle.js
 **/target
-src/mobile-web/dist

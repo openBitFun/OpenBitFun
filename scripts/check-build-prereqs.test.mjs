@@ -21,7 +21,6 @@ const scriptPath = path.join(repoRoot, 'scripts/check-build-prereqs.mjs');
 
 function createTestRoot({
   nodeModules = false,
-  mobileWebDist = false,
   pluginHostDist = false,
   sherpaOnnx = null,
   virtualStoreEntries = null,
@@ -42,12 +41,6 @@ function createTestRoot({
         writeFileSync(path.join(packageDir, file), '{}');
       }
     }
-  }
-
-  if (mobileWebDist) {
-    const distDir = path.join(root, 'src', 'mobile-web', 'dist');
-    mkdirSync(distDir, { recursive: true });
-    writeFileSync(path.join(distDir, 'index.html'), '<html></html>');
   }
 
   if (pluginHostDist) {
@@ -103,9 +96,6 @@ if (args[0] === 'install') {
     mkdirSync(restorePath, { recursive: true });
     writeFileSync(path.join(restorePath, 'package.json'), '{}');
   }
-} else if (args[0] === 'run' && args[1] === 'prepare:mobile-web') {
-  mkdirSync('src/mobile-web/dist', { recursive: true });
-  writeFileSync('src/mobile-web/dist/index.html', '<html></html>');
 } else if (args[0] === 'run' && args[1] === 'plugin-host:prepare') {
   mkdirSync('src/apps/extension-host/dist', { recursive: true });
   writeFileSync('src/apps/extension-host/dist/extension-host.js', '');
@@ -161,7 +151,6 @@ function runCheck(
 test('passes when all prerequisites are present (including sherpa-onnx prebuilt)', (t) => {
   const root = createTestRoot({
     nodeModules: true,
-    mobileWebDist: true,
     pluginHostDist: true,
     sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
     virtualStoreEntries: {
@@ -183,7 +172,6 @@ test('passes when all prerequisites are present (including sherpa-onnx prebuilt)
 test('fails when a pnpm virtual store package has no files', (t) => {
   const root = createTestRoot({
     nodeModules: true,
-    mobileWebDist: true,
     pluginHostDist: true,
     sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
     virtualStoreEntries: {
@@ -210,7 +198,6 @@ test('--fix removes broken virtual store packages before running pnpm install', 
     'node_modules/.pnpm/typescript@5.8.3/node_modules/typescript';
   const root = createTestRoot({
     nodeModules: true,
-    mobileWebDist: true,
     pluginHostDist: true,
     sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
     virtualStoreEntries: { [brokenRelativeDir]: [] },
@@ -248,7 +235,6 @@ test('--fix removes broken virtual store packages before running pnpm install', 
 
 test('fails when root node_modules is missing', (t) => {
   const root = createTestRoot({
-    mobileWebDist: true,
     pluginHostDist: true,
     sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
   });
@@ -261,25 +247,9 @@ test('fails when root node_modules is missing', (t) => {
   assert.match(result.stderr, /Fix: pnpm install/);
 });
 
-test('fails when mobile-web dist is missing', (t) => {
-  const root = createTestRoot({
-    nodeModules: true,
-    pluginHostDist: true,
-    sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
-  });
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-
-  const result = runCheck(root, { sherpaEnv: '' });
-
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /\[FAIL\] mobile-web dist/);
-  assert.match(result.stderr, /Fix: pnpm run prepare:mobile-web/);
-});
-
 test('does not require the DeepSeek profile for cargo check', (t) => {
   const root = createTestRoot({
     nodeModules: true,
-    mobileWebDist: true,
     pluginHostDist: true,
     sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
   });
@@ -295,7 +265,6 @@ test('does not require the DeepSeek profile for cargo check', (t) => {
 test('fails when OpenCode extension Host dist is missing', (t) => {
   const root = createTestRoot({
     nodeModules: true,
-    mobileWebDist: true,
     sherpaOnnx: ['sherpa-onnx-v1.13.4-osx-arm64-static-lib'],
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -310,7 +279,6 @@ test('fails when OpenCode extension Host dist is missing', (t) => {
 test('warns when sherpa-onnx prebuilt dir does not exist (first build)', (t) => {
   const root = createTestRoot({
     nodeModules: true,
-    mobileWebDist: true,
     pluginHostDist: true,
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -323,7 +291,7 @@ test('warns when sherpa-onnx prebuilt dir does not exist (first build)', (t) => 
 });
 
 test('exits with error code when both errors and warnings are present', (t) => {
-  const root = createTestRoot({ mobileWebDist: false });
+  const root = createTestRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const result = runCheck(root, { sherpaEnv: '' });
@@ -346,7 +314,6 @@ test('--fix runs fix commands, re-verifies, and exits 0 when errors resolved', (
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /Attempting fixes/);
   assert.match(result.stdout, /\$ pnpm install/);
-  assert.match(result.stdout, /\$ pnpm run prepare:mobile-web/);
   assert.match(result.stdout, /\$ pnpm run plugin-host:prepare/);
   assert.doesNotMatch(result.stdout, /prepare:dsh-profile/);
   assert.match(result.stdout, /Re-checking prerequisites/);

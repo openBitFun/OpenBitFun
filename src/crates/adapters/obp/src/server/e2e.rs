@@ -49,7 +49,6 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use super::connection::{self, ConnectionContext};
 use super::mesh::{verify_client, ClientClaims, HandshakeRefusal, HANDSHAKE_TIMEOUT};
-use super::scope::Scope;
 use super::{ObpServer, OBP_PROTOCOL_VERSION};
 use crate::authority::MeshIo;
 
@@ -273,14 +272,24 @@ pub fn decode_message(plaintext: Vec<u8>) -> std::io::Result<Message> {
 pub(crate) enum Sniffed {
     /// The end-to-end channel (its magic consumed).
     E2e(Box<dyn MeshIo>),
+    /// A plain HTTP request (`GET /obp-ui/v1/<sha256>`, the server pool
+    /// fetching web UI files by hash), its first byte put back.
+    UiFetch(Box<dyn MeshIo>),
     /// Anything else, with the bytes read so far put back (TLS).
     Tls(Box<dyn MeshIo>),
 }
 
-/// Tells the end-to-end channel from TLS by the stream's first bytes.
+/// Tells the end-to-end channel, a plain HTTP fetch and TLS apart by the
+/// stream's first bytes (`O`, `G`, and 0x16 for a TLS `ClientHello`).
 pub(crate) async fn sniff(mut stream: Box<dyn MeshIo>) -> std::io::Result<Sniffed> {
     let mut first = [0u8; 1];
     stream.read_exact(&mut first).await?;
+    if first[0] == super::ui_fetch::FIRST_BYTE {
+        return Ok(Sniffed::UiFetch(Box::new(Prefixed::new(
+            first.to_vec(),
+            stream,
+        ))));
+    }
     if first[0] != MAGIC[0] {
         return Ok(Sniffed::Tls(Box::new(Prefixed::new(
             first.to_vec(),
@@ -455,9 +464,9 @@ pub(crate) async fn serve(server: Arc<ObpServer>, mut stream: Box<dyn MeshIo>, p
     );
 
     let device_id = verified.device;
-    let scope = Scope::AccountDevice {
-        device_id: device_id.clone(),
-    };
+    // The directory row kind picked the scope (`cloud-agent` for the
+    // account's cloud agent, `account-device` otherwise).
+    let scope = verified.scope;
     let (id, stop) = server.register_connection(scope.clone());
     let context = ConnectionContext {
         backend: Arc::clone(&server.backend),
@@ -465,9 +474,15 @@ pub(crate) async fn serve(server: Arc<ObpServer>, mut stream: Box<dyn MeshIo>, p
         instance_id: server.instance_id.clone(),
         registry_digest: server.registry_digest.clone(),
         limits: server.options.limits.clone(),
+        ui_bundle_id: server.ui_bundle.cached_bundle_id(),
+        fleet_clients: Arc::clone(&server.fleet_clients),
         stop,
     };
-    log::info!("OBP e2e connection accepted: device={}", device_id);
+    log::info!(
+        "OBP e2e connection accepted: device={}, scope={}",
+        device_id,
+        context.scope.wire_name()
+    );
 
     let received = Arc::new(AtomicU64::new(0));
     let sent = Arc::new(AtomicU64::new(0));

@@ -6246,8 +6246,12 @@ export const requiredContentRules = [
         message: 'missing remote-connect QR owner module',
       },
       {
-        regex: /\bpub mod relay_client\b/,
-        message: 'missing remote-connect relay client owner module',
+        regex: /\bpub mod routing_lease\b/,
+        message: 'missing device routing claim owner module (which local host serves the device on Link)',
+      },
+      {
+        regex: /\bpub mod mesh_route\b/,
+        message: 'missing account-device mesh route owner module (OBP over Link; no relay fallback)',
       },
       {
         regex: /\bpub use device::DeviceIdentity\b/,
@@ -6264,10 +6268,6 @@ export const requiredContentRules = [
       {
         regex: /\bpub use qr_generator::QrGenerator\b/,
         message: 'missing remote-connect QR compatibility export',
-      },
-      {
-        regex: /pub use relay_client::\{[\s\S]*\bConnectionState\b[\s\S]*\bRelayClient\b[\s\S]*\bRelayEvent\b[\s\S]*\}/,
-        message: 'missing shared account relay lifecycle export',
       },
       {
         regex: /\bpub struct RemoteSessionStateTracker\b/,
@@ -6659,14 +6659,6 @@ export const requiredContentRules = [
     reason: 'remote-connect owner crate must keep focused behavior contracts',
     patterns: [
       {
-        regex: /\brelay_invitations_and_authentication_use_the_same_protocol_for_all_endpoints\b/,
-        message: 'missing authenticated relay invitation owner contract test',
-      },
-      {
-        regex: /\bremote_connect_lan_url_builder_lives_in_services_owner\b/,
-        message: 'missing relay endpoint owner contract test',
-      },
-      {
         regex: /\bremote_connect_command_wire_shape_lives_in_owner_contract\b/,
         message: 'missing remote command wire contract test',
       },
@@ -6811,7 +6803,7 @@ export const requiredContentRules = [
   {
     path: 'src/crates/assembly/core/src/service/remote_connect/mod.rs',
     reason:
-      'core remote-connect root keeps compatibility re-exports while services-integrations owns device, pairing, encryption, QR, and relay primitives',
+      'core remote-connect root keeps compatibility re-exports while services-integrations owns device, pairing, encryption, QR, device routing claim and mesh route primitives',
     patterns: [
       {
         regex: /\bpub mod device\s*\{[\s\S]*openbitfun_services_integrations::remote_connect::device::\*/m,
@@ -6830,8 +6822,12 @@ export const requiredContentRules = [
         message: 'missing QR compatibility re-export module',
       },
       {
-        regex: /\bpub mod relay_client\s*\{[\s\S]*openbitfun_services_integrations::remote_connect::relay_client::\*/m,
-        message: 'missing relay client compatibility re-export module',
+        regex: /\bpub mod routing_lease\s*\{[\s\S]*openbitfun_services_integrations::remote_connect::routing_lease::\*/m,
+        message: 'missing device routing claim compatibility re-export module',
+      },
+      {
+        regex: /\bpub mod mesh_route\s*\{[\s\S]*openbitfun_services_integrations::remote_connect::mesh_route::\*/m,
+        message: 'missing mesh route compatibility re-export module',
       },
     ],
   },

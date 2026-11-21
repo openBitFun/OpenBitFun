@@ -3,10 +3,22 @@
 //! never mint pairing codes, list or revoke other clients, or read the owner
 //! link. The LAN listener and its switch (`obp_set_lan_enabled`) were
 //! retired: phones pair over the account device mesh.
+//!
+//! One command here is `Proxied` instead: `ui_bundle_manifest`, the web UI
+//! bundle (`nsh-web`) a browser loads from this device. The browser calls it
+//! over the end-to-end channel (`account-device` scope), so the device key
+//! authenticates the manifest; the files then come by hash through the
+//! server's pool, which pulls them from this device's mesh listener
+//! (`GET /obp-ui/v1/<sha256>`, `openbitfun_obp::server`).
+
+use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
+use serde_json::Value;
 
-use super::{global_server, unavailable_status, ObpStatus, PairingOffer};
+use super::{
+    default_web_root, global_server, unavailable_status, ObpStatus, PairingOffer, UiBundleSource,
+};
 
 /// The refusal for LAN pairing (older UIs still offer it).
 pub(crate) const LAN_PAIRING_RETIRED: &str = "obp_lan_retired: pairing on the local network was retired; join the phone to the account device mesh and scan the mesh QR code in Devices (devices on the same network connect directly through the mesh)";
@@ -87,6 +99,36 @@ pub async fn obp_revoke_paired_client(
     Ok(server.status())
 }
 
+/// `ui_bundle_manifest` takes an empty request (`{ request: {} }`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct UiBundleManifestRequest {}
+
+/// The bundle when this process runs no OBP server (its listener is off):
+/// the same web root the server would use.
+fn standalone_source() -> Arc<UiBundleSource> {
+    static SOURCE: OnceLock<Arc<UiBundleSource>> = OnceLock::new();
+    Arc::clone(SOURCE.get_or_init(|| {
+        Arc::new(match default_web_root() {
+            Some(root) => UiBundleSource::directory(root),
+            None => UiBundleSource::unavailable(
+                "this desktop build ships no web UI bundle (nsh-web); update OpenBitFun on this device",
+            ),
+        })
+    }))
+}
+
+/// The web UI manifest this device ships and its bundle id
+/// (`{manifest, bundleId}`), or `ui_bundle_unavailable: <reason>`.
+// @backend-command
+pub async fn ui_bundle_manifest(request: UiBundleManifestRequest) -> Result<Value, String> {
+    let UiBundleManifestRequest {} = request;
+    match global_server() {
+        Some(server) => server.ui_bundle_manifest().await,
+        None => openbitfun_obp::server::ui_bundle_manifest(standalone_source()).await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +142,22 @@ mod tests {
         .await
         .unwrap_err();
         assert!(refused.starts_with("obp_lan_retired:"), "{refused}");
+    }
+
+    /// Through the generated dispatcher, as a browser's call arrives: the
+    /// manifest with its recomputed id, or the explicit unavailable state
+    /// (this build's web root may have no bundle or no manifest).
+    #[tokio::test]
+    async fn the_web_ui_manifest_is_served_or_explicitly_unavailable() {
+        match ui_bundle_manifest(UiBundleManifestRequest {}).await {
+            Ok(answer) => assert_eq!(
+                answer["bundleId"],
+                openbitfun_obp::ui_bundle::bundle_id(&answer["manifest"]).unwrap()
+            ),
+            Err(reason) => assert!(reason.starts_with("ui_bundle_unavailable: "), "{reason}"),
+        }
+        let request: UiBundleManifestRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        let UiBundleManifestRequest {} = request;
     }
 }

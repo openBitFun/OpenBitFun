@@ -46,6 +46,10 @@ pub(crate) struct Dial<'a> {
 pub(crate) struct Resume {
     pub(crate) last_seq: Option<u64>,
     pub(crate) instance_id: Option<String>,
+    /// The fleet member of the hello (`{protocol, cursor}` with the vector
+    /// cursor): a fleet entry then tags every event with its origin and
+    /// resumes each origin from the cursor. An older device ignores it.
+    pub(crate) fleet: Option<Value>,
 }
 
 /// A failed call: the device backend's own error, or a transport failure.
@@ -87,6 +91,8 @@ pub(crate) async fn connect(
             last_seq: resume.last_seq,
             instance_id: resume.instance_id,
             credit_bytes: None,
+            fleet: resume.fleet,
+            ..MeshConnectOptions::default()
         },
     )
     .await?;
@@ -252,12 +258,24 @@ mod tests {
                         match frame["method"].as_str().unwrap_or_default() {
                             "hello" => {
                                 assert_eq!(frame["params"]["ack"], true);
-                                ws.send(send(json!({"jsonrpc": "2.0", "id": frame["id"], "result": {
+                                let mut result = json!({
                                     "protocol": 1, "scope": "account-device", "capabilities": ["mesh_v1"],
                                     "backend": {"version": "9.9.9", "platform": "test", "instanceId": "inst-1"},
-                                    "lastSeq": 5, "creditBytes": 1048576}})))
-                                    .await
-                                    .unwrap();
+                                    "lastSeq": 5, "creditBytes": 1048576});
+                                // A fleet entry answers the fleet hello per cursor origin.
+                                if let Some(cursor) = frame["params"]["fleet"]["cursor"].as_object()
+                                {
+                                    let state: serde_json::Map<String, Value> = cursor
+                                        .keys()
+                                        .map(|origin| (origin.clone(), json!("resumed")))
+                                        .collect();
+                                    result["fleet"] = json!({"protocol": 1, "cursorState": state});
+                                }
+                                ws.send(send(
+                                    json!({"jsonrpc": "2.0", "id": frame["id"], "result": result}),
+                                ))
+                                .await
+                                .unwrap();
                                 for seq in [6, 7] {
                                     ws.send(send(json!({"jsonrpc": "2.0", "method": "event", "params": {
                                         "seq": seq, "event": "agentic://text-chunk", "payload": {"n": seq}}})))
@@ -295,6 +313,14 @@ mod tests {
     }
 
     async fn dial(addr: std::net::SocketAddr, pair_key: [u8; 32]) -> Result<Connection, String> {
+        dial_with(addr, pair_key, Resume::default()).await
+    }
+
+    async fn dial_with(
+        addr: std::net::SocketAddr,
+        pair_key: [u8; 32],
+        resume: Resume,
+    ) -> Result<Connection, String> {
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         connect(
             Box::new(stream),
@@ -304,9 +330,31 @@ mod tests {
                 pair_key,
                 authority: addr.to_string(),
             },
-            Resume::default(),
+            resume,
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn the_fleet_hello_carries_the_vector_cursor() {
+        let key = [7u8; 32];
+        let device = device(key, "phone-1", "desk-1").await;
+        let plain = dial(device.addr, key).await.unwrap();
+        assert!(
+            plain.hello().get("fleet").is_none(),
+            "no fleet member, no fleet answer"
+        );
+        let fleet = dial_with(
+            device.addr,
+            key,
+            Resume {
+                fleet: Some(json!({"protocol": 1, "cursor": {"desk-1": {"instanceId": "inst-1", "seq": 4}}})),
+                ..Resume::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(fleet.hello()["fleet"]["cursorState"]["desk-1"], "resumed");
     }
 
     #[tokio::test]

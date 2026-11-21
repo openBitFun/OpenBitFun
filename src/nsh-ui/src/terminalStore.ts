@@ -13,9 +13,9 @@ import {
   writeTerminal,
   type TerminalShell,
 } from "./api";
-import { invokeCommand, listenEvent } from "./bridge";
+import { invokeCommand, listenEvent, setFleetOwnerLookup } from "./bridge";
 import { Storage } from "nsh";
-import { activeWorkspaceId } from "./state";
+import { activeWorkspaceId, deviceContext } from "./state";
 
 /**
  * The host emits `terminal_event` with `{ type, payload }`: `Data` carries the
@@ -49,6 +49,11 @@ export interface TerminalTab {
   agentCreated?: boolean;
   /** Where the host's scrollback ended at the last read, for delta replays. */
   nextOffset?: number;
+  /**
+   * The device the shell runs on (`""` without the fleet layer). Terminals are
+   * keyed `(deviceId, id)`: a shell shows only while its device is the context.
+   */
+  deviceId?: string;
 }
 
 /** Upper bound on in-memory scrollback per terminal tab (prevents unbounded growth). */
@@ -89,10 +94,22 @@ function decodeBinaryPayload(data: unknown): string {
 }
 
 export const terminalTabs = signal<TerminalTab[]>([]);
-/** The tabs of the active workspace: a shell runs in one workspace and shows there. */
+/** The tabs of the active workspace on the device context: a shell runs in one workspace and shows there. */
 export const visibleTerminalTabs = computed<TerminalTab[]>(() => {
   const workspaceId = activeWorkspaceId();
-  return terminalTabs().filter(tab => !tab.workspaceId || !workspaceId || tab.workspaceId === workspaceId);
+  const device = deviceContext();
+  return terminalTabs().filter(
+    tab =>
+      (tab.deviceId ?? "") === device && (!tab.workspaceId || !workspaceId || tab.workspaceId === workspaceId),
+  );
+});
+
+// A command acting on a terminal goes to the device that runs it.
+setFleetOwnerLookup("terminal", id => {
+  const device = deviceContext();
+  const tabs = terminalTabs().filter(tab => tab.id === id);
+  const tab = tabs.find(item => (item.deviceId ?? "") === device) ?? tabs[0];
+  return tab?.deviceId || null;
 });
 /** A running shell waiting for the user to confirm closing it. */
 export const confirmingCloseTerminal = signal<string | null>(null);
@@ -182,15 +199,16 @@ function subscribeOutput(): void {
   if (subscribed) return;
   subscribed = true;
   // A remote shell's output notice carries no bytes: pull what is new.
-  listenEvent<{ session_id?: string; sessionId?: string }>("terminal-output", event => {
+  listenEvent<{ session_id?: string; sessionId?: string }>("terminal-output", (event, meta) => {
     const id = event?.sessionId ?? event?.session_id;
-    if (id && terminalTabs().some(tab => tab.id === id)) void resyncTerminal(id);
+    if (id && terminalTabs().some(tab => tab.id === id && (tab.deviceId ?? "") === meta.origin)) void resyncTerminal(id);
   });
-  listenEvent<TerminalEventPayload>("terminal_event", event => {
+  listenEvent<TerminalEventPayload>("terminal_event", (event, meta) => {
     const payload = event?.payload;
     if (!payload?.session_id) return;
     const id = payload.session_id;
-    const tab = terminalTabs().find(item => item.id === id);
+    // Only the shell of the device that emitted it (terminal ids repeat across devices).
+    const tab = terminalTabs().find(item => item.id === id && (item.deviceId ?? "") === meta.origin);
     if (!tab) return;
     if (event?.type === "Data" && typeof payload.data === "string" && payload.data) {
       enqueuePtyChunk(id, payload.data);
@@ -337,6 +355,7 @@ export async function openTerminal(
         buffer: "",
         named: Boolean(override?.title),
         workspaceId: workspaceId ?? null,
+        deviceId: deviceContext(),
       },
     ]);
     selectTerminal(session.id);
@@ -453,8 +472,10 @@ const attachedWorkspaces = new Set<string>();
  * `terminal_list`. Each is attached once and replays its scrollback when shown.
  */
 export async function reattachTerminals(workspaceId: string | null): Promise<void> {
-  if (!workspaceId || attachedWorkspaces.has(workspaceId)) return;
-  attachedWorkspaces.add(workspaceId);
+  const device = deviceContext();
+  const attachKey = `${device}/${workspaceId ?? ""}`;
+  if (!workspaceId || attachedWorkspaces.has(attachKey)) return;
+  attachedWorkspaces.add(attachKey);
   subscribeOutput();
   let sessions: Array<Record<string, unknown>>;
   try {
@@ -464,7 +485,7 @@ export async function reattachTerminals(workspaceId: string | null): Promise<voi
     // An older host without the list keeps the shells this surface opens.
     return;
   }
-  const known = new Set(terminalTabs().map(tab => tab.id));
+  const known = new Set(terminalTabs().filter(tab => (tab.deviceId ?? "") === device).map(tab => tab.id));
   const added: TerminalTab[] = [];
   for (const session of sessions) {
     const id = typeof session?.id === "string" ? session.id : "";
@@ -479,6 +500,7 @@ export async function reattachTerminals(workspaceId: string | null): Promise<voi
       named: false,
       workspaceId,
       agentCreated: String(session.source ?? "").toLowerCase() === "agent",
+      deviceId: device,
     });
   }
   if (added.length) terminalTabs.update(current => [...current, ...added]);

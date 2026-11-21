@@ -30,6 +30,7 @@ pub mod appearance;
 pub mod backend_protocol;
 pub mod computer_use;
 pub mod crash_diagnostics;
+pub mod fleet;
 pub mod host;
 pub mod logging;
 pub mod mesh;
@@ -767,6 +768,7 @@ backend_commands![
     api::settings_mutation_api::delete_permission_rule,
     api::settings_mutation_api::set_approval_settings,
     api::settings_mutation_api::set_web_search_provider,
+    api::settings_mutation_api::set_superagent_settings,
     api::settings_mutation_api::get_settings_schema,
     // permission page view (wave 4)
     api::settings_mutation_api::get_permission_settings,
@@ -1085,19 +1087,11 @@ backend_commands![
     api::remote_connect_api::account_login,
     api::remote_connect_api::account_status,
     api::remote_connect_api::account_logout,
-    api::remote_connect_api::account_connect_devices,
-    api::remote_connect_api::account_online_devices,
-    api::remote_connect_api::account_execute_on_device,
     api::remote_connect_api::account_get_credential_hint,
     api::remote_connect_api::account_token_expired,
     api::remote_connect_api::account_list_devices,
     api::remote_connect_api::account_update_device_alias,
-    api::remote_connect_api::account_relay_capabilities,
     api::remote_connect_api::account_delete_device,
-    api::remote_connect_api::account_device_rpc,
-    api::remote_connect_api::account_subscribe_session,
-    api::remote_connect_api::account_unsubscribe_session,
-    api::remote_connect_api::account_load_older_session,
     // OpenBitFun Page API
     api::pages_api::page_publish,
     api::pages_api::page_save_version,
@@ -1109,12 +1103,6 @@ backend_commands![
     api::pages_api::page_update,
     api::pages_api::page_unpublish,
     api::pages_api::page_delete,
-    api::peer_host_invoke::peer_host_invoke_complete,
-    api::peer_host_invoke::peer_host_bridge_ready,
-    api::peer_host_invoke::peer_control_attach,
-    api::peer_host_invoke::peer_control_detach,
-    api::peer_host_invoke::peer_mode_ping,
-    api::peer_host_invoke::peer_controller_set_active,
     // MiniApp API
     api::miniapp_api::list_miniapps,
     api::miniapp_api::get_miniapp,
@@ -1267,6 +1255,8 @@ backend_commands![
     backend_protocol::ws::obp_get_status,
     backend_protocol::ws::obp_create_pairing,
     backend_protocol::ws::obp_revoke_paired_client,
+    // The web UI bundle a browser loads from this device (wave 10).
+    backend_protocol::ws::ui_bundle_manifest,
     // Device network (OpenBitFun Link in-process; OBP to other account devices)
     mesh::mesh_api::mesh_status,
     mesh::mesh_api::mesh_list_devices,
@@ -1275,6 +1265,17 @@ backend_commands![
     mesh::peer_link::peer_link_call,
     mesh::peer_link::peer_link_events,
     mesh::peer_link::peer_link_disconnect,
+    // Fleet: every runtime host of the account through this one (wave 12).
+    fleet::fleet_api::fleet_attention,
+    fleet::fleet_api::fleet_attention_mark_read,
+    fleet::fleet_api::fleet_call,
+    fleet::fleet_api::fleet_device_detail,
+    fleet::fleet_api::fleet_events,
+    fleet::fleet_api::fleet_navigator,
+    fleet::fleet_api::fleet_prompts,
+    fleet::fleet_api::fleet_recent_sessions,
+    fleet::fleet_api::fleet_subscribe,
+    fleet::fleet_api::fleet_ui_bundle,
 ];
 
 /// Starts the backend services every host runs once its managed state is
@@ -1485,7 +1486,6 @@ async fn init_agentic_system() -> anyhow::Result<(
     coordinator.set_scheduler_notifier(scheduler.outcome_sender());
     coordinator.set_round_injection_source(scheduler.round_injection_monitor());
     coordination::set_global_scheduler(scheduler.clone());
-    api::remote_connect_api::set_dialog_scheduler(scheduler.clone());
 
     let cron_service = openbitfun_core::service::cron::CronService::new(
         path_manager.clone(),
@@ -1699,60 +1699,6 @@ pub(crate) async fn deliver_projected_event(
     transport: &HostTransportAdapter,
     projected: openbitfun_events::AgenticFrontendEvent,
 ) {
-    for hub in api::remote_connect_api::host_stream_hubs().await {
-        if let Some(session_id) = projected
-            .payload
-            .get("sessionId")
-            .or_else(|| projected.payload.get("session_id"))
-            .and_then(serde_json::Value::as_str)
-        {
-            let name = projected.event_name.as_str();
-            let policy =
-            openbitfun_core::service::remote_connect::session_records::session_event_publication(
-                name,
-                &projected.payload,
-            );
-            if policy.synchronize_records {
-                if let Err(error) = async {
-                    if let Some(turn) = projected
-                        .payload
-                        .get("turnId")
-                        .or_else(|| projected.payload.get("settledTurnId"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        openbitfun_core::service::remote_connect::synchronize_session_record_turn(
-                            &hub, session_id, turn,
-                        )
-                        .await
-                    } else if name == "agentic://session-history-changed" {
-                        openbitfun_core::service::remote_connect::synchronize_session_records(
-                            &hub, session_id,
-                        )
-                        .await
-                    } else {
-                        Ok(())
-                    }
-                }
-                .await
-                {
-                    log::error!("Unable to synchronize host session records: {error}");
-                }
-            }
-            if policy.persist_control {
-                if let Err(error) = hub
-                    .append(
-                        session_id.to_owned(),
-                        projected.event_name.clone(),
-                        projected.payload.clone(),
-                    )
-                    .await
-                {
-                    log::error!("Unable to publish session control event: {error}");
-                }
-            }
-        }
-    }
-
     if let Err(e) = transport
         .emit_generic(&projected.event_name, projected.payload.clone())
         .await
@@ -2095,7 +2041,6 @@ fn create_event_emitter(
     use openbitfun_transport::TransportEmitter;
     let inner: Arc<dyn openbitfun_core::infrastructure::events::EventEmitter> =
         Arc::new(TransportEmitter::new(transport));
-    let inner = api::remote_connect_api::wrap_peer_aware_emitter(inner);
     api::miniapp_agent_api::wrap_miniapp_agent_context_cleanup_emitter(inner)
 }
 

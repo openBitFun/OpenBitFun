@@ -150,15 +150,6 @@ impl PeerTurnTracker {
             .unwrap_or(false)
     }
 
-    pub(crate) fn complete_terminal_delivery(&self, generation: u64, key: &PeerTurnKey) {
-        if let Ok(mut inner) = self.inner.lock() {
-            if inner.stream == PeerEventStreamState::Ready && inner.stream_generation == generation
-            {
-                finish_turn_locked(&mut inner, key);
-            }
-        }
-    }
-
     pub(crate) fn is_event_stream_generation_current(&self, generation: u64) -> bool {
         self.inner
             .lock()
@@ -166,17 +157,6 @@ impl PeerTurnTracker {
                 inner.stream == PeerEventStreamState::Ready && inner.stream_generation == generation
             })
             .unwrap_or(false)
-    }
-
-    pub(crate) fn current_event_stream_generation(&self) -> Result<u64, String> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|_| "Peer turn tracker is unavailable".to_string())?;
-        if inner.stream != PeerEventStreamState::Ready {
-            return Err("Peer event stream is not ready".to_string());
-        }
-        Ok(inner.stream_generation)
     }
 
     #[cfg(test)]
@@ -885,7 +865,6 @@ pub(crate) struct PeerHostState {
     pub(crate) compatibility: CoreAgentRuntimeCompatibility,
     pub(crate) account_runtime:
         Arc<openbitfun_core::service::remote_connect::account_runtime::AccountRuntime>,
-    pub(crate) account_routing: Arc<crate::account::CliAccountRoutingHost>,
     pub(crate) turns: PeerTurnTracker,
     pub(crate) workspace_service: Arc<WorkspaceService>,
     pub(crate) filesystem_service: Arc<FileSystemService>,

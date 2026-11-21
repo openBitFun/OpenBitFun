@@ -8,7 +8,7 @@
 
 import { Clipboard, openUrl, Text, View } from "nsh";
 import { tr } from "../i18n";
-import { meshPathLabel } from "../peerStore";
+import { meshPathLabel } from "../meshPath";
 import {
   loadSignedInControllers,
   signedInControllers,

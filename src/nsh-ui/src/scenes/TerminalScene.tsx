@@ -1,3 +1,4 @@
+import { ToolPaneHeader } from "../ui/toolPane";
 import { cleanup, effect, Scroll, signal, Text, View, type ViewRef } from "nsh";
 import { Terminal, type TerminalRef } from "nsh/base";
 import { formatCount } from "../format";
@@ -75,7 +76,6 @@ import {
   InputBox,
   StatusDot,
   TooltipBubble,
-  WorkbenchSwitcher,
   type InlineBannerTone,
   type StatusDotKind,
 } from "../ui/primitives";
@@ -510,6 +510,9 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         backgroundColor: palette().canvas,
       }}
     >
+      <If when={!props.compact}>
+        <ToolPaneHeader />
+      </If>
       <RemoteWorkspaceStatusBanner compact={props.compact} />
       {/* Full workbench toolbar: one quiet row of tabs and ghost controls, one primary action. */}
       <If when={!narrow()}>
@@ -526,8 +529,6 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             backgroundColor: palette().canvas,
           }}
         >
-          <WorkbenchSwitcher />
-          <ToolbarDivider />
 
           <Scroll horizontal scrollbar={false} style={{ flex: 1, minWidth: 120 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>

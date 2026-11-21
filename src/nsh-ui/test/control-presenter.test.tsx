@@ -1,7 +1,7 @@
 // The OpenBitFunControl presentation surface: the host resolves where an Agent
 // request leads (`destination`), this UI opens that screen and reports back.
 import { expect, open, test } from "nsh/test";
-import { createBackend } from "./support";
+import { showAllSessions, createBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -12,7 +12,7 @@ async function request(app: Awaited<ReturnType<typeof open>>, payload: Record<st
 test("an Agent request opens the screen the host resolved and reports it", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   // The window declares itself the presentation surface without claiming creation support.
   expect(backend.calls.find(call => call.action === "mark_openbitfun_control_surface_ready")?.request).toEqual({});
 
@@ -52,7 +52,7 @@ test("an Agent request opens the screen the host resolved and reports it", async
 test("a destination this UI has no screen for fails loudly instead of pretending", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   await request(app, {
     requestId: "r-pet",
     action: "open",
@@ -73,11 +73,11 @@ test("a destination this UI has no screen for fails loudly instead of pretending
 test("a persisted language change from the executor is applied and acknowledged", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   await app.host.send("openbitfun.event", {
     event: "agentic://openbitfun-control-effect",
     payload: { requestId: "e-1", phase: "commit", changedPaths: ["app.language"], value: "zh-CN" },
   });
-  await app.waitFor("会话");
+  await app.waitFor("收件箱");
   expect(backend.controlReports?.[0]).toMatchObject({ requestId: "e-1", success: true, result: { status: "applied" } });
 });

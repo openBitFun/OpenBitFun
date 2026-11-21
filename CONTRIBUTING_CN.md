@@ -36,9 +36,6 @@ pnpm run check:build-prereqs -- --fix  # 尝试自动修复缺失的前置依赖
 检查项包括：
 
 - 缺少 `node_modules`（修复：`pnpm install`）
-- 缺少 `src/mobile-web/dist`（修复：`pnpm run prepare:mobile-web` —
-  openbitfun-desktop 的 Tauri 构建脚本将该目录作为资源引用，缺失时
-  `cargo check -p openbitfun-desktop` 和 `cargo check --workspace` 会失败）
 - 缺少 sherpa-onnx 预编译库（sherpa-onnx-sys 构建脚本会在构建时从
   GitHub 下载；若网络连通性差导致下载失败，设置
   `SHERPA_ONNX_LIB_DIR` 指向 `target/sherpa-onnx-prebuilt/` 下的预编译
@@ -171,7 +168,6 @@ Repository Object Sizes 检查会拒绝超过 5 MiB 的 Git 文件对象，包�
 | --- | --- |
 | 仓库元信息或 GitHub 配置 | `pnpm run check:repo-hygiene && pnpm run check:github-config && git diff --check` |
 | 前端运行时或 UI | `pnpm run check:web`；行为变化时再加最近的 focused test |
-| Mobile web | `pnpm --dir src/mobile-web run type-check` |
 | Rust 共享 runtime 或 services | 遵循最近模块的 `AGENTS.md`，选择单个包/测试目标和最小所需 feature |
 | 桌面后端 / 原生宿主集成 | `cargo check -p openbitfun-desktop` |
 | i18n 资源 | `pnpm run i18n:audit` |

@@ -395,12 +395,11 @@ const PAYLOAD_MANIFEST_FILE: &str = "payload-manifest.json";
 /// The native desktop package (`scripts/package-desktop-nsh-windows.mjs`): the
 /// NSH runner as `MAIN_APP_EXE`, the backend library it loads, the UI bundle
 /// and the resources the backend resolves next to the executable.
-const REQUIRED_PAYLOAD_FILES: [&str; 8] = [
+const REQUIRED_PAYLOAD_FILES: [&str; 7] = [
     MAIN_APP_EXE,
     "openbitfun_desktop_lib.dll",
     "nsh/bundle.nshc",
     "nsh/app.json",
-    "mobile-web/dist/index.html",
     "resources/ext-host/extension-host.js",
     "resources/worker_host.js",
     "flashgrep/flashgrep-x86_64-pc-windows-msvc.exe",

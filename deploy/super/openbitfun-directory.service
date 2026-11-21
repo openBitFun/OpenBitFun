@@ -1,0 +1,52 @@
+# OpenBitFun 2.0 account device directory (openbitfun-relay-server built from
+# src/apps/relay-server, run as a directory only): device rows and X25519
+# public keys of the account's devices, and the cloud agent's row. Its own
+# database; it never shares data with the 1.0 relay container. Reached at
+# https://super.openbitfun.com/directory/ (deploy/super).
+
+[Unit]
+Description=OpenBitFun 2.0 account device directory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openbitfun-directory
+Group=openbitfun-directory
+WorkingDirectory=/opt/openbitfun-directory
+Environment=RELAY_LISTEN_ADDR=127.0.0.1:19750
+Environment=RELAY_DB_PATH=/var/lib/openbitfun-directory/directory.db
+Environment=RELAY_ASSET_DIR=/var/lib/openbitfun-directory/assets
+Environment=RELAY_ASSET_STORE_MAX_BYTES=67108864
+Environment=RELAY_CORS_ALLOW_ORIGINS=https://super.openbitfun.com
+# The cloud agent's server-only registration route (64 hex characters, 0600).
+Environment=RELAY_CLOUD_AGENT_KEY_FILE=/opt/openbitfun-directory/etc/cloud-agent.key
+Environment=RUST_LOG=info
+ExecStart=/opt/openbitfun-directory/bin/openbitfun-relay-server
+StateDirectory=openbitfun-directory
+StateDirectoryMode=0700
+UMask=0077
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

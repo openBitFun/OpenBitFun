@@ -20,15 +20,30 @@ pub const LIVE_RELAY_ENDPOINT_PATHS: &[&str] = &["/relay", "/v/1.0.2"];
 /// The version travels as a GET parameter so a release no longer needs a new
 /// proxy location, while `remote.openbitfun.com` keeps one root page. Callers
 /// must join API paths onto [`relay_endpoint_base`], never onto this string.
-pub const DEFAULT_RELAY_URL: &str = "https://remote.openbitfun.com/relay?v=1.0.10";
+///
+/// OpenBitFun 2.0 uses only its own service host: this is the same base as
+/// [`DEFAULT_ACCOUNT_DIRECTORY_URL`] (and must stay byte-equal to it, so the
+/// device key scoped by this URL is the key the directory session
+/// registers). `remote.openbitfun.com` serves released 1.0 clients only.
+pub const DEFAULT_RELAY_URL: &str = "https://super.openbitfun.com/directory";
+
+/// The new version's account directory: device rows and X25519 keys of the
+/// account's devices, the device network's pair keys, and the cloud node's
+/// row. A relay-service instance of OpenBitFun 2.0 with its own database
+/// (never the 1.0 relay on `remote.openbitfun.com`). Hosts resolve an override (`OPENBITFUN_ACCOUNT_DIRECTORY_URL`) at
+/// the services layer and join API paths onto this base.
+pub const DEFAULT_ACCOUNT_DIRECTORY_URL: &str = "https://super.openbitfun.com/directory";
+
+/// The new version's service host: the mesh issuer (`/mesh/v1/*`), the
+/// Link relay node (`/mesh/et/`), the browser gateway, the web UI and the
+/// cloud node (`/agent/`).
+pub const DEFAULT_SERVICE_ORIGIN: &str = "https://super.openbitfun.com";
 
 /// Strip the version query and any fragment so the endpoint can be joined with
 /// an API path. A trailing slash is removed so `{base}/api/...` stays correct.
 pub fn relay_endpoint_base(endpoint: &str) -> &str {
     let endpoint = endpoint.trim();
-    let end = endpoint
-        .find(['?', '#'])
-        .unwrap_or(endpoint.len());
+    let end = endpoint.find(['?', '#']).unwrap_or(endpoint.len());
     endpoint[..end].trim_end_matches('/')
 }
 
@@ -358,6 +373,13 @@ mod relay_endpoint_tests {
     use super::*;
 
     #[test]
+    fn the_2_0_relay_and_directory_bases_are_one_endpoint_on_the_new_host() {
+        assert_eq!(DEFAULT_RELAY_URL, DEFAULT_ACCOUNT_DIRECTORY_URL);
+        assert!(DEFAULT_ACCOUNT_DIRECTORY_URL.starts_with(DEFAULT_SERVICE_ORIGIN));
+        assert!(!DEFAULT_RELAY_URL.contains("remote.openbitfun.com"));
+    }
+
+    #[test]
     fn base_strips_version_query_and_fragment() {
         assert_eq!(
             relay_endpoint_base("https://remote.openbitfun.com/relay?v=1.0.9"),
@@ -420,7 +442,10 @@ mod relay_endpoint_tests {
     #[test]
     fn page_url_keeps_version_before_the_fragment() {
         assert_eq!(
-            relay_page_url("https://remote.openbitfun.com/relay?v=1.0.9", "#/pair?did=abc"),
+            relay_page_url(
+                "https://remote.openbitfun.com/relay?v=1.0.9",
+                "#/pair?did=abc"
+            ),
             "https://remote.openbitfun.com/relay/?v=1.0.9#/pair?did=abc"
         );
         assert_eq!(

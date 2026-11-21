@@ -12,6 +12,7 @@ import {
   type ConnectionState,
   type TransportKind,
 } from "./backendConnection";
+import { advanceFleetCursor, fleetCursorHasSeen, readFleetHelloAnswer, type FleetCursor } from "./fleetTypes";
 
 /** The wire, as the native module exposes it. */
 export interface JsonWireBackend {
@@ -34,7 +35,11 @@ function parseJson(text: string): unknown {
 function readInfo(text: string): BackendInfo {
   const value = (parseJson(text) ?? {}) as Record<string, unknown>;
   const read = (key: string) => (typeof value[key] === "string" && value[key] ? (value[key] as string) : null);
-  return { version: read("version"), platform: read("platform"), dataDir: read("dataDir") };
+  const info: BackendInfo = { version: read("version"), platform: read("platform"), dataDir: read("dataDir") };
+  // A fleet entry says so in its ready info (the native host) or hello (a Link stream).
+  const fleet = readFleetHelloAnswer(value.fleet);
+  if (fleet) info.fleet = fleet;
+  return info;
 }
 
 function readBatch(text: string): BackendEvent[] {
@@ -47,6 +52,8 @@ function readBatch(text: string): BackendEvent[] {
     if (typeof record.event !== "string") continue;
     const event: BackendEvent = { event: record.event, payload: record.payload ?? null };
     if (typeof record.seq === "number") event.seq = record.seq;
+    if (typeof record.origin === "string" && record.origin) event.origin = record.origin;
+    if (typeof record.originInstance === "string" && record.originInstance) event.originInstance = record.originInstance;
     out.push(event);
   }
   return out;
@@ -61,6 +68,8 @@ export function createJsonWireConnection(
   const subscribers = new Set<(events: readonly BackendEvent[]) => void>();
   const maxBackoffMs = options.maxBackoffMs ?? 5000;
   let lastSeq: number | null = null;
+  /** Per-origin cursor for fleet frames, whose `seq` is the origin's own. */
+  const originCursor: FleetCursor = {};
   let polling = false;
   let readyPromise: Promise<BackendInfo> | null = null;
 
@@ -86,9 +95,23 @@ export function createJsonWireConnection(
 
   function deliver(batch: BackendEvent[]): void {
     // A replay after a reconnect may repeat what was already delivered.
-    const fresh = batch.filter(item => item.seq === undefined || lastSeq === null || item.seq > lastSeq);
+    const fresh = batch.filter(item => {
+      if (item.seq === undefined) return true;
+      if (item.origin) {
+        const instance = item.originInstance ?? "";
+        if (item.event === "backend://events-dropped") {
+          // The origin skipped ahead: its cursor restarts at the notice's own seq.
+          originCursor[item.origin] = { instanceId: instance, seq: item.seq };
+          return true;
+        }
+        if (fleetCursorHasSeen(originCursor, item.origin, instance, item.seq)) return false;
+        advanceFleetCursor(originCursor, item.origin, instance, item.seq);
+        return true;
+      }
+      return lastSeq === null || item.seq > lastSeq;
+    });
     if (fresh.length === 0) return;
-    for (const item of fresh) if (item.seq !== undefined) lastSeq = item.seq;
+    for (const item of fresh) if (item.seq !== undefined && !item.origin) lastSeq = item.seq;
     for (const subscriber of [...subscribers]) {
       try {
         subscriber(fresh);

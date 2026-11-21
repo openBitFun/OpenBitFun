@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { createBackend } from "./support";
+import { createBackend, openSession, showAllSessions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -33,6 +33,7 @@ test("welcome empty state starter cards populate composer without auto-sending",
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
+  await openSession(app, "Fresh studio");
   await app.waitFor("How can I help today?");
   expect(app.texts()).toContain("Summarize workspace architecture");
   expect(app.texts()).toContain("Review uncommitted Git changes");
@@ -64,10 +65,16 @@ test("welcome empty state also renders when no sessions exist yet", async () => 
   const backend = createBackend({ sessions: [] });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
+  // With no session, the new shell reaches one through All sessions › By device › "New session here".
+  await showAllSessions(app);
+  await app.press("all-sessions-tab-by-device");
+  await app.hover("workspace-row-workspace-1");
+  await app.press("new-session-here-workspace-1");
   await app.waitFor("How can I help today?");
   await app.press("starter-card-plan-feature");
   expect(app.value("composer")).toBe("Help me plan and implement a new feature step by step.");
-  expect(backend.actions()).not.toContain("create_session");
+  // A starter card fills the composer; it never sends a turn by itself.
+  expect(backend.actions()).not.toContain("submit_user_message");
 });
 
 test("tauri transcript progressively discloses thinking, compact tool strips, checklist, diff, aux file open, and live ambient status", async () => {
@@ -136,7 +143,7 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Muse workflow");
+  await openSession(app, "Muse workflow");
   await app.waitFor("Inspect and update the pipeline.");
 
   // Layered progressive disclosure: compact tool strips show cleanly; reasoning & checklist/diff stay collapsed.
@@ -174,13 +181,14 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-rich", turnId: "turn-live-tauri" },
   });
-  await app.waitFor("Working on your turn…");
+  // The header carries the running state; the ambient strip above the composer is gone (visual spec §5).
+  await app.waitFor("session-status-working");
 
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
     payload: { sessionId: "session-rich", text: "Evaluating edge cases.", contentType: "thinking" },
   });
-  await app.waitFor("Thinking through the request…");
+  await app.waitFor("Thinking…");
   // Live reasoning opens by itself while the model is still thinking.
   await app.waitFor("Evaluating edge cases.");
 
@@ -188,7 +196,6 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
     event: "agentic://text-chunk",
     payload: { sessionId: "session-rich", delta: "All checks are green." },
   });
-  await app.waitFor("Streaming response…");
   await app.waitFor("All checks are green.");
 
   await app.host.send("openbitfun.event", {
@@ -236,6 +243,7 @@ test("conversation sub-header search, copy transcript, thread actions overlay, f
     },
   });
 
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Ready to fork.");
   // Literal "×" is never rendered outside open tab close buttons inside thread actions overlay.
   expect(app.texts().filter(text => text === "×")).toHaveLength(0);
@@ -282,7 +290,7 @@ test("layered 3-band chat input dock supports attachments, agent selector, unifi
     },
   });
 
-  await app.waitFor("NSH skeleton");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Message");
 
   // Band 1 attachment chip uses vector close icon rather than literal "×".
@@ -314,7 +322,8 @@ test("permission card and interactive question options answer blocking host inte
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Approval needed: run_command");
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Wants to run");
   expect(app.texts()).toContain("cargo test -p openbitfun-desktop");
 
   await app.press("Allow once");
@@ -322,7 +331,7 @@ test("permission card and interactive question options answer blocking host inte
     requestId: "perm-1",
     reply: "once",
   });
-  expect(app.texts()).not.toContain("Approval needed: run_command");
+  expect(app.texts()).not.toContain("Wants to run");
 
   await app.host.send("openbitfun.event", {
     event: "backend-event-toolawaitinguserinput",
@@ -362,25 +371,26 @@ test("sessions scene repaints reactively across dark and light Tauri palettes", 
     colorScheme: "dark",
   });
 
-  await app.waitFor("Return sends, Shift+Return inserts a line break");
-  expect(app.spanStyle("Return sends, Shift+Return inserts a line break").color).toBe("#94949cff");
+  await openSession(app, "NSH skeleton");
+  // The idle shortcut hint is gone (visual spec §5); a tool row's target is muted text too.
+  await app.waitFor("NavPanel.tsx");
+  expect(app.spanStyle("NavPanel.tsx").color).toBe("#94949cff");
 
   await app.press("Settings");
   // Settings opens on General; the scheme lives on the Appearance page.
   await app.press("nav-settings-page-appearance");
   await app.waitFor("appearance-light");
   await app.press("appearance-light");
-  // Settings replaces the nav panel with its own page list; Back returns to Sessions.
-  await app.press("settings-nav-back");
-  await app.waitFor("Return sends, Shift+Return inserts a line break");
-  expect(app.spanStyle("Return sends, Shift+Return inserts a line break").color).toBe("#5c6672ff");
+  // Back to the session through All sessions (the new shell has no settings back row).
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("NavPanel.tsx");
+  expect(app.spanStyle("NavPanel.tsx").color).toBe("#5c6672ff");
 });
 
 test("rename sends the whole session record the host deserializes", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.press("thread-actions-trigger");
   await app.press("Rename");
   await app.type("session-rename", "Renamed session");
@@ -441,6 +451,7 @@ test("a persisted round keeps its order and every tool card shows its result", a
     ],
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Ordered");
   await app.waitFor("All tests passed.");
   const texts = app.texts();
   const before = texts.indexOf("Let me run the tests.");
@@ -465,8 +476,7 @@ test("a persisted round keeps its order and every tool card shows its result", a
 test("a live round cuts its text at each tool call and shows the tool's result", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
   const send = (event: string, payload: Record<string, unknown>) =>
@@ -501,8 +511,7 @@ test("a live round cuts its text at each tool call and shows the tool's result",
 test("a running turn keeps streaming while another session is open", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
   await app.host.send("openbitfun.event", {
@@ -515,7 +524,7 @@ test("a running turn keeps streaming while another session is open", async () =>
   });
   await app.waitFor("Part one.");
 
-  await app.press("Terminal migration >> nth=0");
+  await openSession(app, "Terminal migration");
   await app.waitFor("Port the terminal.");
   expect(app.texts()).not.toContain("Part one.");
   // While the session is away its turn keeps arriving.
@@ -525,7 +534,7 @@ test("a running turn keeps streaming while another session is open", async () =>
   });
   expect(app.texts().join("\n")).not.toContain("Part two.");
 
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Part one. Part two.");
   expect(app.texts()).toContain("Keep going");
 });
@@ -533,8 +542,7 @@ test("a running turn keeps streaming while another session is open", async () =>
 test("a turn footer forks from that turn and opens the fork", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   await app.press("fork-turn-turn-1");
   expect(backend.calls.find(call => call.action === "fork_session")?.request).toMatchObject({
@@ -552,8 +560,7 @@ test("a turn footer forks from that turn and opens the fork", async () => {
 test("the permission pill writes the session's mode", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("composer-plus");
   await app.press("composer-plus");
   await app.press("permission-mode-pill");
@@ -569,8 +576,7 @@ test("the permission pill writes the session's mode", async () => {
 test("editing a user message rolls back to that turn and reruns it", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Add the plan and fix the imports.");
   await app.press("edit-rerun-turn-2");
   await app.waitFor("Roll back and rerun");
@@ -591,8 +597,7 @@ test("editing a user message rolls back to that turn and reruns it", async () =>
 test("the context ring reports the window the host measured", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   expect(app.shows("context-usage")).toBe(false);
   await app.host.send("openbitfun.event", {
@@ -607,8 +612,7 @@ test("the context ring reports the window the host measured", async () => {
 test("slash commands run the host command instead of sending a turn", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
   // The menu is the host's list, the one the IM bots offer too.
@@ -646,8 +650,7 @@ test("a host without session commands says so instead of listing a client copy",
     },
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   await app.type("composer", "/");
   await app.waitFor("This host has no session commands. Update OpenBitFun on it to use /compact, /init and /reload.");
@@ -657,8 +660,7 @@ test("a host without session commands says so instead of listing a client copy",
 test("the host decides whether a mid-turn message steers or queues", async () => {
   const backend = createBackend({ hostQueue: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
   backend.setRunningTurn("session-1", "turn-9");
@@ -666,7 +668,7 @@ test("the host decides whether a mid-turn message steers or queues", async () =>
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
 
   // The stored policy is the host's; the composer forwards the message as is.
   await app.type("composer", "Also check the tests");
@@ -702,8 +704,7 @@ test("a host without a queue or submit_user_message is told to update, nothing i
     },
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
 
   // An idle session still starts its turn on the older host.
@@ -721,7 +722,7 @@ test("a host without a queue or submit_user_message is told to update, nothing i
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
   // Without the host queue there is an explicit state, not a local list.
   await app.waitFor("This host has no message queue. Update OpenBitFun on it to queue messages during a turn.");
   await app.type("composer", "Mid-turn note");
@@ -735,15 +736,14 @@ test("a host without a queue or submit_user_message is told to update, nothing i
 test("stop goes through the host's stop, which picks interrupt or cancel", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
   await app.press("Stop");
   await app.waitUntil(() => backend.actions().includes("stop_dialog_turn"));
   expect(backend.calls.find(call => call.action === "stop_dialog_turn")?.request).toMatchObject({
@@ -761,7 +761,7 @@ test("unread marks are the host's, and legacy local seen marks are handed over o
     host: { handlers: backend.handlers },
     storage: { "openbitfun.nsh.session-seen.v1": JSON.stringify({ "session-2": 1762950000000 }) },
   });
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   // The legacy stamp travels to the host with the row's workspace, once.
   await app.waitUntil(() => backend.seenMarks.some(mark => mark.sessionId === "session-2"));
   expect(backend.seenMarks.find(mark => mark.sessionId === "session-2")).toMatchObject({
@@ -774,7 +774,7 @@ test("unread marks are the host's, and legacy local seen marks are handed over o
   });
 
   // Opening a session acknowledges the host receipt; no local stamp is written.
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitUntil(() => backend.seenMarks.some(mark => mark.sessionId === "session-1"));
   expect(app.storage()["openbitfun.nsh.session-seen.v1"]).toBeUndefined();
 });
@@ -792,6 +792,7 @@ test("a long history opens on its newest turns and loads earlier ones on request
   });
   withCustomTurns(backend, { "session-long": turns });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "Long history");
   await app.waitFor("Answer 3");
   const first = backend.calls.find(call => call.action === "get_session_transcript_view")?.request;
   expect(first).toMatchObject({ session_id: "session-long", limit: 30 });
@@ -805,7 +806,8 @@ test("a long history opens on its newest turns and loads earlier ones on request
 test("an approval can be rejected with a reason the agent receives", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("Approval needed: run_command");
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Wants to run");
   await app.press("reject-with-reason-perm-1");
   await app.type("reject-reason-perm-1", "Use the dry-run flag first");
   await app.press("Reject with reason");
@@ -814,7 +816,7 @@ test("an approval can be rejected with a reason the agent receives", async () =>
     reply: "reject",
     feedback: "Use the dry-run flag first",
   });
-  await app.waitFor("Approval needed: run_command", { state: "gone" });
+  await app.waitFor("Wants to run", { state: "gone" });
 });
 
 test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream completes", async () => {
@@ -854,6 +856,7 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
   // the app's own work per chunk.
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers }, clock: {} });
 
+  await openSession(app, "Long day");
   const started = Date.now();
   await app.waitFor("Answer 199", { timeout: 20_000 });
   const renderMs = Date.now() - started;
@@ -895,8 +898,7 @@ test("a 200-turn transcript with tool output renders, and a 2,000-chunk stream c
 test("a narrow chat runs full width with the composer controls in its + menu", async () => {
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, width: 1440, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Attach");
   expect(app.shows("agent-picker")).toBe(true);
 
@@ -925,8 +927,7 @@ test("a narrow chat runs full width with the composer controls in its + menu", a
 test("an older host without the transcript view says so instead of projecting turns itself", async () => {
   const backend = createBackend({ transcriptViewUnsupported: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("transcript-host-update");
   expect(app.texts().join("\n")).toContain("This host cannot show the conversation");
   // No client-side projection of the raw records, and no welcome screen either.
@@ -948,8 +949,7 @@ test("a live turn gives way when the host's view reports it settled, and re-read
   ];
   withCustomTurns(backend, { "session-1": persisted });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Rendered with a virtualized list.");
 
   const send = (event: string, payload: Record<string, unknown>) =>

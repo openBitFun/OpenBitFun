@@ -7,7 +7,6 @@ import {
   weekdayShortLabels,
 } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { peerScope } from "../peerState";
 import {
   activeRoutineCount,
   calendarCells,
@@ -33,8 +32,6 @@ import {
   routineDraft,
   routineFilter,
   routineFormError,
-  routinePeerDeliveryNotice,
-  routineReportPolicySupported,
   routines,
   routinesBusy,
   routinesError,
@@ -49,12 +46,14 @@ import {
   toggleRoutineEnabled,
   updateRoutineDraft,
   type CronJobRecord,
+  type CronSchedule,
   type RoutineFilter,
   type RoutineReportPolicy,
   type RoutineScheduleKind,
 } from "../routinesStore";
-import { activeWorkspaceId, sessions, workspaces } from "../state";
-import { palette, radii, textLineHeight, textSize } from "../theme";
+import { activeWorkspaceId, deviceContext, sessions, workspaces } from "../state";
+import { palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
+import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
 import {
   InsetGroup,
@@ -307,6 +306,31 @@ function TimeLabel(props: { label: string }) {
 }
 
 /**
+ * A schedule as words ("Every 30m", "Once: …"). A cron schedule has no words
+ * from the host, so its expression is shown as it is, in mono, with no label.
+ */
+function scheduleText(schedule: CronSchedule): string {
+  if (schedule.kind === "cron") return [schedule.expr, schedule.tz].filter(Boolean).join(" · ");
+  return formatScheduleSummary(schedule);
+}
+
+function ScheduleText(props: { schedule: CronSchedule }) {
+  return (
+    <Text
+      style={{
+        ...(props.schedule.kind === "cron" ? textStyle("mono", { color: palette().textMuted }) : textStyle("caption", { tabular: true })),
+        flexShrink: 0,
+        maxWidth: "60%",
+        numberOfLines: 1,
+        textOverflow: "ellipsis",
+      }}
+    >
+      {scheduleText(props.schedule)}
+    </Text>
+  );
+}
+
+/**
  * One routine in the inset grouped list. The text area opens the editor; the
  * switch and the "…" menu sit beside it (siblings, never nested presses).
  */
@@ -371,18 +395,12 @@ function RoutineRow(props: { job: () => CronJobRecord; first: boolean }) {
           >
             {props.job().name}
           </Text>
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(12, 1.4),
-              numberOfLines: 1,
-              textOverflow: "ellipsis-middle",
-            }}
-          >
-            {`${formatScheduleSummary(props.job().schedule)} · ${routineTargetLabel(props.job())}`}
-          </Text>
+          <View style={{ flexDirection: "row", alignItems: "baseline", minWidth: 0, gap: space.xs }}>
+            <ScheduleText schedule={props.job().schedule} />
+            <Text style={{ ...textStyle("caption", { tabular: true }), flexShrink: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis-middle" }}>
+              {`· ${routineTargetLabel(props.job())}`}
+            </Text>
+          </View>
           <If when={props.job().payload.text ?? ""}>
             {text => (
               <Text
@@ -522,7 +540,7 @@ function DueSection() {
                 first={index() === 0}
                 leading={<TimeLabel label={item().timeLabel} />}
                 label={item().job.name}
-                detail={`${formatScheduleSummary(item().job.schedule)} · ${routineTargetLabel(item().job)}`}
+                detail={`${scheduleText(item().job.schedule)} · ${routineTargetLabel(item().job)}`}
                 chevron
                 accessibilityLabel={`routine-due-${item().job.id}-${item().atMs}`}
                 onPress={() => openEditRoutineDraft(item().job)}
@@ -568,9 +586,9 @@ function RoutineListSection() {
             detail={routines().length === 0 ? tr("routines.emptySubtitle") : tr("routines.emptyFilteredSubtitle")}
             action={
               <Button
-                label={routines().length === 0 ? tr("routines.createRoutine") : tr("routines.showAllRoutines")}
+                label={routines().length === 0 ? tr("routines.newRoutine") : tr("routines.showAllRoutines")}
                 variant="secondary"
-                size="sm"
+                size="md"
                 accessibilityLabel="routines-empty-action"
                 onPress={() => {
                   if (routines().length === 0) openCreateRoutineDraft();
@@ -1119,15 +1137,11 @@ function RoutineEditorModal() {
                   size="md"
                   options={policyOptions()}
                   value={routineDraft().reportPolicy}
-                  disabled={!routineReportPolicySupported()}
                   accessibilityLabel="routine-policy-select"
                   style={{ width: "100%" }}
                   onChange={reportPolicy => updateRoutineDraft({ reportPolicy })}
                 />
               </View>
-              <If when={routinePeerDeliveryNotice()}>
-                {notice => <InlineBanner tone="warning" message={notice()} />}
-              </If>
             </View>
           </View>
 
@@ -1161,9 +1175,9 @@ function routineSessionOptions(): SelectDropdownOption<string>[] {
   }));
 }
 
-function RoutinesBody() {
+function RoutinesBody(props: { embedded?: boolean }) {
   return (
-    <StudioBody>
+    <StudioBody style={props.embedded ? libraryBodyStyle() : undefined}>
       <If when={routinesError()}>
         {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
       </If>
@@ -1173,9 +1187,6 @@ function RoutinesBody() {
           message={routinesNotice() ?? ""}
           onDismiss={() => routinesNotice.set("")}
         />
-      </If>
-      <If when={routinePeerDeliveryNotice()}>
-        {notice => <InlineBanner tone="warning" message={notice()} />}
       </If>
 
       <If when={routines().length > 0}>
@@ -1193,9 +1204,48 @@ function RoutinesBody() {
   );
 }
 
-export function RoutinesScene() {
+export function RoutinesScene(props: { embedded?: boolean }) {
+  const refreshControls = () => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+      <If when={routinesBusy()}>
+        <Spinner size={14} />
+      </If>
+      <IconButton
+        icon="refresh"
+        size="md"
+        accessibilityLabel="routines-refresh"
+        tooltip={tr("routines.refreshTooltip")}
+        disabled={routinesBusy()}
+        onPress={() => void loadRoutines()}
+      />
+    </View>
+  );
+  const newButton = () => (
+    <Button
+      label={tr("routines.newRoutine")}
+      variant="primary"
+      size="md"
+      leadingIcon="plus"
+      accessibilityLabel="routines-new"
+      onPress={() => openCreateRoutineDraft()}
+    />
+  );
+  const filterTabs = () => (
+    <SegmentedTabs size="sm" options={filterTabOptions()} value={routineFilter()} onChange={next => routineFilter.set(next)} />
+  );
+  const searchField = () => (
+    <SearchInput
+      size="md"
+      value={routineQuery()}
+      placeholder={tr("routines.polish.searchPlaceholder")}
+      accessibilityLabel="routines-search-input"
+      style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 240 }}
+      onChange={value => routineQuery.set(value)}
+    />
+  );
   effect(() => {
-    const scopeKey = peerScope()?.deviceId ?? "local";
+    // The device the Library looks at (fleet) or the driven peer (older backends).
+    const scopeKey = `local:${deviceContext()}`;
     void scopeKey;
     ensureCronHostReady();
     void loadRoutines();
@@ -1213,56 +1263,35 @@ export function RoutinesScene() {
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "row", backgroundColor: palette().canvas }}
     >
       <Scroll style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-        <StudioHeader
-          title={tr("routines.title")}
-          subtitle={tr("routines.subtitle")}
-          actions={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <If when={routinesBusy()}>
-                <Spinner size={14} />
-              </If>
-              <IconButton
-                icon="refresh"
-                size="md"
-                accessibilityLabel="routines-refresh"
-                tooltip={tr("routines.refreshTooltip")}
-                disabled={routinesBusy()}
-                onPress={() => void loadRoutines()}
-              />
-              <Button
-                label={tr("routines.newRoutine")}
-                variant="primary"
-                size="md"
-                leadingIcon="plus"
-                accessibilityLabel="routines-new"
-                onPress={() => openCreateRoutineDraft()}
-              />
-            </View>
-          }
-          extra={
-            <StudioToolbar
-              leading={
-                <SegmentedTabs
-                  size="sm"
-                  options={filterTabOptions()}
-                  value={routineFilter()}
-                  onChange={next => routineFilter.set(next)}
-                />
+        <If
+          when={props.embedded}
+          else={
+            <StudioHeader
+              title={tr("routines.title")}
+              subtitle={tr("routines.subtitle")}
+              actions={
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                  {refreshControls()}
+                  {newButton()}
+                </View>
               }
-              trailing={
-                <SearchInput
-                  size="md"
-                  value={routineQuery()}
-                  placeholder={tr("routines.polish.searchPlaceholder")}
-                  accessibilityLabel="routines-search-input"
-                  style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 240 }}
-                  onChange={value => routineQuery.set(value)}
-                />
-              }
+              extra={<StudioToolbar leading={filterTabs()} trailing={searchField()} />}
             />
           }
-        />
-        <RoutinesBody />
+        >
+          <LibraryToolbar
+            accessibilityLabel="routines-toolbar"
+            leading={
+              <>
+                {filterTabs()}
+                {searchField()}
+                {refreshControls()}
+              </>
+            }
+            primary={newButton()}
+          />
+        </If>
+        <RoutinesBody embedded={props.embedded} />
       </Scroll>
 
       <If when={sideCalendar()}>

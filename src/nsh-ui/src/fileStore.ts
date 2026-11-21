@@ -23,7 +23,6 @@ import {
   type GitStatus,
   type WorkspaceEntry,
 } from "./api";
-import { peerScope } from "./peerState";
 import {
   activeWorkspace,
   activeWorkspaceId,
@@ -1137,7 +1136,7 @@ let snapshotKey: string | null = null;
 
 function currentWorkspaceKey(): string | null {
   const id = activeWorkspaceId();
-  return id ? `${peerScope()?.deviceId ?? "local"}::${id}` : null;
+  return id ? `local::${id}` : null;
 }
 
 function rememberWorkspaceKey(): void {
@@ -1304,11 +1303,11 @@ export function ensureWorkspaceWatch(): void {
   installWatchListeners();
   const ws = activeWorkspace();
   if (!ws) return;
-  const key = `${peerScope()?.deviceId ?? "local"}::${ws.id}::${ws.rootPath}`;
+  const key = `local::${ws.id}::${ws.rootPath}`;
   if (watchedRoot?.key === key) return;
   const previous = watchedRoot;
   watchedRoot = { key, workspaceId: ws.id, root: ws.rootPath };
-  if (previous && !previous.key.startsWith(`${peerScope()?.deviceId ?? "local"}::`)) {
+  if (previous && !previous.key.startsWith(`local::`)) {
     // The previous root belonged to another device; its watcher is not ours to stop.
   } else if (previous) {
     void invokeCommand<unknown>("stop_file_watch", { workspaceId: previous.workspaceId, path: previous.root }).catch(

@@ -906,3 +906,387 @@ async fn peer_link_e2e_streams_live_tokens_over_the_relay_node() {
     controller_node.stop().await;
     target_node.stop().await;
 }
+
+// ── Fleet over the mesh (two desktop hosts and a client) ─────────────────────
+
+/// A desktop backend with its fleet: fleet verbs go to the fleet layer as the
+/// desktop routes them (entry verbs, owner verbs as mesh host verbs), the
+/// rest to [`EchoBackend`] (`page_list` stands in for a turn's events).
+struct FleetEchoBackend {
+    echo: EchoBackend,
+    fleet: std::sync::OnceLock<Arc<openbitfun_obp::fleet::host::FleetHost>>,
+    instance: std::sync::OnceLock<String>,
+}
+
+impl ObpBackend for FleetEchoBackend {
+    fn dispatch(&self, command: String, args: Value) -> ObpDispatchFuture {
+        if openbitfun_obp::fleet::host::is_fleet_host_command(&command) {
+            let fleet = self.fleet.get().cloned();
+            let instance = self.instance.get().cloned().unwrap_or_default();
+            return Box::pin(async move {
+                let fleet = fleet
+                    .ok_or_else(|| openbitfun_obp::fleet::host::fleet_unavailable(&command))?;
+                fleet
+                    .dispatch(&command, args, &instance)
+                    .await
+                    .unwrap_or_else(|| Err("not a fleet verb".to_string()))
+            });
+        }
+        self.echo.dispatch(command, args)
+    }
+
+    fn events(&self) -> Arc<EventHub> {
+        self.echo.events()
+    }
+
+    fn info(&self) -> Value {
+        self.echo.info()
+    }
+
+    fn is_account_device_host_verb(&self, command: &str) -> bool {
+        super::mesh_verbs::is_account_device_host_verb(command)
+    }
+
+    fn mesh_capabilities(&self) -> Vec<&'static str> {
+        let mut capabilities = super::mesh_verbs::CAPABILITIES.to_vec();
+        if self.fleet.get().is_some() {
+            capabilities.push(openbitfun_product_domains::fleet::FLEET_V1_CAPABILITY);
+        }
+        capabilities
+    }
+
+    fn fleet_mux(&self) -> Option<Arc<openbitfun_obp::fleet::mux::FleetMux>> {
+        self.fleet.get().map(|fleet| fleet.mux())
+    }
+}
+
+/// The desktop's fleet backend facts and dispatch, with a fixed digest.
+struct DesktopLikeOwner {
+    device_id: String,
+    instance: String,
+    backend: Arc<FleetEchoBackend>,
+}
+
+impl openbitfun_obp::fleet::router::FleetBackend for DesktopLikeOwner {
+    fn local_device_id(&self) -> Option<String> {
+        Some(self.device_id.clone())
+    }
+
+    fn local_facts(&self) -> openbitfun_product_domains::fleet::FleetDeviceFacts {
+        use openbitfun_product_domains::fleet::*;
+        // `crate::fleet::local_facts` without the machine identity file.
+        FleetDeviceFacts {
+            device_id: self.device_id.clone(),
+            name: format!("{} name", self.device_id),
+            host_kind: FleetHostKind::Desktop,
+            is_client_device: true,
+            state: FleetDeviceState::Online,
+            version: Some(crate::VERSION.to_string()),
+            fleet_protocol: Some(FLEET_PROTOCOL_VERSION),
+            ..FleetDeviceFacts::default()
+        }
+    }
+
+    fn local_digest(
+        &self,
+        _request: openbitfun_product_domains::fleet::FleetDigestRequest,
+    ) -> openbitfun_obp::fleet::FleetFuture<
+        '_,
+        Result<openbitfun_product_domains::fleet::FleetDigest, String>,
+    > {
+        use openbitfun_product_domains::fleet::*;
+        Box::pin(async move {
+            Ok(FleetDigest {
+                device_id: self.device_id.clone(),
+                instance_id: self.instance.clone(),
+                revision: 1,
+                full: true,
+                workspaces: vec![FleetWorkspace {
+                    workspace_id: format!("ws-{}", self.device_id),
+                    name: "repo".into(),
+                    root_path: "/src/repo".into(),
+                    kind: FleetWorkspaceKind::Local,
+                    ..FleetWorkspace::default()
+                }],
+                sessions: vec![FleetSession {
+                    workspace_id: format!("ws-{}", self.device_id),
+                    session_id: format!("session-{}", self.device_id),
+                    title: "turn".into(),
+                    agent_type: "agentic".into(),
+                    status: FleetSessionStatus::Running,
+                    last_activity_ms: 1,
+                    ..FleetSession::default()
+                }],
+                ..FleetDigest::default()
+            })
+        })
+    }
+
+    fn dispatch_local(
+        &self,
+        command: String,
+        args: Value,
+    ) -> openbitfun_obp::fleet::FleetFuture<'_, Result<Value, openbitfun_obp::fleet::FleetCallError>>
+    {
+        Box::pin(openbitfun_obp::fleet::host::dispatch_as_account_device(
+            self.backend.as_ref(),
+            &self.device_id,
+            command,
+            args,
+        ))
+    }
+}
+
+struct OnePeer(openbitfun_obp::fleet::sync::FleetPeerPresence);
+
+impl openbitfun_obp::fleet::host::FleetPresenceSource for OnePeer {
+    fn presence(
+        &self,
+    ) -> openbitfun_obp::fleet::FleetFuture<'_, Vec<openbitfun_obp::fleet::sync::FleetPeerPresence>>
+    {
+        let presence = vec![self.0.clone()];
+        Box::pin(async move { presence })
+    }
+}
+
+struct FleetDesktop {
+    server: Arc<ObpServer>,
+    hub: Arc<EventHub>,
+    fleet: Arc<openbitfun_obp::fleet::host::FleetHost>,
+    _dir: tempfile::TempDir,
+}
+
+async fn fleet_desktop(
+    id: &str,
+    secret: [u8; 32],
+    peer: (&str, [u8; 32]),
+    client: (&str, [u8; 32]),
+) -> FleetDesktop {
+    use openbitfun_obp::fleet::host::{FleetHost, FleetHostParts};
+    use openbitfun_obp::fleet::sync::{FleetPeerPresence, FleetSyncConfig};
+    let dir = tempfile::tempdir().unwrap();
+    let hub = EventHub::new(256);
+    let backend = Arc::new(FleetEchoBackend {
+        echo: EchoBackend {
+            hub: Arc::clone(&hub),
+        },
+        fleet: std::sync::OnceLock::new(),
+        instance: std::sync::OnceLock::new(),
+    });
+    let mut options = ObpServerOptions::new(dir.path().join("obp"));
+    options.loopback_port = 0;
+    let server = ObpServer::new(Arc::clone(&backend) as Arc<dyn ObpBackend>, options).unwrap();
+    let instance = server.instance_id().to_string();
+    backend.instance.set(instance.clone()).unwrap();
+    let authority = device(id, secret, &[peer, client]);
+    let links = crate::mesh::peer_link::PeerLinks::new(Arc::new(DialerConnector {
+        dialer: MeshDialer {
+            connector: Arc::new(LoopbackConnector),
+            authority: Arc::clone(&authority) as Arc<dyn MeshAuthority>,
+        },
+    }));
+    let fleet = FleetHost::start(
+        id.to_string(),
+        FleetHostParts {
+            backend: Arc::new(DesktopLikeOwner {
+                device_id: id.to_string(),
+                instance,
+                backend: Arc::clone(&backend),
+            }),
+            links,
+            presence: Arc::new(OnePeer(FleetPeerPresence {
+                device_id: peer.0.to_string(),
+                name: format!("{} name", peer.0),
+                host_kind: openbitfun_product_domains::fleet::FleetHostKind::Desktop,
+                online: true,
+                mesh: true,
+                route: None,
+                version: Some(crate::VERSION.to_string()),
+                as_of_ms: 1,
+                unsupported: None,
+            })),
+            authority: Arc::clone(&authority) as Arc<dyn MeshAuthority>,
+            hub: Arc::clone(&hub),
+            cache_path: Some(openbitfun_obp::fleet::index::index_cache_path(dir.path())),
+            config: FleetSyncConfig {
+                presence_poll: Duration::from_millis(200),
+                retry_min: Duration::from_millis(100),
+                retry_max: Duration::from_millis(500),
+                ..FleetSyncConfig::default()
+            },
+            on_local_event: None,
+        },
+    );
+    assert!(backend.fleet.set(Arc::clone(&fleet)).is_ok());
+    server.start_mesh(authority).await.unwrap();
+    FleetDesktop {
+        server,
+        hub,
+        fleet,
+        _dir: dir,
+    }
+}
+
+/// Two desktop hosts on the mesh and a phone-like client connected to one of
+/// them: the navigator of the entry lists both desktops with their
+/// workspaces and running sessions, a turn on the other desktop is started
+/// with `fleet_call` (resolved by session owner) and its events stream back
+/// to the client tagged with that desktop as origin; owner-only events stay
+/// home.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fleet_navigator_and_forwarded_turn_over_mesh() {
+    const CLIENT: [u8; 32] = [37; 32];
+    let _range = SHARED_DEVICE_ID_RANGE.lock().await;
+    let entry = fleet_desktop(
+        "fleet-entry-desk",
+        ALICE,
+        ("fleet-owner-desk", BOB),
+        ("fleet-phone", CLIENT),
+    )
+    .await;
+    let owner = fleet_desktop(
+        "fleet-owner-desk",
+        BOB,
+        ("fleet-entry-desk", ALICE),
+        ("fleet-phone", CLIENT),
+    )
+    .await;
+    let dialer = MeshDialer {
+        connector: Arc::new(LoopbackConnector),
+        authority: device(
+            "fleet-phone",
+            CLIENT,
+            &[("fleet-entry-desk", ALICE), ("fleet-owner-desk", BOB)],
+        ),
+    };
+    let target = MeshTarget {
+        device_id: "fleet-entry-desk".into(),
+        virtual_ip: Ipv4Addr::new(10, 126, 126, 4),
+        port: None,
+    };
+    let (_, info) = dialer.locate(&target).await.unwrap();
+    assert!(info.capabilities.contains(&"fleet_v1".to_string()));
+    let client = dialer
+        .connect(
+            &target,
+            MeshConnectOptions {
+                fleet: Some(json!({ "protocol": 1, "cursor": {} })),
+                ..MeshConnectOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(client.hello()["scope"], "account-device");
+    assert_eq!(client.hello()["fleet"]["deviceId"], "fleet-entry-desk");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let navigator = loop {
+        let navigator = client
+            .call("fleet_navigator", json!({ "request": {} }))
+            .await
+            .unwrap();
+        let devices = navigator["devices"].as_array().cloned().unwrap_or_default();
+        let ready = devices.len() == 2
+            && devices
+                .iter()
+                .all(|device| !device["workspaces"].as_array().unwrap().is_empty());
+        if ready || Instant::now() >= deadline {
+            break navigator;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let devices = navigator["devices"].as_array().unwrap();
+    assert_eq!(devices.len(), 2, "{navigator}");
+    let owner_row = devices
+        .iter()
+        .find(|device| device["deviceId"] == "fleet-owner-desk")
+        .unwrap();
+    assert_eq!(owner_row["state"], "online");
+    assert_eq!(owner_row["hostKind"], "desktop");
+    assert_eq!(
+        owner_row["workspaces"][0]["sessions"][0]["sessionId"],
+        "session-fleet-owner-desk"
+    );
+    assert_eq!(navigator["totals"]["running"], 2);
+
+    // Follow the owner, then start a turn there by session owner.
+    let applied = client
+        .call(
+            "fleet_subscribe",
+            json!({ "request": { "follow": { "fleet-owner-desk": { "all": true } } } }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied["applied"], true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let turn = client
+        .call(
+            "fleet_call",
+            json!({ "request": { "target": "fleet-owner-desk", "command": "page_list",
+                    "args": { "count": 3 } } }),
+        )
+        .await
+        .unwrap();
+    assert!(turn.is_null(), "{turn}");
+    let mut events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline
+        && !events
+            .iter()
+            .any(|event: &super::mesh_client::MeshObpEvent| event.event == "agentic://tool-event")
+    {
+        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
+            Ok(Some(event)) => events.push(event),
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+    let from_owner: Vec<&str> = events
+        .iter()
+        .filter(|event| event.origin.as_deref() == Some("fleet-owner-desk"))
+        .map(|event| event.event.as_str())
+        .collect();
+    assert_eq!(
+        from_owner
+            .iter()
+            .filter(|name| **name == "agentic://text-chunk")
+            .count(),
+        3,
+        "{events:?}"
+    );
+    assert!(from_owner.contains(&"agentic://tool-event"));
+    // Owner-only events of the owner never cross.
+    assert!(!from_owner
+        .iter()
+        .any(|name| name.starts_with("account://") || name.starts_with("mesh://")));
+    let owner_chunk = events
+        .iter()
+        .find(|event| event.origin.as_deref() == Some("fleet-owner-desk"))
+        .unwrap();
+    assert_eq!(
+        owner_chunk.origin_instance.as_deref(),
+        Some(owner.server.instance_id())
+    );
+    assert!(owner_chunk.seq <= owner.hub.last_seq());
+    // The entry's own events keep the entry as origin.
+    entry
+        .hub
+        .publish("agentic://text-chunk", json!({ "index": "here" }));
+    let own = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = client.next_event().await.unwrap();
+            if event.payload["index"] == "here" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(own.origin.as_deref(), Some("fleet-entry-desk"));
+
+    client.close().await;
+    entry.fleet.shutdown();
+    owner.fleet.shutdown();
+    entry.server.shutdown();
+    owner.server.shutdown();
+}

@@ -39,8 +39,8 @@ use crate::infrastructure::PathManager;
     feature = "remote-connect"
 ))]
 pub use account_device_rpc::{
-    decode_device_dispatch_response, device_dispatch_wire_args, device_dispatch_wire_value,
-    encode_device_dispatch_command, invoke_device_dispatch, AccountRuntimeDeviceDispatchRpc,
+    device_dispatch_wire_args, device_dispatch_wire_value, invoke_device_dispatch,
+    AccountRuntimeDeviceDispatchRpc,
 };
 #[cfg(all(
     feature = "agent-runtime",

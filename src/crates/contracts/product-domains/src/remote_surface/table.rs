@@ -18,7 +18,7 @@
 use super::{
     HostSupport, OperationDefinition, OperationSurface, PeerStance, RemoteWorkspaceStance,
 };
-use PeerStance::{ControllerLocal, HostControlPlane, OperatorOnly, Proxied};
+use PeerStance::{ControllerLocal, FleetEntry, HostControlPlane, OperatorOnly, Proxied};
 use RemoteWorkspaceStance::{Agnostic, LocalOnly, Routed, Unaudited, Unsupported};
 
 const fn op(
@@ -33,6 +33,7 @@ const fn op(
         remote_workspace,
         peer,
         cli_peer,
+        cloud_peer: CLOUD_NOT_SERVED,
     }
 }
 
@@ -50,6 +51,22 @@ const fn host_invoke_only(
         remote_workspace,
         peer,
         cli_peer,
+        cloud_peer: CLOUD_NOT_SERVED,
+    }
+}
+
+/// A command only the account's cloud node serves (`superagent_*`).
+/// Frontends send it with `fleet_call {target: "cloud-…"}` (`ByTarget`); it
+/// never depends on a workspace filesystem (Agnostic), and desktop and CLI
+/// hosts answer it unsupported.
+const fn cloud_node(id: &'static str) -> OperationDefinition {
+    OperationDefinition {
+        id,
+        surface: OperationSurface::CloudNode,
+        remote_workspace: RemoteWorkspaceStance::Agnostic,
+        peer: PeerStance::Proxied,
+        cli_peer: CLI_CLOUD_NODE_ONLY,
+        cloud_peer: HostSupport::Handled,
     }
 }
 
@@ -66,6 +83,7 @@ const fn retired(id: &'static str, reason: &'static str) -> OperationDefinition 
         remote_workspace: RemoteWorkspaceStance::LocalOnly,
         peer: PeerStance::Retired { reason },
         cli_peer: HostSupport::Unsupported { reason },
+        cloud_peer: HostSupport::Unsupported { reason },
     }
 }
 
@@ -96,6 +114,13 @@ const LAN_RELAY_RETIRED: &str =
 // OpenBitFun Link: the device network runs in-process and joins by account
 // sign-in; network credentials are never shown, and the EasyTier app path
 // for phones is gone.
+// OpenBitFun 2.0: the 1.x relay transport (device routing socket, relay RPC,
+// HostInvoke, its control plane and host streams) is not part of 2.0. Devices
+// reach each other over OBP on OpenBitFun Link.
+const RELAY_TRANSPORT_RETIRED: &str =
+    "the OpenBitFun relay transport was retired in OpenBitFun 2.0; devices of the account reach each other over OBP on OpenBitFun Link (the fleet)";
+const RELAY_HOST_INVOKE_RETIRED: &str =
+    "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)";
 const MESH_PHONE_JOIN_RETIRED: &str =
     "phones no longer join the device network with the EasyTier app; network credentials are never shown";
 
@@ -140,30 +165,45 @@ pub(super) const SOFT_EMPTY_ACP_CLIENTS: HostSupport = HostSupport::SoftEmpty {
 pub(super) const SOFT_EMPTY_BACKGROUND_COMMANDS: HostSupport = HostSupport::SoftEmpty {
     reason: "background command activities are desktop-hosted; the CLI peer host reports none",
 };
+/// The cloud node cell of every desktop and CLI row: the cloud node runs no
+/// Agent runtime and serves only its own `superagent_*` rows.
+pub(super) const CLOUD_NOT_SERVED: HostSupport = HostSupport::Unsupported {
+    reason:
+        "the account's cloud node runs no Agent runtime and serves only the superagent commands",
+};
+/// The CLI cell of every cloud-node row.
+pub(super) const CLI_CLOUD_NODE_ONLY: HostSupport = HostSupport::Unsupported {
+    reason: super::CLOUD_NODE_ONLY_REASON,
+};
+/// Cell of every `FleetEntry` row: the fleet layer of a runtime host answers
+/// these on its OBP listener; the relay HostInvoke bridge never does.
+pub(super) const FLEET_LAYER_ONLY: HostSupport = HostSupport::Unsupported {
+    reason: "fleet commands are answered by the fleet layer of an OpenBitFun runtime host over OBP, not over the relay HostInvoke bridge",
+};
 
 #[rustfmt::skip]
 pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("accept_file",                                                Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("accept_operation",                                           Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("accept_session",                                             Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("account_connect_devices",                                    Agnostic,    ControllerLocal,  REFUSED),
+    retired("account_connect_devices", RELAY_TRANSPORT_RETIRED),
     op("account_delete_device",                                      Agnostic,    ControllerLocal,  REFUSED),
-    op("account_device_rpc",                                         Agnostic,    ControllerLocal,  REFUSED),
-    op("account_execute_on_device",                                  Agnostic,    ControllerLocal,  REFUSED),
+    retired("account_device_rpc", RELAY_TRANSPORT_RETIRED),
+    retired("account_execute_on_device", RELAY_TRANSPORT_RETIRED),
     op("account_get_credential_hint",                                Agnostic,    ControllerLocal,  REFUSED),
     op("account_github_info",                                        Agnostic,    ControllerLocal,  REFUSED),
     op("account_github_poll",                                        Agnostic,    ControllerLocal,  REFUSED),
     op("account_github_start",                                       Agnostic,    ControllerLocal,  REFUSED),
     op("account_list_devices",                                       Agnostic,    ControllerLocal,  REFUSED),
-    op("account_load_older_session",                                 Agnostic,    ControllerLocal,  REFUSED),
+    retired("account_load_older_session", RELAY_TRANSPORT_RETIRED),
     op("account_login",                                              Agnostic,    ControllerLocal,  REFUSED),
     op("account_logout",                                             Agnostic,    ControllerLocal,  REFUSED),
-    op("account_online_devices",                                     Agnostic,    ControllerLocal,  REFUSED),
-    op("account_relay_capabilities",                                Agnostic,    ControllerLocal,  REFUSED),
+    retired("account_online_devices", RELAY_TRANSPORT_RETIRED),
+    retired("account_relay_capabilities", RELAY_TRANSPORT_RETIRED),
     op("account_status",                                             Agnostic,    ControllerLocal,  REFUSED),
-    op("account_subscribe_session",                                  Agnostic,    ControllerLocal,  REFUSED),
+    retired("account_subscribe_session", RELAY_TRANSPORT_RETIRED),
     op("account_token_expired",                                      Agnostic,    ControllerLocal,  REFUSED),
-    op("account_unsubscribe_session",                                Agnostic,    ControllerLocal,  REFUSED),
+    retired("account_unsubscribe_session", RELAY_TRANSPORT_RETIRED),
     op("account_update_device_alias",                                Agnostic,    ControllerLocal,  REFUSED),
     op("acknowledge_external_ecosystems_command",                    Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("activate_session_goal",                                      Unaudited,   Proxied,          HANDLED),
@@ -309,6 +349,10 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     host_invoke_only("dispatch_target_workspace_bundle_chunk",       Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("dispatch_target_workspace_bundle_commit",      Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("dispatch_target_workspace_provision",          Agnostic,    HostControlPlane, HANDLED),
+    // `workspace_target_source_v1`: the target resolves a source it holds (a
+    // workspace id or a remote URL at a ref) into a pinned worktree; a CLI
+    // host advertises the capability because this row exists.
+    host_invoke_only("dispatch_target_workspace_provision_source",   Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("dispatch_target_workspace_sync",               Agnostic,    HostControlPlane, HANDLED),
     host_invoke_only("dispatch_target_workspace_sync_chunk",         Agnostic,    HostControlPlane, HANDLED),
     op("download_skill_market",                                      Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
@@ -329,6 +373,36 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("export_local_file_to_path",                                  Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("export_session_transcript",                                  Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("fetch_mcp_app_resource",                                     Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
+    // Fleet (one surface over every runtime host of the account). The serving
+    // runtime host's fleet layer answers these for the owner and account-device
+    // scopes (desktop backend commands; the CLI host answers them in its OBP
+    // backend, never over the relay HostInvoke bridge).
+    // The Inbox (`fleet_attention`): an index projection of the serving
+    // runtime host, with its read state.
+    op("fleet_attention",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    op("fleet_attention_mark_read",                                  Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    op("fleet_call",                                                 Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    // The device page (`fleet_device_detail`): an index projection of the
+    // serving runtime host, with the cloud agent's queued jobs.
+    op("fleet_device_detail",                                        Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    // Owner verb (`fleet_v1`): admitted on the mesh listener as an
+    // account-device host verb, like `obp_remote_command`.
+    host_invoke_only("fleet_digest",                                 Agnostic,    OperatorOnly,     REFUSED),
+    op("fleet_events",                                               Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    // The model relay for the account's cloud agent: the OBP scope admits it
+    // for the `cloud-agent` connection only, before this registry; peer hosts
+    // answer it in their OBP backend, never as a proxied product command.
+    host_invoke_only("fleet_model_cancel",                           Agnostic,    HostControlPlane, HANDLED),
+    host_invoke_only("fleet_model_poll",                             Agnostic,    HostControlPlane, HANDLED),
+    host_invoke_only("fleet_model_start",                            Agnostic,    HostControlPlane, HANDLED),
+    op("fleet_navigator",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    op("fleet_prompts",                                              Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    // All sessions › Recent: an index projection of the serving runtime host.
+    op("fleet_recent_sessions",                                      Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    // Owner verb (`fleet_v1`), see `fleet_digest`.
+    host_invoke_only("fleet_replay",                                 Agnostic,    OperatorOnly,     REFUSED),
+    op("fleet_subscribe",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
+    op("fleet_ui_bundle",                                            Agnostic,    FleetEntry,       FLEET_LAYER_ONLY),
     op("fork_session",                                               Routed,      Proxied,          HANDLED),
     retired("frontend_update_candidate_failed", FRONTEND_HOT_UPDATE_RETIRED),
     retired("frontend_update_candidate_ready", FRONTEND_HOT_UPDATE_RETIRED),
@@ -631,16 +705,16 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("page_unpublish",                                             Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("page_update",                                                Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("paste_files",                                                Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
-    op("peer_control_attach",                                        Agnostic,    HostControlPlane, HANDLED),
-    op("peer_control_detach",                                        Agnostic,    HostControlPlane, HANDLED),
-    op("peer_controller_set_active",                                 Agnostic,    ControllerLocal,  REFUSED),
-    op("peer_host_bridge_ready",                                     Agnostic,    ControllerLocal,  REFUSED),
-    op("peer_host_invoke_complete",                                  Agnostic,    ControllerLocal,  REFUSED),
+    retired("peer_control_attach", RELAY_HOST_INVOKE_RETIRED),
+    retired("peer_control_detach", RELAY_HOST_INVOKE_RETIRED),
+    retired("peer_controller_set_active", RELAY_HOST_INVOKE_RETIRED),
+    retired("peer_host_bridge_ready", RELAY_HOST_INVOKE_RETIRED),
+    retired("peer_host_invoke_complete", RELAY_HOST_INVOKE_RETIRED),
     op("peer_link_call",                                             Agnostic,    ControllerLocal,  REFUSED),
     op("peer_link_connect",                                          Agnostic,    ControllerLocal,  REFUSED),
     op("peer_link_disconnect",                                       Agnostic,    ControllerLocal,  REFUSED),
     op("peer_link_events",                                           Agnostic,    ControllerLocal,  REFUSED),
-    op("peer_mode_ping",                                             Agnostic,    HostControlPlane, HANDLED),
+    retired("peer_mode_ping", RELAY_HOST_INVOKE_RETIRED),
     op("plan_external_hook_import_command",                          Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("plan_external_mcp_import_command",                           Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     op("predownload_acp_client_adapter",                             Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
@@ -805,6 +879,9 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("set_session_thread_goal_status",                             Unaudited,   Proxied,          HANDLED),
     op("set_subagent_timeout",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("set_subscription_account_enabled",                             LocalOnly,   Proxied,          CLI_NO_SUBSCRIPTION_ACCOUNTS),
+    // This device's cloud-agent switches (`superagent`): a per-device
+    // setting, written on the device the frontend targets.
+    op("set_superagent_settings",                                    Agnostic,    Proxied,          HANDLED),
     op("set_task_model",                                             Agnostic,    Proxied,          HANDLED),
     op("set_tray_unread_count",                                      LocalOnly,   ControllerLocal,  REFUSED),
     op("set_web_search_provider",                                    Agnostic,    Proxied,          HANDLED),
@@ -868,6 +945,19 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("submit_user_answers",                                        Agnostic,    Proxied,          HANDLED),
     op("submit_user_message",                                        Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("subscribe_permission_requests",                              Agnostic,    Proxied,          HANDLED),
+    // The account's cloud node (OpenBitFun superagent): one conversation
+    // surface over every device. Served by the cloud node only.
+    cloud_node("superagent_cancel_turn"),
+    cloud_node("superagent_delete_conversation"),
+    cloud_node("superagent_delete_data"),
+    cloud_node("superagent_disable"),
+    cloud_node("superagent_enable"),
+    cloud_node("superagent_get_conversation"),
+    cloud_node("superagent_job_action"),
+    cloud_node("superagent_list_conversations"),
+    cloud_node("superagent_rename_conversation"),
+    cloud_node("superagent_send"),
+    cloud_node("superagent_status"),
     op("terminal_ack",                                               Routed,      Proxied,          HANDLED),
     op("terminal_close",                                             Routed,      Proxied,          HANDLED),
     op("terminal_create",                                            Routed,      Proxied,          HANDLED),
@@ -887,6 +977,11 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("test_image_generation_service",                              Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("toggle_main_window_fullscreen",                              LocalOnly,   ControllerLocal,  REFUSED),
     op("touch_session_activity",                                     Unaudited,   Proxied,          HANDLED),
+    // The web UI bundle a browser loads from the device it controls: a read of
+    // public, host-owned build output, identical whatever the active workspace
+    // (Agnostic). It must answer on the device itself under `account-device`
+    // (the browser's end-to-end channel), so it is Proxied, never controller-local.
+    op("ui_bundle_manifest",                                         Agnostic,    Proxied,          HANDLED),
     op("unarchive_session",                                          Unaudited,   Proxied,          HANDLED),
     op("update_active_turn_permission_mode",                         Routed,      Proxied,          HANDLED),
     op("update_app_status",                                          Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),

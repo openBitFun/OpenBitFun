@@ -39,6 +39,13 @@ server = [
     "dep:urlencoding",
     "dep:openbitfun-product-domains",
 ]
+# The fleet layer: every runtime host of the account in one surface. The
+# owner-partition index, digest replication and anti-entropy, legacy-peer
+# polling, `fleet_call` routing and the per-origin event mux. Hosts plug in
+# through `fleet::router::FleetBackend` and `fleet::sync::FleetPeerTransport`.
+# It also dials the account's cloud node (`client::cloud`) over
+# `wss://<domain>/agent/obp`, verified against the bundled web PKI roots.
+fleet = ["server", "dep:openbitfun-product-domains", "dep:webpki-roots"]
 # Loopback stand-ins for the device network, for host test suites.
 test-support = []
 
@@ -67,6 +74,8 @@ uuid = { workspace = true, optional = true }
 # The NSH web bundle served at `/`.
 mime_guess = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
+# The cloud node's public certificate (`fleet`).
+webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

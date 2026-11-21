@@ -7,10 +7,10 @@
 
 import { Storage, signal } from "nsh";
 
-/** The desktop's `control.flowChat.transcriptMaxWidth` token. */
-export const DEFAULT_CONTENT_WIDTH = 900;
-/** Two thirds of the default, which is where the desktop stops narrowing. */
-export const MIN_CONTENT_WIDTH = Math.round((DEFAULT_CONTENT_WIDTH * 2) / 3);
+/** The conversation column default (visual spec §2.2: ≈72 characters at 15 px); stored values keep theirs. */
+export const DEFAULT_CONTENT_WIDTH = 760;
+/** Where the stepper stops narrowing (two thirds of the desktop's old 900 default). */
+export const MIN_CONTENT_WIDTH = 600;
 /** The step its stepper takes. */
 export const CONTENT_WIDTH_STEP = 10;
 /** Where the desktop keeps it. */

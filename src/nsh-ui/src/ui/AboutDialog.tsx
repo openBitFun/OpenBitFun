@@ -1,18 +1,53 @@
-// About OpenBitFun: what the desktop's own About dialog shows (product, version,
-// platform, license, the source repository), read from the host that runs the
-// window. `get_app_version` is the installed build; this frontend embeds no
-// commit or branch metadata, so those rows say so instead of inventing values.
+// About OpenBitFun (visual spec §4.11): the mark, the installed version, one
+// status row for updates, and the links. The version and platform are read from
+// the host that runs the window; this frontend embeds no commit or branch, so
+// Details lists only what the host reports. The update state is the shell's
+// (`App.tsx` owns the update commands): it hands it over with
+// `installAboutUpdates`, and without one the row says updates come from the
+// desktop app instead of failing.
 
 import { Clipboard, openUrl, signal, Text, View } from "nsh";
-import { controllerAppVersion, invokeCommand, windowPlatform } from "../bridge";
-import { peerScope } from "../peerState";
+import { controllerAppVersion, invokeCommand } from "../bridge";
 import { tr } from "../i18n";
-import { fontMono, palette, radii, textLineHeight, textSize } from "../theme";
+import { controlHeight, layout, palette, radii, space, textStyle } from "../theme";
 import { Icon } from "./icons";
 import { ModalDialog, pushToast } from "./overlays";
-import { Button, IconButton } from "./primitives";
+import { Button } from "./primitives";
+import { BitMatrixMark } from "./SignInView";
+import { InsetGroup } from "./studio";
+import { paintTransition } from "./motion";
 
 export const GITHUB_REPOSITORY_URL = "https://github.com/GCWing/OpenBitFun";
+const RELEASE_NOTES_URL = `${GITHUB_REPOSITORY_URL}/releases`;
+const LICENSES_URL = `${GITHUB_REPOSITORY_URL}/blob/main/LICENSE`;
+
+/** The shell's update phases (the desktop's update menu: check, download, install). */
+export type AboutUpdatePhase = "idle" | "checking" | "available" | "downloading" | "ready" | "installing";
+
+/** What the shell hands the About dialog about updates. Every value is the shell's. */
+export interface AboutUpdateSource {
+  /** Whether this window installs updates itself (a native NSH window does not). */
+  supported: () => boolean;
+  phase: () => AboutUpdatePhase;
+  /** The version an update is available or ready for. */
+  version: () => string;
+  /** The download's progress, when the host reports one. */
+  percent?: () => number | null;
+  /** Whether the last check found nothing newer (unknown before a check). */
+  upToDate?: () => boolean;
+  /** Whether the last attempt failed. */
+  failed?: () => boolean;
+  check: () => void;
+  download: () => void;
+  restart: () => void;
+}
+
+const updateSource = signal<AboutUpdateSource | null>(null);
+
+/** Called once by the shell so the dialog shows and drives its update state. */
+export function installAboutUpdates(source: AboutUpdateSource | null): void {
+  updateSource.set(source);
+}
 
 interface AboutFacts {
   version: string;
@@ -22,28 +57,19 @@ interface AboutFacts {
 export const aboutOpen = signal(false);
 const aboutFacts = signal<AboutFacts | null>(null);
 const aboutError = signal("");
+const detailsOpen = signal(false);
 
 async function loadAboutFacts(): Promise<void> {
   aboutError.set("");
   try {
-    // Both host reads are proxied while a peer is driven; About describes this window.
-    const local = !peerScope();
     const [nativeVersion, system] = await Promise.all([
       controllerAppVersion(),
-      local
-        ? invokeCommand<{ platform?: string; arch?: string; osVersion?: string; os_version?: string }>(
-            "get_system_info",
-            {},
-          ).catch(() => null)
-        : Promise.resolve({ platform: windowPlatform() } as {
-            platform?: string;
-            arch?: string;
-            osVersion?: string;
-            os_version?: string;
-          }),
+      invokeCommand<{ platform?: string; arch?: string; osVersion?: string; os_version?: string }>(
+        "get_system_info",
+        {},
+      ).catch(() => null),
     ]);
-    const version =
-      nativeVersion ?? (local ? await invokeCommand<string>("get_app_version", {}) : "");
+    const version = nativeVersion ?? (await invokeCommand<string>("get_app_version", {}));
     const os = system?.osVersion ?? system?.os_version ?? "";
     const platform = [system?.platform, system?.arch].filter(Boolean).join(" · ");
     aboutFacts.set({
@@ -57,180 +83,242 @@ async function loadAboutFacts(): Promise<void> {
 }
 
 export function openAboutDialog(): void {
+  detailsOpen.set(false);
   aboutOpen.set(true);
   void loadAboutFacts();
 }
 
-function AboutRow(props: { label: string; value: string; mono?: boolean; copyable?: boolean }) {
+/** The version and platform as one copyable block (only what the host reported). */
+function versionInfo(): string {
+  const facts = aboutFacts();
+  return [
+    facts?.version ? `${tr("product.name")} ${facts.version}` : tr("product.name"),
+    facts?.platform ? `${tr("shell.about.platform")}: ${facts.platform}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function copyVersionInfo(): void {
+  void Clipboard.writeText(versionInfo()).then(
+    () => pushToast(tr("shell.about.copied"), "success"),
+    () => undefined,
+  );
+}
+
+function openLink(url: string): void {
+  void openUrl(url).catch(() => pushToast(tr("shell.about.openFailed"), "error"));
+}
+
+/** The left words and the right action of the status row, by update phase. */
+function statusRow(): { text: string; action: { label: string; run: () => void; id: string } | null } {
+  const source = updateSource();
+  if (!source || !source.supported()) {
+    return { text: tr("shell.updates.unsupported"), action: null };
+  }
+  const failed = source.failed?.() ? tr("update.failed") : "";
+  switch (source.phase()) {
+    case "checking":
+      return { text: tr("update.checking"), action: null };
+    case "available":
+      return {
+        text: failed || tr("update.available", { version: source.version() }),
+        action: { label: tr("update.download"), run: source.download, id: "about-update-download" },
+      };
+    case "downloading": {
+      const percent = source.percent?.() ?? null;
+      return {
+        text: percent === null ? tr("update.downloadingStarted") : tr("update.downloading", { percent }),
+        action: null,
+      };
+    }
+    case "ready":
+      return {
+        text: failed || tr("update.available", { version: source.version() }),
+        action: { label: tr("update.restart"), run: source.restart, id: "about-update-restart" },
+      };
+    case "installing":
+      return { text: tr("update.restart"), action: null };
+    default:
+      return {
+        text: failed || (source.upToDate?.() ? tr("update.upToDate") : ""),
+        action: { label: tr("update.check"), run: source.check, id: "about-update-check" },
+      };
+  }
+}
+
+function StatusRow() {
+  return (
+    <InsetGroup accessibilityLabel="about-update">
+      <View
+        style={{
+          minHeight: STATUS_ROW_HEIGHT,
+          paddingHorizontal: space.lg,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.md,
+        }}
+      >
+        <Text
+          style={{
+            ...textStyle("body"),
+            flex: 1,
+            minWidth: 0,
+            numberOfLines: 2,
+          }}
+        >
+          {statusRow().text}
+        </Text>
+        <If when={statusRow().action}>
+          {action => (
+            <Button
+              label={action().label}
+              variant={action().id === "about-update-restart" ? "primary" : "secondary"}
+              size="sm"
+              accessibilityLabel={action().id}
+              onPress={() => action().run()}
+            />
+          )}
+        </If>
+      </View>
+    </InsetGroup>
+  );
+}
+
+/** The status row is an `InsetRow` of 48 (visual spec §4.11). */
+const STATUS_ROW_HEIGHT = space.x5l;
+
+function LinkText(props: { label: string; accessibilityLabel: string; onPress: () => void; trailing?: "chevron-down" | "chevron-up" }) {
   return (
     <View
+      role="button"
+      accessibilityLabel={props.accessibilityLabel}
+      onPress={props.onPress}
       style={{
-        minHeight: 34,
-        paddingHorizontal: 12,
+        minHeight: controlHeight.xs,
+        paddingHorizontal: space.xs,
+        borderRadius: radii.sm,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        borderBottomWidth: 1,
-        borderColor: palette().borderSubtle,
+        gap: space.xs,
+        cursor: "pointer",
+        ...paintTransition(),
       }}
+      hoverStyle={{ backgroundColor: palette().panelHover }}
     >
-      <Text
-        style={{
-          width: 96,
-          flexShrink: 0,
-          color: palette().textMuted,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.3),
-        }}
-      >
-        {props.label}
-      </Text>
-      <Text
-        style={{
-          flex: 1,
-          minWidth: 0,
-          color: palette().text,
-          fontFamily: props.mono ? fontMono : undefined,
-          fontSize: textSize(13),
-          lineHeight: textLineHeight(13, 1.3),
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {props.value}
-      </Text>
-      <If when={props.copyable && props.value !== tr("shell.about.notAvailable")}>
-        <IconButton
-          icon="copy"
-          size="xs"
-          accessibilityLabel={`about-copy-${props.label}`}
-          tooltip={tr("shell.about.copy")}
-          onPress={() => {
-            void Clipboard.writeText(props.value).then(
-              () => pushToast(tr("shell.about.copied"), "success"),
-              () => undefined,
-            );
-          }}
-        />
+      <Text style={textStyle("label", { color: palette().textSecondary })}>{props.label}</Text>
+      <If when={props.trailing ?? ""}>
+        {icon => <Icon name={icon() as "chevron-down"} size={space.md} color={palette().textMuted} />}
       </If>
     </View>
   );
 }
 
+function Dot() {
+  return <Text style={textStyle("label", { color: palette().textMuted })}>·</Text>;
+}
+
 export function AboutDialog() {
-  const dash = () => tr("shell.about.notAvailable");
   return (
     <ModalDialog
       open={aboutOpen()}
-      title={tr("shell.about.title")}
       size="sm"
-      accessibilityLabel="about-dialog"
+      accessibilityLabel={tr("shell.about.title")}
       onClose={() => aboutOpen.set(false)}
       footer={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Button
-            label={tr("shell.about.openGithub")}
-            variant="secondary"
-            size="sm"
-            leadingIcon="star"
-            accessibilityLabel="about-github"
-            onPress={() => {
-              void openUrl(GITHUB_REPOSITORY_URL).catch(() =>
-                pushToast(tr("shell.about.openFailed"), "error"),
-              );
-            }}
-          />
-          <Button
-            label={tr("common.close")}
-            variant="primary"
-            size="sm"
-            onPress={() => aboutOpen.set(false)}
-          />
-        </View>
+        <Button
+          label={tr("common.close")}
+          variant="secondary"
+          size="md"
+          accessibilityLabel="about-close"
+          onPress={() => aboutOpen.set(false)}
+        />
       }
     >
-      <View style={{ gap: 14 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-          <View
+      <View style={{ width: "100%", maxWidth: layout.modalConfirmWidth, alignSelf: "center" }}>
+        <View style={{ alignItems: "center" }}>
+          <BitMatrixMark size={MARK_SIZE} />
+          <Text style={{ ...textStyle("modalTitle"), marginTop: space.md, textAlign: "center" }}>
+            {tr("product.name")}
+          </Text>
+          <Text
             style={{
-              width: 44,
-              height: 44,
-              borderRadius: radii.lg,
-              borderCurve: "continuous",
-              backgroundColor: palette().accentSoft,
-              alignItems: "center",
-              justifyContent: "center",
+              ...textStyle("label", { color: palette().textSecondary }),
+              fontWeight: "400",
+              marginTop: space.xs,
+              textAlign: "center",
             }}
           >
-            <Icon name="sparkles" size={22} color={palette().accent} />
-          </View>
-          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-            <Text
-              style={{
-                color: palette().text,
-                fontSize: textSize(15),
-                lineHeight: textLineHeight(15, 1.3),
-                fontWeight: "600",
-              }}
-            >
-              {tr("product.name")}
-            </Text>
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
-              }}
-            >
-              {tr("shell.about.tagline")}
-            </Text>
-          </View>
+            {aboutFacts()?.version ? tr("about.version", { version: aboutFacts()!.version }) : tr("shell.about.notAvailable")}
+          </Text>
+          <Text
+            style={{
+              ...textStyle("label", { color: palette().textMuted }),
+              fontWeight: "400",
+              marginTop: space.sm,
+              textAlign: "center",
+            }}
+          >
+            {tr("about.tagline")}
+          </Text>
         </View>
 
         <If when={aboutError()}>
           {message => (
-            <Text
-              style={{
-                color: palette().danger,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-              }}
-            >
+            <Text style={{ ...textStyle("caption", { color: palette().danger }), marginTop: space.md, textAlign: "center" }}>
               {tr("shell.about.readFailed", { error: message() })}
             </Text>
           )}
         </If>
 
+        <View style={{ marginTop: space.xxl }}>
+          <StatusRow />
+        </View>
+
         <View
           style={{
-            borderRadius: radii.md,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: palette().borderSubtle,
-            overflow: "hidden",
+            marginTop: space.lg,
+            flexDirection: "row",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: space.xs,
           }}
         >
-          <AboutRow
-            label={tr("shell.about.version")}
-            value={aboutFacts()?.version || dash()}
-            mono
-            copyable
+          <LinkText label={tr("about.releaseNotes")} accessibilityLabel="about-release-notes" onPress={() => openLink(RELEASE_NOTES_URL)} />
+          <Dot />
+          <LinkText label={tr("about.licenses")} accessibilityLabel="about-licenses" onPress={() => openLink(LICENSES_URL)} />
+          <Dot />
+          <LinkText
+            label={tr("about.details")}
+            accessibilityLabel="about-details"
+            trailing={detailsOpen() ? "chevron-up" : "chevron-down"}
+            onPress={() => detailsOpen.update(open => !open)}
           />
-          <AboutRow label={tr("shell.about.platform")} value={aboutFacts()?.platform || dash()} />
-          <AboutRow label={tr("shell.about.commit")} value={dash()} mono />
-          <AboutRow label={tr("shell.about.branch")} value={dash()} mono />
-          <AboutRow label={tr("shell.about.license")} value="MIT License" />
         </View>
-        <Text
-          style={{
-            color: palette().textMuted,
-            fontSize: textSize(11),
-            lineHeight: textLineHeight(11, 1.4),
-          }}
-        >
-          {tr("shell.about.buildMetadataNote")}
-        </Text>
+        {/* The 400 modal fits three links on a line; Copy sits under them rather than wrapping after a dot. */}
+        <View style={{ marginTop: space.xs, flexDirection: "row", justifyContent: "center" }}>
+          <LinkText label={tr("about.copy")} accessibilityLabel="about-copy" onPress={copyVersionInfo} />
+        </View>
+
+        <If when={detailsOpen() ? versionInfo() : ""}>
+          {info => (
+            <View
+              accessibilityLabel="about-details-well"
+              style={{
+                marginTop: space.md,
+                padding: space.md,
+                borderRadius: radii.sm,
+                backgroundColor: palette().surfaceTertiary,
+              }}
+            >
+              <Text style={textStyle("mono")}>{info()}</Text>
+            </View>
+          )}
+        </If>
       </View>
     </ModalDialog>
   );
 }
+
+const MARK_SIZE = 40;

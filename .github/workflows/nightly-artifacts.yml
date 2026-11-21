@@ -215,9 +215,6 @@ jobs:
           bun install --cwd src/apps/extension-host --frozen-lockfile
           bun run --cwd src/apps/extension-host build
 
-      - name: Build mobile web resources
-        run: pnpm run prepare:mobile-web
-
       - name: Patch nightly version
         shell: bash
         env:
@@ -276,6 +273,13 @@ jobs:
         if: runner.os == 'macOS'
         timeout-minutes: 5
         run: node tests/e2e/native/smoke.mjs --app "target/${PACKAGE_TARGET}/release/bundle/macos/OpenBitFun.app"
+
+      - name: Build the CLI's web UI
+        # Browsers load the web UI from the device they control, so the CLI
+        # embeds the one built from this commit (src/apps/cli/build.rs).
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node scripts/ci/build-cli-web-ui.mjs
 
       - name: Package macOS CLI for SSH dispatch
         if: runner.os == 'macOS'

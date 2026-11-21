@@ -14,7 +14,6 @@ import { computed, effect, signal } from "nsh";
 import { getConfig } from "./api";
 import { isWindowFocused, listenEvent, nativeWindow, setTrayUnreadCount, showSystemNotification } from "./bridge";
 import { tr } from "./i18n";
-import { peerScope } from "./peerState";
 import { pendingPermissions } from "./permissionStore";
 import { activeScene, activeSessionId, sessions } from "./state";
 
@@ -87,7 +86,6 @@ async function switchEnabled(path: string): Promise<boolean> {
 }
 
 async function sendSystemNotification(path: string, title: string, body: string): Promise<void> {
-  if (peerScope()) return;
   if (await isWindowFocused()) return;
   if (!(await switchEnabled(path))) return;
   try {

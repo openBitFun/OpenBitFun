@@ -105,17 +105,6 @@
       }
     },
     {
-      "id": "mobile-web",
-      "label": "Mobile Web and Remote Control",
-      "kind": "canonical-web",
-      "owner": "@openbitfun/theme-openbitfun",
-      "root": "src/mobile-web",
-      "audit": {
-        "engine": "theme",
-        "baseline": "scripts/theme-color-governance-baseline.mobile-web.json"
-      }
-    },
-    {
       "id": "installer",
       "label": "OpenBitFun Installer",
       "kind": "canonical-web",

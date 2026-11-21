@@ -8,8 +8,10 @@ only sign in with their OpenBitFun account; no EasyTier binary or app is used
 and no network name or secret is ever shown. Devices connect directly when
 they can (LAN, IPv4/IPv6 hole punching, relaying through another device of
 the account); the relay node is the coordination point and the fallback path.
-The old relay server is not a transport for this; it stays the account's
-device directory (names and public keys).
+The account's device directory (names and public keys) is OpenBitFun 2.0's
+own `openbitfun-directory` (`deploy/super`); it is not a transport. All of
+this is served on `super.openbitfun.com` only (`deploy/super`); the 1.0 relay
+on `remote.openbitfun.com` is not used.
 
 This directory holds the sanitized deployment of the shared relay node and
 the per-account credential issuer. Secrets (the issuer key) live only on the
@@ -19,9 +21,9 @@ server, mode 0600.
 |---|---|---|
 | `openbitfun-link-node` | `/opt/openbitfun-link-node` | The fork's shared node for every account network (`obf-*`), admitting only devices with an issuer-signed join token |
 | `openbitfun-mesh-issuer` | `/opt/openbitfun-mesh-issuer` | `POST /mesh/v1/credentials`: verifies the OpenBitFun identity token, returns the account's network and a 30-minute join token for the requesting device |
-| `openbitfun-link-gateway` | `/opt/openbitfun-link-gateway` | Browsers: email sign-in, the account's devices, and a byte pipe into the account network (`/obp/`) |
-| Web controller | `/opt/openbitfun-web/app` | The NSH web UI as a controller, `https://<domain>/app/` |
-| nginx include | `/etc/nginx/openbitfun-mesh-location.conf` | `wss://<domain>/mesh/et/`, `/mesh/v1/*`, `/obp/` and `/app/` |
+| `openbitfun-link-gateway` | `/opt/openbitfun-link-gateway` | Browsers: email sign-in, the account's devices, a byte pipe into the account network (`/obp/`), and the web UI pool (`/cas/`, data in `/var/lib/openbitfun-ui-pool`) |
+| Web controller | `/opt/openbitfun-web/super` | The NSH web UI as a controller, `https://<domain>/` |
+| nginx site | `/etc/nginx/sites-available/super.openbitfun.com.conf` (`deploy/super`) | `wss://<domain>/mesh/et/`, `/mesh/v1/*`, `/obp/`, `/cas/`, `/b/` and `/` |
 
 ## Reachability: domain-only
 
@@ -36,7 +38,7 @@ existing connection to the node.
 
 The provider's front end closes connections idle for 180 s; Link pings every
 WebSocket tunnel at least every 15 s and redials a lost relay connection every
-second. nginx (`openbitfun-mesh-location.conf`) keeps tunnels for 3600 s,
+second. nginx (`deploy/super/super.openbitfun.com.conf`) keeps tunnels for 3600 s,
 passes the WebSocket upgrade, does not buffer, and takes the client address
 from `X-Forwarded-For` so per-client limits count devices.
 
@@ -116,19 +118,21 @@ Link cannot join through this node (they send no join token).
 ## Browser gateway and web controller
 
 Browsers do not run Link. A phone or computer browser opens
-`https://<domain>/app/` (the web controller: the same NSH UI, built with
+`https://<domain>/` (the web controller: the same NSH UI, built with
 `pnpm run web-controller:build`), signs in with the email verification code,
-sees the account's devices and drives one, through the browser gateway
+and then operates every device of the account through the best-ranked one
+(the fleet entry), through the browser gateway
 (`openbitfun-link-gateway`, from `src/apps/relay-server/link-gateway`):
 
 | Route (nginx `/obp/` to `127.0.0.1:19730`) | What |
 |---|---|
 | `GET /obp/api/v1/session` | Whether this browser is signed in |
 | `POST /obp/api/v1/auth/code` `{email, locale}` | Starts a sign-in at the identity authority and sends the code; the authority's transaction stays on the gateway |
-| `POST /obp/api/v1/auth/verify` `{challengeId, code, device}` | Checks the code, registers the browser's own X25519 device key in the account directory (relay, kind `mobile`: a controller, never listed as a host) and sets the session cookie |
+| `POST /obp/api/v1/auth/verify` `{challengeId, code, device}` | Checks the code, registers the browser's own X25519 device key in the account directory (`openbitfun-directory`, kind `mobile`: a controller, never listed as a host), sets the session cookie, and asks the cloud agent to create the account's node (`/agent/api/v1/ensure`, best effort) |
 | `POST /obp/api/v1/auth/sign-out` | Revokes the browser's directory credential and clears the cookie |
-| `GET /obp/api/v1/devices`, `/devices/{id}/key` | The account's devices with whether each can be connected and why not; a device's public key for the handshake |
+| `GET /obp/api/v1/devices`, `/devices/{id}/key` | The account's devices with whether each can be connected and why not, `entryCandidates` (the fleet entry ranking: each device's `fleet_v1` and `fleetLoad` probed from its own `/obp/mesh/info` at most every 30 s, the account's cloud node always last, reached at `cloudNode.path` = `/agent/obp`); a device's public key for the handshake |
 | `GET /obp/{deviceId}` (WebSocket) | A byte pipe to the device's OBP port in the account's Link network |
+| `GET /cas/{sha256}?device={deviceId}[&holders=...]` (nginx `/cas/`) | A file of a device's web UI bundle from the pool; a miss is pulled from that device, then from the named holders |
 
 - **End to end.** Inside the pipe the browser (page realm of `host.js`:
   WebCrypto X25519 key, non-extractable, in IndexedDB) and the device run OBP's
@@ -136,7 +140,9 @@ sees the account's devices and drives one, through the browser gateway
   the account-device proof over the directory pair key, bound to fresh
   ephemeral keys, then AES-256-GCM records. The gateway logs byte counts per
   pipe, never content.
-- **Session.** An HttpOnly, `Secure`, `SameSite=Strict` cookie on `/obp`:
+- **Session.** An HttpOnly, `Secure`, `SameSite=Strict` cookie on `/obp` and
+  `/cas` (the same sealed value twice; every signed-in session check
+  re-issues both, sign-out clears both):
   the account id, the browser's device id and directory credential, sealed
   with AES-256-GCM under a key derived from the issuer key (no session store;
   a restart keeps sessions). Every device list and pipe re-checks the
@@ -154,6 +160,46 @@ sees the account's devices and drives one, through the browser gateway
   unavailable. A device on a build without the end-to-end channel hangs up on
   the hello; the page says to update OpenBitFun there.
 
+### Web UI pool (`/cas/`)
+
+A browser runs the exact web UI bundle the device it controls ships, not a
+server-picked version. The launcher (`/`) gets the device's manifest
+(`ui_bundle_manifest`) over the end-to-end channel, and a Service Worker
+(`/ui-loader.js`, scope `/b/`) loads every file by hash from the pool
+and checks it against that manifest. The pool is untrusted by design and
+stores each hash once for every account and device.
+
+- **Hit:** the stored bytes, `Cache-Control: public, max-age=31536000,
+  immutable`; a `.br` entry with `Content-Encoding: br`.
+- **Miss:** the gateway checks that `device` is one of the session account's
+  own devices (directory, the browser's own credential), opens a Link stream
+  to it and sends `GET /obp-ui/v1/<sha256>`; the device answers with the file
+  or its `.br` sibling (`Content-Encoding: br`). The bytes are hashed while
+  they are written to a temp file, renamed into place only when the hash
+  matches (a mismatch is logged with the device id and never stored), then
+  served. When that device cannot serve it, the other account devices named
+  in `&holders=` are tried in order. Concurrent misses for one hash share one pull; a browser whose
+  device differs from the failed pull's retries with its own. A device at its
+  concurrency cap (503) is retried with backoff; `ui_bundle_unavailable` is
+  answered as such.
+- **Store:** `/var/lib/openbitfun-ui-pool/<aa>/<sha256>` plus a
+  `<sha256>.meta` sidecar (encoding, size, last use). Half-written temp files
+  and files without a sidecar are dropped at start. It is a cache: deleting
+  the directory loses nothing.
+- **Limits:** 64 MiB per file, 4 GiB total (oldest-unused evicted first),
+  240 pulls per account per minute, 4 concurrent pulls per account and 64 in
+  total (`LINK_GATEWAY_UI_POOL_*` in the unit).
+- **Last use and cleanup:** recorded on every hit or store, the sidecar
+  rewritten at most once an hour; a daily task deletes files unused for 30
+  days and logs only counts and bytes (`UI pool cleanup: ...`).
+- **Answers:** 401 `signed_out`, 400 `device_required`, 403
+  `not_your_device`, 404 `not_in_bundle`, 413 `too_large`, 429 `busy`, 502
+  `hash_mismatch` / `bad_device_answer` (an older device: update it), 503
+  `ui_bundle_unavailable` / `pool_unavailable` / `unavailable`, 504
+  `unreachable`.
+- `/b/` on nginx answers every path with `/ui-boot.html` (it
+  registers the worker and reloads), so a hard reload or a first visit works.
+
 Gateway install (it mints account-network membership from the issuer key, so
 it runs as the issuer's user and reads `issuer.key` where it is):
 
@@ -164,6 +210,9 @@ install -m 0644 openbitfun-link-gateway.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now openbitfun-link-gateway
 ```
 
+systemd creates `/var/lib/openbitfun-ui-pool` (`StateDirectory`, owned by the
+gateway's user, mode 0750).
+
 The binary builds in the same reduced context as the node (add
 `src/apps/relay-server/link-gateway` to the context's members):
 `cargo build --release -p openbitfun-link-gateway`.
@@ -172,14 +221,14 @@ Web controller install (static files; nothing runs):
 
 ```bash
 pnpm run web-controller:build          # target/web-controller/app (domain: --domain)
-rsync -a --delete target/web-controller/app/ <server>:/opt/openbitfun-web/app/
+rsync -a --delete target/web-controller/app/ <server>:/opt/openbitfun-web/super/
 ```
 
 The page's `#nsh-params` `{controller: {api, gateway}}` names the gateway;
-the nginx include serves `/app/` with the CSP the NSH web runtime needs
+the nginx site serves `/` with the CSP the NSH web runtime needs
 (`script-src 'self' 'wasm-unsafe-eval'`), precompressed files and immutable
-caching for content-hashed names. The old relay site keeps `/` (legacy
-`mobile-web`) unchanged. `nginx -t` before every reload.
+caching for content-hashed names. The 1.0 relay site (`remote.openbitfun.com`,
+legacy `mobile-web`) is a different host and stays unchanged. `nginx -t` before every reload.
 
 ## Verification
 

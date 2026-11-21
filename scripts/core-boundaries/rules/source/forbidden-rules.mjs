@@ -4116,19 +4116,6 @@ export const forbiddenContentUnderRules = [
     ],
   },
   {
-    path: 'src/mobile-web',
-    reason:
-      'mobile surfaces must consume capability-surface projections instead of raw plugin runtime client contracts',
-    patterns: [
-      {
-        regex:
-          /\b(?:PluginRuntimeReadResponse|PluginStatusSnapshot|PluginResponseEnvelope|PluginDispatchEnvelope|PluginEffectCandidate|PluginQuarantineState|PluginRuntimeClient|PluginRuntimeBinding|openbitfun_plugin_runtime_client|openbitfun_agent_runtime::runtime)\b/,
-        message:
-          'mobile surfaces must not consume raw plugin runtime client contracts; project through the capability surface contract first',
-      },
-    ],
-  },
-  {
     path: 'OpenBitFun-Installer',
     reason:
       'installer surfaces must consume capability-surface projections instead of raw plugin runtime client contracts',

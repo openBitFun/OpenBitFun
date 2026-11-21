@@ -14,7 +14,7 @@ pub const MESH_NETWORK_PREFIX: &str = "obf-";
 /// Path of the credential endpoint on the account edge.
 pub const MESH_CREDENTIALS_PATH: &str = "/mesh/v1/credentials";
 /// The default issuer (overridable with `OPENBITFUN_MESH_API_URL`).
-pub const DEFAULT_MESH_API_URL: &str = "https://remote.openbitfun.com";
+pub const DEFAULT_MESH_API_URL: &str = "https://super.openbitfun.com";
 const MAX_PEERS: usize = 8;
 const MAX_JOIN_TOKEN_LEN: usize = 2048;
 
@@ -136,7 +136,7 @@ mod tests {
         serde_json::from_str(
             r#"{"version":1,"networkName":"obf-ff0a7d2cfa2526e8cdf8e6a2",
                 "networkSecret":"c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA",
-                "peers":["wss://remote.openbitfun.com:443/mesh/et/"],
+                "peers":["wss://super.openbitfun.com:443/mesh/et/"],
                 "easytierVersion":"2.7.1","issuedAt":1795110000,
                 "joinToken":"obfjt1.e30.c2ln","joinTokenExpiresAt":1795111800,
                 "futureField":true}"#,

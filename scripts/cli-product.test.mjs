@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { cliBuildPlan, stagePluginHostResources } from './cli-product.mjs';
+import { CLI_WEB_UI_VARIABLE, cliBuildPlan, prepareCliWebUi, stagePluginHostResources } from './cli-product.mjs';
 import { resolveProductDefinition } from './product-customization/resolver.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
@@ -128,4 +128,30 @@ test('CLI build rejects Cargo target directory overrides that bypass product iso
       (error) => error?.code === 'unsupported_cli_target_dir_override',
     );
   }
+});
+
+test('CLI build embeds the web UI of this tree, or fails loudly', () => {
+  const resolution = resolveProductDefinition({ rootDir: ROOT, productConfig: ACME, member: 'cli' });
+  const plan = cliBuildPlan(resolution, 'build', [], 'linux');
+  delete plan.environment[CLI_WEB_UI_VARIABLE];
+  delete plan.environment.OPENBITFUN_CLI_WEB_UI;
+  assert.ok(plan.webUiOutPath.startsWith(resolution.outputDir));
+  const calls = [];
+  const spawn = (command, args) => {
+    calls.push([command, ...args]);
+    return { status: 0 };
+  };
+  const write = (dir, options) => ({ bundleDir: join(dir, 'Acme'), bundleId: 'id', options });
+  const dir = prepareCliWebUi(plan, { spawn, write });
+  assert.deepEqual(calls, [['nsh', 'package', 'src/nsh-ui', '--target', 'web', '-o', plan.webUiOutPath]]);
+  assert.equal(dir, join(plan.webUiOutPath, 'Acme'));
+  assert.equal(plan.environment[CLI_WEB_UI_VARIABLE], dir);
+  // An explicit directory is used as is; a failed web build fails the CLI build.
+  assert.equal(prepareCliWebUi(plan, { spawn: () => assert.fail('no rebuild'), write }), dir);
+  const failing = cliBuildPlan(resolution, 'build', [], 'linux');
+  delete failing.environment[CLI_WEB_UI_VARIABLE];
+  delete failing.environment.OPENBITFUN_CLI_WEB_UI;
+  assert.throws(() => prepareCliWebUi(failing, { spawn: () => ({ status: 1 }), write }), /OPENBITFUN_CLI_WEB_UI=off/);
+  failing.environment.OPENBITFUN_CLI_WEB_UI = 'off';
+  assert.equal(prepareCliWebUi(failing, { spawn: () => assert.fail('no build'), write }), null);
 });

@@ -380,6 +380,9 @@ pub const fn advertised_by(host: PeerHostKind) -> &'static [PeerHostCapability] 
     match host {
         PeerHostKind::Desktop => DESKTOP_CAPABILITIES,
         PeerHostKind::Cli => CLI_CAPABILITIES,
+        // The cloud node publishes `superagent_v1` on its own hello; it is
+        // not a peer host of the registry's capability set.
+        PeerHostKind::Cloud => &[],
     }
 }
 

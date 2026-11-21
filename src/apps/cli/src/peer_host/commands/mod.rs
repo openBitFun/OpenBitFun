@@ -86,6 +86,7 @@ pub(crate) fn dispatch<'a>(
         "delete_permission_rule" => Box::pin(settings_mutations::delete_permission_rule(args)),
         "set_approval_settings" => Box::pin(settings_mutations::set_approval_settings(args)),
         "set_web_search_provider" => Box::pin(settings_mutations::set_web_search_provider(args)),
+        "set_superagent_settings" => Box::pin(settings_mutations::set_superagent_settings(args)),
         "get_settings_schema" => Box::pin(settings_mutations::get_settings_schema(args)),
         "get_permission_settings" => Box::pin(settings_mutations::get_permission_settings()),
         "get_web_search_credential_status" => Box::pin(config::get_web_search_credential_status(args)),
@@ -118,6 +119,8 @@ pub(crate) fn dispatch<'a>(
             Box::pin(external_sources::dispatch(command, args, state))
         }
 
+        // The web UI bundle a browser loads from this host (wave 10).
+        "ui_bundle_manifest" => Box::pin(system::ui_bundle_manifest()),
         "terminal_execute" => Box::pin(terminal::execute(args)),
         "terminal_create" => Box::pin(terminal::create(state, args)),
         "terminal_write" => Box::pin(terminal::write(args)),
@@ -327,6 +330,7 @@ pub(crate) fn dispatch<'a>(
 /// cannot be advertised as runnable here without a handler (or vice versa).
 #[cfg(test)]
 pub(crate) const HANDLED_COMMANDS: &[&str] = &[
+    "ui_bundle_manifest",
     "btw_ask_stream",
     "btw_cancel",
     "get_skill_configs",
@@ -515,6 +519,7 @@ pub(crate) const HANDLED_COMMANDS: &[&str] = &[
     "delete_permission_rule",
     "set_approval_settings",
     "set_web_search_provider",
+    "set_superagent_settings",
     "get_settings_schema",
     "get_permission_settings",
     "validate_cron_job_draft",

@@ -14,7 +14,6 @@ import { computed, signal } from "nsh";
 import { getRecentWorkspaces, type WorkspaceRecord } from "./api";
 import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { isCommandUnavailable } from "./hostCommands";
-import { peerScope, peerSupports } from "./peerState";
 import {
   activeScene,
   activeWorkspace,
@@ -485,14 +484,6 @@ export function canRepairSshCredentials(authType: { type: string }, error: unkno
   return authType.type !== "None" && isSshAuthenticationError(error);
 }
 
-export function canUseSshNoneAuth(): boolean {
-  return !peerScope() || peerSupports("ssh_none_auth_v1") === true;
-}
-
-export function canUsePortScopedSshIds(): boolean {
-  return !peerScope() || peerSupports("ssh_port_scoped_identity_v1") === true;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -515,7 +506,6 @@ function resolveConnectionIdForEndpoint(
   endpoint: { host: string; port: number; username: string; suffix?: string },
   saved: readonly SavedConnection[],
   isSameTarget: (conn: SavedConnection) => boolean,
-  portScopedIds: boolean,
   referencedIds: readonly string[],
 ): string {
   const suffix = endpoint.suffix ?? "";
@@ -529,7 +519,6 @@ function resolveConnectionIdForEndpoint(
   if (existing) return existing.id;
 
   const legacy = `ssh-${endpoint.username}@${endpoint.host}${suffix}`;
-  if (!portScopedIds) return legacy;
 
   const taken = (id: string) => saved.some(conn => canonicalSshConnectionId(conn.id) === id);
   if (!taken(legacy)) {
@@ -726,7 +715,6 @@ export const forwardedRemotePortSet = computed<Set<number>>(
 );
 
 // Internal coordination state
-let lastScopePeerId: string | null | undefined;
 let configLookupTimer: ReturnType<typeof setTimeout> | null = null;
 let portForwardPollTimer: ReturnType<typeof setInterval> | null = null;
 let directoryRequestTicket = 0;
@@ -735,10 +723,6 @@ let containerLoadTicket = 0;
 let sshConnectedCallback: ((config: SSHConnectionConfig, connectionId: string) => void) | null = null;
 let browserSelectCallback: ((path: string) => void) | null = null;
 let pendingConnectBrowseOverride: boolean | null = null;
-
-function currentPeerKey(): string | null {
-  return peerScope()?.deviceId ?? null;
-}
 
 function stopPortForwardPolling(): void {
   if (portForwardPollTimer !== null) {
@@ -752,78 +736,6 @@ function clearConfigLookupTimer(): void {
     clearTimeout(configLookupTimer);
     configLookupTimer = null;
   }
-}
-
-/**
- * Clears all SSH modal states and cached machine-specific SSH data when
- * switching between this controller and a Peer device (or between peers).
- */
-export function resetSshRemoteForScopeChange(): void {
-  resetRemoteLiveness();
-  stopPortForwardPolling();
-  clearConfigLookupTimer();
-  directoryRequestTicket += 1;
-  savedLoadTicket += 1;
-  containerLoadTicket += 1;
-  sshConnectedCallback = null;
-  browserSelectCallback = null;
-  pendingConnectBrowseOverride = null;
-
-  newWorkspaceModalOpen.set(false);
-  sshConnectionModalOpen.set(false);
-  remoteFileBrowserOpen.set(false);
-  portForwardModalOpen.set(false);
-  authPromptOpen.set(false);
-
-  savedConnections.set([]);
-  storedPasswordMap.set({});
-  sshConfigHosts.set([]);
-  dockerContainers.set([]);
-  wslDistributions.set(null);
-  wslError.set("");
-  connectionStatuses.set({});
-  serverInfos.set({});
-  activeConnectionId.set(null);
-  activeConnectionConfig.set(null);
-  activeRemoteWorkspace.set(null);
-
-  sshEditingProfile.set(null);
-  sshSelectedConnectionId.set(null);
-  sshContainerHost.set(null);
-  sshForm.set(createEmptySshForm());
-  sshError.set("");
-  sshNotice.set("");
-  connectionTestReport.set(null);
-
-  authPromptTarget.set(null);
-  authPromptPassword.set("");
-  authPromptPassphrase.set("");
-  authPromptVerificationCode.set("");
-  authPromptError.set("");
-
-  browserConnectionId.set(null);
-  browserEntries.set([]);
-  browserError.set("");
-  browserPendingRebind.set(null);
-
-  portForwardConnectionId.set(null);
-  portForwards.set([]);
-  listeningPorts.set([]);
-  portForwardError.set("");
-
-  newWorkspaceFolders.set([]);
-  newWorkspaceRecentLocal.set([]);
-  newWorkspaceConnectedRemote.set(null);
-  newWorkspaceError.set("");
-  newWorkspaceEnvContainers.set([]);
-}
-
-/** Synchronizes store scope with `peerScope()`; drops caches when the active host changes. */
-export function syncSshRemoteScope(peerId: string | null = currentPeerKey()): void {
-  if (lastScopePeerId !== undefined && lastScopePeerId !== peerId) {
-    resetSshRemoteForScopeChange();
-  }
-  lastScopePeerId = peerId;
 }
 
 export function setSshFormField<K extends keyof SshFormState>(field: K, value: SshFormState[K]): void {
@@ -872,10 +784,9 @@ function scheduleSshConfigLookup(host: string): void {
 }
 
 async function lookupAndApplySshConfig(host: string): Promise<void> {
-  const expectedPeer = currentPeerKey();
   try {
     const result = await invokeRawCommand<SSHConfigLookupResult>("ssh_get_config", { host });
-    if (!result?.found || !result.config || currentPeerKey() !== expectedPeer) return;
+    if (!result?.found || !result.config) return;
     const cfg = result.config;
     if (cfg.proxyJump || cfg.certificateFile) {
       sshShowAdvanced.set(true);
@@ -994,12 +905,11 @@ export function populateFormFromSavedConnection(conn: SavedConnection): void {
 // ============================================================================
 
 export async function loadSavedConnections(): Promise<SavedConnection[]> {
-  const expectedPeer = currentPeerKey();
   const ticket = ++savedLoadTicket;
   savedConnectionsLoading.set(true);
   try {
     const list = await invokeRawCommand<SavedConnection[]>("ssh_list_saved_connections", {});
-    if (ticket !== savedLoadTicket || currentPeerKey() !== expectedPeer) return [];
+    if (ticket !== savedLoadTicket) return [];
     const normalized = Array.isArray(list) ? list : [];
     savedConnections.set(normalized);
     if (normalized.length === 0 && !sshEditOnly()) {
@@ -1014,7 +924,7 @@ export async function loadSavedConnections(): Promise<SavedConnection[]> {
           return [conn.id, alive] as const;
         }),
       ).then(results => {
-        if (ticket !== savedLoadTicket || currentPeerKey() !== expectedPeer) return;
+        if (ticket !== savedLoadTicket) return;
         const updates: Record<string, ConnectionStatus> = {};
         let changed = false;
         for (const [id, alive] of results) {
@@ -1035,7 +945,6 @@ export async function loadSavedConnections(): Promise<SavedConnection[]> {
   } catch (error) {
     if (
       ticket === savedLoadTicket &&
-      currentPeerKey() === expectedPeer &&
       !isMissingCommandError(error)
     ) {
       sshError.set(errorMessage(error));
@@ -1049,12 +958,9 @@ export async function loadSavedConnections(): Promise<SavedConnection[]> {
 }
 
 export async function checkHasStoredPassword(connectionId: string): Promise<boolean> {
-  const expectedPeer = currentPeerKey();
   try {
     const has = await invokeRawCommand<boolean>("ssh_has_stored_password", { connectionId });
-    if (currentPeerKey() === expectedPeer) {
-      storedPasswordMap.update(prev => ({ ...prev, [connectionId]: Boolean(has) }));
-    }
+    storedPasswordMap.update(prev => ({ ...prev, [connectionId]: Boolean(has) }));
     return Boolean(has);
   } catch {
     return false;
@@ -1062,16 +968,14 @@ export async function checkHasStoredPassword(connectionId: string): Promise<bool
 }
 
 export async function loadSshConfigHosts(): Promise<SSHConfigEntry[]> {
-  const expectedPeer = currentPeerKey();
   sshConfigLoading.set(true);
   try {
     const hosts = await invokeRawCommand<SSHConfigEntry[]>("ssh_list_config_hosts", {});
-    if (currentPeerKey() !== expectedPeer) return [];
     const list = Array.isArray(hosts) ? hosts : [];
     sshConfigHosts.set(list);
     return list;
   } catch {
-    if (currentPeerKey() === expectedPeer) sshConfigHosts.set([]);
+    sshConfigHosts.set([]);
     return [];
   } finally {
     sshConfigLoading.set(false);
@@ -1079,21 +983,17 @@ export async function loadSshConfigHosts(): Promise<SSHConfigEntry[]> {
 }
 
 export async function loadWslDistributions(): Promise<WslDistributions | null> {
-  const expectedPeer = currentPeerKey();
   wslLoading.set(true);
   wslError.set("");
   try {
     const result = await invokeRawCommand<WslDistributions>("ssh_list_wsl_distributions", {});
-    if (currentPeerKey() !== expectedPeer) return null;
     wslDistributions.set(result);
     if (result?.supported && result.distributions?.length > 0 && !sshForm().wslDistribution) {
       sshForm.update(prev => ({ ...prev, wslDistribution: result.distributions[0] }));
     }
     return result;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      wslError.set(errorMessage(error));
-    }
+    wslError.set(errorMessage(error));
     return null;
   } finally {
     wslLoading.set(false);
@@ -1126,19 +1026,18 @@ export async function loadLocalDockerContainers(): Promise<DockerContainerInfo[]
 export async function discoverDockerContainers(
   configOverride?: SSHConnectionConfig,
 ): Promise<DockerContainerInfo[]> {
-  const expectedPeer = currentPeerKey();
   const ticket = ++containerLoadTicket;
   dockerContainersLoading.set(true);
   sshError.set("");
   try {
     const config = configOverride ?? (await buildSshConnectionConfig(false, false));
-    if (!config || ticket !== containerLoadTicket || currentPeerKey() !== expectedPeer) {
+    if (!config || ticket !== containerLoadTicket) {
       return [];
     }
     const list = await invokeRawCommand<DockerContainerInfo[]>("ssh_list_docker_containers", {
       config,
     });
-    if (ticket !== containerLoadTicket || currentPeerKey() !== expectedPeer) return [];
+    if (ticket !== containerLoadTicket) return [];
     const normalized = Array.isArray(list) ? list : [];
     dockerContainers.set(normalized);
     if (normalized.length === 0) {
@@ -1146,7 +1045,7 @@ export async function discoverDockerContainers(
     }
     return normalized;
   } catch (error) {
-    if (ticket === containerLoadTicket && currentPeerKey() === expectedPeer) {
+    if (ticket === containerLoadTicket) {
       sshError.set(errorMessage(error));
     }
     return [];
@@ -1158,12 +1057,11 @@ export async function discoverDockerContainers(
 }
 
 export async function refreshSshServerInfo(connectionId: string): Promise<ServerInfo | null> {
-  const expectedPeer = currentPeerKey();
   try {
     const info = await invokeRawCommand<ServerInfo | null>("ssh_get_server_info", {
       connectionId,
     });
-    if (info && currentPeerKey() === expectedPeer) {
+    if (info) {
       serverInfos.update(prev => ({ ...prev, [connectionId]: info }));
     }
     return info;
@@ -1173,15 +1071,12 @@ export async function refreshSshServerInfo(connectionId: string): Promise<Server
 }
 
 export async function checkSshConnected(connectionId: string): Promise<boolean> {
-  const expectedPeer = currentPeerKey();
   try {
     const connected = await invokeRawCommand<boolean>("ssh_is_connected", { connectionId });
-    if (currentPeerKey() === expectedPeer) {
-      connectionStatuses.update(prev => ({
-        ...prev,
-        [connectionId]: connected ? "connected" : "disconnected",
-      }));
-    }
+    connectionStatuses.update(prev => ({
+      ...prev,
+      [connectionId]: connected ? "connected" : "disconnected",
+    }));
     return Boolean(connected);
   } catch {
     return false;
@@ -1189,12 +1084,9 @@ export async function checkSshConnected(connectionId: string): Promise<boolean> 
 }
 
 export async function loadRemoteWorkspaceInfo(): Promise<RemoteWorkspace | null> {
-  const expectedPeer = currentPeerKey();
   try {
     const info = await invokeRawCommand<RemoteWorkspace | null>("remote_get_workspace_info", {});
-    if (currentPeerKey() === expectedPeer) {
-      activeRemoteWorkspace.set(info ?? null);
-    }
+    activeRemoteWorkspace.set(info ?? null);
     return info ?? null;
   } catch {
     return null;
@@ -1316,10 +1208,6 @@ export async function buildSshConnectionConfig(
     sshError.set("Password is required.");
     return null;
   }
-  if (!isLocalDocker && form.authType === "none" && !canUseSshNoneAuth()) {
-    sshError.set("The active host does not advertise ssh_none_auth_v1 support.");
-    return null;
-  }
   if (!isLocalDocker && form.authType === "privateKey" && !form.keyPath.trim()) {
     sshError.set("Private key path is required.");
     return null;
@@ -1390,7 +1278,6 @@ export async function buildSshConnectionConfig(
 
   let id = editing?.id ?? `docker-local-${containerName}`;
   if (!editing && !isLocalDocker) {
-    const portScopedIds = canUsePortScopedSshIds();
     const isSameTarget = (conn: SavedConnection) =>
       !conn.wsl &&
       (usesContainer
@@ -1400,26 +1287,10 @@ export async function buildSshConnectionConfig(
     const referencedIds = workspaces()
       .filter(ws => ws.workspaceKind === "remote" && ws.connectionId)
       .map(ws => ws.connectionId as string);
-    if (!portScopedIds) {
-      const hasConflict = saved.some(
-        conn =>
-          !(conn.host === connectHost && conn.port === port && conn.username === username && isSameTarget(conn)) &&
-          conn.host === connectHost &&
-          conn.username === username &&
-          isSameTarget(conn),
-      );
-      if (hasConflict && persistsProfile) {
-        sshError.set(
-          "This host does not support port-scoped SSH connection IDs; another port already exists for this user and host.",
-        );
-        return null;
-      }
-    }
     id = resolveConnectionIdForEndpoint(
       { host: connectHost, port, username, suffix: usesContainer ? `-container-${containerName}` : "" },
       saved,
       isSameTarget,
-      portScopedIds,
       referencedIds,
     );
   }
@@ -1459,7 +1330,6 @@ export async function buildSshConnectionConfig(
 // ============================================================================
 
 export async function testSshConnection(): Promise<ConnectionTestReport | null> {
-  const expectedPeer = currentPeerKey();
   sshTesting.set(true);
   connectionTestReport.set(null);
   sshError.set("");
@@ -1467,13 +1337,10 @@ export async function testSshConnection(): Promise<ConnectionTestReport | null> 
     const config = await buildSshConnectionConfig(true, false);
     if (!config) return null;
     const report = await invokeRawCommand<ConnectionTestReport>("ssh_test_connection", { config });
-    if (currentPeerKey() !== expectedPeer) return null;
     connectionTestReport.set(report);
     return report;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      sshError.set(errorMessage(error));
-    }
+    sshError.set(errorMessage(error));
     return null;
   } finally {
     sshTesting.set(false);
@@ -1484,7 +1351,6 @@ export async function connectWithConfig(
   config: SSHConnectionConfig,
   options: { browseAfterConnect?: boolean } = {},
 ): Promise<SSHConnectionResult | null> {
-  const expectedPeer = currentPeerKey();
   sshConnecting.set(true);
   sshError.set("");
   sshNotice.set("");
@@ -1492,7 +1358,6 @@ export async function connectWithConfig(
 
   try {
     const result = await invokeRawCommand<SSHConnectionResult>("ssh_connect", { config });
-    if (currentPeerKey() !== expectedPeer) return null;
     if (!result?.success) {
       const msg = result?.error || "SSH connection failed";
       connectionStatuses.update(prev => ({ ...prev, [config.id]: "error" }));
@@ -1512,7 +1377,6 @@ export async function connectWithConfig(
       const probed = await refreshSshServerInfo(resolvedId);
       if (probed?.homeDir?.trim()) homeDir = probed.homeDir.trim();
     }
-    if (currentPeerKey() !== expectedPeer) return null;
 
     void loadSavedConnections();
     const shouldBrowse =
@@ -1540,10 +1404,8 @@ export async function connectWithConfig(
     }
     return result;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      connectionStatuses.update(prev => ({ ...prev, [config.id]: "error" }));
-      sshError.set(errorMessage(error));
-    }
+    connectionStatuses.update(prev => ({ ...prev, [config.id]: "error" }));
+    sshError.set(errorMessage(error));
     throw error;
   } finally {
     sshConnecting.set(false);
@@ -1562,14 +1424,12 @@ export async function submitSshConnectionForm(): Promise<void> {
 }
 
 export async function saveSshConnectionForm(): Promise<boolean> {
-  const expectedPeer = currentPeerKey();
   sshConnecting.set(true);
   sshError.set("");
   try {
     const config = await buildSshConnectionConfig(true, true);
     if (!config) return false;
     await invokeRawCommand<void>("ssh_save_connection", { config });
-    if (currentPeerKey() !== expectedPeer) return false;
     await loadSavedConnections();
     if (sshEditOnly()) {
       sshConnectionModalOpen.set(false);
@@ -1581,9 +1441,7 @@ export async function saveSshConnectionForm(): Promise<boolean> {
     }
     return true;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      sshError.set(errorMessage(error));
-    }
+    sshError.set(errorMessage(error));
     return false;
   } finally {
     sshConnecting.set(false);
@@ -1591,19 +1449,15 @@ export async function saveSshConnectionForm(): Promise<boolean> {
 }
 
 export async function deleteSavedSshConnection(connectionId: string): Promise<boolean> {
-  const expectedPeer = currentPeerKey();
   try {
     await invokeRawCommand<void>("ssh_delete_connection", { connectionId });
-    if (currentPeerKey() !== expectedPeer) return false;
     if (sshSelectedConnectionId() === connectionId) {
       sshSelectedConnectionId.set(null);
     }
     await loadSavedConnections();
     return true;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      sshError.set(errorMessage(error));
-    }
+    sshError.set(errorMessage(error));
     return false;
   }
 }
@@ -1734,22 +1588,19 @@ export async function submitAuthPrompt(): Promise<void> {
 }
 
 export async function disconnectSsh(connectionId: string): Promise<void> {
-  const expectedPeer = currentPeerKey();
   try {
     await invokeRawCommand<void>("ssh_disconnect", { connectionId });
   } finally {
-    if (currentPeerKey() === expectedPeer) {
-      connectionStatuses.update(prev => ({ ...prev, [connectionId]: "disconnected" }));
-      if (activeConnectionId() === connectionId) {
-        activeConnectionId.set(null);
-        activeConnectionConfig.set(null);
-      }
-      if (remoteFileBrowserOpen() && browserConnectionId() === connectionId) {
-        closeRemoteFileBrowser();
-      }
-      if (portForwardModalOpen() && portForwardConnectionId() === connectionId) {
-        closePortForwardModal();
-      }
+    connectionStatuses.update(prev => ({ ...prev, [connectionId]: "disconnected" }));
+    if (activeConnectionId() === connectionId) {
+      activeConnectionId.set(null);
+      activeConnectionConfig.set(null);
+    }
+    if (remoteFileBrowserOpen() && browserConnectionId() === connectionId) {
+      closeRemoteFileBrowser();
+    }
+    if (portForwardModalOpen() && portForwardConnectionId() === connectionId) {
+      closePortForwardModal();
     }
   }
 }
@@ -1761,7 +1612,6 @@ export async function disconnectSsh(connectionId: string): Promise<void> {
 export async function loadRemoteDirectory(path: string): Promise<void> {
   const connectionId = browserConnectionId();
   if (!connectionId) return;
-  const expectedPeer = currentPeerKey();
   const ticket = ++directoryRequestTicket;
   const normalized = normalizeRemotePath(path);
 
@@ -1782,14 +1632,14 @@ export async function loadRemoteDirectory(path: string): Promise<void> {
       entries = await readOnce();
     } catch (firstErr) {
       await new Promise(resolve => setTimeout(resolve, 250));
-      if (ticket !== directoryRequestTicket || currentPeerKey() !== expectedPeer) return;
+      if (ticket !== directoryRequestTicket) return;
       try {
         entries = await readOnce();
       } catch {
         throw firstErr;
       }
     }
-    if (ticket !== directoryRequestTicket || currentPeerKey() !== expectedPeer) return;
+    if (ticket !== directoryRequestTicket) return;
     const sorted = [...(Array.isArray(entries) ? entries : [])].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
       return a.name.localeCompare(b.name);
@@ -1798,7 +1648,7 @@ export async function loadRemoteDirectory(path: string): Promise<void> {
     browserCurrentPath.set(normalized);
     browserPathInput.set(normalized);
   } catch (error) {
-    if (ticket === directoryRequestTicket && currentPeerKey() === expectedPeer) {
+    if (ticket === directoryRequestTicket) {
       browserError.set(errorMessage(error));
     }
   } finally {
@@ -1922,7 +1772,6 @@ export async function openRemoteWorkspace(
     rebindConnection?: boolean;
   } = {},
 ): Promise<boolean> {
-  const expectedPeer = currentPeerKey();
   const normalizedPath = normalizeRemotePath(remotePath);
   const saved = savedConnections().find(conn => conn.id === connectionId);
   const connectionName =
@@ -1980,10 +1829,8 @@ export async function openRemoteWorkspace(
         throw remoteErr;
       }
     }
-    if (currentPeerKey() !== expectedPeer) return false;
 
     await loadWorkspaces();
-    if (currentPeerKey() !== expectedPeer) return false;
 
     if (openedRecord?.id && !workspaces().some(ws => ws.id === openedRecord?.id)) {
       workspaces.update(current => [openedRecord!, ...current]);
@@ -2016,9 +1863,7 @@ export async function openRemoteWorkspace(
     newWorkspaceModalOpen.set(false);
     return true;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      browserError.set(errorMessage(error));
-    }
+    browserError.set(errorMessage(error));
     return false;
   } finally {
     browserBusy.set(false);
@@ -2102,20 +1947,16 @@ export async function removeRemoteWorkspaceEntry(
 // ============================================================================
 
 export async function loadPortForwards(connectionId?: string): Promise<PortForward[]> {
-  const expectedPeer = currentPeerKey();
   portForwardLoading.set(true);
   try {
     const list = await invokeRawCommand<PortForward[]>("ssh_list_port_forwards", {
       connectionId: connectionId ?? null,
     });
-    if (currentPeerKey() !== expectedPeer) return [];
     const normalized = Array.isArray(list) ? list : [];
     portForwards.set(normalized);
     return normalized;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      portForwardError.set(errorMessage(error));
-    }
+    portForwardError.set(errorMessage(error));
     return [];
   } finally {
     portForwardLoading.set(false);
@@ -2126,7 +1967,6 @@ export async function detectRemoteListeningPorts(
   connectionId = portForwardConnectionId() ?? "",
 ): Promise<RemoteListeningPort[]> {
   if (!connectionId) return [];
-  const expectedPeer = currentPeerKey();
   detectingPorts.set(true);
   portForwardError.set("");
   try {
@@ -2134,15 +1974,12 @@ export async function detectRemoteListeningPorts(
       "ssh_list_remote_listening_ports",
       { connectionId },
     );
-    if (currentPeerKey() !== expectedPeer) return [];
     const normalized = Array.isArray(ports) ? ports : [];
     listeningPorts.set(normalized);
     return normalized;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      listeningPorts.set([]);
-      portForwardError.set(errorMessage(error));
-    }
+    listeningPorts.set([]);
+    portForwardError.set(errorMessage(error));
     return [];
   } finally {
     detectingPorts.set(false);
@@ -2150,7 +1987,6 @@ export async function detectRemoteListeningPorts(
 }
 
 export async function startPortForward(request: PortForwardRequest): Promise<PortForward | null> {
-  const expectedPeer = currentPeerKey();
   portForwardError.set("");
   const labelText = (request.label ?? request.description ?? "").trim() || undefined;
   const payload: Record<string, unknown> = {
@@ -2163,13 +1999,10 @@ export async function startPortForward(request: PortForwardRequest): Promise<Por
   };
   try {
     const forward = await invokeCommand<PortForward>("ssh_start_port_forward", payload);
-    if (currentPeerKey() !== expectedPeer) return null;
     await loadPortForwards(request.connectionId);
     return forward;
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      portForwardError.set(errorMessage(error));
-    }
+    portForwardError.set(errorMessage(error));
     return null;
   }
 }
@@ -2291,7 +2124,6 @@ export function selectNewWorkspaceHostOption(optionId: string | null): void {
 export async function loadNewWorkspaceEnvironmentContainers(
   target: "localDocker" | "remoteDocker",
 ): Promise<void> {
-  const expectedPeer = currentPeerKey();
   newWorkspaceEnvLoading.set(true);
   newWorkspaceError.set("");
   try {
@@ -2349,13 +2181,10 @@ export async function loadNewWorkspaceEnvironmentContainers(
     const list = await invokeRawCommand<DockerContainerInfo[]>("ssh_list_docker_containers", {
       config,
     });
-    if (currentPeerKey() !== expectedPeer) return;
     newWorkspaceEnvContainers.set(Array.isArray(list) ? list : []);
   } catch (error) {
-    if (currentPeerKey() === expectedPeer) {
-      newWorkspaceEnvContainers.set([]);
-      newWorkspaceError.set(errorMessage(error));
-    }
+    newWorkspaceEnvContainers.set([]);
+    newWorkspaceError.set(errorMessage(error));
   } finally {
     newWorkspaceEnvLoading.set(false);
   }
@@ -2743,7 +2572,6 @@ export async function confirmNewWorkspace(): Promise<boolean> {
 // ============================================================================
 
 export async function openNewWorkspaceModal(options: OpenNewWorkspaceOptions = {}): Promise<void> {
-  syncSshRemoteScope();
   newWorkspaceStep.set(options.step ?? "choice");
   newWorkspaceShowAssistantChoice.set(options.showAssistantChoice ?? true);
   newWorkspaceSource.set("host");
@@ -2757,13 +2585,11 @@ export async function openNewWorkspaceModal(options: OpenNewWorkspaceOptions = {
   newWorkspaceEnvContainers.set([]);
   newWorkspaceModalOpen.set(true);
 
-  const expectedPeer = currentPeerKey();
   void loadSavedConnections();
   void loadSshConfigHosts();
   void loadWslDistributions();
   try {
     const recent = await getRecentWorkspaces();
-    if (currentPeerKey() !== expectedPeer) return;
     const localOnly = (Array.isArray(recent) ? recent : []).filter(
       ws =>
         (ws.workspaceKind ?? "local").toLowerCase() !== "remote" &&
@@ -2773,7 +2599,7 @@ export async function openNewWorkspaceModal(options: OpenNewWorkspaceOptions = {
     );
     newWorkspaceRecentLocal.set(localOnly.slice(0, 5));
   } catch {
-    if (currentPeerKey() === expectedPeer) newWorkspaceRecentLocal.set([]);
+    newWorkspaceRecentLocal.set([]);
   }
 }
 
@@ -2787,7 +2613,6 @@ export async function openSshConnectionModal(
   presetConnectionId?: string,
   options: OpenSshConnectionOptions = {},
 ): Promise<void> {
-  syncSshRemoteScope();
   sshConnectedCallback = options.onConnected ?? null;
   pendingConnectBrowseOverride =
     options.browseAfterConnect !== undefined ? options.browseAfterConnect : null;
@@ -2882,7 +2707,6 @@ export async function openRemoteFileBrowser(
   initialPath?: string,
   options: OpenRemoteFileBrowserOptions = {},
 ): Promise<void> {
-  syncSshRemoteScope();
   browserSelectCallback = options.onSelect ?? null;
   browserConnectionId.set(connectionId);
   const saved = savedConnections().find(conn => conn.id === connectionId);
@@ -2928,7 +2752,6 @@ export async function openPortForwardModal(
   connectionId: string,
   connectionName?: string,
 ): Promise<void> {
-  syncSshRemoteScope();
   stopPortForwardPolling();
   const saved = savedConnections().find(conn => conn.id === connectionId);
   portForwardConnectionId.set(connectionId);
@@ -3118,8 +2941,6 @@ function bindLinkEvents(): void {
   if (linkEventsBound) return;
   linkEventsBound = true;
   listenEvent<HostRemoteLink>("remote://link-state", payload => {
-    // A Peer owns its own links; this controller's local ones are not shown while driving it.
-    if (currentPeerKey() !== null) return;
     applyHostLink(payload);
   });
   // Missed events (a slow client, a restarted backend): read the host's current links again.
@@ -3127,8 +2948,6 @@ function bindLinkEvents(): void {
 }
 
 async function rehydrateLinkStates(): Promise<void> {
-  const expectedPeer = currentPeerKey();
-  if (expectedPeer !== null) return;
   let links: HostRemoteLink[];
   try {
     links = await invokeCommand<HostRemoteLink[]>("remote_workspace_link_states", {});
@@ -3136,7 +2955,7 @@ async function rehydrateLinkStates(): Promise<void> {
     // The next ensure (activation or Reconnect) answers with the state anyway.
     return;
   }
-  if (currentPeerKey() !== expectedPeer || !Array.isArray(links)) return;
+  if (!Array.isArray(links)) return;
   // A restarted backend numbers its states from 1 again.
   linkRevisions.clear();
   for (const link of links) applyHostLink(link);
@@ -3146,7 +2965,6 @@ async function requestEnsureConnected(
   target: ReconnectTarget,
   activate: boolean,
 ): Promise<boolean> {
-  const expectedPeer = currentPeerKey();
   bindLinkEvents();
   if (remoteLinkStates()[target.connectionId] !== "connected") setLinkState(target.connectionId, "checking");
   let answer: EnsureConnectedAnswer;
@@ -3157,7 +2975,6 @@ async function requestEnsureConnected(
       activate,
     });
   } catch (error) {
-    if (currentPeerKey() !== expectedPeer) return false;
     if (isCommandUnavailable(error, "remote_workspace_ensure_connected")) {
       // An older host: it cannot restore links, and this surface no longer does it either.
       setLinkState(target.connectionId, "host-outdated");
@@ -3166,23 +2983,19 @@ async function requestEnsureConnected(
     setLinkState(target.connectionId, "offline", errorMessage(error));
     return false;
   }
-  if (currentPeerKey() !== expectedPeer) return false;
   applyHostLink(answer?.link, target);
   return answer?.link?.state === "connected" && remoteLinkStates()[target.connectionId] === "connected";
 }
 
 /**
- * Makes sure the transport behind a remote workspace is up. Local workspaces,
- * and every workspace while driving a Peer device (the peer owns its own SSH
- * sessions, and controller-local credentials must never open one there), pass
- * straight through. Concurrent calls for the same connection share one request.
+ * Makes sure the transport behind a remote workspace is up. Local workspaces
+ * pass straight through. Concurrent calls for the same connection share one request.
  */
 export function ensureRemoteConnected(
   ws: WorkspaceRecord | null,
   options: { activate?: boolean } = {},
 ): Promise<boolean> {
   if (!ws || ws.workspaceKind !== "remote" || !ws.connectionId) return Promise.resolve(true);
-  if (currentPeerKey() !== null) return Promise.resolve(true);
   const connectionId = ws.connectionId;
   const running = ensureInFlight.get(connectionId);
   if (running) return running;
@@ -3209,15 +3022,6 @@ export async function retryRemoteWorkspace(ws: WorkspaceRecord | null = activeWo
     return false;
   }
   return ensureRemoteConnected(ws);
-}
-
-/** Drops every link state (Peer Device Mode in or out). */
-function resetRemoteLiveness(): void {
-  remoteLinkStates.set({});
-  remoteLinkErrors.set({});
-  remoteLinkAttempts.set({});
-  linkRevisions.clear();
-  pendingAuthReconnect = null;
 }
 
 // Activation is the moment the desktop checks a remote workspace's link.

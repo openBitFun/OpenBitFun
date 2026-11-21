@@ -4,7 +4,6 @@ use crate::peer_host::{
     state::PeerHostState,
 };
 use openbitfun_core::service::{
-    remote_connect::host_stream::HostStreamHub,
     remote_ssh::{get_remote_workspace_manager, RemoteTerminalManager},
     terminal::{
         session::SessionStatus, CloseSessionRequest, CreateSessionRequest, ResizeRequest,
@@ -20,16 +19,17 @@ const TERMINAL_EXIT_EVENT: &str = "terminal-exit";
 const TERMINAL_CLOSED_EVENT: &str = "terminal-closed";
 const TERMINAL_EXIT_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-async fn publish_lifecycle(hub: &HostStreamHub, id: &str, event: &str, mut payload: Value) {
+/// Publishes a fact about terminal `id` to OBP controllers. The payload names
+/// the terminal as both `terminal_id` and `session_id` (what the UI's terminal
+/// store keys on); output itself stays in the replay log.
+fn publish_terminal(id: &str, event: &str, mut payload: Value) {
     payload["terminal_id"] = json!(id);
-    if let Err(error) = hub
-        .append(format!("terminal-{id}"), event.into(), payload)
-        .await
-    {
-        tracing::debug!(
-            "Terminal lifecycle event was not published: terminal={id} event={event} error={error}"
-        );
-    }
+    payload["session_id"] = json!(id);
+    super::super::fanout::publish_host_event(event, &payload);
+}
+
+fn publish_lifecycle(id: &str, event: &str, payload: Value) {
+    publish_terminal(id, event, payload);
 }
 
 /// `Some(code)` once the PTY has exited; the code itself may be unknown.
@@ -63,7 +63,7 @@ async fn remote_session(id: &str) -> Option<RemoteTerminalManager> {
     manager.get_session(id).await.map(|_| manager)
 }
 
-pub(crate) async fn create(state: &PeerHostState, args: &Value) -> Result<Value, String> {
+pub(crate) async fn create(_state: &PeerHostState, args: &Value) -> Result<Value, String> {
     let request = request_value(args);
     let id =
         optional_string(request, "sessionId").unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -100,11 +100,6 @@ pub(crate) async fn create(state: &PeerHostState, args: &Value) -> Result<Value,
         // can open a terminal before any workspace has been registered.
         explicit.filter(|id| !id.is_empty())
     };
-    let hub = state
-        .account_routing
-        .host_stream_hub()
-        .await
-        .ok_or("Account host streams are unavailable")?;
     if let Some(connection) = connection {
         let services = openbitfun_core::service::remote_ssh::workspace_state::ensure_saved_connection_services().await?;
         let ssh = services
@@ -147,13 +142,7 @@ pub(crate) async fn create(state: &PeerHostState, args: &Value) -> Result<Value,
             )
             .await
             .map_err(|e| e.to_string())?;
-        hub.append(
-            format!("terminal-{id}"),
-            "terminal-created".into(),
-            json!({"terminal_id":id}),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        publish_terminal(&id, "terminal-created", json!({}));
         let mut created = created;
         manager
             .set_workspace_id(&created.session.id, workspace_id.clone())
@@ -162,67 +151,40 @@ pub(crate) async fn create(state: &PeerHostState, args: &Value) -> Result<Value,
         let result = response(created.session);
         let mut rx = created.output_rx;
         tokio::spawn(async move {
-            let mut closed = hub.subscribe_closed();
             loop {
-                if *closed.borrow() {
-                    break;
-                }
-                let output =
-                    tokio::select! { output = rx.recv() => output, _ = closed.changed() => break };
+                let output = rx.recv().await;
                 match output {
                     Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(_) => {
                         // The SSH channel ended, so the shell is gone. The channel
                         // does not report an exit code.
                         publish_lifecycle(
-                            &hub,
                             &id,
                             TERMINAL_EXIT_EVENT,
                             json!({"exit_code":Value::Null}),
-                        )
-                        .await;
+                        );
                         // The record, and its replay, outlive the channel until the
                         // tab is closed.
                         let mut removal_check = tokio::time::interval(TERMINAL_EXIT_CHECK_INTERVAL);
                         removal_check
                             .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                         loop {
-                            if *closed.borrow() {
+                            removal_check.tick().await;
+                            if manager.replay_cursor(&id).await.is_none() {
+                                publish_lifecycle(&id, TERMINAL_CLOSED_EVENT, json!({}));
                                 break;
-                            }
-                            tokio::select! {
-                                _ = removal_check.tick() => {
-                                    if manager.replay_cursor(&id).await.is_none() {
-                                        publish_lifecycle(&hub, &id, TERMINAL_CLOSED_EVENT, json!({})).await;
-                                        break;
-                                    }
-                                }
-                                _ = closed.changed() => break,
                             }
                         }
                         break;
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(75)).await;
-                if *closed.borrow() {
-                    break;
-                }
                 while rx.try_recv().is_ok() {}
                 let Some(cursor) = manager.replay_cursor(&id).await else {
-                    publish_lifecycle(&hub, &id, TERMINAL_CLOSED_EVENT, json!({})).await;
+                    publish_lifecycle(&id, TERMINAL_CLOSED_EVENT, json!({}));
                     break;
                 };
-                if hub
-                    .append(
-                        format!("terminal-{id}"),
-                        "terminal-output".into(),
-                        json!({"terminal_id":id,"cursor":cursor}),
-                    )
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
+                publish_terminal(&id, "terminal-output", json!({"cursor":cursor}));
             }
         });
         return Ok(result);
@@ -255,61 +217,37 @@ pub(crate) async fn create(state: &PeerHostState, args: &Value) -> Result<Value,
             .map_err(|e| e.to_string())?;
         session.workspace_id = Some(workspace_id);
     }
-    hub.append(
-        format!("terminal-{id}"),
-        "terminal-created".into(),
-        json!({"terminal_id":id}),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    publish_terminal(&id, "terminal-created", json!({}));
     let manager = terminal.session_manager();
     tokio::spawn(async move {
-        let mut closed = hub.subscribe_closed();
         // The replay watch only moves on output; a shell can exit without any.
         let mut exit_check = tokio::time::interval(TERMINAL_EXIT_CHECK_INTERVAL);
         exit_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut exit_published = false;
         loop {
-            if *closed.borrow() {
-                break;
-            }
             tokio::select! {
                 changed = rx.changed() => {
                     if changed.is_err() {
                         // The close can land between exit checks; keep the exit code.
                         let status = manager.session_status(&id).await;
                         if let Some(payload) = unpublished_exit(status.as_ref(), exit_published) {
-                            publish_lifecycle(&hub, &id, TERMINAL_EXIT_EVENT, payload).await;
+                            publish_lifecycle(&id, TERMINAL_EXIT_EVENT, payload);
                         }
-                        publish_lifecycle(&hub, &id, TERMINAL_CLOSED_EVENT, json!({})).await;
+                        publish_lifecycle(&id, TERMINAL_CLOSED_EVENT, json!({}));
                         break;
                     }
                 }
                 _ = exit_check.tick(), if !exit_published => {
                     if let Some(exit_code) = exited_code(manager.session_status(&id).await.as_ref()) {
                         exit_published = true;
-                        publish_lifecycle(&hub, &id, TERMINAL_EXIT_EVENT, json!({"exit_code":exit_code})).await;
+                        publish_lifecycle(&id, TERMINAL_EXIT_EVENT, json!({"exit_code":exit_code}));
                     }
                     continue;
                 }
-                _ = closed.changed() => break,
             }
             tokio::time::sleep(std::time::Duration::from_millis(75)).await;
-            if *closed.borrow() {
-                break;
-            }
             let cursor = *rx.borrow_and_update();
-            if hub
-                .append(
-                    format!("terminal-{id}"),
-                    "terminal-output".into(),
-                    json!({"terminal_id":id,"cursor":cursor}),
-                )
-                .await
-                .is_err()
-            {
-                break;
-            }
+            publish_terminal(&id, "terminal-output", json!({"cursor":cursor}));
         }
     });
     serde_json::to_value(session).map_err(|e| e.to_string())

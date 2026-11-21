@@ -13,8 +13,8 @@
 
 import { tr } from "./i18n";
 import { signal } from "nsh";
-import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
-import { reportError } from "./state";
+import { fleetActive, invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { activeSessionDevice, activeSessionId, deviceOfSession, reportError } from "./state";
 
 export interface QuestionOptionView {
   label: string;
@@ -31,6 +31,8 @@ export interface QuestionView {
 export interface QuestionPrompt {
   toolId: string;
   sessionId: string;
+  /** The device whose runtime asked (`EventMeta.origin`; `""` without the fleet layer). */
+  deviceId: string;
   questions: QuestionView[];
   /** The host's own deadline, when it set one; 0 means it waits for an answer. */
   deadlineMs: number;
@@ -89,12 +91,13 @@ function readDeadline(payload: unknown): number {
   return typeof deadline === "number" && Number.isFinite(deadline) ? deadline : 0;
 }
 
-function toPrompt(toolId: string, sessionId: string, questions: unknown): QuestionPrompt | null {
+function toPrompt(toolId: string, sessionId: string, questions: unknown, deviceId: string): QuestionPrompt | null {
   const views = readQuestions(questions);
   if (views.length === 0) return null;
   return {
     toolId,
     sessionId,
+    deviceId,
     questions: views,
     deadlineMs: readDeadline(questions),
     answers: {},
@@ -105,18 +108,33 @@ function toPrompt(toolId: string, sessionId: string, questions: unknown): Questi
   };
 }
 
+/** A prompt's identity: tool ids are unique per device's runtime only. */
+function promptKey(prompt: { toolId: string; deviceId: string }): string {
+  return `${prompt.deviceId}/${prompt.toolId}`;
+}
+
 function upsert(prompt: QuestionPrompt): void {
+  const key = promptKey(prompt);
   questionPrompts.update(current => {
-    const existing = current.find(item => item.toolId === prompt.toolId);
+    const existing = current.find(item => promptKey(item) === key);
     if (!existing) return [...current, prompt];
     // A republished question keeps whatever the user already picked.
     if (existing.questions.length === prompt.questions.length) return current;
-    return current.map(item => (item.toolId === prompt.toolId ? prompt : item));
+    return current.map(item => (promptKey(item) === key ? prompt : item));
   });
 }
 
-function drop(toolId: string): void {
-  questionPrompts.update(current => current.filter(item => item.toolId !== toolId));
+function drop(key: string): void {
+  questionPrompts.update(current => current.filter(item => promptKey(item) !== key));
+}
+
+/** The prompt a tool id names: the open session's device first, then any device. */
+function findPrompt(toolId: string): QuestionPrompt | undefined {
+  const all = questionPrompts();
+  return (
+    all.find(item => item.toolId === toolId && item.deviceId === activeSessionDevice()) ??
+    all.find(item => item.toolId === toolId)
+  );
 }
 
 /**
@@ -128,13 +146,15 @@ function drop(toolId: string): void {
 const interactionStarted = new Set<string>();
 
 async function startInteraction(prompt: QuestionPrompt): Promise<void> {
-  if (interactionStarted.has(prompt.toolId)) return;
-  interactionStarted.add(prompt.toolId);
+  const key = promptKey(prompt);
+  if (interactionStarted.has(key)) return;
+  interactionStarted.add(key);
   try {
-    await invokeCommand<unknown>("start_user_question_interaction", {
-      sessionId: prompt.sessionId,
-      toolId: prompt.toolId,
-    });
+    await invokeCommand<unknown>(
+      "start_user_question_interaction",
+      { sessionId: prompt.sessionId, toolId: prompt.toolId },
+      prompt.deviceId ? { target: prompt.deviceId } : undefined,
+    );
   } catch {
     // An older host has no such command; the question is still answerable.
   }
@@ -144,7 +164,7 @@ async function startInteraction(prompt: QuestionPrompt): Promise<void> {
 export async function startQuestionPrompts(): Promise<void> {
   if (listening) return;
   listening = true;
-  listenEvent<Record<string, unknown>>("backend-event-toolawaitinguserinput", payload => {
+  listenEvent<Record<string, unknown>>("backend-event-toolawaitinguserinput", (payload, meta) => {
     const value = asRecord(asRecord(payload).value ?? payload);
     // Real Rust `BackendEvent::ToolAwaitingUserInput` serializes snake_case
     // (`tool_id`, `session_id`); also accept camelCase from fixtures/newer bridges.
@@ -161,15 +181,24 @@ export async function startQuestionPrompts(): Promise<void> {
           ? value.sessionId
           : "";
     if (!toolId) return;
-    const prompt = toPrompt(toolId, sessionId, value.questions);
+    const prompt = toPrompt(toolId, sessionId, value.questions, meta.origin);
     if (!prompt) return;
     upsert(prompt);
     void startInteraction(prompt);
   });
 }
 
-/** Drops prompts cached from a host this surface just left (e.g. Peer Device switch). */
-export function resetQuestionPrompts(): void {
+/**
+ * Drops cached prompts: every one (a host this surface just left, the legacy
+ * Peer Device switch), or only one device's (`origin`, a gap in its events;
+ * its mailbox is read again when its session opens or re-hydrates).
+ */
+export function resetQuestionPrompts(origin?: string): void {
+  if (origin !== undefined && fleetActive()) {
+    questionPrompts.update(current => current.filter(item => item.deviceId !== origin));
+    for (const key of [...interactionStarted]) if (key.startsWith(`${origin}/`)) interactionStarted.delete(key);
+    return;
+  }
   questionPrompts.set([]);
   interactionStarted.clear();
 }
@@ -179,12 +208,19 @@ export function resetQuestionPrompts(): void {
  * asked while this surface was on another session, or before it loaded, is
  * otherwise invisible and the turn stays stuck.
  */
-export async function loadQuestionMailbox(sessionId: string): Promise<void> {
+export async function loadQuestionMailbox(sessionId: string, deviceId?: string): Promise<void> {
   if (!sessionId) return;
+  const device = deviceId ?? (sessionId === activeSessionId() ? activeSessionDevice() : deviceOfSession(sessionId));
   // Prompts that arrive while this read is in flight are newer than the snapshot.
   const startedAt = arrivals;
   try {
-    const snapshot = asRecord(await invokeCommand<unknown>("get_session_interaction_mailbox", { sessionId }));
+    const snapshot = asRecord(
+      await invokeCommand<unknown>(
+        "get_session_interaction_mailbox",
+        { sessionId },
+        device ? { target: device } : undefined,
+      ),
+    );
     const mailbox = asRecord(snapshot.userQuestions ?? snapshot.user_questions);
     const pending = Array.isArray(mailbox.questions) ? mailbox.questions : [];
     const readToolId = (entry: unknown): string => {
@@ -199,14 +235,17 @@ export async function loadQuestionMailbox(sessionId: string): Promise<void> {
     questionPrompts.update(current =>
       current.filter(
         item =>
-          item.sessionId !== sessionId || item.seenAt > startedAt || known.has(item.toolId),
+          item.sessionId !== sessionId ||
+          item.deviceId !== device ||
+          item.seenAt > startedAt ||
+          known.has(item.toolId),
       ),
     );
     for (const entry of pending) {
       const record = asRecord(entry);
       const toolId = readToolId(entry);
       if (!toolId) continue;
-      const prompt = toPrompt(toolId, sessionId, record.questions);
+      const prompt = toPrompt(toolId, sessionId, record.questions, device);
       if (!prompt) continue;
       upsert(prompt);
       if (record.interactionStarted !== true && record.interaction_started !== true) {
@@ -219,8 +258,11 @@ export async function loadQuestionMailbox(sessionId: string): Promise<void> {
 }
 
 function patch(toolId: string, change: (prompt: QuestionPrompt) => QuestionPrompt): void {
+  const target = findPrompt(toolId);
+  if (!target) return;
+  const key = promptKey(target);
   questionPrompts.update(current =>
-    current.map(item => (item.toolId === toolId ? change(item) : item)),
+    current.map(item => (promptKey(item) === key ? change(item) : item)),
   );
 }
 
@@ -289,7 +331,7 @@ function buildAnswers(prompt: QuestionPrompt): Record<string, string | string[]>
 }
 
 export async function submitQuestion(toolId: string): Promise<void> {
-  const prompt = questionPrompts().find(item => item.toolId === toolId);
+  const prompt = findPrompt(toolId);
   if (!prompt || prompt.submitting) return;
   if (!canSubmitQuestion(prompt)) {
     patch(toolId, item => ({ ...item, error: tr("chat.question.answerAll") }));
@@ -299,12 +341,13 @@ export async function submitQuestion(toolId: string): Promise<void> {
   try {
     // Positional: `tool_id` and `answers` are separate arguments on the host, not
     // one request struct.
-    await invokeRawCommand("submit_user_answers", {
-      toolId,
-      answers: buildAnswers(prompt),
-      sessionId: prompt.sessionId,
-    });
-    drop(toolId);
+    // The answer goes to the device whose tool future is waiting.
+    await invokeRawCommand(
+      "submit_user_answers",
+      { toolId, answers: buildAnswers(prompt), sessionId: prompt.sessionId },
+      prompt.deviceId ? { target: prompt.deviceId } : undefined,
+    );
+    drop(promptKey(prompt));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     patch(toolId, item => ({ ...item, submitting: false, error: message }));
@@ -315,5 +358,8 @@ export async function submitQuestion(toolId: string): Promise<void> {
 /** The prompts this surface should show for one session. */
 export function questionsForSession(sessionId: string | null): QuestionPrompt[] {
   if (!sessionId) return [];
-  return questionPrompts().filter(prompt => prompt.sessionId === sessionId);
+  const device = sessionId === activeSessionId() ? activeSessionDevice() : null;
+  return questionPrompts().filter(
+    prompt => prompt.sessionId === sessionId && (device === null || prompt.deviceId === device),
+  );
 }

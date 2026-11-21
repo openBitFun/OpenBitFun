@@ -250,6 +250,19 @@ export function enterMotion(
 }
 
 /**
+ * A modal's entrance (visual spec §2.6): fade and scale .98 → 1 on the snappy
+ * spring (420, 41); opacity only under `reduceMotion()`.
+ */
+export function modalEnterMotion(): Motion {
+  if (reduceMotion()) {
+    return createMotion({ enter: { keyframes: { opacity: [0, 1] }, duration: 110, easing: MOTION_EASE_STANDARD_BEZIER } });
+  }
+  return createMotion({
+    enter: { keyframes: { opacity: [0, 1], scale: [0.98, 1] }, spring: MOTION_SPRING_SNAPPY },
+  });
+}
+
+/**
  * Resolves the trigger-anchored CSS `transformOrigin` for a popover or menu
  * based on its effective `<Overlay>` `placement` and `align`.
  */
@@ -453,10 +466,13 @@ export interface BrandSpinnerProps {
   variant?: "bars" | "matrix";
 }
 
-const MATRIX_DELAYS: ReadonlyArray<number> = [
-  0, 80, 160,
-  80, 160, 240,
-  160, 240, 320,
+/** The working pulse's period (theme `motionTiming.pulse`). */
+const MATRIX_PULSE_MS = 1600;
+/** Ring cells in clockwise order from the top left, 140 ms apart; the center stays. */
+const MATRIX_RING_DELAYS: ReadonlyArray<number> = [
+  0, 140, 280,
+  980, 0, 420,
+  840, 700, 560,
 ];
 
 /**
@@ -521,9 +537,10 @@ export function BrandSpinner(props: BrandSpinnerProps) {
                 height: "100%",
                 borderRadius: 1.5,
                 backgroundColor: props.color ?? palette().accent,
-                animationName: reduceMotion() ? "none" : "pulse",
-                animationDuration: 920,
-                animationDelay: reduceMotion() ? 0 : MATRIX_DELAYS[cell()],
+                // The ring pulses around the steady center (OpenBitFun among your devices).
+                animationName: reduceMotion() || cell() === 4 ? "none" : "pulse",
+                animationDuration: MATRIX_PULSE_MS,
+                animationDelay: reduceMotion() ? 0 : MATRIX_RING_DELAYS[cell()],
                 animationTimingFunction: "ease-in-out",
                 animationIterationCount: "infinite",
               }}

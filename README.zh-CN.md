@@ -169,4 +169,4 @@ pnpm run desktop:dev
 
 Android、iOS 和 HarmonyOS 的源码及发布已迁至
 [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)。
-浏览器版 mobile-web 以及 Desktop／CLI／Relay 主机实现仍在本仓库维护。
+Desktop／CLI／Relay 主机实现仍在本仓库维护。OpenBitFun 1.0 的手机网页端（`src/mobile-web`）已在 2.0 中移除；手机和浏览器使用 NSH UI（`src/nsh-ui`）。

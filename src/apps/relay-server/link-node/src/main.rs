@@ -43,7 +43,7 @@ enum Command {
         #[arg(long)]
         device: String,
         /// Relay URL the document names.
-        #[arg(long, default_value = "wss://remote.openbitfun.com:443/mesh/et/")]
+        #[arg(long, default_value = "wss://super.openbitfun.com:443/mesh/et/")]
         peer: String,
         /// Output file (created 0600).
         #[arg(long)]

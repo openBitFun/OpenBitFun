@@ -1,14 +1,32 @@
 // Application state. NSH components run once, so the store is plain signals and
 // the loaders below; a change re-runs only the bindings that read that signal.
 
-import { computed, signal, Storage } from "nsh";
+import { computed, effect, signal, Storage, untracked } from "nsh";
 import {
   attachmentContexts,
   clearAttachments,
   imageAttachments,
   type ImageAttachment,
 } from "./attachmentStore";
-import { invokeCommand, listenEvent } from "./bridge";
+import {
+  entryDeviceId,
+  fleetActive,
+  invokeCommand,
+  listenEvent,
+  fleetHandshakePending,
+  setFleetDeviceContextReader,
+  settleFleetHandshake,
+} from "./bridge";
+import {
+  fleetDeviceById,
+  fleetNavigator,
+  fleetSessionOwner,
+  fleetSessionRow,
+  fleetWorkspaceByKey,
+  refreshFleetNavigator,
+  startFleetStore,
+} from "./fleetStore";
+import type { FleetSession, FleetWorkspace, WorkspaceKey } from "./fleetTypes";
 import {
   currentLocale,
   loadAppLocale,
@@ -17,11 +35,9 @@ import {
   tr,
   type AppLocale,
 } from "./i18n";
-import { peerScope, peerSupports } from "./peerState";
-import { resetPermissions } from "./permissionStore";
 import { markSessionSeen, reconcileSessionReadState } from "./sessionStatusStore";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
-import { loadQuestionMailbox, resetQuestionPrompts } from "./userQuestionStore";
+import { loadQuestionMailbox } from "./userQuestionStore";
 import {
   archiveSession,
   cancelDialogTurn,
@@ -54,7 +70,20 @@ import {
   type WorkspaceRecord,
 } from "./api";
 
+/**
+ * Routes. `openbitfun` (the conversation), `inbox`, `sessions` (one session),
+ * `all-sessions`, `device`, `library` and `settings` are the destinations of the
+ * shell; `files` / `git` / `terminal` / `browser` are the workspace tools. The
+ * older ids stay valid as aliases (`navigateScene` resolves them): `home` is
+ * OpenBitFun, the five studio ids are Library tabs and `devices` is All sessions
+ * by device.
+ */
 export type SceneId =
+  | "openbitfun"
+  | "inbox"
+  | "all-sessions"
+  | "device"
+  | "library"
   | "home"
   | "sessions"
   | "assistants"
@@ -73,7 +102,7 @@ export type AuxPaneTab = "files" | "git" | "terminal";
 export type AuxPaneSide = "right" | "left";
 export type SessionGrouping = "grouped" | "flat";
 
-export const activeScene = signal<SceneId>("sessions");
+export const activeScene = signal<SceneId>("openbitfun");
 export const drawerOpen = signal(true);
 
 export function toggleDrawer(): void {
@@ -81,13 +110,13 @@ export function toggleDrawer(): void {
 }
 
 /** Navigation history across scenes (`NavBar` back/forward). */
-export const navHistory = signal<SceneId[]>(["sessions"]);
+export const navHistory = signal<SceneId[]>(["openbitfun"]);
 export const navIndex = signal(0);
 export const canGoBack = computed(() => navIndex() > 0);
 export const canGoForward = computed(() => navIndex() < navHistory().length - 1);
 
 /** Open scene tabs shown in `SceneBar`. */
-export const openSceneTabs = signal<SceneId[]>(["sessions"]);
+export const openSceneTabs = signal<SceneId[]>(["openbitfun"]);
 
 export function openSceneTab(scene: SceneId): void {
   if (!openSceneTabs().includes(scene)) {
@@ -108,7 +137,60 @@ export function closeSceneTab(scene: SceneId): void {
   }
 }
 
-export function navigateScene(scene: SceneId): void {
+/** The Library's tabs (visual spec §4.8). */
+export type LibraryTab = "assistants" | "agents" | "skills" | "spaces" | "routines";
+export const LIBRARY_TABS: ReadonlyArray<LibraryTab> = ["assistants", "agents", "skills", "spaces", "routines"];
+export const libraryTab = signal<LibraryTab>("assistants");
+
+/** All sessions' two views (visual spec §4.6). */
+export type AllSessionsView = "recent" | "by-device";
+export const allSessionsView = signal<AllSessionsView>("recent");
+
+/** The device the device page shows (a fleet device id; `""` = this device). */
+export const devicePageId = signal<string>("");
+
+/**
+ * Resolves the older scene ids onto the current routes: `home` is the
+ * OpenBitFun conversation, the five studio ids open that Library tab, and
+ * `devices` opens All sessions by device.
+ */
+export function resolveSceneAlias(scene: SceneId): SceneId {
+  switch (scene) {
+    case "home":
+      return "openbitfun";
+    case "assistants":
+    case "agents":
+    case "skills":
+    case "spaces":
+    case "routines":
+      libraryTab.set(scene);
+      return "library";
+    case "devices":
+      allSessionsView.set("by-device");
+      return "all-sessions";
+    default:
+      return scene;
+  }
+}
+
+export function openLibrary(tab?: LibraryTab): void {
+  if (tab) libraryTab.set(tab);
+  navigateScene("library");
+}
+
+export function openAllSessions(view?: AllSessionsView): void {
+  if (view) allSessionsView.set(view);
+  navigateScene("all-sessions");
+}
+
+/** Opens a device's page (from a device badge, a breadcrumb or All sessions). */
+export function openDevicePage(deviceId: string): void {
+  devicePageId.set(deviceId);
+  navigateScene("device");
+}
+
+export function navigateScene(requested: SceneId): void {
+  const scene = resolveSceneAlias(requested);
   openSceneTab(scene);
   const history = navHistory();
   const idx = navIndex();
@@ -181,9 +263,9 @@ export function swapAuxPanes(): void {
 }
 
 /** Left NavPanel width & session tree grouping. */
-export const NAV_MIN_WIDTH = 216;
-export const NAV_MAX_WIDTH = 480;
-export const NAV_DEFAULT_WIDTH = 280;
+export const NAV_MIN_WIDTH = 232;
+export const NAV_MAX_WIDTH = 360;
+export const NAV_DEFAULT_WIDTH = 264;
 /** A sidebar dragged narrower than this collapses, as the desktop's does. */
 export const NAV_COLLAPSE_WIDTH = 64;
 export const navWidth = signal(NAV_DEFAULT_WIDTH);
@@ -250,10 +332,82 @@ export function persistShellLayout(): void {
 }
 
 export const workspaces = signal<WorkspaceRecord[]>([]);
-export const activeWorkspaceId = signal<string | null>(null);
+/**
+ * The selected workspace anywhere on the account. Workspace ids are unique per
+ * device only, so the device is part of the key. On a connection without the
+ * fleet layer the device is always `""` (one backend, one device).
+ */
+export const activeWorkspaceKey = signal<WorkspaceKey | null>(null);
+/** The selected workspace's id (read-only; select through `selectWorkspace`). */
+export const activeWorkspaceId = computed<string | null>(() => activeWorkspaceKey()?.workspaceId ?? null);
+/**
+ * The device context: the device of the selected workspace, else the entry the
+ * UI is connected through. Settings, models, files, git, terminals and every
+ * command without an owner run there. `""` without the fleet layer.
+ */
+/** A device picked with no workspace of it selected yet (fleet only). */
+const selectedDevice = signal<string | null>(null);
+export const deviceContext = computed<string>(() => {
+  if (!fleetActive()) return "";
+  return activeWorkspaceKey()?.deviceId || selectedDevice() || entryDeviceId() || "";
+});
+/** Same as `deviceContext`; the device the selected workspace belongs to. */
+export const activeDeviceId = deviceContext;
+setFleetDeviceContextReader(() => deviceContext() || null);
 export const sessions = signal<SessionSummary[]>([]);
 export const sessionTotal = signal(0);
 export const activeSessionId = signal<string | null>(null);
+/** The device of the open session (`""` without the fleet layer). */
+export const activeSessionDevice = signal<string>("");
+
+/** The key of a session anywhere on the account: `"<deviceId>/<sessionId>"`. */
+export function sessionKey(sessionId: string, deviceId: string = deviceOfSession(sessionId)): string {
+  return `${deviceId}/${sessionId}`;
+}
+
+/** The session id of a `sessionKey`. */
+export function sessionIdOfKey(key: string): string {
+  const slash = key.indexOf("/");
+  return slash >= 0 ? key.slice(slash + 1) : key;
+}
+
+/** The device id of a `sessionKey` (`""` without the fleet layer). */
+export function deviceIdOfKey(key: string): string {
+  const slash = key.indexOf("/");
+  return slash >= 0 ? key.slice(0, slash) : "";
+}
+
+/**
+ * The device a session id belongs to, as far as this surface knows: the open
+ * session's device, else the fleet index's owner, else the device context.
+ */
+export function deviceOfSession(sessionId: string | null | undefined): string {
+  if (!fleetActive()) return "";
+  if (sessionId && sessionId === activeSessionId() && activeSessionDevice()) return activeSessionDevice();
+  return (sessionId ? fleetSessionOwner(sessionId) : null) ?? deviceContext();
+}
+
+/** The open session's key, or `null`. */
+export const activeSessionKey = computed<string | null>(() => {
+  const sessionId = activeSessionId();
+  return sessionId ? `${activeSessionDevice()}/${sessionId}` : null;
+});
+
+function setActiveSession(sessionId: string | null, deviceId?: string): void {
+  activeSessionDevice.set(sessionId ? (deviceId ?? deviceOfSession(sessionId)) : "");
+  activeSessionId.set(sessionId);
+}
+
+function setActiveWorkspaceKey(workspaceId: string | null, deviceId?: string): void {
+  if (!workspaceId) {
+    activeWorkspaceKey.set(null);
+    return;
+  }
+  const device = fleetActive() ? (deviceId ?? deviceContext()) : "";
+  const current = activeWorkspaceKey();
+  if (current && current.workspaceId === workspaceId && current.deviceId === device) return;
+  activeWorkspaceKey.set({ deviceId: device, workspaceId });
+}
 /** The open session's turns, as the host's transcript view projects them. */
 export const sessionTurns = signal<TranscriptTurnView[]>([]);
 /**
@@ -346,7 +500,9 @@ function notifyRunningTurn(sessionId: string, snapshot: RunningTurnSnapshot): vo
 }
 
 export type SessionSwitchPhase = "leave" | "enter" | "reset";
-const sessionSwitchHandlers = new Set<(phase: SessionSwitchPhase, sessionId: string | null) => void>();
+const sessionSwitchHandlers = new Set<
+  (phase: SessionSwitchPhase, sessionId: string | null, key: string | null) => void
+>();
 
 /**
  * Lets `agentEvents` keep a running turn per session: `leave` fires before the
@@ -354,7 +510,7 @@ const sessionSwitchHandlers = new Set<(phase: SessionSwitchPhase, sessionId: str
  * `reset` when the machine being read changes.
  */
 export function onSessionSwitch(
-  handler: (phase: SessionSwitchPhase, sessionId: string | null) => void,
+  handler: (phase: SessionSwitchPhase, sessionId: string | null, key: string | null) => void,
 ): () => void {
   sessionSwitchHandlers.add(handler);
   return () => {
@@ -362,10 +518,10 @@ export function onSessionSwitch(
   };
 }
 
-function notifySessionSwitch(phase: SessionSwitchPhase, sessionId: string | null): void {
+function notifySessionSwitch(phase: SessionSwitchPhase, sessionId: string | null, key: string | null = null): void {
   for (const handler of [...sessionSwitchHandlers]) {
     try {
-      handler(phase, sessionId);
+      handler(phase, sessionId, key);
     } catch {
       // A failed restore must not block selecting the session.
     }
@@ -426,9 +582,10 @@ export function removeSessionFromEvent(sessionId: string): void {
     sessions.update(current => current.filter(item => item.sessionId !== sessionId));
     sessionTotal.update(total => Math.max(0, total - 1));
   }
-  openSessionIds.set(openSessionIds().filter(id => id !== sessionId));
+  const key = sessionKey(sessionId);
+  openSessionKeys.set(openSessionKeys().filter(item => item !== key));
   if (activeSessionId() === sessionId) {
-    activeSessionId.set(null);
+    setActiveSession(null);
     sessionTurns.set([]);
     clearPendingTurn(sessionId);
     clearStreamedText();
@@ -488,6 +645,11 @@ export const workspaceNavigatorOutdated = signal(false);
  * workspace the host names.
  */
 export async function loadWorkspaces(options?: { autoOpenRecent?: boolean }): Promise<void> {
+  if (fleetHandshakePending()) await settleFleetHandshake();
+  if (fleetActive()) {
+    await loadFleetWorkspaces();
+    return;
+  }
   let reopen: WorkspaceRecord | null = null;
   await runStep(async () => {
     try {
@@ -530,8 +692,8 @@ export async function loadWorkspaces(options?: { autoOpenRecent?: boolean }): Pr
 }
 
 function clearWorkspaceSelection(): void {
-  activeWorkspaceId.set(null);
-  activeSessionId.set(null);
+  setActiveWorkspaceKey(null);
+  setActiveSession(null);
   sessionTurns.set([]);
   sessions.set([]);
   sessionCursor.set(null);
@@ -549,8 +711,7 @@ function clearWorkspaceSelection(): void {
  */
 export async function openRecentWorkspace(record: WorkspaceRecord): Promise<void> {
   await runStep(async () => {
-    const legacyPathOnly = peerScope() !== null && peerSupports("workspace_id_references_v1") === false;
-    const opened = await openWorkspaceById(record, legacyPathOnly);
+    const opened = await openWorkspaceById(record);
     await loadWorkspaces();
     const id = opened?.id || record.id;
     if (opened?.id && !workspaces().some(item => item.id === opened.id)) {
@@ -583,51 +744,23 @@ export async function renameWorkspace(workspaceId: string, name: string): Promis
   });
 }
 
-/**
- * Drops every cached fact about the machine this surface was reading, then
- * reloads the workspace list from the host it now reads. Peer Device Mode calls
- * this on the way in and out so a peer's sessions are never drawn from the other
- * machine's records.
- */
-export async function resetForDeviceChange(): Promise<void> {
-  activeWorkspaceId.set(null);
-  activeSessionId.set(null);
-  openSessionIds.set([]);
-  sessions.set([]);
-  sessionTurns.set([]);
-  sessionCursor.set(null);
-  sessionHasMore.set(false);
-  sessionTotal.set(0);
-  runningTurnId.set(null);
-  runningTurns.set({});
-  clearStreamedText();
-  clearPendingTurn();
-  turnError.set("");
-  workspaces.set([]);
-  recentWorkspaces.set([]);
-  workspacesLoaded.set(false);
-  // The agents this surface bound belong to the sessions of the machine it left.
-  sessionAgentTypes.set({});
-  composerDrafts.clear();
-  notifySessionSwitch("reset", null);
-  resetPermissions();
-  resetQuestionPrompts();
-  notifyWorkspaceChanged();
-  await loadWorkspaces();
-}
-
-export function selectWorkspace(workspaceId: string, options?: { syncHost?: boolean }): void {
-  if (activeWorkspaceId() === workspaceId) return;
+export function selectWorkspace(
+  workspaceId: string,
+  options?: { syncHost?: boolean; deviceId?: string },
+): void {
+  const device = fleetActive() ? (options?.deviceId ?? deviceContext()) : "";
+  const current = activeWorkspaceKey();
+  if (current && current.workspaceId === workspaceId && current.deviceId === device) return;
   // A recent workspace is not open on the host: reopen it instead of pretending.
-  if (!workspaces().some(item => item.id === workspaceId)) {
+  if (!fleetActive() && !workspaces().some(item => item.id === workspaceId)) {
     const recent = recentWorkspaces().find(item => item.id === workspaceId);
     if (recent) {
       void openRecentWorkspace(recent);
       return;
     }
   }
-  activeWorkspaceId.set(workspaceId);
-  activeSessionId.set(null);
+  setActiveWorkspaceKey(workspaceId, device);
+  setActiveSession(null);
   sessionTurns.set([]);
   sessions.set([]);
   sessionCursor.set(null);
@@ -635,6 +768,12 @@ export function selectWorkspace(workspaceId: string, options?: { syncHost?: bool
   clearPendingTurn();
   clearStreamedText();
   notifyWorkspaceChanged();
+  if (fleetActive()) {
+    // The host's own current workspace is that host's preference, not this view's.
+    applyFleetWorkspaceRows();
+    void loadSessions();
+    return;
+  }
   if (options?.syncHost !== false) {
     // A refused switch leaves the host on another workspace; say so.
     void setActiveWorkspace(workspaceId).catch(reportError);
@@ -670,8 +809,8 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
     }
     if (activeWorkspaceId() === workspaceId) {
       const next = remaining[0] ?? null;
-      activeWorkspaceId.set(null);
-      activeSessionId.set(null);
+      setActiveWorkspaceKey(null);
+      setActiveSession(null);
       sessionTurns.set([]);
       sessions.set([]);
       sessionCursor.set(null);
@@ -692,6 +831,15 @@ export const sessionHasMore = signal(false);
 export async function loadSessions(): Promise<void> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return;
+  if (fleetActive()) {
+    await runStep(async () => {
+      await refreshFleetNavigator();
+      applyFleetWorkspaceRows();
+      const first = sessions()[0];
+      if (!activeSessionId() && first) selectSession(first.sessionId, deviceContext());
+    });
+    return;
+  }
   await runStep(async () => {
     const page = await listSessions(workspaceId, 50);
     if (activeWorkspaceId() !== workspaceId) return;
@@ -713,6 +861,11 @@ export async function loadSessions(): Promise<void> {
 export async function refreshSessionsSilently(): Promise<void> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return;
+  if (fleetActive()) {
+    await refreshFleetNavigator();
+    applyFleetWorkspaceRows();
+    return;
+  }
   try {
     const limit = Math.max(50, sessions().length);
     const page = await listSessions(workspaceId, limit);
@@ -731,13 +884,20 @@ export async function refreshSessionsSilently(): Promise<void> {
   }
 }
 
-/** Appends the next catalogue page; the cursor is the host's, not a row offset. */
+/**
+ * Appends the next catalogue page; the cursor is the host's, not a row offset.
+ * The fleet index holds a workspace's newest sessions only, so on a fleet
+ * connection the first extra page is read from the owner without a cursor and
+ * the rows already shown are skipped.
+ */
 export async function loadMoreSessions(): Promise<void> {
   const workspaceId = activeWorkspaceId();
-  const cursor = sessionCursor();
-  if (!workspaceId || !cursor) return;
+  const cursor = sessionCursor() ?? (fleetActive() && sessionHasMore() ? undefined : null);
+  if (!workspaceId || cursor === null) return;
   await runStep(async () => {
+    // On a fleet connection the page comes from the workspace's owner (`fleet_call`).
     const page = await listSessions(workspaceId, 50, cursor);
+    if (activeWorkspaceId() !== workspaceId) return;
     const known = new Set(sessions().map(item => item.sessionId));
     const extra = (page.sessions ?? []).filter(item => !known.has(item.sessionId));
     sessions.set([...sessions(), ...extra]);
@@ -748,24 +908,37 @@ export async function loadMoreSessions(): Promise<void> {
   });
 }
 
-/** Sessions the user opened, in the order the tab strip shows them. */
-export const openSessionIds = signal<string[]>([]);
+/** Sessions the user opened (`sessionKey`s), in the order the tab strip shows them. */
+export const openSessionKeys = signal<string[]>([]);
+/** The open sessions' ids, in tab order (read-only view of `openSessionKeys`). */
+export const openSessionIds = computed<string[]>(() => openSessionKeys().map(sessionIdOfKey));
 
-export function selectSession(sessionId: string): void {
+export function selectSession(sessionId: string, deviceId?: string, workspaceId?: string): void {
   const previous = activeSessionId();
-  activeSessionId.set(sessionId);
-  if (!openSessionIds().includes(sessionId)) openSessionIds.update(ids => [...ids, sessionId]);
-  if (previous !== sessionId) {
-    notifySessionSwitch("leave", previous);
-    swapComposerDraft(previous, sessionId);
+  const previousKey = activeSessionKey();
+  const device = fleetActive() ? (deviceId ?? deviceOfSession(sessionId)) : "";
+  // A session belongs to one workspace on its device (a dispatch job's lives in
+  // its own worktree workspace); its transcript and composer read that
+  // workspace, so it is selected first when the session lives elsewhere.
+  const owner = fleetActive() ? workspaceId || fleetSessionRow(device, sessionId)?.workspaceId || "" : "";
+  const current = activeWorkspaceKey();
+  if (owner && (current?.workspaceId !== owner || current?.deviceId !== device)) {
+    selectWorkspace(owner, { deviceId: device });
+  }
+  const key = `${device}/${sessionId}`;
+  setActiveSession(sessionId, device);
+  if (!openSessionKeys().includes(key)) openSessionKeys.update(keys => [...keys, key]);
+  if (previousKey !== key) {
+    notifySessionSwitch("leave", previous, previousKey);
+    swapComposerDraft(previousKey, key);
     sessionTurns.set([]);
     turnsLoading.set(true);
     clearPendingTurn();
     clearStreamedText();
     turnError.set("");
   }
-  runningTurnId.set(runningTurns()[sessionId] ?? null);
-  if (previous !== sessionId) notifySessionSwitch("enter", sessionId);
+  runningTurnId.set(runningTurns()[key] ?? null);
+  if (previousKey !== key) notifySessionSwitch("enter", sessionId, key);
   // Opening a session is what makes it read; its row compares against this stamp.
   const row = sessions().find(item => item.sessionId === sessionId);
   markSessionSeen(sessionId, sessionLastActivityMs(row));
@@ -776,27 +949,29 @@ export function selectSession(sessionId: string): void {
 }
 
 /** Closes one tab; the neighbour takes over when the closed tab was on screen. */
-export function closeSessionTab(sessionId: string): void {
-  const remaining = openSessionIds().filter(id => id !== sessionId);
-  openSessionIds.set(remaining);
-  if (activeSessionId() !== sessionId) return;
+export function closeSessionTab(sessionId: string, deviceId?: string): void {
+  const key = deviceId !== undefined ? `${deviceId}/${sessionId}` : sessionKey(sessionId);
+  const remaining = openSessionKeys().filter(item => item !== key);
+  openSessionKeys.set(remaining);
+  if (activeSessionKey() !== key) return;
   const fallback = remaining[remaining.length - 1];
-  notifySessionSwitch("leave", sessionId);
-  swapComposerDraft(sessionId, null);
-  activeSessionId.set(null);
+  notifySessionSwitch("leave", sessionId, key);
+  swapComposerDraft(key, null);
+  setActiveSession(null);
   sessionTurns.set([]);
   runningTurnId.set(null);
   clearPendingTurn();
   clearStreamedText();
-  if (fallback) selectSession(fallback);
+  if (fallback) selectSession(sessionIdOfKey(fallback), deviceIdOfKey(fallback));
 }
 
 /** How many of the newest turns a session loads; "Load earlier" widens it. */
 export const TURN_WINDOW_STEP = 30;
+/** Turn window per `sessionKey`. */
 export const turnWindows = signal<Record<string, number>>({});
 
 function turnWindowOf(sessionId: string): number {
-  return turnWindows()[sessionId] ?? TURN_WINDOW_STEP;
+  return turnWindows()[sessionKey(sessionId)] ?? TURN_WINDOW_STEP;
 }
 
 /**
@@ -819,7 +994,7 @@ export const hasEarlierTurns = computed(() => {
 export async function loadEarlierTurns(): Promise<void> {
   const sessionId = activeSessionId();
   if (!sessionId) return;
-  turnWindows.update(current => ({ ...current, [sessionId]: turnWindowOf(sessionId) + TURN_WINDOW_STEP }));
+  turnWindows.update(current => ({ ...current, [sessionKey(sessionId)]: turnWindowOf(sessionId) + TURN_WINDOW_STEP }));
   await loadTurns(sessionId, { silent: true });
 }
 
@@ -917,7 +1092,7 @@ export function setPendingTurn(sessionId: string, userText: string, turnId?: str
   const trimmed = userText.trim();
   if (!sessionId || !trimmed) return;
   // The new turn joins the window instead of pushing the oldest loaded one out.
-  turnWindows.update(current => ({ ...current, [sessionId]: turnWindowOf(sessionId) + 1 }));
+  turnWindows.update(current => ({ ...current, [sessionKey(sessionId)]: turnWindowOf(sessionId) + 1 }));
   pendingTurnState.set({
     sessionId,
     ...(turnId ? { turnId } : {}),
@@ -993,16 +1168,22 @@ export function clearStreamedText(): void {
 /** The turn the host reported as running, so the composer can stop it. */
 export const runningTurnId = signal<string | null>(null);
 /**
- * Session id → the turn running in it. The rows need this for every session, not
- * only the selected one, because a workspace can run several at a time.
+ * `sessionKey` → the turn running in it. The rows need this for every session,
+ * not only the selected one, because a workspace (and every device) can run
+ * several at a time.
  */
 export const runningTurns = signal<Record<string, string>>({});
+
+/** The turn running in a session, by id on its device. */
+export function runningTurnOf(sessionId: string, deviceId?: string): string | null {
+  return runningTurns()[sessionKey(sessionId, deviceId ?? deviceOfSession(sessionId))] ?? null;
+}
 /** The composer's current text. */
 export const composerText = signal<string>("");
 
 /**
  * What each session's composer held when another session was opened, so a draft
- * and its attachments stay with the session they were written for.
+ * and its attachments stay with the session they were written for (by `sessionKey`).
  */
 const composerDrafts = new Map<string, { text: string; attachments: ImageAttachment[] }>();
 
@@ -1156,10 +1337,11 @@ export async function stopRunningTurn(): Promise<void> {
       }
     }
     runningTurnId.set(null);
+    const key = sessionKey(sessionId);
     runningTurns.update(current => {
-      if (!(sessionId in current)) return current;
+      if (!(key in current)) return current;
       const next = { ...current };
-      delete next[sessionId];
+      delete next[key];
       return next;
     });
     await loadTurns(sessionId, { silent: true });
@@ -1174,7 +1356,7 @@ export const DEFAULT_AGENT_TYPE = "Standard";
 /** The agent a session created from this surface starts as. */
 export const chosenAgentType = signal<string>(DEFAULT_AGENT_TYPE);
 
-/** Session id → the agent this surface bound, ahead of the host's next catalogue read. */
+/** `sessionKey` → the agent this surface bound, ahead of the host's next catalogue read. */
 export const sessionAgentTypes = signal<Record<string, string>>({});
 
 /**
@@ -1184,7 +1366,7 @@ export const sessionAgentTypes = signal<Record<string, string>>({});
  */
 export function agentTypeOf(sessionId: string | null): string {
   if (!sessionId) return chosenAgentType();
-  const bound = sessionAgentTypes()[sessionId];
+  const bound = sessionAgentTypes()[sessionKey(sessionId)];
   if (bound) return bound;
   const stored = sessions().find(row => row.sessionId === sessionId)?.agentType;
   return stored && stored.trim() ? stored.trim() : chosenAgentType();
@@ -1219,7 +1401,7 @@ export async function createSessionInWorkspace(
     // to agree with the answer that created the session before that read lands.
     if (created?.sessionId) {
       const bound = created.agentType || agentType;
-      sessionAgentTypes.update(current => ({ ...current, [created.sessionId]: bound }));
+      sessionAgentTypes.update(current => ({ ...current, [sessionKey(created.sessionId, deviceContext())]: bound }));
     }
     await loadSessions();
     if (created?.sessionId) selectSession(created.sessionId);
@@ -1265,10 +1447,11 @@ export async function archiveSessionRow(sessionId: string, archived: boolean): P
     );
     if (archived) {
       // An archived session leaves the tab strip with its header actions.
-      openSessionIds.set(openSessionIds().filter(id => id !== sessionId));
+      const key = sessionKey(sessionId);
+      openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     }
     if (archived && activeSessionId() === sessionId) {
-      activeSessionId.set(null);
+      setActiveSession(null);
       sessionTurns.set([]);
     }
   });
@@ -1283,9 +1466,10 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     // The header counts the whole catalog, so a deleted row lowers it here rather
     // than waiting for a reload the user did not ask for.
     sessionTotal.update(total => Math.max(0, total - 1));
-    openSessionIds.set(openSessionIds().filter(id => id !== sessionId));
+    const key = sessionKey(sessionId);
+    openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     if (activeSessionId() === sessionId) {
-      activeSessionId.set(null);
+      setActiveSession(null);
       sessionTurns.set([]);
     }
   });
@@ -1368,7 +1552,7 @@ export async function startQuickPromptInSession(
         ...(workspacePath ? { workspacePath } : {}),
         includeInternal: false,
       });
-      sessionAgentTypes.update(current => ({ ...current, [currentId]: requestedAgent }));
+      sessionAgentTypes.update(current => ({ ...current, [sessionKey(currentId)]: requestedAgent }));
       sessions.update(current =>
         current.map(row => (row.sessionId === currentId ? { ...row, agentType: requestedAgent } : row)),
       );
@@ -1382,6 +1566,156 @@ export async function startQuickPromptInSession(
     await sendTurn(prompt);
   }
 }
+
+// ── Fleet lists ──────────────────────────────────────────────────────────────
+//
+// On a fleet connection the workspace and session lists of the device context
+// are the fleet index's rows, in the backend's order; nothing is merged here.
+
+function workspaceRecordOf(row: FleetWorkspace): WorkspaceRecord {
+  return {
+    id: row.workspaceId,
+    name: row.name,
+    rootPath: row.rootPath,
+    workspaceKind: row.kind === "remote_ssh" ? "remote" : row.kind,
+    ...(row.sshHost ? { sshHost: row.sshHost } : {}),
+  };
+}
+
+function sessionSummaryOf(row: FleetSession): SessionSummary {
+  return {
+    sessionId: row.sessionId,
+    sessionName: row.title,
+    lastActiveAt: row.lastActivityMs,
+    workspaceId: row.workspaceId,
+    agentType: row.agentType,
+    unread: row.unread,
+    deviceId: row.deviceId,
+  };
+}
+
+/** Puts the device context's index rows into the workspace and session lists. */
+function applyFleetWorkspaceRows(): void {
+  if (!fleetActive()) return;
+  const device = fleetDeviceById(deviceContext());
+  workspaces.set((device?.workspaces ?? []).map(workspaceRecordOf));
+  recentWorkspaces.set([]);
+  workspaceNavigatorOutdated.set(false);
+  const key = activeWorkspaceKey();
+  const row = key ? fleetWorkspaceByKey(key) : null;
+  if (!row) return;
+  const rows = row.sessions.map(sessionSummaryOf);
+  const known = new Set(rows.map(item => item.sessionId));
+  // Rows read from the owner beyond the index's newest stay below them.
+  const extra = sessions().filter(item => !known.has(item.sessionId) && item.workspaceId === row.workspaceId);
+  sessions.set([...rows, ...extra]);
+  reconcileSessionReadState(rows);
+  sessionTotal.set(row.sessionTotal);
+  sessionHasMore.set(row.hasMore || sessionCursor() !== null);
+}
+
+let followingFleetRows = false;
+
+function followFleetRows(): void {
+  if (followingFleetRows) return;
+  followingFleetRows = true;
+  effect(() => {
+    fleetNavigator();
+    untracked(() => applyFleetWorkspaceRows());
+  });
+}
+
+/**
+ * The fleet path of `loadWorkspaces`: reads the index, keeps the selection while
+ * its device still lists it, else selects the device context's current
+ * workspace (the host's own `isHostCurrent`), else its first one.
+ */
+async function loadFleetWorkspaces(): Promise<void> {
+  followFleetRows();
+  await runStep(async () => {
+    try {
+      await refreshFleetNavigator();
+      applyFleetWorkspaceRows();
+      const key = activeWorkspaceKey();
+      if (key && fleetWorkspaceByKey(key)) return;
+      const device = fleetDeviceById(deviceContext());
+      const next = device?.workspaces.find(item => item.isHostCurrent) ?? device?.workspaces[0] ?? null;
+      if (next) selectWorkspace(next.workspaceId, { deviceId: next.deviceId || device!.deviceId });
+      else if (key) clearWorkspaceSelection();
+    } finally {
+      workspacesLoaded.set(true);
+    }
+  });
+}
+
+/**
+ * Moves the device context to `deviceId` (fleet only): its current workspace is
+ * selected, and every device-scoped store reloads through `onWorkspaceChanged`.
+ * Nothing is reset; the other devices' sessions, turns and drafts stay keyed by
+ * their device.
+ */
+export async function selectDeviceContext(deviceId: string): Promise<void> {
+  if (!fleetActive() || !deviceId) return;
+  selectedDevice.set(deviceId);
+  if (activeWorkspaceKey()?.deviceId === deviceId) return;
+  const device = fleetDeviceById(deviceId);
+  const next = device?.workspaces.find(item => item.isHostCurrent) ?? device?.workspaces[0] ?? null;
+  if (next) {
+    selectWorkspace(next.workspaceId, { deviceId });
+    await loadSessions();
+  } else {
+    clearWorkspaceSelection();
+    applyFleetWorkspaceRows();
+  }
+}
+
+// The fleet answer arrives with the handshake (or the native ready info), so the
+// first workspace read may have run before it: when the connection turns out to
+// be a fleet entry (or a client moves to one), the lists are read from the index.
+let fleetModeSeen = false;
+effect(() => {
+  const active = fleetActive();
+  untracked(() => {
+    if (active === fleetModeSeen) return;
+    fleetModeSeen = active;
+    if (!active) return;
+    startFleetStore();
+    void loadFleetWorkspaces();
+  });
+});
+
+// The entry streams another device's events only while someone follows it
+// (`fleet_subscribe`): the device context in full (terminals, files, git, its
+// sessions), and the open sessions of any other device. A new entry (failover)
+// starts with no follows, so the set is sent again.
+let lastFollow = "";
+effect(() => {
+  if (!fleetActive()) {
+    lastFollow = "";
+    return;
+  }
+  const entry = entryDeviceId() ?? "";
+  const context = deviceContext();
+  const follow: Record<string, { all?: boolean; sessions?: string[] }> = {};
+  if (context) follow[context] = { all: true };
+  for (const key of openSessionKeys()) {
+    const device = deviceIdOfKey(key);
+    if (!device || follow[device]?.all) continue;
+    (follow[device] ??= { sessions: [] }).sessions!.push(sessionIdOfKey(key));
+  }
+  // The account's cloud node (OpenBitFun) streams its turns and job cards
+  // (`superagent://…`) to this client only while followed; they are small.
+  const cloud = fleetNavigator()?.devices.find(device => device.hostKind === "cloud")?.deviceId;
+  if (cloud && !follow[cloud]) follow[cloud] = { all: true };
+  const signature = `${entry}|${JSON.stringify(follow)}`;
+  if (signature === lastFollow) return;
+  lastFollow = signature;
+  untracked(() => {
+    void invokeCommand("fleet_subscribe", { follow }).catch(error =>
+      console.warn(`Fleet follow update failed: ${error instanceof Error ? error.message : String(error)}`),
+    );
+  });
+});
 
 let localeSyncSubscribed = false;
 

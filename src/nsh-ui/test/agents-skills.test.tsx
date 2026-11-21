@@ -1,7 +1,16 @@
 import { expect, open, test } from "nsh/test";
-import { createBackend, createDeviceBackend, type Backend, type BackendCall, type BackendOptions } from "./support";
+import { showAllSessions, showDevices, createBackend, createDeviceBackend, type Backend, type BackendCall, type BackendOptions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
+
+type OpenApp = Awaited<ReturnType<typeof open>>;
+
+/** Agents and Skills are Library tabs (visual spec §4.8): open the Library, then the tab. */
+async function openLibraryTab(app: OpenApp, tab: "agents" | "skills"): Promise<void> {
+  await app.waitFor("Library");
+  if (!app.shows(`library-tab-${tab}`)) await app.press("Library");
+  await app.press(`library-tab-${tab}`);
+}
 
 interface StudioMockOptions extends BackendOptions {
   skillConfigsShape?: "report" | "array";
@@ -11,7 +20,7 @@ interface StudioMockOptions extends BackendOptions {
 }
 
 function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
-  const base: Backend = options.devices || options.onlineDevices
+  const base: Backend = options.devices
     ? createDeviceBackend(options)
     : createBackend(options);
   const baseInvoke = base.handlers["openbitfun.invoke"];
@@ -604,31 +613,6 @@ function createAgentsSkillsBackend(options: StudioMockOptions = {}) {
         return { ok: false, error: `${action} must be called via invokeCommand (raw: false)` };
       }
 
-      if (action === "account_device_rpc") {
-        const rpcPayload = payload as {
-          targetDeviceId?: string;
-          commandJson?: string;
-          target_device_id?: string;
-          command_json?: string;
-        };
-        const envelope = JSON.parse(String(rpcPayload.commandJson ?? rpcPayload.command_json ?? "{}")) as {
-          cmd?: string;
-          command?: string;
-          args?: Record<string, unknown>;
-        };
-        const innerAction = envelope.command ?? "";
-        const innerArgs = (envelope.args ?? {}) as Record<string, unknown>;
-        const innerPayload = (innerArgs.request ?? innerArgs) as Record<string, unknown>;
-        const custom = handleCustomAction(innerAction, innerPayload);
-        if (custom.handled) {
-          return {
-            ok: true,
-            value: JSON.stringify({ resp: "host_invoke_result", ok: true, value: custom.value }),
-            transport: "dev",
-          };
-        }
-      }
-
       try {
         const custom = handleCustomAction(action, payload as Record<string, unknown>);
         if (custom.handled) {
@@ -658,9 +642,9 @@ test("AgentsScene loads catalog with exact raw flags, filters, and Start Thread 
   const mock = createAgentsSkillsBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("Agents");
-  await app.waitFor("Agents & Subagents");
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "agents");
+  await app.waitFor("Agents your sessions can use, and the helpers they call.");
   await app.waitFor("Reviewer");
   await app.waitFor("HelperSub");
 
@@ -719,8 +703,8 @@ test("AgentsScene creates, edits, deletes custom mode and configures/resets buil
   const mock = createAgentsSkillsBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("Agents");
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "agents");
   await app.waitFor("Reviewer");
 
   // Create custom primary mode
@@ -824,8 +808,8 @@ test("AgentsScene creates, edits, configures, reloads, and deletes subagents", a
   const mock = createAgentsSkillsBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("Agents");
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "agents");
   await app.waitFor("Explorer");
 
   // Create project subagent
@@ -944,8 +928,8 @@ test("SkillsScene toggles global disabled, inspects SKILL.md, validates, install
   const mock = createAgentsSkillsBackend({ includeShadowedSkill: true });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("Skills");
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "skills");
   await app.waitFor("Code Reviewer");
   await app.waitFor("Shadowed · Overridden by user::openbitfun::reviewer");
   await app.waitFor("Discovery Diagnostics");
@@ -1058,8 +1042,8 @@ test("SkillsScene marketplace lists, searches, shows Installed badge, downloads,
   const mock = createAgentsSkillsBackend({ skillConfigsShape: "array", marketShape: "array" });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("Skills");
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "skills");
   await app.waitFor("Code Reviewer");
 
   // Marketplace list
@@ -1095,13 +1079,17 @@ test("SkillsScene marketplace lists, searches, shows Installed badge, downloads,
   });
 
   // Switch to remote workspace and verify explicit degradation for local-only folder installs & custom agents
-  await app.press("remote-host");
+  // The place a session runs is where it was asked for: New session here on the remote workspace.
+  await showDevices(app);
+  await app.hover("workspace-row-workspace-2");
+  await app.press("new-session-here-workspace-2");
+  await openLibraryTab(app, "skills");
   await app.waitFor("Remote workspace active: installing skills from a local folder path is unsupported.");
   await app.press("skills-install-folder-toggle");
   expect(app.enabled("skill-folder-validate")).toBe(false);
   expect(app.enabled("skill-folder-install")).toBe(false);
 
-  await app.press("Agents");
+  await openLibraryTab(app, "agents");
   await app.waitFor("Remote workspace active: creating, editing, or deleting custom agents is unsupported on remote workspaces. You can still start threads and inspect available bots.");
   expect(app.enabled("agents-create-bot")).toBe(false);
 });
@@ -1110,53 +1098,13 @@ test("SkillsScene renders marketplace { skills, sourceErrors } object responses"
   const mock = createAgentsSkillsBackend({ marketShape: "diagnostics" });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("Skills");
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "skills");
   await app.waitFor("Code Reviewer");
 
   await app.press("skills-tab-marketplace");
   await app.waitFor("testing");
   await app.waitFor("PrivateMarket: timeout");
-});
-
-test("SkillsScene warns and disables local folder installs in Peer Device Mode", async () => {
-  const mock = createAgentsSkillsBackend({
-    onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-  });
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
-
-  await app.waitFor("NSH skeleton");
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("device-use-device-linux");
-  await app.waitFor("peer session on device-linux");
-
-  await app.press("Skills");
-  await app.waitFor("Peer Device Mode (builder): installing skills from a local folder on this controller machine is unsupported.");
-  await app.press("skills-install-folder-toggle");
-  expect(app.enabled("skill-folder-validate")).toBe(false);
-  expect(app.enabled("skill-folder-install")).toBe(false);
-});
-
-test("AgentsScene respects peerSupports('tool_catalog') === false in Peer Device Mode", async () => {
-  const mock = createAgentsSkillsBackend({
-    onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-    peerCapabilities: { tool_catalog: false },
-  });
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
-
-  await app.waitFor("NSH skeleton");
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("device-use-device-linux");
-  await app.waitFor("peer session on device-linux");
-
-  await app.press("Agents");
-  await app.waitFor("Peer Device Mode (builder): connected peer does not expose tool_catalog; tool lists are read-only.");
-  expect(mock.callFor("list_agent_tool_names")).toHaveLength(0);
-
-  await app.press("agent-configure-Standard");
-  await app.waitFor("Connected peer host does not expose the tool catalog.");
 });
 
 test("Agents and Skills load the user-level catalogue without a workspace, as the desktop does", async () => {
@@ -1170,15 +1118,15 @@ test("Agents and Skills load the user-level catalogue without a workspace, as th
         ? { ok: true, value: { opened: [], recent: [], selectedId: null, selection: "none" }, transport: "dev" }
         : invoke(data);
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
-  await app.waitFor("No open workspace yet.");
+  await app.waitFor("nav-library");
 
-  await app.press("Agents");
+  await openLibraryTab(app, "agents");
   await app.waitFor("Reviewer");
   const modes = mock.callFor("get_available_modes")[0];
   expect((modes?.request as Record<string, unknown> | undefined)?.workspaceId).toBeUndefined();
   expect(mock.callFor("list_subagents").length).toBeGreaterThan(0);
 
-  await app.press("Skills");
+  await openLibraryTab(app, "skills");
   await app.waitUntil(() => mock.callFor("get_skill_configs").length > 0);
   expect(mock.callFor("get_skill_configs")[0]?.request).toMatchObject({
     workspaceId: null,
@@ -1187,7 +1135,7 @@ test("Agents and Skills load the user-level catalogue without a workspace, as th
 
   // Re-entering a scene reads the catalogue again.
   const before = mock.callFor("get_available_modes").length;
-  await app.press("Agents");
+  await openLibraryTab(app, "agents");
   await app.waitUntil(() => mock.callFor("get_available_modes").length > before);
 });
 
@@ -1241,7 +1189,7 @@ test("an agent that can load skills lists them and replaces its selection per sk
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Agents");
+  await openLibraryTab(app, "agents");
   await app.press("agent-configure-Standard");
   await app.waitFor("mode-skill-deploy");
   await app.press("mode-skill-deploy");
@@ -1252,18 +1200,17 @@ test("an agent that can load skills lists them and replaces its selection per sk
 test("Agents and Skills switch to the compact layout at phone width and keep their primary action", async () => {
   const mock = createAgentsSkillsBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
 
-  await app.press("Agents");
+  await openLibraryTab(app, "agents");
   await app.waitFor("Reviewer");
-  const desktopTitle = Number(app.spanStyle("Agents & Subagents").fontSize);
 
   // At phone width the shell's sidebar is put away, as a phone user would, and the
-  // scene reads its own laid-out width to move to the compact layout.
+  // Library keeps its tabs in a horizontal scroller above the hosted scene.
   await app.setViewport(390, 844);
   // The shell folds its sidebar away at phone width (or overlays it); make sure the scene is uncovered.
   if (app.shows("compact-drawer-scrim")) await app.press("compact-drawer-scrim");
-  await app.waitUntil(() => Number(app.spanStyle("Agents & Subagents").fontSize) < desktopTitle);
+  await app.waitFor("library-tabs-scroll");
   await app.waitFor("Primary agents");
   expect(app.texts()).toContain("Reviewer");
   expect(app.texts()).toContain("HelperSub");
@@ -1272,12 +1219,9 @@ test("Agents and Skills switch to the compact layout at phone width and keep the
   await app.press("agent-builder-close");
   await app.waitUntil(() => !app.shows("builder-id-input"));
 
-  await app.press("toggle-drawer");
-  await app.press("Skills");
-  await app.waitFor("Skills & Capabilities");
-  if (app.shows("compact-drawer-scrim")) await app.press("compact-drawer-scrim");
+  await app.press("library-tab-skills");
+  await app.waitFor("Instructions and tools agents load when needed.");
   await app.waitFor("Code Reviewer");
-  expect(Number(app.spanStyle("Skills & Capabilities").fontSize)).toBeLessThan(desktopTitle);
   await app.press("label:skill-toggle-user::openbitfun::reviewer");
   await app.waitUntil(() => mock.callFor("set_global_skill_disabled").length > 0);
   await app.press("skills-install-folder-toggle");
@@ -1312,15 +1256,15 @@ test("Agents and Skills follow the host's capability flags instead of their own 
     return result;
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: mock.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("Agents");
+  await showAllSessions(app, "NSH skeleton");
+  await openLibraryTab(app, "agents");
   await app.waitFor("HelperSub");
   await app.press("agent-actions-HelperSub");
   await app.waitFor("agent-menu-delete-HelperSub");
   expect(app.enabled("agent-menu-delete-HelperSub")).toBe(false);
   await app.keyboard.press("escape");
 
-  await app.press("Skills");
+  await openLibraryTab(app, "skills");
   await app.waitFor("Code Reviewer");
   expect(app.enabled("label:skill-toggle-user::openbitfun::reviewer")).toBe(false);
 });

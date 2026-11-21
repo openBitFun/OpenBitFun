@@ -2,7 +2,6 @@ import { computed, effect, lifecycle, Scroll, signal, Text, untracked, View, typ
 import { TextView } from "nsh/base";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { peerScope } from "../peerState";
 import {
   addingFolderSkill,
   canDeleteInstalledSkill,
@@ -57,7 +56,8 @@ import {
   type SkillScopeFilter,
 } from "../skillsCatalogStore";
 import { activeWorkspace, activeWorkspaceId } from "../state";
-import { fontMono, palette, radii, textLineHeight, textSize, textTracking } from "../theme";
+import { fontMono, palette, radii, space, textLineHeight, textSize, textTracking } from "../theme";
+import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import { Icon, type IconName } from "../ui/icons";
 import { createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
 import {
@@ -991,15 +991,14 @@ function SectionCount(props: { count: number }) {
   );
 }
 
-export function SkillsScene() {
+export function SkillsScene(props: { embedded?: boolean }) {
   // The catalogue does not need a workspace (the host answers user-level
   // entries without one, as the desktop asks). It reloads on every scene entry,
-  // when the workspace or Peer changes, and when the window regains focus.
+  // when the workspace changes, and when the window regains focus.
   let enteredScene = false;
   effect(() => {
     const workspace = activeWorkspace();
-    const peer = peerScope();
-    const key = `${peer?.deviceId ?? "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     if (!enteredScene || untracked(() => skillsLoadedKey()) !== key) {
       enteredScene = true;
       void loadSkillsCatalog(false, key);
@@ -1012,19 +1011,17 @@ export function SkillsScene() {
     lastLifecycle = state;
     if (!regained) return;
     const workspace = untracked(() => activeWorkspace());
-    const peer = untracked(() => peerScope());
-    const key = `${peer?.deviceId ?? "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     void loadSkillsCatalog(false, key);
   });
 
   effect(() => {
     const tab = skillsTab();
-    const peer = peerScope();
     if (tab !== "marketplace") return;
     const query = marketSearchQuery().trim();
     if (marketLoadedKey() === null) {
       void loadSkillMarketCatalog(query);
-    } else if (!marketLoading() && marketLoadedKey()?.split(":").slice(1).join(":") !== (peer?.deviceId ?? "local")) {
+    } else if (!marketLoading() && marketLoadedKey()?.split(":").slice(1).join(":") !== "local") {
       void loadSkillMarketCatalog(query);
     }
   });
@@ -1036,123 +1033,144 @@ export function SkillsScene() {
     }
   };
 
+  const viewTabs = () => (
+    <SegmentedTabs
+      size="sm"
+      options={[
+        { value: "installed", label: tr("skills.installed"), accessibilityLabel: "skills-tab-installed" },
+        { value: "marketplace", label: tr("skills.marketplace"), accessibilityLabel: "skills-tab-marketplace" },
+      ]}
+      value={skillsTab()}
+      onChange={chooseTab}
+    />
+  );
+  const filterControls = () => (
+    <If
+      when={skillsTab() === "installed"}
+      else={
+        <>
+          <SearchInput
+            size="md"
+            value={marketSearchQuery()}
+            placeholder={tr("skills.searchMarketplace")}
+            accessibilityLabel="market-search-input"
+            style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
+            onChange={val => marketSearchQuery.set(val)}
+            onSubmit={() => void loadSkillMarketCatalog()}
+          />
+          <Button
+            label={tr("common.search")}
+            variant="secondary"
+            size="sm"
+            accessibilityLabel="market-search-submit"
+            onPress={() => void loadSkillMarketCatalog()}
+          />
+          <If when={marketSearchQuery().trim()}>
+            <Button
+              label={tr("common.reset")}
+              variant="ghost"
+              size="sm"
+              onPress={() => {
+                marketSearchQuery.set("");
+                void loadSkillMarketCatalog("");
+              }}
+            />
+          </If>
+        </>
+      }
+    >
+      <>
+        <SearchInput
+          size="md"
+          value={skillSearchQuery()}
+          placeholder={tr("skills.searchInstalled")}
+          countLabel={
+            hasActiveInstalledFilter()
+              ? `${formatCount(filteredInstalledSkills().length)}/${formatCount(installedSkills().length)}`
+              : undefined
+          }
+          accessibilityLabel="skills-search-input"
+          style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
+          onChange={val => skillSearchQuery.set(val)}
+        />
+        <FilterMenu
+          value={skillScopeFilter()}
+          defaultValue="all"
+          options={scopeOptions()}
+          accessibilityLabel="skills-scope-select"
+          tooltip={tr("skills.scopeFilter")}
+          onChange={next => skillScopeFilter.set(next)}
+        />
+        <If when={hasActiveInstalledFilter()}>
+          <Button
+            label={tr("common.clear")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel="skills-filters-clear"
+            onPress={resetInstalledFilters}
+          />
+        </If>
+      </>
+    </If>
+  );
+  const refreshButton = () => (
+    <IconButton
+      icon="refresh"
+      size="md"
+      accessibilityLabel="skills-refresh"
+      tooltip={tr("skills.refreshTooltip")}
+      disabled={skillsLoading()}
+      onPress={() => void loadSkillsCatalog(true)}
+    />
+  );
+  const installButton = () => (
+    <Button
+      label={tr("skills.installFromFolder")}
+      leadingIcon="plus"
+      variant={folderInstallUnsupportedReason() ? "secondary" : "primary"}
+      size="md"
+      tooltip={folderInstallUnsupportedReason() ?? undefined}
+      accessibilityLabel="skills-install-folder-toggle"
+      onPress={() => installDrawerOpen.update(open => !open)}
+    />
+  );
+
   return (
     <View
       onLayout={trackStudioWidth}
       style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: palette().canvas }}
     >
       <Scroll style={{ flex: 1, minHeight: 0 }}>
-        <StudioHeader
-          title={tr("skills.title")}
-          subtitle={tr("skills.pageSubtitle")}
-          actions={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <IconButton
-                icon="refresh"
-                size="md"
-                accessibilityLabel="skills-refresh"
-                tooltip={tr("skills.refreshTooltip")}
-                disabled={skillsLoading()}
-                onPress={() => void loadSkillsCatalog(true)}
-              />
-              <Button
-                label={tr("skills.installFromFolder")}
-                leadingIcon="plus"
-                variant={folderInstallUnsupportedReason() ? "secondary" : "primary"}
-                size="md"
-                tooltip={folderInstallUnsupportedReason() ?? undefined}
-                accessibilityLabel="skills-install-folder-toggle"
-                onPress={() => installDrawerOpen.update(open => !open)}
-              />
-            </View>
-          }
-          extra={
-            <StudioToolbar
-              leading={
-                <SegmentedTabs
-                  size="sm"
-                  options={[
-                    { value: "installed", label: tr("skills.installed"), accessibilityLabel: "skills-tab-installed" },
-                    { value: "marketplace", label: tr("skills.marketplace"), accessibilityLabel: "skills-tab-marketplace" },
-                  ]}
-                  value={skillsTab()}
-                  onChange={chooseTab}
-                />
+        <If
+          when={props.embedded}
+          else={
+            <StudioHeader
+              title={tr("skills.title")}
+              subtitle={tr("skills.subtitle")}
+              actions={
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                  {refreshButton()}
+                  {installButton()}
+                </View>
               }
-              trailing={
-                <If
-                  when={skillsTab() === "installed"}
-                  else={
-                    <>
-                      <SearchInput
-                        size="md"
-                        value={marketSearchQuery()}
-                        placeholder={tr("skills.searchMarketplace")}
-                        accessibilityLabel="market-search-input"
-                        style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
-                        onChange={val => marketSearchQuery.set(val)}
-                        onSubmit={() => void loadSkillMarketCatalog()}
-                      />
-                      <Button
-                        label={tr("common.search")}
-                        variant="secondary"
-                        size="sm"
-                        accessibilityLabel="market-search-submit"
-                        onPress={() => void loadSkillMarketCatalog()}
-                      />
-                      <If when={marketSearchQuery().trim()}>
-                        <Button
-                          label={tr("common.reset")}
-                          variant="ghost"
-                          size="sm"
-                          onPress={() => {
-                            marketSearchQuery.set("");
-                            void loadSkillMarketCatalog("");
-                          }}
-                        />
-                      </If>
-                    </>
-                  }
-                >
-                  <>
-                    <SearchInput
-                      size="md"
-                      value={skillSearchQuery()}
-                      placeholder={tr("skills.searchInstalled")}
-                      countLabel={
-                        hasActiveInstalledFilter()
-                          ? `${formatCount(filteredInstalledSkills().length)}/${formatCount(installedSkills().length)}`
-                          : undefined
-                      }
-                      accessibilityLabel="skills-search-input"
-                      style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
-                      onChange={val => skillSearchQuery.set(val)}
-                    />
-                    <FilterMenu
-                      value={skillScopeFilter()}
-                      defaultValue="all"
-                      options={scopeOptions()}
-                      accessibilityLabel="skills-scope-select"
-                      tooltip={tr("skills.scopeFilter")}
-                      onChange={next => skillScopeFilter.set(next)}
-                    />
-                    <If when={hasActiveInstalledFilter()}>
-                      <Button
-                        label={tr("common.clear")}
-                        variant="ghost"
-                        size="sm"
-                        accessibilityLabel="skills-filters-clear"
-                        onPress={resetInstalledFilters}
-                      />
-                    </If>
-                  </>
-                </If>
-              }
+              extra={<StudioToolbar leading={viewTabs()} trailing={filterControls()} />}
             />
           }
-        />
+        >
+          <LibraryToolbar
+            accessibilityLabel="skills-toolbar"
+            leading={
+              <>
+                {viewTabs()}
+                {filterControls()}
+                {refreshButton()}
+              </>
+            }
+            primary={installButton()}
+          />
+        </If>
 
-        <StudioBody>
+        <StudioBody style={props.embedded ? libraryBodyStyle() : undefined}>
           <If
             when={
               Boolean(folderInstallUnsupportedReason())
@@ -1197,9 +1215,9 @@ export function SkillsScene() {
                   detail={hasActiveInstalledFilter() ? tr("skills.emptyFilteredSubtitle") : tr("skills.emptySubtitle")}
                   action={
                     <Button
-                      label={hasActiveInstalledFilter() ? tr("common.resetFilter") : tr("skills.browseMarketplace")}
+                      label={hasActiveInstalledFilter() ? tr("common.resetFilter") : tr("skills.emptyAction")}
                       variant="secondary"
-                      size="sm"
+                      size="md"
                       onPress={() => {
                         if (hasActiveInstalledFilter()) resetInstalledFilters();
                         else chooseTab("marketplace");

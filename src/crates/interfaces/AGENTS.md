@@ -4,7 +4,7 @@
 
 This layer owns Rust protocol or host-facing entrypoints that expose assembled
 product behavior. UI apps and delivery hosts remain under `src/apps`,
-`src/nsh-ui`, `src/mobile-web`, and `OpenBitFun-Installer` with their nearest local
+`src/nsh-ui`, and `OpenBitFun-Installer` with their nearest local
 `AGENTS.md`.
 
 ## Modules

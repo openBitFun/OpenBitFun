@@ -7,7 +7,6 @@ import { subscribeWorkspaceFileChanges } from "./fileStore";
 import { gitLiveMode, holdGitStatusLive, renewGitStatusLive, type GitStatusChange } from "./gitStatusLive";
 import { isCommandUnavailable } from "./hostCommands";
 import { tr } from "./i18n";
-import { peerScope } from "./peerState";
 import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -322,8 +321,8 @@ function clearGitState(): void {
 }
 
 export function workspaceScopeKey(ws: WorkspaceRecord | null): string {
-  if (!ws) return `${peerScope()?.deviceId ?? "local"}::none`;
-  return `${peerScope()?.deviceId ?? "local"}::${ws.id}::${ws.rootPath}::${ws.workspaceKind ?? "local"}`;
+  if (!ws) return `local::none`;
+  return `local::${ws.id}::${ws.rootPath}::${ws.workspaceKind ?? "local"}`;
 }
 
 export async function syncGitWorkspace(ws: WorkspaceRecord | null): Promise<void> {

@@ -340,6 +340,9 @@ fn validate_config_semantics(path: &str, value: &Value) -> Result<(), String> {
     if path == "memories" {
         openbitfun_config_contracts::settings_mutations::validate_memories_value(value)?;
     }
+    if path == openbitfun_config_contracts::settings_mutations::SUPERAGENT_PATH {
+        openbitfun_config_contracts::settings_mutations::validate_superagent_value(value)?;
+    }
     Ok(())
 }
 

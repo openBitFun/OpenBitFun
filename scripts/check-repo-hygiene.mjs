@@ -11,7 +11,7 @@
  *   Windows drive paths under folders such as Users, workspace, Projects, code, dev, tmp;
  *   file:// Windows paths under those folders; and Unix paths under /Users or /home.
  * - Skip generated and dependency outputs such as node_modules, dist, target, Monaco assets,
- *   mobile-web dist, relay static assets, and lockfiles.
+ *   relay static assets, and lockfiles.
  * - Skip local-path and token checks in recognized test files; also skip local-path checks for
  *   comment-only lines and Rust inline test blocks inside non-test source files.
  */
@@ -84,7 +84,6 @@ const ignoredContentPaths = [
   /(^|\/)dist\//,
   /(^|\/)target\//,
   /(^|\/)src\/apps\/relay-server\/static\/assets\//,
-  /(^|\/)src\/mobile-web\/dist\//,
   /(^|\/).*package-lock\.json$/,
   /(^|\/)pnpm-lock\.yaml$/,
   /(^|\/)Cargo\.lock$/,
@@ -95,7 +94,6 @@ const testFilePattern = /(^|\/)(tests?|__tests__)\/|[._-](test|spec)\.[cm]?[jt]s
 const workspaceNpmLockfiles = new Set([
   'package-lock.json',
   'OpenBitFun-Installer/package-lock.json',
-  'src/mobile-web/package-lock.json',
   'tests/e2e/package-lock.json',
 ]);
 const temporaryPromptNames = new Set([

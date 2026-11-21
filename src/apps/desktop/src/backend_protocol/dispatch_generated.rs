@@ -30,24 +30,16 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("accept_file", NativeCommandSupport::Native),
     ("accept_operation", NativeCommandSupport::Native),
     ("accept_session", NativeCommandSupport::Native),
-    ("account_connect_devices", NativeCommandSupport::Native),
     ("account_delete_device", NativeCommandSupport::Native),
-    ("account_device_rpc", NativeCommandSupport::Native),
-    ("account_execute_on_device", NativeCommandSupport::Native),
     ("account_get_credential_hint", NativeCommandSupport::Native),
     ("account_github_info", NativeCommandSupport::Native),
     ("account_github_poll", NativeCommandSupport::Native),
     ("account_github_start", NativeCommandSupport::Native),
     ("account_list_devices", NativeCommandSupport::Native),
-    ("account_load_older_session", NativeCommandSupport::Native),
     ("account_login", NativeCommandSupport::Native),
     ("account_logout", NativeCommandSupport::Native),
-    ("account_online_devices", NativeCommandSupport::Native),
-    ("account_relay_capabilities", NativeCommandSupport::Native),
     ("account_status", NativeCommandSupport::Native),
-    ("account_subscribe_session", NativeCommandSupport::Native),
     ("account_token_expired", NativeCommandSupport::Native),
-    ("account_unsubscribe_session", NativeCommandSupport::Native),
     ("account_update_device_alias", NativeCommandSupport::Native),
     ("acknowledge_external_ecosystems_command", NativeCommandSupport::Native),
     ("activate_session_goal", NativeCommandSupport::Native),
@@ -184,6 +176,16 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("export_local_file_to_path", NativeCommandSupport::Native),
     ("export_session_transcript", NativeCommandSupport::Native),
     ("fetch_mcp_app_resource", NativeCommandSupport::Native),
+    ("fleet_attention", NativeCommandSupport::Native),
+    ("fleet_attention_mark_read", NativeCommandSupport::Native),
+    ("fleet_call", NativeCommandSupport::Native),
+    ("fleet_device_detail", NativeCommandSupport::Native),
+    ("fleet_events", NativeCommandSupport::Native),
+    ("fleet_navigator", NativeCommandSupport::Native),
+    ("fleet_prompts", NativeCommandSupport::Native),
+    ("fleet_recent_sessions", NativeCommandSupport::Native),
+    ("fleet_subscribe", NativeCommandSupport::Native),
+    ("fleet_ui_bundle", NativeCommandSupport::Native),
     ("fork_session", NativeCommandSupport::Native),
     ("generate_commit_message", NativeCommandSupport::Native),
     ("generate_insights", NativeCommandSupport::Native),
@@ -463,16 +465,10 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("page_unpublish", NativeCommandSupport::Native),
     ("page_update", NativeCommandSupport::Native),
     ("paste_files", NativeCommandSupport::Native),
-    ("peer_control_attach", NativeCommandSupport::Native),
-    ("peer_control_detach", NativeCommandSupport::Native),
-    ("peer_controller_set_active", NativeCommandSupport::Native),
-    ("peer_host_bridge_ready", NativeCommandSupport::Native),
-    ("peer_host_invoke_complete", NativeCommandSupport::Native),
     ("peer_link_call", NativeCommandSupport::Native),
     ("peer_link_connect", NativeCommandSupport::Native),
     ("peer_link_disconnect", NativeCommandSupport::Native),
     ("peer_link_events", NativeCommandSupport::Native),
-    ("peer_mode_ping", NativeCommandSupport::Native),
     ("plan_external_hook_import_command", NativeCommandSupport::Native),
     ("plan_external_mcp_import_command", NativeCommandSupport::Native),
     ("predownload_acp_client_adapter", NativeCommandSupport::Native),
@@ -628,6 +624,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("set_session_thread_goal_status", NativeCommandSupport::Native),
     ("set_subagent_timeout", NativeCommandSupport::Native),
     ("set_subscription_account_enabled", NativeCommandSupport::Native),
+    ("set_superagent_settings", NativeCommandSupport::Native),
     ("set_task_model", NativeCommandSupport::Native),
     ("set_tray_unread_count", NativeCommandSupport::Adapter),
     ("set_web_search_provider", NativeCommandSupport::Native),
@@ -708,6 +705,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("test_image_generation_service", NativeCommandSupport::Native),
     ("toggle_main_window_fullscreen", NativeCommandSupport::Adapter),
     ("touch_session_activity", NativeCommandSupport::Native),
+    ("ui_bundle_manifest", NativeCommandSupport::Native),
     ("unarchive_session", NativeCommandSupport::Native),
     ("update_active_turn_permission_mode", NativeCommandSupport::Native),
     ("update_app_status", NativeCommandSupport::Native),
@@ -758,24 +756,16 @@ pub(super) fn dispatch<'a>(
         "accept_file" => command_accept_file(host, args),
         "accept_operation" => command_accept_operation(host, args),
         "accept_session" => command_accept_session(host, args),
-        "account_connect_devices" => command_account_connect_devices(host, args),
         "account_delete_device" => command_account_delete_device(host, args),
-        "account_device_rpc" => command_account_device_rpc(host, args),
-        "account_execute_on_device" => command_account_execute_on_device(host, args),
         "account_get_credential_hint" => command_account_get_credential_hint(host, args),
         "account_github_info" => command_account_github_info(host, args),
         "account_github_poll" => command_account_github_poll(host, args),
         "account_github_start" => command_account_github_start(host, args),
         "account_list_devices" => command_account_list_devices(host, args),
-        "account_load_older_session" => command_account_load_older_session(host, args),
         "account_login" => command_account_login(host, args),
         "account_logout" => command_account_logout(host, args),
-        "account_online_devices" => command_account_online_devices(host, args),
-        "account_relay_capabilities" => command_account_relay_capabilities(host, args),
         "account_status" => command_account_status(host, args),
-        "account_subscribe_session" => command_account_subscribe_session(host, args),
         "account_token_expired" => command_account_token_expired(host, args),
-        "account_unsubscribe_session" => command_account_unsubscribe_session(host, args),
         "account_update_device_alias" => command_account_update_device_alias(host, args),
         "acknowledge_external_ecosystems_command" => command_acknowledge_external_ecosystems_command(host, args),
         "activate_session_goal" => command_activate_session_goal(host, args),
@@ -912,6 +902,16 @@ pub(super) fn dispatch<'a>(
         "export_local_file_to_path" => command_export_local_file_to_path(host, args),
         "export_session_transcript" => command_export_session_transcript(host, args),
         "fetch_mcp_app_resource" => command_fetch_mcp_app_resource(host, args),
+        "fleet_attention" => command_fleet_attention(host, args),
+        "fleet_attention_mark_read" => command_fleet_attention_mark_read(host, args),
+        "fleet_call" => command_fleet_call(host, args),
+        "fleet_device_detail" => command_fleet_device_detail(host, args),
+        "fleet_events" => command_fleet_events(host, args),
+        "fleet_navigator" => command_fleet_navigator(host, args),
+        "fleet_prompts" => command_fleet_prompts(host, args),
+        "fleet_recent_sessions" => command_fleet_recent_sessions(host, args),
+        "fleet_subscribe" => command_fleet_subscribe(host, args),
+        "fleet_ui_bundle" => command_fleet_ui_bundle(host, args),
         "fork_session" => command_fork_session(host, args),
         "generate_commit_message" => command_generate_commit_message(host, args),
         "generate_insights" => command_generate_insights(host, args),
@@ -1191,16 +1191,10 @@ pub(super) fn dispatch<'a>(
         "page_unpublish" => command_page_unpublish(host, args),
         "page_update" => command_page_update(host, args),
         "paste_files" => command_paste_files(host, args),
-        "peer_control_attach" => command_peer_control_attach(host, args),
-        "peer_control_detach" => command_peer_control_detach(host, args),
-        "peer_controller_set_active" => command_peer_controller_set_active(host, args),
-        "peer_host_bridge_ready" => command_peer_host_bridge_ready(host, args),
-        "peer_host_invoke_complete" => command_peer_host_invoke_complete(host, args),
         "peer_link_call" => command_peer_link_call(host, args),
         "peer_link_connect" => command_peer_link_connect(host, args),
         "peer_link_disconnect" => command_peer_link_disconnect(host, args),
         "peer_link_events" => command_peer_link_events(host, args),
-        "peer_mode_ping" => command_peer_mode_ping(host, args),
         "plan_external_hook_import_command" => command_plan_external_hook_import_command(host, args),
         "plan_external_mcp_import_command" => command_plan_external_mcp_import_command(host, args),
         "predownload_acp_client_adapter" => command_predownload_acp_client_adapter(host, args),
@@ -1356,6 +1350,7 @@ pub(super) fn dispatch<'a>(
         "set_session_thread_goal_status" => command_set_session_thread_goal_status(host, args),
         "set_subagent_timeout" => command_set_subagent_timeout(host, args),
         "set_subscription_account_enabled" => command_set_subscription_account_enabled(host, args),
+        "set_superagent_settings" => command_set_superagent_settings(host, args),
         "set_task_model" => command_set_task_model(host, args),
         "set_tray_unread_count" => super::native_commands::set_tray_unread_count(host, args),
         "set_web_search_provider" => command_set_web_search_provider(host, args),
@@ -1436,6 +1431,7 @@ pub(super) fn dispatch<'a>(
         "test_image_generation_service" => command_test_image_generation_service(host, args),
         "toggle_main_window_fullscreen" => super::native_commands::toggle_main_window_fullscreen(host, args),
         "touch_session_activity" => command_touch_session_activity(host, args),
+        "ui_bundle_manifest" => command_ui_bundle_manifest(host, args),
         "unarchive_session" => command_unarchive_session(host, args),
         "update_active_turn_permission_mode" => command_update_active_turn_permission_mode(host, args),
         "update_app_status" => command_update_app_status(host, args),
@@ -1512,44 +1508,10 @@ fn command_accept_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
 }
 
 #[inline(never)]
-fn command_account_connect_devices(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_connect_devices().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
 fn command_account_delete_device(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_delete_device(
             arg(&args, "targetDeviceId", "account_delete_device")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_account_device_rpc(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_device_rpc(
-            arg(&args, "targetDeviceId", "account_device_rpc")?,
-            arg(&args, "commandJson", "account_device_rpc")?,
-            arg(&args, "timeoutMs", "account_device_rpc")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_account_execute_on_device(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_execute_on_device(
-            arg(&args, "targetDeviceId", "account_execute_on_device")?,
-            arg(&args, "sessionId", "account_execute_on_device")?,
-            arg(&args, "content", "account_execute_on_device")?,
-            arg(&args, "agentType", "account_execute_on_device")?,
-            arg(&args, "workspacePath", "account_execute_on_device")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })
@@ -1599,16 +1561,6 @@ fn command_account_list_devices(host: &Arc<NativeHost>, args: Value) -> Dispatch
 }
 
 #[inline(never)]
-fn command_account_load_older_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_load_older_session(
-            arg(&args, "request", "account_load_older_session")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
 fn command_account_login(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_login(
@@ -1629,22 +1581,6 @@ fn command_account_logout(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
 }
 
 #[inline(never)]
-fn command_account_online_devices(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_online_devices().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_account_relay_capabilities(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_relay_capabilities().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
 fn command_account_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_status().await;
@@ -1653,29 +1589,9 @@ fn command_account_status(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
 }
 
 #[inline(never)]
-fn command_account_subscribe_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_subscribe_session(
-            arg(&args, "request", "account_subscribe_session")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
 fn command_account_token_expired(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::remote_connect_api::account_token_expired().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_account_unsubscribe_session(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_unsubscribe_session(
-            arg(&args, "request", "account_unsubscribe_session")?,
-        ).await;
         (&result).dispatch_kind().finish(result)
     })
 }
@@ -3054,6 +2970,106 @@ fn command_fetch_mcp_app_resource(host: &Arc<NativeHost>, args: Value) -> Dispat
         let result = crate::fetch_mcp_app_resource(
             host.command_state("fetch_mcp_app_resource")?,
             arg(&args, "request", "fetch_mcp_app_resource")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_attention(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_attention(
+            arg(&args, "request", "fleet_attention")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_attention_mark_read(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_attention_mark_read(
+            arg(&args, "request", "fleet_attention_mark_read")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_call(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_call(
+            arg(&args, "request", "fleet_call")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_device_detail(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_device_detail(
+            arg(&args, "request", "fleet_device_detail")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_events(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_events(
+            arg(&args, "request", "fleet_events")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_navigator(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_navigator(
+            arg(&args, "request", "fleet_navigator")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_prompts(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_prompts(
+            arg(&args, "request", "fleet_prompts")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_recent_sessions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_recent_sessions(
+            arg(&args, "request", "fleet_recent_sessions")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_subscribe(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_subscribe(
+            arg(&args, "request", "fleet_subscribe")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_fleet_ui_bundle(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::fleet::fleet_api::fleet_ui_bundle(
+            arg(&args, "request", "fleet_ui_bundle")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })
@@ -5927,59 +5943,6 @@ fn command_paste_files(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_
 }
 
 #[inline(never)]
-fn command_peer_control_attach(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::peer_host_invoke::peer_control_attach(
-            arg(&args, "controllerDeviceId", "peer_control_attach")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_peer_control_detach(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::peer_host_invoke::peer_control_detach(
-            arg(&args, "controllerDeviceId", "peer_control_detach")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_peer_controller_set_active(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::peer_host_invoke::peer_controller_set_active(
-            arg(&args, "active", "peer_controller_set_active")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_peer_host_bridge_ready(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::peer_host_invoke::peer_host_bridge_ready(
-            arg(&args, "request", "peer_host_bridge_ready")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_peer_host_invoke_complete(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::peer_host_invoke::peer_host_invoke_complete(
-            arg(&args, "id", "peer_host_invoke_complete")?,
-            arg(&args, "ok", "peer_host_invoke_complete")?,
-            arg(&args, "value", "peer_host_invoke_complete")?,
-            arg(&args, "error", "peer_host_invoke_complete")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
 fn command_peer_link_call(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::mesh::peer_link::peer_link_call(
@@ -6015,14 +5978,6 @@ fn command_peer_link_events(host: &Arc<NativeHost>, args: Value) -> DispatchFutu
         let result = crate::mesh::peer_link::peer_link_events(
             arg(&args, "request", "peer_link_events")?,
         ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_peer_mode_ping(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::peer_host_invoke::peer_mode_ping().await;
         (&result).dispatch_kind().finish(result)
     })
 }
@@ -7682,6 +7637,17 @@ fn command_set_subscription_account_enabled(host: &Arc<NativeHost>, args: Value)
 }
 
 #[inline(never)]
+fn command_set_superagent_settings(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::settings_mutation_api::set_superagent_settings(
+            HostHandle::new(Arc::clone(host)),
+            arg(&args, "request", "set_superagent_settings")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
 fn command_set_task_model(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::settings_mutation_api::set_task_model(
@@ -8535,6 +8501,16 @@ fn command_touch_session_activity(host: &Arc<NativeHost>, args: Value) -> Dispat
             arg(&args, "request", "touch_session_activity")?,
             host.command_state("touch_session_activity")?,
             host.command_state("touch_session_activity")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_ui_bundle_manifest(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::backend_protocol::ws::ui_bundle_manifest(
+            arg(&args, "request", "ui_bundle_manifest")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })

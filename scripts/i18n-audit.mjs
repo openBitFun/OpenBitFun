@@ -1,9 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 
-const require = createRequire(import.meta.url);
 const root = process.cwd();
 const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'locales.json');
 const hardcodedBaselinePath = path.join(root, 'scripts', 'i18n-hardcoded-baseline.json');
@@ -12,8 +10,6 @@ const dynamicKeyAllowlistPath = path.join(root, 'scripts', 'i18n-dynamic-key-all
 const l10nIdenticalAllowlistPath = path.join(root, 'scripts', 'i18n-l10n-identical-allowlist.json');
 const governanceBaselinePath = path.join(root, 'scripts', 'i18n-governance-baseline.json');
 const sharedTermsDir = path.join(root, 'src', 'shared', 'i18n', 'resources', 'shared');
-const mobileWebSourceDir = path.join(root, 'src', 'mobile-web', 'src');
-const mobileWebMessagesPath = path.join(mobileWebSourceDir, 'i18n', 'messages.ts');
 const installerSourceDir = path.join(root, 'OpenBitFun-Installer', 'src');
 const installerLocalesDir = path.join(installerSourceDir, 'i18n', 'locales');
 const coreLocalesDir = path.join(root, 'src', 'crates', 'assembly', 'core', 'locales');
@@ -28,7 +24,6 @@ const SHARED_NAMESPACES = ['shared'];
 
 let errorCount = 0;
 let warningCount = 0;
-let auditTypeScript = null;
 let cliOptions = { reportJsonPath: null };
 let governanceBaselineCache;
 const reportCategories = [
@@ -102,17 +97,6 @@ function parseCliOptions(args) {
 
 cliOptions = parseCliOptions(process.argv.slice(2));
 
-function loadTypeScriptForAudit() {
-  try {
-    return require('typescript');
-  } catch (error) {
-    reportError(
-      `Failed to load TypeScript for i18n audit: ${error.message}. Run pnpm install before running pnpm run i18n:audit.`,
-    );
-    return null;
-  }
-}
-
 function toPosixPath(value) {
   return value.split(path.sep).join('/');
 }
@@ -181,11 +165,6 @@ function isPlainObject(value) {
 
 function extractI18nextPlaceholders(value) {
   const matches = String(value).matchAll(/\{\{\s*-?\s*([A-Za-z_][\w]*)\s*\}\}/g);
-  return sortedUnique(Array.from(matches, (match) => match[1]));
-}
-
-function extractMobilePlaceholders(value) {
-  const matches = String(value).matchAll(/\{\s*([A-Za-z_][\w]*)\s*\}/g);
   return sortedUnique(Array.from(matches, (match) => match[1]));
 }
 
@@ -437,119 +416,6 @@ function readInstallerJsonEntries(uiLocale) {
   }
 }
 
-function propertyNameToString(ts, name) {
-  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
-    return name.text;
-  }
-  return null;
-}
-
-function unwrapTsExpression(ts, expression) {
-  let current = expression;
-  while (current && (ts.isAsExpression(current) || ts.isSatisfiesExpression(current))) {
-    current = current.expression;
-  }
-  return current;
-}
-
-function flattenTsObjectKeys(ts, objectLiteral, prefix = '') {
-  const keys = [];
-  for (const property of objectLiteral.properties) {
-    if (!ts.isPropertyAssignment(property)) continue;
-
-    const key = propertyNameToString(ts, property.name);
-    if (!key) continue;
-    if (!prefix && key === 'shared') continue;
-
-    const nextPrefix = prefix ? `${prefix}.${key}` : key;
-    const initializer = unwrapTsExpression(ts, property.initializer);
-
-    if (ts.isObjectLiteralExpression(initializer)) {
-      keys.push(...flattenTsObjectKeys(ts, initializer, nextPrefix));
-    } else {
-      keys.push(nextPrefix);
-    }
-  }
-  return keys.sort();
-}
-
-function flattenTsObjectEntries(ts, objectLiteral, prefix = '') {
-  const entries = [];
-  for (const property of objectLiteral.properties) {
-    if (!ts.isPropertyAssignment(property)) continue;
-
-    const key = propertyNameToString(ts, property.name);
-    if (!key) continue;
-    if (!prefix && key === 'shared') continue;
-
-    const nextPrefix = prefix ? `${prefix}.${key}` : key;
-    const initializer = unwrapTsExpression(ts, property.initializer);
-
-    if (ts.isObjectLiteralExpression(initializer)) {
-      entries.push(...flattenTsObjectEntries(ts, initializer, nextPrefix));
-    } else if (
-      ts.isStringLiteral(initializer) ||
-      ts.isNoSubstitutionTemplateLiteral(initializer)
-    ) {
-      entries.push([nextPrefix, initializer.text]);
-    } else {
-      entries.push([nextPrefix, '']);
-    }
-  }
-  return entries.sort(([left], [right]) => left.localeCompare(right));
-}
-
-function readMobileMessagesByLocale() {
-  const ts = auditTypeScript;
-  if (!ts) {
-    return new Map();
-  }
-
-  const source = fs.readFileSync(mobileWebMessagesPath, 'utf8');
-  const sourceFile = ts.createSourceFile(mobileWebMessagesPath, source, ts.ScriptTarget.Latest, true);
-  const output = new Map();
-
-  function visit(node) {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === 'messages'
-    ) {
-      const initializer = unwrapTsExpression(ts, node.initializer);
-      if (!initializer || !ts.isObjectLiteralExpression(initializer)) {
-        reportError('mobile-web messages export is not an object literal');
-        return;
-      }
-
-      for (const property of initializer.properties) {
-        if (!ts.isPropertyAssignment(property)) continue;
-
-        const locale = propertyNameToString(ts, property.name);
-        if (!locale) continue;
-
-        const value = unwrapTsExpression(ts, property.initializer);
-        if (!ts.isObjectLiteralExpression(value)) {
-          reportError(`mobile-web messages.${locale} is not an object literal`);
-          continue;
-        }
-
-        output.set(locale, new Map(flattenTsObjectEntries(ts, value)));
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-
-  visit(sourceFile);
-  return output;
-}
-
-function readMobileMessageKeysByLocale() {
-  return new Map(
-    Array.from(readMobileMessagesByLocale().entries())
-      .map(([locale, entries]) => [locale, Array.from(entries.keys()).sort()]),
-  );
-}
-
 function diffSets(left, right) {
   const rightSet = new Set(right);
   return left.filter((item) => !rightSet.has(item));
@@ -573,10 +439,6 @@ function auditSurfaceResourceRoots() {
       } else if (surface === 'core') {
         if (!fs.existsSync(path.join(resourceRoot, `${localeId}.ftl`))) {
           reportError(`${surface} is missing ${localeId} Fluent resource`);
-        }
-      } else if (surface === 'mobile-web') {
-        if (!fs.existsSync(path.join(resourceRoot, 'messages.ts'))) {
-          reportError(`${surface} is missing messages.ts`);
         }
       }
     }
@@ -635,27 +497,6 @@ function auditSharedTermsCoverage() {
   }
 }
 
-function auditMobileWebBoundary() {
-  // No surface imports another surface's locale catalog: mobile-web owns its
-  // messages and must not reach into the desktop UI (src/nsh-ui) catalogs.
-  const sourceFiles = listFiles(
-    mobileWebSourceDir,
-    (file) => file.endsWith('.ts') || file.endsWith('.tsx'),
-  );
-  const forbiddenPatterns = [
-    /src[/\\]nsh-ui[/\\]src[/\\]locales/,
-    /src[/\\]nsh-ui[/\\]src[/\\]i18n/,
-    /\.\.[/\\]\.\.[/\\]nsh-ui[/\\]/,
-  ];
-
-  for (const file of sourceFiles) {
-    const text = fs.readFileSync(file, 'utf8');
-    if (forbiddenPatterns.some((pattern) => pattern.test(text))) {
-      reportError(`${toPosixPath(path.relative(root, file))} imports or references desktop UI (src/nsh-ui) i18n resources`);
-    }
-  }
-}
-
 function auditKeyParity(namespaces) {
   for (const namespace of namespaces) {
     const baselineKeys = readJsonKeys(baselineLocale);
@@ -691,53 +532,6 @@ function auditSharedTermPlaceholderParity(namespaces) {
         const actual = extractI18nextPlaceholders(localeEntries.get(key));
         reportPlaceholderParity(namespace, locale, key, expected, actual);
       }
-    }
-  }
-}
-
-function auditMobileWebMessageParity() {
-  const messagesByLocale = readMobileMessageKeysByLocale();
-  const baselineKeys = messagesByLocale.get('en-US');
-  if (!baselineKeys) {
-    reportError('mobile-web messages are missing the en-US baseline locale');
-    return;
-  }
-
-  for (const [locale, keys] of messagesByLocale.entries()) {
-    if (locale === 'en-US') continue;
-
-    const missing = diffSets(baselineKeys, keys);
-    const extra = diffSets(keys, baselineKeys);
-    if (missing.length > 0) {
-      reportError(`mobile-web ${locale} messages are missing ${missing.length} key(s): ${missing.slice(0, 8).join(', ')}`);
-    }
-    if (extra.length > 0) {
-      reportError(`mobile-web ${locale} messages have ${extra.length} extra key(s): ${extra.slice(0, 8).join(', ')}`);
-    }
-  }
-}
-
-function auditMobileWebPlaceholderParity() {
-  const messagesByLocale = readMobileMessagesByLocale();
-  const baselineEntries = messagesByLocale.get('en-US');
-  if (!baselineEntries) {
-    reportError('mobile-web messages are missing the en-US baseline locale');
-    return;
-  }
-
-  const baselinePlaceholders = new Map(
-    Array.from(baselineEntries.entries()).map(([key, value]) => [
-      key,
-      extractMobilePlaceholders(value),
-    ]),
-  );
-
-  for (const [locale, entries] of messagesByLocale.entries()) {
-    if (locale === 'en-US') continue;
-    for (const [key, expected] of baselinePlaceholders.entries()) {
-      if (!entries.has(key)) continue;
-      const actual = extractMobilePlaceholders(entries.get(key));
-      reportPlaceholderParity('mobile-web', locale, key, expected, actual);
     }
   }
 }
@@ -978,20 +772,6 @@ function collectI18nResourceEntries(namespaces) {
           key,
           value,
           file,
-        });
-      }
-    }
-  }
-
-  if (auditTypeScript) {
-    for (const [locale, messageEntries] of readMobileMessagesByLocale().entries()) {
-      for (const [key, value] of messageEntries.entries()) {
-        pushResourceEntry(entries, {
-          surface: 'mobile-web',
-          locale,
-          key,
-          value,
-          file: 'src/mobile-web/src/i18n/messages.ts',
         });
       }
     }
@@ -1607,18 +1387,6 @@ function auditI18nGovernanceReport(namespaces) {
   auditGovernanceBaseline();
 }
 
-function shouldSkipMobileWebSourceScan(file) {
-  const normalized = toPosixPath(path.relative(root, file));
-  return (
-    normalized.endsWith('/i18n/messages.ts') ||
-    normalized.endsWith('/i18n/generatedLocaleContract.ts') ||
-    normalized.endsWith('.test.ts') ||
-    normalized.endsWith('.test.tsx') ||
-    normalized.endsWith('.spec.ts') ||
-    normalized.endsWith('.spec.tsx')
-  );
-}
-
 function shouldSkipInstallerSourceScan(file) {
   const normalized = toPosixPath(path.relative(root, file));
   return (
@@ -1654,7 +1422,6 @@ function shouldSkipLocaleFormatSourceScan(file) {
   return (
     // Surface i18n owners are the only approved locations for direct Intl usage;
     // product code must call their exported formatting helpers instead.
-    normalized === 'src/mobile-web/src/i18n/I18nProvider.tsx' ||
     normalized.endsWith('/generatedLocaleContract.ts') ||
     normalized.endsWith('.test.ts') ||
     normalized.endsWith('.test.tsx') ||
@@ -1665,15 +1432,6 @@ function shouldSkipLocaleFormatSourceScan(file) {
 
 function createLocaleFormatScanSpecs() {
   return [
-    {
-      surface: 'mobile-web',
-      root: mobileWebSourceDir,
-      predicate: (file) => (
-        (file.endsWith('.ts') || file.endsWith('.tsx')) &&
-        !shouldSkipMobileWebSourceScan(file) &&
-        !shouldSkipLocaleFormatSourceScan(file)
-      ),
-    },
     {
       surface: 'installer',
       root: installerSourceDir,
@@ -1781,11 +1539,6 @@ function auditHardcodedSourceBudgets() {
   // owned locale resources; do not raise them for new user-facing text.
   const specs = [
     {
-      id: 'mobile-web-source',
-      root: mobileWebSourceDir,
-      predicate: (file) => (file.endsWith('.ts') || file.endsWith('.tsx')) && !shouldSkipMobileWebSourceScan(file),
-    },
-    {
       id: 'installer-source',
       root: installerSourceDir,
       predicate: (file) => (file.endsWith('.ts') || file.endsWith('.tsx')) && !shouldSkipInstallerSourceScan(file),
@@ -1816,16 +1569,10 @@ function auditHardcodedSourceBudgets() {
 auditGeneratedContract();
 auditSharedTermsCoverage();
 auditSurfaceResourceRoots();
-auditMobileWebBoundary();
 
 const namespaces = SHARED_NAMESPACES;
 auditKeyParity(namespaces);
 auditSharedTermPlaceholderParity(namespaces);
-auditTypeScript = loadTypeScriptForAudit();
-if (auditTypeScript) {
-  auditMobileWebMessageParity();
-  auditMobileWebPlaceholderParity();
-}
 auditInstallerKeyParity();
 auditInstallerPlaceholderParity();
 auditCoreFluentParity();

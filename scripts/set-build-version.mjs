@@ -16,7 +16,6 @@ export function setBuildVersion(root, version) {
     'OpenBitFun-Installer/package.json',
     // The native desktop app's manifest; its other fields stay untouched.
     'src/apps/desktop-nsh/nsh.json',
-    'src/mobile-web/package.json',
     'src/miniapp-market-web/package.json',
   ]) {
     const file = path.join(root, relative);

@@ -11,7 +11,6 @@ const versions = new Map([
   ['OpenBitFun-Installer/src-tauri/Cargo.toml', readTomlVersion('OpenBitFun-Installer/src-tauri/Cargo.toml', /^version = "([^"]+)"/m)],
   // The native desktop app's manifest (`nsh build` reads its version).
   ['src/apps/desktop-nsh/nsh.json', readJsonVersion('src/apps/desktop-nsh/nsh.json')],
-  ['src/mobile-web/package.json', readJsonVersion('src/mobile-web/package.json')],
   ['src/miniapp-market-web/package.json', readJsonVersion('src/miniapp-market-web/package.json')],
   ['src/apps/relay-server/Cargo.toml', readTomlVersion('src/apps/relay-server/Cargo.toml', /version = "([^"]+)" # x-release-please-version/)],
   ['src/crates/services/relay-service/Cargo.toml', readTomlVersion('src/crates/services/relay-service/Cargo.toml', /^version = "([^"]+)"/m)],

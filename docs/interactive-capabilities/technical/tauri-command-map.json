@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "8c7c7efeebc00dc169740b5321b981c9bd229525167eaf6d1388436ee4fcfb2d",
-  "commandCount": 716,
+  "catalogDigest": "111f8eba88e117defacc127be88915b4344b785e72d1ddb74208d7f2a9b21f74",
+  "commandCount": 714,
   "coverage": {
-    "commandCount": 716,
-    "documentedCommandCount": 636,
-    "implementationCommandCount": 80,
-    "implementationDigest": "53da5415ee5c1025374ea529af4a1f2a25eba0063a001290204c49d819f558f3"
+    "commandCount": 714,
+    "documentedCommandCount": 631,
+    "implementationCommandCount": 83,
+    "implementationDigest": "ac0edaf745cbeecfa4b41aac88fcaee2b6c4761f029578565cb55a02850a6baf"
   },
   "commands": [
     {
@@ -59,22 +59,6 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
-      "id": "account_connect_devices",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:devices"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::remote_connect_api::account_connect_devices",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_connect_devices() -> Result<Vec<OnlineDeviceInfo>, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "account_delete_device",
       "moduleId": "remote_connect",
       "capabilityId": "feature.remote-connect",
@@ -88,38 +72,6 @@
       "rustPath": "api::remote_connect_api::account_delete_device",
       "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
       "signature": "fn account_delete_device(targetDeviceId: String) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "account_device_rpc",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:devices"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::remote_connect_api::account_device_rpc",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_device_rpc( target_device_id: String, command_json: String, timeout_ms: Option<u64>, ) -> Result<String, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "account_execute_on_device",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:devices"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::remote_connect_api::account_execute_on_device",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_execute_on_device( target_device_id: String, session_id: Option<String>, content: String, agent_type: Option<String>, workspace_path: Option<String>, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -209,20 +161,6 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "account_load_older_session",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::remote_connect_api::account_load_older_session",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_load_older_session(request: UnsubscribeSessionRequest) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "account_login",
       "moduleId": "remote_connect",
       "capabilityId": "feature.remote-connect",
@@ -255,38 +193,6 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "account_online_devices",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:devices"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::remote_connect_api::account_online_devices",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_online_devices() -> Result<Vec<OnlineDeviceInfo>, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "account_relay_capabilities",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:devices"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::remote_connect_api::account_relay_capabilities",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_relay_capabilities() -> Result<Vec<String>, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "account_status",
       "moduleId": "remote_connect",
       "capabilityId": "feature.remote-connect",
@@ -303,20 +209,6 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
-      "id": "account_subscribe_session",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::remote_connect_api::account_subscribe_session",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_subscribe_session(request: SubscribeSessionRequest) -> Result<String, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "account_token_expired",
       "moduleId": "remote_connect",
       "capabilityId": "feature.remote-connect",
@@ -328,20 +220,6 @@
       "rustPath": "api::remote_connect_api::account_token_expired",
       "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
       "signature": "fn account_token_expired() -> bool",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "account_unsubscribe_session",
-      "moduleId": "remote_connect",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::remote_connect_api::account_unsubscribe_session",
-      "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
-      "signature": "fn account_unsubscribe_session(request: UnsubscribeSessionRequest) -> Result<(), String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -2523,6 +2401,152 @@
       "sourceFile": "src/apps/desktop/src/api/mcp_api.rs",
       "signature": "fn fetch_mcp_app_resource( state: State<'_, AppState>, request: FetchMCPAppResourceRequest, ) -> Result<FetchMCPAppResourceResponse, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "fleet_attention",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_attention",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_attention(request: FleetAttentionRequest) -> Result<FleetAttentionView, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_attention_mark_read",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_attention_mark_read",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_attention_mark_read( request: FleetAttentionMarkReadRequest, ) -> Result<FleetAttentionMarkReadResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_call",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [
+        "feature.remote-connect:peer-device"
+      ],
+      "visibility": "documented",
+      "rustPath": "fleet::fleet_api::fleet_call",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_call(request: FleetCallRequest) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_device_detail",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_device_detail",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_device_detail( request: FleetDeviceDetailRequest, ) -> Result<FleetDeviceDetail, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_events",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [
+        "feature.remote-connect:peer-device"
+      ],
+      "visibility": "documented",
+      "rustPath": "fleet::fleet_api::fleet_events",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_events(request: FleetEventsRequest) -> Result<FleetEventsResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_navigator",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [
+        "feature.remote-connect:peer-device"
+      ],
+      "visibility": "documented",
+      "rustPath": "fleet::fleet_api::fleet_navigator",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_navigator(request: FleetNavigatorRequest) -> Result<FleetNavigator, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_prompts",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_prompts",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_prompts(request: FleetPromptsRequest) -> Result<FleetPromptsResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_recent_sessions",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_recent_sessions",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_recent_sessions( request: FleetRecentSessionsRequest, ) -> Result<FleetRecentSessions, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_subscribe",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_subscribe",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_subscribe( request: FleetSubscribeRequest, ) -> Result<FleetSubscribeResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "fleet_ui_bundle",
+      "moduleId": "fleet",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "fleet::fleet_api::fleet_ui_bundle",
+      "sourceFile": "src/apps/desktop/src/fleet/fleet_api.rs",
+      "signature": "fn fleet_ui_bundle( request: FleetUiBundleRequest, ) -> Result<FleetUiBundleResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "fork_session",
@@ -6954,82 +6978,6 @@
       "remoteWorkspacePolicy": "RemoteUnsupported"
     },
     {
-      "id": "peer_control_attach",
-      "moduleId": "peer_host_invoke",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:peer-device"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::peer_host_invoke::peer_control_attach",
-      "sourceFile": "src/apps/desktop/src/api/peer_host_invoke.rs",
-      "signature": "fn peer_control_attach(controller_device_id: String) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_control_detach",
-      "moduleId": "peer_host_invoke",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:peer-device"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::peer_host_invoke::peer_control_detach",
-      "sourceFile": "src/apps/desktop/src/api/peer_host_invoke.rs",
-      "signature": "fn peer_control_detach(controller_device_id: String) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_controller_set_active",
-      "moduleId": "peer_host_invoke",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:peer-device"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::peer_host_invoke::peer_controller_set_active",
-      "sourceFile": "src/apps/desktop/src/api/peer_host_invoke.rs",
-      "signature": "fn peer_controller_set_active(active: bool) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_host_bridge_ready",
-      "moduleId": "peer_host_invoke",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::peer_host_invoke::peer_host_bridge_ready",
-      "sourceFile": "src/apps/desktop/src/api/peer_host_invoke.rs",
-      "signature": "fn peer_host_bridge_ready(request: PeerHostBridgeReadyRequest) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_host_invoke_complete",
-      "moduleId": "peer_host_invoke",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [],
-      "visibility": "implementation",
-      "rustPath": "api::peer_host_invoke::peer_host_invoke_complete",
-      "sourceFile": "src/apps/desktop/src/api/peer_host_invoke.rs",
-      "signature": "fn peer_host_invoke_complete( id: String, ok: bool, value: Option<Value>, error: Option<String>, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "peer_link_call",
       "moduleId": "peer_link",
       "capabilityId": "feature.remote-connect",
@@ -7083,22 +7031,6 @@
       "rustPath": "mesh::peer_link::peer_link_events",
       "sourceFile": "src/apps/desktop/src/mesh/peer_link.rs",
       "signature": "fn peer_link_events(request: PeerLinkEventsRequest) -> Result<PeerEventsBatch, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "peer_mode_ping",
-      "moduleId": "peer_host_invoke",
-      "capabilityId": "feature.remote-connect",
-      "capabilityIds": [
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.remote-connect:peer-device"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::peer_host_invoke::peer_mode_ping",
-      "sourceFile": "src/apps/desktop/src/api/peer_host_invoke.rs",
-      "signature": "fn peer_mode_ping() -> Result<Value, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -9566,6 +9498,22 @@
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
+      "id": "set_superagent_settings",
+      "moduleId": "settings_mutation",
+      "capabilityId": "setting.ai.permissions",
+      "capabilityIds": [
+        "setting.ai.permissions"
+      ],
+      "documentedItemIds": [
+        "setting.ai.permissions:openbitfun-device-switches"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::settings_mutation_api::set_superagent_settings",
+      "sourceFile": "src/apps/desktop/src/api/settings_mutation_api.rs",
+      "signature": "fn set_superagent_settings( app: HostHandle, request: SuperagentSettingsRequest, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "set_task_model",
       "moduleId": "settings_mutation",
       "capabilityId": "setting.application.general",
@@ -10848,6 +10796,20 @@
       "sourceFile": "src/apps/desktop/src/api/session_api.rs",
       "signature": "fn touch_session_activity( request: TouchSessionActivityRequest, runtime: State<'_, DesktopRuntimeContext>, startup_trace: State<'_, DesktopStartupTrace>, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "ui_bundle_manifest",
+      "moduleId": "obp",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "backend_protocol::ws::ui_bundle_manifest",
+      "sourceFile": "src/apps/desktop/src/backend_protocol/ws/obp_api.rs",
+      "signature": "fn ui_bundle_manifest(request: UiBundleManifestRequest) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "unarchive_session",

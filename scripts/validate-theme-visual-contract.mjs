@@ -4,10 +4,9 @@ const CONTRACT_URL = new URL('./theme-visual-governance-contract.json', import.m
 // The React desktop UI surfaces (app shell, flow chat, tool cards, editor, terminal,
 // markdown, generated widget, appearance settings) were retired with src/web-ui.
 const REQUIRED_SURFACE_KEYS = [
-  'mobile-web-shell',
   'installer-shell',
 ];
-const ALLOWED_PLATFORMS = new Set(['web', 'mobile-web', 'installer']);
+const ALLOWED_PLATFORMS = new Set(['web', 'installer']);
 const ALLOWED_FORM_FACTORS = new Set(['desktop', 'narrow', 'mobile', 'iframe']);
 const ALLOWED_THEMES = new Set([
   'dark',
@@ -27,7 +26,6 @@ const ALLOWED_EVIDENCE_TYPES = new Set([
   'boundary-render-review',
   'contrast-review',
   'focused-visual-review',
-  'mobile-build-review',
   'theme-color-audit',
 ]);
 

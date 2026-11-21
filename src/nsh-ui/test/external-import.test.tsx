@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { createBackend, createDeviceBackend, type BackendOptions } from "./support";
+import { showDevices, createBackend, createDeviceBackend, type BackendOptions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -350,50 +350,3 @@ test("a remote workspace never reaches the external-source commands and says why
   expect(app.shows("external-import-open-agents")).toBe(true);
 });
 
-test("in Peer Device Mode the catalog is read from the peer while import and restore stay on their host", async () => {
-  const base = createDeviceBackend({
-    devices: [
-      { deviceId: "device-mac", deviceName: "studio", platform: "macos", alias: "Studio" },
-      { deviceId: "device-linux", deviceName: "builder", platform: "linux" },
-    ],
-    onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-  });
-  const originalInvoke = base.handlers["openbitfun.invoke"];
-  const peerCommands: string[] = [];
-  base.handlers["openbitfun.invoke"] = (data: unknown) => {
-    const args = (data ?? {}) as { action?: string; raw?: Record<string, unknown> };
-    if (args.action === "account_device_rpc") {
-      const env = JSON.parse(String(args.raw?.commandJson ?? "{}")) as { command?: string; args?: { request?: unknown } };
-      if (env.command === "get_external_source_discovery_snapshot") {
-        peerCommands.push(env.command);
-        return {
-          ok: true,
-          value: JSON.stringify({ resp: "host_invoke_result", ok: true, value: discoverySnapshot(true, 2) }),
-          transport: "dev",
-        };
-      }
-      if (env.command && EXTERNAL_COMMANDS.includes(env.command)) peerCommands.push(env.command);
-    }
-    return originalInvoke(data);
-  };
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("OpenBitFun");
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("Use >> nth=0");
-  await app.waitFor("Driving builder (desktop): sessions, files, terminals and settings come from that device");
-
-  await app.press("Settings");
-  await app.press("nav-settings-page-external-import");
-  await app.waitFor("Claude Code");
-  expect(app.texts()).toContain(
-    "Showing the external apps found on builder. Importing MCP servers and restoring sessions stay on that host.",
-  );
-  expect(app.texts()).toContain(
-    "Import is not supported on this host or in this workspace. Source information remains available.",
-  );
-  expect(app.texts()).toContain(
-    "Manage removed source sessions on their owning host. This action is unavailable in Peer mode.",
-  );
-  expect(peerCommands).toEqual(["get_external_source_discovery_snapshot"]);
-});

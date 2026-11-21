@@ -3,6 +3,13 @@ import { createBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
+/** Assistants is a Library tab (visual spec §4.8): open the Library, then the tab. */
+async function openAssistants(app: Awaited<ReturnType<typeof open>>): Promise<void> {
+  await app.waitFor("Library");
+  if (!app.shows("library-tab-assistants")) await app.press("Library");
+  await app.press("library-tab-assistants");
+}
+
 type Recorded = { action: string; payload: Record<string, unknown>; raw: boolean };
 
 const SEEDED_IDENTITY =
@@ -96,26 +103,29 @@ test("the assistants list puts the primary assistant first and offers delete onl
   const { backend } = assistantHost();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
 
   expect(app.texts()).toContain("Calm · Fox");
   // An assistant without a vibe says so, as the desktop's card does.
   expect(app.texts()).toContain("An assistant waiting to be defined");
-  // With fewer than three assistants the list offers a create row.
-  expect(app.shows("assistants-create-card")).toBe(true);
-  await app.press("assistants-create-card");
+  // The page's one primary button creates an assistant.
+  expect(app.shows("assistants-new")).toBe(true);
+  await app.press("assistants-new");
   await app.waitFor("new-assistant-modal");
   await app.press("modal-close");
   await app.waitFor("new-assistant-modal", { state: "gone" });
 
-  // The primary assistant cannot be deleted; the other one can.
+  // The primary assistant cannot be deleted; the other one can. In the Library an
+  // open assistant replaces the list, and its back button returns to it.
+  await app.press("assistant-card-asst-1");
   await app.press("assistant-actions-asst-1");
   await app.waitFor("assistant-delete-asst-1");
   expect(app.enabled("assistant-delete-asst-1")).toBe(false);
   await app.keyboard.press("escape");
   await app.waitFor("assistant-delete-asst-1", { state: "gone" });
 
+  await app.press("assistants-back");
   await app.press("assistant-card-asst-2");
   await app.waitFor("assistant-actions-asst-2");
   await app.press("assistant-actions-asst-2");
@@ -135,7 +145,7 @@ test("the primary assistant leads the list even when the host lists it last", as
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.waitFor("assistant-primary-dot-asst-2");
   const texts = app.texts();
   expect(texts.indexOf("Scout")).toBeLessThan(texts.indexOf("Calm · Fox"));
@@ -145,7 +155,7 @@ test("the assistant page edits the name in place and the avatar from the picker"
   const { backend, recorded, files } = assistantHost();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.waitFor("assistant-name-edit");
 
@@ -215,7 +225,7 @@ test("a failed identity write says so and the next read restores the host's valu
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.press("assistant-name-edit");
   await app.clear("assistant-name-input");
@@ -232,7 +242,7 @@ test("the assistant page lists the assistant's own sessions and opens one in Ses
   const { backend, recorded } = assistantHost();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.press("assistant-tab-sessions");
   await app.waitFor("Morning plan");
@@ -264,21 +274,10 @@ test("an assistant without sessions says so, and a refused list says why", async
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.press("assistant-card-asst-2");
   await app.press("assistant-tab-sessions");
   await app.waitFor("Could not load sessions: Workspace is not open");
-});
-
-test("home shows the desktop personal overview's five usage metrics", async () => {
-  const backend = createBackend();
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("OpenBitFun");
-  await app.press("Home");
-  await app.waitFor("Total Tokens");
-  for (const label of ["Total Tokens", "Peak Daily Tokens", "Requests (30d)", "Longest Streak", "Current Streak"]) {
-    expect(app.shows(label)).toBe(true);
-  }
 });
 
 test("an older host without set_assistant_identity asks for an update instead of editing the file here", async () => {
@@ -293,7 +292,7 @@ test("an older host without set_assistant_identity asks for an update instead of
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await app.waitFor("OpenBitFun");
-  await app.press("Assistants");
+  await openAssistants(app);
   await app.press("assistant-card-asst-1");
   await app.press("assistant-name-edit");
   await app.clear("assistant-name-input");

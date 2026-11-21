@@ -90,6 +90,18 @@ pub(crate) struct DirectoryDevice {
     pub(crate) last_seen_at: Option<i64>,
 }
 
+/// The directory row kind of the account's cloud agent (the cloud runtime
+/// node, `relay-service` `DEVICE_KIND_CLOUD_AGENT`).
+pub(crate) const CLOUD_AGENT_KIND: &str = "cloud_agent";
+
+impl DirectoryDevice {
+    /// The account's cloud node: reached at the server's `/agent/obp`, never
+    /// through a pipe into the account network.
+    pub(crate) fn is_cloud_node(&self) -> bool {
+        self.device_kind.as_deref() == Some(CLOUD_AGENT_KIND)
+    }
+}
+
 /// The identity authority and the device directory.
 pub(crate) trait Accounts: Send + Sync + 'static {
     /// Starts an email sign-in and sends the code.
@@ -126,6 +138,13 @@ pub(crate) trait Accounts: Send + Sync + 'static {
     /// Revokes the browser's directory credential.
     fn sign_out<'a>(&'a self, directory_token: &'a str)
         -> BoxFuture<'a, Result<(), UpstreamError>>;
+    /// Creates the account's cloud node on its first sign-in (the cloud
+    /// agent's `POST /agent/api/v1/ensure`, on by default). Best effort: a
+    /// sign-in never waits for or fails on it. The default does nothing
+    /// (no cloud agent configured).
+    fn ensure_cloud_node<'a>(&'a self, _access_token: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
 }
 
 /// A byte stream to a device's OBP port.
@@ -230,9 +249,20 @@ pub(crate) struct HttpAccounts {
     auth_url: String,
     directory_url: String,
     client_version: String,
+    /// The cloud agent's loopback root (`http://127.0.0.1:19740`), if any.
+    superagent_url: Option<String>,
 }
 
 impl HttpAccounts {
+    /// Asks the cloud agent at `url` to create each account's node on its
+    /// first browser sign-in.
+    pub(crate) fn with_superagent(mut self, url: Option<&str>) -> Self {
+        self.superagent_url = url
+            .map(|url| url.trim().trim_end_matches('/').to_string())
+            .filter(|url| !url.is_empty());
+        self
+    }
+
     pub(crate) fn new(auth_url: &str, directory_url: &str) -> anyhow::Result<Self> {
         openbitfun_services_core::tls_provider::ensure_ring_crypto_provider();
         Ok(Self {
@@ -244,6 +274,7 @@ impl HttpAccounts {
             auth_url: auth_url.trim().trim_end_matches('/').to_string(),
             directory_url: directory_url.trim().trim_end_matches('/').to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),
+            superagent_url: None,
         })
     }
 
@@ -482,7 +513,9 @@ impl Accounts for HttpAccounts {
         Box::pin(async move {
             let response = self
                 .client
-                .get(self.directory("/api/devices"))
+                // `include=cloud_agent` also lists the account's cloud node
+                // (an older directory ignores it and lists hosts only).
+                .get(self.directory("/api/devices?include=cloud_agent"))
                 .bearer_auth(directory_token)
                 .send()
                 .await
@@ -570,6 +603,32 @@ impl Accounts for HttpAccounts {
                     "The device directory answered HTTP {}.",
                     response.status()
                 )))
+            }
+        })
+    }
+
+    fn ensure_cloud_node<'a>(&'a self, access_token: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(base) = &self.superagent_url else {
+                return;
+            };
+            let result = self
+                .client
+                .post(format!("{base}/agent/api/v1/ensure"))
+                .bearer_auth(access_token)
+                .send()
+                .await;
+            match result {
+                Ok(response) if response.status().is_success() => {
+                    log::info!("Cloud node ensured at sign-in")
+                }
+                Ok(response) => log::warn!(
+                    "Cloud node ensure at sign-in answered HTTP {}",
+                    response.status().as_u16()
+                ),
+                Err(_) => {
+                    log::warn!("Cloud node ensure at sign-in: the cloud agent is unreachable")
+                }
             }
         })
     }

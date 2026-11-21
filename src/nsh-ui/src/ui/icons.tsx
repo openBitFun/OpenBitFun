@@ -10,7 +10,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "nsh";
-import { isLightAppearance, palette } from "../theme";
+import { isLightAppearance, palette, radii } from "../theme";
 import { LUCIDE_PATHS } from "./lucideIcons";
 
 export type IconName =
@@ -591,7 +591,8 @@ function characterStatusColor(status: string): string {
   const key = status.trim().toLowerCase();
   if (key === "online" || key === "ready" || key === "active") return palette().success;
   if (key === "running" || key === "busy" || key === "working") return palette().accent;
-  if (key === "approval" || key === "warning" || key === "idle" || key === "waiting") {
+  // Idle is a neutral state, never a warning (visual spec §2.4).
+  if (key === "approval" || key === "warning" || key === "waiting") {
     return palette().warning;
   }
   if (key === "failed" || key === "error") return palette().danger;
@@ -898,7 +899,7 @@ export function BotCharacter(props: BotCharacterProps) {
               bottom: -1,
               width: Math.max(8, Math.round((props.size ?? 34) * 0.26)),
               height: Math.max(8, Math.round((props.size ?? 34) * 0.26)),
-              borderRadius: 999,
+              borderRadius: radii.pill,
               borderWidth: 2,
               borderColor: props.ringColor ?? palette().canvas,
               backgroundColor: characterStatusColor(status()),

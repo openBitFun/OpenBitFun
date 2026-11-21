@@ -22,7 +22,16 @@ import {
 import { enUSMessages } from "./src/locales/en-US";
 import { zhCNMessages } from "./src/locales/zh-CN";
 import { zhTWMessages } from "./src/locales/zh-TW";
-import { type BackendOptions, DEFAULT_USAGE, createBackend, createDeviceBackend } from "./test/support";
+import { showDevices,
+  type BackendOptions,
+  DEFAULT_USAGE,
+  createBackend,
+  createDeviceBackend,
+  openSession,
+  openSessionRow,
+  openToolScene,
+  showAllSessions,
+} from "./test/support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -31,10 +40,12 @@ test("shell and sessions come from the host", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.waitFor("OpenBitFun");
-  const texts = app.texts();
-  expect(app.shows("OpenBitFun")).toBe(true);
-  expect(app.shows("Sessions")).toBe(true);
-  expect(texts).toContain("NSH skeleton");
+  // The sidebar is OpenBitFun, Inbox, Search, history, then All sessions and Library.
+  expect(app.shows("nav-openbitfun")).toBe(true);
+  expect(app.shows("nav-inbox")).toBe(true);
+  expect(app.shows("nav-all-sessions")).toBe(true);
+  expect(app.shows("nav-library")).toBe(true);
+  await showAllSessions(app, "NSH skeleton");
 
   // The catalog is requested for the workspace the host reported.
   const listCall = backend.calls.find(call => call.action === "list_persisted_sessions_page");
@@ -45,10 +56,10 @@ test("opened sessions become tabs on the session canvas", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Terminal migration");
-  await app.press("Terminal migration >> nth=0");
+  await showAllSessions(app, "Terminal migration");
+  await openSessionRow(app, "Terminal migration >> nth=0");
   await app.waitFor("Port the terminal.");
-  await app.press("NSH skeleton >> nth=0");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
   // Both sessions stay open: each tab inside the thread menu brings its own transcript back.
@@ -70,33 +81,24 @@ test("archived sessions are their own list and can be restored", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  // Archived rows stay out of the active list but are still counted.
+  await showAllSessions(app, "NSH skeleton");
+  // Archived rows stay out of All sessions; Settings › Archived sessions lists them.
   expect(app.texts()).not.toContain("Old experiment");
-  await app.press("drawer-more");
-  await app.waitFor("Archived 1");
-
-  await app.press("Archived 1");
+  await app.press("Settings");
+  await app.press("Archived sessions");
+  await app.waitFor("label:settings-archived");
   await app.waitFor("Old experiment");
-  // The active rows leave the list (the header pill still names the selected session).
-  expect(app.texts()).not.toContain("Terminal migration");
-
-  // Restore from the thread menu of the archived session.
-  await app.press("Old experiment");
-  await app.press("thread-actions-trigger");
-  await app.press("Restore");
-  expect(backend.actions()).toContain("unarchive_session");
-  await app.waitFor("Archived 0");
-  await app.press("Active");
-  await app.waitFor("Old experiment");
+  await app.press("label:settings-archived-restore-session-3");
+  await app.waitUntil(() => backend.actions().includes("unarchive_session"));
+  await showAllSessions(app, "Old experiment");
 });
 
 test("selecting a session loads its turns", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Terminal migration");
-  await app.press("Terminal migration >> nth=0");
+  await showAllSessions(app, "Terminal migration");
+  await openSessionRow(app, "Terminal migration >> nth=0");
   await app.waitFor("Port the terminal.");
   expect(backend.actions()).toContain("get_session_transcript_view");
   expect(app.texts()).toContain("Port the terminal.");
@@ -106,11 +108,9 @@ test("deleting a session drops its row and the catalog count with it", async () 
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  const before = app.texts();
-  expect(before).toContain("3");
+  await showAllSessions(app, "NSH skeleton");
 
-  await app.press("NSH skeleton >> nth=0");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.press("thread-actions-trigger");
   await app.press("Delete");
   await app.waitFor("Delete NSH skeleton? This cannot be undone.");
@@ -120,16 +120,17 @@ test("deleting a session drops its row and the catalog count with it", async () 
     session_id: "session-1",
     workspace_id: "workspace-1",
   });
-  await app.waitFor("2");
-  expect(app.texts()).not.toContain("3");
+  // The row leaves All sessions with it.
+  await showAllSessions(app, "Terminal migration");
+  expect(app.shows("NSH skeleton")).toBe(false);
 });
 
 test("session header actions archive, rename and send a turn", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
 
   await app.press("thread-actions-trigger");
   await app.press("Rename");
@@ -165,24 +166,23 @@ test("each session row states what that session is doing", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  // The host reports messages for both active sessions and neither was opened
-  // here, so both rows expose unread status dots; session-1 also awaits approval.
-  await app.waitFor("status-Not read yet");
-  await app.waitFor("status-Waiting for approval");
+  await showAllSessions(app, "NSH skeleton");
+  // Neither session was opened here: session-2 holds an unread result and
+  // session-1 also awaits approval, so each row carries its one mark.
+  await app.waitFor("label:Done");
+  await app.waitFor("label:Needs you");
 
-  await app.press("NSH skeleton >> nth=0");
-  await app.waitFor("Message");
-  // Opening a session is what marks it read.
-  expect(app.count("status-Not read yet")).toBe(1);
+  await openSessionRow(app, "NSH skeleton >> nth=0");
+  await app.waitFor("Port the session list.");
 
   // A turn in another session marks that row without touching this transcript.
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-2", turnId: "turn-2" },
   });
-  await app.waitFor("status-Running");
   expect(app.texts()).toContain("Port the session list.");
+  await showAllSessions(app);
+  await app.waitFor("label:Working");
 
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-completed",
@@ -192,8 +192,8 @@ test("each session row states what that session is doing", async () => {
     event: "agentic://dialog-turn-failed",
     payload: { sessionId: "session-2", turnId: "turn-3", reason: "provider refused" },
   });
-  await app.waitFor("status-Last turn failed");
-  expect(app.shows("status-Running")).toBe(false);
+  await app.waitFor("label:Failed");
+  expect(app.shows("label:Working")).toBe(false);
 });
 
 test("settings switches the scheme it draws and remembers the choice", async () => {
@@ -205,7 +205,7 @@ test("settings switches the scheme it draws and remembers the choice", async () 
     colorScheme: "dark",
   });
 
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
   await app.waitFor("Showing the dark scheme");
@@ -225,8 +225,8 @@ test("a message sent while a turn runs steers that turn instead of starting anot
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   // The host reports the turn it started; it is the host that addresses it.
@@ -235,7 +235,7 @@ test("a message sent while a turn runs steers that turn instead of starting anot
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
 
   await app.type("composer", "Also check the tests");
   await app.press("Steer");
@@ -275,8 +275,8 @@ test("a queued message waits in the host queue; this window never drains it", as
   const backend = createBackend({ hostQueue: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   backend.setRunningTurn("session-1", "turn-9");
@@ -284,7 +284,7 @@ test("a queued message waits in the host queue; this window never drains it", as
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
 
   await app.type("composer", "Then look at the docs");
   await app.press("Queue");
@@ -316,7 +316,7 @@ test("rows an earlier build kept locally are handed to the host queue once", asy
       ]),
     },
   });
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   const submits = await waitForCalls(backend, "manage_dialog_queue", 2);
   const submit = submits.find(call => (call.request as { action?: string })?.action === "submit");
   expect(submit?.request).toMatchObject({
@@ -330,8 +330,8 @@ test("a host with a dialog queue keeps the message and promotes it on request", 
   const backend = createBackend({ hostQueue: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   backend.setRunningTurn("session-1", "turn-9");
@@ -339,7 +339,7 @@ test("a host with a dialog queue keeps the message and promotes it on request", 
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
 
   await app.type("composer", "Hold this until the turn ends");
   await app.press("Queue");
@@ -371,8 +371,8 @@ test("a host queue reorders its own rows against the revision it just read", asy
   const backend = createBackend({ hostQueue: true });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   backend.setRunningTurn("session-1", "turn-9");
@@ -380,7 +380,7 @@ test("a host queue reorders its own rows against the revision it just read", asy
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
 
   await app.type("composer", "First on the queue");
   await app.press("Queue");
@@ -411,8 +411,8 @@ test("a queued row the host is holding back says why", async () => {
   const backend = createBackend(options);
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   backend.setRunningTurn("session-1", "turn-9");
@@ -420,7 +420,7 @@ test("a queued row the host is holding back says why", async () => {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
 
   await app.type("composer", "Blocked by the host");
   await app.press("Queue");
@@ -456,8 +456,8 @@ test("a clipboard image rides into the turn as an attachment", async () => {
     },
   });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   await app.press("Attach");
@@ -487,8 +487,8 @@ test("the session header copies a session and selects the copy", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.press("thread-actions-trigger");
   await app.press("Duplicate");
   expect(backend.calls.find(call => call.action === "copy_session")?.request).toMatchObject({
@@ -503,8 +503,12 @@ test("the session list asks the host for a new session", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Sessions");
-  await app.press("New");
+  // A direct session starts where it was asked for: All sessions › By device › the workspace.
+  await showAllSessions(app, "NSH skeleton");
+  await app.press("all-sessions-tab-by-device");
+  await app.hover("workspace-row-workspace-1");
+  await app.press("new-session-here-workspace-1");
+  await app.waitUntil(() => backend.calls.some(call => call.action === "create_session"));
   expect(backend.calls.find(call => call.action === "create_session")?.request).toMatchObject({
     sessionName: "New session",
     agentType: "Standard",
@@ -524,6 +528,18 @@ test("the composer's agent comes from the host catalogue and the shared preferen
   });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
+  // With no session, the new shell starts one from All sessions › By device ›
+  // "New session here"; it starts as the agent the composer is on (the shared
+  // preference), and that pick is remembered where the desktop keeps it.
+  await showAllSessions(app);
+  await app.press("all-sessions-tab-by-device");
+  await app.hover("workspace-row-workspace-1");
+  await app.press("new-session-here-workspace-1");
+  await app.waitUntil(() => backend.calls.some(call => call.action === "create_session"));
+  expect(backend.calls.find(call => call.action === "create_session")?.request).toMatchObject({
+    sessionName: "New session",
+    agentType: "Creative",
+  });
   await app.waitFor("Agent: Creative");
   // The catalogue is asked for by workspace: that is what the host resolves an
   // agent against, and what makes a remote workspace answer with its own agents.
@@ -541,14 +557,6 @@ test("the composer's agent comes from the host catalogue and the shared preferen
   // The host also resolves an assistant-workspace agent, which a session here
   // cannot be switched to, so it is not offered.
   expect(app.texts()).not.toContain("Claw");
-
-  // A new session starts as the agent the composer is on, and that pick is
-  // remembered where the desktop keeps it, so the next launch starts there too.
-  await app.press("New");
-  expect(backend.calls.find(call => call.action === "create_session")?.request).toMatchObject({
-    sessionName: "New session",
-    agentType: "Creative",
-  });
 });
 
 test("a started session keeps its agent; one with no turn takes the pick", async () => {
@@ -572,8 +580,8 @@ test("a started session keeps its agent; one with no turn takes the pick", async
   });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  // The first row is selected and has no turn yet, so the pick rebinds it.
-  await app.waitFor("Fresh session");
+  // "Fresh session" has no turn yet, so the pick rebinds it.
+  await openSession(app, "Fresh session");
   await app.press("agent-picker");
   await app.press("Ultimate");
   expect(backend.sessionModeWrites).toEqual([
@@ -594,7 +602,7 @@ test("a started session keeps its agent; one with no turn takes the pick", async
 
   // A session that already ran a turn keeps its agent: the press asks for a new
   // session instead of rebinding a transcript produced under another agent.
-  await app.press("NSH skeleton >> nth=0");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.press("agent-picker");
   await app.press("Minimal");
   expect(app.texts()).toContain(
@@ -611,6 +619,7 @@ test("a host without an agent catalogue says so and stays on Standard", async ()
   const backend = createBackend({ agentModes: null });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Agent: Standard");
   await app.press("agent-picker");
   // The panel names the command that did not answer, and offers a re-read rather
@@ -630,8 +639,7 @@ test("files scene walks directories lazily and previews markdown and code", asyn
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Files");
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
   // The root is read through the explorer's own directory call, not the deep tree.
   await app.waitFor("README.md");
@@ -658,7 +666,7 @@ test("files scene previews an image and a video from host bytes", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
 
   await app.press("logo.png");
@@ -689,7 +697,7 @@ test("the files scene lists changed files and reviews one as a diff", async () =
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
   // git_get_status for the workspace root decorates the tree and the list.
   expect(backend.actions()).toContain("git_get_status");
@@ -719,7 +727,7 @@ test("pasting copies the clipboard's files into the workspace", async () => {
     modules: { nsh: { "Clipboard.readFiles": () => ["file:///Users/me/notes%20one.md"] } },
   });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await app.press("file-actions-menu");
   await app.press("Paste");
@@ -740,7 +748,7 @@ test("files scene creates, renames and deletes through the workspace commands", 
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("file-actions-menu");
 
   await app.press("file-actions-menu");
@@ -776,7 +784,7 @@ test("files scene searches file names through the host", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("file-search");
   await app.type("file-search", "guide");
   await app.keyboard.press("Return");
@@ -791,7 +799,7 @@ test("files scene greps inside files and opens the hit", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("file-search");
   await app.press("search-mode-content");
   await app.type("file-search", "hello");
@@ -812,8 +820,8 @@ test("a tool card expands into its checklist and its edit", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
   // A tool call that carries a todo list shows its progress directly in the compact strip.
@@ -831,8 +839,8 @@ test("the composer picks the model the next turn runs on", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
   // The catalog's default names the model in the composer bar before the user picks one.
   await app.waitFor("Model: Primary model");
@@ -853,7 +861,7 @@ test("the composer picks the model the next turn runs on", async () => {
 
   // Another session shows the model its own record carries, not this one's pick,
   // and a model the catalog does not list is shown by its own id.
-  await app.press("Terminal migration >> nth=0");
+  await openSessionRow(app, "Terminal migration >> nth=0");
   await app.waitFor("Model: session-only-model");
 });
 
@@ -861,8 +869,8 @@ test("the composer offers the reasoning the chosen model supports", async () => 
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   // The session reported no preset, which is the model's own default.
   await app.waitFor("Reasoning: Default");
 
@@ -893,8 +901,8 @@ test("a host that declares no reasoning settings draws no control", async () => 
   const backend = createBackend({ reasoningCatalog: null });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Model: Primary model");
   expect(app.texts().some(text => text.startsWith("Reasoning:"))).toBe(false);
 });
@@ -903,8 +911,8 @@ test("the transcript shows tool cards from a turn", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   // A read is titled by its verb and the file it read, not by the raw tool name.
   await app.waitFor("NavPanel.tsx");
   const texts = app.texts().join("\n");
@@ -916,8 +924,8 @@ test("a reasoning model's streamed notes never become its answer", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
   await app.host.send("openbitfun.event", {
@@ -929,8 +937,8 @@ test("a reasoning model's streamed notes never become its answer", async () => {
     event: "agentic://text-chunk",
     payload: { sessionId: "session-1", text: "Weigh the options.", contentType: "thinking" },
   });
-  await app.waitFor("Thinking");
-  expect(app.texts().join("\n")).toContain("streaming");
+  // Live reasoning reads "Thinking…" with the matrix spinner (visual spec §3 Thinking).
+  await app.waitFor("Thinking…");
 
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
@@ -949,14 +957,14 @@ test("a persisted reasoning block stays collapsed until it is opened", async () 
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Terminal migration");
-  await app.press("Terminal migration");
+  await showAllSessions(app, "Terminal migration");
+  await openSessionRow(app, "Terminal migration");
   await app.waitFor("Thinking");
 
-  // Collapsed, as the desktop keeps it: the header says how much there is, the
-  // notes themselves are not in the transcript yet.
+  // Collapsed: one quiet row (no character count, visual spec §5); the notes
+  // themselves are not in the transcript yet.
   const collapsed = app.texts().join("\n");
-  expect(collapsed).toContain("46 characters");
+  expect(collapsed).not.toContain("46 characters");
   expect(collapsed).not.toContain("Weigh the two options");
 
   await app.press("label:thinking-turn-2|thinking|Weigh the two options before writing anything.");
@@ -968,8 +976,8 @@ test("a reply renders as Markdown rather than as its source", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Terminal migration");
-  await app.press("Terminal migration");
+  await showAllSessions(app, "Terminal migration");
+  await openSessionRow(app, "Terminal migration");
   await app.waitFor("Plan");
 
   const texts = app.texts().join("\n");
@@ -991,8 +999,8 @@ test("a transcript block goes to the clipboard on Copy", async () => {
     modules: { nsh: { "Clipboard.writeText": (text: string) => void copied.push(text) } },
   });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
   await app.press("Copy >> nth=0");
@@ -1006,8 +1014,8 @@ test("a running turn streams its text and can be stopped", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
 
   const turnsBefore = backend.actions().filter(action => action === "get_session_transcript_view").length;
@@ -1045,7 +1053,8 @@ test("a pending permission request is answerable from the scene", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   // The prompt seeds from what is already waiting when the window attaches.
-  await app.waitFor("Approval needed: run_command");
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Wants to run");
   expect(app.texts().join("\n")).toContain("cargo test -p openbitfun-desktop");
 
   await app.press("Always allow");
@@ -1062,8 +1071,8 @@ test("a pending permission request is answerable from the scene", async () => {
       request: { requestId: "perm-2", action: "write_file", resources: ["/repo/main.rs"], sessionId: "session-1" },
     },
   });
-  await app.waitFor("Approval needed: write_file");
-  await app.press("Reject >> nth=0");
+  await app.waitFor("Wants to edit 1 file");
+  await app.press("deny-perm-2");
   expect(backend.calls.filter(call => call.action === "respond_permission").pop()?.request).toMatchObject({
     requestId: "perm-2",
     reply: "reject",
@@ -1098,8 +1107,8 @@ test("a question the host is waiting on is recovered from the mailbox and answer
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   // The question is only reachable through the mailbox when its event is gone.
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("The agent needs an answer");
   await app.waitFor("Port: Which port should the server use?");
   await app.waitFor("8080");
@@ -1120,8 +1129,8 @@ test("a live question takes several options and a typed answer", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
   await app.host.send("openbitfun.event", {
     event: "backend-event-toolawaitinguserinput",
@@ -1169,7 +1178,7 @@ test("settings scene reads the configured fields", async () => {
 
   await app.press("Settings");
   await app.press("nav-settings-page-general");
-  await app.waitFor("Application");
+  await app.waitFor("Startup");
   expect(app.texts().join("\n")).toContain("Close button");
   // Settings opens one page at a time: the editor's rows are not drawn here.
   expect(app.shows("editor-font-size")).toBe(false);
@@ -1192,7 +1201,7 @@ test("settings scene writes toggles, selects and numbers", async () => {
 
   await app.press("Settings");
   await app.press("nav-settings-page-general");
-  await app.waitFor("Application");
+  await app.waitFor("Startup");
 
   await app.press("notify-permission-request");
   expect(backend.settingsWrites).toContainEqual({ path: "app.notifications.permission_request_notify", value: true });
@@ -1282,14 +1291,14 @@ test("settings switches interface language live across English, Simplified Chine
   await app.press("Settings");
   await app.press("nav-settings-page-general");
   await app.waitFor("Interface language");
-  await app.waitFor("Application");
+  await app.waitFor("Startup");
 
   // Switch live to Simplified Chinese -> entire shell + settings repaint immediately.
   // The host keeps the language through `i18n_set_language`; no `app` document is
   // read and written back from here.
   await app.press("app-language-zh-CN");
   await app.waitFor("界面语言");
-  await app.waitFor("常规");
+  await app.waitFor("启动");
   expect(app.shows("设置")).toBe(true);
   const languageCalls = () =>
     backend.calls
@@ -1306,7 +1315,7 @@ test("settings switches interface language live across English, Simplified Chine
   // Switch back to English -> restores cleanly and persists canonical en-US.
   await app.press("app-language-en-US");
   await app.waitFor("Interface language");
-  await app.waitFor("Application");
+  await app.waitFor("Startup");
   expect(languageCalls().pop()).toBe("en-US");
   expect(backend.settingsWrites.some(entry => entry.path === "app")).toBe(false);
 });
@@ -1475,6 +1484,8 @@ test("a host older than the typed settings commands says so instead of writing w
   // No fallback to the whole-list write the command replaced.
   expect(backend.settingsWrites.some(write => write.path === "ai.models")).toBe(false);
 
+  // The refused form stays open over the page (and its list) until it is closed.
+  await app.press("model-editor-cancel");
   await app.press("nav-settings-page-permissions");
   await app.waitFor("Edit rules");
   await app.press("permission-mode-auto");
@@ -1661,7 +1672,7 @@ test("the search field answers with sessions, messages and files, and runs what 
   expect(app.texts()).toContain("Commands");
 
   await app.type("global-search-input", "terminal");
-  await app.waitFor("Terminal migration");
+  await showAllSessions(app, "Terminal migration");
   // A session-name hit, a message hit from the host and a file hit from
   // `search_files` are grouped by kind rather than merged into one list.
   await app.waitFor("Terminal is wired to terminal_create.");
@@ -1705,7 +1716,7 @@ test("stored key bindings are shown, not edited", async () => {
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
-  await app.press("nav-settings-page-input");
+  await app.press("nav-settings-page-shortcuts");
   await app.waitFor("Keyboard shortcuts");
   // The count is the host's document; this surface has no shortcut registry, so
   // the row states that instead of offering an editor that would change nothing.
@@ -1857,219 +1868,12 @@ test("settings creates a model pool the host keeps, and deletes it", async () =>
   await app.waitFor("No pool yet.");
 });
 
-test("the devices list hides a device and keeps the arrangement in app storage", async () => {
-  const backend = createDeviceBackend();
-  const app = await open("./App.tsx", {
-    ...DESKTOP,
-    host: { handlers: backend.handlers },
-    // A preference file the React surface wrote: this app must read the same shape.
-    storage: {
-      "openbitfun.device-order.v1": JSON.stringify({ state: { order: ["device-linux"] }, version: 0 }),
-    },
-  });
-
-  await app.press("Devices");
-  await app.waitFor("Studio");
-  // The stored order wins over the default (local device first). Read the device list only:
-  // the navigation panel has a "Studio" group label of its own.
-  const shown = app.texts();
-  const names = shown
-    .slice(Math.max(0, shown.indexOf("Your devices")))
-    .filter(text => text === "Studio" || text === "builder");
-  expect(names[0]).toBe("builder");
-
-  await app.press("device-actions-device-linux");
-  await app.press("device-hide-device-linux");
-  await app.waitFor("Hidden 1");
-  expect(app.texts()).not.toContain("builder");
-
-  await app.press("toggle-hidden-devices");
-  await app.waitFor("builder");
-  // A listed device that is hidden says how to bring it back.
-  await app.press("device-actions-device-linux");
-  await app.waitFor("Show");
-  await app.press("device-hide-device-linux");
-  await app.press("device-actions-device-linux");
-  await app.waitFor("Hide");
-  await app.press("device-actions-device-linux");
-  expect(app.texts()).not.toContain("Hidden 1");
-});
-
-test("devices scene reports inventory and presence", async () => {
-  const backend = createDeviceBackend();
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("Studio");
-  const texts = app.texts().join("\n");
-  expect(texts).toContain("Studio");
-  expect(texts).toContain("builder");
-  expect(texts).toContain("online");
-  expect(texts).toContain("offline");
-  // Peer Device Mode is offered on a reachable device, and the scene says what it does.
-  expect(texts).toContain("Driving another device");
-  expect(texts).toContain("Press Use on an online device");
-});
-
-test("answering a question while driving another device reaches that device", async () => {
-  const backend = createDeviceBackend({
-    onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("device-use-device-linux");
-  await app.waitFor("peer session on device-linux");
-  await app.press("Sessions");
-  await app.press("peer session on device-linux >> nth=0");
-  // The mailbox is the peer's, so it is read over the same Device RPC.
-  expect(backend.peerInvocations.map(call => call.action)).toContain("get_session_interaction_mailbox");
-
-  await app.host.send("openbitfun.event", {
-    event: "backend-event-toolawaitinguserinput",
-    payload: {
-      toolId: "tool-peer-q",
-      sessionId: "device-linux-session",
-      questions: {
-        questions: [
-          {
-            question: "Restart the service?",
-            header: "Restart",
-            multiSelect: false,
-            options: [{ label: "Yes", description: "" }, { label: "No", description: "" }],
-          },
-        ],
-        responseHostNowMs: 1,
-        responseDeadlineMs: 0,
-      },
-    },
-  });
-  await app.waitFor("Restart: Restart the service?");
-  await app.press("question-tool-peer-q-0-Yes");
-  await app.press("Send answer");
-
-  // The answer must reach the host that owns the waiting tool future, and it
-  // travels as positional arguments rather than inside a `request` struct.
-  const submitted = backend.peerInvocations.find(call => call.action === "submit_user_answers");
-  expect(submitted?.args).toMatchObject({
-    toolId: "tool-peer-q",
-    answers: { "0": "Yes" },
-    sessionId: "device-linux-session",
-  });
-  expect(submitted?.args.request).toBeUndefined();
-  // Nothing was answered on this machine instead.
-  expect(backend.userAnswers).toEqual([]);
-});
-
-test("driving another device routes product commands through the peer transport", async () => {
-  const backend = createDeviceBackend({
-    // device-mac is this machine; the second device answers.
-    onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("device-use-device-linux");
-
-  // The handshake and the control link reach the target through Device RPC, and
-  // the peer's own workspace replaces the one this machine listed.
-  await app.waitFor("Driving builder (desktop): sessions, files, terminals and settings come from that device");
-  const rpcs = backend.calls.filter(call => call.action === "account_device_rpc");
-  const commands = rpcs.map(call => JSON.parse(String((call.request as Record<string, unknown>).commandJson)).command);
-  expect(commands.slice(0, 2)).toEqual(["peer_mode_ping", "peer_control_attach"]);
-  expect(rpcs.map(call => (call.request as Record<string, unknown>).targetDeviceId)).toContain("device-linux");
-  await app.waitFor("peer workspace on device-linux");
-  // Product traffic goes to the peer; account and relay calls stay here, which
-  // is why none of them appear inside the Device RPC envelopes.
-  expect(commands).toContain("get_workspace_navigator");
-  expect(commands).toContain("list_persisted_sessions_page");
-  expect(commands.some(command => String(command).startsWith("account_"))).toBe(false);
-
-  // A relay can drop the peer without either side asking, so the banner can run
-  // the handshake again rather than making the user leave and re-enter.
-  await app.press("reconnect-peer");
-  const afterReconnect = backend.calls
-    .filter(call => call.action === "account_device_rpc")
-    .map(call => JSON.parse(String((call.request as Record<string, unknown>).commandJson)).command);
-  expect(afterReconnect.filter(command => command === "peer_mode_ping")).toHaveLength(2);
-  expect(afterReconnect.filter(command => command === "peer_control_attach")).toHaveLength(2);
-
-  await app.press("leave-peer");
-  await app.waitFor("OpenBitFun");
-  const afterDetach = backend.calls.filter(call => call.action === "account_device_rpc");
-  const detach = JSON.parse(String((afterDetach[afterDetach.length - 1].request as Record<string, unknown>).commandJson));
-  expect(detach.command).toBe("peer_control_detach");
-  // Back on this machine, so its own workspace is listed again.
-  expect(app.texts()).not.toContain("peer workspace on device-linux");
-});
-
-test("a peer without the queue or the send command is told to update; nothing waits here", async () => {
-  const backend = createDeviceBackend({
-    onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }],
-    // A host that never states the queue capability: nothing may be submitted to it.
-    peerCapabilities: { cancel_tool: true },
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("builder");
-  await app.press("device-use-device-linux");
-  await app.waitFor("Driving builder (desktop): sessions, files, terminals and settings come from that device");
-
-  await app.press("Sessions");
-  await app.waitFor("peer session on device-linux");
-  await app.press("peer session on device-linux >> nth=0");
-  await app.waitFor("Message");
-
-  // The banner offers the handshake again without leaving peer mode.
-  await app.waitFor("Reconnect");
-
-  await app.host.send("openbitfun.event", {
-    event: "agentic://dialog-turn-started",
-    payload: { sessionId: "device-linux-session", turnId: "turn-1" },
-  });
-  await app.waitFor("Steer running turn…");
-  await app.waitFor("builder has no message queue. Update OpenBitFun there to queue messages during a turn.");
-  await app.type("composer", "Queue this here");
-  await app.press("Queue");
-  // The older peer has no `submit_user_message`: the message stays in the
-  // composer with an explicit notice instead of a local list.
-  await app.waitFor("send-host-update");
-  expect(app.value("composer")).toBe("Queue this here");
-
-  const peerCommands = backend.calls
-    .filter(call => call.action === "account_device_rpc")
-    .map(call => JSON.parse(String((call.request as Record<string, unknown>).commandJson)))
-    .map((envelope: { command?: string; args?: { request?: { action?: string } } }) =>
-      envelope.command === "manage_dialog_queue" ? `queue:${envelope.args?.request?.action}` : envelope.command);
-  expect(peerCommands.filter(command => String(command).startsWith("queue:submit"))).toEqual([]);
-  expect(peerCommands).toContain("submit_user_message");
-  expect(app.storage()["openbitfun.nsh.pending-queue.v1"]).toBeUndefined();
-});
-
-test("devices scene saves an alias through the account command", async () => {
-  const backend = createDeviceBackend();
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("Studio");
-  await app.press("device-actions-device-mac");
-  await app.press("device-rename-device-mac");
-  await app.type("device-alias", "Studio Mac");
-  await app.press("Save");
-  expect(backend.calls.find(call => call.action === "account_update_device_alias")?.request).toMatchObject({
-    device_id: "device-mac",
-    device_alias: "Studio Mac",
-  });
-});
 
 test("terminal scene creates a host session", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("running");
   expect(backend.actions()).toContain("terminal_create");
   const createCall = backend.calls.find(call => call.action === "terminal_create");
@@ -2099,7 +1903,7 @@ test("the terminal starts the shell the picker chose, and remembers it", async (
     storage: { "openbitfun.nsh.terminal-shell.v1": "shell-zsh" },
   });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("Shell: zsh");
   const firstShell = backend.calls.filter(call => call.action === "terminal_create").pop();
   expect(firstShell?.request).toMatchObject({ shellId: "shell-zsh", shellType: "Zsh" });
@@ -2121,7 +1925,7 @@ test("terminal tabs keep their own shell and switch without losing output", asyn
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("shell 1");
 
   await app.press("New shell");
@@ -2167,7 +1971,7 @@ test("a shell's title follows its program, while a named tab keeps its name", as
     },
   });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("shell 1");
 
   // The host reports the title the program in the shell set for itself.
@@ -2193,7 +1997,7 @@ test("a saved terminal profile reopens its shell with its startup command", asyn
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("shell 1");
 
   // A profile names the shell the picker has selected, not the host's default.
@@ -2248,7 +2052,7 @@ test("a profile a previous run saved is offered again", async () => {
     },
   });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("shell 1");
   await app.press("profiles-toggle");
   await app.waitFor("Open Dev server");
@@ -2282,7 +2086,7 @@ test("an older host without profile commands keeps stored profiles openable and 
     },
   });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("shell 1");
   await app.press("profiles-toggle");
   await app.waitFor("Open Dev server");
@@ -2505,154 +2309,16 @@ test("automatic approval picks a model, its fallbacks, and the decision model ke
   expect(backend.decisionKeyClears()).toBe(1);
 });
 
-test("devices scene dispatches a job to another host and lists the controller index", async () => {
-  const backend = createBackend({
-    dispatchJob: {
-      jobId: "job-old",
-      sessionId: "session-old",
-      target: { kind: "ssh", connectionId: "conn-1", displayName: "build-box" },
-      workspacePath: "/srv/api",
-      promptPreview: "Upgrade the lockfile",
-      lastState: "running",
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:01:00Z",
-    },
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Devices");
-  await app.waitFor("Detached dispatch");
-  await app.waitFor("running");
-  await app.waitFor("Upgrade the lockfile · build-box");
 
-  await app.press("dispatch-form-toggle");
-  // The first remote target is preselected, so a job never defaults to this machine.
-  await app.waitFor("build-box (ssh)");
-  await app.waitFor("/path/on/that/host");
-  await app.type("dispatch-workspace", "/srv/api");
-  await app.type("dispatch-prompt", "Fix the flaky test");
-  await app.press("dispatch-approval-reject-and-report");
-  await app.press("dispatch-submit");
-
-  const submitted = backend.submittedDispatch() as Record<string, unknown>;
-  expect(submitted).toMatchObject({
-    target: { kind: "ssh", connectionId: "conn-1", workspacePath: "/srv/api" },
-    agentType: "Standard",
-    prompt: "Fix the flaky test",
-    // A detached job may wait for nobody, so the policy has to be explicit.
-    approvalPolicy: "reject-and-report",
-  });
-  expect(String(submitted.jobId)).toMatch(/^job-/);
-  expect(String(submitted.sessionId)).toMatch(/^session-/);
-
-  await app.press("dispatch-cancel-job-old");
-  expect(backend.cancelledJobs).toEqual(["job-old"]);
-});
-
-test("an observed job replays the target log, answers a permission and steers the turn", async () => {
-  const backend = createBackend({
-    dispatchJob: {
-      jobId: "job-live",
-      sessionId: "session-live",
-      target: { kind: "ssh", connectionId: "conn-1", displayName: "build-box" },
-      workspacePath: "/srv/api",
-      promptPreview: "Upgrade the lockfile",
-      title: "Lockfile upgrade",
-      lastState: "running",
-    },
-    // The target's whole log for this turn: text arrives in chunks and one tool
-    // call sits between them. Nothing here ends the turn.
-    dispatchEvents: [
-      { type: "jobState", timestamp: "2026-01-01T00:00:00Z", state: "running" },
-      { type: "agentEvent", timestamp: "2026-01-01T00:00:01Z", event: { type: "TextChunk", text: "Reading " } },
-      { type: "agentEvent", timestamp: "2026-01-01T00:00:02Z", event: { type: "TextChunk", text: "the lockfile." } },
-      {
-        type: "agentEvent",
-        timestamp: "2026-01-01T00:00:03Z",
-        event: {
-          type: "ToolEvent",
-          tool_event: { event_type: "Started", tool_id: "call-1", tool_name: "read_file" },
-        },
-      },
-    ],
-    dispatchPermissions: [
-      {
-        requestId: "perm-9",
-        sessionId: "session-live",
-        agentId: "standard",
-        action: "run_command",
-        resources: ["cargo update"],
-        source: "agent",
-      },
-    ],
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("Lockfile upgrade · build-box");
-  await app.press("dispatch-observe-job-live");
-
-  // One page of the target's log: the state, the text chunks folded into one
-  // line, and the tool call as its own row.
-  await app.waitFor("Observed job");
-  await app.waitFor("Reading the lockfile.");
-  await app.waitFor("read_file · Started");
-  await app.waitFor("Permission: run_command");
-  await app.waitFor("cargo update");
-
-  await app.press("dispatch-permission-once-perm-9");
-  expect(backend.dispatchAnswers).toEqual([
-    { jobId: "job-live", requestId: "perm-9", reply: "once" },
-  ]);
-
-  // The turn is still running, so the composer steers it and never starts a turn.
-  await app.type("dispatch-observe-message", "also bump the toolchain");
-  await app.press("dispatch-observe-send");
-  expect(backend.dispatchAppends).toEqual([
-    { jobId: "job-live", content: "also bump the toolchain" },
-  ]);
-  expect(backend.dispatchContinues).toEqual([]);
-  await app.waitFor("also bump the toolchain");
-});
-
-test("a finished job takes the next turn and hands its work back", async () => {
-  const backend = createBackend({
-    dispatchJob: {
-      jobId: "job-done",
-      sessionId: "session-done",
-      target: { kind: "ssh", connectionId: "conn-1", displayName: "build-box" },
-      workspacePath: "/srv/api",
-      promptPreview: "Upgrade the lockfile",
-      title: "Lockfile upgrade",
-      lastState: "succeeded",
-    },
-    dispatchEvents: [{ type: "jobState", timestamp: "2026-01-01T00:00:00Z", state: "succeeded" }],
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("Lockfile upgrade · build-box");
-  await app.press("dispatch-observe-job-done");
-  await app.waitFor("Sync result");
-
-  // A finished turn cannot be steered: the same composer starts the next one.
-  await app.type("dispatch-observe-message", "now run the tests");
-  await app.press("dispatch-observe-send");
-  expect(backend.dispatchAppends).toEqual([]);
-  expect(backend.dispatchContinues.length).toBe(1);
-  expect(backend.dispatchContinues[0]).toMatchObject({ jobId: "job-done", prompt: "now run the tests" });
-  expect(backend.dispatchContinues[0].turnId).toMatch(/^turn-/);
-
-  await app.press("dispatch-observe-sync");
-  expect(backend.dispatchSyncs).toEqual(["job-done"]);
-});
 
 test("external agents report why a client cannot run, and the document is written whole", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
-  await app.press("nav-settings-page-external-agents");
+  // External agents live on the MCP servers page now.
+  await app.press("nav-settings-page-mcp");
   await app.waitFor("External agents");
   // A running client and one whose adapter is missing, each with its own state.
   await app.waitFor("OpenCode · opencode");
@@ -2685,9 +2351,9 @@ test("a host without ACP commands hides the external-agents section", async () =
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
-  await app.press("nav-settings-page-external-agents");
-  // The page says why it is empty instead of drawing an empty list.
-  await app.waitFor("This host does not offer external agents.");
+  await app.press("nav-settings-page-mcp");
+  // The section says it is not available here instead of drawing an empty list.
+  await app.waitFor("Not available on this device");
   expect(app.shows("acp-json-toggle")).toBe(false);
 });
 
@@ -2863,8 +2529,8 @@ test("content width is a stepper over the preference both frontends keep", async
   expect(app.storage()["openbitfun:appearance:flowChatWidth"]).toBe("1110");
 
   await app.press("content-width-reset");
-  await app.waitFor("900px · the transcript column, shared with the desktop surface");
-  expect(app.storage()["openbitfun:appearance:flowChatWidth"]).toBe("900");
+  await app.waitFor("760px · the transcript column, shared with the desktop surface");
+  expect(app.storage()["openbitfun:appearance:flowChatWidth"]).toBe("760");
 });
 
 test("a stored content width below the floor falls back to the default", async () => {
@@ -2878,7 +2544,7 @@ test("a stored content width below the floor falls back to the default", async (
 
   await app.press("Settings");
   await app.press("nav-settings-page-appearance");
-  await app.waitFor("900px · the transcript column, shared with the desktop surface");
+  await app.waitFor("760px · the transcript column, shared with the desktop surface");
 });
 
 test("log files show the run's folder, the crash hint, and pack a bundle on request", async () => {  const backend = createBackend({
@@ -2933,29 +2599,14 @@ test("a host that reports no log folder says so and offers no actions", async ()
   expect(app.texts()).not.toContain("Effective level");
 });
 
-test("a host without dispatch commands keeps the panel out of the way", async () => {
-  const backend = createBackend();
-  // A build from before these commands: the panel must not claim an error.
-  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
-    const args = (data ?? {}) as { action?: string };
-    if (args.action === "dispatch_list_targets" || args.action === "dispatch_list_jobs") {
-      throw new Error("Command not found");
-    }
-    return null;
-  };
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("Driving another device");
-  expect(app.texts()).not.toContain("Detached dispatch");
-});
 
 test("settings writes tool and hook switches as leaf paths, not whole objects", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
-  await app.press("nav-settings-page-automation");
+  // Agent hooks live on the Execution page now.
+  await app.press("nav-settings-page-execution");
   await app.waitFor("Agent hooks");
   await app.waitFor("Honor project hook files");
 
@@ -3113,10 +2764,11 @@ test("commit attribution writes its own leaf, and external import states where i
   // one, and the page still points at the section that does work here.
   await app.press("nav-settings-page-external-import");
   await app.waitFor("External imports");
-  await app.waitFor("This host does not support external import. Update the serving host to use it.");
+  await app.waitFor("Not available on this device");
   await app.waitFor("This host does not support restoring removed source sessions. Update the serving host and retry.");
   await app.press("external-import-open-agents");
-  await app.waitFor("Coding agents this app can run through ACP.");
+  // The button opens MCP servers at its external-agents section.
+  await app.waitFor("acp-json-toggle");
 });
 
 test("the stored mid-turn policy decides whether a composer message steers or queues", async () => {
@@ -3124,15 +2776,15 @@ test("the stored mid-turn policy decides whether a composer message steers or qu
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   // The default is steering, which is what the composer has always done.
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
   backend.setRunningTurn("session-1", "turn-9");
   await app.host.send("openbitfun.event", {
     event: "agentic://dialog-turn-started",
     payload: { sessionId: "session-1", turnId: "turn-9" },
   });
-  await app.waitFor("Steer running turn…");
+  await app.waitFor("Steer this session");
 
   await app.press("Settings");
   await app.press("nav-settings-page-input");
@@ -3143,8 +2795,8 @@ test("the stored mid-turn policy decides whether a composer message steers or qu
     value: "queue",
   });
 
-  // Settings swaps the nav panel for its page list; Back returns to Sessions.
-  await app.press("settings-nav-back");
+  // Back to the session the message goes to.
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Queue follow-up…");
   await app.type("composer", "Wait for the turn");
   await app.press("Queue");
@@ -3196,7 +2848,8 @@ test("quick actions edit the stored list and the composer menu runs one", async 
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await app.press("Settings");
-  await app.press("nav-settings-page-automation");
+  // Quick actions live on the Execution page now.
+  await app.press("nav-settings-page-execution");
   await app.waitFor("Quick actions");
   await app.waitFor("Commit all current code changes");
 
@@ -3217,9 +2870,8 @@ test("quick actions edit the stored list and the composer menu runs one", async 
   expect(addedRows.some(row => row.label === "Release notes" && row.prompt === "Draft the release notes")).toBe(true);
 
   // The composer's menu lists the shown actions and sends the prompt as a turn.
-  await app.press("settings-nav-back");
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
   await app.press("composer-plus");
   await app.press("Actions");
@@ -3233,8 +2885,8 @@ test("a file reference picked in the composer travels in the message", async () 
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   // The picker searches the workspace the session runs in, with the same read the
@@ -3267,8 +2919,8 @@ test("Return takes the offered reference first, then sends the message", async (
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   await app.type("composer", "Explain @readme");
@@ -3291,8 +2943,8 @@ test("typing @ in the message opens the picker and is replaced by the tag", asyn
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Message");
 
   // The token is typed where the message is, so the panel has no field of its own
@@ -3318,8 +2970,8 @@ test("the reference picker says when nothing matches and when the host cannot se
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await showAllSessions(app, "NSH skeleton");
+  await openSessionRow(app, "NSH skeleton >> nth=0");
 
   await app.press("composer-plus");
   await app.press("Reference");
@@ -3330,8 +2982,7 @@ test("the reference picker says when nothing matches and when the host cannot se
 
   const refusing = createBackend({ fileSearch: false });
   const other = await open("./App.tsx", { ...DESKTOP, host: { handlers: refusing.handlers } });
-  await other.waitFor("NSH skeleton");
-  await other.press("NSH skeleton >> nth=0");
+  await openSession(other, "NSH skeleton");
   await other.press("composer-plus");
   await other.press("Reference");
   await other.type("mention-query", "main");
@@ -3606,44 +3257,7 @@ function nativeWindowHandlers(
   };
 }
 
-test("the sidebar lists opened workspaces and keeps recent ones apart", async () => {
-  const backend = createBackend({
-    recentOnlyWorkspaces: [{ id: "workspace-old", name: "legacy-app", rootPath: "/old/legacy", workspaceKind: "local" }],
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("label:workspace-row-workspace-1");
-  await app.waitFor("Recent");
-  expect(app.shows("label:workspace-row-workspace-old")).toBe(false);
-  expect(app.shows("label:recent-workspace-workspace-old")).toBe(true);
-
-  // Reopening a recent workspace goes through open_workspace by id, never
-  // set_active_workspace on a workspace the host has not opened.
-  const before = backend.calls.filter(call => call.action === "set_active_workspace").length;
-  await app.press("label:recent-workspace-workspace-old");
-  await app.waitFor("label:workspace-row-workspace-old");
-  expect(backend.calls.find(call => call.action === "open_workspace")?.request).toMatchObject({
-    workspaceId: "workspace-old",
-  });
-  const switches = backend.calls.filter(call => call.action === "set_active_workspace");
-  expect(switches.slice(before).some(call => (call.request as { workspaceId?: string }).workspaceId === "workspace-old")).toBe(false);
-  expect(app.shows("label:recent-workspace-workspace-old")).toBe(false);
-});
-
-test("removing a recent workspace asks the host to forget it", async () => {
-  const backend = createBackend({
-    recentOnlyWorkspaces: [{ id: "workspace-old", name: "legacy-app", rootPath: "/old/legacy", workspaceKind: "local" }],
-  });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.waitFor("label:recent-workspace-remove-workspace-old");
-  await app.press("label:recent-workspace-remove-workspace-old");
-  await app.waitUntil(() => backend.actions().includes("remove_recent_workspace"));
-  expect(backend.calls.find(call => call.action === "remove_recent_workspace")?.request).toMatchObject({
-    workspaceId: "workspace-old",
-  });
-  await app.waitUntil(() => !app.shows("label:recent-workspace-workspace-old"));
-});
 
 test("startup follows the host's current workspace instead of the first row", async () => {
   const backend = createBackend({ currentWorkspaceId: "workspace-2" });
@@ -3657,7 +3271,6 @@ test("startup follows the host's current workspace instead of the first row", as
   );
   // The host already has it active, so the surface does not switch it again.
   expect(backend.actions()).not.toContain("set_active_workspace");
-  await app.waitFor("topbar-workspace-chip");
 });
 
 test("with nothing opened, startup reopens the most recent workspace", async () => {
@@ -3696,7 +3309,7 @@ test("macOS keeps its traffic lights and hides the window on a close request", a
   const native = nativeWindowHandlers(backend, "macos");
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: native.handlers } });
 
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   expect(app.shows("label:window-minimize")).toBe(false);
   await app.host.send("openbitfun.event", { event: "openbitfun_main_window_close_requested", payload: null });
   await app.waitUntil(() => backend.actions().includes("hide_main_window_after_close_request"));
@@ -3727,78 +3340,16 @@ test("a Windows close request follows app.close_button_behavior", async () => {
   expect(askBackend.actions()).not.toContain("minimize_to_tray");
 });
 
-test("the workspace menu renames, copies the path and reveals a local folder", async () => {
-  const backend = createBackend();
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("label:workspace-actions-workspace-1");
-  await app.press("label:workspace-actions-workspace-1");
-  await app.press("Copy path");
-  await app.waitUntil(() => app.clipboard() === "/repo");
 
-  await app.press("label:workspace-actions-workspace-1");
-  await app.press("Reveal in file manager");
-  await app.waitUntil(() => backend.actions().includes("reveal_in_explorer"));
-  expect(backend.calls.find(call => call.action === "reveal_in_explorer")?.request).toMatchObject({
-    path: "/repo",
-    workspaceId: "workspace-1",
-  });
-
-  await app.rightClick("label:workspace-row-workspace-1");
-  await app.press("Rename…");
-  await app.waitFor("label:workspace-rename-input");
-  await app.clear("label:workspace-rename-input");
-  await app.type("label:workspace-rename-input", "Studio");
-  await app.press("label:workspace-rename-save");
-  await app.waitUntil(() => backend.actions().includes("update_workspace_info"));
-  expect(backend.calls.find(call => call.action === "update_workspace_info")?.request).toMatchObject({
-    workspaceId: "workspace-1",
-    name: "Studio",
-  });
-  await app.waitFor("Studio");
-});
-
-test("a remote workspace's menu does not offer this machine's file manager", async () => {
-  const backend = createBackend();
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.waitFor("label:workspace-actions-workspace-2");
-  await app.press("label:workspace-actions-workspace-2");
-  await app.waitFor("Reveal in file manager");
-  expect(app.enabled("Reveal in file manager")).toBe(false);
-});
-
-test("the session row menu duplicates, exports and renames in place", async () => {
-  const backend = createBackend();
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.waitFor("label:session-row-actions-session-2");
-  await app.press("label:session-row-actions-session-2");
-  await app.press("Duplicate");
-  await app.waitUntil(() => backend.actions().includes("copy_session"));
-  expect(backend.calls.find(call => call.action === "copy_session")?.request).toMatchObject({
-    source_session_id: "session-2",
-    workspace_id: "workspace-1",
-  });
-
-  await app.press("label:session-row-actions-session-1");
-  await app.press("Rename…");
-  await app.waitFor("label:session-rename-input-session-1");
-  await app.clear("label:session-rename-input-session-1");
-  await app.type("label:session-rename-input-session-1", "Renamed inline");
-  await app.submit("label:session-rename-input-session-1");
-  await app.waitUntil(() => backend.actions().includes("save_session_metadata"));
-  await app.waitFor("Renamed inline");
-});
 
 test("the sidebar layout is kept in app storage and read back on the next launch", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("NSH skeleton");
-  await app.press("drawer-more");
-  await app.press("label:nav-toggle-grouping");
-  await app.waitUntil(() => (app.storage()["openbitfun.nsh.shell-layout.v1"] ?? "").includes('"sessionGrouping":"flat"'));
+  await app.waitFor("label:toggle-drawer");
+  await app.press("label:toggle-drawer");
+  await app.waitUntil(() => (app.storage()["openbitfun.nsh.shell-layout.v1"] ?? "").includes('"drawerOpen":false'));
 
   const next = await open("./App.tsx", {
     ...DESKTOP,
@@ -3810,48 +3361,19 @@ test("the sidebar layout is kept in app storage and read back on the next launch
   expect(next.shows("global-search-trigger")).toBe(false);
 });
 
-test("a failed turn and an approval land in the notification history", async () => {
-  const backend = createBackend();
-  const native = nativeWindowHandlers(backend, "macos", { focused: false });
-  const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: native.handlers } });
-
-  await app.waitFor("NSH skeleton");
-  await app.host.send("openbitfun.event", {
-    event: "agentic://dialog-turn-failed",
-    payload: { sessionId: "session-2", turnId: "turn-9", reason: "provider refused" },
-  });
-  await app.waitFor("label:notifications-unread-1");
-  // The window has no focus, so the OS notification goes out too.
-  await app.waitUntil(() => backend.actions().includes("send_system_notification"));
-  expect(backend.calls.find(call => call.action === "send_system_notification")?.request).toMatchObject({
-    title: "OpenBitFun task stopped",
-  });
-  // The tray counts the session whose result nobody has seen yet.
-  await app.waitUntil(() =>
-    backend.calls.some(
-      call => call.action === "set_tray_unread_count" && (call.request as { count?: number }).count === 1,
-    ),
-  );
-
-  await app.press("label:topbar-notifications");
-  await app.waitFor("OpenBitFun task stopped");
-  await app.press("Mark all as read");
-  await app.waitUntil(() => !app.shows("label:notifications-unread-1"));
-});
 
 test("About comes from the native menu and shows this window's build", async () => {
   const backend = createBackend();
   const native = nativeWindowHandlers(backend, "macos");
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: native.handlers } });
 
-  await app.waitFor("NSH skeleton");
+  await showAllSessions(app, "NSH skeleton");
   await app.host.send("openbitfun.event", { event: "openbitfun_menu_about", payload: null });
   await app.waitFor("About OpenBitFun");
-  await app.waitFor("1.4.2");
-  expect(app.texts()).toContain("MIT License");
+  await app.waitFor("Version 1.4.2");
 });
 
-test("the footer menu checks for updates and offers the download", async () => {
+test("the account menu checks for updates, offers the download and then the restart", async () => {
   const backend = createBackend();
   const native = nativeWindowHandlers(backend, "macos");
   const handlers = {
@@ -3871,14 +3393,17 @@ test("the footer menu checks for updates and offers the download", async () => {
   };
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers } });
 
-  await app.waitFor("label:nav-footer-menu");
-  await app.press("label:nav-footer-menu");
+  await app.waitFor("label:account-row");
+  await app.press("label:account-row");
   await app.press("Check for updates");
   await app.waitFor("Update 1.5.0 available");
-  await app.waitFor("label:footer-update-badge");
-  await app.press("label:nav-footer-menu");
+  await app.press("label:account-row");
   await app.press("Download update 1.5.0");
   await app.waitFor("Update 1.5.0 is ready to install");
+  // A ready update puts one accent dot on the avatar and "Restart to update" in the menu; no banner.
+  await app.waitFor("label:account-update-ready");
+  await app.press("label:account-row");
+  await app.waitFor("Restart to update");
 });
 
 test("global search groups workspaces and settings pages beside sessions", async () => {

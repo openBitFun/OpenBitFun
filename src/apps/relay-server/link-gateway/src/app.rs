@@ -1,4 +1,5 @@
-//! The gateway's routes (behind nginx at `https://<domain>/obp/`):
+//! The gateway's routes (behind nginx at `https://super.openbitfun.com/obp/`
+//! and `/cas/`):
 //!
 //! - `GET  /obp/api/v1/session`: whether this browser is signed in.
 //! - `POST /obp/api/v1/auth/code` `{email, locale}`: sends a sign-in code.
@@ -7,12 +8,21 @@
 //!   directory, and sets the session cookie.
 //! - `POST /obp/api/v1/auth/sign-out`: revokes the browser's credential.
 //! - `GET  /obp/api/v1/devices`: the account's devices, with whether each can
-//!   be connected and why not (the gateway decides; the page only draws it).
+//!   be connected and why not (the gateway decides; the page only draws it),
+//!   and `entryCandidates`: the device ids the page tries as its fleet entry,
+//!   best first (each device's `fleet_v1` and `fleetLoad` come from its own
+//!   `/obp/mesh/info`, probed at most every 30 s, `crate::probe`), with the
+//!   account's cloud node always last (`cloudNode` says where it is reached).
 //! - `GET  /obp/api/v1/devices/{id}/key`: a device's public key, for the
 //!   browser's end-to-end handshake.
 //! - `GET  /obp/{deviceId}` (WebSocket): a byte pipe to the device's OBP port
 //!   in the account network. The browser runs the end-to-end channel inside
 //!   it; the gateway only counts bytes.
+//! - `GET  /cas/{sha256}?device={deviceId}`: a file of a device's web UI
+//!   bundle from the untrusted pool, pulled through from that device (one of
+//!   the account's own) on a miss, then from the other account devices named
+//!   in `&holders=` (`crate::pool`). The session cookie is set
+//!   on `/obp` and `/cas`.
 //!
 //! Isolation: the account comes only from the sealed session, a pipe opens
 //! only to a device the directory lists for that account (checked with the
@@ -39,6 +49,8 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::pool::{PullError, UiPool};
+use crate::probe::{InfoProbes, ProbeFacts};
 use crate::session::{self, Session, SessionSealer};
 use crate::upstream::{
     Accounts, DeviceRegistration, DeviceStreams, DirectoryDevice, OnlineMember, PendingSignIn,
@@ -67,7 +79,7 @@ pub(crate) struct GatewayOptions {
 impl Default for GatewayOptions {
     fn default() -> Self {
         Self {
-            origins: vec!["https://remote.openbitfun.com".to_string()],
+            origins: vec!["https://super.openbitfun.com".to_string()],
             secure_cookies: true,
             max_pipes: 1024,
             idle_timeout: Duration::from_secs(150),
@@ -137,6 +149,10 @@ pub(crate) struct Gateway {
     directory: Mutex<HashMap<String, (Instant, Vec<DirectoryDevice>)>>,
     pipes: AtomicUsize,
     pipe_ids: AtomicU64,
+    /// The web UI pool; `None`: it could not be opened (answers say so).
+    pool: Option<Arc<UiPool>>,
+    /// Each device's `/obp/mesh/info` ranking facts (≤ 30 s old).
+    probes: InfoProbes,
 }
 
 fn now_secs() -> i64 {
@@ -162,7 +178,7 @@ fn valid_device_id(value: &str) -> bool {
 }
 
 /// A short, stable label for logs (never the account id itself).
-fn account_label(account_id: &str) -> String {
+pub(crate) fn account_label(account_id: &str) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(account_id.as_bytes());
     digest[..4]
@@ -193,6 +209,15 @@ fn upstream_error(error: UpstreamError) -> Response {
         &error.message,
         error.retry_after_seconds,
     )
+}
+
+fn with_cookies(mut response: Response, cookies: Vec<String>) -> Response {
+    for cookie in cookies {
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
+    }
+    response
 }
 
 fn no_store(mut response: Response) -> Response {
@@ -248,6 +273,7 @@ impl Gateway {
         streams: Arc<dyn DeviceStreams>,
         sealer: SessionSealer,
         options: GatewayOptions,
+        pool: Option<Arc<UiPool>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             accounts,
@@ -260,6 +286,8 @@ impl Gateway {
             directory: Mutex::new(HashMap::new()),
             pipes: AtomicUsize::new(0),
             pipe_ids: AtomicU64::new(1),
+            pool,
+            probes: InfoProbes::default(),
         })
     }
 
@@ -273,6 +301,7 @@ impl Gateway {
             .route("/obp/api/v1/devices", get(devices_route))
             .route("/obp/api/v1/devices/{device_id}/key", get(device_key_route))
             .route("/obp/{device_id}", get(pipe_route))
+            .route("/cas/{hash}", get(cas_route))
             .with_state(Arc::clone(self))
     }
 
@@ -349,10 +378,27 @@ fn account_json(session: &Session) -> serde_json::Value {
 
 async fn session_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) -> Response {
     match gateway.session(&headers) {
-        Some(session) => no_store(
-            Json(serde_json::json!({ "signedIn": true, "account": account_json(&session) }))
-                .into_response(),
-        ),
+        // Re-issued on every path, so a browser signed in before the pool
+        // existed (cookie on `/obp` only) gets the `/cas` one too.
+        Some(session) => {
+            let value = headers
+                .get(header::COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(session::cookie_value)
+                .unwrap_or_default()
+                .to_string();
+            let response =
+                Json(serde_json::json!({ "signedIn": true, "account": account_json(&session) }))
+                    .into_response();
+            no_store(with_cookies(
+                response,
+                session::set_cookies(
+                    &value,
+                    session.expires_at - now_secs(),
+                    gateway.options.secure_cookies,
+                ),
+            ))
+        }
         None => no_store(Json(serde_json::json!({ "signedIn": false })).into_response()),
     }
 }
@@ -575,15 +621,21 @@ async fn verify_route(
         account_label(&session.account_id),
         session.device_id
     );
-    let mut response =
-        Json(serde_json::json!({ "account": account_json(&session) })).into_response();
-    if let Ok(value) = HeaderValue::from_str(&session::set_cookie(
-        &gateway.sealer.seal(&session),
-        gateway.options.secure_cookies,
-    )) {
-        response.headers_mut().insert(header::SET_COOKIE, value);
+    // On by default: the first sign-in creates the account's cloud node.
+    // Never awaited here; the browser's sign-in does not depend on it.
+    {
+        let accounts = Arc::clone(&gateway.accounts);
+        tokio::spawn(async move { accounts.ensure_cloud_node(&access_token).await });
     }
-    no_store(response)
+    let response = Json(serde_json::json!({ "account": account_json(&session) })).into_response();
+    no_store(with_cookies(
+        response,
+        session::set_cookies(
+            &gateway.sealer.seal(&session),
+            session::SESSION_SECONDS,
+            gateway.options.secure_cookies,
+        ),
+    ))
 }
 
 async fn sign_out_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) -> Response {
@@ -604,25 +656,21 @@ async fn sign_out_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap)
         }
         gateway.forget_directory(&session.directory_token);
     }
-    let mut response = Json(serde_json::json!({ "signedIn": false })).into_response();
-    if let Ok(value) = HeaderValue::from_str(&session::clear_cookie(gateway.options.secure_cookies))
-    {
-        response.headers_mut().insert(header::SET_COOKIE, value);
-    }
-    no_store(response)
+    let response = Json(serde_json::json!({ "signedIn": false })).into_response();
+    no_store(with_cookies(
+        response,
+        session::clear_cookies(gateway.options.secure_cookies),
+    ))
 }
 
 fn signed_out() -> Response {
-    let mut response = api_error(
+    let response = api_error(
         StatusCode::UNAUTHORIZED,
         "signed_out",
         "Sign in with your OpenBitFun account.",
         None,
     );
-    if let Ok(value) = HeaderValue::from_str(&session::clear_cookie(true)) {
-        response.headers_mut().insert(header::SET_COOKIE, value);
-    }
-    response
+    with_cookies(response, session::clear_cookies(true))
 }
 
 /// The device list the page draws: every reachability decision is here.
@@ -681,6 +729,112 @@ fn device_view(
     })
 }
 
+/// Where a page reaches the account's cloud node (an OBP endpoint on this
+/// domain, behind nginx; not a pipe into the account network).
+pub(crate) const CLOUD_NODE_PATH: &str = "/agent/obp";
+
+/// The account's runtime hosts a browser may enter the fleet through, best
+/// first (`rank_entry_candidates`, the same ranking the phone applies):
+/// online, then with the fleet layer (`fleet_v1`), then a full host (a
+/// desktop), then lowest latency as the gateway reaches it, then fewest
+/// attached clients (`fleetLoad`), then newest version. `facts` holds each
+/// device's probe of its own `/obp/mesh/info` (missing: unknown, as for an
+/// older device). Only devices the page may connect are listed, and the
+/// account's cloud node comes last, always: it is the entry when no device
+/// is online (it serves its cached index and the superagent).
+fn entry_candidates(
+    devices: &[DirectoryDevice],
+    network: Option<&HashMap<String, OnlineMember>>,
+    facts: &HashMap<String, ProbeFacts>,
+) -> Vec<String> {
+    use openbitfun_product_domains::fleet::{rank_entry_candidates, FleetEntryCandidate};
+    let candidates: Vec<FleetEntryCandidate> = devices
+        .iter()
+        .filter(|device| !device.is_cloud_node())
+        .filter_map(|device| {
+            let (online, latency_ms) = match network {
+                None => (device.online, None),
+                Some(network) => match network.get(&device.device_id) {
+                    Some(member) if member.controller => return None,
+                    Some(member) => (
+                        true,
+                        member
+                            .latency_ms
+                            .filter(|latency| latency.is_finite() && *latency >= 0.0)
+                            .map(|latency| latency.round().min(u32::MAX as f64) as u32),
+                    ),
+                    // Not on the device network: the page cannot open it.
+                    None => return None,
+                },
+            };
+            // A row without a kind predates kind reporting and is a desktop.
+            let full_host = matches!(device.device_kind.as_deref(), None | Some("desktop"));
+            let probed = facts.get(&device.device_id).copied().unwrap_or_default();
+            Some(FleetEntryCandidate {
+                device_id: device.device_id.clone(),
+                online,
+                fleet_protocol: probed.fleet_protocol,
+                full_host,
+                latency_ms,
+                fleet_load: probed.fleet_load,
+                version: device.client_version.clone(),
+            })
+        })
+        .collect();
+    let mut ranked: Vec<String> = rank_entry_candidates(&candidates)
+        .into_iter()
+        .map(|candidate| candidate.device_id)
+        .collect();
+    let mut cloud: Vec<String> = devices
+        .iter()
+        .filter(|device| device.is_cloud_node())
+        .map(|device| device.device_id.clone())
+        .collect();
+    cloud.sort();
+    cloud.dedup();
+    ranked.extend(cloud);
+    ranked
+}
+
+/// The devices worth probing: the ones `entry_candidates` may list.
+fn probe_targets(
+    devices: &[DirectoryDevice],
+    network: Option<&HashMap<String, OnlineMember>>,
+) -> Vec<String> {
+    devices
+        .iter()
+        .filter(|device| !device.is_cloud_node())
+        .filter(|device| match network {
+            None => device.online,
+            Some(network) => network
+                .get(&device.device_id)
+                .is_some_and(|member| !member.controller),
+        })
+        .map(|device| device.device_id.clone())
+        .collect()
+}
+
+/// The account's cloud node for the page: its id, name and endpoint path.
+fn cloud_node_view(devices: &[DirectoryDevice]) -> serde_json::Value {
+    devices
+        .iter()
+        .filter(|device| device.is_cloud_node())
+        .min_by(|a, b| a.device_id.cmp(&b.device_id))
+        .map(|device| {
+            let name = device
+                .device_alias
+                .as_deref()
+                .filter(|alias| !alias.trim().is_empty())
+                .unwrap_or(device.device_name.as_str());
+            serde_json::json!({
+                "deviceId": device.device_id,
+                "name": if name.trim().is_empty() { "OpenBitFun" } else { name },
+                "path": CLOUD_NODE_PATH,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null)
+}
+
 async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) -> Response {
     let Some(session) = gateway.session(&headers) else {
         return signed_out();
@@ -702,6 +856,7 @@ async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) 
         Ok(devices) => {
             let mut views: Vec<serde_json::Value> = devices
                 .iter()
+                .filter(|device| !device.is_cloud_node())
                 .map(|device| device_view(device, network.as_ref()))
                 .collect();
             // Online first, then by name.
@@ -711,7 +866,20 @@ async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) 
                     .cmp(&a["online"].as_bool())
                     .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
             });
-            no_store(Json(serde_json::json!({ "devices": views })).into_response())
+            let targets = probe_targets(&devices, network.as_ref());
+            let facts = gateway
+                .probes
+                .facts(gateway.streams.as_ref(), &session.account_id, &targets)
+                .await;
+            let entry_candidates = entry_candidates(&devices, network.as_ref(), &facts);
+            no_store(
+                Json(serde_json::json!({
+                    "devices": views,
+                    "entryCandidates": entry_candidates,
+                    "cloudNode": cloud_node_view(&devices),
+                }))
+                .into_response(),
+            )
         }
         Err(error) if error.code == "signed_out" => signed_out(),
         Err(error) => upstream_error(error),
@@ -770,6 +938,204 @@ async fn pipe_route(
         .on_upgrade(move |socket| run_pipe(gateway, socket, session, device_id))
 }
 
+#[derive(Deserialize)]
+struct CasQuery {
+    #[serde(default)]
+    device: Option<String>,
+    /// Other devices of the account holding the same bundle, comma
+    /// separated (`fleet_ui_bundle` `holders`), tried after `device`.
+    #[serde(default)]
+    holders: Option<String>,
+}
+
+/// The most holders one pull walks.
+const MAX_UI_HOLDERS: usize = 8;
+
+/// `device` first, then the named holders: valid ids, no repeats, bounded.
+fn ui_holders(device_id: &str, holders: Option<&str>) -> Vec<String> {
+    let mut list = vec![device_id.to_string()];
+    for holder in holders.unwrap_or_default().split(',').map(str::trim) {
+        if list.len() >= MAX_UI_HOLDERS {
+            break;
+        }
+        if valid_device_id(holder) && !list.iter().any(|known| known == holder) {
+            list.push(holder.to_string());
+        }
+    }
+    list
+}
+
+/// A stored pool file as the answer: immutable, by hash, never sniffed.
+fn cas_answer(stored: crate::pool::Stored) -> Response {
+    let crate::pool::Stored { size, br, file } = stored;
+    let body = futures::stream::unfold(Some(file), |file| async move {
+        let mut file = file?;
+        let mut buffer = vec![0u8; PIPE_CHUNK];
+        match file.read(&mut buffer).await {
+            Ok(0) => None,
+            Ok(count) => {
+                buffer.truncate(count);
+                Some((
+                    Ok::<_, std::io::Error>(axum::body::Bytes::from(buffer)),
+                    Some(file),
+                ))
+            }
+            Err(error) => Some((Err(error), None)),
+        }
+    });
+    let mut response = Response::new(axum::body::Body::from_stream(body));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if br {
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+    }
+    response
+}
+
+fn pull_error(error: PullError) -> Response {
+    match error {
+        PullError::NotInBundle => api_error(
+            StatusCode::NOT_FOUND,
+            "not_in_bundle",
+            "This device's web UI has no such file.",
+            None,
+        ),
+        PullError::Mismatch => api_error(
+            StatusCode::BAD_GATEWAY,
+            "hash_mismatch",
+            "The device sent a file that does not match its hash.",
+            None,
+        ),
+        PullError::TooLarge => api_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "too_large",
+            "This file is larger than the web UI pool stores.",
+            None,
+        ),
+        PullError::Busy(message) => {
+            api_error(StatusCode::TOO_MANY_REQUESTS, "busy", &message, Some(10))
+        }
+        PullError::DeviceBusy => api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "busy",
+            "The device is busy serving its web UI; retry shortly.",
+            Some(5),
+        ),
+        PullError::NoBundle => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ui_bundle_unavailable",
+            "This device can't be opened in a browser; update OpenBitFun on it.",
+            None,
+        ),
+        PullError::Unreachable(message) => api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "unreachable",
+            &format!("The device is not reachable now: {message}"),
+            None,
+        ),
+        PullError::BadAnswer(message) => api_error(
+            StatusCode::BAD_GATEWAY,
+            "bad_device_answer",
+            &format!("The device cannot serve its web UI: {message}"),
+            None,
+        ),
+        PullError::Unavailable(message) => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            &message,
+            Some(30),
+        ),
+    }
+}
+
+async fn cas_route(
+    State(gateway): State<Arc<Gateway>>,
+    Path(hash): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<CasQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(session) = gateway.session(&headers) else {
+        return api_error(
+            StatusCode::UNAUTHORIZED,
+            "signed_out",
+            "Sign in with your OpenBitFun account.",
+            None,
+        );
+    };
+    let Some(pool) = gateway.pool.as_ref() else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pool_unavailable",
+            "The web UI pool is not available on this server.",
+            Some(60),
+        );
+    };
+    if !crate::pool::valid_hash(&hash) {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Files are addressed by their lowercase SHA-256.",
+            None,
+        );
+    }
+    if let Some(stored) = pool.lookup(&hash).await {
+        return cas_answer(stored);
+    }
+    let Some(device_id) = query.device.filter(|device| valid_device_id(device)) else {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "device_required",
+            "Name the device whose web UI this file belongs to.",
+            None,
+        );
+    };
+    let holders = ui_holders(&device_id, query.holders.as_deref());
+    // Only the account's own devices, through the browser's own credential.
+    match gateway.directory_devices(&session).await {
+        Ok(devices)
+            if holders.iter().all(|holder| {
+                devices
+                    .iter()
+                    .any(|device| &device.device_id == holder && !device.is_cloud_node())
+            }) => {}
+        Ok(_) => {
+            log::warn!(
+                "UI pool refused a pull from a device outside the account: account={}, device={}, holders={}",
+                account_label(&session.account_id),
+                device_id,
+                holders.len()
+            );
+            return api_error(
+                StatusCode::FORBIDDEN,
+                "not_your_device",
+                "This device is not part of your account.",
+                None,
+            );
+        }
+        Err(error) if error.code == "signed_out" => return signed_out(),
+        Err(error) => return upstream_error(error),
+    }
+    match pool
+        .fetch_from_holders(&hash, &session.account_id, &holders, &gateway.streams)
+        .await
+    {
+        Ok(stored) => cas_answer(stored),
+        Err(error) => pull_error(error),
+    }
+}
+
 async fn close_with(mut socket: WebSocket, code: u16, reason: &str) {
     let reason: String = reason.chars().take(110).collect();
     let _ = socket
@@ -813,7 +1179,11 @@ async fn run_pipe(
     }
     // The account's own devices only, through the browser's own credential.
     match gateway.directory_devices(&session).await {
-        Ok(devices) if devices.iter().any(|device| device.device_id == device_id) => {}
+        // The cloud node is reached at `/agent/obp`, never through a pipe.
+        Ok(devices)
+            if devices
+                .iter()
+                .any(|device| device.device_id == device_id && !device.is_cloud_node()) => {}
         Ok(_) => {
             log::warn!(
                 "Gateway refused a pipe to a device outside the account: account={}, device={}",

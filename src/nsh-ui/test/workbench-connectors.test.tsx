@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { type BackendOptions, createBackend, createDeviceBackend } from "./support";
+import { openSession, openToolScene, showDevices, type BackendOptions, createBackend, createDeviceBackend } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -26,7 +26,7 @@ interface ExtendedHarness {
   }>;
   formStateWrites: Array<Record<string, unknown>>;
   configuredBots: Array<Record<string, unknown>>;
-  startedConnections: Array<{ method: string; lan_ip: string | null }>;
+  startedConnections: Array<{ method: string; lan_ip?: unknown }>;
   stoppedConnections: Array<string | null>;
   stopBotCount: () => number;
   weixinQrStarts: () => number;
@@ -57,7 +57,7 @@ function createWorkbenchBackend(
   const fileWrites: ExtendedHarness["fileWrites"] = [];
   const formStateWrites: Array<Record<string, unknown>> = [];
   const configuredBots: Array<Record<string, unknown>> = [];
-  const startedConnections: Array<{ method: string; lan_ip: string | null }> = [];
+  const startedConnections: Array<{ method: string; lan_ip?: unknown }> = [];
   const stoppedConnections: Array<string | null> = [];
   const verboseWrites: boolean[] = [];
   const modelDiscoveryCalls: Array<Record<string, unknown>> = [];
@@ -78,7 +78,6 @@ function createWorkbenchBackend(
     feishu_app_id: "",
     feishu_app_secret: "",
   };
-  let serverConnected = false;
 
   const handlers: Record<string, (data: unknown) => unknown> = {
     ...base.handlers,
@@ -208,18 +207,12 @@ function createWorkbenchBackend(
           if (!hasRaw) throw new Error("remote_connect_status takes no request wrapper");
           return {
             ok: true,
+            // The 2.0 shape: the retired relay fields stay, always empty.
             value: {
-              connections: [
-                {
-                  method: "openbitfun_server",
-                  relay_connected: serverConnected,
-                  relay_url: serverConnected ? "https://relay.example/pair/dev-1" : null,
-                  clients: [],
-                },
-              ],
-              relay_connected: serverConnected,
-              relay_url: serverConnected ? "https://relay.example/pair/dev-1" : null,
-              active_method: serverConnected ? "openbitfun_server" : null,
+              connections: [],
+              relay_connected: false,
+              relay_url: null,
+              active_method: null,
               clients: [],
               bot_connected: botConnected,
               bot_verbose_mode: botVerbose,
@@ -233,12 +226,6 @@ function createWorkbenchBackend(
           return {
             ok: true,
             value: [
-              {
-                id: "openbitfun_server",
-                name: "OpenBitFun Server",
-                available: true,
-                description: "Official OpenBitFun relay",
-              },
               { id: "bot_feishu", name: "Feishu Bot", available: true, description: "Via Feishu messenger" },
               { id: "bot_telegram", name: "Telegram Bot", available: true, description: "Via Telegram" },
               { id: "bot_weixin", name: "WeChat (Weixin)", available: true, description: "Via WeChat iLink bot" },
@@ -264,23 +251,21 @@ function createWorkbenchBackend(
         case "remote_connect_start": {
           if (hasRaw) throw new Error("remote_connect_start must use request wrapper");
           const method = String(payload.method ?? "");
-          const lanIp = typeof payload.lan_ip === "string" ? payload.lan_ip : null;
-          startedConnections.push({ method, lan_ip: lanIp });
-          if (method === "lan") {
-            return { ok: false, error: "unsupported: the LAN relay was retired; devices on one network connect through the device mesh" };
+          // The retired LAN field is no longer sent.
+          startedConnections.push({ method, ...("lan_ip" in payload ? { lan_ip: payload.lan_ip } : {}) });
+          if (!method.startsWith("bot_")) {
+            return { ok: false, error: "RELAY_METHOD_RETIRED: unsupported: the OpenBitFun relay was retired in OpenBitFun 2.0" };
           }
           if (method === "bot_telegram") {
             botConnected = "Telegram(@openbitfun_bot)";
           } else if (method === "bot_feishu") {
             botConnected = "Feishu(cli_feishu_1)";
-          } else if (method === "openbitfun_server") {
-            serverConnected = true;
           }
           return {
             ok: true,
             value: {
               method,
-              qr_url: method === "openbitfun_server" ? "https://relay.example/pair/dev-1" : null,
+              qr_url: null,
               qr_data: null,
               bot_pairing_code: method.startsWith("bot_") ? "PAIR-1234" : null,
               bot_link: method === "bot_telegram" ? "https://t.me/openbitfun_bot" : null,
@@ -293,7 +278,6 @@ function createWorkbenchBackend(
           if (hasRaw) throw new Error("remote_connect_stop must use request wrapper");
           const method = typeof payload.method === "string" ? payload.method : null;
           stoppedConnections.push(method);
-          if (!method || method === "openbitfun_server") serverConnected = false;
           return { ok: true, value: null, transport: "dev" };
         }
         case "remote_connect_stop_bot": {
@@ -383,7 +367,7 @@ test("files scene edits code and markdown files, tracks open tabs, uses dropdown
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
   await app.waitFor("workbench-switch-files");
   await app.waitFor("workbench-switch-terminal");
@@ -481,9 +465,9 @@ test("files scene edits code and markdown files, tracks open tabs, uses dropdown
   await app.waitFor("Confirm delete");
   await app.press("Confirm delete");
 
-  // Sessions AuxPane mounts FilesScene in compact mode when toggled.
-  await app.press("Sessions");
-  await app.press("aux-pane-toggle");
+  // A session's inspector mounts FilesScene in compact mode when its tool toggle is pressed.
+  await openSession(app, "NSH skeleton");
+  await app.press("session-tool-files");
   await app.waitFor("Explorer");
 });
 
@@ -522,7 +506,7 @@ test("files and git stack list then detail with a back control when the scene is
   };
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers } });
 
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
   // Wide: explorer and preview sit side by side, no back control.
   expect(app.shows("files-stack-back")).toBe(false);
@@ -544,7 +528,8 @@ test("files and git stack list then detail with a back control when the scene is
 
   // Git: a pressed change pushes its diff with the same request; back returns to the list.
   await app.setViewport(1440, 900);
-  await app.press("Git");
+  // The tool switcher of the full-width header (visual spec §4.10) names Git "Changes".
+  await app.press("workbench-switch-git");
   await app.waitFor("Working Copy");
   await app.setViewport(560, 900);
   await app.waitFor("label:git-staged-main.rs");
@@ -558,16 +543,17 @@ test("files and git stack list then detail with a back control when the scene is
   expect(app.shows("label:git-stack-back")).toBe(false);
 });
 
-test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and starts/stops relays via modals", async () => {
+test("devices scene configures Telegram/Feishu bots and starts WeChat QR via modals; the 1.x relay row is gone", async () => {
   const backend = createWorkbenchBackend({}, true);
   const app = await open("../App.tsx", {
     ...DESKTOP,
     host: { handlers: backend.handlers },
   });
 
-  await app.press("Devices");
-  // Section headers are sentence case in the calm studio layout.
-  await app.waitFor("Messaging channels");
+  // Chat apps live in Settings › Account › Devices and chat apps.
+  await app.press("Settings");
+  await app.press("Devices and chat apps");
+  await app.waitFor("label:channels-section");
   await app.waitFor("No bot connected");
 
   // Open Telegram channel modal, configure & start, then close modal.
@@ -583,7 +569,7 @@ test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and start
     bot_type: "telegram",
     bot_token: "tg-bot-token-123",
   });
-  expect(backend.startedConnections).toContainEqual({ method: "bot_telegram", lan_ip: null });
+  expect(backend.startedConnections).toContainEqual({ method: "bot_telegram" });
   await app.press("Done");
 
   // Stop bot
@@ -602,7 +588,7 @@ test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and start
     app_id: "cli_app_1",
     app_secret: "sec_feishu_1",
   });
-  expect(backend.startedConnections).toContainEqual({ method: "bot_feishu", lan_ip: null });
+  expect(backend.startedConnections).toContainEqual({ method: "bot_feishu" });
   await app.press("Done");
 
   // Open WeChat channel modal & start QR, then close modal.
@@ -631,71 +617,12 @@ test("devices scene configures Telegram/Feishu bots, starts WeChat QR, and start
   await app.press("connector-bot-verbose");
   expect(backend.verboseWrites).toEqual([true]);
 
-  // The legacy mobile web relay: only the official server route is left (the
-  // LAN relay was retired; devices on one network connect through the mesh).
-  await app.press("channel-toggle-relay");
-  expect(app.shows("connector-lan-ip")).toBe(false);
-  expect(app.shows("connector-lan-start")).toBe(false);
-  expect(app.shows("text:Local Network (LAN)")).toBe(false);
-  await app.press("connector-server-start");
-  await app.waitFor("Server active");
-  await app.waitFor("text:https://relay.example/pair/dev-1");
-  expect(backend.startedConnections).toContainEqual({ method: "openbitfun_server", lan_ip: null });
-  expect(backend.startedConnections.some(item => item.method === "lan")).toBe(false);
-  // The pairing link is also a scannable QR code (180 px, level M), as on the desktop.
-  expect(app.shows("connector-pairing-qr")).toBe(true);
-
-  await app.press("connector-copy-url");
-  expect(app.clipboard()).toBe("https://relay.example/pair/dev-1");
-
-  await app.press("connector-server-stop");
-  await app.waitFor("OpenBitFun Server relay stopped");
-  await app.waitFor("Start Server Relay");
-  expect(backend.stoppedConnections).toContain("openbitfun_server");
-  await app.press("Done");
+  // The 1.x mobile web relay was retired in 2.0: no row, and only bot methods start.
+  expect(app.shows("channel-toggle-relay")).toBe(false);
+  expect(backend.startedConnections.every(item => item.method.startsWith("bot_"))).toBe(true);
+  expect(backend.stoppedConnections).toEqual([]);
 });
 
-test("devices scene marks connectors controller-local on peer, uses device dropdown & rename modal, and opens dispatch modal", async () => {
-  const backend = createWorkbenchBackend(
-    { onlineDevices: [{ deviceId: "device-mac" }, { deviceId: "device-linux" }] },
-    true,
-  );
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("builder");
-
-  // Peer row overflow dropdown: rename modal sets a device alias.
-  await app.press("device-actions-device-linux");
-  await app.press("device-rename-device-linux");
-  await app.waitFor("Rename Device");
-  await app.type("device-alias", "gpu-box");
-  await app.press("Save");
-  await app.waitFor("gpu-box");
-
-  // Removing a device asks first, then calls account_delete_device positionally.
-  await app.waitFor("device-alias", { state: "gone" });
-  await app.press("device-actions-device-linux");
-  await app.press("device-remove-device-linux");
-  await app.waitFor("device-remove-confirm");
-  await app.press("device-remove-confirm");
-  await app.waitUntil(() => backend.deletedDevices.length === 1);
-  expect(backend.deletedDevices).toEqual(["device-linux"]);
-  await app.waitFor("Device \"gpu-box\" removed");
-
-  // Open New Detached Dispatch Job modal and close it cleanly.
-  await app.press("New job");
-  await app.waitFor("New Detached Dispatch Job");
-  await app.press("Cancel");
-
-  // Driving a peer marks Messaging Channels controller-local.
-  await app.press("device-use-device-linux");
-  await app.waitFor("peer session on device-linux");
-
-  await app.press("Devices");
-  await app.waitFor("Controller local");
-  expect(app.texts().join("\n")).toContain("Connectors manage this controller machine");
-});
 
 test("settings opens on General, renders one page at a time, and finds a field by search", async () => {
   const backend = createWorkbenchBackend();
@@ -707,7 +634,8 @@ test("settings opens on General, renders one page at a time, and finds a field b
 
   await app.press("Settings");
   // General is the first page, as on the desktop; other pages are not mounted.
-  await app.waitFor("Language, account, startup, updates and notifications.");
+  // A Preferences page says it syncs with the account instead of listing features.
+  await app.waitFor("settings-synced");
   await app.waitFor("Interface language");
   expect(app.texts()).not.toContain("Showing the dark scheme");
   expect(app.shows("mcp-add")).toBe(false);
@@ -717,7 +645,7 @@ test("settings opens on General, renders one page at a time, and finds a field b
   expect(generalTexts).not.toContain("app.auto_update");
   expect(generalTexts).not.toContain("app.telemetry");
 
-  // The navigation lists the desktop's five groups of pages.
+  // The settings list holds the Preferences, Account and Device scopes.
   await app.waitFor("nav-settings-page-models");
   await app.press("nav-settings-page-models");
   await app.waitFor("Model pools");
@@ -981,7 +909,7 @@ test("terminal scene keeps theme canvas background in light scheme and manages s
     host: { handlers: backend.handlers },
   });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   await app.waitFor("workbench-switch-terminal");
   await app.waitFor("running");
   await app.waitFor("shell 1");
@@ -999,49 +927,6 @@ test("terminal scene keeps theme canvas background in light scheme and manages s
   await app.waitFor("default shell · pnpm test");
 });
 
-test("devices dispatch form probes the target before Submit and sends the job options", async () => {
-  const backend = createBackend();
-  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-
-  await app.press("Devices");
-  await app.waitFor("Detached dispatch");
-  await app.press("dispatch-form-toggle");
-  await app.waitFor("build-box (ssh)");
-  await app.waitFor("Ready for detached jobs");
-  const probe = backend.calls.find(c => c.action === "dispatch_probe_target");
-  expect(probe?.raw).toBe(false);
-  expect(probe?.request).toMatchObject({ target: { kind: "ssh", connectionId: "conn-1", workspacePath: "" } });
-
-  // A host without a CLI keeps Submit off and says why.
-  await app.press("dispatch-target-select");
-  await app.press("label:dispatch-target-ssh:conn-2");
-  await app.waitFor("The OpenBitFun CLI is not installed on that host.");
-  expect(app.enabled("dispatch-submit")).toBe(false);
-
-  await app.press("dispatch-target-select");
-  await app.press("label:dispatch-target-ssh:conn-1");
-  await app.waitFor("Ready for detached jobs");
-  expect(app.enabled("dispatch-submit")).toBe(true);
-
-  await app.type("dispatch-workspace", "/srv/api");
-  await app.type("dispatch-prompt", "Bump the toolchain");
-  await app.type("dispatch-title", "Toolchain bump");
-  await app.clear("dispatch-base-ref");
-  await app.type("dispatch-base-ref", "release/1.2");
-  await app.press("dispatch-model-select");
-  await app.press("dispatch-model-gpt-5-mini");
-  await app.press("dispatch-include-uncommitted");
-  await app.press("dispatch-submit");
-  await app.waitUntil(() => backend.submittedDispatch() !== null);
-  expect(backend.submittedDispatch()).toMatchObject({
-    target: { kind: "ssh", connectionId: "conn-1", workspacePath: "/srv/api" },
-    prompt: "Bump the toolchain",
-    title: "Toolchain bump",
-    baseRef: "release/1.2",
-    model: "gpt-5-mini",
-    includeUncommitted: true,
-  });
-});
 
 test("terminal scene attaches the shells the host already runs for the workspace and asks before closing a running one", async () => {
   const backend = createWorkbenchBackend({
@@ -1072,7 +957,7 @@ test("terminal scene attaches the shells the host already runs for the workspace
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.press("Terminal");
+  await openToolScene(app, "terminal");
   // The agent's shell for this workspace is attached instead of a new one being started;
   // the other workspace's shell stays out of this list.
   await app.waitFor("cargo test");

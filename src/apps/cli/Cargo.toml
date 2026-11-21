@@ -64,13 +64,13 @@ openbitfun-agent-runtime-ipc = { path = "../../crates/adapters/agent-runtime-ipc
 openbitfun-app-server = { path = "../../crates/interfaces/app-server" }
 openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = ["agent-api", "git-port", "permission", "plugin-runtime", "workspace-ports"] }
 openbitfun-runtime-services = { path = "../../crates/execution/runtime-services" }
-openbitfun-services-core = { path = "../../crates/services/services-core", features = ["dispatch-workspace", "local-storage", "process-runtime", "runtime-ownership", "tls-provider"] }
+openbitfun-services-core = { path = "../../crates/services/services-core", features = ["dispatch-wire", "dispatch-workspace", "local-storage", "process-runtime", "runtime-ownership", "tls-provider"] }
 openbitfun-agent-tools = { path = "../../crates/execution/tool-contracts" }
 openbitfun-product-domains = { path = "../../crates/contracts/product-domains", features = ["external-sources"] }
 # Remote control over OpenBitFun Link: the CLI host joins the account's device
 # network and serves the backend protocol (OBP) like a desktop host.
 openbitfun-link = { path = "../../crates/services/link" }
-openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server"] }
+openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "fleet"] }
 
 # CLI framework
 clap = { workspace = true }
@@ -142,7 +142,7 @@ shlex = { workspace = true }
 hex = { workspace = true }
 openbitfun-core = { path = "../../crates/assembly/core", features = ["test-support"] }
 # Loopback stand-ins for Link in the OBP serving-path tests.
-openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "test-support"] }
+openbitfun-obp = { path = "../../crates/adapters/obp", features = ["server", "fleet", "test-support"] }
 tokio = { workspace = true, features = ["io-util", "net"] }
 
 [target.'cfg(windows)'.dependencies]

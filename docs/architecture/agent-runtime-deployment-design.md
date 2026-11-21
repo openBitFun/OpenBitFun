@@ -577,3 +577,26 @@ Session/Turn、事件恢复、Permission/UserInput、Controller、配置管理�
 - Account/session cloud sync 仍使用既有 Core compatibility 边界，不属于 Shared Runtime 支持。
 - Remote workspace 的文件、凭据、进程和 Runtime 位于目标执行域，禁止静默回落本机。
 - 未经真实 consumer 验证的接口不进入 wire；当前 wire 只包含表中列出的 Shared TUI 操作。
+- The account's cloud superagent is a control-plane node, not a deployment of this runtime (§10): it owns no workspace Session, Tool, Permission or MCP owner, and it never becomes a second Runtime implementation.
+
+## 10. Cloud superagent: control-plane node
+
+The account's cloud superagent ("OpenBitFun", `openbitfun-superagent`, `src/apps/relay-server/superagent`; contract in `openbitfun_product_domains::superagent`) is the main entry of the product: one input box, a model, and a closed set of management tools over the account's runtime hosts. It is not an Agent Runtime deployment and does not link `openbitfun-core`, which assumes one user per process.
+
+| Fact | Decision |
+|---|---|
+| Owners | None of the Runtime owners: no workspace, Session, Tool, Permission, MCP, Hook or plugin owner, no file system access to any workspace. Its only state is per-account conversations, a job ledger and an index projection |
+| Where work runs | On runtime hosts (desktop, CLI) through Detached Dispatch. The target owns the job, worktree, session, event log and permission mailbox; the superagent is a controller and observer |
+| Model | No credentials on the server: each model round is relayed to an account device (`fleet_model_start` / `_poll` / `_cancel`, `openbitfun_core::service::superagent_relay`), which runs the completion with its own provider and runs no tool for it |
+| Loop | A thin turn state machine persisted after every step: model round, tool calls (dispatches written ahead with deterministic job ids), `parked` (no model call, no memory beyond the record; resumes on an event or timer with no frontend attached), then done, failed or cancelled. No fixed workflow and no loop pattern checks; budgets are user-visible quotas |
+| Access | Full access by default: dispatched jobs use `approval: auto`, and the agent may answer job prompts (`answeredBy: superagent`). Devices enforce `superagent.acceptDispatch` and `superagent.allowAutoApproval` (both default on) per call in the `cloud-agent` OBP scope |
+| Reach | Loopback service behind `https://super.openbitfun.com/agent/`; frontends and entries use `wss://super.openbitfun.com/agent/obp` with the `obp-e2e-v1` channel. It joins an account's Link network only while a job is live or a turn is unfinished |
+
+Multi-tenancy uses account slots instead of processes per account:
+
+- A slot (`slots.rs`) loads on demand and holds the account's node key and directory credential, the ledger, the resident conversations (last 20 turns each) and an index projection of at most 256 KiB, within 4 MiB.
+- At most 512 slots are resident (least recently used first out); a slot unloads after 10 idle minutes, and accounts with live jobs or unfinished turns stay on a small watcher list.
+- Model rounds: at most 64 per process and 2 per account.
+- Every change is persisted before the next step as AES-256-GCM records under a per-account data key wrapped by the server master key (`store.rs`), so unloading or restarting loses nothing. Deleting an account's data removes the wrapped key first (crypto-shred). This protects disks and backups, not against the operator of the running process.
+
+A turn survives disconnects: frontends are observers, jobs belong to their targets, write-ahead steps reconcile through target status after a restart, and cancelling a turn never cancels its jobs.

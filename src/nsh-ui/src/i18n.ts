@@ -9,7 +9,6 @@ import { Storage, signal, type Signal } from "nsh";
 import { setLocale as setNshLocale } from "nsh/i18n";
 import { getConfig } from "./api";
 import { invokeCommand } from "./bridge";
-import { peerScope } from "./peerState";
 import { enUSMessages, type MessageKey } from "./locales/en-US";
 import { zhCNMessages } from "./locales/zh-CN";
 import { zhTWMessages } from "./locales/zh-TW";
@@ -232,19 +231,6 @@ export function syncLocaleFromHost(raw: unknown): void {
 }
 
 async function readHostLocale(): Promise<AppLocale | null> {
-  if (peerScope() !== null) {
-    // `i18n_get_current_language` is ControllerLocal, so reading it never leaks
-    // or mutates the remote peer's settings.
-    try {
-      const value = await invokeCommand<unknown>("i18n_get_current_language");
-      const parsed = normalizeLocale(value);
-      if (parsed) return parsed;
-    } catch {
-      return null;
-    }
-    return null;
-  }
-
   try {
     const appConfig = await getConfig("app", true);
     if (appConfig && typeof appConfig === "object") {
@@ -348,8 +334,7 @@ export async function setAppLocale(
 
   // `i18n_set_language` owns the language: the host validates the locale,
   // stores `app.language` as a leaf and applies its runtime effects. It is
-  // controller-local, so while a peer device is driven the change stays on this
-  // machine. No whole `app` document is read or written back from here.
+  // controller-local, so the change stays on this machine. No whole `app` document is read or written back from here.
   let persisted = true;
   try {
     await invokeCommand("i18n_set_language", { language: canonical });
@@ -403,9 +388,9 @@ const HOST_ERROR_RULES: ReadonlyArray<HostErrorRule> = [
   {
     key: "error.peerOffline",
     match:
-      /\b(?:peer(?: is)? offline|device(?: is)? offline|target(?: is)? offline|not connected to relay|peer unreachable)\b/i,
+      /\b(?:peer(?: is)? offline|device(?: is)? offline|target(?: is)? offline|peer unreachable)\b/i,
     stripGeneric:
-      /(?:^|\b)(?:error|failed|peer(?: is)? offline|device(?: is)? offline|target(?: is)? offline|not connected to relay|peer unreachable)(?:\b|$)/gi,
+      /(?:^|\b)(?:error|failed|peer(?: is)? offline|device(?: is)? offline|target(?: is)? offline|peer unreachable)(?:\b|$)/gi,
   },
   {
     key: "error.connectionRefused",
@@ -483,9 +468,6 @@ const EXACT_STORE_MESSAGE_KEYS: Readonly<Record<string, MessageKey>> = {
   "bot connection stopped": "error.connectorBotStopped",
   "wechat qr login ready": "error.connectorWechatQrReady",
   "wechat bot connected": "error.connectorWechatConnected",
-  "openbitfun server relay started": "error.connectorServerStarted",
-  "openbitfun server relay stopped": "error.connectorServerStopped",
-  "relay stopped": "error.connectorRelayStopped",
   "no dispatch target is available from this host": "error.dispatchNoTarget",
   "a remote target needs the workspace path on that host": "error.dispatchPathRequired",
   "a job needs a prompt": "error.dispatchPromptRequired",
@@ -535,29 +517,6 @@ function localizeStoreMessage(locale: AppLocale, text: string): string | null {
     if (/^(?:exa|openbitfun)$/i.test(rawTarget)) {
       return trForLocale(locale, "settings.notice.savedField", { label: rawTarget });
     }
-  }
-
-  const stillStarting = /^(.+?)\s+is still starting;\s*try again once its window is ready$/i.exec(text);
-  if (stillStarting) {
-    return trForLocale(locale, "error.peerStillStarting", { label: stillStarting[1].trim() });
-  }
-
-  const didNotAnswer = /^(.+?)\s+did not answer again:\s*(.+)$/i.exec(text);
-  if (didNotAnswer) {
-    const inner = localizeHostErrorForLocale(locale, didNotAnswer[2]);
-    return trForLocale(locale, "error.peerDidNotAnswer", {
-      label: didNotAnswer[1].trim(),
-      detail: inner,
-    });
-  }
-
-  const detachFailed = /^Detach did not reach\s+(.+?):\s*(.+)$/i.exec(text);
-  if (detachFailed) {
-    const inner = localizeHostErrorForLocale(locale, detachFailed[2]);
-    return trForLocale(locale, "error.peerDetachFailed", {
-      label: detachFailed[1].trim(),
-      detail: inner,
-    });
   }
 
   const submittedTo = /^Submitted to\s+(.+)$/i.exec(text);

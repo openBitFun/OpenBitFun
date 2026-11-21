@@ -12,22 +12,17 @@ pub mod bot;
 mod chat_projection;
 pub mod device;
 pub mod device_crypto;
+pub mod directory_session;
 pub mod encryption;
 pub mod file_projection;
 pub mod host_stream;
-pub mod host_stream_subscriber;
 pub mod html_preview;
-mod lan;
 pub mod mesh_route;
 pub mod message_encoding;
 mod model_write_fence;
 mod page_upload;
 pub mod pairing;
 pub mod qr_generator;
-pub mod realtime_client;
-mod realtime_payload;
-pub mod relay_client;
-pub mod relay_failure;
 mod relay_http;
 pub mod routing_lease;
 pub mod rpc_execution;
@@ -42,10 +37,6 @@ pub use chat_projection::{
 };
 pub use device::DeviceIdentity;
 pub use encryption::{decrypt_from_base64, encrypt_to_base64, KeyPair};
-pub use lan::{
-    build_lan_relay_url, build_lan_relay_url_with_ip, get_local_ip, list_local_ips,
-    LocalNetworkInterface,
-};
 use log::info;
 use openbitfun_core_types::{
     ModelsDevReasoningCatalog, ProviderCatalog, ReasoningCatalogProjection,
@@ -74,7 +65,10 @@ pub use page_upload::{
 };
 pub use pairing::PairingState;
 pub use qr_generator::QrGenerator;
-pub use relay_client::{ensure_rustls_crypto_provider, ConnectionState, RelayClient, RelayEvent};
+/// Installs the process-wide rustls crypto provider (TLS for HTTPS clients).
+pub fn ensure_rustls_crypto_provider() {
+    openbitfun_services_core::tls_provider::ensure_ring_crypto_provider();
+}
 pub use routing_lease::DeviceRoutingPriority;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

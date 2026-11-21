@@ -3,20 +3,22 @@
 // is shown; the retired EasyTier-app route and the mesh pairing QR are gone.
 
 import { expect, open, test } from "nsh/test";
-import { createDeviceBackend, withMeshPeerFixtures, withPhoneFixtures } from "./support";
+import { createDeviceBackend, withMeshDevices, withPhoneFixtures } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
 test("the web controller address and its QR, no join values or pairing", async () => {
   const { backend, phoneCalls } = withPhoneFixtures(createDeviceBackend());
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("Devices");
+  // Settings › Account › Devices and chat apps › Open on your phone.
+  await app.press("Settings");
+  await app.press("Devices and chat apps");
+  await app.press("label:account-open-on-phone");
   await app.waitFor("label:use-on-phone");
   await app.waitFor("label:phone-qr");
-  await app.waitFor("text:https://remote.openbitfun.com/app/");
+  await app.waitFor("text:https://super.openbitfun.com/");
   await app.waitFor(
-    "text:On your phone or any computer, open remote.openbitfun.com/app (or the OpenBitFun app) and sign in with the email of this account. Your devices are listed there; pick this computer to use it.",
+    "text:On your phone or any computer, open super.openbitfun.com (or the OpenBitFun app) and sign in with the email of this account. Your devices are listed there; pick this computer to use it.",
   );
   // No EasyTier steps, network values or pairing offer any more.
   expect(app.shows("text:obf-0123456789abcdef")).toBe(false);
@@ -27,23 +29,22 @@ test("the web controller address and its QR, no join values or pairing", async (
   expect(phoneCalls.some(call => call.command === "obp_create_pairing")).toBe(false);
 
   await app.press("label:phone-copy-url");
-  await app.waitUntil(() => app.clipboard() === "https://remote.openbitfun.com/app/");
+  await app.waitUntil(() => app.clipboard() === "https://super.openbitfun.com/");
   await app.press("label:phone-open-url");
-  await app.waitUntil(() => app.openedUrls().includes("https://remote.openbitfun.com/app/"));
+  await app.waitUntil(() => app.openedUrls().includes("https://super.openbitfun.com/"));
 });
 
 test("phones and browsers signed in now are listed as signed-in clients, never as unreachable devices", async () => {
   const { backend } = withPhoneFixtures(createDeviceBackend());
-  withMeshPeerFixtures(backend, {
-    meshDevices: [
-      { deviceId: "phone-1", name: "Alice's iPhone", role: "controller", reachable: false, path: "relayed", route: "relayed_server", hops: 2, capabilities: [] },
-      { deviceId: "obf-gateway-lwb", name: null, role: "controller", reachable: false, path: "relayed", hops: 2, capabilities: [] },
-      { deviceId: "desk-2", name: "Studio Mac", role: "device", reachable: true, path: "p2p", route: "direct_lan", hops: 1, capabilities: ["obp_v1", "mesh_v1"] },
-    ],
-  });
+  withMeshDevices(backend, [
+    { deviceId: "phone-1", name: "Alice's iPhone", role: "controller", reachable: false, path: "relayed", route: "relayed_server", hops: 2, capabilities: [] },
+    { deviceId: "obf-gateway-lwb", name: null, role: "controller", reachable: false, path: "relayed", hops: 2, capabilities: [] },
+    { deviceId: "desk-2", name: "Studio Mac", role: "device", reachable: true, path: "p2p", route: "direct_lan", hops: 1, capabilities: ["obp_v1", "mesh_v1"] },
+  ]);
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("Devices");
+  await app.press("Settings");
+  await app.press("Devices and chat apps");
+  await app.press("label:account-open-on-phone");
   await app.waitFor("label:phone-controllers");
   await app.waitFor("label:phone-controller-phone-1");
   await app.waitFor("Alice's iPhone");

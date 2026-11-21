@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { type BackendOptions, createBackend, createDeviceBackend, projectWorkspaceNavigator } from "./support";
+import { showDevices, openToolScene, type BackendOptions, createBackend, createDeviceBackend, projectWorkspaceNavigator } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -594,15 +594,22 @@ function createSshBackend(options: MockSshBackendOptions = {}) {
   };
 }
 
+/** This device's page: All sessions › By device › This device (New workspace…, SSH connections). */
+async function openThisDevicePage(app: Awaited<ReturnType<typeof open>>) {
+  await showDevices(app);
+  await app.press("device-open-local");
+  await app.waitFor("device-scene");
+}
+
 async function openNewWorkspaceViaUi(app: Awaited<ReturnType<typeof open>>) {
-  await app.press("workspace-switcher-trigger");
+  await openThisDevicePage(app);
+  await app.press("device-new-workspace");
   await app.waitFor("new-workspace-modal");
 }
 
 async function openSshModalViaUi(app: Awaited<ReturnType<typeof open>>) {
-  await app.press("nav-remote-trigger");
-  await app.waitFor("SSH connections…");
-  await app.press("SSH connections…");
+  await openThisDevicePage(app);
+  await app.press("device-ssh");
   await app.waitFor("ssh-connection-modal");
 }
 
@@ -863,7 +870,8 @@ test("Remote File Browser handles POSIX navigation, mkdir, rename, delete, and r
   });
   expect(ssh.localOpenCalls).toHaveLength(0);
 
-  // Disconnect SSH & close remote workspace from sidebar workspace actions menu
+  // Disconnect SSH & close the remote workspace from its row in All sessions › By device
+  await showDevices(app);
   await app.waitFor("workspace-actions-ws-remote-1");
   await app.press("workspace-actions-ws-remote-1");
   await app.waitFor("Disconnect SSH");
@@ -947,7 +955,7 @@ test("Port Forwarding modal detects listeners without auto-forwarding, normalize
   });
 });
 
-test("Peer Device Mode clears SSH modals on peer scope change and tolerates CLI peer lacking remote_open_workspace", async () => {
+test("the remote browser tolerates a host lacking remote_open_workspace", async () => {
   const ssh = createSshBackend({ failMissingRemoteOpenCommand: true });
   const deviceBackend = createDeviceBackend();
   const baseInvoke = deviceBackend.handlers["openbitfun.invoke"] as (d: unknown) => Promise<unknown>;
@@ -978,12 +986,12 @@ test("Peer Device Mode clears SSH modals on peer scope change and tolerates CLI 
   await app.waitFor("remote-file-browser-modal");
   await app.press("remote-browser-open");
 
-  // CLI peer lacks remote_open_workspace, but open_remote_workspace succeeded -> closes browser cleanly
+  // The host lacks remote_open_workspace, but open_remote_workspace succeeded -> closes browser cleanly
   await app.waitUntil(() => !app.shows("remote-file-browser-modal"));
   expect(ssh.callsFor("open_remote_workspace")).toHaveLength(1);
 });
 
-test("Sidebar SSH host row quick-connect and Local Docker / WSL target discovery in SSH Connection modal", async () => {
+test("Local Docker / WSL target discovery in the SSH Connection modal", async () => {
   const ssh = createSshBackend({ wslSupported: true, wslDistributions: ["Ubuntu-22.04"] });
   const app = await open("../App.tsx", {
     ...DESKTOP,
@@ -991,11 +999,6 @@ test("Sidebar SSH host row quick-connect and Local Docker / WSL target discovery
   });
 
   await app.waitFor("OpenBitFun");
-  await app.waitFor("ssh-host-row-conn-prod-1");
-  await app.press("ssh-host-row-conn-prod-1");
-  await app.waitFor("remote-file-browser-modal");
-  await app.press("remote-browser-cancel");
-  await app.waitUntil(() => !app.shows("remote-file-browser-modal"));
 
   await openSshModalViaUi(app);
   await app.press("Local Docker");
@@ -1018,14 +1021,16 @@ test("Remote workspace activation asks the backend to restore a dropped link and
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
   await app.waitFor("OpenBitFun");
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
 
   // The staging link is down: activation hands it to the backend, which restores
   // it from the saved profile (vault password) and re-activates the workspace.
   // This surface reconnects and activates nothing itself (the saved-host list
   // still reads each host's status for its dot).
+  await showDevices(app);
   await app.press("workspace-row-ws-staging");
+  await openToolScene(app, "files");
   await app.waitUntil(() => ssh.linkRestores.includes("conn-staging-2"));
   expect(ssh.callsFor("remote_workspace_ensure_connected")[0]).toMatchObject({
     raw: false,
@@ -1039,7 +1044,9 @@ test("Remote workspace activation asks the backend to restore a dropped link and
   await app.waitFor("file-watch-unsupported");
 
   // A workspace whose saved connection is gone is marked offline, loudly, with a way to retry.
+  await showDevices(app);
   await app.press("workspace-row-ws-gone");
+  await openToolScene(app, "files");
   await app.waitFor("remote-link-offline");
   await app.waitFor("gone.example.com is offline");
   await app.waitFor("The saved connection for this workspace is missing on this host.");
@@ -1058,9 +1065,11 @@ test("Remote link state follows the backend's remote://link-state events and ask
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
   await app.waitFor("OpenBitFun");
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
+  await showDevices(app);
   await app.press("workspace-row-ws-prod");
+  await openToolScene(app, "files");
   await app.waitUntil(() => ssh.callsFor("remote_workspace_ensure_connected").length === 1);
   expect(app.shows("remote-link-reconnecting")).toBe(false);
 
@@ -1093,9 +1102,11 @@ test("A host without backend link supervision gets an explicit update-the-host s
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: ssh.base.handlers } });
 
   await app.waitFor("OpenBitFun");
-  await app.press("Files");
+  await openToolScene(app, "files");
   await app.waitFor("Explorer");
+  await showDevices(app);
   await app.press("workspace-row-ws-staging");
+  await openToolScene(app, "files");
   await app.waitFor("remote-link-host-outdated");
   await app.waitFor("staging.example.com: this host cannot restore remote connections");
   expect(ssh.callsFor("ssh_connect")).toHaveLength(0);

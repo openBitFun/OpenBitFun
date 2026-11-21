@@ -240,16 +240,12 @@ pub(crate) async fn invoke(
     runtime: &Arc<CliRuntimeContext>,
     command: RemoteControlRequest,
 ) -> Result<Value> {
-    if matches!(
-        &command,
-        RemoteControlRequest::Start {
-            method: openbitfun_product_domains::remote_control::RemoteControlMethod::Lan,
-            ..
-        } | RemoteControlRequest::Stop {
-            method: openbitfun_product_domains::remote_control::RemoteControlMethod::Lan
+    if let RemoteControlRequest::Start { method, .. } | RemoteControlRequest::Stop { method } =
+        &command
+    {
+        if method.bot_type().is_none() {
+            anyhow::bail!("unsupported: OpenBitFun 2.0 has no Mobile Web or LAN relay. Other devices of this account control this host over OpenBitFun Link while remote control is on (`openbitfun remote-control on|off`); nothing was started or stopped");
         }
-    ) {
-        anyhow::bail!("unsupported: This CLI host has no embedded LAN Relay; use Mobile Web with the configured account Relay");
     }
     if let Some(host) = crate::remote_control::daemon_host() {
         return host.execute(command).await;

@@ -1,3 +1,4 @@
+import { ToolPaneHeader } from "../ui/toolPane";
 import {
   cleanup,
   Clipboard,
@@ -139,7 +140,6 @@ import {
   InputBox,
   SplitHandle,
   TooltipBubble,
-  WorkbenchSwitcher,
 } from "../ui/primitives";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
 import {
@@ -1376,9 +1376,6 @@ function FileTree(props: { compact?: boolean; width: number; stacked?: boolean }
           backgroundColor: palette().canvasSubtle,
         }}
       >
-        <If when={Boolean(props.stacked) && !props.compact}>
-          <WorkbenchSwitcher />
-        </If>
         {/* Row 1: Explorer label + quiet tabular item count + New / Refresh / More */}
         <View
           style={{
@@ -2380,8 +2377,8 @@ function PreviewBody(props: { compact?: boolean }) {
           >
             <QuietEmptyPrompt
               icon="file-code"
-              title={tr("files.noFileOpen")}
-              subtitle={tr("files.noFileOpenSubtitle")}
+              title={tr("pane.files.choose")}
+              subtitle={undefined}
             />
           </View>
         </If>
@@ -2711,10 +2708,6 @@ function Preview(props: { compact?: boolean; stacked?: boolean }) {
               onPress={() => filesStackDetail.set(false)}
             />
           </If>
-          <If when={!narrow()}>
-            <WorkbenchSwitcher />
-            <ToolbarDivider />
-          </If>
           <OpenFileTabStrip compact={narrow()} />
           <If when={openFile()}>
             {file => (
@@ -3029,6 +3022,9 @@ export function FilesScene(props: { compact?: boolean } = {}) {
       onLayout={sceneWidth.onLayout}
       style={{ flex: 1, minHeight: 0, minWidth: 0, flexDirection: "column" }}
     >
+      <If when={!props.compact}>
+        <ToolPaneHeader />
+      </If>
       <RemoteWorkspaceStatusBanner compact={props.compact} />
       {/* Narrow: the list first; opening a file pushes the preview full width with a back control. */}
       <If

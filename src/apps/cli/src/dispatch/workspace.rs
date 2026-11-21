@@ -325,7 +325,7 @@ fn pending_provision_response(
     }
 }
 
-fn provision_in_store(
+pub(super) fn provision_in_store(
     store: &DispatchStore,
     request: DispatchWorkspaceProvisionRequest,
 ) -> Result<DispatchWorkspaceProvisionResponse> {
@@ -1558,7 +1558,7 @@ fn sanitize_label(value: &str) -> Option<String> {
 }
 
 /// `git@host:acme/app.git` and `https://host/acme/app.git` both yield `app`.
-fn remote_basename(remote_url: &str) -> String {
+pub(super) fn remote_basename(remote_url: &str) -> String {
     remote_url
         .trim_end_matches('/')
         .rsplit(['/', ':'])
@@ -1572,7 +1572,7 @@ fn commit_exists(repo: &Path, commit: &str) -> Result<bool> {
     git_succeeds(repo, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
 }
 
-fn git_command(dir: &Path) -> Command {
+pub(super) fn git_command(dir: &Path) -> Command {
     let mut command = openbitfun_services_core::process_manager::create_command("git");
     command
         .current_dir(dir)
@@ -1587,7 +1587,7 @@ fn git_command(dir: &Path) -> Command {
     command
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String> {
+pub(super) fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = git_command(dir)
         .args(args)
         .output()
@@ -1672,7 +1672,7 @@ fn git_within(dir: &Path, timeout: Duration, args: &[&str]) -> Result<()> {
 }
 
 /// Stop a timed-out Git child and everything it spawned.
-fn kill_process_tree(child: &mut std::process::Child) {
+pub(super) fn kill_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         // The child leads its own group (see `process_group` above), so its pid
@@ -1844,7 +1844,7 @@ fn validate_digest(digest: &str) -> Result<()> {
 
 /// Reject anything Git itself would not accept as a branch, plus leading
 /// dashes, which Git would read as an option rather than a ref.
-fn validate_branch(branch: &str) -> Result<()> {
+pub(super) fn validate_branch(branch: &str) -> Result<()> {
     if branch.is_empty() || branch.len() > 255 || branch.starts_with('-') {
         bail!("dispatch branch name is outside the accepted range");
     }
@@ -1862,7 +1862,7 @@ fn validate_branch(branch: &str) -> Result<()> {
 
 /// A remote URL becomes a `git remote` argument, so it must not look like an
 /// option, and `ext::` would let a URL execute an arbitrary command.
-fn validate_remote_url(url: &str) -> Result<()> {
+pub(super) fn validate_remote_url(url: &str) -> Result<()> {
     if url.is_empty() || url.len() > 2048 {
         bail!("dispatch remoteUrl is outside the accepted length");
     }
@@ -1878,7 +1878,7 @@ fn validate_remote_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn truncate_utf8(value: &str) -> String {
+pub(super) fn truncate_utf8(value: &str) -> String {
     const MAX_ERROR_BYTES: usize = 16 * 1024;
     if value.len() <= MAX_ERROR_BYTES {
         return value.to_string();

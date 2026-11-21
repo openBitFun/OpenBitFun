@@ -1,4 +1,4 @@
-import { effect, Overlay, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
+import { cleanup, effect, Overlay, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
 import { Input, TextView } from "nsh/base";
 import {
   ASSISTANT_AVATAR_PRESETS,
@@ -77,19 +77,22 @@ import {
 } from "../assistantStore";
 import { formatCount, formatPlural, formatRelativeTime } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { peerScope } from "../peerState";
-import { sessionLastActivityMs } from "../state";
+import { deviceContext, sessionLastActivityMs } from "../state";
 import {
   fontMono,
+  layout,
   palette,
   radii,
+  space,
   textLineHeight,
   textSize,
+  textStyle,
   textTracking,
 } from "../theme";
 import { Icon } from "../ui/icons";
 import {
   AssistantAvatar,
+  InsetGroup,
   STUDIO_CONTENT_MAX,
   STUDIO_TOUCH_MIN,
   StudioEmpty,
@@ -98,6 +101,7 @@ import {
   studioTitleSize,
   trackStudioWidth,
 } from "../ui/studio";
+import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
 import {
   STATIC_MARKDOWN_OPTIONS,
   createMarkdownCodeActions,
@@ -182,6 +186,19 @@ function compactDetailOpen(): boolean {
   return assistantView() === "config";
 }
 
+/** Hosted in the Library: the list is the landing and an open assistant replaces it, at every width. */
+const assistantsEmbedded = signal(false);
+
+/** The list and the editor take turns (a phone-sized scene, or the Library). */
+function listDetailFlow(): boolean {
+  return studioCompact() || assistantsEmbedded();
+}
+
+/** True while an open assistant's editor replaces the Library list (the Library hides its header). */
+export function assistantDetailShown(): boolean {
+  return assistantsEmbedded() && compactDetailOpen() && Boolean(selectedAssistant());
+}
+
 /** What the studio pane shows under the assistant's header. */
 type StudioTab = "persona" | "sessions";
 const studioTab = signal<StudioTab>("persona");
@@ -208,15 +225,15 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
       }}
       style={{
         position: "relative",
-        minHeight: STUDIO_TOUCH_MIN + 8,
+        minHeight: assistantsEmbedded() ? layout.touchTarget + space.md : STUDIO_TOUCH_MIN + 8,
         flexDirection: "row",
         alignItems: "center",
         gap: 12,
         paddingHorizontal: 12,
         paddingVertical: 8,
-        borderRadius: studioCompact() ? 0 : radii.md,
+        borderRadius: listDetailFlow() ? 0 : radii.md,
         borderCurve: "continuous",
-        backgroundColor: isSelected() && !studioCompact() ? palette().panelHover : "transparent",
+        backgroundColor: isSelected() && !listDetailFlow() ? palette().panelHover : "transparent",
         cursor: "pointer",
         ...paintTransition(MOTION_DURATION.fast),
       }}
@@ -227,7 +244,7 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
         outlineOffset: -2,
       }}
     >
-      <If when={studioCompact() && !props.first}>
+      <If when={listDetailFlow() && !props.first}>
         <View
           style={{
             position: "absolute",
@@ -284,7 +301,7 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
           {assistantMeta(props.item)}
         </Text>
       </View>
-      <If when={studioCompact()}>
+      <If when={listDetailFlow()}>
         <Icon name="chevron-right" size={12} color={palette().textMuted} />
       </If>
     </View>
@@ -422,19 +439,6 @@ function CompanionsRail() {
           />
         </View>
 
-        <If when={peerScope()}>
-          {scope => (
-            <Text
-              style={{
-                color: palette().textSecondary,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
-              }}
-            >
-              {tr("assistants.peerLabel", { label: scope().label })}
-            </Text>
-          )}
-        </If>
         <If when={assistantsNotice()}>
           {notice => (
             <Text
@@ -524,6 +528,73 @@ function CompanionsRail() {
         </View>
       </Scroll>
     </View>
+  );
+}
+
+/** The Library's Assistants tab: its toolbar (refresh, New assistant), then the rows. */
+function AssistantLibraryList() {
+  return (
+    <Scroll style={{ flex: 1, minHeight: 0 }}>
+      <LibraryToolbar
+        accessibilityLabel="assistants-toolbar"
+        leading={
+          <IconButton
+            icon="refresh"
+            size="md"
+            tooltip={tr("assistants.refreshTooltip")}
+            disabled={assistantsLoading()}
+            accessibilityLabel="assistants-refresh"
+            onPress={() => void loadAssistants()}
+          />
+        }
+        primary={
+          <Button
+            label={tr("assistants.newAssistant")}
+            variant="primary"
+            size="md"
+            leadingIcon="plus"
+            disabled={assistantsBusy()}
+            accessibilityLabel="assistants-new"
+            onPress={openNewAssistantModal}
+          />
+        }
+      />
+      <View style={libraryBodyStyle()}>
+        <If when={assistantsNotice()}>
+          {notice => <Text style={textStyle("caption", { color: palette().success })}>{notice()}</Text>}
+        </If>
+        <If when={assistantsError() && assistants().length > 0 ? assistantsError() : ""}>
+          {err => <Text style={textStyle("caption", { color: palette().danger })}>{localizeHostError(err())}</Text>}
+        </If>
+        <If when={!assistantsLoading() && assistants().length === 0}>
+          <StudioEmpty
+            icon={assistantsError() ? "alert-circle" : "bot"}
+            tone={assistantsError() ? "danger" : "neutral"}
+            message={assistantsError() ? tr("assistants.unavailableTitle") : tr("assistants.noneYetTitle")}
+            detail={assistantsError() ? localizeHostError(assistantsError()) : tr("assistants.noneYetSubtitle")}
+            action={
+              <Button
+                label={assistantsError() ? tr("common.retry") : tr("assistants.newAssistant")}
+                variant="secondary"
+                size="md"
+                accessibilityLabel="assistants-empty-action"
+                onPress={() => {
+                  if (assistantsError()) void loadAssistants();
+                  else openNewAssistantModal();
+                }}
+              />
+            }
+          />
+        </If>
+        <If when={assistants().length > 0}>
+          <InsetGroup accessibilityLabel="assistants-list">
+            <Each of={galleryAssistants()} key={item => item.id}>
+              {(item, idx) => <CompanionGalleryRow item={item()} first={idx() === 0} />}
+            </Each>
+          </InsetGroup>
+        </If>
+      </View>
+    </Scroll>
   );
 }
 
@@ -1055,7 +1126,7 @@ function PersonaStudioPane() {
               }}
             >
               <View style={{ width: "100%", maxWidth: STUDIO_CONTENT_MAX, alignSelf: "center", gap: 12 }}>
-                <If when={studioCompact()}>
+                <If when={listDetailFlow()}>
                   <View style={{ flexDirection: "row" }}>
                     <Button
                       label={tr("assistants.title")}
@@ -1188,6 +1259,15 @@ function PersonaStudioPane() {
                   </View>
                 </View>
 
+                {/* With the list out of view, its notice and error show under the open assistant. */}
+                <If when={listDetailFlow() ? assistantsNotice() : ""}>
+                  {notice => <Text style={textStyle("caption", { color: palette().success })}>{notice()}</Text>}
+                </If>
+                <If when={listDetailFlow() ? assistantsError() : ""}>
+                  {err => (
+                    <Text style={textStyle("caption", { color: palette().danger })}>{localizeHostError(err())}</Text>
+                  )}
+                </If>
                 <If
                   when={
                     confirmingAssistantAction()?.id === assistant().id
@@ -1592,18 +1672,23 @@ function NewAssistantModal() {
   );
 }
 
-export function AssistantsScene() {
+export function AssistantsScene(props: { embedded?: boolean }) {
+  assistantsEmbedded.set(Boolean(props.embedded));
+  cleanup(() => assistantsEmbedded.set(false));
   // Each visit lands on the list in the compact layout, on the Persona tab.
   openAssistantGallery();
   studioTab.set("persona");
   let initialMount = true;
+  let lastDevice = untracked(() => deviceContext());
   effect(() => {
-    const peerId = peerScope()?.deviceId ?? null;
-    const force = initialMount;
+    // A new device context (the Library's scope chip) reads that device's assistants.
+    const device = deviceContext();
+    const force = initialMount || device !== lastDevice;
+    lastDevice = device;
     initialMount = false;
     untracked(() => {
       studioMenuOpen.set(false);
-      syncAssistantsScope(peerId, force);
+      syncAssistantsScope(force);
     });
   });
 
@@ -1611,10 +1696,7 @@ export function AssistantsScene() {
     const id = selectedAssistantId() ?? "";
     const rootPath = selectedAssistantRoot();
     const fileName = activePersonaFile();
-    const reloadTick = personaReloadToken();
-    const peerId = peerScope()?.deviceId ?? null;
-    void reloadTick;
-    void peerId;
+    void personaReloadToken();
     if (!id) return;
     untracked(() => {
       const assistant = selectedAssistant();
@@ -1628,8 +1710,6 @@ export function AssistantsScene() {
   effect(() => {
     const id = selectedAssistantId() ?? "";
     const tab = studioTab();
-    const peerId = peerScope()?.deviceId ?? null;
-    void peerId;
     if (!id || tab !== "sessions") return;
     untracked(() => {
       const assistant = selectedAssistant();
@@ -1643,10 +1723,12 @@ export function AssistantsScene() {
       style={{ flex: 1, minHeight: 0, flexDirection: "row", backgroundColor: palette().canvas }}
     >
       {/* Regular: list rail beside the studio. Compact: the list is the landing, the studio replaces it. */}
-      <If when={!studioCompact() || !compactDetailOpen() || !selectedAssistant()}>
-        <CompanionsRail />
+      <If when={!listDetailFlow() || !compactDetailOpen() || !selectedAssistant()}>
+        <If when={assistantsEmbedded()} else={<CompanionsRail />}>
+          <AssistantLibraryList />
+        </If>
       </If>
-      <If when={!studioCompact() || (compactDetailOpen() && Boolean(selectedAssistant()))}>
+      <If when={!listDetailFlow() || (compactDetailOpen() && Boolean(selectedAssistant()))}>
         <PersonaStudioPane />
       </If>
       <NewAssistantModal />

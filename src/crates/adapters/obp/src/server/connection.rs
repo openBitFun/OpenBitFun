@@ -20,16 +20,45 @@ use serde_json::Value;
 use tokio::sync::{mpsc, watch, Notify, Semaphore};
 
 use super::protocol::{
-    command_error, error_frame, event_frame, result_frame, AckParams, BackendIdentity, CallParams,
-    HelloParams, HelloResult, Incoming, RpcError, FORBIDDEN, HELLO_REQUIRED, INTERNAL_ERROR,
-    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, OBP_PROTOCOL_VERSION, PARSE_ERROR,
-    PROTOCOL_MISMATCH, SERVER_CAPABILITIES,
+    command_error, error_frame, event_frame, passes_prefixes, result_frame, AckParams,
+    BackendIdentity, CallParams, HelloParams, HelloResult, Incoming, RpcError, FORBIDDEN,
+    HELLO_REQUIRED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
+    OBP_PROTOCOL_VERSION, PARSE_ERROR, PROTOCOL_MISMATCH, SERVER_CAPABILITIES,
 };
-use super::scope::{check_command, event_visible, Scope};
+use super::scope::{check_cloud_agent_call, check_command, event_visible, Scope};
 use super::ObpBackend;
 use crate::events::{BackendEvent, EventHub, EVENTS_DROPPED_EVENT};
 
 const TEXT_CHUNK_EVENT: &str = "agentic://text-chunk";
+
+/// Identifies connections to the fleet mux (`FleetClientKey::Connection`).
+static NEXT_FLEET_CLIENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The fleet stream of a connection whose hello asked for it (feature
+/// `fleet`; without it no connection has one).
+#[cfg(feature = "fleet")]
+type FleetStreamSlot = crate::fleet::mux::FleetStream;
+#[cfg(not(feature = "fleet"))]
+type FleetStreamSlot = std::convert::Infallible;
+
+/// A connection bound to the fleet mux: it answers `fleet_subscribe` itself.
+#[derive(Clone)]
+struct FleetBinding {
+    #[cfg(feature = "fleet")]
+    mux: Arc<crate::fleet::mux::FleetMux>,
+    #[cfg(feature = "fleet")]
+    key: crate::fleet::mux::FleetClientKey,
+}
+
+/// What the handshake settled.
+struct Session {
+    /// The event cursor to start after (plain stream).
+    cursor: u64,
+    credit: Option<Arc<Credit>>,
+    /// The hello's event-name prefix filter.
+    prefixes: Option<Vec<String>>,
+    fleet: Option<(FleetStreamSlot, FleetBinding)>,
+}
 
 /// Close code sent when the server stops a connection on purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +124,11 @@ pub(crate) fn mesh_capabilities(backend: &dyn ObpBackend) -> Vec<&'static str> {
             capabilities.push(capability);
         }
     }
+    if backend.serves_cloud_agent()
+        && !capabilities.contains(&super::scope::CLOUD_AGENT_SCOPE_CAPABILITY)
+    {
+        capabilities.push(super::scope::CLOUD_AGENT_SCOPE_CAPABILITY);
+    }
     capabilities
 }
 
@@ -105,7 +139,29 @@ pub(crate) struct ConnectionContext {
     pub instance_id: String,
     pub registry_digest: String,
     pub limits: ConnectionLimits,
+    /// The id of the web UI bundle this host ships, when loaded (the
+    /// `hello`'s `uiBundleId` hint; `ui_bundle_manifest` is authoritative).
+    pub ui_bundle_id: Option<String>,
+    /// The server's count of attached fleet clients (`fleetLoad`): a
+    /// connection whose hello opened a fleet stream holds one while it lives.
+    pub fleet_clients: Arc<std::sync::atomic::AtomicUsize>,
     pub stop: watch::Receiver<Option<StopReason>>,
+}
+
+/// Holds one unit of the server's fleet-client count until dropped.
+struct FleetClientSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl FleetClientSlot {
+    fn hold(count: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for FleetClientSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Bytes sent and not yet acknowledged, by `seq`.
@@ -115,9 +171,14 @@ struct Credit {
     changed: Notify,
 }
 
+/// One sent frame: `(seq, bytes, origin)`.
+type SentFrame = (u64, u64, Option<(String, String)>);
+
 #[derive(Default)]
 struct CreditInner {
-    sent: VecDeque<(u64, u64)>,
+    /// `(seq, bytes, origin)` in send order; `origin` is `(device,
+    /// instance)` on a fleet stream.
+    sent: VecDeque<SentFrame>,
     unacked_bytes: u64,
 }
 
@@ -143,19 +204,69 @@ impl Credit {
 
     fn record(&self, seq: u64, bytes: u64) {
         let mut inner = self.lock();
-        inner.sent.push_back((seq, bytes));
+        inner.sent.push_back((seq, bytes, None));
+        inner.unacked_bytes += bytes;
+    }
+
+    /// A frame of a fleet stream (`seq` is `origin`'s own).
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    fn record_origin(&self, origin: &str, instance: &str, seq: u64, bytes: u64) {
+        let mut inner = self.lock();
+        inner
+            .sent
+            .push_back((seq, bytes, Some((origin.to_string(), instance.to_string()))));
         inner.unacked_bytes += bytes;
     }
 
     fn ack(&self, seq: u64) {
         {
             let mut inner = self.lock();
-            while let Some(&(sent_seq, bytes)) = inner.sent.front() {
-                if sent_seq > seq {
+            while let Some((sent_seq, bytes, _)) = inner.sent.front() {
+                if *sent_seq > seq {
                     break;
                 }
+                let bytes = *bytes;
                 inner.sent.pop_front();
                 inner.unacked_bytes = inner.unacked_bytes.saturating_sub(bytes);
+            }
+        }
+        self.changed.notify_one();
+    }
+
+    /// An ack on a fleet stream. With the client's vector `cursor`, every
+    /// frame at the front that the cursor covers (same origin instance, seq
+    /// not newer) is returned. With `seq` alone, frames up to the first one
+    /// with that seq are returned (seqs are per origin, so the plain rule
+    /// would stall on a mixed stream).
+    fn ack_fleet(&self, seq: u64, cursor: Option<&Value>) {
+        {
+            let mut inner = self.lock();
+            let covered = |origin: &Option<(String, String)>, sent_seq: u64| match (cursor, origin)
+            {
+                (Some(cursor), Some((device, instance))) => {
+                    let position = &cursor[device.as_str()];
+                    position["instanceId"].as_str() == Some(instance.as_str())
+                        && position["seq"]
+                            .as_u64()
+                            .is_some_and(|acked| sent_seq <= acked)
+                }
+                _ => false,
+            };
+            if cursor.is_some_and(Value::is_object) {
+                while let Some((sent_seq, bytes, origin)) = inner.sent.front() {
+                    if !covered(origin, *sent_seq) {
+                        break;
+                    }
+                    let bytes = *bytes;
+                    inner.sent.pop_front();
+                    inner.unacked_bytes = inner.unacked_bytes.saturating_sub(bytes);
+                }
+            } else if let Some(position) = inner.sent.iter().position(|(sent, _, _)| *sent == seq) {
+                for _ in 0..=position {
+                    if let Some((_, bytes, _)) = inner.sent.pop_front() {
+                        inner.unacked_bytes = inner.unacked_bytes.saturating_sub(bytes);
+                    }
+                }
             }
         }
         self.changed.notify_one();
@@ -163,7 +274,7 @@ impl Credit {
 }
 
 /// One event as the pump sends it: shared from the ring, or merged.
-enum Outgoing {
+pub(crate) enum Outgoing {
     Shared(Arc<BackendEvent>),
     Merged {
         seq: u64,
@@ -173,10 +284,36 @@ enum Outgoing {
 }
 
 impl Outgoing {
-    fn seq(&self) -> u64 {
+    pub(crate) fn seq(&self) -> u64 {
         match self {
             Self::Shared(event) => event.seq,
             Self::Merged { seq, .. } => *seq,
+        }
+    }
+
+    /// `(seq, event, payload)`.
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    pub(crate) fn parts(&self) -> (u64, &str, &Value) {
+        match self {
+            Self::Shared(event) => (event.seq, event.event.as_str(), &event.payload),
+            Self::Merged {
+                seq,
+                event,
+                payload,
+            } => (*seq, event.as_str(), payload),
+        }
+    }
+
+    /// `(seq, event, payload)`, owned.
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    pub(crate) fn into_parts(self) -> (u64, String, Value) {
+        match self {
+            Self::Shared(event) => (event.seq, event.event.clone(), event.payload.clone()),
+            Self::Merged {
+                seq,
+                event,
+                payload,
+            } => (seq, event, payload),
         }
     }
 
@@ -223,7 +360,7 @@ fn chunk_key(payload: &serde_json::Map<String, Value>) -> String {
 
 /// Merges consecutive chunks of one stream. Order is preserved: any other
 /// event ends the run before it.
-fn coalesce(events: Vec<Arc<BackendEvent>>) -> Vec<Outgoing> {
+pub(crate) fn coalesce(events: Vec<Arc<BackendEvent>>) -> Vec<Outgoing> {
     let mut out: Vec<Outgoing> = Vec::with_capacity(events.len());
     // (key, field, ended) of the run at the end of `out`.
     let mut run: Option<(String, &'static str, bool)> = None;
@@ -303,7 +440,7 @@ impl Backlog {
         self.bytes = 0;
     }
 
-    fn scan(&mut self, hub: &EventHub, scope: &Scope, cursor: u64) {
+    fn scan(&mut self, hub: &EventHub, visible: &dyn Fn(&str) -> bool, cursor: u64) {
         if self.scanned < cursor {
             self.reset(cursor);
         }
@@ -316,7 +453,7 @@ impl Backlog {
                 if event.event == EVENTS_DROPPED_EVENT {
                     // The cursor already fell out of the ring.
                     self.bytes = u64::MAX;
-                } else if event_visible(scope, &event.event) {
+                } else if visible(&event.event) {
                     self.bytes = self.bytes.saturating_add(estimate_bytes(event));
                 }
             }
@@ -364,21 +501,44 @@ where
         }
         _ = stop.changed() => None,
     };
-    let Some((cursor, credit)) = hello else {
+    let Some(session) = hello else {
         drop(outbox);
         let _ = writer.await;
         return;
     };
-
-    let pump = tokio::spawn(pump_events(
-        context.backend.events(),
-        context.scope.clone(),
-        cursor,
-        credit.clone(),
-        context.limits.clone(),
-        outbox.clone(),
-        context.stop.clone(),
-    ));
+    let credit = session.credit.clone();
+    let _fleet_slot = session
+        .fleet
+        .is_some()
+        .then(|| FleetClientSlot::hold(&context.fleet_clients));
+    let (pump, fleet) = match session.fleet {
+        #[cfg(feature = "fleet")]
+        Some((fleet_stream, binding)) => (
+            tokio::spawn(pump_fleet(
+                fleet_stream,
+                credit.clone(),
+                context.limits.clone(),
+                outbox.clone(),
+                context.stop.clone(),
+            )),
+            Some(binding),
+        ),
+        #[cfg(not(feature = "fleet"))]
+        Some((never, _)) => match never {},
+        None => (
+            tokio::spawn(pump_events(
+                context.backend.events(),
+                context.scope.clone(),
+                session.prefixes,
+                session.cursor,
+                credit.clone(),
+                context.limits.clone(),
+                outbox.clone(),
+                context.stop.clone(),
+            )),
+            None,
+        ),
+    };
 
     let calls = Arc::new(Semaphore::new(context.limits.max_inflight_calls.max(1)));
     let mut ping = tokio::time::interval(context.limits.ping_interval);
@@ -391,7 +551,7 @@ where
                 last_heard = tokio::time::Instant::now();
                 match message {
                     Message::Text(text) => {
-                        handle_message(text.as_str(), &context, &outbox, credit.as_deref(), &calls).await;
+                        handle_message(text.as_str(), &context, &outbox, credit.as_deref(), &calls, fleet.as_ref()).await;
                     }
                     Message::Binary(_) => {
                         let frame = error_frame(&Value::Null, &RpcError::new(INVALID_REQUEST, "binary frames are not part of OBP"));
@@ -415,6 +575,10 @@ where
         }
     };
     pump.abort();
+    #[cfg(feature = "fleet")]
+    if let Some(binding) = &fleet {
+        binding.mux.drop_client(binding.key).await;
+    }
     if let Some(reason) = stop_reason {
         let _ = outbox
             .send(Message::Close(Some(reason.close_frame())))
@@ -425,12 +589,13 @@ where
 }
 
 /// Reads until `hello`, answering anything else with `hello_required`.
-/// Returns the event cursor to start after and the negotiated credit.
+/// Returns the event cursor to start after, the negotiated credit, the
+/// prefix filter and, for a fleet hello, the fleet stream.
 async fn handshake<S, E>(
     stream: &mut S,
     outbox: &Outbox,
     context: &ConnectionContext,
-) -> Option<(u64, Option<Arc<Credit>>)>
+) -> Option<Session>
 where
     S: futures::Stream<Item = Result<Message, E>> + Unpin,
 {
@@ -497,6 +662,8 @@ where
                 .clamp(limits.min_credit_bytes, limits.max_credit_bytes);
             Arc::new(Credit::new(window))
         });
+        let prefixes = params.event_prefixes();
+        let fleet = open_fleet(&params, context, prefixes.clone()).await;
         let info = context.backend.info();
         let read = |key: &str| {
             info.get(key)
@@ -508,7 +675,9 @@ where
             protocol: OBP_PROTOCOL_VERSION,
             scope: context.scope.wire_name(),
             capabilities: match context.scope {
-                Scope::AccountDevice { .. } => mesh_capabilities(context.backend.as_ref()),
+                Scope::AccountDevice { .. } | Scope::CloudAgent { .. } => {
+                    mesh_capabilities(context.backend.as_ref())
+                }
                 _ => SERVER_CAPABILITIES.to_vec(),
             },
             registry_digest: context.registry_digest.clone(),
@@ -527,9 +696,27 @@ where
             .map(|capability| capability.key())
             .collect(),
             host_kind: context.backend.host_kind().as_wire_str(),
+            ui_bundle_id: context.ui_bundle_id.clone(),
+            events: prefixes
+                .as_ref()
+                .map(|prefixes| serde_json::json!({ "prefixes": prefixes })),
+            fleet: fleet.as_ref().map(|(_, answer, _)| answer.clone()),
         };
         if !send_text(outbox, result_frame(&id, &result)).await {
             return None;
+        }
+        if let Some((fleet_stream, _, binding)) = fleet {
+            log::info!(
+                "OBP fleet client connected: scope={}, client={}",
+                context.scope.wire_name(),
+                params.client.as_deref().unwrap_or("-")
+            );
+            return Some(Session {
+                cursor: newest,
+                credit,
+                prefixes,
+                fleet: Some((fleet_stream, binding)),
+            });
         }
         log::info!(
             "OBP client connected: scope={}, client={}, resume={:?}",
@@ -567,8 +754,60 @@ where
             }
             None => newest,
         };
-        return Some((cursor, credit));
+        return Some(Session {
+            cursor,
+            credit,
+            prefixes,
+            fleet: None,
+        });
     }
+}
+
+/// The fleet stream a hello asks for, with its `fleet` answer
+/// (`{protocol, deviceId, cursorState}`): only for a `fleet` hello on the
+/// owner or account-device scope of a host that serves the fleet layer, and
+/// while this device has an identity. Everything else is an old connection.
+#[cfg(feature = "fleet")]
+async fn open_fleet(
+    params: &HelloParams,
+    context: &ConnectionContext,
+    prefixes: Option<Vec<String>>,
+) -> Option<(FleetStreamSlot, Value, FleetBinding)> {
+    let hello = params.fleet_hello()?;
+    if !matches!(context.scope, Scope::Owner | Scope::AccountDevice { .. }) {
+        return None;
+    }
+    let mux = context.backend.fleet_mux()?;
+    let key = crate::fleet::mux::FleetClientKey::Connection(
+        NEXT_FLEET_CLIENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    );
+    let legacy = params.last_seq.map(|seq| (seq, params.instance_id.clone()));
+    let (fleet_stream, states) = crate::fleet::mux::FleetStream::open(
+        Arc::clone(&mux),
+        key,
+        context.scope.clone(),
+        prefixes,
+        &hello,
+        &context.instance_id,
+        legacy,
+    )
+    .await?;
+    let answer = serde_json::json!({
+        "protocol": openbitfun_product_domains::fleet::FLEET_PROTOCOL_VERSION,
+        "deviceId": mux.local_device_id(),
+        "cursorState": states,
+    });
+    Some((fleet_stream, answer, FleetBinding { mux, key }))
+}
+
+#[cfg(not(feature = "fleet"))]
+async fn open_fleet(
+    _params: &HelloParams,
+    _context: &ConnectionContext,
+    _prefixes: Option<Vec<String>>,
+) -> Option<(FleetStreamSlot, Value, FleetBinding)> {
+    let _ = &NEXT_FLEET_CLIENT;
+    None
 }
 
 async fn handle_message(
@@ -577,6 +816,7 @@ async fn handle_message(
     outbox: &Outbox,
     credit: Option<&Credit>,
     calls: &Arc<Semaphore>,
+    fleet: Option<&FleetBinding>,
 ) {
     if text.trim_start().starts_with('[') {
         let frame = error_frame(
@@ -612,7 +852,11 @@ async fn handle_message(
         ("ack", _) => match serde_json::from_value::<AckParams>(incoming.params) {
             Ok(ack) => {
                 if let Some(credit) = credit {
-                    credit.ack(ack.seq);
+                    if fleet.is_some() {
+                        credit.ack_fleet(ack.seq, ack.cursor.as_ref());
+                    } else {
+                        credit.ack(ack.seq);
+                    }
                 }
             }
             Err(error) => log::debug!("OBP ack ignored: {}", error),
@@ -626,6 +870,10 @@ async fn handle_message(
                     return;
                 }
             };
+            if let Some(frame) = answer_fleet_verb(&id, &params, context, fleet).await {
+                send_text(outbox, frame).await;
+                return;
+            }
             let backend = Arc::clone(&context.backend);
             let host_verb = |command: &str| backend.is_account_device_host_verb(command);
             if let Err(refusal) = check_command(&context.scope, &params.command, &host_verb) {
@@ -641,6 +889,25 @@ async fn handle_message(
                 }));
                 send_text(outbox, error_frame(&id, &error)).await;
                 return;
+            }
+            // The cloud agent: this device's switches and the call's
+            // approval policy, read per call.
+            if let Scope::CloudAgent { .. } = context.scope {
+                let policy = backend.cloud_agent_policy().await;
+                if let Err(refusal) = check_cloud_agent_call(&params.command, &params.args, &policy)
+                {
+                    log::info!(
+                        "OBP call refused for the cloud agent: command={}",
+                        params.command
+                    );
+                    let error = RpcError::new(FORBIDDEN, refusal).with_data(serde_json::json!({
+                        "kind": "forbidden",
+                        "command": params.command,
+                        "scope": context.scope.wire_name(),
+                    }));
+                    send_text(outbox, error_frame(&id, &error)).await;
+                    return;
+                }
             }
             // Bound in-flight calls; past the bound this connection's reader
             // waits, which is its own backpressure.
@@ -701,9 +968,61 @@ async fn handle_message(
     }
 }
 
+/// The fleet verbs a connection answers itself: `fleet_events` is the native
+/// desktop's in-process long poll and never runs over OBP (a connection gets
+/// the fleet stream as frames), and `fleet_subscribe` on a fleet connection
+/// sets that connection's interest. `None`: the call goes on as usual.
+async fn answer_fleet_verb(
+    id: &Value,
+    params: &CallParams,
+    context: &ConnectionContext,
+    fleet: Option<&FleetBinding>,
+) -> Option<String> {
+    match params.command.as_str() {
+        "fleet_events" => Some(error_frame(
+            id,
+            &command_error(
+                "fleet_events",
+                "fleet_events_unsupported: fleet_events serves the in-process desktop UI; over OBP send a hello with `fleet` and read the event frames".to_string(),
+                true,
+            ),
+        )),
+        #[cfg(feature = "fleet")]
+        "fleet_subscribe" => {
+            let binding = fleet?;
+            if !matches!(context.scope, Scope::Owner | Scope::AccountDevice { .. }) {
+                return None;
+            }
+            let request = params.args.get("request").unwrap_or(&params.args).clone();
+            let request: openbitfun_product_domains::fleet::FleetSubscribeRequest =
+                match serde_json::from_value(request) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return Some(error_frame(
+                            id,
+                            &command_error(
+                                "fleet_subscribe",
+                                format!("invalid fleet_subscribe request: {error}"),
+                                false,
+                            ),
+                        ))
+                    }
+                };
+            binding.mux.set_follow(binding.key, request.follow).await;
+            Some(result_frame(id, &serde_json::json!({ "applied": true })))
+        }
+        _ => {
+            let _ = (context, fleet);
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn pump_events(
     hub: Arc<EventHub>,
     scope: Scope,
+    prefixes: Option<Vec<String>>,
     mut cursor: u64,
     credit: Option<Arc<Credit>>,
     limits: ConnectionLimits,
@@ -714,10 +1033,12 @@ async fn pump_events(
         scanned: cursor,
         bytes: 0,
     };
+    let visible =
+        |event: &str| event_visible(&scope, event) && passes_prefixes(prefixes.as_deref(), event);
     loop {
         if let Some(credit) = &credit {
             while credit.exhausted() {
-                backlog.scan(&hub, &scope, cursor);
+                backlog.scan(&hub, &visible, cursor);
                 if backlog.bytes > limits.backlog_drop_bytes {
                     let newest = hub.last_seq();
                     log::info!(
@@ -773,7 +1094,7 @@ async fn pump_events(
         let visible: Vec<Arc<BackendEvent>> = batch
             .events
             .into_iter()
-            .filter(|event| event_visible(&scope, &event.event))
+            .filter(|event| visible(&event.event))
             .collect();
         let mut spent = false;
         for outgoing in coalesce(visible) {
@@ -794,6 +1115,84 @@ async fn pump_events(
         }
         if !spent {
             cursor = batch.last_seq;
+        }
+    }
+}
+
+/// The event pump of a fleet connection: frames of every origin the client
+/// follows, under the same credit window. When the window is spent the
+/// unsent frames are bounded per origin, and an origin past the backlog
+/// bound is skipped forward on its own (`events-dropped {origin, reason:
+/// "slow_client"}`); the other origins keep their events.
+#[cfg(feature = "fleet")]
+async fn pump_fleet(
+    mut fleet: FleetStreamSlot,
+    credit: Option<Arc<Credit>>,
+    limits: ConnectionLimits,
+    outbox: Outbox,
+    mut stop: watch::Receiver<Option<StopReason>>,
+) {
+    let spent =
+        |credit: &Option<Arc<Credit>>| credit.as_ref().is_some_and(|credit| credit.exhausted());
+    loop {
+        // Send what the window allows; notices go out regardless.
+        while let Some(item) = fleet.peek() {
+            if !item.notice && spent(&credit) {
+                break;
+            }
+            let Some(item) = fleet.take() else { break };
+            let (seq, event, payload) = item.out.parts();
+            let frame = super::protocol::fleet_event_frame(
+                &item.origin,
+                &item.instance,
+                seq,
+                event,
+                payload,
+            );
+            // Notices are not counted: a client acks the frames it applied
+            // by cursor, and a notice moves no cursor of its own.
+            if let (Some(credit), false) = (&credit, item.notice) {
+                credit.record_origin(&item.origin, &item.instance, seq, frame.len() as u64);
+            }
+            if !send_text(&outbox, frame).await {
+                return;
+            }
+        }
+        let window_spent = spent(&credit);
+        let cap = if window_spent {
+            limits.backlog_drop_bytes.saturating_add(1)
+        } else {
+            u64::MAX
+        };
+        fleet.fill(cap, limits.events_per_batch).await;
+        if window_spent {
+            for origin in fleet.over(limits.backlog_drop_bytes) {
+                fleet.skip_slow(&origin).await;
+            }
+        }
+        if !fleet.is_empty() && !window_spent {
+            continue;
+        }
+        if fleet.peek().is_some_and(|item| item.notice) {
+            continue;
+        }
+        let credit_returned = async {
+            match &credit {
+                Some(credit) => credit.changed.notified().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            open = fleet.wait() => {
+                if !open {
+                    let _ = outbox
+                        .send(Message::Close(Some(StopReason::Shutdown.close_frame())))
+                        .await;
+                    return;
+                }
+            }
+            _ = credit_returned => {}
+            _ = stop.changed() => return,
         }
     }
 }
@@ -845,6 +1244,33 @@ mod tests {
                 (6, "de".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn fleet_acks_return_credit_by_cursor_or_by_seq() {
+        let credit = Credit::new(100);
+        credit.record_origin("a", "ia", 40, 30);
+        credit.record_origin("b", "ib", 3, 30);
+        credit.record_origin("a", "ia", 41, 30);
+        credit.record_origin("b", "ib", 4, 30);
+        assert!(credit.exhausted());
+        // `seq` alone must not pop frames of another origin with higher seqs
+        // stalled behind a lower one, nor stall on them.
+        credit.ack_fleet(3, None);
+        assert_eq!(credit.lock().sent.len(), 2);
+        let cursor = serde_json::json!({
+            "a": { "instanceId": "ia", "seq": 41 },
+            "b": { "instanceId": "ib", "seq": 3 },
+        });
+        credit.ack_fleet(41, Some(&cursor));
+        assert_eq!(credit.lock().sent.len(), 1);
+        // Another instance's cursor covers nothing.
+        let foreign = serde_json::json!({ "b": { "instanceId": "old", "seq": 9 } });
+        credit.ack_fleet(4, Some(&foreign));
+        assert_eq!(credit.lock().sent.len(), 1);
+        let cursor = serde_json::json!({ "b": { "instanceId": "ib", "seq": 4 } });
+        credit.ack_fleet(4, Some(&cursor));
+        assert_eq!(credit.lock().unacked_bytes, 0);
     }
 
     #[test]

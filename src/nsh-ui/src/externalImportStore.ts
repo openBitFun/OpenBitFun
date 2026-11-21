@@ -15,7 +15,6 @@
 
 import { signal } from "nsh";
 import { invokeCommand } from "./bridge";
-import { peerScope, peerSupports } from "./peerState";
 import { activeWorkspace } from "./state";
 import type { WorkspaceRecord } from "./api";
 
@@ -83,7 +82,6 @@ export type RemovedSessionsState =
   | "idle"
   | "loading"
   | "ready"
-  | "unsupportedSurface"
   | "unsupportedHost"
   | "error";
 
@@ -178,19 +176,16 @@ function isRemoteWorkspace(workspace: WorkspaceRecord | null): boolean {
 }
 
 /**
- * The workspace fields one request carries: none for the user scope, the id for
- * a host that resolves ids, and the root path for a Peer that predates them.
+ * The workspace fields one request carries: none for the user scope, the id
+ * otherwise.
  */
 export function workspaceFields(workspace: WorkspaceRecord | null): Record<string, string> {
   if (!workspace) return {};
-  if (peerScope() && peerSupports("workspace_id_references_v1") === false) {
-    return { workspacePath: workspace.rootPath };
-  }
   return { workspaceId: workspace.id };
 }
 
 function scopeKey(): string {
-  return `${peerScope()?.deviceId ?? "local"}|${activeWorkspace()?.id ?? ""}`;
+  return `local|${activeWorkspace()?.id ?? ""}`;
 }
 
 function mapCatalog(raw: unknown, discovery: ExternalDiscoveryState | null): ExternalImportSnapshot {
@@ -381,9 +376,7 @@ export async function setAutomaticDiscovery(enabled: boolean): Promise<void> {
 
 /** True when this surface may copy MCP servers into OpenBitFun here. */
 export function mcpImportSupported(): boolean {
-  // The desktop imports only when it drives its own host: a Peer would copy into
-  // the peer's configuration from a list this machine cannot inspect.
-  return peerScope() === null && !isRemoteWorkspace(activeWorkspace());
+  return !isRemoteWorkspace(activeWorkspace());
 }
 
 export async function loadMcpImportPlan(): Promise<void> {
@@ -521,17 +514,11 @@ export function sessionEcosystems(): string[] {
 
 /**
  * Lists the source sessions removed from the session list, for every ecosystem
- * the host imports sessions from. They belong to the host that owns them, so in
- * Peer Device Mode the list is not read at all (the desktop does the same).
+ * the host imports sessions from.
  */
 export async function loadRemovedSessions(): Promise<void> {
   const ticket = ++removedTicket;
   removedRestoreFailed.set(null);
-  if (peerScope()) {
-    removedSessions.set([]);
-    removedSessionsState.set("unsupportedSurface");
-    return;
-  }
   removedSessionsState.set("loading");
   const rows: RemovedExternalSessionRow[] = [];
   let missing = 0;
@@ -579,7 +566,7 @@ export function removedSessionKey(row: RemovedExternalSessionRow): string {
 
 /** Puts one removed source session back into its workspace's session list. */
 export async function restoreRemovedSession(row: RemovedExternalSessionRow): Promise<void> {
-  if (removedRestoreBusy() || peerScope()) return;
+  if (removedRestoreBusy()) return;
   const key = removedSessionKey(row);
   removedRestoreBusy.set(key);
   removedRestoreFailed.set(null);

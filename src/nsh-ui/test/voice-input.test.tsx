@@ -1,7 +1,7 @@
 // Composer dictation over the system recognizer, and the voice-call entry that
 // states this window cannot place a call.
 import { expect, open, test } from "nsh/test";
-import { createBackend } from "./support";
+import { createBackend, openSession as openSessionRowOf } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -24,8 +24,7 @@ function withVoiceConfig(backend: Backend, voiceInput: Record<string, unknown>, 
 
 async function openSession(backend: Backend) {
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSessionRowOf(app, "NSH skeleton");
   await app.waitFor("Port the session list.");
   return app;
 }

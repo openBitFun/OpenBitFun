@@ -1,6 +1,7 @@
 //! Shared GitHub identity used by every OpenBitFun product surface.
 mod credentials;
 mod flow;
+pub(crate) use credentials::profile_credential_vault;
 pub use credentials::{
     clear_market_credentials, load_market_credentials, save_market_credentials,
     StoredMarketCredentials,

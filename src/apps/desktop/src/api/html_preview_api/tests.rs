@@ -606,225 +606,23 @@ fn current_and_legacy_preview_requests_round_trip_without_guessing_peer_identity
 }
 
 #[test]
-fn peer_capability_is_required_even_for_desktop_and_wire_failures_are_explicit() {
-    for ping in [
-        serde_json::json!({}),
-        serde_json::json!({"host_type":"desktop","capabilities":{}}),
-        serde_json::json!({"capabilities":{"workspace_html_preview_v1":false}}),
+fn peer_capability_is_required_in_the_hello_host_capabilities() {
+    for host_capabilities in [
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!(["workspace_latex_preview_v1"]),
+        serde_json::json!({"workspace_html_preview_v1": true}),
     ] {
-        assert!(require_preview_capability(&ping)
+        assert!(require_preview_capability(&host_capabilities)
             .unwrap_err()
             .message
             .contains("update OpenBitFun"));
     }
-    for host in ["desktop", "cli"] {
-        assert!(require_preview_capability(
-            &serde_json::json!({"host_type":host,"capabilities":{"workspace_html_preview_v1":true}})
-        )
-        .is_ok());
-    }
-    assert!(
-        decode_peer_result(r#"{"resp":"host_invoke_result","ok":false,"error":"offline"}"#)
-            .is_err()
-    );
-    assert!(decode_peer_result(r#"{"resp":"error","message":"unsupported"}"#).is_err());
-    assert!(decode_peer_result(r#"{"resp":"host_invoke_result","ok":true}"#).is_err());
-    assert!(decode_peer_result("invalid").is_err());
-}
-
-// Called from the relay fixture while it owns the isolated account context.
-pub(crate) async fn verify_encrypted_peer_gateway(
-    device_id: &str,
-    request: HtmlPreviewResourceRequest,
-    expected: &[u8],
-) {
-    let reader = Arc::new(PeerPreviewReader {
-        device_id: device_id.into(),
-        account_generation: account_context_generation(),
-    });
-    reader.ensure_supported().await.unwrap();
-    let preview = start_preview(reader, request).await.unwrap();
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    let reply = client.get(&preview.url).send().await.unwrap();
-    assert_eq!(reply.status(), StatusCode::FOUND);
-    let cookie = reply.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap();
-    let asset = reqwest::Url::parse(&preview.url)
-        .unwrap()
-        .join("/assets/large.js")
-        .unwrap();
-    let reply = client
-        .get(asset)
-        .header(header::COOKIE, cookie)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reply.status(), StatusCode::OK);
-    assert_eq!(
-        reply.headers()[header::CONTENT_TYPE],
-        "text/javascript; charset=utf-8"
-    );
-    assert_eq!(reply.bytes().await.unwrap().as_ref(), expected);
-    release(preview).await;
-}
-
-// Uses the existing v1 peer reader, including a target without any routing changes.
-pub(crate) async fn verify_encrypted_peer_site_routes(
-    device_id: &str,
-    request: HtmlPreviewResourceRequest,
-    expected_html: &[u8],
-    expected_image: &[u8],
-) {
-    let reader = Arc::new(PeerPreviewReader {
-        device_id: device_id.into(),
-        account_generation: account_context_generation(),
-    });
-    reader.ensure_supported().await.unwrap();
-    let preview = start_preview(reader, request).await.unwrap();
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    let reply = client.get(&preview.url).send().await.unwrap();
-    assert_eq!(reply.headers()[header::LOCATION], "/");
-    let cookie = reply.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap();
-    let origin = reqwest::Url::parse(&preview.url)
-        .unwrap()
-        .join("/")
-        .unwrap();
-    for route in ["/", "/evaluation", "/docs/detail?lang=en", "/evaluation"] {
-        let reply = client
-            .get(origin.join(route).unwrap())
-            .header(header::COOKIE, cookie)
-            .header(header::ACCEPT, "text/html")
-            .header(header::CACHE_CONTROL, "no-cache")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(reply.status(), StatusCode::OK, "{route}");
-        assert_eq!(reply.bytes().await.unwrap().as_ref(), expected_html);
-    }
-    let reply = client
-        .get(origin.join("/assets/image.png").unwrap())
-        .header(header::COOKIE, cookie)
-        .header(header::ACCEPT, "image/png")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reply.status(), StatusCode::OK);
-    assert_eq!(reply.headers()[header::CONTENT_TYPE], "image/png");
-    assert_eq!(reply.bytes().await.unwrap().as_ref(), expected_image);
-    let reply = client
-        .get(origin.join("/assets/missing.png").unwrap())
-        .header(header::COOKIE, cookie)
-        .header(header::ACCEPT, "image/png")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
-    release(preview).await;
-}
-
-pub(crate) async fn benchmark_encrypted_peer_gateway(
-    device_id: &str,
-    mut input: HtmlPreviewResourceRequest,
-    files: Vec<(String, Vec<u8>)>,
-) {
-    use futures::{stream, StreamExt};
-    let reader = Arc::new(PeerPreviewReader {
-        device_id: device_id.into(),
-        account_generation: account_context_generation(),
-    });
-    reader.ensure_supported().await.unwrap();
-    input.expected_source = Some(reader.read(&input).await.unwrap().source);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    let mut serial = Vec::new();
-    let mut cold = Vec::new();
-    let mut warm = Vec::new();
-    for _ in 0..3 {
-        let start = std::time::Instant::now();
-        for group in [&files[..1], &files[1..]] {
-            stream::iter(group.iter())
-                .map(|(path, expected)| {
-                    let reader = reader.clone();
-                    let mut request = input.clone();
-                    request.metadata_only = false;
-                    request.resource_path = Some(path.clone());
-                    async move {
-                        let mut bytes = Vec::new();
-                        loop {
-                            let file = reader.read(&request).await.unwrap();
-                            bytes.extend(BASE64.decode(file.content_base64).unwrap());
-                            request.expected_revision = Some(file.revision);
-                            request.offset = bytes.len() as u64;
-                            if request.offset == file.size {
-                                break;
-                            }
-                        }
-                        assert_eq!(&bytes, expected);
-                    }
-                })
-                .buffer_unordered(6)
-                .collect::<Vec<_>>()
-                .await;
-        }
-        serial.push(start.elapsed().as_millis());
-        let preview = start_preview(reader.clone(), input.clone()).await.unwrap();
-        let bootstrap = client.get(&preview.url).send().await.unwrap();
-        let cookie = bootstrap.headers()[header::SET_COOKIE]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap();
-        let origin = reqwest::Url::parse(&preview.url).unwrap();
-        for times in [&mut cold, &mut warm] {
-            let start = std::time::Instant::now();
-            for group in [&files[..1], &files[1..]] {
-                stream::iter(group.iter())
-                    .map(|(path, expected)| {
-                        let client = client.clone();
-                        let url = origin
-                            .join(if path == &files[0].0 { "/" } else { path })
-                            .unwrap();
-                        async move {
-                            let response = client
-                                .get(url)
-                                .header(header::COOKIE, cookie)
-                                .send()
-                                .await
-                                .unwrap();
-                            assert_eq!(response.status(), StatusCode::OK);
-                            assert_eq!(response.bytes().await.unwrap().as_ref(), expected);
-                        }
-                    })
-                    .buffer_unordered(6)
-                    .collect::<Vec<_>>()
-                    .await;
-            }
-            times.push(start.elapsed().as_millis());
-        }
-        release(preview).await;
-    }
-    println!("HTML_PREVIEW_BENCH transport=encrypted-peer-40ms bytes={} serial_ms={serial:?} cold_ms={cold:?} warm_ms={warm:?}", files.iter().map(|(_, bytes)| bytes.len()).sum::<usize>());
+    assert!(require_preview_capability(&serde_json::json!([
+        "workspace_latex_preview_v1",
+        "workspace_html_preview_v1"
+    ]))
+    .is_ok());
 }
 
 #[tokio::test]

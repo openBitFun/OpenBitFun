@@ -110,13 +110,11 @@ export const CONTRACT_VAR_DEFINITION_PATH_PARTS = [
   'OpenBitFun-Installer/src/theme/installerThemeRuntime.ts',
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
-  'src/mobile-web/src/styles/global.scss',
 ];
 
 export const STATIC_CONTRACT_VAR_DEFINITION_PATH_PARTS = [
   'design-system/packages/design-tokens/src',
   'design-system/packages/theme-openbitfun/src',
-  'src/mobile-web/src/styles/global.scss',
 ];
 
 export const RUNTIME_CONTRACT_VAR_DEFINITION_PATH_PARTS = [
@@ -166,7 +164,7 @@ export const COLOR_DOMAIN_LABELS = Object.fromEntries([
 export const COLOR_DOMAIN_CONTRACTS = [
   {
     key: 'assetMetadata',
-    owner: 'src/mobile-web/src/assets; src/miniapp-market-web/public; design-system/packages/ui/src/brand/assets',
+    owner: 'src/miniapp-market-web/public; design-system/packages/ui/src/brand/assets',
     reason: 'Favicons, install metadata, and self-contained vector assets cannot consume runtime CSS variables and therefore own their serialized colors at the asset boundary.',
     mergePolicy: 'Keep only identity or platform metadata colors here; any rendered application UI color must move to a canonical theme token.',
   },

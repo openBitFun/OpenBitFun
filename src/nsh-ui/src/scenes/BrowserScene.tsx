@@ -9,6 +9,7 @@
 // is; the layer places the presented page there and keeps the others off
 // screen at their own size.
 
+import { ToolPaneHeader } from "../ui/toolPane";
 import { cleanup, effect, signal, Text, View, WebView, type ViewRef, type WebViewNavigation, type WebViewRef } from "nsh";
 import {
   browserAddress,
@@ -41,7 +42,7 @@ import { palette, textLineHeight, textSize } from "../theme";
 import { Icon } from "../ui/icons";
 import { Spinner } from "../ui/motion";
 import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
-import { Button, IconButton, InlineBanner, TextField } from "../ui/primitives";
+import { Button, EmptyStateCard, IconButton, InlineBanner, TextField } from "../ui/primitives";
 
 let layerRef: ViewRef | undefined;
 const pagesMenuOpen = signal(false);
@@ -139,35 +140,11 @@ export function BrowserPageLayer() {
   );
 }
 
+/** The unsupported state (spec §4.10, §3 Empty states): centered, never boxed. */
 function UnavailableState(props: { title: string; message: string }) {
   return (
-    <View
-      accessibilityLabel="browser-unavailable"
-      style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center", paddingHorizontal: 32, gap: 8 }}
-    >
-      <Icon name="globe" size={28} color={palette().textMuted} />
-      <Text
-        style={{
-          color: palette().text,
-          fontSize: textSize(15),
-          fontWeight: "600",
-          lineHeight: textLineHeight(15, 1.3),
-          textAlign: "center",
-        }}
-      >
-        {props.title}
-      </Text>
-      <Text
-        style={{
-          color: palette().textSecondary,
-          fontSize: textSize(13),
-          lineHeight: textLineHeight(13, 1.45),
-          textAlign: "center",
-          maxWidth: 440,
-        }}
-      >
-        {props.message}
-      </Text>
+    <View accessibilityLabel="browser-unavailable" style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
+      <EmptyStateCard icon="globe" title={props.title} subtitle={props.message || undefined} />
     </View>
   );
 }
@@ -241,7 +218,7 @@ function Toolbar() {
         value={browserAddress()}
         onChange={value => browserAddress.set(value)}
         onSubmit={text => void loadBrowserUrl(text)}
-        placeholder={tr("browser.addressPlaceholder")}
+        placeholder={tr("pane.browser.placeholder")}
         leadingIcon="globe"
         clearable
         clearLabel={tr("browser.clearAddress")}
@@ -310,13 +287,14 @@ export function BrowserScene() {
 
   return (
     <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }} accessibilityLabel="browser-scene">
+      <ToolPaneHeader />
       <If
         when={browserAvailability() === "available"}
         else={
           <If when={browserAvailability() !== "checking"}>
             <UnavailableState
-              title={tr("browser.unavailableTitle")}
-              message={browserAvailability() === "noWebView" ? tr("browser.noWebView") : tr("browser.notNative")}
+              title={browserAvailability() === "noWebView" ? tr("browser.unavailableTitle") : tr("pane.browser.desktopOnly")}
+              message={browserAvailability() === "noWebView" ? tr("browser.noWebView") : ""}
             />
           </If>
         }

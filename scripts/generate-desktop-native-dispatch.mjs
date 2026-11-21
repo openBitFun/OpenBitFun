@@ -19,6 +19,9 @@
 // (`pub(super) fn <command>(host: &Arc<NativeHost>, args: Value) ->
 // DispatchFuture<'_>`), listed as `backend_protocol::native_commands::<command>`.
 //
+// Both modes also check the Product Operation Registry's fleet routing table
+// against the handler signatures (see "Fleet routing check" below).
+//
 // Usage: node scripts/generate-desktop-native-dispatch.mjs [--check]
 
 import fs from 'node:fs';
@@ -396,7 +399,250 @@ export function buildDispatcher(libSource, files) {
     total: entries.length,
     native: entries.filter((entry) => !entry.adapter).length,
     adapters: entries.filter((entry) => entry.adapter).map((entry) => entry.handler.name),
+    entries,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Fleet routing check
+//
+// The Product Operation Registry's fleet routing side table
+// (`product-domains/src/remote_surface/fleet_routing.rs`, exported as
+// `fleetRouting` in the committed registry JSON) says how a `fleet_call` finds
+// the device that executes a command. This check proves it against the real
+// handler signatures:
+// - every declared `by_owner` path exists in the handler's parameters (the
+//   first segment is an argument key, each further segment a serde field of
+//   that argument's struct, following `flatten`, `rename`, `rename_all` and
+//   `alias`);
+// - closure: a forwarded (`proxied` / `operator_only`) command whose arguments
+//   or request struct carry a session or workspace id is `by_owner`, or
+//   `by_target` with a declared reason.
+// ---------------------------------------------------------------------------
+
+const registryExportPath = path.join(
+  repoRoot,
+  'src/crates/contracts/product-domains/src/generated/remote-surface-registry.json',
+);
+const structRoots = [desktopSrc, path.join(repoRoot, 'src/crates')];
+export const FLEET_OWNER_ID_KEYS = new Set(['sessionId', 'session_id', 'workspaceId', 'workspace_id']);
+
+function walkRust(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name === 'target' || entry.name === 'node_modules' || entry.name === 'tests') continue;
+      walkRust(path.join(dir, entry.name), out);
+    } else if (entry.name.endsWith('.rs')) {
+      out.push(path.join(dir, entry.name));
+    }
+  }
+  return out;
+}
+
+function serdeRename(name, rule) {
+  switch (rule) {
+    case 'camelCase':
+      return lowerCamelCase(name);
+    case 'snake_case':
+      return name;
+    case 'SCREAMING_SNAKE_CASE':
+      return name.toUpperCase();
+    case 'kebab-case':
+      return name.replace(/_/g, '-');
+    default:
+      return name;
+  }
+}
+
+/**
+ * Indexes the named-field structs, `type` aliases and `use … as …` renames
+ * under the desktop app and the workspace crates. Files are keyed relative
+ * to the repository root.
+ */
+export function indexRustTypes(sources) {
+  const structs = new Map();
+  const aliases = new Map();
+  const fileAliases = new Map();
+  const STRUCT = /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z0-9_]+)\s*(<[^{;(]*>)?\s*(?:where[^{]*)?\{/g;
+  for (const { file, source } of sources) {
+    const text = stripLineComments(source);
+    for (const match of text.matchAll(STRUCT)) {
+      let cursor = match.index + match[0].length;
+      let depth = 1;
+      while (depth > 0 && cursor < text.length) {
+        if (text[cursor] === '{') depth += 1;
+        else if (text[cursor] === '}') depth -= 1;
+        cursor += 1;
+      }
+      const body = text.slice(match.index + match[0].length, cursor - 1);
+      const renameAll = /rename_all\s*=\s*"([A-Za-z_-]+)"/.exec(match[1])?.[1] ?? null;
+      const fields = [];
+      for (const part of splitTopLevel(body)) {
+        const field = /^((?:#\[.*?\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?(?:r#)?([a-z_][a-z0-9_]*)\s*:\s*(.+)$/s.exec(part);
+        if (!field) continue;
+        const attributes = field[1];
+        const rename = /\brename\s*=\s*"([^"]+)"/.exec(attributes)?.[1];
+        fields.push({
+          name: field[2],
+          wire: rename ?? serdeRename(field[2], renameAll),
+          aliases: [...attributes.matchAll(/\balias\s*=\s*"([^"]+)"/g)].map((alias) => alias[1]),
+          flatten: /\bflatten\b/.test(attributes),
+          type: field[3],
+        });
+      }
+      if (!structs.has(match[2])) structs.set(match[2], []);
+      structs.get(match[2]).push({ file, fields });
+    }
+    for (const match of text.matchAll(/\btype\s+([A-Za-z0-9_]+)\s*=\s*([A-Za-z0-9_:]+)\s*;/g)) {
+      aliases.set(match[1], match[2].split('::').pop());
+    }
+    const local = new Map();
+    for (const use of text.matchAll(/\buse\s+[^;]+;/g)) {
+      for (const rename of use[0].matchAll(/\b([A-Za-z0-9_]+)\s+as\s+([A-Za-z0-9_]+)/g)) {
+        local.set(rename[2], rename[1]);
+        if (!aliases.has(rename[2])) aliases.set(rename[2], rename[1]);
+      }
+    }
+    fileAliases.set(file, local);
+  }
+  return { structs, aliases, fileAliases };
+}
+
+export function loadRustTypeIndex() {
+  const sources = [];
+  for (const root of structRoots) {
+    for (const file of walkRust(root)) {
+      if (file === outputPath) continue;
+      sources.push({ file: path.relative(repoRoot, file), source: fs.readFileSync(file, 'utf8') });
+    }
+  }
+  return indexRustTypes(sources);
+}
+
+/** The innermost named type of `Option<Box<Vec<T>>>`, without generics or path. */
+function baseTypeName(type) {
+  let text = type.replace(/\s+/g, '').replace(/^&(mut)?/, '');
+  let match;
+  while ((match = /^(?:Option|Box|Arc)<(.+)>$/.exec(text))) text = match[1];
+  return text.split('<')[0].split('::').pop();
+}
+
+/**
+ * The struct candidates a type name resolves to from `fromFile`: a `use … as`
+ * rename or `type` alias first, then a struct in the same file, then the only
+ * one in the desktop app, then every same-named struct (ambiguous).
+ */
+function resolveStructs(index, typeName, fromFile, seen = new Set()) {
+  if (seen.has(typeName)) return [];
+  seen.add(typeName);
+  const renamed = index.fileAliases.get(fromFile)?.get(typeName);
+  if (renamed && renamed !== typeName) return resolveStructs(index, renamed, fromFile, seen);
+  const candidates = index.structs.get(typeName) ?? [];
+  if (!candidates.length) {
+    const alias = index.aliases.get(typeName);
+    return alias && alias !== typeName ? resolveStructs(index, alias, fromFile, seen) : [];
+  }
+  const sameFile = candidates.filter((candidate) => candidate.file === fromFile);
+  if (sameFile.length) return sameFile;
+  const desktop = candidates.filter((candidate) => candidate.file.startsWith('src/apps/desktop/'));
+  if (desktop.length === 1) return desktop;
+  return candidates;
+}
+
+/** Wire keys of one struct candidate, following `flatten` fields. */
+function structKeys(index, candidate, seen = new Set()) {
+  const keys = new Map();
+  for (const field of candidate.fields) {
+    if (field.flatten) {
+      const typeName = baseTypeName(field.type);
+      if (seen.has(typeName)) continue;
+      const nested = resolveStructs(index, typeName, candidate.file);
+      if (nested.length !== 1) continue;
+      for (const [key, value] of structKeys(index, nested[0], new Set([...seen, typeName]))) keys.set(key, value);
+      continue;
+    }
+    for (const key of [field.wire, ...field.aliases]) keys.set(key, { type: field.type, file: candidate.file });
+  }
+  return keys;
+}
+
+/**
+ * Whether `path` (dot-separated, relative to the call's `args` object)
+ * exists in a handler's parameters. Returns `{ ok }` or `{ ok: false, why }`.
+ * With several same-named struct candidates the path must exist in all.
+ */
+export function verifyArgumentPath(index, command, argumentPath) {
+  const [first, ...rest] = argumentPath.split('.');
+  const param = command.params.find(
+    (candidate) => classifyParam(candidate) === 'arg' && argumentKey(command, candidate) === first,
+  );
+  if (!param) return { ok: false, why: `no argument '${first}'` };
+  let types = [{ type: param.type, file: path.join('src/apps/desktop/src', command.file) }];
+  for (const segment of rest) {
+    const next = [];
+    for (const { type, file } of types) {
+      const typeName = baseTypeName(type);
+      const candidates = resolveStructs(index, typeName, file);
+      if (!candidates.length) return { ok: false, why: `cannot resolve struct ${typeName} for '${segment}'` };
+      for (const candidate of candidates) {
+        const field = structKeys(index, candidate).get(segment);
+        if (!field) return { ok: false, why: `${typeName} (${candidate.file}) has no serde field '${segment}'` };
+        next.push(field);
+      }
+    }
+    types = next;
+  }
+  return { ok: true };
+}
+
+/** Argument keys and request-struct keys (one level) a handler accepts. */
+export function handlerKeyPaths(index, command) {
+  const paths = [];
+  for (const param of command.params) {
+    if (classifyParam(param) !== 'arg') continue;
+    const key = argumentKey(command, param);
+    paths.push(key);
+    const candidates = resolveStructs(index, baseTypeName(param.type), path.join('src/apps/desktop/src', command.file));
+    for (const candidate of candidates) {
+      for (const nested of structKeys(index, candidate).keys()) paths.push(`${key}.${nested}`);
+    }
+  }
+  return [...new Set(paths)];
+}
+
+/** Every fleet routing violation, as `<command>: <message>` lines. */
+export function checkFleetRouting(registry, dispatcher, index) {
+  const failures = [];
+  if (!Array.isArray(registry.fleetRouting)) {
+    return ['the registry export has no fleetRouting table; run `pnpm run capabilities:generate`'];
+  }
+  const routes = new Map(registry.fleetRouting.map((entry) => [entry.id, entry.route]));
+  const stances = new Map(registry.operations.map((operation) => [operation.id, operation.peer?.kind]));
+  for (const entry of dispatcher.entries) {
+    const name = entry.handler.name;
+    const route = routes.get(name);
+    if (!route) continue; // the registry closure test owns missing rows
+    if (entry.adapter) {
+      if (route.kind === 'by_owner') {
+        failures.push(`${name}: by_owner on a host adapter cannot be verified; route it by_target with a reason`);
+      }
+      continue;
+    }
+    if (route.kind === 'by_owner') {
+      const verdict = verifyArgumentPath(index, entry.command, route.path);
+      if (!verdict.ok) failures.push(`${name}: by_owner path '${route.path}' does not exist (${verdict.why})`);
+    }
+    if (!['proxied', 'operator_only'].includes(stances.get(name))) continue;
+    const ownerKeys = handlerKeyPaths(index, entry.command).filter((keyPath) =>
+      FLEET_OWNER_ID_KEYS.has(keyPath.split('.').pop()),
+    );
+    if (ownerKeys.length && route.kind === 'by_target' && !route.reason) {
+      failures.push(
+        `${name}: carries ${ownerKeys.join(', ')} but routes by_target; declare by_owner (or by_target with a reason) in fleet_routing.rs`,
+      );
+    }
+  }
+  return failures;
 }
 
 function main() {
@@ -406,6 +652,16 @@ function main() {
     .filter((file) => file !== outputPath)
     .map((file) => ({ file: path.relative(desktopSrc, file), source: fs.readFileSync(file, 'utf8') }));
   const result = buildDispatcher(libSource, files);
+  const fleetFailures = checkFleetRouting(
+    JSON.parse(fs.readFileSync(registryExportPath, 'utf8')),
+    result,
+    loadRustTypeIndex(),
+  );
+  if (fleetFailures.length) {
+    console.error('fleet routing (product-domains remote_surface/fleet_routing.rs) disagrees with the handlers:');
+    for (const failure of fleetFailures) console.error(`- ${failure}`);
+    process.exit(1);
+  }
   const current = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
   if (check) {
     if (current !== result.text) {

@@ -6,6 +6,7 @@
 pub mod account;
 pub mod agent_catalog;
 pub mod detached_dispatch_control;
+pub mod fleet;
 pub mod html_preview;
 pub mod mcp;
 pub mod native_hooks;
@@ -17,6 +18,7 @@ pub mod remote_control;
 pub mod remote_surface;
 #[cfg(feature = "external-sources")]
 pub mod session_import;
+pub mod superagent;
 pub mod tool_permissions;
 
 #[cfg(feature = "external-sources")]

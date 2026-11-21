@@ -36,9 +36,12 @@ import { listenEvent } from "./bridge";
 import { loadQueueForSession } from "./queueStore";
 import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
 import {
+  activeSessionDevice,
   activeSessionId,
   activeWorkspaceId,
   bindPendingTurnId,
+  deviceContext,
+  deviceIdOfKey,
   clearPendingTurn,
   clearStreamedText,
   loadTurns,
@@ -51,6 +54,7 @@ import {
   removeSessionFromEvent,
   runningTurnId,
   runningTurns,
+  sessionKey,
   sessionTurns,
   setPendingTurn,
   streamText,
@@ -98,6 +102,8 @@ export interface LiveModelRound {
 
 export interface LiveTurnState {
   sessionId: string;
+  /** The device the session runs on (`""` without the fleet layer). */
+  deviceId?: string;
   turnId: string | null;
   userText: string;
   rounds: LiveModelRound[];
@@ -170,6 +176,23 @@ const HEAVY_MAX_CHARS_PER_FRAME = 96;
 
 /** Structured live rounds & tools for the active session's in-flight/settling turn. */
 export const liveTurn = signal<LiveTurnState | null>(null);
+
+/**
+ * The device the event being handled comes from (`EventMeta.origin`; `""`
+ * without the fleet layer). Per-session state here is keyed by
+ * `"<device>/<session>"`, so two devices' sessions never share a stream, a
+ * parked turn or a running mark.
+ */
+let eventOrigin = "";
+
+function keyOf(sessionId: string, origin: string = eventOrigin): string {
+  return `${origin}/${sessionId}`;
+}
+
+/** True when the event being handled names the open session on its device. */
+function isActive(sessionId: string): boolean {
+  return Boolean(sessionId) && sessionId === activeSessionId() && eventOrigin === activeSessionDevice();
+}
 
 /**
  * Monotonic tick incremented at most once per painted streaming frame (and on
@@ -856,23 +879,24 @@ const turnStarts = new Map<string, number>();
 
 /** When the turn running in a session started, for the composer's elapsed clock. */
 export function turnStartedAt(sessionId: string): number | undefined {
-  return turnStarts.get(sessionId);
+  return turnStarts.get(sessionKey(sessionId));
 }
 
-/** True when an event names a session other than the open one. */
+/** True when an event names a session other than the open one (or the open one's id on another device). */
 function isOtherSession(payload: { sessionId?: string; session_id?: string } | null | undefined): boolean {
   const id = sessionOf(payload);
-  return Boolean(id) && id !== activeSessionId();
+  return Boolean(id) && !isActive(id);
 }
 
 function parkedTurnFor(sessionId: string, turnId: string | null): ParkedTurn {
-  const existing = parkedTurns.get(sessionId);
+  const key = keyOf(sessionId);
+  const existing = parkedTurns.get(key);
   if (existing && (!turnId || !existing.turnId || existing.turnId === turnId)) {
     if (turnId && !existing.turnId) existing.turnId = turnId;
     return existing;
   }
   const created: ParkedTurn = { sessionId, turnId, userText: "", rounds: [] };
-  parkedTurns.set(sessionId, created);
+  parkedTurns.set(key, created);
   return created;
 }
 
@@ -901,14 +925,14 @@ function parkedRoundFor(
 }
 
 /** Snapshots the open session's running turn before another session replaces it on screen. */
-function parkActiveTurn(sessionId: string | null): void {
-  if (!sessionId) return;
+function parkActiveTurn(sessionId: string | null, key: string | null): void {
+  if (!sessionId || !key) return;
   const live = liveTurn();
-  if (!live || live.sessionId !== sessionId || live.settling) return;
-  if (!runningTurns()[sessionId] && !runningTurnId()) return;
+  if (!live || live.sessionId !== sessionId || keyOf(sessionId, live.deviceId ?? "") !== key || live.settling) return;
+  if (!runningTurns()[key] && !runningTurnId()) return;
   flushStreamingBuffers();
   const pending = pendingTurnState();
-  parkedTurns.set(sessionId, {
+  parkedTurns.set(key, {
     sessionId,
     turnId: live.turnId,
     userText: live.userText || (pending && pending.sessionId === sessionId ? pending.userText : ""),
@@ -924,12 +948,12 @@ function parkActiveTurn(sessionId: string | null): void {
 }
 
 /** Puts a parked turn back on screen when its session is opened again. */
-function restoreParkedTurn(sessionId: string | null): void {
-  if (!sessionId) return;
-  const parked = parkedTurns.get(sessionId);
+function restoreParkedTurn(sessionId: string | null, key: string | null): void {
+  if (!sessionId || !key) return;
+  const parked = parkedTurns.get(key);
   if (!parked) return;
-  parkedTurns.delete(sessionId);
-  if (!runningTurns()[sessionId]) return;
+  parkedTurns.delete(key);
+  if (!runningTurns()[key]) return;
   batch(() => {
     clearAllRoundStreams();
     const rounds: LiveModelRound[] = [];
@@ -944,6 +968,7 @@ function restoreParkedTurn(sessionId: string | null): void {
     }
     liveTurn.set({
       sessionId,
+      deviceId: deviceIdOfKey(key),
       turnId: parked.turnId,
       userText: parked.userText,
       rounds,
@@ -961,7 +986,7 @@ function restoreParkedTurn(sessionId: string | null): void {
 function parkEvent(kind: "chunk" | "roundStarted" | "roundCompleted" | "superseded" | "tool", payload: Record<string, unknown>): void {
   const sessionId = sessionOf(payload as { sessionId?: string });
   if (!sessionId) return;
-  const turnId = turnOf(payload as { turnId?: string }) ?? runningTurns()[sessionId] ?? null;
+  const turnId = turnOf(payload as { turnId?: string }) ?? runningTurns()[keyOf(sessionId)] ?? null;
   const roundId = roundOf(payload as { roundId?: string });
   const turn = parkedTurnFor(sessionId, turnId);
   switch (kind) {
@@ -1055,6 +1080,7 @@ function ensureLiveTurn(sessionId: string, turnId: string | null): LiveTurnState
   if (
     current &&
     current.sessionId === sessionId &&
+    (current.deviceId ?? "") === eventOrigin &&
     (!turnId || !current.turnId || current.turnId === turnId)
   ) {
     if (turnId && !current.turnId) {
@@ -1069,6 +1095,7 @@ function ensureLiveTurn(sessionId: string, turnId: string | null): LiveTurnState
   const pending = pendingTurnState();
   return {
     sessionId,
+    deviceId: eventOrigin,
     turnId,
     userText: pending && pending.sessionId === sessionId ? pending.userText : "",
     rounds: [],
@@ -1108,11 +1135,12 @@ function upsertRoundMeta(
 function endTurn(payload: TurnEventPayload | null): void {
   const sessionId = sessionOf(payload);
   if (!sessionId) return;
-  turnStarts.delete(sessionId);
+  const key = keyOf(sessionId);
+  turnStarts.delete(key);
   runningTurns.update(current => {
-    if (!(sessionId in current)) return current;
+    if (!(key in current)) return current;
     const next = { ...current };
-    delete next[sessionId];
+    delete next[key];
     return next;
   });
 }
@@ -1130,11 +1158,14 @@ function endTurn(payload: TurnEventPayload | null): void {
  *   (cancelled before it existed) has nothing left to wait for.
  */
 async function settleCompletedTurn(sessionId: string, turnId: string | null, afterPersist: boolean): Promise<void> {
-  if (!sessionId || activeSessionId() !== sessionId) return;
-  const effectiveTurnId = turnId ?? settlingTurns.get(sessionId)?.turnId ?? liveTurn()?.turnId ?? null;
+  if (!sessionId || !isActive(sessionId)) return;
+  const origin = eventOrigin;
+  const key = keyOf(sessionId);
+  const stillActive = () => activeSessionId() === sessionId && activeSessionDevice() === origin;
+  const effectiveTurnId = turnId ?? settlingTurns.get(key)?.turnId ?? liveTurn()?.turnId ?? null;
 
   const loaded = await loadTurns(sessionId, { silent: true });
-  if (activeSessionId() !== sessionId) return;
+  if (!stillActive()) return;
   // A failed read keeps what streamed visible; the next read settles it.
   if (loaded === null) return;
 
@@ -1144,7 +1175,7 @@ async function settleCompletedTurn(sessionId: string, turnId: string | null, aft
   const ready = matched ? matched.settled : afterPersist;
   if (!ready) return;
 
-  settlingTurns.delete(sessionId);
+  settlingTurns.delete(key);
   batch(() => {
     clearAllRoundStreams();
     liveTurn.set(null);
@@ -1163,9 +1194,10 @@ async function settleCompletedTurn(sessionId: string, turnId: string | null, aft
 export function settleLiveTurnFromView(sessionId: string): void {
   const live = liveTurn();
   if (!live?.turnId || live.sessionId !== sessionId || activeSessionId() !== sessionId) return;
+  if ((live.deviceId ?? "") !== activeSessionDevice()) return;
   const matched = sessionTurns().find(turn => turn.turnId === live.turnId);
   if (!matched?.settled) return;
-  settlingTurns.delete(sessionId);
+  settlingTurns.delete(keyOf(sessionId, activeSessionDevice()));
   batch(() => {
     if (runningTurnId() === live.turnId) runningTurnId.set(null);
     clearAllRoundStreams();
@@ -1332,7 +1364,7 @@ function applyToolEvent(
 function finishOtherSessionTurn(payload: TurnEventPayload | null, drain: boolean): boolean {
   if (!payload || !isOtherSession(payload)) return false;
   const sessionId = sessionOf(payload);
-  parkedTurns.delete(sessionId);
+  parkedTurns.delete(keyOf(sessionId));
   // The host drains its own queue; the rows follow.
   if (drain) void loadQueueForSession(sessionId, true);
   return true;
@@ -1357,7 +1389,7 @@ const CHUNK_SPANS_KEY = "__openbitfunChunkSpans";
 
 type AgentEventHandler = (payload: never) => void;
 const agentEventHandlers = new Map<string, AgentEventHandler>();
-/** Per session, the delivery position a replayed snapshot already covered. */
+/** Per session (`"<device>/<session>"`), the delivery position a replayed snapshot already covered. */
 const replayFloors = new Map<string, { streamId: string; cursor: number }>();
 /** Turns this surface followed live from their `dialog-turn-started`. */
 const followedTurns = new Set<string>();
@@ -1371,7 +1403,7 @@ let replayingSnapshot = false;
 function admitLiveEvent(event: string, payload: unknown): unknown {
   if (!payload || typeof payload !== "object") return payload;
   const record = payload as Record<string, unknown>;
-  const floor = replayFloors.get(sessionOf(record as { sessionId?: string }));
+  const floor = replayFloors.get(keyOf(sessionOf(record as { sessionId?: string })));
   if (!floor) return payload;
   const cursor = record[RUNTIME_CURSOR_KEY];
   if (typeof cursor !== "number" || record[RUNTIME_STREAM_KEY] !== floor.streamId) return payload;
@@ -1392,10 +1424,16 @@ function admitLiveEvent(event: string, payload: unknown): unknown {
 
 function onAgentEvent<T>(event: string, handler: (payload: T) => void): void {
   agentEventHandlers.set(event, handler as AgentEventHandler);
-  listenEvent<T>(event, payload => {
-    const admitted = admitLiveEvent(event, payload);
-    if (admitted === null) return;
-    handler(admitted as T);
+  listenEvent<T>(event, (payload, meta) => {
+    const previous = eventOrigin;
+    eventOrigin = meta.origin;
+    try {
+      const admitted = admitLiveEvent(event, payload);
+      if (admitted === null) return;
+      handler(admitted as T);
+    } finally {
+      eventOrigin = previous;
+    }
   });
 }
 
@@ -1412,15 +1450,26 @@ export function forgetFollowedTurns(): void {
 export function hydrateRunningTurn(sessionId: string, snapshot: RunningTurnSnapshot): void {
   const turnId = snapshot.activeTurnId;
   if (!turnId || activeSessionId() !== sessionId) return;
+  const device = activeSessionDevice();
   const live = liveTurn();
-  if (followedTurns.has(turnId) && live?.sessionId === sessionId && live.turnId === turnId) return;
+  if (
+    followedTurns.has(turnId) &&
+    live?.sessionId === sessionId &&
+    (live.deviceId ?? "") === device &&
+    live.turnId === turnId
+  ) {
+    return;
+  }
+  // The snapshot is the open session's, on its own device.
+  const previousOrigin = eventOrigin;
+  eventOrigin = device;
   replayingSnapshot = true;
   try {
     batch(() => {
       clearAllRoundStreams();
       liveTurn.set(null);
     });
-    parkedTurns.delete(sessionId);
+    parkedTurns.delete(keyOf(sessionId));
     for (const event of snapshot.events ?? []) {
       const handler = agentEventHandlers.get(event.eventName);
       if (handler) (handler as (payload: unknown) => void)(event.payload);
@@ -1428,8 +1477,9 @@ export function hydrateRunningTurn(sessionId: string, snapshot: RunningTurnSnaps
     flushStreamingBuffers();
   } finally {
     replayingSnapshot = false;
+    eventOrigin = previousOrigin;
   }
-  replayFloors.set(sessionId, { streamId: snapshot.streamId, cursor: snapshot.cursor });
+  replayFloors.set(keyOf(sessionId, device), { streamId: snapshot.streamId, cursor: snapshot.cursor });
   // The snapshot carries the turn's start, so it counts as followed from now on.
   followedTurns.add(turnId);
 }
@@ -1444,9 +1494,9 @@ export function subscribeAgentEvents(): void {
     resetLiveTurn();
   });
 
-  onSessionSwitch((phase, sessionId) => {
-    if (phase === "leave") parkActiveTurn(sessionId);
-    else if (phase === "enter") restoreParkedTurn(sessionId);
+  onSessionSwitch((phase, sessionId, key) => {
+    if (phase === "leave") parkActiveTurn(sessionId, key);
+    else if (phase === "enter") restoreParkedTurn(sessionId, key);
     else resetParkedTurns();
   });
 
@@ -1671,12 +1721,13 @@ export function subscribeAgentEvents(): void {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
     if (running && !replayingSnapshot) followedTurns.add(running);
-    if (sessionId) turnStarts.set(sessionId, Date.now());
+    const key = keyOf(sessionId);
+    if (sessionId) turnStarts.set(key, Date.now());
     if (sessionId) {
       runningTurns.update(current => {
         const next = { ...current };
-        if (running) next[sessionId] = running;
-        else delete next[sessionId];
+        if (running) next[key] = running;
+        else delete next[key];
         return next;
       });
     }
@@ -1688,12 +1739,12 @@ export function subscribeAgentEvents(): void {
           : typeof payload?.user_input === "string" && payload.user_input
             ? payload.user_input
             : undefined;
-    if (sessionId && sessionId !== activeSessionId()) {
-      parkedTurns.set(sessionId, { sessionId, turnId: running, userText: userInput ?? "", rounds: [] });
+    if (sessionId && !isActive(sessionId)) {
+      parkedTurns.set(key, { sessionId, turnId: running, userText: userInput ?? "", rounds: [] });
       return;
     }
     const targetSession = sessionId || activeSessionId() || "";
-    settlingTurns.delete(targetSession);
+    settlingTurns.delete(keyOf(targetSession));
     batch(() => {
       clearStreamedText();
       if (targetSession && running) {
@@ -1702,6 +1753,7 @@ export function subscribeAgentEvents(): void {
       runningTurnId.set(running);
       liveTurn.set({
         sessionId: targetSession,
+        deviceId: eventOrigin,
         turnId: running,
         userText: userInput ?? pendingTurnState()?.userText ?? "",
         rounds: [],
@@ -1730,7 +1782,7 @@ export function subscribeAgentEvents(): void {
       }
     });
     if (sessionId) {
-      settlingTurns.set(sessionId, { turnId: completedTurnId });
+      settlingTurns.set(keyOf(sessionId), { turnId: completedTurnId });
       void settleCompletedTurn(sessionId, completedTurnId, false);
       // The host drains its own queue; the rows follow.
       void loadQueueForSession(sessionId, true);
@@ -1746,8 +1798,8 @@ export function subscribeAgentEvents(): void {
           ? payload.settled_turn_id
           : null;
     if (!sessionId) return;
-    if (sessionId === activeSessionId()) {
-      if (settlingTurns.has(sessionId) || liveTurn()?.settling) {
+    if (isActive(sessionId)) {
+      if (settlingTurns.has(keyOf(sessionId)) || liveTurn()?.settling) {
         void settleCompletedTurn(sessionId, settledTurnId, true);
       } else if (!runningTurnId()) {
         // External or detached update landed on the active session.
@@ -1765,7 +1817,7 @@ export function subscribeAgentEvents(): void {
     const turnId = turnOf(payload) ?? runningTurnId();
     runningTurnId.set(null);
     if (sessionId) {
-      settlingTurns.set(sessionId, { turnId });
+      settlingTurns.set(keyOf(sessionId), { turnId });
       void settleCompletedTurn(sessionId, turnId, true);
       // The host drains its own queue; the rows follow.
       void loadQueueForSession(sessionId, true);
@@ -1782,7 +1834,7 @@ export function subscribeAgentEvents(): void {
     const turnId = turnOf(payload) ?? runningTurnId();
     runningTurnId.set(null);
     if (sessionId) {
-      settlingTurns.set(sessionId, { turnId });
+      settlingTurns.set(keyOf(sessionId), { turnId });
       void settleCompletedTurn(sessionId, turnId, true);
     } else {
       clearStreamedText();
@@ -1793,10 +1845,11 @@ export function subscribeAgentEvents(): void {
     const sessionId = sessionOf(payload);
     const turnId = turnOf(payload);
     if (sessionId && turnId) {
-      runningTurns.update(current => ({ ...current, [sessionId]: turnId }));
-      if (!turnStarts.has(sessionId)) turnStarts.set(sessionId, Date.now());
+      const key = keyOf(sessionId);
+      runningTurns.update(current => ({ ...current, [key]: turnId }));
+      if (!turnStarts.has(key)) turnStarts.set(key, Date.now());
     }
-    if (sessionId && sessionId !== activeSessionId()) return;
+    if (sessionId && !isActive(sessionId)) return;
     if (turnId) runningTurnId.set(turnId);
   });
 
@@ -1817,7 +1870,7 @@ export function subscribeAgentEvents(): void {
       bumpScrollTick();
     });
     if (sessionId) {
-      settlingTurns.set(sessionId, { turnId });
+      settlingTurns.set(keyOf(sessionId), { turnId });
       void settleCompletedTurn(sessionId, turnId, true);
       // A failed turn must not strand the queue behind it.
       // The host drains its own queue; the rows follow.
@@ -1832,13 +1885,14 @@ export function subscribeAgentEvents(): void {
   onAgentEvent<SessionTitleGeneratedPayload>("session_title_generated", payload => {
     const sessionId = sessionOf(payload);
     const title = typeof payload?.title === "string" ? payload.title.trim() : "";
-    if (!sessionId || !title) return;
+    if (!sessionId || !title || eventOrigin !== deviceContext()) return;
     patchSessionTitle(sessionId, title);
   });
 
   onAgentEvent<SessionCreatedPayload>("agentic://session-created", payload => {
     const sessionId = sessionOf(payload);
-    if (!sessionId) return;
+    // The lists show the device context's sessions; another device's arrive with its index.
+    if (!sessionId || eventOrigin !== deviceContext()) return;
     const wsId = payload?.workspaceId ?? payload?.workspace_id;
     const activeWs = activeWorkspaceId();
     if (wsId && activeWs && wsId !== activeWs) return;
@@ -1864,7 +1918,7 @@ export function subscribeAgentEvents(): void {
 
   onAgentEvent<TurnEventPayload>("agentic://session-deleted", payload => {
     const sessionId = sessionOf(payload);
-    if (!sessionId) return;
+    if (!sessionId || eventOrigin !== deviceContext()) return;
     removeSessionFromEvent(sessionId);
   });
 }

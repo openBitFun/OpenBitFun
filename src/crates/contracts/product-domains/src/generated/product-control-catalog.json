@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "8c7c7efeebc00dc169740b5321b981c9bd229525167eaf6d1388436ee4fcfb2d",
+  "digest": "111f8eba88e117defacc127be88915b4344b785e72d1ddb74208d7f2a9b21f74",
   "ownerDigest": "6f0746578f3c56479f7c289bb05395dfe6917042f4d419de8c9a2f719d31f815",
   "searchAcceptance": [
     {
@@ -178,11 +178,11 @@
     "features": 23,
     "settings": 23,
     "userFacing": 46,
-    "documentedItems": 350,
+    "documentedItems": 351,
     "controlCoverage": {
       "direct": 63,
       "delegated": 67,
-      "interactive": 220,
+      "interactive": 221,
       "unsupported": 0
     }
   },
@@ -15226,6 +15226,7 @@
       "capabilityId": "setting.ai.permissions",
       "itemIds": [
         "default-permission-posture",
+        "openbitfun-device-switches",
         "auto-approval-screener",
         "auto-approval-fallbacks",
         "global-permission-rules",
@@ -15275,6 +15276,52 @@
       "capabilityId": "setting.ai.permissions",
       "itemIds": [
         "default-permission-posture"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "ai.permissions"
+      }
+    },
+    {
+      "id": "setting.ai.permissions:open:openbitfun-device-switches",
+      "capabilityId": "setting.ai.permissions",
+      "itemIds": [
+        "openbitfun-device-switches"
       ],
       "kind": "open",
       "risk": "ui",
@@ -26619,8 +26666,8 @@
       "categoryId": "connect",
       "titleZh": "Remote Connect 远控与多设备互控",
       "titleEn": "Remote Connect, Bots & Peer Devices",
-      "summaryZh": "离开工位也能用手机网页，或接入微信、飞书、Telegram 中的聊天机器人查看对话进度、审批权限并继续指挥；同账号多台电脑还能开启 Peer Device Mode，在一个窗口里直接切换操作另一台机器的工作区与会话。",
-      "summaryEn": "Follow sessions, approve permissions, and keep working from Mobile Web or a WeChat, Feishu, or Telegram bot—or enter Peer Device Mode to browse and drive another same-account computer right from your current OpenBitFun window.",
+      "summaryZh": "离开工位也能在 OpenBitFun 手机应用或浏览器中登录同一账号，或接入微信、飞书、Telegram 中的聊天机器人查看对话进度、审批权限并继续指挥；同账号的所有设备经 OpenBitFun Link 在一个界面里互相查看与操作。",
+      "summaryEn": "Follow sessions, approve permissions, and keep working from the OpenBitFun phone app, a browser, or a WeChat, Feishu, or Telegram bot—and see and drive every device of your account from one OpenBitFun window over OpenBitFun Link.",
       "keywordsZh": [
         "Remote Connect",
         "远程控制",
@@ -26636,7 +26683,7 @@
       "keywordsEn": [
         "remote connect",
         "remote control",
-        "mobile web",
+        "OpenBitFun Link",
         "Feishu bot",
         "Telegram bot",
         "WeChat bot",
@@ -26646,13 +26693,13 @@
         "email sign-in"
       ],
       "highlightsZh": [
-        "手机扫码即连：官方 Relay 免部署开箱即用，同一网络的设备经账号设备网络直连",
+        "手机或浏览器用同一账号登录即可查看并操作你的设备：经 OpenBitFun Link 直连或中继，无需配对码",
         "接入微信、飞书或 Telegram 机器人，在常用聊天软件里收发进度与批复权限",
         "同账号多设备互控（Peer Mode）：左侧边栏直接展开另一台电脑的项目与会话",
         "智能体可直接帮你启停远控渠道、生成微信扫码登录并查看监听状态"
       ],
       "highlightsEn": [
-        "Scan to connect from phone: zero-setup official Relay, with same-network devices connecting directly through the account device mesh",
+        "Sign in with the same account on your phone or in a browser to see and control your devices over OpenBitFun Link, with no pairing codes",
         "Pair a WeChat, Feishu, or Telegram bot to chat and approve permissions from your messenger",
         "Same-account Peer Device Mode: expand and operate another computer’s workspaces right in your sidebar",
         "Ask the agent directly to start/stop channels, launch WeChat QR login, or inspect listener health"
@@ -26671,13 +26718,13 @@
         },
         {
           "id": "connection-methods",
-          "titleZh": "使用免部署的官方 Relay",
-          "titleEn": "Use the zero-setup official Relay",
+          "titleZh": "经 OpenBitFun Link 在任何网络连接你的设备",
+          "titleEn": "Reach your devices on any network over OpenBitFun Link",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「使用免部署的官方 Relay」需要结合你当前的网络环境确认连接入口；官方 Relay 开箱即用，私有 Relay 仅面向配套定制客户端构建，界面不提供自定义服务器地址输入。",
-            "reasonEn": "\"Use the zero-setup official Relay\" depends on your current network setup and host confirmation; the official Relay needs no deployment, while private Relays require matching custom builds rather than a custom URL field."
+            "reasonZh": "「经 OpenBitFun Link 在任何网络连接你的设备」由登录与本机可被控制开关决定，没有需要智能体选择的连接入口。",
+            "reasonEn": "\"Reach your devices on any network over OpenBitFun Link\" follows sign-in and the Allow control switch; there is no connection entry for the Agent to choose."
           }
         },
         {
@@ -26719,7 +26766,7 @@
         {
           "id": "bots",
           "titleZh": "接入微信扫码、飞书或 Telegram 聊天机器人（每次连接一个聊天应用，与手机远控并行不悖）",
-          "titleEn": "Connect a WeChat (QR login), Feishu, or Telegram bot alongside Mobile Web",
+          "titleEn": "Connect a WeChat (QR login), Feishu, or Telegram bot",
           "control": {
             "kind": "direct",
             "operations": [
@@ -26758,36 +26805,36 @@
         },
         {
           "id": "peer-device",
-          "titleZh": "开启 Peer Device Mode，在当前窗口无缝接管另一台电脑的工作区",
-          "titleEn": "Use Peer Device Mode to operate another computer’s workspaces in your current window",
+          "titleZh": "在当前窗口直接操作同账号另一台电脑的工作区",
+          "titleEn": "Operate another computer’s workspaces in your current window",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "「开启 Peer Device Mode，在当前窗口无缝接管另一台电脑的工作区」会切换当前窗口所绑定的远端主机数据面，需要你在侧边栏或设备面板明确点击目标设备确认切换。",
-            "reasonEn": "\"Use Peer Device Mode to operate another computer’s workspaces in your current window\" switches the active window’s live data plane to another host and requires an explicit device selection in the sidebar or device switcher."
+            "reasonZh": "「在当前窗口直接操作同账号另一台电脑的工作区」会切换当前窗口显示的设备，需要你在「所有会话 › 按设备」或设备页明确选择目标设备。",
+            "reasonEn": "\"Operate another computer’s workspaces in your current window\" changes which device the window shows and requires an explicit device choice in All sessions › By device or on the device page."
           }
         }
       ],
       "stepsZh": [
         "点击左下角设备状态按钮打开「管理设备」（即「设备与连接」弹窗），先在「概览」或「我的设备」中登录账号；登录后左侧会显示「手机或浏览器」与「聊天应用」",
-        "手机或跨电脑互控：在两台设备使用同一种方式（同为 GitHub 或同为邮箱验证码）登录同一账号；官方 Relay 无需额外部署",
-        "手机远控可在「手机或浏览器」中扫描官方或桌面局域网邀请二维码并确认目标设备；跨电脑互控直接在左侧边栏展开对应设备即可进入 Peer Mode",
+        "手机或跨电脑互控：在每台设备使用同一种方式（同为 GitHub 或同为邮箱验证码）登录同一账号；设备经 OpenBitFun Link 自动互联，无需额外部署",
+        "手机或浏览器：打开 OpenBitFun 手机应用或「手机或浏览器」面板中的网页地址，用同一账号登录后即可看到并操作你的设备；跨电脑互控直接在左侧边栏展开对应设备",
         "机器人远控：在「聊天应用」选择微信扫码（或加载飞书 / Telegram 凭据配置），把返回的配对码发给机器人完成绑定"
       ],
       "stepsEn": [
         "Click the bottom-left device status control → Manage devices to open Devices & Connections, and sign in under Overview or My devices; once signed in, Phone or browser and Chat apps appear in the dialog sidebar",
-        "For mobile or cross-computer control, sign in on every device using the exact same login method (GitHub or email code) and account; the official Relay works out of the box",
-        "On mobile, scan the official or LAN invitation QR under Phone or browser and confirm the host; on another computer, simply expand that device in the left sidebar to enter Peer Device Mode",
+        "For mobile or cross-computer control, sign in on every device using the exact same login method (GitHub or email code) and account; devices connect over OpenBitFun Link with no setup",
+        "On a phone or in a browser, open the OpenBitFun app or the web address shown under Phone or browser and sign in with the same account to see and drive your devices; on another computer, simply expand that device in the left sidebar",
         "For IM bots, open Chat apps to scan the WeChat QR (or supply your Feishu / Telegram bot config) and send the pairing code to the bot chat to finish linking"
       ],
       "agentExamplesZh": [
-        "开启手机网页远控，我想在手机上接着看进度",
+        "看看我的哪些设备在线",
         "帮我启动微信机器人登录二维码，配好消息监听",
         "查看当前远控和机器人的运行状态",
         "暂时停用 Telegram 机器人，保留已有配置"
       ],
       "agentExamplesEn": [
-        "Enable Mobile Web remote control so I can follow this session from my phone",
+        "Show which of my devices are online",
         "Start WeChat bot QR login and set up message listening",
         "Check the current Remote Connect and bot status",
         "Stop the Telegram bot for now while keeping its configuration"
@@ -26820,8 +26867,8 @@
           "id": "start",
           "titleZh": "启动远控渠道",
           "titleEn": "Start a Remote Connect channel",
-          "descriptionZh": "启动指定机器人或手机网页远控。CLI 自动启动 daemon，退出当前聊天后继续监听。新机器人需将返回的配对码发给机器人；CLI 不支持局域网 Relay。",
-          "descriptionEn": "Start the selected bot or Mobile Web. CLI starts its daemon and keeps listening after this chat exits. Send the returned pairing code to a new bot. CLI does not host a LAN Relay.",
+          "descriptionZh": "启动指定机器人。CLI 自动启动 daemon，退出当前聊天后继续监听。新机器人需将返回的配对码发给机器人。",
+          "descriptionEn": "Start the selected bot. CLI starts its daemon and keeps listening after this chat exits. Send the returned pairing code to a new bot.",
           "risk": "write",
           "inputSchema": {
             "additionalProperties": false,
@@ -26855,8 +26902,8 @@
           "id": "stop",
           "titleZh": "停用远控渠道",
           "titleEn": "Stop a Remote Connect channel",
-          "descriptionZh": "停用选定渠道并保留配置和会话。机器人停用状态跨重启保留。关闭手机网页会同时断开该主机的 Peer 设备路由，机器人保持运行。",
-          "descriptionEn": "Stop the selected channel while retaining configuration and sessions. Bot disablement survives restart. Stopping Mobile Web also disconnects Peer routing on this host; bots keep running.",
+          "descriptionZh": "停用选定渠道并保留配置和会话。机器人停用状态跨重启保留。",
+          "descriptionEn": "Stop the selected channel while retaining configuration and sessions. Bot disablement survives restart.",
           "risk": "write",
           "inputSchema": {
             "additionalProperties": false,
@@ -27014,7 +27061,7 @@
         "邮箱登录",
         "remote connect",
         "remote control",
-        "mobile web",
+        "OpenBitFun Link",
         "Feishu bot",
         "Telegram bot",
         "WeChat bot",
@@ -27022,18 +27069,18 @@
         "peer device",
         "GitHub sign-in",
         "email sign-in",
-        "手机扫码即连：官方 Relay 免部署开箱即用，同一网络的设备经账号设备网络直连",
+        "手机或浏览器用同一账号登录即可查看并操作你的设备：经 OpenBitFun Link 直连或中继，无需配对码",
         "接入微信、飞书或 Telegram 机器人，在常用聊天软件里收发进度与批复权限",
         "同账号多设备互控（Peer Mode）：左侧边栏直接展开另一台电脑的项目与会话",
         "智能体可直接帮你启停远控渠道、生成微信扫码登录并查看监听状态",
-        "Scan to connect from phone: zero-setup official Relay, with same-network devices connecting directly through the account device mesh",
+        "Sign in with the same account on your phone or in a browser to see and control your devices over OpenBitFun Link, with no pairing codes",
         "Pair a WeChat, Feishu, or Telegram bot to chat and approve permissions from your messenger",
         "Same-account Peer Device Mode: expand and operate another computer’s workspaces right in your sidebar",
         "Ask the agent directly to start/stop channels, launch WeChat QR login, or inspect listener health",
         "本机可被控制",
         "Allow control of this device",
-        "使用免部署的官方 Relay",
-        "Use the zero-setup official Relay",
+        "经 OpenBitFun Link 在任何网络连接你的设备",
+        "Reach your devices on any network over OpenBitFun Link",
         "一键启动、停用远控渠道并查看实时连接与设备信息",
         "Start or stop Remote Connect channels and inspect live connection status",
         "查看扫码邀请链接",
@@ -27041,18 +27088,18 @@
         "在手机或浏览器中打开同一界面，扫码配对并随时撤销",
         "Open the same UI on a phone or browser, pair by QR, and revoke at any time",
         "接入微信扫码、飞书或 Telegram 聊天机器人（每次连接一个聊天应用，与手机远控并行不悖）",
-        "Connect a WeChat (QR login), Feishu, or Telegram bot alongside Mobile Web",
+        "Connect a WeChat (QR login), Feishu, or Telegram bot",
         "通过 GitHub 或邮箱验证码登录账号并查看身份状态",
         "Sign in with GitHub or an email verification code and check account status",
         "查看同账号在线设备、系统型号、自定义设备别名与移除旧设备",
         "Browse same-account devices, OS/model info, custom aliases, and device removal",
-        "开启 Peer Device Mode，在当前窗口无缝接管另一台电脑的工作区",
-        "Use Peer Device Mode to operate another computer’s workspaces in your current window",
-        "开启手机网页远控，我想在手机上接着看进度",
+        "在当前窗口直接操作同账号另一台电脑的工作区",
+        "Operate another computer’s workspaces in your current window",
+        "看看我的哪些设备在线",
         "帮我启动微信机器人登录二维码，配好消息监听",
         "查看当前远控和机器人的运行状态",
         "暂时停用 Telegram 机器人，保留已有配置",
-        "Enable Mobile Web remote control so I can follow this session from my phone",
+        "Show which of my devices are online",
         "Start WeChat bot QR login and set up message listening",
         "Check the current Remote Connect and bot status",
         "Stop the Telegram bot for now while keeping its configuration"
@@ -30606,6 +30653,17 @@
           }
         },
         {
+          "id": "openbitfun-device-switches",
+          "titleZh": "决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求",
+          "titleEn": "Decide whether OpenBitFun may start work on this device and approve requests from the jobs it started",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“决定 OpenBitFun 能否在本设备上开展工作、能否代你批准请求”会改变这台设备的安全边界；智能体会打开权限页交由你亲自切换。",
+            "reasonEn": "“Decide whether OpenBitFun may start work on this device and approve requests” changes this device's safety boundary; the Agent opens Permissions so you switch it yourself."
+          }
+        },
+        {
           "id": "auto-approval-screener",
           "titleZh": "为自动审批选择聊天审查模型或专用 Jev 决策模型并加密保存凭据",
           "titleEn": "Choose a chat screener model or dedicated Jev decision model for auto-approval with encrypted credentials",
@@ -30713,6 +30771,8 @@
         "Order global Allow / Ask / Deny baseline rules and toggle the composer permission-mode switcher",
         "在需要确认（默认）、自动审批与完全访问三种默认权限模式间切换",
         "Switch the default permission mode between Ask (default), Auto-approve, and Full access",
+        "决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求",
+        "Decide whether OpenBitFun may start work on this device and approve requests from the jobs it started",
         "为自动审批选择聊天审查模型或专用 Jev 决策模型并加密保存凭据",
         "Choose a chat screener model or dedicated Jev decision model for auto-approval with encrypted credentials",
         "设置自动审批超时（默认 30 秒）及模型不确定或报错时的兜底动作",

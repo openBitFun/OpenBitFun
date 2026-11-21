@@ -11,9 +11,16 @@
 //!   the same generic dispatcher as a relay RPC, answering its
 //!   `RemoteResponse`, advertised as `remote_command_v1`.
 //!
+//! - the model relay `fleet_model_*` for the account's cloud agent (only its
+//!   `cloud-agent` connection may call it), advertised as `fleet_model_v1`;
+//! - the fleet owner verbs `fleet_digest` / `fleet_replay` (another runtime
+//!   host replicating this one), answered by `crate::fleet`, advertised as
+//!   `fleet_v1` while the fleet runs.
+//!
 //! A controller negotiates them through the mesh capabilities, so an older
 //! target keeps its relay path and a new-to-new pair never uses the relay.
 
+use openbitfun_core::service::superagent_relay;
 use openbitfun_services_integrations::remote_connect::mesh_route::{
     CAPABILITY_DISPATCH_TARGET_V1, CAPABILITY_REMOTE_COMMAND_V1, OBP_REMOTE_COMMAND,
 };
@@ -22,12 +29,28 @@ use serde_json::Value;
 use super::ObpDispatchFuture;
 
 /// The capabilities these verbs add to an `account-device` connection.
-pub(crate) const CAPABILITIES: &[&str] =
-    &[CAPABILITY_DISPATCH_TARGET_V1, CAPABILITY_REMOTE_COMMAND_V1];
+pub(crate) const CAPABILITIES: &[&str] = &[
+    CAPABILITY_DISPATCH_TARGET_V1,
+    CAPABILITY_REMOTE_COMMAND_V1,
+    superagent_relay::FLEET_MODEL_CAPABILITY,
+];
+
+/// The capabilities advertised now: [`CAPABILITIES`], plus `fleet_v1` while
+/// this host's fleet runs (it then serves the owner verbs).
+pub(crate) fn capabilities() -> Vec<&'static str> {
+    let mut capabilities = CAPABILITIES.to_vec();
+    if crate::fleet::current().is_some() {
+        capabilities.push(openbitfun_product_domains::fleet::FLEET_V1_CAPABILITY);
+    }
+    capabilities
+}
 
 /// Whether `command` is a same-account host verb served on the mesh.
 pub(crate) fn is_account_device_host_verb(command: &str) -> bool {
-    command == OBP_REMOTE_COMMAND || crate::api::dispatch_host::is_target_command(command)
+    command == OBP_REMOTE_COMMAND
+        || crate::api::dispatch_host::is_target_command(command)
+        || openbitfun_obp::fleet::host::is_fleet_owner_verb(command)
+        || superagent_relay::is_fleet_model_command(command)
 }
 
 /// Runs a host verb; `None` for any other command (the generated dispatch
@@ -35,6 +58,22 @@ pub(crate) fn is_account_device_host_verb(command: &str) -> bool {
 pub(crate) fn route(command: &str, args: Value) -> Option<ObpDispatchFuture> {
     if command == OBP_REMOTE_COMMAND {
         return Some(Box::pin(remote_command(args)));
+    }
+    // The model relay for the account's cloud agent (the OBP scope admits it
+    // for `cloud-agent` connections only).
+    if superagent_relay::is_fleet_model_command(command) {
+        let command = command.to_string();
+        return Some(Box::pin(async move {
+            superagent_relay::global_relay()
+                .handle(&command, args)
+                .await
+        }));
+    }
+    if openbitfun_obp::fleet::host::is_fleet_owner_verb(command) {
+        return Some(Box::pin(crate::fleet::fleet_api::owner_verb(
+            command.to_string(),
+            args,
+        )));
     }
     if crate::api::dispatch_host::is_target_command(command) {
         let command = command.to_string();
@@ -99,6 +138,12 @@ mod tests {
         ));
         assert!(!is_account_device_host_verb("dispatch_target_nope"));
         assert!(!is_account_device_host_verb("open_workspace"));
+        assert!(is_account_device_host_verb("fleet_digest"));
+        assert!(is_account_device_host_verb("fleet_replay"));
+        assert!(!is_account_device_host_verb("fleet_navigator"));
+        assert!(route("fleet_digest", json!({})).is_some());
+        assert!(is_account_device_host_verb("fleet_model_start"));
+        assert!(route("fleet_model_poll", json!({})).is_some());
         assert!(route("open_workspace", json!({})).is_none());
         assert!(route("dispatch_target_probe", json!({})).is_some());
     }

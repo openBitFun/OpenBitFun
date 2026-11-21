@@ -8,10 +8,6 @@ const contractPath = path.join(root, 'src', 'shared', 'i18n', 'contract', 'local
 
 const outputs = [
   {
-    path: path.join(root, 'src', 'mobile-web', 'src', 'i18n', 'generatedLocaleContract.ts'),
-    generate: generateMobileLocaleContract,
-  },
-  {
     path: path.join(root, 'OpenBitFun-Installer', 'src', 'i18n', 'generatedLocaleContract.ts'),
     generate: generateInstallerLocaleContract,
   },
@@ -181,76 +177,6 @@ function generatedHeader(language) {
     `${comment} Do not edit it by hand; edit the shared i18n contract or shared terms instead.`,
     '',
   ].join('\n');
-}
-
-function generateMobileLocaleContract(contract, sharedTermsByLocale) {
-  const locales = orderedLocales(contract, 'mobile-web');
-  const defaultLanguage = contract.surfaceDefaults['mobile-web'];
-  const unknownFallbacks = contract.unknownLocaleFallbackChain;
-  const sharedTerms = sharedTermsForLocales(sharedTermsByLocale, locales);
-
-  return `${generatedHeader('ts')}export const MOBILE_LOCALES = [
-${locales.map((locale) => `  {
-    id: ${jsonString(locale.id)},
-    shortName: ${jsonString(locale.shortName)},
-    aliases: ${tsArray(locale.aliases)},
-    contentFallbacks: ${tsArray(locale.contentFallbacks)},
-  }`).join(',\n')}
-] as const;
-const UNKNOWN_LANGUAGE_FALLBACK_CHAIN = ${tsArray(unknownFallbacks)} as const satisfies readonly MobileLanguage[];
-
-const mobileLocaleAliasesByPriority = MOBILE_LOCALES
-  .flatMap(locale => locale.aliases.map(alias => ({ locale, alias: alias.toLowerCase() })))
-  .sort((a, b) => b.alias.length - a.alias.length);
-
-export type MobileLanguage = (typeof MOBILE_LOCALES)[number]['id'];
-
-export const DEFAULT_LANGUAGE = ${jsonString(defaultLanguage)} satisfies MobileLanguage;
-
-export type SharedI18nTerms = {
-  readonly [key: string]: string | SharedI18nTerms;
-};
-
-export const SHARED_TERMS_BY_LOCALE = ${tsObject(sharedTerms)} as const satisfies Record<MobileLanguage, SharedI18nTerms>;
-
-export function isMobileLanguage(value: string | null | undefined): value is MobileLanguage {
-  return MOBILE_LOCALES.some(locale => locale.id === value);
-}
-
-export function resolveMobileLanguage(value: string | null | undefined): MobileLanguage | null {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized) return null;
-
-  const exact = MOBILE_LOCALES.find(locale => locale.id.toLowerCase() === normalized);
-  if (exact) return exact.id;
-
-  return mobileLocaleAliasesByPriority
-    .find(({ alias }) => normalized === alias || normalized.startsWith(\`\${alias}-\`))
-    ?.locale.id ?? null;
-}
-
-export function getNextMobileLanguage(language: MobileLanguage): MobileLanguage {
-  const currentIndex = MOBILE_LOCALES.findIndex(locale => locale.id === language);
-  return MOBILE_LOCALES[(currentIndex + 1) % MOBILE_LOCALES.length].id;
-}
-
-export function getMobileLanguageShortName(language: MobileLanguage): string {
-  return MOBILE_LOCALES.find(locale => locale.id === language)?.shortName ?? language;
-}
-
-export function getMobileFallbackChain(language: string | null | undefined, includeSelf = false): MobileLanguage[] {
-  const resolved = resolveMobileLanguage(language);
-  const locale = resolved ? MOBILE_LOCALES.find(item => item.id === resolved) : null;
-  const chain: MobileLanguage[] = locale
-    ? [
-      ...(includeSelf ? [locale.id] : []),
-      ...locale.contentFallbacks,
-    ]
-    : [...UNKNOWN_LANGUAGE_FALLBACK_CHAIN];
-
-  return Array.from(new Set(chain));
-}
-`;
 }
 
 function generateInstallerLocaleContract(contract, sharedTermsByLocale) {

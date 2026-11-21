@@ -170,4 +170,4 @@ Core code is licensed under the [MIT License](./LICENSE). Third-party dependenci
 
 Android, iOS and HarmonyOS source code and releases have moved to
 [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile).
-The browser mobile-web client and Desktop/CLI/Relay host implementations remain in this repository.
+Desktop/CLI/Relay host implementations remain in this repository. The OpenBitFun 1.0 phone web UI (`src/mobile-web`) was removed in 2.0; phones and browsers use the NSH UI (`src/nsh-ui`).

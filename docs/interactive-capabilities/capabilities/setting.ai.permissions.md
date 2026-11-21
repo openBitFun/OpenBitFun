@@ -30,6 +30,10 @@ Set the default safety posture for agent tool calls (Ask, Auto-approve, or Full 
   - Switch the default permission mode between Ask (default), Auto-approve, and Full access
   - 说明：“需要确认”默认放行普通工作区编辑、已识别的只读命令、任务调度和会话间消息，对其他命令、删除、敏感文件和发布操作保持人工把关；“自动审批”先由模型评估风险；“完全访问”需二次确认高风险提示，跳过常规询问但依然遵守产品底层硬性安全限制。
   - Why & how: Ask allows ordinary workspace edits, recognized read-only commands, scheduling, and messages between sessions, while keeping other commands, deletions, sensitive files, and publishing subject to confirmation; Auto-approve screens calls with an AI reviewer first; Full access requires confirming a risk warning and skips routine prompts while keeping hard product safety limits intact.
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 决定 OpenBitFun 能否在本设备上开展工作、能否代你批准它所启动任务的请求
+  - Decide whether OpenBitFun may start work on this device and approve requests from the jobs it started
+  - 说明：“接收 OpenBitFun 的任务”关闭后，OpenBitFun 不会在此设备上开展工作；“允许 OpenBitFun 代我回答”开启时，它可以批准自己在本机启动的任务所发出的请求，并显示批准了什么。两者默认开启，按设备分别设置。
+  - Why & how: With Accept jobs from OpenBitFun off, OpenBitFun keeps this device out of its work; with Let OpenBitFun answer for me on, it can approve requests from jobs it started on this device and shows what it approved. Both are on by default and set per device.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 为自动审批选择聊天审查模型或专用 Jev 决策模型并加密保存凭据
   - Choose a chat screener model or dedicated Jev decision model for auto-approval with encrypted credentials
   - 说明：聊天模型模式默认优先选用“快速模型”（亦可改为“主模型”或任一已启用模型）；专用决策模型模式默认使用 jev-latest，其 API Key 仅加密保存在当前执行主机。

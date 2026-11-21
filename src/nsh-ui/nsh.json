@@ -9,7 +9,7 @@
     ],
     "network": {
       "hosts": [
-        "remote.openbitfun.com"
+        "super.openbitfun.com"
       ]
     },
     "application": true,

@@ -8,16 +8,11 @@
   ],
   "surfaceDefaults": {
     "android": "zh-CN",
-    "mobile-web": "en-US",
     "installer": "en-US",
-    "core": "zh-CN"
+    "core": "zh-CN",
+    "superagent": "en-US"
   },
   "surfaceOrders": {
-    "mobile-web": [
-      "zh-CN",
-      "zh-TW",
-      "en-US"
-    ],
     "installer": [
       "en-US",
       "zh-CN",
@@ -27,13 +22,14 @@
       "zh-CN",
       "zh-TW",
       "en-US"
+    ],
+    "superagent": [
+      "en-US",
+      "zh-CN",
+      "zh-TW"
     ]
   },
   "surfaces": {
-    "mobile-web": {
-      "resourceRoot": "src/mobile-web/src/i18n",
-      "loading": "surface-minimal"
-    },
     "installer": {
       "resourceRoot": "OpenBitFun-Installer/src/i18n/locales",
       "loading": "surface-minimal"
@@ -45,6 +41,10 @@
     "relay-static-homepage": {
       "resourceRoot": "src/apps/relay-server/static/homepage",
       "loading": "self-contained-static"
+    },
+    "superagent": {
+      "resourceRoot": "src/apps/relay-server/superagent/locales",
+      "loading": "backend-service"
     }
   },
   "locales": [

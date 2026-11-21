@@ -19,6 +19,7 @@
 mod baseline;
 mod capabilities;
 mod events;
+pub mod fleet_routing;
 mod table;
 
 use std::collections::BTreeSet;
@@ -27,6 +28,10 @@ use serde::{Deserialize, Serialize};
 
 pub use capabilities::{advertised_by, advertises, capability_map, PeerHostCapability};
 pub use events::{event_stance, EventStance, OWNER_ONLY_EVENT_PREFIXES};
+pub use fleet_routing::{
+    fleet_entry_commands, fleet_route, fleet_routes, is_fleet_verb, owner_key_value, FleetEntity,
+    FleetRoute, FleetRouting,
+};
 
 /// Wire schema version of the exported registry artifact.
 pub const REMOTE_SURFACE_SCHEMA_VERSION: u32 = 1;
@@ -67,6 +72,11 @@ pub enum OperationSurface {
     /// A CLI peer host alias kept for older controllers, or a detached
     /// dispatch target verb routed before the peer bridge.
     HostInvokeOnly,
+    /// Served only by the account's cloud node (`hostKind: "cloud"`, the
+    /// OpenBitFun superagent). No desktop or CLI host registers it; frontends
+    /// reach it with `fleet_call {target: "cloud-…"}`, and desktop and CLI
+    /// hosts answer it unsupported.
+    CloudNode,
 }
 
 /// How Peer Device Mode treats the operation.
@@ -86,6 +96,11 @@ pub enum PeerStance {
     /// Answered by the host before the deny check: peer control attach/detach,
     /// `peer_mode_ping`, and the detached dispatch target verbs.
     HostControlPlane,
+    /// A fleet verb (`fleet_*`): answered by the fleet layer of the runtime
+    /// host the client is connected through, for the owner and account-device
+    /// scopes; never forwarded to another device, refused for paired clients
+    /// and over the relay HostInvoke bridge.
+    FleetEntry,
     /// A protocol tombstone kept after its runtime owner was removed.
     Retired { reason: &'static str },
 }
@@ -96,6 +111,9 @@ pub enum PeerStance {
 pub enum PeerHostKind {
     Desktop,
     Cli,
+    /// The account's cloud node (the OpenBitFun superagent). It answers only
+    /// the rows whose `cloud_peer` is handled.
+    Cloud,
 }
 
 impl PeerHostKind {
@@ -104,6 +122,7 @@ impl PeerHostKind {
         match self {
             Self::Desktop => "desktop",
             Self::Cli => "cli",
+            Self::Cloud => "cloud",
         }
     }
 
@@ -112,6 +131,7 @@ impl PeerHostKind {
         match self {
             Self::Desktop => "desktop",
             Self::Cli => "CLI",
+            Self::Cloud => "cloud",
         }
     }
 }
@@ -153,7 +173,20 @@ pub struct OperationDefinition {
     pub remote_workspace: RemoteWorkspaceStance,
     pub peer: PeerStance,
     pub cli_peer: HostSupport,
+    /// Support on the account's cloud node. Exported only where it is
+    /// handled (the `superagent_*` rows), so the artifact of every other row
+    /// is unchanged.
+    #[serde(skip_serializing_if = "cloud_unserved")]
+    pub cloud_peer: HostSupport,
 }
+
+fn cloud_unserved(support: &HostSupport) -> bool {
+    !support.is_handled()
+}
+
+/// The reason a desktop or CLI host gives for a cloud-node row.
+pub const CLOUD_NODE_ONLY_REASON: &str =
+    "the account's cloud node (OpenBitFun) serves this command; send it with fleet_call to the cloud target";
 
 impl OperationDefinition {
     /// Support on a peer host of the given kind.
@@ -164,7 +197,12 @@ impl OperationDefinition {
     pub fn host_support(&self, host: PeerHostKind) -> HostSupport {
         match host {
             PeerHostKind::Cli => self.cli_peer,
+            PeerHostKind::Cloud => self.cloud_peer,
             PeerHostKind::Desktop => match (self.surface, self.peer) {
+                (OperationSurface::CloudNode, _) => HostSupport::Unsupported {
+                    reason: CLOUD_NODE_ONLY_REASON,
+                },
+                (_, PeerStance::FleetEntry) => self.cli_peer,
                 (OperationSurface::TauriCommand, _) => HostSupport::Handled,
                 (OperationSurface::HostInvokeOnly, PeerStance::HostControlPlane) => {
                     HostSupport::Handled
@@ -322,6 +360,15 @@ pub fn peer_host_verdict(command: &str, host: PeerHostKind) -> PeerHostVerdict {
             PeerHostVerdict::Refuse(PeerRefusal::ControllerLocal)
         }
         PeerStance::Retired { reason } => PeerHostVerdict::Refuse(PeerRefusal::Retired { reason }),
+        // The relay HostInvoke bridge never serves fleet verbs; a host's OBP
+        // listener answers them before this verdict.
+        PeerStance::FleetEntry => PeerHostVerdict::Refuse(PeerRefusal::HostUnsupported {
+            host,
+            reason: match definition.host_support(host) {
+                HostSupport::Unsupported { reason } | HostSupport::SoftEmpty { reason } => reason,
+                HostSupport::Handled => "fleet commands are answered over OBP",
+            },
+        }),
         PeerStance::Proxied => match definition.host_support(host) {
             HostSupport::Handled | HostSupport::SoftEmpty { .. } => PeerHostVerdict::Execute,
             HostSupport::Unsupported { reason } => {
@@ -340,6 +387,8 @@ pub struct RemoteSurfaceRegistryExport {
     pub retired_command_prefixes: Vec<RetiredPrefixExport>,
     pub capabilities: CapabilitiesExport,
     pub operations: Vec<OperationDefinition>,
+    /// How `fleet_call` reaches each registered command (`fleet_routing`).
+    pub fleet_routing: Vec<FleetRouting>,
     /// The event stance (`events::OWNER_ONLY_EVENT_PREFIXES`) for generated
     /// client routing. Filled only in [`export`], after the digest, so the
     /// stance stays outside the registry digest as `events` documents.
@@ -382,6 +431,7 @@ fn export_without_digest() -> RemoteSurfaceRegistryExport {
                 .collect(),
         },
         operations: operations().to_vec(),
+        fleet_routing: fleet_routes().to_vec(),
         owner_only_event_prefixes: Vec::new(),
     }
 }
@@ -613,15 +663,12 @@ mod tests {
     #[test]
     fn host_control_plane_rows_execute_on_both_hosts() {
         let control_plane = ops_with(|op| op.peer == PeerStance::HostControlPlane);
-        assert!(control_plane.contains(&"peer_control_attach"));
-        assert!(control_plane.contains(&"peer_control_detach"));
-        assert!(control_plane.contains(&"peer_mode_ping"));
         assert_eq!(
             control_plane
                 .iter()
                 .filter(|id| id.starts_with("dispatch_target_"))
                 .count(),
-            15
+            16
         );
         for id in control_plane {
             let op = operation(id).unwrap();
@@ -659,7 +706,6 @@ mod tests {
             "account_github_poll",
             "account_github_info",
             "account_logout",
-            "peer_mode_ping",
             "dispatch_submit",
             "mark_openbitfun_control_surface_ready",
         ] {
@@ -828,6 +874,124 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn fleet_verbs_are_answered_by_the_fleet_layer_not_the_relay_bridge() {
+        let entry: Vec<&str> = fleet_entry_commands().collect();
+        assert_eq!(entry.len(), 10, "{entry:?}");
+        for id in entry {
+            let op = operation(id).unwrap();
+            // Registered backend commands of the desktop host.
+            assert_eq!(op.surface, OperationSurface::TauriCommand, "{id}");
+            assert_ne!(
+                op.remote_workspace,
+                RemoteWorkspaceStance::Unaudited,
+                "{id}"
+            );
+            assert!(!op.is_controller_local(), "{id}");
+            assert!(!op.is_refused_by_peer_hosts(), "{id}");
+            for host in [PeerHostKind::Desktop, PeerHostKind::Cli] {
+                assert!(
+                    matches!(
+                        peer_host_verdict(id, host),
+                        PeerHostVerdict::Refuse(PeerRefusal::HostUnsupported { .. })
+                    ),
+                    "{id} must be refused over the relay bridge on {host:?}"
+                );
+                assert!(op.host_support(host).is_unsupported(), "{id}");
+            }
+            assert!(!cli_handled_commands().contains(id), "{id}");
+        }
+        assert!(!controller_local_commands().any(|id| id.starts_with("fleet_")));
+        for owner_verb in ["fleet_digest", "fleet_replay"] {
+            let op = operation(owner_verb).unwrap();
+            assert_eq!(op.surface, OperationSurface::HostInvokeOnly);
+            assert_eq!(
+                op.peer,
+                PeerStance::OperatorOnly,
+                "{owner_verb} is an account-device host verb like obp_remote_command"
+            );
+            assert_eq!(op.remote_workspace, RemoteWorkspaceStance::Agnostic);
+        }
+        let parsed: Value = serde_json::from_str(&export_json()).unwrap();
+        assert_eq!(
+            parsed["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|op| op["id"] == "fleet_call")
+                .unwrap()["peer"],
+            serde_json::json!({"kind": "fleet_entry"})
+        );
+        assert_eq!(
+            parsed["fleetRouting"].as_array().unwrap().len(),
+            fleet_routes().len()
+        );
+    }
+
+    #[test]
+    fn superagent_rows_are_served_by_the_cloud_node_only() {
+        let cloud = ops_with(|op| op.surface == OperationSurface::CloudNode);
+        assert_eq!(
+            cloud,
+            [
+                "superagent_cancel_turn",
+                "superagent_delete_conversation",
+                "superagent_delete_data",
+                "superagent_disable",
+                "superagent_enable",
+                "superagent_get_conversation",
+                "superagent_job_action",
+                "superagent_list_conversations",
+                "superagent_rename_conversation",
+                "superagent_send",
+                "superagent_status",
+            ]
+        );
+        for id in &cloud {
+            let op = operation(id).unwrap();
+            assert_eq!(op.remote_workspace, RemoteWorkspaceStance::Agnostic, "{id}");
+            assert_eq!(op.peer, PeerStance::Proxied, "{id}");
+            assert!(op.host_support(PeerHostKind::Cloud).is_handled(), "{id}");
+            assert_eq!(
+                peer_host_verdict(id, PeerHostKind::Cloud),
+                PeerHostVerdict::Execute
+            );
+            for host in [PeerHostKind::Desktop, PeerHostKind::Cli] {
+                assert_eq!(
+                    peer_host_verdict(id, host),
+                    PeerHostVerdict::Refuse(PeerRefusal::HostUnsupported {
+                        host,
+                        reason: CLOUD_NODE_ONLY_REASON,
+                    }),
+                    "{id} on {host:?}"
+                );
+            }
+            assert_eq!(
+                fleet_route(id),
+                FleetRoute::ByTarget { reason: None },
+                "{id}"
+            );
+            assert!(!cli_handled_commands().contains(id));
+            assert!(!controller_local_commands().any(|local| local == *id));
+        }
+        // Every other row stays off the cloud node.
+        for op in operations() {
+            if op.surface != OperationSurface::CloudNode {
+                assert!(
+                    !op.host_support(PeerHostKind::Cloud).is_handled(),
+                    "{}",
+                    op.id
+                );
+            }
+        }
+        let parsed: Value = serde_json::from_str(&export_json()).unwrap();
+        let rows = parsed["operations"].as_array().unwrap();
+        let row = |id: &str| rows.iter().find(|op| op["id"] == id).unwrap().clone();
+        assert_eq!(row("superagent_send")["surface"], "cloud_node");
+        assert_eq!(row("superagent_send")["cloudPeer"]["kind"], "handled");
+        assert!(row("start_dialog_turn").get("cloudPeer").is_none());
     }
 
     #[test]

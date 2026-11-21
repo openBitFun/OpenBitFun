@@ -10,8 +10,8 @@ use openbitfun_runtime_ports::{
     AgentSubmissionSource, RemoteControlSessionState, RemoteControlStateSnapshot,
 };
 use openbitfun_services_integrations::remote_connect::{
-    agent_input_attachment_from_remote_image_context, build_lan_relay_url_with_ip,
-    build_remote_chat_messages, build_remote_image_attachment, build_remote_image_contexts,
+    agent_input_attachment_from_remote_image_context, build_remote_chat_messages,
+    build_remote_image_attachment, build_remote_image_contexts,
     build_remote_image_submission_request, build_remote_model_catalog,
     build_remote_session_create_request, build_remote_submission_request, cancel_remote_task,
     handle_remote_command, handle_remote_workspace_file_command, make_slim_tool_params,
@@ -34,7 +34,7 @@ use openbitfun_services_integrations::remote_connect::{
     resolve_remote_execution_image_contexts, resolve_remote_file_chunk_range,
     resolve_remote_model_default_slot, resolve_remote_workspace_path,
     should_send_remote_model_catalog, submit_remote_dialog, ActiveTurnSnapshot,
-    ChatImageAttachment, ChatMessage, ChatMessageItem, ImageAttachment, QrGenerator,
+    ChatImageAttachment, ChatMessage, ChatMessageItem, ImageAttachment,
     RemoteAssistantWorkspaceFacts, RemoteCancelDecision, RemoteCancelRuntimeHost,
     RemoteCancelTaskRequest, RemoteChatHistoryRound, RemoteChatHistoryTextItem,
     RemoteChatHistoryThinkingItem, RemoteChatHistoryToolCall, RemoteChatHistoryToolItem,
@@ -57,47 +57,6 @@ use openbitfun_services_integrations::remote_connect::{
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
-#[test]
-fn relay_invitations_and_authentication_use_the_same_protocol_for_all_endpoints() {
-    for endpoint in [
-        "https://remote.openbitfun.com/v/1.0.2",
-        "http://192.168.1.8:9700",
-    ] {
-        assert_eq!(
-            QrGenerator::build_device_url(endpoint, "desktop-1").unwrap(),
-            format!("{endpoint}/#/pair?did=desktop-1")
-        );
-    }
-    use openbitfun_services_integrations::remote_connect::realtime_client::account_auth_payload;
-    // Every handshake reports the build string and control-contract protocol
-    // number, including on reconnect.
-    assert_eq!(
-        account_auth_payload("test-token", true),
-        serde_json::json!({
-            "token":"test-token",
-            "clientType":"machine-scoped",
-            "clientVersion": openbitfun_product_domains::account::client_version(),
-            "clientProtocol": openbitfun_product_domains::account::CLIENT_PROTOCOL_VERSION,
-        })
-    );
-    assert_eq!(
-        account_auth_payload("test-token", false),
-        serde_json::json!({
-            "token":"test-token",
-            "clientType":"user-scoped",
-            "clientVersion": openbitfun_product_domains::account::client_version(),
-            "clientProtocol": openbitfun_product_domains::account::CLIENT_PROTOCOL_VERSION,
-        })
-    );
-}
-
-#[test]
-fn remote_connect_lan_url_builder_lives_in_services_owner() {
-    let url = build_lan_relay_url_with_ip(9700, "192.168.1.8").unwrap();
-
-    assert_eq!(url, "http://192.168.1.8:9700");
-}
 
 #[test]
 fn remote_connect_submission_contract_preserves_relay_source_and_turn_id() {

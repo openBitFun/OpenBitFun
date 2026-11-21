@@ -23,7 +23,7 @@ services.
 | `cursor-adapter` | Read-only Cursor CLI snapshot, Desktop composer and fallback JSONL session history | [AGENTS.md](cursor-adapter/AGENTS.md) |
 | `zcode-adapter` | Read-only Zcode SQLite task discovery and session-history translation | [AGENTS.md](zcode-adapter/AGENTS.md) |
 | `static-hook-support` | Shared bounded/redacting static-source utilities plus the JSON/TOML Hook parser used by sibling ecosystem adapters; no ecosystem policy or runtime | inherited |
-| `obp` | The backend protocol (OBP) wire for every host and controller: event ring, JSON-RPC framing, registry-driven scopes, loopback and OpenBitFun Link listeners with the account-device handshake and the `obp-e2e-v1` channel (`server`), and the controller client (`client`); hosts plug in their dispatcher through `ObpBackend`, no product rules | inherited |
+| `obp` | The backend protocol (OBP) wire for every host and controller: event ring, JSON-RPC framing, registry-driven scopes, loopback and OpenBitFun Link listeners with the account-device handshake, the `obp-e2e-v1` channel and the by-hash web UI fetch (`server`), the web UI bundle manifest and bundle id (`ui_bundle`), and the controller client (`client`); hosts plug in their dispatcher through `ObpBackend`, no product rules | inherited |
 | `transport` | Event transport adapters plus protocol-neutral bounded JSON encoding and TypeScript message/JSON-RPC mechanics shared by current hosts | [AGENTS.md](transport/AGENTS.md) |
 | `webdriver` | Embedded WebDriver protocol and browser automation adapter | [AGENTS.md](webdriver/AGENTS.md) |
 

@@ -5,7 +5,6 @@ import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { formatMonthYear, formatTimestamp } from "./format";
 import { tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
-import { peerScope, peerSupports } from "./peerState";
 import { activeWorkspace, activeWorkspaceId, workspaces } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -126,23 +125,7 @@ export const calendarYear = signal(initialNow.getFullYear());
 export const calendarMonth = signal(initialNow.getMonth());
 export const selectedCalendarDay = signal<string>(dateKeyOf(initialNow));
 
-let cronHostReadySignaledFor: string | null = null;
-
-export function routineReportPolicySupported(): boolean {
-  if (peerScope() && peerSupports("background_result_delivery_v1") === false) {
-    return false;
-  }
-  return true;
-}
-
-export function routinePeerDeliveryNotice(): string {
-  const scope = peerScope();
-  if (!scope) return "";
-  if (peerSupports("background_result_delivery_v1") === false) {
-    return `Connected peer ${scope.label} does not advertise background_result_delivery_v1; reportPolicy is omitted from routine mutations.`;
-  }
-  return "";
-}
+let cronHostReadySignaled = false;
 
 function defaultAtIso(): string {
   const future = new Date(Date.now() + 3600_000);
@@ -655,10 +638,8 @@ export function selectCalendarDay(dayKey: string): void {
 // --- Host actions & subscriptions ---
 
 export function ensureCronHostReady(): void {
-  const scopeKey = peerScope()?.deviceId ?? "local";
-  if (cronHostReadySignaledFor === scopeKey) return;
-  cronHostReadySignaledFor = scopeKey;
-  // Another host may have the preview command; ask it again.
+  if (cronHostReadySignaled) return;
+  cronHostReadySignaled = true;
   routinePreviewUnavailable.set(false);
   void invokeRawCommand<unknown>("notify_cron_host_ready", {}).catch(() => undefined);
 }
@@ -688,7 +669,7 @@ export async function toggleRoutineEnabled(job: CronJobRecord): Promise<void> {
   routinesBusy.set(true);
   routinesError.set("");
   try {
-    const includePolicy = routineReportPolicySupported() && Boolean(job.reportPolicy);
+    const includePolicy = Boolean(job.reportPolicy);
     const updated = await invokeCommand<Record<string, unknown>>("update_cron_job", {
       jobId: job.id,
       name: job.name,
@@ -858,8 +839,7 @@ export async function saveRoutineDraft(): Promise<void> {
         },
       };
 
-  const includeReportPolicy = routineReportPolicySupported();
-  const reportPolicyPayload = includeReportPolicy && draft.reportPolicy
+  const reportPolicyPayload = draft.reportPolicy
     ? { reportPolicy: draft.reportPolicy }
     : {};
 

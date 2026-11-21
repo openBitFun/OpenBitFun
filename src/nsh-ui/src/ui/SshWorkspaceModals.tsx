@@ -20,7 +20,6 @@ import {
 } from "nsh";
 import { formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { peerScope } from "../peerState";
 import {
   addLocalFolderToNewWorkspace,
   authPromptDescription,
@@ -52,7 +51,6 @@ import {
   browserSelectedPath,
   browseFolderForNewWorkspace,
   cancelRemoteWorkspaceRebind,
-  canUseSshNoneAuth,
   checkHasStoredPassword,
   closeAuthPrompt,
   closeNewWorkspaceModal,
@@ -157,7 +155,6 @@ import {
   submitPortForwardForm,
   submitRemoteRename,
   submitSshConnectionForm,
-  syncSshRemoteScope,
   testSshConnection,
   workspaceSourceCoordinates,
   workspaceSourceFor,
@@ -295,13 +292,6 @@ function FieldSection(props: {
 // ============================================================================
 
 function newWorkspaceSubtitle(): string {
-  const peer = peerScope();
-  if (peer) {
-    return tr("ssh.targetDeviceSubtitle", {
-      label: peer.label,
-      hostKind: peer.hostKind,
-    });
-  }
   return tr("devices.thisMachine");
 }
 
@@ -950,22 +940,13 @@ function SshConnectionModal() {
     { value: "wsl" as WorkspaceConnectionTarget, label: tr("ssh.wsl") },
   ];
 
-  const authOptions = (): ReadonlyArray<SelectDropdownOption<SshAuthFormKind>> => {
-    const items: Array<SelectDropdownOption<SshAuthFormKind>> = [
-      { value: "password", label: tr("ssh.authPassword"), icon: "key" },
-      { value: "privateKey", label: tr("ssh.authPrivateKey"), icon: "key" },
-      { value: "agent", label: tr("ssh.authAgent"), icon: "shield" },
-      { value: "keyboardInteractive", label: tr("ssh.authKeyboardInteractive"), icon: "key" },
-    ];
-    if (canUseSshNoneAuth() || sshForm().authType === "none") {
-      items.push({
-        value: "none",
-        label: tr("ssh.authNone"),
-        icon: "plug",
-      });
-    }
-    return items;
-  };
+  const authOptions = (): ReadonlyArray<SelectDropdownOption<SshAuthFormKind>> => [
+    { value: "password", label: tr("ssh.authPassword"), icon: "key" },
+    { value: "privateKey", label: tr("ssh.authPrivateKey"), icon: "key" },
+    { value: "agent", label: tr("ssh.authAgent"), icon: "shield" },
+    { value: "keyboardInteractive", label: tr("ssh.authKeyboardInteractive"), icon: "key" },
+    { value: "none", label: tr("ssh.authNone"), icon: "plug" },
+  ];
 
   const containerAccessOptions = (): ReadonlyArray<SelectDropdownOption<"auto" | "docker-exec">> => [
     { value: "auto", label: tr("ssh.accessAuto") },
@@ -1033,11 +1014,7 @@ function SshConnectionModal() {
     <ModalDialog
       open={sshConnectionModalOpen()}
       title={modalTitle()}
-      subtitle={
-        peerScope()
-          ? tr("ssh.peerHostSubtitle", { label: peerScope()!.label })
-          : tr("ssh.modalSubtitle")
-      }
+      subtitle={tr("ssh.modalSubtitle")}
       size="lg"
       accessibilityLabel="ssh-connection-modal"
       closeOnBackdropPress={!sshConnecting()}
@@ -3237,11 +3214,6 @@ function PortForwardModal() {
 // ============================================================================
 
 export function SshWorkspaceModals() {
-  // Automatically clear & close SSH modals whenever Peer Device Mode switches devices.
-  effect(() => {
-    syncSshRemoteScope(peerScope()?.deviceId ?? null);
-  });
-
   return (
     <View style={{ pointerEvents: "box-none" }}>
       <NewWorkspaceModal />

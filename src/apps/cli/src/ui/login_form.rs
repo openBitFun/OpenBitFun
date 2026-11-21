@@ -297,7 +297,7 @@ impl LoginFormState {
                 let is_local = local_id == Some(d.device_id.as_str());
                 let status = if d.online { "online" } else { "offline" };
                 let badge = if is_local { " [this device]" } else { "" };
-                // A missing flag (older Relay) is unknown and shows nothing.
+                // A missing flag (older account service) is unknown and shows nothing.
                 let compat = if d.is_compatible() {
                     ""
                 } else {

@@ -1,6 +1,10 @@
 // The web target's connection choice: a page the OpenBitFun domain serves
-// (`#nsh-params` `{ controller: { api, gateway } }`) is a controller: it signs in
-// and connects to one of the account's devices (`src/controller/`). A page
+// (`#nsh-params` `{ controller: { api, gateway, uiBundleId } }`) is a controller:
+// it signs in and connects to one of the account's devices (`src/controller/`).
+// A device's own UI that the domain's UI loader serves (`/app/b/<bundleId>/`)
+// is one too: its `index.html` carries no parameters, so the page realm
+// (`host.js`) supplies `{ controller: { api, gateway, uiBundleId, bundlePage } }`
+// before the app starts, and the handoff names the device. A page
 // served by an OpenBitFun backend
 // (its `index.html` carries `#nsh-params` `{ obp: { url, path, protocol } }`,
 // read here as `host.params.obp`) connects back to that backend over the
@@ -46,7 +50,10 @@ export function controllerParams(params: unknown = safeHostParams()): WebControl
   const record = controller as Record<string, unknown>;
   const api = typeof record.api === "string" && record.api ? record.api : null;
   const gateway = typeof record.gateway === "string" && record.gateway ? record.gateway : null;
-  return api && gateway ? { api, gateway } : null;
+  if (!api || !gateway) return null;
+  const uiBundleId =
+    typeof record.uiBundleId === "string" && /^[0-9a-f]{64}$/.test(record.uiBundleId) ? record.uiBundleId : null;
+  return { api, gateway, uiBundleId, bundlePage: record.bundlePage === true };
 }
 
 /** The `obp` launch parameter, when the page was served by a backend. */

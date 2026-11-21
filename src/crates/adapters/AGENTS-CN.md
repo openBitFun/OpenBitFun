@@ -20,7 +20,7 @@
 | `cursor-adapter` | 只读 Cursor CLI 快照、Desktop composer 和回退 JSONL 会话历史 | [AGENTS.md](cursor-adapter/AGENTS.md) |
 | `zcode-adapter` | 只读 Zcode SQLite 任务发现和会话历史转换 | [AGENTS.md](zcode-adapter/AGENTS.md) |
 | `static-hook-support` | 各生态 adapter 共用的有界、脱敏静态来源工具和 JSON/TOML Hook 解析器；不含生态策略或 runtime | 继承本指南 |
-| `obp` | 所有宿主与控制端共用的后端协议（OBP）线路：事件环、JSON-RPC 帧、按注册表的作用域、回环与 OpenBitFun Link 监听（含账号设备握手与 `obp-e2e-v1` 通道，`server`）以及控制端客户端（`client`）；宿主通过 `ObpBackend` 接入自己的分发器，不含产品规则 | 继承 |
+| `obp` | 所有宿主与控制端共用的后端协议（OBP）线路：事件环、JSON-RPC 帧、按注册表的作用域、回环与 OpenBitFun Link 监听（含账号设备握手、`obp-e2e-v1` 通道与按哈希获取 Web UI 文件，`server`）、Web UI 包清单与包 ID（`ui_bundle`）以及控制端客户端（`client`）；宿主通过 `ObpBackend` 接入自己的分发器，不含产品规则 | 继承 |
 | `transport` | Event transport adapter，以及当前各宿主共用的协议中立有界 JSON 编码和 TypeScript message/JSON-RPC 机制 | [AGENTS.md](transport/AGENTS.md) |
 | `webdriver` | Embedded WebDriver protocol 与浏览器自动化 adapter | [AGENTS.md](webdriver/AGENTS.md) |
 

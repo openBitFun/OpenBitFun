@@ -16,6 +16,11 @@ pub(crate) async fn get_system_info() -> Result<Value, String> {
     }))
 }
 
+/// `ui_bundle_manifest`: the web UI bundle compiled into this CLI.
+pub(crate) async fn ui_bundle_manifest() -> Result<Value, String> {
+    crate::ui_bundle::ui_bundle_manifest().await
+}
+
 pub(crate) async fn get_runtime_logging_info() -> Result<Value, String> {
     Ok(crate::logging::runtime_logging_info())
 }

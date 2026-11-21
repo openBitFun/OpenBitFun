@@ -2,7 +2,7 @@
 // transcript view, and a turn that was already running when this surface opened
 // the session is hydrated from the view's `runningTurn` snapshot.
 import { expect, open, test } from "nsh/test";
-import { createBackend } from "./support";
+import { createBackend, openSession } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 
@@ -70,8 +70,7 @@ test("a Task card lists the subagent's steps from the transcript view", async ()
     ],
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("The survey is done.");
   // The subagent's own answer belongs to the card, not the transcript.
   expect(app.texts()).not.toContain("Every module is small.");
@@ -119,8 +118,7 @@ test("a turn already running when the session opens is hydrated from the view", 
     ],
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Half of the answer");
   expect(app.texts()).toContain("Is it still running?");
   expect(app.texts()).toContain("cargo test");
@@ -168,8 +166,7 @@ test("a turn this surface followed from its start is not replayed again", async 
     ],
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Snapshot text");
   await app.host.send("openbitfun.event", {
     event: "agentic://text-chunk",
@@ -177,8 +174,8 @@ test("a turn this surface followed from its start is not replayed again", async 
   });
   await app.waitFor("Snapshot text and live text.");
   // Switching away and back re-reads the view; the followed turn keeps its stream.
-  await app.press("Terminal migration >> nth=0");
+  await openSession(app, "Terminal migration");
   await app.waitFor("Port the terminal.");
-  await app.press("NSH skeleton >> nth=0");
+  await openSession(app, "NSH skeleton");
   await app.waitFor("Snapshot text and live text.");
 });

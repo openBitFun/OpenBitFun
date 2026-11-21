@@ -3,7 +3,6 @@
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand, listenEvent, windowShellId } from "./bridge";
 import { tr } from "./i18n";
-import { peerScope } from "./peerState";
 import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -196,12 +195,6 @@ export const selectedSpaceSourceCode = computed(() => {
   if (tab === "worker_js") return detail.source.workerJs || `// ${tr("spaces.noWorkerJs")}`;
   return detail.source.html || `<!-- ${tr("spaces.noHtml")} -->`;
 });
-
-export function spacesPeerNotice(): string {
-  const scope = peerScope();
-  if (!scope) return "";
-  return tr("spaces.peerNotice", { label: scope.label, hostKind: scope.hostKind });
-}
 
 export async function loadSpaces(): Promise<void> {
   spacesBusy.set(true);
@@ -431,7 +424,6 @@ export const spaceOpening = signal<string | null>(null);
 export function spaceWindowBlockedReason(): string {
   const shellId = windowShellId();
   if (shellId !== "nsh-desktop" && shellId !== "host-page") return tr("spaces.openWindowBrowser");
-  if (peerScope()) return tr("spaces.openWindowPeer");
   if ((activeWorkspace()?.workspaceKind ?? "").toLowerCase() === "remote") return tr("spaces.openWindowRemote");
   return "";
 }

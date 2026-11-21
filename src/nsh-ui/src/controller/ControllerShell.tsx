@@ -1,28 +1,29 @@
-// The controller shell: what a browser on the OpenBitFun domain (or the phone
-// app) shows before it drives a device — sign in with the email code, pick one
-// of the account's devices, connect — and the thin bar above the studio while
-// it drives one. It draws the port's answers only: which devices exist, whether
-// each can be connected and why not are the server's.
+// The controller shell (visual spec §4.13): what a browser on the OpenBitFun
+// domain (or the phone app) shows before it drives a device. Sign in with the
+// email code (the shared sign-in column), then "Opening OpenBitFun…", then the
+// UI itself — no device list, no device bar. Only when nothing can open does a
+// quiet list of the account's devices show, under the reason and Try again.
+// It draws the port's answers only: which devices exist, whether each can be
+// connected and why not are the server's.
 
-import { safeArea, signal, Text, View, type JSX } from "nsh";
+import { effect, safeArea, signal, Text, untracked, View, type JSX } from "nsh";
 import { formatRelativeTime } from "../format";
 import { tr } from "../i18n";
-import { palette, radii, textSize, textStyle } from "../theme";
-import { Button, DeviceGlyph, InlineBanner, TextField } from "../ui/primitives";
-import { controllerPort, type ControllerDevice } from "./controllerPort";
+import { compactLayout, controlHeight, layout, motionTiming, palette, radii, space, textStyle } from "../theme";
+import { Icon } from "../ui/icons";
+import { BrandSpinner, paintTransition } from "../ui/motion";
+import { DeviceGlyph, EmptyStateCard } from "../ui/primitives";
+import { SignInView } from "../ui/SignInView";
+import type { ControllerDevice } from "./controllerPort";
 import {
   connectControllerDevice,
   controllerAccount,
   controllerBusy,
   controllerChallenge,
   controllerConnecting,
-  controllerConnectMs,
-  controllerDevice,
   controllerDevices,
   controllerFailure,
   controllerPhase,
-  leaveControllerDevice,
-  refreshControllerDevices,
   requestControllerCode,
   restartControllerSignIn,
   signOutController,
@@ -33,289 +34,279 @@ import {
 
 const email = signal("");
 const code = signal("");
+/** When another code may be requested, from the challenge the server answered. */
+const resendAt = signal<number | null>(null);
+const shellWidth = signal(0);
+
+/** The sign-in column starts at this share of the height (visual spec §4.1). */
+const SIGN_IN_TOP_SHARE = 22;
+/** "Opening OpenBitFun…" sits at this share of the height (visual spec §4.13). */
+const OPENING_TOP_SHARE = 40;
+/** On a phone the column starts this far down instead (96). */
+const PHONE_SIGN_IN_TOP = space.x6l + space.x3l;
+const OPENING_SPINNER = space.xxl;
 
 function failureText(failure: ControllerFailure): string {
   switch (failure.code) {
     case "invalid_email":
-      return tr("controller.error.invalidEmail");
+      return tr("signin.errEmail");
     case "invalid_code":
-      return tr("controller.error.invalidCode");
+      return tr("signin.errCode");
     case "rate_limited":
       return failure.retryAfterSeconds
-        ? tr("controller.error.rateLimitedFor", { seconds: String(failure.retryAfterSeconds) })
+        ? tr("signin.errRate", { seconds: String(failure.retryAfterSeconds) })
         : tr("controller.error.rateLimited");
     case "signed_out":
       return tr("controller.error.signedOut");
     case "network":
-      return tr("controller.error.network");
+      return tr("signin.errNetwork");
+    case "device_ui_unavailable":
+      return failure.detail === "all" ? tr("controller.error.devicesUiUnavailable") : tr("controller.error.deviceUiUnavailable");
+    case "page_outdated":
+      return tr("launcher.pageOutdated");
+    case "ui_verification_failed":
+      return tr("launcher.verifyFailed");
+    case "ui_load_failed":
+      return tr("controller.error.uiLoad", { file: failure.detail ?? "" });
     default:
       // The server's own sentence (unreachable, unsupported, unavailable).
       return failure.message;
   }
 }
 
-function FailureBanner() {
-  return (
-    <If when={controllerFailure()}>
-      {failure => (
-        <InlineBanner tone="warning" message={failureText(failure())} accessibilityLabel="controller-error" />
-      )}
-    </If>
-  );
+function phone(): boolean {
+  return shellWidth() > 0 && shellWidth() <= layout.phoneMaxWidth;
 }
 
-function Card(props: { children: JSX.Element; accessibilityLabel: string }) {
+function SignInStep() {
   return (
-    <View
-      accessibilityLabel={props.accessibilityLabel}
-      style={{
-        width: "100%",
-        maxWidth: 440,
-        gap: 16,
-        padding: 24,
-        borderRadius: radii.lg,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: palette().border,
-        backgroundColor: palette().canvas,
+    <SignInView
+      idPrefix="controller"
+      step={controllerPhase() === "code" ? "code" : "email"}
+      busy={controllerBusy()}
+      error={controllerFailure() ? failureText(controllerFailure()!) : ""}
+      emailCode
+      email={email()}
+      onEmailChange={value => email.set(value)}
+      onContinue={() => {
+        if (email().trim()) void requestControllerCode(email());
       }}
-    >
-      {props.children}
-    </View>
+      codeEmail={controllerChallenge()?.email ?? email()}
+      codeLength={controllerChallenge()?.codeLength ?? undefined}
+      code={code()}
+      onCodeChange={value => code.set(value)}
+      onSignIn={() => {
+        if (code().trim()) void verifyControllerCode(code());
+      }}
+      resendAt={resendAt()}
+      onResend={() => {
+        code.set("");
+        void requestControllerCode(controllerChallenge()?.email ?? email());
+      }}
+      onOtherEmail={() => {
+        code.set("");
+        restartControllerSignIn();
+      }}
+    />
   );
 }
 
-function Heading(props: { title: string; detail?: string }) {
-  return (
-    <View style={{ gap: 6 }}>
-      <Text style={textStyle("pageTitle")}>{props.title}</Text>
-      <If when={props.detail ?? ""}>{detail => <Text style={textStyle("body", { color: palette().textSecondary })}>{detail()}</Text>}</If>
-    </View>
-  );
+function deviceStatus(device: ControllerDevice): { text: string; warn: boolean } {
+  const reason = device.unavailable;
+  if (!reason) return { text: "", warn: false };
+  if (reason.code === "offline" || !device.online) {
+    const ago = formatRelativeTime(device.lastSeenAt ?? 0);
+    return { text: ago ? tr("launcher.offline", { ago }) : tr("state.offline"), warn: false };
+  }
+  if (reason.code === "update_required" || reason.code === "unsupported") {
+    return { text: tr("launcher.needsUpdate"), warn: true };
+  }
+  // The server's sentence for any other reason.
+  return { text: reason.message, warn: false };
 }
 
-function EmailStep() {
-  const submit = () => {
-    if (email().trim()) void requestControllerCode(email());
-  };
-  return (
-    <Card accessibilityLabel="controller-email">
-      <Heading title={tr("controller.signIn.title")} detail={tr("controller.signIn.detail")} />
-      <TextField
-        value={email()}
-        onChange={value => email.set(value)}
-        onSubmit={submit}
-        label={tr("controller.signIn.email")}
-        placeholder="name@example.com"
-        content="email"
-        autoFocus
-        accessibilityLabel="controller-email-input"
-      />
-      <FailureBanner />
-      <Button
-        label={tr("controller.signIn.sendCode")}
-        variant="primary"
-        fullWidth
-        loading={controllerBusy()}
-        disabled={controllerBusy() || !email().trim()}
-        accessibilityLabel="controller-send-code"
-        onPress={submit}
-      />
-    </Card>
-  );
-}
-
-function CodeStep() {
-  const submit = () => {
-    if (code().trim()) void verifyControllerCode(code());
-  };
-  return (
-    <Card accessibilityLabel="controller-code">
-      <Heading
-        title={tr("controller.code.title")}
-        detail={tr("controller.code.detail", {
-          email: controllerChallenge()?.email ?? email(),
-          length: String(controllerChallenge()?.codeLength ?? 8),
-        })}
-      />
-      <TextField
-        value={code()}
-        onChange={value => code.set(value)}
-        onSubmit={submit}
-        label={tr("controller.code.label")}
-        placeholder="12345678"
-        monospace
-        content="one-time-code"
-        autoFocus
-        accessibilityLabel="controller-code-input"
-      />
-      <FailureBanner />
-      <Button
-        label={tr("controller.code.verify")}
-        variant="primary"
-        fullWidth
-        loading={controllerBusy()}
-        disabled={controllerBusy() || !code().trim()}
-        accessibilityLabel="controller-verify"
-        onPress={submit}
-      />
-      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-        <Button
-          label={tr("controller.code.resend")}
-          variant="ghost"
-          size="sm"
-          disabled={controllerBusy()}
-          accessibilityLabel="controller-resend"
-          onPress={() => void requestControllerCode(controllerChallenge()?.email ?? email())}
-        />
-        <Button
-          label={tr("controller.code.otherEmail")}
-          variant="ghost"
-          size="sm"
-          accessibilityLabel="controller-other-email"
-          onPress={() => {
-            code.set("");
-            restartControllerSignIn();
-          }}
-        />
-      </View>
-    </Card>
-  );
-}
-
-function deviceDetail(device: ControllerDevice): string {
-  if (device.unavailable) return device.unavailable.message;
-  const parts = [device.os, device.clientVersion ? `OpenBitFun ${device.clientVersion}` : null].filter(Boolean);
-  return parts.join(" · ");
-}
-
+/** A quiet device row, 44 high: glyph · name · its exception in words. */
 function DeviceRow(props: { device: () => ControllerDevice }) {
   const device = () => props.device();
+  const usable = () => device().connectable && controllerConnecting() === null;
   return (
     <View
-      accessibilityLabel={`controller-device-${device().deviceId}`}
+      role="button"
+      accessibilityLabel={`controller-connect-${device().deviceId}`}
+      accessibilityState={{ disabled: !usable() }}
+      onPress={usable() ? () => void connectControllerDevice(device()) : undefined}
       style={{
+        minHeight: layout.touchTarget,
+        paddingHorizontal: space.sm,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        paddingVertical: 10,
-        borderTopWidth: 1,
-        borderColor: palette().border,
+        gap: space.md,
+        borderRadius: radii.md,
+        cursor: usable() ? "pointer" : "default",
+        ...paintTransition(motionTiming.hover),
       }}
+      hoverStyle={usable() ? { backgroundColor: palette().panelHover } : undefined}
     >
-      {/* The directory's presence is a hint (hosts on Link keep no relay socket): no red dot. */}
-      <DeviceGlyph kind={device().kind ?? "laptop"} status={device().online ? "online" : undefined} />
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <Text style={textStyle("cardTitle")}>{device().name}</Text>
-        <Text style={textStyle("caption")}>{deviceDetail(device())}</Text>
-        <If when={!device().online && device().lastSeenAt}>
-          {() => (
-            <Text style={textStyle("meta")}>
-              {tr("controller.devices.lastSeen", { time: formatRelativeTime(device().lastSeenAt ?? 0) })}
-            </Text>
-          )}
-        </If>
-      </View>
-      <Button
-        label={tr("controller.devices.connect")}
-        variant={device().connectable ? "primary" : "secondary"}
-        size="sm"
-        loading={controllerConnecting() === device().deviceId}
-        disabled={!device().connectable || controllerConnecting() !== null}
-        accessibilityLabel={`controller-connect-${device().deviceId}`}
-        onPress={() => void connectControllerDevice(device())}
-      />
+      <DeviceGlyph kind={device().kind ?? "laptop"} size={16} />
+      <Text
+        style={{
+          ...textStyle("body"),
+          flex: 1,
+          minWidth: 0,
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {device().name}
+      </Text>
+      <If when={deviceStatus(device()).text}>
+        {text => (
+          <Text
+            style={{
+              ...textStyle("caption", {
+                color: deviceStatus(device()).warn ? palette().warning : palette().textMuted,
+                tabular: true,
+              }),
+              flexShrink: 1,
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {text()}
+          </Text>
+        )}
+      </If>
+      <If when={controllerConnecting() === device().deviceId}>
+        <BrandSpinner variant="matrix" size={space.md} />
+      </If>
+      <If when={device().connectable && controllerConnecting() !== device().deviceId}>
+        <Icon name="chevron-right" size={space.md} color={palette().textMuted} />
+      </If>
     </View>
   );
 }
 
-function DevicesStep() {
+/** Nothing could open: the reason, Try again, and the account's devices below. */
+function NoneStep() {
   return (
-    <Card accessibilityLabel="controller-devices">
-      <Heading
-        title={tr("controller.devices.title")}
-        detail={tr("controller.devices.signedInAs", {
-          account: controllerAccount()?.email ?? controllerAccount()?.login ?? controllerAccount()?.accountId ?? "",
-        })}
+    <View accessibilityLabel="controller-devices" style={{ width: "100%", maxWidth: layout.signInWidth, gap: space.xxl }}>
+      <EmptyStateCard
+        icon="monitor"
+        title={tr("launcher.noneTitle")}
+        subtitle={controllerFailure() ? failureText(controllerFailure()!) : tr("launcher.noneBody")}
+        actionLabel={tr("launcher.tryAgain")}
+        onAction={() => {
+          if (!controllerBusy()) void startController();
+        }}
+        style={{ paddingVertical: 0, paddingHorizontal: 0 }}
       />
-      <FailureBanner />
       <If when={controllerDevices()}>
         {devices => (
-          <View>
-            <If when={devices().length === 0}>
-              <Text style={textStyle("body", { color: palette().textSecondary })}>{tr("controller.devices.none")}</Text>
-            </If>
+          <View style={{ gap: space.xs }}>
             <Each of={devices()} key={device => device.deviceId}>
               {device => <DeviceRow device={device} />}
             </Each>
           </View>
         )}
       </If>
-      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-        <Button
-          label={tr("controller.devices.refresh")}
-          variant="secondary"
-          size="sm"
-          leadingIcon="refresh"
-          loading={controllerBusy()}
-          disabled={controllerBusy()}
-          accessibilityLabel="controller-refresh"
-          onPress={() => void refreshControllerDevices()}
-        />
-        <Button
-          label={tr("controller.signOut")}
-          variant="ghost"
-          size="sm"
-          accessibilityLabel="controller-sign-out"
-          onPress={() => void signOutController()}
-        />
-      </View>
-      <Text style={textStyle("micro", { color: palette().textMuted })}>
-        {controllerPort()?.kind === "native" ? tr("controller.devices.privacyApp") : tr("controller.devices.privacy")}
-      </Text>
-    </Card>
+    </View>
   );
 }
 
-/** The bar above the studio while this window drives a device. */
-function DeviceBar() {
+function OpeningStep(props: { label: string; accessibilityLabel: string }) {
+  return (
+    <View accessibilityLabel={props.accessibilityLabel} style={{ alignItems: "center", gap: space.md }}>
+      <BrandSpinner variant="matrix" size={OPENING_SPINNER} />
+      <Text style={textStyle("label", { color: palette().textSecondary })}>{props.label}</Text>
+    </View>
+  );
+}
+
+/** Footer of every launcher step: lock + "End-to-end encrypted" · "Sign out". */
+function Footer() {
   return (
     <View
-      accessibilityLabel="controller-bar"
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 12,
-        paddingVertical: 4,
-        borderBottomWidth: 1,
-        borderColor: palette().border,
+        justifyContent: "center",
+        gap: space.sm,
+        paddingTop: space.lg,
+        paddingBottom: space.x3l,
+      }}
+    >
+      <Icon name="lock" size={space.md} color={palette().textMuted} />
+      <Text style={textStyle("caption")}>{tr("launcher.encrypted")}</Text>
+      <If when={controllerAccount() ? "1" : ""}>
+        <Text style={textStyle("caption")}>·</Text>
+        <View
+          role="button"
+          accessibilityLabel="controller-sign-out"
+          onPress={() => void signOutController()}
+          style={{ minHeight: controlHeight.xs, justifyContent: "center", cursor: "pointer" }}
+        >
+          <Text style={textStyle("caption", { color: palette().textSecondary })} hoverStyle={{ color: palette().text }}>
+            {tr("launcher.signOut")}
+          </Text>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+function Launcher() {
+  const signingIn = () => controllerPhase() === "email" || controllerPhase() === "code";
+  const topShare = () => (signingIn() || controllerPhase() === "devices" ? SIGN_IN_TOP_SHARE : OPENING_TOP_SHARE);
+  return (
+    <View
+      onLayout={event => {
+        const width = event.bounds.size.width;
+        if (width > 0 && Math.abs(width - shellWidth()) > 1) {
+          shellWidth.set(width);
+          compactLayout.set(phone());
+        }
+      }}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        flexDirection: "column",
+        alignItems: "stretch",
+        paddingHorizontal: phone() ? space.xxl : layout.pageGutter,
         backgroundColor: palette().canvas,
       }}
     >
-      <Text style={[textStyle("caption"), { flex: 1, fontSize: textSize(12) }]}>
-        {tr("controller.bar.driving", {
-          device: controllerDevice()?.name ?? "",
-          time: String(controllerConnectMs() ?? 0),
-        })}
-      </Text>
-      <Button
-        label={tr("controller.bar.switch")}
-        variant="ghost"
-        size="sm"
-        accessibilityLabel="controller-switch-device"
-        onPress={() => void leaveControllerDevice()}
-      />
+      <If
+        when={phone() && signingIn()}
+        else={<View style={{ flexGrow: topShare(), flexShrink: 1, minHeight: space.x3l }} />}
+      >
+        <View style={{ height: PHONE_SIGN_IN_TOP, flexShrink: 1 }} />
+      </If>
+      <View style={{ alignItems: "center", width: "100%" }}>
+        <If when={controllerPhase() === "starting"}>
+          {() => <OpeningStep label={tr("launcher.checking")} accessibilityLabel="controller-starting" />}
+        </If>
+        <If when={controllerPhase() === "opening"}>
+          {() => <OpeningStep label={tr("launcher.opening")} accessibilityLabel="controller-opening" />}
+        </If>
+        <If when={signingIn()}>{() => <SignInStep />}</If>
+        <If when={controllerPhase() === "devices"}>{() => <NoneStep />}</If>
+      </View>
+      <View style={{ flexGrow: 100 - topShare(), flexShrink: 1, minHeight: space.x3l }} />
+      <Footer />
     </View>
   );
 }
 
 /**
- * The controller entry: the sign-in and device steps until a device is
- * connected, then `children` (the studio) under the device bar.
+ * The controller entry: the launcher steps until a device is connected, then
+ * `children` (the UI) filling the page.
  */
 export function ControllerShell(props: { children: () => JSX.Element }) {
   void startController();
+  effect(() => {
+    const challenge = controllerChallenge();
+    untracked(() => resendAt.set(challenge ? Date.now() + challenge.retryAfterSeconds * 1000 : null));
+  });
   return (
     <View
       style={{
@@ -331,36 +322,12 @@ export function ControllerShell(props: { children: () => JSX.Element }) {
     >
       <If when={controllerPhase() === "connected"}>
         {() => (
-          <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
-            <DeviceBar />
-            <View style={{ flex: 1, minHeight: 0 }}>{props.children()}</View>
+          <View accessibilityLabel="controller-studio" style={{ flex: 1, minHeight: 0 }}>
+            {props.children()}
           </View>
         )}
       </If>
-      <If when={controllerPhase() !== "connected"}>
-        {() => (
-          <View
-            style={{
-              flex: 1,
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 16,
-              backgroundColor: palette().canvas,
-            }}
-          >
-            <View style={{ alignItems: "center", gap: 4, marginBottom: 20 }}>
-              <Text style={textStyle("display")}>{tr("product.name")}</Text>
-              <Text style={textStyle("caption")}>{tr("controller.tagline")}</Text>
-            </View>
-            <If when={controllerPhase() === "starting"}>
-              <Text style={textStyle("caption")}>{tr("controller.starting")}</Text>
-            </If>
-            <If when={controllerPhase() === "email"}>{() => <EmailStep />}</If>
-            <If when={controllerPhase() === "code"}>{() => <CodeStep />}</If>
-            <If when={controllerPhase() === "devices"}>{() => <DevicesStep />}</If>
-          </View>
-        )}
-      </If>
+      <If when={controllerPhase() !== "connected"}>{() => <Launcher />}</If>
     </View>
   );
 }

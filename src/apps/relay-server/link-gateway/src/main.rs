@@ -11,10 +11,12 @@
 //!
 //! It mints its own membership of each account network from the issuer key,
 //! so it runs where the issuer key is (as the issuer's user) and listens on
-//! loopback only; nginx exposes `https://<domain>/obp/` (domain-only server,
-//! `deploy/easytier/README.md`).
+//! loopback only; nginx exposes `https://super.openbitfun.com/obp/` and the web
+//! UI pool `https://super.openbitfun.com/cas/` (domain-only server, `deploy/easytier/README.md`).
 
 mod app;
+mod pool;
+mod probe;
 mod session;
 mod upstream;
 
@@ -40,13 +42,23 @@ struct Args {
         default_value = "ws://127.0.0.1:11011/"
     )]
     relay_node: String,
-    /// The account device directory (the relay's HTTP API root).
+    /// The account device directory: OpenBitFun 2.0's own directory
+    /// instance (`openbitfun-directory`, a relay-service with its own
+    /// database), never the 1.0 relay.
     #[arg(
         long,
         env = "LINK_GATEWAY_DIRECTORY_URL",
-        default_value = "http://127.0.0.1:19702"
+        default_value = "http://127.0.0.1:19750"
     )]
     directory_url: String,
+    /// The cloud agent's loopback root; each account's first browser
+    /// sign-in asks it to create the account's cloud node. Empty: off.
+    #[arg(
+        long,
+        env = "LINK_GATEWAY_SUPERAGENT_URL",
+        default_value = "http://127.0.0.1:19740"
+    )]
+    superagent_url: String,
     /// The identity authority's API root.
     #[arg(
         long,
@@ -59,7 +71,7 @@ struct Args {
         long,
         env = "LINK_GATEWAY_ORIGINS",
         value_delimiter = ',',
-        default_value = "https://remote.openbitfun.com"
+        default_value = "https://super.openbitfun.com"
     )]
     origins: Vec<String>,
     /// The gateway's member name in every account network.
@@ -77,6 +89,26 @@ struct Args {
     /// Cookies without `Secure` (local `http://` development only).
     #[arg(long, env = "LINK_GATEWAY_INSECURE_COOKIES")]
     insecure_cookies: bool,
+    /// The web UI pool directory (files by hash; a cache, safe to delete).
+    #[arg(
+        long,
+        env = "LINK_GATEWAY_UI_POOL_DIR",
+        default_value = "/var/lib/openbitfun-ui-pool"
+    )]
+    ui_pool_dir: std::path::PathBuf,
+    /// Total bytes the pool keeps (oldest-unused files are evicted first).
+    #[arg(long, env = "LINK_GATEWAY_UI_POOL_MAX_BYTES", default_value_t = 4 * 1024 * 1024 * 1024)]
+    ui_pool_max_bytes: u64,
+    /// Files not used for this many days are deleted by the daily cleanup.
+    #[arg(long, env = "LINK_GATEWAY_UI_POOL_MAX_AGE_DAYS", default_value_t = 30)]
+    ui_pool_max_age_days: u64,
+    /// Files one account may pull from its devices per minute.
+    #[arg(
+        long,
+        env = "LINK_GATEWAY_UI_POOL_PULLS_PER_MINUTE",
+        default_value_t = 240
+    )]
+    ui_pool_pulls_per_minute: u32,
 }
 
 /// Gateway membership minted from the issuer key (this host holds it).
@@ -175,11 +207,36 @@ async fn main() -> anyhow::Result<()> {
         },
     )
     .map_err(anyhow::Error::msg)?;
+    // Without a usable pool directory the gateway still signs browsers in
+    // and pipes; `/cas/` answers `pool_unavailable`.
+    let pool = match pool::UiPool::open(
+        &args.ui_pool_dir,
+        pool::PoolOptions {
+            max_total_bytes: args.ui_pool_max_bytes,
+            max_age: Duration::from_secs(args.ui_pool_max_age_days.max(1) * 24 * 60 * 60),
+            pulls_per_account_per_minute: args.ui_pool_pulls_per_minute,
+            ..pool::PoolOptions::default()
+        },
+        pool::system_clock(),
+    ) {
+        Ok(pool) => {
+            pool.spawn_cleanup(Duration::from_secs(24 * 60 * 60));
+            Some(pool)
+        }
+        Err(error) => {
+            log::error!(
+                "The web UI pool at {} cannot be opened; /cas/ is unavailable: {}",
+                args.ui_pool_dir.display(),
+                error
+            );
+            None
+        }
+    };
     let gateway = app::Gateway::new(
-        Arc::new(upstream::HttpAccounts::new(
-            &args.auth_url,
-            &args.directory_url,
-        )?),
+        Arc::new(
+            upstream::HttpAccounts::new(&args.auth_url, &args.directory_url)?
+                .with_superagent(Some(&args.superagent_url)),
+        ),
         Arc::new(upstream::LinkStreams(Arc::clone(&link))),
         session::SessionSealer::from_issuer_key(&key),
         app::GatewayOptions {
@@ -188,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
             max_pipes: args.max_pipes,
             ..app::GatewayOptions::default()
         },
+        pool,
     );
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await

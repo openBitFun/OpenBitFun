@@ -1431,14 +1431,9 @@ let remoteFormState = {
   weixin_base_url: "",
   weixin_bot_account_id: "",
 };
-let remoteRelayConnected = false;
-let remoteActiveMethod = null;
-let remoteRelayUrl = null;
 let remoteBotConnected = "Telegram(@openbitfun_bot)";
 let remoteBotVerboseMode = false;
 const remoteMethods = [
-  { id: "lan", name: "LAN", available: true, description: "Same local network" },
-  { id: "openbitfun_server", name: "OpenBitFun Server", available: true, description: "Official OpenBitFun relay" },
   { id: "bot_feishu", name: "Feishu Bot", available: true, description: "Via Feishu messenger" },
   { id: "bot_telegram", name: "Telegram Bot", available: true, description: "Via Telegram" },
   { id: "bot_weixin", name: "WeChat (Weixin)", available: true, description: "Via WeChat iLink bot" },
@@ -3190,17 +3185,10 @@ const DEV_FIXTURES = {
     if (!devAccountLoggedIn) {
       throw new Error("not logged in");
     }
-    // The host merges its live relay presence into the directory rows.
     return [
-      { deviceId: "dev-device-mac", deviceName: "studio-mac", platform: "macos", alias: "Studio", online: true, presence: "live", is_local: true },
+      { deviceId: "dev-device-mac", deviceName: "studio-mac", platform: "macos", alias: "Studio", online: true, presence: "directory", is_local: true },
       { deviceId: "dev-device-remote", deviceName: "build-host", platform: "linux", online: false, presence: "offline", is_local: false },
     ];
-  },
-  account_online_devices: () => {
-    if (!devAccountLoggedIn) {
-      throw new Error("not logged in");
-    }
-    return [{ deviceId: "dev-device-mac" }];
   },
   remote_connect_get_device_info: () => ({
     device_id: "dev-device-mac",
@@ -3209,25 +3197,13 @@ const DEV_FIXTURES = {
     device_os: "macos",
     mac_address: "00:00:00:00:00:00",
   }),
+  // The 2.0 shape: the retired relay fields stay, always empty.
   remote_connect_status: () => ({
-    connections: [
-      {
-        method: "lan",
-        relay_connected: remoteRelayConnected && remoteActiveMethod === "lan",
-        relay_url: remoteActiveMethod === "lan" ? remoteRelayUrl : null,
-        clients: [],
-      },
-      {
-        method: "openbitfun_server",
-        relay_connected: remoteRelayConnected && remoteActiveMethod === "openbitfun_server",
-        relay_url: remoteActiveMethod === "openbitfun_server" ? remoteRelayUrl : null,
-        clients: [],
-      },
-    ],
-    relay_connected: remoteRelayConnected,
-    relay_url: remoteRelayUrl,
-    active_method: remoteActiveMethod,
-    clients: remoteRelayConnected ? [{ id: "mobile-preview", name: "Mobile Web" }] : [],
+    connections: [],
+    relay_connected: false,
+    relay_url: null,
+    active_method: null,
+    clients: [],
     bot_connected: remoteBotConnected,
     bot_verbose_mode: remoteBotVerboseMode,
   }),
@@ -3240,7 +3216,7 @@ const DEV_FIXTURES = {
   },
   remote_connect_start: args => {
     const req = payloadOf(args);
-    const method = String(req.method || "openbitfun_server");
+    const method = String(req.method || "");
     if (method === "bot_telegram" || method === "bot_feishu" || method === "bot_weixin") {
       remoteBotConnected = method.replace("bot_", "");
       return {
@@ -3253,28 +3229,11 @@ const DEV_FIXTURES = {
         pairing_state: "connected",
       };
     }
-    remoteRelayConnected = true;
-    remoteActiveMethod = method === "lan" ? { lan: { ip: req.lan_ip || "192.168.1.42" } } : method;
-    remoteRelayUrl = method === "lan" ? "http://192.168.1.42:8788/remote" : "https://relay.example.invalid/pair/studio";
-    return {
-      method: remoteActiveMethod,
-      qr_data: remoteRelayUrl,
-      qr_svg: null,
-      qr_url: remoteRelayUrl,
-      bot_pairing_code: null,
-      bot_link: null,
-      pairing_state: "waiting_for_scan",
-    };
+    throw new Error(
+      "RELAY_METHOD_RETIRED: unsupported: the OpenBitFun relay was retired in OpenBitFun 2.0",
+    );
   },
-  remote_connect_stop: args => {
-    const req = payloadOf(args);
-    if (!req.method || req.method === "openbitfun_server" || req.method === "lan") {
-      remoteRelayConnected = false;
-      remoteActiveMethod = null;
-      remoteRelayUrl = null;
-    }
-    return null;
-  },
+  remote_connect_stop: () => null,
   remote_connect_configure_bot: args => {
     const req = payloadOf(args);
     const botType = String(req.bot_type || "");
@@ -4040,6 +3999,149 @@ const DEV_FIXTURES = {
   get_decision_model_credential_status: () => ({ configured: false }),
 };
 
+// ── UI-B OpenBitFun conversation (wave 15) ───────────────────────────────────
+//
+// The cloud node's `superagent_*` answers for the development page: one
+// conversation with three live jobs (visual spec §4.3), Working now and the
+// history groups. A send appends the message and a short reply in place; the
+// tests drive the live events themselves.
+const devSuperagent = (() => {
+  const now = Date.now();
+  const MIN = 60 * 1000;
+  const gate = (allowed, reason) => (allowed ? { allowed: true } : { allowed: false, reason });
+  const cards = {
+    "job-build": {
+      jobId: "job-build", deviceId: "dev-linux", deviceName: "linux-box", os: "linux", hostKind: "cli",
+      title: "Build release 1.2", state: "done", branch: "release/1.2",
+      diffStat: { filesChanged: 2, insertions: 3, deletions: 1, files: [], truncated: false },
+      sessionId: "session-1", updatedMs: now - 4 * MIN, seen: false,
+      actions: { openTranscript: gate(true), message: gate(true), cancel: gate(false, "job_terminal"), publish: gate(true), answer: gate(false, "no_pending_prompt") },
+    },
+    "job-test-mac": {
+      jobId: "job-test-mac", deviceId: "dev-mac", deviceName: "mac-mini", os: "macos", hostKind: "desktop",
+      title: "Test release 1.2", state: "blocked", stateReason: "prompt_pending", branch: "release/1.2",
+      pendingPrompt: { requestId: "perm-e2e", toolName: "Bash", title: "pnpm e2e", more: 0, kind: "permission", payload: { action: "bash", resources: ["pnpm e2e"] } },
+      sessionId: "session-2", updatedMs: now - 10 * 1000,
+      actions: { openTranscript: gate(true), message: gate(true), cancel: gate(true), publish: gate(false, "job_not_finished"), answer: gate(true) },
+    },
+    "job-test-linux": {
+      jobId: "job-test-linux", deviceId: "dev-linux", deviceName: "linux-box", os: "linux", hostKind: "cli",
+      title: "Test release 1.2", state: "working", branch: "release/1.2", summaryLine: "cargo test 812/1400",
+      lastAnswer: { promptId: "perm-cargo", answeredBy: "superagent", decision: "once", atMs: now - 2 * MIN, detail: "cargo test --workspace" },
+      sessionId: "session-1", updatedMs: now - 2 * MIN,
+      actions: { openTranscript: gate(true), message: gate(true), cancel: gate(true), publish: gate(false, "job_not_finished"), answer: gate(false, "no_pending_prompt") },
+    },
+    "job-test-win": {
+      jobId: "job-test-win", deviceId: "dev-win", deviceName: "win-pc", os: "windows", hostKind: "desktop",
+      title: "Test release 1.2", state: "queued", stateReason: "waiting_for_device",
+      summaryLine: "Starts when it's online, expires in 23 h", updatedMs: now - 1 * MIN,
+      actions: { openTranscript: gate(false, "waiting_for_device"), message: gate(false, "waiting_for_device"), cancel: gate(true), publish: gate(false, "job_not_finished"), answer: gate(false, "no_pending_prompt") },
+    },
+  };
+  const conversations = {
+    "conv-release": {
+      id: "conv-release", title: "Release 1.2", updatedMs: now - MIN, rollup: "needs_you", unread: false,
+      turn: { id: "turn-3", step: "model_round", rounds: 3 },
+      messages: [
+        { id: "m1", role: "user", text: "Build on the linux box, then test it on all three.", atMs: now - 9 * MIN, clientMessageId: "dev-c1" },
+        { id: "m2", role: "assistant", text: "Building on linux-box first. I'll start the tests when it passes.", atMs: now - 9 * MIN },
+        { id: "m3", role: "jobs", jobIds: ["job-build"], atMs: now - 9 * MIN },
+        { id: "m4", role: "assistant", text: "Build passed. Testing on three machines.", atMs: now - 4 * MIN, citations: [{ jobId: "job-build", label: "Build release 1.2" }] },
+        { id: "m5", role: "jobs", jobIds: ["job-test-mac", "job-test-linux", "job-test-win"], atMs: now - 4 * MIN },
+      ],
+    },
+    "conv-812": { id: "conv-812", title: "Fix #812", updatedMs: now - 30 * MIN, rollup: "working", unread: false, turn: null, messages: [] },
+    "conv-deps": { id: "conv-deps", title: "Bump deps", updatedMs: now - 26 * 60 * MIN, rollup: "unread", unread: true, turn: null, messages: [] },
+    "conv-docs": { id: "conv-docs", title: "Docs pass", updatedMs: now - 30 * 60 * MIN, rollup: "none", unread: false, turn: null, messages: [] },
+  };
+  const row = conversation => ({
+    id: conversation.id, title: conversation.title, updatedMs: conversation.updatedMs,
+    status: conversation.turn ? "running" : "idle", rollup: conversation.rollup, unread: conversation.unread,
+  });
+  let seq = 0;
+  const fixtures = {
+    superagent_status: () => ({
+      enabled: true, signedIn: true, deviceId: "cloud-dev", name: "OpenBitFun", hostKind: "cloud",
+      placeholder: "Ask OpenBitFun",
+      suggestions: ["Run the tests on all my devices", "Update deps", "Summarize today's work"],
+      workingNow: { needsYou: [cards["job-test-mac"]], working: [cards["job-test-linux"], cards["job-test-win"]] },
+    }),
+    superagent_enable: () => ({ enabled: true }),
+    superagent_disable: () => ({ enabled: false }),
+    superagent_list_conversations: () => ({
+      groups: [
+        { id: "today", rows: [row(conversations["conv-release"]), row(conversations["conv-812"])] },
+        { id: "yesterday", rows: [row(conversations["conv-deps"]), row(conversations["conv-docs"])] },
+      ].map(group => ({ ...group, rows: group.rows.filter(item => conversations[item.id]) })).filter(group => group.rows.length > 0),
+      nextCursor: null,
+      timeZone: "UTC",
+    }),
+    superagent_get_conversation: args => {
+      const req = payloadOf(args);
+      const conversation = conversations[req.conversationId || req.id];
+      if (!conversation) throw new Error("not_found: no such conversation");
+      const ids = new Set(conversation.messages.flatMap(message => message.jobIds || []));
+      return {
+        conversation: { id: conversation.id, title: conversation.title, updatedMs: conversation.updatedMs, turn: conversation.turn },
+        messages: conversation.messages,
+        cursor: 0,
+        hasMore: false,
+        cards: [...ids].map(id => cards[id]).filter(Boolean),
+      };
+    },
+    superagent_send: args => {
+      const req = payloadOf(args);
+      let conversation = req.conversationId ? conversations[req.conversationId] : null;
+      if (!conversation) {
+        const id = `conv-dev-${++seq}`;
+        conversation = { id, title: String(req.message || "").slice(0, 48), updatedMs: Date.now(), rollup: "none", unread: false, turn: null, messages: [] };
+        conversations[id] = conversation;
+      }
+      const duplicate = conversation.messages.some(message => message.clientMessageId === req.clientMessageId);
+      if (!duplicate) {
+        conversation.messages.push({ id: `m-dev-${++seq}`, role: "user", text: String(req.message || ""), atMs: Date.now(), clientMessageId: req.clientMessageId });
+        conversation.messages.push({ id: `m-dev-${++seq}`, role: "assistant", text: "On it. I'll report back here as the jobs finish.", atMs: Date.now() });
+      }
+      conversation.turn = { id: `turn-dev-${seq}`, step: "done", rounds: 1 };
+      conversation.updatedMs = Date.now();
+      return { conversationId: conversation.id, messageId: `m-dev-${seq}`, turnId: `turn-dev-${seq}`, duplicate };
+    },
+    superagent_cancel_turn: args => {
+      const conversation = conversations[payloadOf(args).conversationId];
+      if (conversation && conversation.turn) conversation.turn = { ...conversation.turn, step: "cancelled" };
+      return { cancelled: true };
+    },
+    superagent_job_action: args => {
+      const req = payloadOf(args);
+      const card = cards[req.jobId];
+      if (!card) throw new Error("not_found: no such job");
+      if (req.action === "cancel") {
+        cards[req.jobId] = { ...card, state: "cancelled", stateReason: undefined, updatedMs: Date.now(), pendingPrompt: undefined };
+        return { cancelled: true, card: cards[req.jobId] };
+      }
+      if (req.action === "message") return { jobId: req.jobId, outcome: card.state === "working" ? "steered" : "started" };
+      if (req.action === "refresh") return { card };
+      throw new Error(`invalid_request: unknown job action '${req.action}'`);
+    },
+    superagent_rename_conversation: args => {
+      const req = payloadOf(args);
+      const conversation = conversations[req.conversationId];
+      if (!conversation) throw new Error("not_found: no such conversation");
+      conversation.title = String(req.title || "").slice(0, 120);
+      return { conversationId: conversation.id, title: conversation.title };
+    },
+    superagent_delete_conversation: args => {
+      const req = payloadOf(args);
+      delete conversations[req.conversationId];
+      return { deleted: true, jobsLeftRunning: 0 };
+    },
+    superagent_delete_data: () => ({ deleted: true, jobsCancelled: 0, jobsLeftRunning: 0 }),
+  };
+  return fixtures;
+})();
+Object.assign(DEV_FIXTURES, devSuperagent);
+// ── end UI-B OpenBitFun conversation (wave 15) ───────────────────────────────
+
 
 // ── Browser controller (page realm): device key and the end-to-end channel ──
 //
@@ -4253,6 +4355,370 @@ function lengthPrefixed(body) {
   new DataView(framed.buffer).setUint32(0, body.length);
   framed.set(body, 4);
   return framed;
+}
+
+// ── Device UI bundles (page realm): the launcher's half of the UI loader ──
+//
+// A browser runs the exact web UI a device ships (`web/ui-loader.js`, a
+// Service Worker under `/app/b/`). After the app realm read the device's
+// manifest over the end-to-end channel (`ui_bundle_manifest`):
+//
+//   host.call("openbitfun.controller.prepareBundle", { manifest, deviceId }) -> { bundleId }
+//     registers the loader, which checks the manifest, recomputes its id and stores it
+//   host.call("openbitfun.controller.launch", { bundleId, deviceId })
+//     writes the handoff and opens /app/b/<bundleId>/index.html#device=<deviceId>
+//   host.call("openbitfun.controller.page") -> { handoff, showDevices, uiError }
+//   host.call("openbitfun.controller.leave")
+//     a device's UI page goes back to the launcher's device list
+//
+// Handoff v1 is a frozen cross-version contract: sessionStorage
+// `obf.controller.handoff.v1` = `{ "v": 1, "deviceId", "at": <ms> }`. Readers
+// ignore fields they do not know; writers only ever add fields.
+
+const CONTROLLER_HANDOFF_KEY = "obf.controller.handoff.v1";
+const UI_LOADER_STORE_MESSAGE = "obf-ui-store";
+const UI_LOADER_TIMEOUT_MS = 15000;
+const BUNDLE_PAGE_PATH = /^(.*\/)b\/([0-9a-f]{64})\/(?:[^/]+\/)*[^/]*$/;
+const BUNDLE_ID = /^[0-9a-f]{64}$/;
+
+/** The handoff v1 in `storage`, or `null` when there is none or it is not v1. */
+export function readControllerHandoff(storage) {
+  let text = null;
+  try {
+    text = storage ? storage.getItem(CONTROLLER_HANDOFF_KEY) : null;
+  } catch {
+    return null;
+  }
+  if (!text) return null;
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.v !== 1) return null;
+  if (typeof value.deviceId !== "string" || !value.deviceId) return null;
+  return { ...value, at: typeof value.at === "number" ? value.at : null };
+}
+
+/** Writes handoff v1 for `deviceId`. */
+export function writeControllerHandoff(storage, deviceId, now = Date.now()) {
+  const handoff = { v: 1, deviceId, at: now };
+  storage.setItem(CONTROLLER_HANDOFF_KEY, JSON.stringify(handoff));
+  return handoff;
+}
+
+/** `{ launcher, bundleId }` when `location` is a device UI page under `<launcher>b/<bundleId>/`. */
+export function bundlePageOf(location) {
+  if (!location || typeof location.pathname !== "string") return null;
+  const match = BUNDLE_PAGE_PATH.exec(location.pathname);
+  if (!match) return null;
+  return { launcher: `${location.origin}${match[1]}`, bundleId: match[2] };
+}
+
+/** The `#nsh-params` a device UI page served by the loader runs with. */
+export function bundlePageParams(location) {
+  const page = bundlePageOf(location);
+  if (!page) return null;
+  const socket = location.protocol === "http:" ? "ws:" : "wss:";
+  return {
+    controller: {
+      api: `${location.origin}/obp/api/v1`,
+      gateway: `${socket}//${location.host}/obp`,
+      uiBundleId: page.bundleId,
+      bundlePage: true,
+    },
+  };
+}
+
+/** The one-shot fragment parameters (`#device=`, `#ui-error=`, `#switch=1`). */
+function fragmentParams(location) {
+  const hash = location && typeof location.hash === "string" ? location.hash.replace(/^#/, "") : "";
+  try {
+    return new URLSearchParams(hash);
+  } catch {
+    return new URLSearchParams();
+  }
+}
+
+/** What a page realm knows about how this page was started. */
+export function controllerPageState(location, storage) {
+  const page = bundlePageOf(location);
+  const fragment = fragmentParams(location);
+  const hashDevice = fragment.get("device");
+  let handoff = null;
+  if (page) {
+    handoff = readControllerHandoff(storage);
+    // A device UI page opened in a new tab has no sessionStorage handoff.
+    if (!handoff && hashDevice) handoff = { v: 1, deviceId: hashDevice, at: null };
+  }
+  const reason = fragment.get("ui-error");
+  return {
+    handoff,
+    showDevices: fragment.get("switch") === "1",
+    uiError: reason ? { reason, file: fragment.get("file") || null, bundleId: fragment.get("bundle") || null } : null,
+  };
+}
+
+/** Gives a device UI page its controller parameters before the app starts. */
+function installBundlePageParams() {
+  if (typeof document === "undefined" || typeof location === "undefined") return;
+  if (document.getElementById("nsh-params")) return;
+  const params = bundlePageParams(location);
+  if (!params) return;
+  const script = document.createElement("script");
+  script.type = "application/json";
+  script.id = "nsh-params";
+  script.textContent = JSON.stringify(params);
+  document.head.appendChild(script);
+}
+
+/** Leaves a device UI page for the launcher, naming what failed (`#ui-error=`). */
+function failBundlePage(page, reason, file) {
+  const fragment = new URLSearchParams({ "ui-error": reason, file, bundle: page.bundleId });
+  location.replace(`${page.launcher}#${fragment.toString()}`);
+}
+
+/**
+ * Hands the NSH runtime a realm iframe the UI loader controls (device UI pages only).
+ *
+ * The coupling, in one place: NSH 0.6.1, `browser.<hash>/runtime.js`,
+ * `createBrowserHost().run()` makes its app realm with
+ * `document.createElement("iframe")`, appends it with
+ * `(document.body ?? document.documentElement).append(frame)`, then reads
+ * `frame.contentWindow.document` at once and loads `bootstrap.js` into it.
+ * Chrome does not give such an `about:blank` iframe the page's Service Worker,
+ * so its scripts would bypass the loader. So this function loads a blank page
+ * inside the loader's scope (`.obf-realm.html`, which the loader answers),
+ * checks that the iframe is controlled, and returns it from the runtime's first
+ * `createElement("iframe")`. The runtime's `append` of it is skipped, since
+ * moving an iframe reloads it. `guardBundleRealm` fails the page loudly when
+ * the runtime builds its realm any other way. Upstream request: the NSH
+ * runtime should load its realm from an in-scope URL, or through the parent.
+ */
+async function prepareBundleRealm(page) {
+  const frame = document.createElement("iframe");
+  frame.hidden = true;
+  frame.setAttribute("aria-hidden", "true");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("the interface realm did not load")), UI_LOADER_TIMEOUT_MS);
+    frame.addEventListener(
+      "load",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+    frame.src = new URL(".obf-realm.html", `${page.launcher}b/${page.bundleId}/`).href;
+    document.body.append(frame);
+  });
+  let controlled = false;
+  try {
+    controlled = Boolean(frame.contentWindow.navigator.serviceWorker.controller);
+  } catch {
+    controlled = false;
+  }
+  if (!controlled) {
+    frame.remove();
+    throw new Error("the interface realm is not served by the interface loader; nothing was run");
+  }
+  const createElement = document.createElement;
+  const parent = frame.parentNode;
+  const append = parent.append;
+  document.createElement = function createRealmOnce(name, options) {
+    if (String(name).toLowerCase() !== "iframe") return createElement.call(this, name, options);
+    document.createElement = createElement;
+    parent.append = function appendKeepingRealm(...nodes) {
+      parent.append = append;
+      const others = nodes.filter(node => node !== frame);
+      if (others.length) append.apply(this, others);
+    };
+    return frame;
+  };
+  return frame;
+}
+
+/**
+ * Fails a device UI page loudly when anything of its bundle did not come
+ * through the loader: a resource under the bundle's address, in the page, its
+ * realm or any other same-origin frame, fetched without the worker
+ * (`workerStart` 0).
+ */
+function guardBundleRealm(page, realm) {
+  const scope = `${page.launcher}b/${page.bundleId}/`;
+  let failed = false;
+  const fail = file => {
+    if (failed) return;
+    failed = true;
+    failBundlePage(page, "verification", file);
+  };
+  const watch = view => {
+    if (!view || typeof view.PerformanceObserver !== "function") return;
+    const observer = new view.PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        if (entry.name.startsWith(scope) && entry.workerStart === 0) fail(entry.name.slice(scope.length));
+      }
+    });
+    observer.observe({ type: "resource", buffered: true });
+  };
+  // Another same-origin frame (a widget's `srcdoc`, a realm built some other
+  // way) is watched too: loading this bundle's files there without the
+  // worker fails the page.
+  const checkFrame = node => {
+    if (node === realm || !node || node.nodeName !== "IFRAME" || node.__obfWatched) return;
+    node.__obfWatched = true;
+    const watchFrame = () => {
+      try {
+        watch(node.contentWindow);
+      } catch {
+        // A cross-origin frame loads nothing of this bundle.
+      }
+    };
+    watchFrame();
+    node.addEventListener("load", watchFrame);
+  };
+  watch(window);
+  watch(realm.contentWindow);
+  for (const node of document.querySelectorAll("iframe")) checkFrame(node);
+  new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        checkFrame(node);
+        if (node && typeof node.querySelectorAll === "function") node.querySelectorAll("iframe").forEach(checkFrame);
+      }
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+}
+
+/** Device UI pages only: refuses an uncontrolled page and readies the realm. */
+async function prepareBundlePage() {
+  if (typeof document === "undefined" || typeof location === "undefined") return;
+  const page = bundlePageOf(location);
+  if (!page || !document.body) return;
+  const container = typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
+  if (!container || !container.controller) {
+    throw new Error("This page must be opened through OpenBitFun's interface loader; open it again from the launcher");
+  }
+  let realm;
+  try {
+    realm = await prepareBundleRealm(page);
+  } catch (error) {
+    failBundlePage(page, "verification", ".obf-realm.html");
+    throw error;
+  }
+  guardBundleRealm(page, realm);
+}
+
+/** The launcher this page belongs to (`https://<domain>/app/`). */
+function launcherUrl() {
+  const page = bundlePageOf(location);
+  if (page) return page.launcher;
+  return new URL(".", document.baseURI || location.href).href;
+}
+
+function uiLoaderWorker(registration) {
+  return new Promise((resolve, reject) => {
+    const worker = registration.installing || registration.waiting || registration.active;
+    if (!worker) {
+      reject(new Error("the UI loader did not install"));
+      return;
+    }
+    if (worker.state === "activated") {
+      resolve(worker);
+      return;
+    }
+    const timer = setTimeout(() => reject(new Error("the UI loader did not start in time")), UI_LOADER_TIMEOUT_MS);
+    worker.addEventListener("statechange", () => {
+      if (worker.state === "activated") {
+        clearTimeout(timer);
+        resolve(worker);
+      } else if (worker.state === "redundant") {
+        clearTimeout(timer);
+        reject(new Error("the UI loader was replaced while starting"));
+      }
+    });
+  });
+}
+
+function askUiLoader(worker, message) {
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => reject(new Error("the UI loader did not answer")), UI_LOADER_TIMEOUT_MS);
+    channel.port1.onmessage = event => {
+      clearTimeout(timer);
+      channel.port1.close();
+      resolve(event.data || { ok: false, error: "the UI loader answered nothing" });
+    };
+    worker.postMessage(message, [channel.port2]);
+  });
+}
+
+async function prepareUiBundle(args) {
+  const { manifest, deviceId } = args || {};
+  if (!manifest || typeof manifest !== "object" || typeof deviceId !== "string" || !deviceId) {
+    throw new Error("ui_bundle_invalid: openbitfun.controller.prepareBundle needs a manifest and a device");
+  }
+  const container = typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
+  if (!container) {
+    throw new Error(
+      "controller_unsupported: this browser cannot open a device's interface here (Service Workers are off, for example in a private window)",
+    );
+  }
+  const launcher = launcherUrl();
+  let registration;
+  try {
+    registration = await container.register(new URL("ui-loader.js", launcher).href, {
+      scope: new URL("b/", launcher).href,
+      updateViaCache: "none",
+    });
+  } catch (error) {
+    throw new Error(`ui_loader_failed: the UI loader could not be installed (${error && error.message ? error.message : error})`);
+  }
+  const worker = await uiLoaderWorker(registration);
+  const answer = await askUiLoader(worker, { type: UI_LOADER_STORE_MESSAGE, manifest, deviceId });
+  if (!answer.ok || typeof answer.bundleId !== "string") throw new Error(answer.error || "ui_bundle_invalid: no bundle id");
+  return { bundleId: answer.bundleId };
+}
+
+function launchUiBundle(args) {
+  const { bundleId, deviceId } = args || {};
+  if (typeof bundleId !== "string" || !BUNDLE_ID.test(bundleId) || typeof deviceId !== "string" || !deviceId) {
+    throw new Error("ui_bundle_invalid: openbitfun.controller.launch needs a bundle id and a device");
+  }
+  try {
+    writeControllerHandoff(sessionStorage, deviceId);
+  } catch {
+    throw new Error("controller_unsupported: this browser cannot hand the device over to its interface (sessionStorage is off)");
+  }
+  const target = new URL(`b/${bundleId}/index.html`, launcherUrl());
+  target.hash = `device=${encodeURIComponent(deviceId)}`;
+  // The launcher steps aside: Back from the device's UI leaves OpenBitFun.
+  location.replace(target.href);
+  return true;
+}
+
+function leaveUiBundle() {
+  try {
+    sessionStorage.removeItem(CONTROLLER_HANDOFF_KEY);
+  } catch {
+    // Nothing stored.
+  }
+  location.assign(`${launcherUrl()}#switch=1`);
+  return true;
+}
+
+function readControllerPage() {
+  const state = controllerPageState(location, typeof sessionStorage !== "undefined" ? sessionStorage : null);
+  // One-shot fragments of the launcher: a reload shows the plain launcher.
+  if (!bundlePageOf(location) && (state.uiError || state.showDevices)) {
+    try {
+      history.replaceState(history.state, "", `${location.pathname}${location.search}`);
+    } catch {
+      // The address keeps the fragment; harmless.
+    }
+  }
+  return state;
 }
 
 function createController(player) {
@@ -4475,6 +4941,10 @@ function createController(player) {
       return { deviceId: key.deviceId, publicKey: key.publicKey };
     },
     forgetKey: forgetControllerKey,
+    prepareBundle: prepareUiBundle,
+    launch: launchUiBundle,
+    leave: leaveUiBundle,
+    page: readControllerPage,
     open,
     send(args) {
       const socket = args && sockets.get(args.id);
@@ -4510,6 +4980,9 @@ export async function createHost(player) {
   const transport = native ? "tauri" : "dev";
 
   if (!native) {
+    // Before the start script reads `#nsh-params` and the runtime makes its realm.
+    installBundlePageParams();
+    await prepareBundlePage();
     const urlLocale = readDevUrlLocale();
     if (urlLocale) {
       devConfigs.app = { ...devConfigs.app, language: urlLocale };
@@ -5301,7 +5774,11 @@ export async function createHost(player) {
         case "openbitfun.controller.forgetKey":
         case "openbitfun.controller.open":
         case "openbitfun.controller.send":
-        case "openbitfun.controller.close": {
+        case "openbitfun.controller.close":
+        case "openbitfun.controller.prepareBundle":
+        case "openbitfun.controller.launch":
+        case "openbitfun.controller.leave":
+        case "openbitfun.controller.page": {
           const operation = name.slice("openbitfun.controller.".length);
           try {
             return { ok: true, value: await controller[operation](args), transport };

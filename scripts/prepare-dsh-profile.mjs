@@ -26,8 +26,8 @@
  * desktop:dev and cargo check do not compile it: the profile is not a
  * compile-time resource.
  * Local DeepSeek sessions run this script explicitly. A stamped profile whose
- * inputs have not changed is left alone — the same mtime short-circuit
- * mobile-web uses. Escape hatches: `--force` /
+ * inputs have not changed is left alone (an mtime short-circuit).
+ * Escape hatches: `--force` /
  * `OPENBITFUN_DSH_PROFILE_FORCE_BUILD=1`.
  */
 

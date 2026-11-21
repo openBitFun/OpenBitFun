@@ -380,9 +380,9 @@ fn to_launch_response(kind: &BrowserKind, result: LaunchResult) -> BrowserContro
 }
 
 /// Overall budget for one Browser Control setup command, measured from its
-/// start. It stays below the Peer host invoke limit for these commands
-/// (`peer_host_invoke::BROWSER_CONTROL_SETUP_INVOKE_TIMEOUT`, 180 s) so a late
-/// fallback cannot outlive the request that is waiting for it.
+/// start. It stays below the 180 s a remote controller waits for these
+/// commands, so a late fallback cannot outlive the request that is waiting
+/// for it.
 const BROWSER_CONTROL_SETUP_BUDGET: Duration = Duration::from_secs(170);
 /// Approval time kept back when a late 404 sends the flow back to setup.
 const FALLBACK_APPROVAL_RESERVE: Duration = Duration::from_secs(20);
@@ -623,11 +623,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn setup_budget_fits_inside_the_peer_host_invoke_limit() {
-        assert!(
-            BROWSER_CONTROL_SETUP_BUDGET
-                < super::super::peer_host_invoke::BROWSER_CONTROL_SETUP_INVOKE_TIMEOUT
-        );
+    fn setup_budget_fits_inside_the_controller_wait() {
+        assert!(BROWSER_CONTROL_SETUP_BUDGET < Duration::from_secs(180));
     }
 
     #[test]

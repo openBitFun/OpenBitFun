@@ -1,0 +1,76 @@
+# OpenBitFun cloud agent (openbitfun-superagent from
+# src/apps/relay-server/superagent). A per-account control-plane node: it
+# plans with a model relayed to one of the account's own devices
+# (fleet_model_*) and hands work to the account's desktops and CLI hosts
+# through Detached Dispatch. It runs no tools here and holds no model
+# credentials. Account records are AES-256-GCM under per-account data keys
+# wrapped by the master key, in /var/lib/openbitfun-superagent
+# (StateDirectory, 0700).
+# It mints its own account-network membership from the issuer key, so it runs
+# as the issuer's user. Loopback listener only: entries reach it as
+# https://<domain>/agent/ (domain-only over HTTPS: the provider's front end
+# and nginx forward it here).
+# SUPERAGENT_FRONTENDS=false keeps /agent/obp and /agent/api/v1/ensure
+# answering `superagent_unavailable` until the cloud-agent directory route is
+# deployed with the relay (see README.md); only /agent/health answers.
+# Install as /etc/systemd/system/openbitfun-superagent.service; see README.md.
+[Unit]
+Description=OpenBitFun cloud agent
+After=network-online.target openbitfun-link-node.service openbitfun-directory.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openbitfun-mesh
+Group=openbitfun-mesh
+WorkingDirectory=/opt/openbitfun-superagent
+Environment=SUPERAGENT_LISTEN=127.0.0.1:19740
+Environment=SUPERAGENT_DATA_DIR=/var/lib/openbitfun-superagent
+Environment=SUPERAGENT_MASTER_KEY_FILE=/opt/openbitfun-superagent/etc/master.key
+Environment=MESH_ISSUER_KEY_FILE=/opt/openbitfun-mesh-issuer/etc/issuer.key
+Environment=SUPERAGENT_RELAY_NODE=ws://127.0.0.1:11011/
+Environment=SUPERAGENT_DIRECTORY_URL=http://127.0.0.1:19750
+# The 2.0 directory's cloud agent route credential (same 64 hex characters as
+# the directory's RELAY_CLOUD_AGENT_KEY_FILE, a copy owned by this user, 0600).
+Environment=SUPERAGENT_DIRECTORY_KEY_FILE=/opt/openbitfun-superagent/etc/directory.key
+Environment=SUPERAGENT_AUTH_URL=https://auth.openbitfun.com/api/v1
+Environment=SUPERAGENT_MEMBER=obf-agent-lwb
+Environment=SUPERAGENT_FRONTENDS=true
+# The directory's server-only route credential (same 0600 file as the relay's
+# RELAY_CLOUD_AGENT_KEY_FILE); set once a relay with the route runs here.
+#Environment=SUPERAGENT_DIRECTORY_KEY_FILE=/opt/openbitfun-superagent/etc/directory.key
+Environment=SUPERAGENT_MAX_ACCOUNTS=256
+Environment=SUPERAGENT_MAX_RESIDENT=512
+Environment=SUPERAGENT_MODEL_ROUNDS=64
+Environment=SUPERAGENT_WATCH_SECONDS=5
+Environment=RUST_LOG=info,easytier=warn,easytier_core=warn
+ExecStart=/opt/openbitfun-superagent/bin/openbitfun-superagent
+StateDirectory=openbitfun-superagent
+StateDirectoryMode=0700
+UMask=0077
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# 512 resident slots x 4 MiB is the slot budget; the rest is Link and buffers.
+MemoryMax=3G
+MemoryHigh=2560M
+
+[Install]
+WantedBy=multi-user.target

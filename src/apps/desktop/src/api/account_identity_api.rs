@@ -24,6 +24,9 @@ pub async fn account_github_poll(
         // Every entry point completes the same account session, including the
         // markets. Relay failure must not turn a valid GitHub identity into a
         // failed sign-in; the device panel can retry the connection later.
+        // The new-version account directory does not wait for the legacy
+        // relay: it signs in from the identity and wakes the device network.
+        super::account_directory::signed_in();
         if let Err(error) = super::remote_connect_api::account_login(
             super::remote_connect_api::AccountAuthRequest {},
         )

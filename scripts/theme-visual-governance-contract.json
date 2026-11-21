@@ -3,26 +3,6 @@
   "description": "Visual review contract for theme-token governance. This is a coverage contract, not proof that screenshots or contrast checks already passed.",
   "surfaces": [
     {
-      "key": "mobile-web-shell",
-      "owner": "src/mobile-web/src/theme; src/mobile-web/src/styles",
-      "platforms": ["mobile-web"],
-      "formFactors": ["mobile", "narrow"],
-      "themes": ["dark", "light", "system"],
-      "states": ["default", "loading", "error", "navigation"],
-      "tokenFamilies": ["@openbitfun/theme-openbitfun", "--openbitfun-color-surface-*", "--openbitfun-color-content-*", "--openbitfun-color-border-*", "--openbitfun-color-action-*", "--openbitfun-color-status-*"],
-      "evidence": [
-        {
-          "type": "mobile-build-review",
-          "command": "pnpm --dir src/mobile-web run type-check && pnpm run build:mobile-web",
-          "requirement": "Theme contract changes must not assume desktop-only WebView behavior or break the mobile web build."
-        }
-      ],
-      "risks": [
-        "Mobile web is a separate build target and may not exercise desktop-only theme runtime paths.",
-        "Narrow form factor can surface contrast and spacing regressions that desktop screenshots miss."
-      ]
-    },
-    {
       "key": "installer-shell",
       "owner": "OpenBitFun-Installer/src/theme; OpenBitFun-Installer/src/pages; OpenBitFun-Installer/src/styles",
       "platforms": ["installer"],

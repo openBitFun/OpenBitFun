@@ -1,9 +1,11 @@
 //! CLI adapters for the shared Remote Connect owner and ProductControl tool.
 //!
-//! The daemon owns listeners. Interactive, Shared and headless Agent processes
-//! use its authenticated local management endpoint instead of polling providers.
+//! The daemon owns bot listeners. Interactive, Shared and headless Agent
+//! processes use its authenticated local management endpoint instead of
+//! polling providers. Other devices control this host over OpenBitFun Link
+//! (`crate::obp_host`) while remote control is on; there is no Mobile Web or
+//! relay transport to start or stop here.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use anyhow::{anyhow, Result};
@@ -12,10 +14,7 @@ use openbitfun_core::agentic::tools::openbitfun_control_host::set_openbitfun_con
 use openbitfun_core::service::remote_connect::{
     bot,
     control::{RemoteBotControl, RemoteConnectServiceHolder},
-    device,
-    embedded_relay_host::EmbeddedRelayHost,
-    relay_client::ConnectionState,
-    AccountClient, DeviceIdentity, QrGenerator, RemoteConnectConfig, RemoteConnectService,
+    device, AccountClient, DeviceIdentity, RemoteConnectConfig, RemoteConnectService,
 };
 use openbitfun_product_domains::detached_dispatch_control::{
     DetachedDispatchControlRequest, DETACHED_DISPATCH_CONTROL_PROVIDER,
@@ -25,9 +24,7 @@ use openbitfun_product_domains::product_control::{
     ProductControlAction, ProductControlDeliveryProfile, ProductControlFuture, ProductControlPort,
     ProductControlRequest,
 };
-use openbitfun_product_domains::remote_control::{
-    RemoteControlMethod, RemoteControlRequest, REMOTE_CONTROL_PROVIDER,
-};
+use openbitfun_product_domains::remote_control::{RemoteControlRequest, REMOTE_CONTROL_PROVIDER};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
@@ -95,9 +92,8 @@ pub(crate) struct CliRemoteControlHost {
     runtime: Weak<CliRuntimeContext>,
     service: RemoteConnectServiceHolder,
     bots: RemoteBotControl,
-    relay_operation: Mutex<()>,
-    relay_enabled: AtomicBool,
-    relay_error: RwLock<Option<String>>,
+    routing_operation: Mutex<()>,
+    routing_error: RwLock<Option<String>>,
     shutdown_requested: tokio::sync::Notify,
 }
 
@@ -105,15 +101,13 @@ impl CliRemoteControlHost {
     fn new(runtime: &Arc<CliRuntimeContext>) -> Result<Arc<Self>> {
         let service = Arc::new(RwLock::new(Some(RemoteConnectService::new(
             RemoteConnectConfig::default(),
-            Arc::new(CliEmbeddedRelayUnavailable),
         )?)));
         Ok(Arc::new(Self {
             runtime: Arc::downgrade(runtime),
             bots: RemoteBotControl::new(service.clone()),
             service,
-            relay_operation: Mutex::new(()),
-            relay_enabled: AtomicBool::new(true),
-            relay_error: RwLock::new(None),
+            routing_operation: Mutex::new(()),
+            routing_error: RwLock::new(None),
             shutdown_requested: tokio::sync::Notify::new(),
         }))
     }
@@ -128,27 +122,23 @@ impl CliRemoteControlHost {
         if allowed {
             let account = self.runtime()?.account_runtime().account_info().await?;
             self.bots.restore(&account.user_id).await?;
-            self.reconcile_relay().await?;
+            self.reconcile_routing().await?;
         } else {
             self.bots.suspend().await;
         }
         Ok(())
     }
 
-    pub(crate) async fn reconcile_relay(&self) -> Result<()> {
-        let _operation = self.relay_operation.lock().await;
-        self.connect_relay_if_enabled().await
-    }
-
-    async fn connect_relay_if_enabled(&self) -> Result<()> {
-        if !self.relay_enabled.load(Ordering::Acquire) || !device::remote_control_allowed()? {
+    /// Claims this device for remote control again when the daemon is signed
+    /// in, remote control is on and the claim was not held (a failed start).
+    pub(crate) async fn reconcile_routing(&self) -> Result<()> {
+        let _operation = self.routing_operation.lock().await;
+        if !device::remote_control_allowed()? {
             return Ok(());
         }
         let runtime = self.runtime()?;
-        if !matches!(
-            runtime.account_routing().connection_state().await,
-            ConnectionState::Disconnected
-        ) {
+        if runtime.account_routing().serving_state() != crate::account::DeviceServingState::Stopped
+        {
             return Ok(());
         }
         let device = DeviceIdentity::from_current_machine()?;
@@ -156,7 +146,7 @@ impl CliRemoteControlHost {
             .account_runtime()
             .restore_device_routing(&device.device_name)
             .await;
-        *self.relay_error.write().await = result.as_ref().err().map(ToString::to_string);
+        *self.routing_error.write().await = result.as_ref().err().map(ToString::to_string);
         result
     }
 
@@ -182,34 +172,18 @@ impl CliRemoteControlHost {
                 let info = account.account_info().await?;
                 result["daemonRunning"] = json!(true);
                 result["host"] = json!({"kind":"cli", "deviceId":info.device_id, "deviceName":info.device_name});
-                result["mobileWeb"] = json!({
-                    "method":"mobile_web", "enabled":self.relay_enabled.load(Ordering::Acquire) && device::remote_control_allowed()?,
-                    "routingState": format!("{:?}", runtime.account_routing().connection_state().await).to_ascii_lowercase(),
-                    "relayUrl":info.relay_url, "lastError":self.relay_error.read().await.clone(),
+                result["link"] = json!({
+                    "remoteControlAllowed": device::remote_control_allowed()?,
+                    "deviceServing": runtime.account_routing().serving_state().as_str(),
+                    "lastError": self.routing_error.read().await.clone(),
+                    "host": crate::obp_host::read_status(),
                 });
-                result["lan"] = json!({"available":false,"reason":"This CLI build uses the configured Relay for Mobile Web; it does not host an embedded LAN Relay"});
                 Ok(result)
             }
-            RemoteControlRequest::Start { method: RemoteControlMethod::MobileWeb, .. } => {
-                device::require_remote_control()?;
-                let _operation = self.relay_operation.lock().await;
-                self.relay_enabled.store(true, Ordering::Release);
-                self.connect_relay_if_enabled().await?;
-                let info = account.account_info().await?;
-                let url = QrGenerator::build_device_url(&info.relay_url, &info.device_id)?;
-                Ok(json!({"started":true,"method":"mobile_web", "url":url,
-                    "routingState":format!("{:?}", runtime.account_routing().connection_state().await).to_ascii_lowercase(),
-                    "deviceId":info.device_id, "nextStep":"Open the URL in Mobile Web and sign in with the same OpenBitFun account. The daemon owns the session and continues when this chat disconnects."}))
-            }
-            RemoteControlRequest::Stop { method: RemoteControlMethod::MobileWeb } => {
-                let _operation = self.relay_operation.lock().await;
-                self.relay_enabled.store(false, Ordering::Release);
-                runtime.account_routing().stop_device_routing().await;
-                Ok(json!({"stopped":true,"method":"mobile_web", "affects":"Mobile Web and Peer Device routing on this daemon; bot listeners remain active", "until":"next daemon restart or explicit start"}))
-            }
-            RemoteControlRequest::Start { method: RemoteControlMethod::Lan, .. }
-            | RemoteControlRequest::Stop { method: RemoteControlMethod::Lan } => {
-                Err(anyhow!("unsupported: This CLI build has no embedded LAN Relay. Use method mobile_web with the configured Relay; no local or controller fallback was performed"))
+            RemoteControlRequest::Start { method, .. } | RemoteControlRequest::Stop { method }
+                if method.bot_type().is_none() =>
+            {
+                Err(anyhow!("unsupported: OpenBitFun 2.0 has no Mobile Web or LAN relay. Other devices of this account control this host over OpenBitFun Link while remote control is on (`openbitfun remote-control on|off`); nothing was started or stopped"))
             }
             other => self.bots.execute(other).await,
         }
@@ -224,22 +198,10 @@ impl CliRemoteControlHost {
     }
 
     pub(crate) async fn shutdown(&self) {
-        self.relay_enabled.store(false, Ordering::Release);
         if let Some(service) = self.service.read().await.as_ref() {
             service.set_bot_account(None).await;
         }
     }
-}
-
-struct CliEmbeddedRelayUnavailable;
-#[async_trait::async_trait]
-impl EmbeddedRelayHost for CliEmbeddedRelayUnavailable {
-    async fn start(&self, _: u16, _: Option<String>) -> Result<()> {
-        Err(anyhow!(
-            "unsupported: Embedded LAN Relay is not available in this CLI host"
-        ))
-    }
-    async fn stop(&self) {}
 }
 
 struct CliProductControlPort {

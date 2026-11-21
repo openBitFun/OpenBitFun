@@ -27,7 +27,6 @@ interface HostReply<T> {
 interface HostEventEnvelope {
   event: string;
   payload: unknown;
-  peerDeviceId?: string;
 }
 
 export interface HostPageConnection extends BackendConnection {
@@ -54,7 +53,6 @@ export function createHostPageConnection(): HostPageConnection {
     host.on<HostEventEnvelope>("openbitfun.event", envelope => {
       if (!envelope || typeof envelope.event !== "string") return;
       const item: BackendEvent = { event: envelope.event, payload: envelope.payload };
-      if (typeof envelope.peerDeviceId === "string") item.peerDeviceId = envelope.peerDeviceId;
       const seq = (envelope as { seq?: unknown }).seq;
       if (typeof seq === "number") {
         item.seq = seq;

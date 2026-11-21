@@ -15,7 +15,7 @@
  *                                  earlier installs keep pointing at it)
  *   openbitfun_desktop_lib.dll     the backend, loaded in-process
  *   nsh\                           the UI bundle
- *   resources\, flashgrep\, nsh-web\, mobile-web\, bin\   what the backend resolves
+ *   resources\, flashgrep\, nsh-web\, bin\   what the backend resolves
  *
  * Usage:
  *   node scripts/build-installer.cjs [--skip-app-build] [--dev] [--mode fast|release] [--app-dir path]
@@ -44,7 +44,6 @@ const REQUIRED_PAYLOAD_FILES = [
   "openbitfun_desktop_lib.dll",
   "nsh/bundle.nshc",
   "nsh/app.json",
-  "mobile-web/dist/index.html",
   "resources/ext-host/extension-host.js",
   "resources/worker_host.js",
   "flashgrep/flashgrep-x86_64-pc-windows-msvc.exe",

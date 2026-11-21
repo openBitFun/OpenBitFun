@@ -1,11 +1,13 @@
-//! Always-on CLI daemon: keeps this device reachable for account peers by
-//! holding the relay device-routing connection in a headless process.
+//! Always-on CLI daemon: keeps this device reachable for the account's other
+//! devices in a headless process, as a runtime node on OpenBitFun Link and in
+//! the fleet (`crate::obp_host`, `crate::fleet_host`), and owns the IM bot
+//! listeners.
 //!
-//! The daemon is the single device-routing owner on this machine: interactive
-//! CLI processes detect it via the pid file and skip their own relay
-//! connection (same-machine processes share one `device_id`; last
-//! AuthConnect wins). `install`/`uninstall` register it with the platform
-//! service manager (systemd user unit / LaunchAgent) so it survives reboots.
+//! While it runs, the daemon is this machine's CLI host for the shared device
+//! identity: interactive CLI processes detect it via the pid file and leave
+//! the device to it (a Desktop host on the same machine still wins).
+//! `install`/`uninstall` register it with the platform service manager
+//! (systemd user unit / LaunchAgent) so it survives reboots.
 
 pub(crate) mod control;
 mod pid;

@@ -3,7 +3,9 @@ mod permissions;
 pub(crate) mod protocol;
 mod query_file;
 mod runner;
+mod source;
 mod store;
+mod summary;
 mod worker;
 mod workspace;
 
@@ -23,8 +25,9 @@ use protocol::{
     DispatchStatusRequest, DispatchStatusResponse, DispatchSubmitRequest, DispatchSubmitResponse,
     DispatchTurnKind, DispatchWorkspaceBundleBeginRequest, DispatchWorkspaceBundleChunkRequest,
     DispatchWorkspaceBundleCommitRequest, DispatchWorkspaceProbe,
-    DispatchWorkspaceProvisionRequest, DispatchWorkspaceSyncChunkRequest,
-    DispatchWorkspaceSyncRequest, DISPATCH_PROTOCOL_VERSION, MAX_DISPATCH_TEXT_BYTES,
+    DispatchWorkspaceProvisionRequest, DispatchWorkspaceProvisionSourceRequest,
+    DispatchWorkspaceSyncChunkRequest, DispatchWorkspaceSyncRequest, DISPATCH_PROTOCOL_VERSION,
+    MAX_DISPATCH_TEXT_BYTES,
 };
 use store::{CreateJobOutcome, DispatchStateRecord, DispatchStore};
 
@@ -74,11 +77,11 @@ async fn run_dispatch_verb_canonical(
         "submit" => {
             serde_json::to_value(submit(parse(input)?).await?).context("encode submit response")
         }
-        "status" => serde_json::to_value(status(parse(input)?)?).context("encode status response"),
+        "status" => status(parse(input)?).context("encode status response"),
         "cancel" => serde_json::to_value(cancel(parse(input)?)?).context("encode cancel response"),
         "list" => {
-            let _: DispatchListRequest = parse(input)?;
-            serde_json::to_value(list()?).context("encode dispatch job list")
+            let request: DispatchListRequest = parse(input)?;
+            serde_json::to_value(list(request)?).context("encode dispatch job list")
         }
         "answer" => {
             serde_json::to_value(answer(parse(input)?)?).context("encode permission answer")
@@ -91,6 +94,12 @@ async fn run_dispatch_verb_canonical(
             DispatchWorkspaceProvisionRequest,
         >(input)?)?)
         .context("encode workspace provision response"),
+        "workspace-provision-source" => {
+            serde_json::to_value(source::provision_source(parse::<
+                DispatchWorkspaceProvisionSourceRequest,
+            >(input)?)?)
+            .context("encode workspace source provision response")
+        }
         "workspace-bundle-begin" => {
             serde_json::to_value(workspace::bundle_begin(parse::<
                 DispatchWorkspaceBundleBeginRequest,
@@ -117,8 +126,46 @@ async fn run_dispatch_verb_canonical(
             DispatchWorkspaceSyncChunkRequest,
         >(input)?)?)
         .context("encode workspace sync chunk response"),
+        "pending-prompts" => {
+            let _: PendingPromptsRequest = parse(input)?;
+            serde_json::to_value(pending_prompt_entries()?).context("encode pending prompts")
+        }
         _ => bail!("unsupported dispatch verb: {verb}"),
     }
+}
+
+/// `pending-prompts` takes no arguments.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingPromptsRequest {}
+
+/// The pending permission requests of this host's live jobs, flattened for a
+/// host that reads them out of process (the desktop's fleet digest).
+fn pending_prompt_entries() -> Result<Vec<serde_json::Value>> {
+    let mut entries = Vec::new();
+    for (job, requests) in pending_dispatch_prompts()? {
+        for request in requests {
+            entries.push(serde_json::json!({
+                "jobId": job.job_id,
+                "sessionId": job.session_id,
+                "workspacePath": job.workspace_path,
+                "title": job.title,
+                "request": request,
+            }));
+        }
+    }
+    Ok(entries)
+}
+
+/// The live jobs of this host's dispatch store with their pending permission
+/// requests (read-only; the fleet digest's dispatch prompts, `fleet_host`).
+pub(crate) fn pending_dispatch_prompts() -> Result<
+    Vec<(
+        protocol::DispatchJobListEntry,
+        Vec<openbitfun_agent_runtime::sdk::PermissionRequest>,
+    )>,
+> {
+    DispatchStore::open_default()?.list_pending_dispatch_prompts()
 }
 
 pub(crate) async fn run_worker(job_id: String) -> Result<()> {
@@ -138,12 +185,20 @@ pub(crate) fn run_workspace_sync(job_id: String) -> Result<()> {
 }
 
 async fn probe(request: DispatchProbeRequest) -> Result<DispatchProbeResponse> {
+    // Resolve the workspace before the (slower) model inspection so a bad
+    // id fails fast.
+    let workspace = match (&request.workspace_path, &request.workspace_id) {
+        (Some(_), Some(_)) => bail!("dispatch probe takes workspacePath or workspaceId, not both"),
+        (Some(path), None) => Some(inspect_workspace(path)?),
+        (None, Some(workspace_id)) => {
+            let catalog = source::default_workspace_catalog()?;
+            let resolved = source::resolve_catalog_workspace(&catalog, workspace_id)?;
+            let probe = inspect_workspace(&resolved.root.to_string_lossy())?;
+            Some(source::probe_repository_facts(probe, &resolved))
+        }
+        (None, None) => None,
+    };
     let readiness = inspect_model_readiness().await?;
-    let workspace = request
-        .workspace_path
-        .as_deref()
-        .map(inspect_workspace)
-        .transpose()?;
     let mut capabilities: Vec<String> =
         openbitfun_services_core::dispatch_contract::DISPATCH_BASE_TARGET_CAPABILITIES
             .iter()
@@ -173,6 +228,7 @@ async fn probe(request: DispatchProbeRequest) -> Result<DispatchProbeResponse> {
     capabilities.push(
         openbitfun_services_core::dispatch_contract::DISPATCH_FILE_CHUNKS_CAPABILITY.to_string(),
     );
+    capabilities.extend(superagent_target_capabilities());
     if runner::is_supported() {
         capabilities.push(
             openbitfun_services_core::dispatch_contract::DISPATCH_DETACHED_WORKER_CAPABILITY
@@ -196,8 +252,31 @@ async fn probe(request: DispatchProbeRequest) -> Result<DispatchProbeResponse> {
     })
 }
 
+/// The superagent's target verbs this build serves. The source verb is a new
+/// target command, so it is advertised only once the Product Operation
+/// Registry has its row: without one, neither the desktop nor the CLI peer
+/// host routes the command here, and advertising it would promise a verb a
+/// controller cannot reach.
+fn superagent_target_capabilities() -> Vec<String> {
+    use openbitfun_services_core::dispatch_contract as contract;
+    let source_routed = openbitfun_product_domains::remote_surface::operations()
+        .iter()
+        .any(|operation| operation.id == contract::DISPATCH_TARGET_PROVISION_SOURCE_COMMAND);
+    contract::DISPATCH_SUPERAGENT_TARGET_CAPABILITIES
+        .iter()
+        .filter(|capability| {
+            **capability != contract::DISPATCH_WORKSPACE_TARGET_SOURCE_CAPABILITY || source_routed
+        })
+        .map(|capability| capability.to_string())
+        .collect()
+}
+
 async fn submit(mut request: DispatchSubmitRequest) -> Result<DispatchSubmitResponse> {
     validate_submit_request(&request)?;
+    if let Some(submitter) = request.submitter.as_deref() {
+        openbitfun_services_core::dispatch_contract::validate_dispatch_submitter(submitter)
+            .map_err(anyhow::Error::msg)?;
+    }
     if !runner::is_supported() {
         bail!("dispatch detached workers are supported only on Linux and macOS");
     }
@@ -343,6 +422,17 @@ async fn query_in_store(
 ) -> Result<serde_json::Value> {
     let job = store.load_job(&request.job_id)?;
     match request.kind {
+        DispatchQueryKind::ResultSummary => {
+            if request.file_path.is_some() || request.file_chunk.is_some() {
+                bail!("resultSummary does not accept a filePath");
+            }
+            let state = store.load_state(&request.job_id)?;
+            Ok(serde_json::to_value(summary::result_summary(
+                store,
+                &request.job_id,
+                &state,
+            )?)?)
+        }
         DispatchQueryKind::ReadFileChunk => {
             let reference = request
                 .file_path
@@ -458,9 +548,27 @@ fn ensure_worker_spawned(
     Ok(())
 }
 
-fn status(request: DispatchStatusRequest) -> Result<DispatchStatusResponse> {
+fn status(request: DispatchStatusRequest) -> Result<serde_json::Value> {
     let store = DispatchStore::open_default()?;
-    let state = reconcile_worker_liveness(&store, &request.job_id)?;
+    if request.summary_only {
+        let state = reconcile_worker_liveness(&store, &request.job_id)?;
+        if state.state.is_terminal() {
+            store.clear_pending_permissions(&request.job_id);
+        }
+        return Ok(serde_json::to_value(summary::status_summary(
+            &store,
+            &request.job_id,
+            &state,
+        )?)?);
+    }
+    Ok(serde_json::to_value(full_status(&store, request)?)?)
+}
+
+fn full_status(
+    store: &DispatchStore,
+    request: DispatchStatusRequest,
+) -> Result<DispatchStatusResponse> {
+    let state = reconcile_worker_liveness(store, &request.job_id)?;
     let page = store.read_events(&request.job_id, request.cursor)?;
     if state.state.is_terminal() {
         store.clear_pending_permissions(&request.job_id);
@@ -609,13 +717,33 @@ fn cancel_in_store_with_process_checks(
     })
 }
 
-fn list() -> Result<Vec<DispatchJobListEntry>> {
+fn list(request: DispatchListRequest) -> Result<Vec<DispatchJobListEntry>> {
+    if let Some(submitter) = request.submitter.as_deref() {
+        openbitfun_services_core::dispatch_contract::validate_dispatch_submitter(submitter)
+            .map_err(anyhow::Error::msg)?;
+    }
     let store = DispatchStore::open_default()?;
-    let initial = store.list_jobs()?;
+    let initial = filter_by_submitter(store.list_jobs()?, request.submitter.as_deref());
     for job in &initial {
         let _ = reconcile_worker_liveness(&store, &job.job_id);
     }
-    store.list_jobs()
+    Ok(filter_by_submitter(
+        store.list_jobs()?,
+        request.submitter.as_deref(),
+    ))
+}
+
+fn filter_by_submitter(
+    jobs: Vec<DispatchJobListEntry>,
+    submitter: Option<&str>,
+) -> Vec<DispatchJobListEntry> {
+    match submitter {
+        None => jobs,
+        Some(submitter) => jobs
+            .into_iter()
+            .filter(|job| job.submitter.as_deref() == Some(submitter))
+            .collect(),
+    }
 }
 
 fn reconcile_worker_liveness(store: &DispatchStore, job_id: &str) -> Result<DispatchStateRecord> {
@@ -917,6 +1045,10 @@ fn inspect_workspace(workspace_path: &str) -> Result<DispatchWorkspaceProbe> {
         dirty,
         ahead,
         behind,
+        workspace_id: None,
+        name: None,
+        head_commit: None,
+        remote_url: None,
     })
 }
 
@@ -1139,6 +1271,7 @@ mod tests {
             title: Some("Task".to_string()),
             attachments: Vec::new(),
             setup_audit: Vec::new(),
+            submitter: None,
         }
     }
 
@@ -1411,5 +1544,254 @@ mod tests {
             .read_pid("job-orphan-group")
             .expect("pid after reconciliation")
             .is_none());
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = openbitfun_services_core::process_manager::create_command("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn text_chunk(session_id: &str, round_id: &str, text: &str) -> protocol::DispatchEvent {
+        protocol::DispatchEvent::agent_event(
+            serde_json::json!({
+                "id": format!("event-{round_id}-{text}"),
+                "event": {
+                    "type": "TextChunk",
+                    "session_id": session_id,
+                    "turn_id": "turn-1",
+                    "round_id": round_id,
+                    "text": text
+                },
+                "priority": "Normal",
+                "timestamp": {"secs_since_epoch": 0, "nanos_since_epoch": 0}
+            }),
+            None,
+        )
+    }
+
+    #[test]
+    fn the_submitter_is_kept_beside_the_request_and_filters_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DispatchStore::open(dir.path().join("dispatch")).unwrap();
+        let mut tagged = test_request("job-cloud");
+        tagged.submitter = Some("cloud".to_string());
+        store
+            .create_job_with_intent(tagged.clone(), tagged, "Cloud".into())
+            .unwrap();
+        store
+            .create_job(test_request("job-local"), "Local".into())
+            .unwrap();
+
+        let record = store.load_job("job-cloud").unwrap();
+        assert_eq!(record.submitter.as_deref(), Some("cloud"));
+        assert_eq!(record.request.submitter, None);
+        // An older binary parses `request` strictly; the tag must not be in it.
+        let raw: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("dispatch/jobs/job-cloud/job.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(raw["request"].get("submitter").is_none());
+        assert_eq!(raw["submitter"], "cloud");
+        let legacy = store.load_job("job-local").unwrap();
+        assert_eq!(legacy.submitter, None);
+
+        let all = store.list_jobs().unwrap();
+        assert_eq!(all.len(), 2);
+        let cloud = filter_by_submitter(all.clone(), Some("cloud"));
+        assert_eq!(cloud.len(), 1);
+        assert_eq!(cloud[0].job_id, "job-cloud");
+        assert_eq!(filter_by_submitter(all.clone(), None).len(), 2);
+        let encoded = serde_json::to_value(&all).unwrap();
+        let local = encoded
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["jobId"] == "job-local")
+            .unwrap();
+        assert!(
+            local.get("submitter").is_none(),
+            "old list entries keep their shape"
+        );
+
+        // The same id with the same tagged intent is idempotent; a different
+        // tag is a different request.
+        let mut retry = test_request("job-cloud");
+        retry.submitter = Some("cloud".to_string());
+        assert!(store
+            .load_existing_job_for_intent(&retry)
+            .unwrap()
+            .is_some());
+        retry.submitter = Some("bot".to_string());
+        assert!(store.load_existing_job_for_intent(&retry).is_err());
+    }
+
+    #[test]
+    fn summary_only_status_carries_no_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DispatchStore::open(dir.path().join("dispatch")).unwrap();
+        store
+            .create_job(test_request("job-sum"), "Task".into())
+            .unwrap();
+        store
+            .append_event(
+                "job-sum",
+                &text_chunk("session-job-sum", "r1", "secret transcript"),
+            )
+            .unwrap();
+        let state = store.load_state("job-sum").unwrap();
+        let summary = summary::status_summary(&store, "job-sum", &state).unwrap();
+        let full_end = store.read_events("job-sum", 0).unwrap().cursor;
+        assert_eq!(summary.cursor, full_end);
+        assert!(summary.summary_only);
+        assert_eq!(summary.state, DispatchJobState::Queued);
+        let encoded = serde_json::to_string(&summary).unwrap();
+        assert!(!encoded.contains("secret transcript"));
+        assert!(!encoded.contains("\"events\""));
+
+        let request: DispatchStatusRequest =
+            parse(serde_json::json!({"jobId": "job-sum", "summaryOnly": true})).unwrap();
+        assert!(request.summary_only);
+        let legacy: DispatchStatusRequest =
+            parse(serde_json::json!({"jobId": "job-sum", "cursor": 3})).unwrap();
+        assert!(!legacy.summary_only);
+    }
+
+    #[tokio::test]
+    async fn result_summary_reports_numstat_and_the_last_reply_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        git_in(&worktree, &["init", "--quiet"]);
+        git_in(
+            &worktree,
+            &[
+                "symbolic-ref",
+                "HEAD",
+                "refs/heads/openbitfun/dispatch/job-res",
+            ],
+        );
+        git_in(&worktree, &["config", "user.email", "d@example.com"]);
+        git_in(&worktree, &["config", "user.name", "D"]);
+        std::fs::write(worktree.join("a.txt"), "one\ntwo\n").unwrap();
+        git_in(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["commit", "--quiet", "-m", "base"]);
+        let base = git_in(&worktree, &["rev-parse", "HEAD"]);
+        std::fs::write(worktree.join("a.txt"), "one\nTOP-SECRET-LINE\nthree\n").unwrap();
+        git_in(&worktree, &["commit", "--quiet", "-am", "agent work"]);
+        std::fs::write(worktree.join("new.txt"), "UNTRACKED-SECRET\n").unwrap();
+
+        let store = DispatchStore::open(dir.path().join("dispatch")).unwrap();
+        let mut job = test_request("job-res");
+        job.workspace_path = worktree.to_string_lossy().into_owned();
+        store.create_job(job, "Result".into()).unwrap();
+        let upload = store.workspace_upload_dir("job-res").unwrap();
+        std::fs::create_dir_all(&upload).unwrap();
+        std::fs::write(
+            upload.join("provision.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "protocolVersion": 6, "jobId": "job-res", "repoKey": "abcdef0123456789",
+                "baseCommit": base, "branch": "openbitfun/dispatch/job-res",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "workspacePath": worktree.to_string_lossy()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for event in [
+            text_chunk("session-job-res", "r1", "thinking out loud"),
+            text_chunk("child-session", "c1", "child chatter"),
+            text_chunk("session-job-res", "r2", "All tests pass.\n"),
+            text_chunk("session-job-res", "r2", "OUTCOME: pass"),
+            text_chunk("child-session", "c2", "late child"),
+        ] {
+            store.append_event("job-res", &event).unwrap();
+        }
+        store
+            .mark_state("job-res", DispatchJobState::Running, Some("turn-1"), None)
+            .unwrap();
+        store
+            .mark_state("job-res", DispatchJobState::Succeeded, Some("turn-1"), None)
+            .unwrap();
+
+        let request: DispatchQueryRequest =
+            parse(serde_json::json!({"jobId": "job-res", "kind": "resultSummary"})).unwrap();
+        let value = query_in_store(&store, request).await.unwrap();
+        let summary: protocol::DispatchResultSummary =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(summary.kind, "resultSummary");
+        assert_eq!(summary.state, DispatchJobState::Succeeded);
+        assert_eq!(summary.base_commit.as_deref(), Some(base.as_str()));
+        assert_eq!(
+            summary.branch.as_deref(),
+            Some("openbitfun/dispatch/job-res")
+        );
+        assert_eq!(summary.commit_count, 1);
+        assert!(summary.uncommitted_changes);
+        let stat = summary.diff_stat.expect("diff stat");
+        assert_eq!(stat.files_changed, 2);
+        assert_eq!((stat.insertions, stat.deletions), (2, 1));
+        assert!(stat
+            .files
+            .iter()
+            .any(|file| file.path == "new.txt" && file.untracked));
+        assert_eq!(
+            summary.summary.as_deref(),
+            Some("All tests pass.\nOUTCOME: pass")
+        );
+        let encoded = value.to_string();
+        for secret in [
+            "TOP-SECRET-LINE",
+            "UNTRACKED-SECRET",
+            "child chatter",
+            "thinking out loud",
+        ] {
+            assert!(
+                !encoded.contains(secret),
+                "{secret} leaked into the summary"
+            );
+        }
+        let with_path: DispatchQueryRequest = parse(serde_json::json!({
+            "jobId": "job-res", "kind": "resultSummary", "filePath": "a.txt"
+        }))
+        .unwrap();
+        assert!(query_in_store(&store, with_path).await.is_err());
+    }
+
+    #[test]
+    fn the_source_capability_waits_for_its_registry_row() {
+        use openbitfun_services_core::dispatch_contract as contract;
+        let advertised = superagent_target_capabilities();
+        for capability in [
+            contract::DISPATCH_QUERY_RESULT_SUMMARY_CAPABILITY,
+            contract::DISPATCH_STATUS_SUMMARY_ONLY_CAPABILITY,
+            contract::DISPATCH_JOB_SUBMITTER_CAPABILITY,
+        ] {
+            assert!(
+                advertised.iter().any(|item| item == capability),
+                "{capability}"
+            );
+        }
+        let routed = openbitfun_product_domains::remote_surface::operations()
+            .iter()
+            .any(|operation| operation.id == contract::DISPATCH_TARGET_PROVISION_SOURCE_COMMAND);
+        assert_eq!(
+            advertised
+                .iter()
+                .any(|item| item == contract::DISPATCH_WORKSPACE_TARGET_SOURCE_CAPABILITY),
+            routed
+        );
+        assert!(crate::peer_host::is_dispatch_target_command(
+            contract::DISPATCH_TARGET_PROVISION_SOURCE_COMMAND
+        ));
     }
 }

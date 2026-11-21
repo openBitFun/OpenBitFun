@@ -1,39 +1,41 @@
-//! Tauri commands for Remote Connect.
+//! Backend commands for the account (sign-in, device directory) and the IM
+//! bots of Remote Connect.
+//!
+//! OpenBitFun 2.0: devices reach each other only over OBP on OpenBitFun Link
+//! (`crate::mesh`, `crate::fleet`). The 1.x relay transport (device routing
+//! socket, relay RPC, HostInvoke, pairing invitations, host streams) is not
+//! part of 2.0; its commands are `retired(...)` registry rows.
 
 use crate::host::HostHandle;
 use openbitfun_core::agentic::tools::account_login_capability::set_account_login_available;
 use openbitfun_core::agentic::tools::page_deploy_host::set_page_deploy_handler;
 use openbitfun_core::agentic::tools::page_manage_host::set_page_manage_handler;
 use openbitfun_core::agentic::tools::page_publish_host::set_page_publish_handler;
+use openbitfun_core::service::remote_connect::routing_lease::{
+    DeviceRoutingLease, DeviceRoutingPriority,
+};
 use openbitfun_core::service::remote_connect::session_store::{
     clear_credential_hint, load_credential_hint, save_credential_hint, AccountHint,
 };
 use openbitfun_core::service::remote_connect::{
     bot::{self, weixin, BotConfig},
     device, session_store, AccountClient, AccountSession, ConnectionMethod, ConnectionResult,
-    DeviceIdentity, RemoteConnectConfig, RemoteConnectService,
+    DeviceIdentity, RemoteConnectConfig, RemoteConnectService, RELAY_METHOD_RETIRED,
 };
-use openbitfun_events::AI_MODEL_CATALOG_UPDATED_EVENT;
 use openbitfun_services_integrations::remote_connect::account::{
-    error_indicates_expired_token, validate_relay_base_url, RoutingIntent, DEVICE_KIND_DESKTOP,
+    error_indicates_expired_token, validate_relay_base_url, DEVICE_KIND_DESKTOP,
 };
 use openbitfun_services_integrations::remote_connect::{
     deploy_page_version_on_relay, join_relay_url, list_pages_from_relay,
     publish_page_content_on_relay,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 #[cfg(test)]
 mod page_tool_tests;
-mod relay_routes;
-#[cfg(test)]
-mod relay_routes_tests;
-pub(crate) use relay_routes::RelayRoute;
-use relay_routes::{DesktopEmbeddedRelayUnavailable, LAN_RELAY_RETIRED_ERROR};
 
 /// Session and relay URL must move together. Keeping them behind one lock
 /// prevents a request from observing a token from one login and the URL from
@@ -53,47 +55,11 @@ static ACCOUNT_OPERATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 /// transition guard only after all login-time network requests complete.
 static ACCOUNT_LOGIN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static ACCOUNT_CONTEXT_TRANSITION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// Serializes connection entry point changes and explicit disconnection.
-static RELAY_START_STOP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Serializes bot start and stop.
+static START_STOP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static ACCOUNT_TRANSITION_BOUNDARY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static ACCOUNT_CONTEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 static ACCOUNT_CONTEXT_TRANSITIONS: AtomicUsize = AtomicUsize::new(0);
-
-/// Device-routing effects take a read lease; connection replacement and
-/// teardown take the write lease. Together with `DeviceRoutingOwner`, this
-/// prevents a retiring event loop from dispatching through a newer socket.
-
-static DEVICE_ROUTING_CONNECTION_ID: AtomicU64 = AtomicU64::new(0);
-
-/// RPC memory admission belongs to the shared relay transport. Account
-/// transitions cancel pending host futures before waiting for routing leases.
-fn device_rpc_cancellation() -> &'static tokio::sync::watch::Sender<u64> {
-    RelayRoute::Official.cancellation()
-}
-
-fn cancel_pending_device_rpcs() {
-    device_rpc_cancellation().send_modify(|epoch| *epoch = epoch.wrapping_add(1));
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct DeviceRoutingOwner {
-    route: RelayRoute,
-    account_generation: u64,
-    account_token: String,
-    connection_id: u64,
-    service_connection_id: u64,
-}
-
-#[derive(Default)]
-struct DeviceRoutingState {
-    owner: Option<DeviceRoutingOwner>,
-    online_devices: Vec<OnlineDeviceInfo>,
-    /// Account-auth QR clients use HTTP device RPC instead of the QR room.
-    /// A successful control heartbeat proves that a client reached this host.
-    control_ping_generation: u64,
-    control_clients: std::collections::BTreeMap<String, (String, std::time::Instant)>,
-    last_unidentified_control_ping: Option<std::time::Instant>,
-}
 
 pub(crate) fn account_context_generation() -> u64 {
     ACCOUNT_CONTEXT_GENERATION.load(Ordering::Acquire)
@@ -110,8 +76,6 @@ impl AccountContextTransitionPermit {
     fn begin() -> Self {
         ACCOUNT_CONTEXT_TRANSITIONS.fetch_add(1, Ordering::AcqRel);
         ACCOUNT_CONTEXT_GENERATION.fetch_add(1, Ordering::AcqRel);
-        cancel_pending_device_rpcs();
-        clear_session_subscriptions();
         Self
     }
 }
@@ -190,24 +154,11 @@ async fn begin_account_transition_if_current(
     })
 }
 
-/// Global handle to the DialogScheduler, set during app startup. Used by the
-/// device-routing background task to execute commands received from peer
-/// devices (ExecuteOnDevice).
-static DIALOG_SCHEDULER: OnceLock<Arc<openbitfun_core::agentic::coordination::DialogScheduler>> =
-    OnceLock::new();
-
-/// Set the global scheduler handle. Called once during app startup.
-pub fn set_dialog_scheduler(
-    scheduler: Arc<openbitfun_core::agentic::coordination::DialogScheduler>,
-) {
-    let _ = DIALOG_SCHEDULER.set(scheduler);
-}
-
-/// HostHandle used by the device-routing background task to emit UI events
-/// (presence / settings-applied) without requiring a Tauri command context.
+/// HostHandle used by background account tasks to emit UI events without a
+/// command context.
 static ACCOUNT_APP_HANDLE: OnceLock<HostHandle> = OnceLock::new();
 
-/// Store the app handle for account device-routing events. Called once during setup.
+/// Store the app handle for account events. Called once during setup.
 pub fn set_account_app_handle(app: HostHandle) {
     let _ = ACCOUNT_APP_HANDLE.set(app);
 }
@@ -230,491 +181,14 @@ fn emit_account_event(event: &str, payload: serde_json::Value) {
     }
 }
 
-/// Payload key carrying the device that produced a re-emitted Peer DeviceEvent.
-///
-/// The controller re-emits peer events under their original event name so the
-/// existing listeners keep working, which means a controller that is also
-/// running its own local work would otherwise see two indistinguishable
-/// streams on one bus. The frontend routes on this key and delivers an event
-/// only to the device surface it belongs to. Keep in sync with
-/// `src/web-ui/src/infrastructure/peer-device/deviceSurfaceRouting.ts`.
-pub const PEER_EVENT_SOURCE_KEY: &str = "__openbitfunSourceDeviceId";
-
-/// Wrapper key used when a peer payload is not a JSON object and therefore
-/// cannot carry `PEER_EVENT_SOURCE_KEY` inline.
-pub const PEER_EVENT_WRAPPED_PAYLOAD_KEY: &str = "__openbitfunSourcePayload";
-
-/// Tag a peer-originated event payload with the device that produced it.
-fn tag_peer_event_source(payload: serde_json::Value, source_device_id: &str) -> serde_json::Value {
-    let source = serde_json::Value::String(source_device_id.to_string());
-    match payload {
-        serde_json::Value::Object(mut map) => {
-            map.insert(PEER_EVENT_SOURCE_KEY.to_string(), source);
-            serde_json::Value::Object(map)
-        }
-        other => {
-            let mut map = serde_json::Map::new();
-            map.insert(PEER_EVENT_SOURCE_KEY.to_string(), source);
-            map.insert(PEER_EVENT_WRAPPED_PAYLOAD_KEY.to_string(), other);
-            serde_json::Value::Object(map)
-        }
-    }
-}
-
-fn emit_device_presence(devices: &[OnlineDeviceInfo], controller_only: bool) {
-    let payload = serde_json::json!({ "devices": devices, "controllerOnly": controller_only });
-    emit_account_event("account://device-presence", payload);
-}
-
-/// Drop the route's controller delivery targets. Pending permission requests
-/// are kept: a relay blip or routing restart is presence loss, and a
-/// re-attaching controller restores them from the interaction mailbox.
-async fn disconnect_route_controllers(route: RelayRoute, reason: &'static str) {
-    clear_route_delivery_targets(route, reason);
-    if route == RelayRoute::Official {
-        emit_device_presence(&[], false);
-    }
-}
-
-/// Clear delivery targets without publishing an empty roster. A routing
-/// reconnect reports the new connection's presence moments later; an empty
-/// roster in between would drop and re-add every sidebar device section.
-fn clear_route_delivery_targets(route: RelayRoute, reason: &'static str) {
-    crate::api::peer_host_invoke::disconnect_route_controllers(route);
-    log::debug!("Peer controller delivery targets cleared: route={route:?}, reason={reason}");
-}
-
-/// Retire the active routing owner before touching the shared service. The
-/// lifecycle write lease ensures no retiring event handler can cross this
-/// boundary and dispatch through a subsequently installed connection.
-async fn stop_and_clear_device_routing(reason: &'static str) {
-    stop_route_device_routing(RelayRoute::Official, reason).await;
-}
-
-async fn stop_route_device_routing(route: RelayRoute, reason: &'static str) {
-    if route == RelayRoute::Official {
-        ROUTING_INTENT.cancel();
-    }
-    route.cancel();
-    let _lifecycle = route.lifecycle().write().await;
-    clear_device_routing_state_on_route(route);
-    if let Some(service) = route.service().read().await.as_ref() {
-        service.stop_device_connection().await;
-    }
-    disconnect_route_controllers(route, reason).await;
-}
-
-async fn finish_device_routing_event_loop(owner: &DeviceRoutingOwner) {
-    let current = with_route_state(owner.route, |state| {
-        if state.owner.as_ref() != Some(owner) {
-            return false;
-        }
-        owner.route.cancel();
-        true
-    });
-    if !current {
-        return;
-    }
-    let _lifecycle = owner.route.lifecycle().write().await;
-    if !clear_device_routing_if_owner(owner) {
-        return;
-    }
-    disconnect_route_controllers(owner.route, "Peer device-routing stream closed").await;
-}
-
-/// Host streams served to controllers while this device's routing is alive.
-async fn route_host_stream_hub(
-    route: RelayRoute,
-) -> Option<Arc<openbitfun_core::service::remote_connect::host_stream::HostStreamHub>> {
-    let service = route.service().read().await;
-    match service.as_ref() {
-        Some(service) => service.host_stream_hub().await,
-        None => None,
-    }
-}
-
-pub(crate) async fn host_stream_hubs(
-) -> Vec<Arc<openbitfun_core::service::remote_connect::host_stream::HostStreamHub>> {
-    let mut hubs = Vec::new();
-    for route in RelayRoute::ALL {
-        if let Some(hub) = route_host_stream_hub(route).await {
-            hubs.push(hub);
-        }
-    }
-    hubs
-}
-
-/// Delivers host stream hints as encrypted `DeviceEvent`s to the one device
-/// that subscribed. Only the stream id, epoch and cursor travel; the controller
-/// reads content back over RPC, so the relay forwards nothing it could store.
-struct DesktopHostStreamNotifier(RelayRoute);
-
-impl openbitfun_core::service::remote_connect::host_stream::HostStreamNotifier
-    for DesktopHostStreamNotifier
-{
-    fn notify(&self, target_device_id: &str, payload: serde_json::Value) {
-        send_peer_device_event_to(
-            self.0,
-            target_device_id.to_owned(),
-            openbitfun_core::service::remote_connect::host_stream::HOST_STREAM_CHANGED_EVENT
-                .to_owned(),
-            payload,
-        );
-    }
-}
-
-/// Emit granular auto-sync progress for the account login / devices UI.
-pub fn fanout_peer_device_event(event: String, payload: serde_json::Value) {
-    if crate::api::peer_host_invoke::attached_controllers().is_empty() {
-        return;
-    }
-    for route in RelayRoute::ALL {
-        enqueue_peer_device_event(
-            route,
-            PeerEventTargets::AttachedControllers,
-            event.clone(),
-            payload.clone(),
-        );
-    }
-}
-
-/// Send one `DeviceEvent` to a specific account device, attached or not.
-fn send_peer_device_event_to(
-    route: RelayRoute,
-    target_device_id: String,
-    event: String,
-    payload: serde_json::Value,
-) {
-    enqueue_peer_device_event(
-        route,
-        PeerEventTargets::Device(target_device_id),
-        event,
-        payload,
-    );
-}
-
-fn enqueue_peer_device_event(
-    route: RelayRoute,
-    targets: PeerEventTargets,
-    event: String,
-    payload: serde_json::Value,
-) {
-    let Some(routing_owner) = with_route_state(route, |state| state.owner.clone())
-        .filter(|owner| route.is_current(owner.account_generation))
-    else {
-        return;
-    };
-    let tx = PEER_EVENT_FANOUT_TX.get_or_init(|| {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PeerEventFanoutItem>();
-        tokio::spawn(async move {
-            while let Some(item) = rx.recv().await {
-                fanout_peer_device_event_once(item).await;
-            }
-        });
-        tx
-    });
-    if let Err(e) = tx.send(PeerEventFanoutItem {
-        routing_owner,
-        targets,
-        event,
-        payload,
-    }) {
-        log::debug!("peer event fanout queue closed: {e}");
-    }
-}
-
-enum PeerEventTargets {
-    AttachedControllers,
-    Device(String),
-}
-
-struct PeerEventFanoutItem {
-    routing_owner: DeviceRoutingOwner,
-    targets: PeerEventTargets,
-    event: String,
-    payload: serde_json::Value,
-}
-
-static PEER_EVENT_FANOUT_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<PeerEventFanoutItem>> =
-    OnceLock::new();
-
-async fn fanout_peer_device_event_once(item: PeerEventFanoutItem) {
-    let mut cancelled = item.routing_owner.route.cancellation().subscribe();
-    tokio::select! {
-        biased;
-        _ = cancelled.changed() => {},
-        _ = fanout_peer_device_event_current(item) => {}
-    }
-}
-
-async fn fanout_peer_device_event_current(item: PeerEventFanoutItem) {
-    let Some(_routing_effect) = lock_current_device_routing(&item.routing_owner).await else {
-        return;
-    };
-    let targets = match &item.targets {
-        PeerEventTargets::AttachedControllers => {
-            crate::api::peer_host_invoke::attached_route_controllers(item.routing_owner.route)
-        }
-        PeerEventTargets::Device(device_id) => vec![device_id.clone()],
-    };
-    if targets.is_empty() {
-        return;
-    }
-    let (session, relay_url) = match item
-        .routing_owner
-        .route
-        .context(item.routing_owner.account_generation)
-        .await
-    {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            log::debug!("peer event fanout skipped (no account): {e}");
-            return;
-        }
-    };
-    if session.token != item.routing_owner.account_token
-        || !device_routing_owner_is_current(&item.routing_owner).await
-    {
-        return;
-    }
-    use openbitfun_core::service::remote_connect::remote_server::RemoteCommand;
-    let mut payload = item.payload;
-    if let Err(error) = openbitfun_core_types::agent_identity_wire::translate_agent_identity_fields(
-        &mut payload,
-        openbitfun_core_types::agent_identity_wire::AgentIdentityDialect::Legacy,
-    ) {
-        log::warn!("Peer event contains conflicting Agent profiles; preserving records: {error}");
-    }
-    let envelope = match serde_json::to_string(&RemoteCommand::DeviceEvent {
-        event: item.event.clone(),
-        payload,
-    }) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("peer event fanout serialize failed: {e}");
-            return;
-        }
-    };
-    for target in targets {
-        let before_send = session.peer_message_guard();
-        let (encrypted_data, nonce, uses_zstd) = match session
-            .encrypt_for_peer_with_encoding(&relay_url, &target, &envelope)
-            .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                log::warn!("peer event fanout encrypt failed: {error}");
-                continue;
-            }
-        };
-        let correlation_id = uuid::Uuid::new_v4().to_string();
-        if let Err(e) = send_device_message_with_routing_lease(
-            &item.routing_owner,
-            &target,
-            &correlation_id,
-            &encrypted_data,
-            &nonce,
-            || before_send(uses_zstd),
-        )
-        .await
-        {
-            log::debug!("peer event fanout to {target} failed: {e}");
-        }
-    }
-}
-
-fn should_fanout_peer_ui_event(event: &str) -> bool {
-    matches!(
-        event,
-        "terminal_event"
-            | "file-system-changed"
-            | openbitfun_core::service::FILE_WATCH_STATUS_CHANGED_EVENT
-            | "backend-event-mcpinteractionrequest"
-            | "backend-event-acppermissionrequest"
-            | "backend-event-toolexecutionprogress"
-            | "backend-event-toolterminalready"
-            | "backend-event-backgroundcommandlifecycle"
-            | "backend-event-toolexecutionstarted"
-            | "backend-event-toolexecutioncompleted"
-            | "backend-event-toolexecutionerror"
-            | "backend-event-toolawaitinguserinput"
-            | "backend-event-toolcallconfirmation"
-            | "permission://event"
-            | AI_MODEL_CATALOG_UPDATED_EVENT
-            | openbitfun_core::service::workspace::WORKSPACE_CATALOG_CHANGED_EVENT
-            | openbitfun_core::service::cron::CRON_JOBS_CHANGED_EVENT
-    )
-}
-
-/// Whether the given UI event would currently be fanned out to attached Peer
-/// Mode controllers. Callers can use this to avoid cloning/serializing payloads
-/// when no fanout will happen.
-pub fn peer_ui_event_fanout_active(event: &str) -> bool {
-    should_fanout_peer_ui_event(event)
-        && !crate::api::peer_host_invoke::attached_controllers().is_empty()
-}
-
-/// Fan-out non-agentic UI events to attached Peer Mode controllers when needed.
-pub fn maybe_fanout_peer_ui_event(event: &str, payload: serde_json::Value) {
-    if !peer_ui_event_fanout_active(event) {
-        return;
-    }
-    fanout_peer_device_event(event.to_string(), payload);
-}
-
-/// EventEmitter wrapper that mirrors selected UI events to Peer Mode controllers.
-pub struct PeerAwareEmitter {
-    inner: Arc<dyn openbitfun_core::infrastructure::events::EventEmitter>,
-}
-
-impl PeerAwareEmitter {
-    pub fn new(inner: Arc<dyn openbitfun_core::infrastructure::events::EventEmitter>) -> Self {
-        Self { inner }
-    }
-}
-
-#[async_trait::async_trait]
-impl openbitfun_core::infrastructure::events::EventEmitter for PeerAwareEmitter {
-    async fn emit(&self, event_name: &str, payload: serde_json::Value) -> anyhow::Result<()> {
-        // Only clone the payload when a peer fanout will actually happen;
-        // otherwise move it into the inner emitter zero-copy.
-        if peer_ui_event_fanout_active(event_name) {
-            self.inner.emit(event_name, payload.clone()).await?;
-            fanout_peer_device_event(event_name.to_string(), payload);
-        } else {
-            self.inner.emit(event_name, payload).await?;
-        }
-        Ok(())
-    }
-}
-
-pub fn wrap_peer_aware_emitter(
-    inner: Arc<dyn openbitfun_core::infrastructure::events::EventEmitter>,
-) -> Arc<dyn openbitfun_core::infrastructure::events::EventEmitter> {
-    Arc::new(PeerAwareEmitter::new(inner))
-}
-
-async fn send_device_message_with_routing_lease(
-    owner: &DeviceRoutingOwner,
-    target_device_id: &str,
-    correlation_id: &str,
-    encrypted_data: &str,
-    nonce: &str,
-    before_send: impl Fn() -> anyhow::Result<()>,
-) -> Result<(), String> {
-    if !device_routing_owner_is_current(owner).await {
-        return Err("device routing changed".to_string());
-    }
-    let holder = owner.route.service().read().await;
-    if !device_routing_owner_is_current(owner).await {
-        return Err("device routing changed".to_string());
-    }
-    let service = holder
-        .as_ref()
-        .ok_or_else(|| "remote connect service not initialized".to_string())?;
-    let sent = service
-        .send_device_message_if_connection_guarded(
-            owner.service_connection_id,
-            target_device_id,
-            correlation_id,
-            encrypted_data,
-            nonce,
-            before_send,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    if !sent || !device_routing_owner_is_current(owner).await {
-        return Err("device routing changed".to_string());
-    }
-    Ok(())
-}
-
-/// Encrypt and send an RPC response (or error) back to the HTTP caller via relay.
-async fn send_rpc_envelope(
-    owner: &DeviceRoutingOwner,
-    session: &AccountSession,
-    source_device_id: &str,
-    correlation_id: &str,
-    accepts_zstd: bool,
-    resp_value: serde_json::Value,
-) -> bool {
-    if !device_routing_owner_is_current(owner).await {
-        return false;
-    }
-    let resp_json = match serde_json::to_string(&resp_value) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("RPC: serialize response failed: {e}");
-            serde_json::json!({
-                "resp": "error",
-                "message": format!("failed to serialize RPC response: {e}"),
-            })
-            .to_string()
-        }
-    };
-    let Ok((_, relay_url)) = owner.route.context(owner.account_generation).await else {
-        return false;
-    };
-    match session
-        .encrypt_reply(&relay_url, source_device_id, &resp_json, accepts_zstd)
-        .await
-    {
-        Ok((enc_resp, resp_nonce)) => {
-            match send_device_message_with_routing_lease(
-                owner,
-                source_device_id,
-                correlation_id,
-                &enc_resp,
-                &resp_nonce,
-                || Ok(()),
-            )
-            .await
-            {
-                Ok(()) => true,
-                Err(e) => {
-                    log::warn!("RPC: send response failed: {e}");
-                    false
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!("RPC: encrypt response failed: {e}");
-            false
-        }
-    }
-}
-
-async fn send_rpc_error(
-    owner: &DeviceRoutingOwner,
-    session: &AccountSession,
-    source_device_id: &str,
-    correlation_id: &str,
-    accepts_zstd: bool,
-    message: impl Into<String>,
-) {
-    send_rpc_envelope(
-        owner,
-        session,
-        source_device_id,
-        correlation_id,
-        accepts_zstd,
-        serde_json::json!({
-            "resp": "error",
-            "message": message.into(),
-        }),
-    )
-    .await;
-}
-
-static ROUTING_INTENT: RoutingIntent = RoutingIntent::new();
 static RENEWAL_WAKE: std::sync::LazyLock<Arc<tokio::sync::Notify>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Notify::new()));
 
-/// Global flag set when the relay returns HTTP 401 (token expired). The
+/// Global flag set when the account service returns HTTP 401 (token expired). The
 /// frontend checks this via `account_token_expired` and prompts re-login.
 static TOKEN_EXPIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Check if the account token has been marked expired by the sync loop.
+/// Check if the account token has been marked expired.
 // @backend-command
 pub async fn account_token_expired() -> bool {
     TOKEN_EXPIRED.load(std::sync::atomic::Ordering::Relaxed)
@@ -759,7 +233,6 @@ async fn invalidate_local_account_session_if_current(
     }
     sync_account_login_capability(false);
     TOKEN_EXPIRED.store(true, std::sync::atomic::Ordering::Relaxed);
-    stop_and_clear_device_routing("Account session expired").await;
     if let Some(service) = get_service_holder().read().await.as_ref() {
         service.clear_bot_delegated_identities().await;
     }
@@ -771,7 +244,8 @@ async fn invalidate_local_account_session_if_current(
         "account://login-state",
         serde_json::json!({ "logged_in": false, "reason": "session_expired" }),
     );
-    log::warn!("Invalidated local account session after relay auth failure: {reason}");
+    sync_device_routing_claim().await;
+    log::warn!("Invalidated local account session after auth failure: {reason}");
     true
 }
 
@@ -922,289 +396,40 @@ async fn account_context_matches(generation: u64, token: &str) -> bool {
     token_matches && account_context_is_current(generation)
 }
 
-#[cfg(test)]
-fn with_device_routing_state<T>(update: impl FnOnce(&mut DeviceRoutingState) -> T) -> T {
-    with_route_state(RelayRoute::Official, update)
-}
+/// This desktop's claim on serving the machine's device identity on Link
+/// (the primary tier; a CLI host on the same machine stands by while it is
+/// held). Held while signed in with remote control allowed.
+static DEVICE_ROUTING_CLAIM: std::sync::Mutex<Option<DeviceRoutingLease>> =
+    std::sync::Mutex::new(None);
 
-fn with_route_state<T>(route: RelayRoute, update: impl FnOnce(&mut DeviceRoutingState) -> T) -> T {
-    let mut state = route
-        .state()
+async fn sync_device_routing_claim() {
+    let wanted =
+        device::remote_control_allowed().unwrap_or(false) && read_account_context().await.is_ok();
+    let mut claim = DEVICE_ROUTING_CLAIM
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    update(&mut state)
-}
-
-fn new_device_routing_owner(
-    account_generation: u64,
-    account_token: &str,
-    service_connection_id: u64,
-) -> DeviceRoutingOwner {
-    DeviceRoutingOwner {
-        route: RelayRoute::Official,
-        account_generation,
-        account_token: account_token.to_string(),
-        connection_id: DEVICE_ROUTING_CONNECTION_ID.fetch_add(1, Ordering::AcqRel) + 1,
-        service_connection_id,
+    if !wanted {
+        if claim.take().is_some() {
+            log::info!("Released the device routing claim");
+        }
+        return;
     }
-}
-
-fn install_device_routing_owner(owner: DeviceRoutingOwner) {
-    with_route_state(owner.route, |state| {
-        state.owner = Some(owner);
-        state.online_devices.clear();
-        state.control_clients.clear();
-        state.last_unidentified_control_ping = None;
-        state.control_ping_generation = 0;
-    });
-}
-
-fn control_ping_generation(owner: &DeviceRoutingOwner) -> Option<u64> {
-    with_route_state(owner.route, |state| {
-        (state.owner.as_ref() == Some(owner)).then_some(state.control_ping_generation)
-    })
-}
-
-fn record_control_ping_if_owner(
-    owner: &DeviceRoutingOwner,
-    generation: u64,
-    now: std::time::Instant,
-    client: Option<&openbitfun_services_integrations::remote_connect::RemoteControlClient>,
-) {
-    with_route_state(owner.route, |state| {
-        if state.owner.as_ref() == Some(owner) && state.control_ping_generation == generation {
-            // Leases use receipt time, not the completion time of queued replies.
-            use openbitfun_services_integrations::remote_connect::relay_client::RELAY_INBOUND_IDLE_TIMEOUT;
-            state.control_clients.retain(|_, (_, last)| {
-                now.saturating_duration_since(*last) < RELAY_INBOUND_IDLE_TIMEOUT
-            });
-            if let Some(client) =
-                client.filter(|client| !client.id.trim().is_empty() && client.id.len() <= 128)
-            {
-                let name: String = client
-                    .name
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(120)
-                    .collect();
-                let entry = state
-                    .control_clients
-                    .entry(client.id.clone())
-                    .or_insert((name.clone(), now));
-                if now >= entry.1 {
-                    *entry = (name, now);
-                }
-            } else {
-                state.last_unidentified_control_ping = Some(
-                    state
-                        .last_unidentified_control_ping
-                        .map_or(now, |last| last.max(now)),
-                );
+    if claim.is_none() {
+        match DeviceRoutingLease::for_device(DeviceRoutingPriority::Primary) {
+            Ok(lease) => *claim = Some(lease),
+            Err(error) => {
+                log::warn!("Device routing claim unavailable: {error}");
+                return;
             }
         }
-    });
-}
-
-fn clear_control_ping_if_owner(owner: &DeviceRoutingOwner) {
-    with_route_state(owner.route, |state| {
-        if state.owner.as_ref() == Some(owner) {
-            state.control_clients.clear();
-            state.last_unidentified_control_ping = None;
-            state.control_ping_generation = state.control_ping_generation.wrapping_add(1);
-        }
-    });
-}
-
-#[cfg(test)]
-fn has_recent_control_ping(owner: &DeviceRoutingOwner, now: std::time::Instant) -> bool {
-    let (clients, unidentified) = account_control_clients(owner, now);
-    !clients.is_empty() || unidentified
-}
-
-fn is_successful_control_ping(
-    command: &openbitfun_core::service::remote_connect::remote_server::RemoteCommand,
-    response: &serde_json::Value,
-) -> bool {
-    use openbitfun_core::service::remote_connect::remote_server::RemoteCommand;
-    // The mobile/browser connection-health loop pings its selected target.
-    // `peer_mode_ping` is also used before attaching or switching a device;
-    // accepting that capability probe would manufacture a mobile connection.
-    matches!(command, RemoteCommand::Ping { .. })
-        && response.get("resp").and_then(|v| v.as_str()) == Some("pong")
-}
-
-fn account_control_clients(
-    owner: &DeviceRoutingOwner,
-    now: std::time::Instant,
-) -> (
-    Vec<openbitfun_services_integrations::remote_connect::RemoteControlClient>,
-    bool,
-) {
-    use openbitfun_services_integrations::remote_connect::{
-        relay_client::RELAY_INBOUND_IDLE_TIMEOUT, RemoteControlClient,
-    };
-    with_route_state(owner.route, |state| {
-        if state.owner.as_ref() != Some(owner) {
-            return (Vec::new(), false);
-        }
-        let clients = state
-            .control_clients
-            .iter()
-            .filter(|(_, (_, last))| {
-                now.saturating_duration_since(*last) < RELAY_INBOUND_IDLE_TIMEOUT
-            })
-            .map(|(id, (name, _))| RemoteControlClient {
-                id: id.clone(),
-                name: name.clone(),
-            })
-            .collect();
-        let unidentified = state
-            .last_unidentified_control_ping
-            .is_some_and(|last| now.saturating_duration_since(last) < RELAY_INBOUND_IDLE_TIMEOUT);
-        (clients, unidentified)
-    })
-}
-
-async fn account_control_snapshot(
-    now: std::time::Instant,
-) -> Option<(
-    String,
-    Vec<openbitfun_services_integrations::remote_connect::RemoteControlClient>,
-    bool,
-)> {
-    let generation = account_context_generation();
-    let (session, relay_url) = read_account_context_for_generation(generation).await.ok()?;
-    let owner = device_routing_owner_for_account(generation, &session.token)?;
-    let (clients, unidentified) = account_control_clients(&owner, now);
-    if clients.is_empty() && !unidentified {
-        return None;
     }
-    (account_context_is_current(generation) && device_routing_owner_is_registered(&owner))
-        .then_some((relay_url, clients, unidentified))
-}
-
-#[cfg(test)]
-async fn account_control_relay_url(now: std::time::Instant) -> Option<String> {
-    account_control_snapshot(now).await.map(|(url, _, _)| url)
-}
-
-fn device_routing_owner_is_registered(owner: &DeviceRoutingOwner) -> bool {
-    with_route_state(owner.route, |state| state.owner.as_ref() == Some(owner))
-}
-
-fn device_routing_owner_for_account(
-    account_generation: u64,
-    account_token: &str,
-) -> Option<DeviceRoutingOwner> {
-    device_routing_owner_for_account_on_route(
-        RelayRoute::Official,
-        account_generation,
-        account_token,
-    )
-}
-
-fn device_routing_owner_for_account_on_route(
-    route: RelayRoute,
-    account_generation: u64,
-    account_token: &str,
-) -> Option<DeviceRoutingOwner> {
-    with_route_state(route, |state| {
-        let owner = state.owner.as_ref()?;
-        if owner.account_generation != account_generation || owner.account_token != account_token {
-            return None;
+    if let Some(lease) = claim.as_mut() {
+        match lease.may_serve() {
+            Ok(true) => {}
+            Ok(false) => log::info!("Another OpenBitFun desktop serves this device"),
+            Err(error) => log::warn!("Device routing claim failed: {error}"),
         }
-        Some(owner.clone())
-    })
-}
-
-#[cfg(test)]
-fn current_device_routing_owner_snapshot() -> Option<DeviceRoutingOwner> {
-    with_device_routing_state(|state| state.owner.clone()).filter(|owner| {
-        account_context_is_current(owner.account_generation)
-            && device_routing_owner_is_registered(owner)
-    })
-}
-
-async fn device_routing_owner_is_current(owner: &DeviceRoutingOwner) -> bool {
-    device_routing_owner_is_registered(owner)
-        && owner
-            .route
-            .matches(owner.account_generation, &owner.account_token)
-            .await
-        && device_routing_owner_is_registered(owner)
-}
-
-async fn lock_current_device_routing(
-    owner: &DeviceRoutingOwner,
-) -> Option<tokio::sync::RwLockReadGuard<'static, ()>> {
-    let guard = owner.route.lifecycle().read().await;
-    if device_routing_owner_is_current(owner).await {
-        Some(guard)
-    } else {
-        None
     }
-}
-
-fn replace_device_presence_if_owner(
-    owner: &DeviceRoutingOwner,
-    devices: Vec<OnlineDeviceInfo>,
-) -> bool {
-    with_route_state(owner.route, |state| {
-        if state.owner.as_ref() != Some(owner) {
-            return false;
-        }
-        state.online_devices = devices;
-        true
-    })
-}
-
-fn device_presence_for_account(
-    account_generation: u64,
-    account_token: &str,
-) -> Option<Vec<OnlineDeviceInfo>> {
-    device_presence_for_account_on_route(RelayRoute::Official, account_generation, account_token)
-}
-
-fn device_presence_for_account_on_route(
-    route: RelayRoute,
-    account_generation: u64,
-    account_token: &str,
-) -> Option<Vec<OnlineDeviceInfo>> {
-    with_route_state(route, |state| {
-        let owner = state.owner.as_ref()?;
-        if owner.account_generation != account_generation || owner.account_token != account_token {
-            return None;
-        }
-        Some(state.online_devices.clone())
-    })
-}
-
-fn clear_device_routing_if_owner(owner: &DeviceRoutingOwner) -> bool {
-    with_route_state(owner.route, |state| {
-        if state.owner.as_ref() != Some(owner) {
-            return false;
-        }
-        state.owner = None;
-        state.online_devices.clear();
-        state.control_clients.clear();
-        state.last_unidentified_control_ping = None;
-        true
-    })
-}
-
-#[cfg(test)]
-fn clear_device_routing_state() -> bool {
-    clear_device_routing_state_on_route(RelayRoute::Official)
-}
-
-fn clear_device_routing_state_on_route(route: RelayRoute) -> bool {
-    with_route_state(route, |state| {
-        let had_owner = state.owner.take().is_some();
-        state.online_devices.clear();
-        state.control_clients.clear();
-        state.last_unidentified_control_ping = None;
-        had_owner
-    })
 }
 
 fn normalize_relay_url(relay_url: &str) -> Result<String, String> {
@@ -1257,7 +482,8 @@ pub async fn account_get_credential_hint() -> Option<AccountHint> {
 }
 
 fn get_service_holder() -> &'static Arc<RwLock<Option<RemoteConnectService>>> {
-    RelayRoute::Official.service()
+    static SERVICE: OnceLock<Arc<RwLock<Option<RemoteConnectService>>>> = OnceLock::new();
+    SERVICE.get_or_init(|| Arc::new(RwLock::new(None)))
 }
 
 fn bot_control() -> &'static openbitfun_core::service::remote_connect::control::RemoteBotControl {
@@ -1295,33 +521,14 @@ pub(crate) async fn execute_remote_control(
         "account_required: Sign in to OpenBitFun on the executing Desktop host first".to_string()
     })?;
     match request {
+        // The 1.x relay methods (phone web pairing, LAN relay).
         Request::Start {
-            method: Method::MobileWeb,
-            ..
-        } => {
-            let result = remote_connect_start(StartRemoteConnectRequest {
-                method: "openbitfun_server".into(),
-                lan_ip: None,
-            })
-            .await?;
-            serde_json::to_value(result).map_err(|error| error.to_string())
-        }
-        Request::Start {
-            method: Method::Lan,
+            method: Method::MobileWeb | Method::Lan,
             ..
         }
         | Request::Stop {
-            method: Method::Lan,
-        } => Err(LAN_RELAY_RETIRED_ERROR.to_string()),
-        Request::Stop {
-            method: Method::MobileWeb,
-        } => {
-            remote_connect_stop(Some(StopRemoteConnectRequest {
-                method: "openbitfun_server".into(),
-            }))
-            .await?;
-            Ok(json!({"stopped":true,"method":"mobile_web"}))
-        }
+            method: Method::MobileWeb | Method::Lan,
+        } => Err(RELAY_METHOD_RETIRED.to_string()),
         other => {
             let generation = account_context_generation();
             let _account_guard = lock_account_operation(generation).await?;
@@ -1337,12 +544,8 @@ pub(crate) async fn execute_remote_control(
     }
 }
 
-/// Called from Tauri setup to eagerly initialize the remote connect service
-/// and restore any previously paired bot connections.  Without this, bots
-/// only start listening after the user first opens the Remote Connect dialog.
-/// Register delegated identity providers for mobile-web (room channel) and
-/// IM bots (global provider). Called after session is restored (startup) or
-/// after fresh login.
+/// Register the delegated identity provider for IM bots. Called after the
+/// session is restored (startup) or after a fresh login.
 async fn register_delegated_identity_providers() {
     // Global provider for IM bots.
     let account_context = get_account_context().clone();
@@ -1393,7 +596,7 @@ async fn maintain_device_session() -> anyhow::Result<bool> {
     let Some(saved) = session_store::renew_session_if_due(false).await? else {
         return Ok(true);
     };
-    let generation = if saved.replaces(&old, &relay_url) {
+    if saved.replaces(&old, &relay_url) {
         let Some(mut transition) = begin_account_transition_if_current(generation).await else {
             return Ok(true);
         };
@@ -1402,20 +605,6 @@ async fn maintain_device_session() -> anyhow::Result<bool> {
             relay_url,
         });
         transition.make_context_observable();
-        let next = account_context_generation();
-        ROUTING_INTENT.rotated(generation, next);
-        next
-    } else if saved.token == old.token
-        && device_routing_owner_for_account(generation, &old.token).is_none()
-    {
-        generation
-    } else {
-        return Ok(true);
-    };
-    if ROUTING_INTENT.requested(generation) {
-        reconnect_requested_devices(generation)
-            .await
-            .map_err(anyhow::Error::msg)?;
     }
     Ok(true)
 }
@@ -1428,16 +617,9 @@ fn monitor_remote_control_permission() {
             if allowed {
                 restore_saved_bots().await;
             } else {
-                if let Err(error) = remote_connect_stop(None).await {
-                    log::warn!("Failed to stop remote control: {error}");
-                }
                 bot_control().suspend().await;
             }
-            if read_account_context().await.is_ok() {
-                if let Err(error) = account_connect_devices_with_retry().await {
-                    log::warn!("Failed to update account connection after remote control setting changed: {error}");
-                }
-            }
+            sync_device_routing_claim().await;
         }
     });
 }
@@ -1457,7 +639,7 @@ pub fn init_on_startup() {
             maintain_device_session,
         );
         // Restore persisted account session (if any) before anything else
-        // so that device routing and bot delegation work on restart.
+        // so that bot delegation works on restart.
         match session_store::load_session_detailed() {
             Ok(Some(loaded)) => {
                 let user_id = loaded.user_id.clone();
@@ -1488,14 +670,11 @@ pub fn init_on_startup() {
                     }
                     match login_account_on_relay_for_generation(openbitfun_product_domains::account::DEFAULT_RELAY_URL.to_string(), Some(startup_generation)).await {
                         Ok(_) => {
-                            if let Err(error) = account_connect_devices_with_retry().await {
-                                log::warn!("New Relay routing failed: {error}");
-                            }
                             restore_saved_bots().await;
                         }
                         Err(error) => {
                             sync_account_login_capability(false);
-                            log::warn!("New Relay sign-in required; previous credential retained: {error}");
+                            log::warn!("Account sign-in required; previous credential retained: {error}");
                             if let Err(error) = ensure_service().await {
                                 log::warn!("Remote connect startup init failed: {error}");
                             }
@@ -1533,21 +712,13 @@ pub fn init_on_startup() {
                     log::warn!("Remote connect startup init failed: {e}");
                 }
 
-                // Re-register delegated identity providers for mobile-web / bots.
+                // Re-register the delegated identity provider for bots.
                 register_delegated_identity_providers().await;
 
                 // Best-effort: restore bot connections now that delegated
                 // identity is available again.
                 restore_saved_bots().await;
-
-                // Re-establish device routing WebSocket in the background.
-                // Uses the same Tauri command logic — fire and forget.
-                tokio::spawn(async {
-                    match account_connect_devices_with_retry().await {
-                        Ok(_) => log::info!("Device routing restored on startup"),
-                        Err(e) => log::warn!("Startup device connect failed: {e}"),
-                    }
-                });
+                sync_device_routing_claim().await;
             }
             Ok(None) => {
                 sync_account_login_capability(false);
@@ -1591,7 +762,7 @@ async fn ensure_service() -> Result<(), String> {
 }
 
 fn new_remote_connect_service(config: RemoteConnectConfig) -> anyhow::Result<RemoteConnectService> {
-    RemoteConnectService::new(config, Arc::new(DesktopEmbeddedRelayUnavailable))
+    RemoteConnectService::new(config)
 }
 
 /// Restore any bot connections that were previously saved to disk.
@@ -1618,22 +789,17 @@ pub struct StartRemoteConnectRequest {
     pub lan_ip: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RelayConnectionStatus {
-    pub method: String,
-    pub relay_connected: bool,
-    pub relay_url: Option<String>,
-    pub clients: Vec<openbitfun_services_integrations::remote_connect::RemoteControlClient>,
-}
-
+/// Remote Connect status. The `relay_*`, `connections` and `clients` fields
+/// belong to the retired 1.x relay: they stay in the shape (always empty or
+/// false) so a client that reads them keeps parsing the answer.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RemoteConnectStatusResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub connections: Vec<RelayConnectionStatus>,
+    pub connections: Vec<serde_json::Value>,
     pub relay_connected: bool,
     pub relay_url: Option<String>,
     pub active_method: Option<ConnectionMethod>,
-    pub clients: Vec<openbitfun_services_integrations::remote_connect::RemoteControlClient>,
+    pub clients: Vec<serde_json::Value>,
     pub bot_connected: Option<String>,
     pub bot_verbose_mode: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1677,19 +843,13 @@ pub async fn remote_connect_get_methods() -> Result<Vec<ConnectionMethodInfo>, S
     Ok(connection_method_infos(service.available_methods().await))
 }
 
-/// The LAN method stays in the shared Remote Connect model for other hosts;
-/// the desktop no longer offers it.
+/// The methods 2.0 offers (IM bots); the retired relay methods are never
+/// listed.
 fn connection_method_infos(methods: Vec<ConnectionMethod>) -> Vec<ConnectionMethodInfo> {
     methods
         .into_iter()
         .filter_map(|m| match m {
-            ConnectionMethod::Lan { .. } => None,
-            ConnectionMethod::OpenBitFunServer => Some(ConnectionMethodInfo {
-                id: "openbitfun_server".into(),
-                name: "OpenBitFun Server".into(),
-                available: true,
-                description: "Official OpenBitFun relay".into(),
-            }),
+            ConnectionMethod::Lan { .. } | ConnectionMethod::OpenBitFunServer => None,
             ConnectionMethod::BotFeishu => Some(ConnectionMethodInfo {
                 id: "bot_feishu".into(),
                 name: "Feishu Bot".into(),
@@ -1714,8 +874,7 @@ fn connection_method_infos(methods: Vec<ConnectionMethod>) -> Vec<ConnectionMeth
 
 fn parse_connection_method(method: &str) -> Result<ConnectionMethod, String> {
     match method {
-        "lan" => Err(LAN_RELAY_RETIRED_ERROR.to_string()),
-        "openbitfun_server" => Ok(ConnectionMethod::OpenBitFunServer),
+        "lan" | "openbitfun_server" => Err(RELAY_METHOD_RETIRED.to_string()),
         "bot_feishu" => Ok(ConnectionMethod::BotFeishu),
         "bot_telegram" => Ok(ConnectionMethod::BotTelegram),
         "bot_weixin" => Ok(ConnectionMethod::BotWeixin),
@@ -1723,117 +882,38 @@ fn parse_connection_method(method: &str) -> Result<ConnectionMethod, String> {
     }
 }
 
-/// Whether the official route already serves the signed-in account on the
-/// endpoint of [`prepared_relay_url`]: its device routing is owned by the
-/// current account generation and token and its transport is up (connected,
-/// or reconnecting by itself).
-///
-/// Showing the invitation of such a route needs no sign-in and no connection.
-/// Presence is deliberately not consulted: it arrives after the connection
-/// and is empty while the transport reconnects, and neither is a reason to
-/// replace a route that controllers may be attached to.
-async fn official_route_is_serving(prepared_relay_url: &str) -> bool {
-    let generation = account_context_generation();
-    let Ok((session, relay_url)) = read_account_context_for_generation(generation).await else {
-        return false;
-    };
-    if relay_requires_account_login(Some(&relay_url), prepared_relay_url) {
-        return false;
-    }
-    let Some(owner) = device_routing_owner_for_account(generation, &session.token) else {
-        return false;
-    };
-    if !device_routing_owner_is_current(&owner).await {
-        return false;
-    }
-    match get_service_holder().read().await.as_ref() {
-        Some(service) => service.is_device_connected().await,
-        None => false,
-    }
-}
-
-/// Start a connection method and return its invitation.
-///
-/// For a Relay route that is already connected this only returns the
-/// invitation again: the route is not signed in again, not reconnected and
-/// not restarted, its routing owner and attached controllers stay as they
-/// are, and a failure to build the invitation leaves it running. The dialog
-/// relies on that and calls this whenever it needs the link.
-///
-/// The retired LAN method is refused with an explicit unsupported error.
+/// Start an IM bot connection and return its pairing code. The retired relay
+/// methods (`openbitfun_server`, `lan`) are refused before touching anything.
 // @backend-command
 pub async fn remote_connect_start(
     request: StartRemoteConnectRequest,
 ) -> Result<ConnectionResult, String> {
     let method = parse_connection_method(&request.method)?;
     ensure_service().await?;
-    let _start_stop = RELAY_START_STOP_LOCK.lock().await;
+    let _start_stop = START_STOP_LOCK.lock().await;
     device::require_remote_control().map_err(|e| e.to_string())?;
-    if matches!(
-        method,
-        ConnectionMethod::BotFeishu | ConnectionMethod::BotTelegram | ConnectionMethod::BotWeixin
-    ) {
-        // IM transports also require the signed-in account before pairing.
-        if read_account_context().await.is_err() {
-            account_login(AccountAuthRequest {}).await?;
-        }
-        let generation = account_context_generation();
-        let _account_guard = lock_account_operation(generation).await?;
-        let (session, _) = read_account_context_for_generation(generation).await?;
-        if let Some(service) = get_service_holder().read().await.as_ref() {
-            service.set_bot_account(Some(session.user_id)).await;
-        }
-        let bot_type = match method {
-            ConnectionMethod::BotFeishu => "feishu",
-            ConnectionMethod::BotTelegram => "telegram",
-            _ => "weixin",
-        };
-        return bot_control()
-            .start_connection(bot_type)
-            .await
-            .map_err(|error| error.to_string());
+    // IM transports require the signed-in account before pairing.
+    if read_account_context().await.is_err() {
+        account_login(AccountAuthRequest {}).await?;
     }
-    let relay_url = {
-        let holder = get_service_holder().read().await;
-        holder
-            .as_ref()
-            .ok_or("service not initialized")?
-            .prepare_relay(&method)
-            .await
-            .map_err(|e| e.to_string())?
+    let generation = account_context_generation();
+    let _account_guard = lock_account_operation(generation).await?;
+    let (session, _) = read_account_context_for_generation(generation).await?;
+    if let Some(service) = get_service_holder().read().await.as_ref() {
+        service.set_bot_account(Some(session.user_id)).await;
+    }
+    let bot_type = match method {
+        ConnectionMethod::BotFeishu => "feishu",
+        ConnectionMethod::BotTelegram => "telegram",
+        ConnectionMethod::BotWeixin => "weixin",
+        ConnectionMethod::Lan { .. } | ConnectionMethod::OpenBitFunServer => {
+            return Err(RELAY_METHOD_RETIRED.to_string())
+        }
     };
-    if official_route_is_serving(&relay_url).await {
-        // Already connected: hand out the invitation and touch nothing else.
-        let holder = get_service_holder().read().await;
-        return holder
-            .as_ref()
-            .ok_or("service not initialized")?
-            .start(method)
-            .await
-            .map_err(|e| format!("start remote connect: {e}"));
-    }
-    let result = async {
-        let current_url = read_account_context().await.ok().map(|(_, url)| url);
-        if relay_requires_account_login(current_url.as_deref(), &relay_url) {
-            login_account_on_relay(relay_url).await?;
-        }
-        account_connect_devices().await?;
-        let holder = get_service_holder().read().await;
-        holder
-            .as_ref()
-            .ok_or("service not initialized")?
-            .start(method)
-            .await
-            .map_err(|e| format!("start remote connect: {e}"))
-    }
-    .await;
-    if result.is_err() {
-        stop_and_clear_device_routing("Relay connection failed").await;
-        if let Some(service) = get_service_holder().read().await.as_ref() {
-            service.stop_relay().await;
-        }
-    }
-    result
+    bot_control()
+        .start_connection(bot_type)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1841,25 +921,16 @@ pub struct StopRemoteConnectRequest {
     pub method: String,
 }
 
+/// Stop a relay method. Nothing of the retired relay runs in 2.0: an omitted
+/// method or `openbitfun_server` has nothing to stop; `lan` is refused like
+/// before. Bots stop through `remote_connect_stop_bot`.
 // @backend-command
 pub async fn remote_connect_stop(request: Option<StopRemoteConnectRequest>) -> Result<(), String> {
-    let selected = request
-        .map(|request| match request.method.as_str() {
-            "lan" => Err(LAN_RELAY_RETIRED_ERROR.to_string()),
-            "openbitfun_server" => Ok(RelayRoute::Official),
-            _ => Err("unknown Relay connection method".to_string()),
-        })
-        .transpose()?;
-    let _start_stop = RELAY_START_STOP_LOCK.lock().await;
-    let _boundary = ACCOUNT_TRANSITION_BOUNDARY_LOCK.lock().await;
-    // Omitted request preserves the old stop-all contract for older clients.
-    if selected.is_none() || selected == Some(RelayRoute::Official) {
-        stop_and_clear_device_routing("Relay stopped").await;
-        if let Some(service) = get_service_holder().read().await.as_ref() {
-            service.stop_relay().await;
-        }
+    match request.as_ref().map(|request| request.method.as_str()) {
+        None | Some("openbitfun_server") => Ok(()),
+        Some("lan") => Err(RELAY_METHOD_RETIRED.to_string()),
+        Some(_) => Err("unknown Relay connection method".to_string()),
     }
-    Ok(())
 }
 
 // @backend-command
@@ -1876,50 +947,15 @@ pub async fn remote_connect_stop_bot() -> Result<(), String> {
 // @backend-command
 pub async fn remote_connect_status() -> Result<RemoteConnectStatusResponse, String> {
     ensure_service().await?;
-
-    let mut connections = Vec::new();
-    for route in RelayRoute::ALL {
-        let holder = route.service().read().await;
-        if let Some(service) = holder.as_ref() {
-            let owner = with_route_state(route, |state| state.owner.clone());
-            let connected = match owner.as_ref() {
-                Some(owner) => {
-                    device_routing_owner_is_current(owner).await
-                        && service.is_device_connected().await
-                }
-                None => false,
-            };
-            let clients = owner
-                .as_ref()
-                .filter(|_| connected)
-                .map(|owner| account_control_clients(owner, std::time::Instant::now()).0)
-                .unwrap_or_default();
-            connections.push(RelayConnectionStatus {
-                method: match route {
-                    RelayRoute::Official => "openbitfun_server",
-                }
-                .into(),
-                relay_connected: connected,
-                relay_url: service.device_relay_url().await,
-                clients,
-            });
-        }
-    }
     let holder = get_service_holder();
     let guard = holder.read().await;
     let service = guard.as_ref().ok_or("service not initialized")?;
-    let relay_connected = service.is_device_connected().await;
-    let relay_url = service.device_relay_url().await;
-    let clients = account_control_snapshot(std::time::Instant::now())
-        .await
-        .map(|(_, clients, _)| clients)
-        .unwrap_or_default();
     Ok(RemoteConnectStatusResponse {
-        connections,
-        relay_connected,
-        relay_url,
-        active_method: service.active_method().await,
-        clients,
+        connections: Vec::new(),
+        relay_connected: false,
+        relay_url: None,
+        active_method: None,
+        clients: Vec::new(),
         bot_connected: service.bot_connected_info().await,
         bot_verbose_mode: bot::load_bot_persistence().verbose_mode,
         remote_control_allowed: Some(device::remote_control_allowed().map_err(|e| e.to_string())?),
@@ -2081,18 +1117,6 @@ pub async fn account_login(_request: AccountAuthRequest) -> Result<AccountLoginR
     login_account_on_relay(openbitfun_product_domains::account::DEFAULT_RELAY_URL.to_string()).await
 }
 
-/// Whether showing an invitation must sign in again on `target`.
-///
-/// A restored session keeps the endpoint base while the prepared official
-/// endpoint also announces `?v=`. The version is not part of the endpoint
-/// identity, and an unneeded login rotates the token and drops device routing.
-fn relay_requires_account_login(current: Option<&str>, target: &str) -> bool {
-    current.map(openbitfun_product_domains::account::relay_endpoint_base)
-        != Some(openbitfun_product_domains::account::relay_endpoint_base(
-            target,
-        ))
-}
-
 async fn login_account_on_relay(relay_url: String) -> Result<AccountLoginResult, String> {
     login_account_on_relay_for_generation(relay_url, None).await
 }
@@ -2135,10 +1159,9 @@ async fn login_account_on_relay_for_generation(
         &session.token,
     );
 
-    // The candidate is authenticated and the old context is now hidden. Clear
-    // its device socket, presence, controllers, and account-pairing callbacks
-    // before publishing the replacement context.
-    stop_and_clear_device_routing("Account changed").await;
+    // The candidate is authenticated and the old context is now hidden.
+    // A directory session of another account is retired with it.
+    super::account_directory::retire_other_account(&session.user_id).await;
     if let Ok((previous, _)) = read_account_context_raw().await {
         if previous.user_id != session.user_id {
             if let Err(error) =
@@ -2190,6 +1213,7 @@ async fn login_account_on_relay_for_generation(
     // this committed account instead of a transient logged-out state.
     transition_guard.make_context_observable();
     sync_account_login_capability(true);
+    sync_device_routing_claim().await;
     emit_account_event(
         "account://login-state",
         serde_json::json!({ "logged_in": true, "relay_url": relay_url }),
@@ -2255,8 +1279,6 @@ async fn clear_account_login_state(revoke_relay_token: bool) {
     // Account transitions hide the context immediately; hide account-backed
     // tools at the same boundary rather than after network cleanup completes.
     sync_account_login_capability(false);
-    // Disconnect device routing before clearing the session.
-    stop_and_clear_device_routing("Account logged out").await;
     if let Ok((previous, _)) = read_account_context_raw().await {
         if let Err(error) =
             openbitfun_core::service::filesystem::upload::retire_account_uploads(&previous.user_id)
@@ -2273,6 +1295,7 @@ async fn clear_account_login_state(revoke_relay_token: bool) {
     clear_credential_hint();
     session_store::logout_session(active, revoke_relay_token).await;
     TOKEN_EXPIRED.store(false, std::sync::atomic::Ordering::Relaxed);
+    sync_device_routing_claim().await;
     emit_account_event(
         "account://login-state",
         serde_json::json!({ "logged_in": false }),
@@ -2284,687 +1307,17 @@ pub async fn account_logout(app: HostHandle) -> Result<(), String> {
     let mut identity = openbitfun_services_integrations::account_identity::AccountIdentityClient::from_environment()
         .await.map_err(|error| error.to_string())?;
     identity.logout().await.map_err(|error| error.to_string())?;
+    // The new-version directory session goes with the identity.
+    super::account_directory::sign_out().await;
     clear_account_login(true).await;
     super::account_identity_api::emit_identity_changed(&app, "signed-out");
     log::info!("Account logged out");
     Ok(())
 }
 
-// ── P2: Device routing commands ──────────────────────────────────────────
+// ── Account device directory ─────────────────────────────────────────
 
-pub use openbitfun_core::service::remote_connect::relay_client::DevicePresenceEntry as OnlineDeviceInfo;
-
-const STARTUP_DEVICE_CONNECT_MAX_ATTEMPTS: usize = 5;
-
-async fn account_connect_devices_with_retry() -> Result<Vec<OnlineDeviceInfo>, String> {
-    let generation = account_context_generation();
-    ROUTING_INTENT.request(generation);
-    reconnect_requested_devices(generation).await
-}
-
-async fn reconnect_requested_devices(
-    expected_generation: u64,
-) -> Result<Vec<OnlineDeviceInfo>, String> {
-    for attempt in 1..=STARTUP_DEVICE_CONNECT_MAX_ATTEMPTS {
-        if !account_context_is_current(expected_generation)
-            || !ROUTING_INTENT.requested(expected_generation)
-        {
-            return Err("account context changed".to_string());
-        }
-        match connect_route_devices_for_generation(RelayRoute::Official, expected_generation).await
-        {
-            Ok(devices) => return Ok(devices),
-            Err(error) => {
-                if error_indicates_expired_token(&error)
-                    || error.contains("account context changed")
-                    || attempt == STARTUP_DEVICE_CONNECT_MAX_ATTEMPTS
-                {
-                    return Err(error);
-                }
-                let delay_ms = 500_u64.saturating_mul(2_u64.pow((attempt - 1) as u32));
-                log::warn!(
-                    "Startup device connection attempt {attempt}/{STARTUP_DEVICE_CONNECT_MAX_ATTEMPTS} \
-                     failed; retrying in {delay_ms}ms: {error}"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            }
-        }
-    }
-    Err("device connection failed".to_string())
-}
-
-/// Connect to the account relay for device-to-device routing. Must be called
-/// after `account_login`. The event receiver is consumed in a background task
-/// that logs presence updates; device messages are forwarded to the RemoteConnectService.
-// @backend-command
-pub async fn account_connect_devices() -> Result<Vec<OnlineDeviceInfo>, String> {
-    connect_route_devices(RelayRoute::Official).await
-}
-
-async fn connect_route_devices(route: RelayRoute) -> Result<Vec<OnlineDeviceInfo>, String> {
-    let generation = route.generation();
-    if route == RelayRoute::Official {
-        ROUTING_INTENT.request(generation);
-    }
-    connect_route_devices_for_generation(route, generation).await
-}
-
-async fn connect_route_devices_for_generation(
-    route: RelayRoute,
-    account_generation: u64,
-) -> Result<Vec<OnlineDeviceInfo>, String> {
-    let operation_guard = route.lock_operation(account_generation).await?;
-    let serves_device = device::remote_control_allowed().map_err(|e| e.to_string())?;
-    if route == RelayRoute::Official && !ROUTING_INTENT.requested(account_generation) {
-        return Err("device routing stopped".to_string());
-    }
-    let (session, relay_url) = route.context(account_generation).await?;
-    let identity = current_device_identity()?;
-    let device_name = identity.device_name.clone();
-    let holder = route.service().read().await;
-    let service = holder
-        .as_ref()
-        .ok_or_else(|| "remote connect service not initialized".to_string())?;
-
-    // Reuse is allowed only when the active socket is explicitly owned by the
-    // current account generation and token. A service-level connected flag by
-    // itself may still describe the account that was just replaced.
-    if let Some(devices) =
-        device_presence_for_account_on_route(route, account_generation, &session.token)
-    {
-        let connected_role = service.account_socket_serves_device().await;
-        if !route.matches(account_generation, &session.token).await {
-            return Err("account context changed".to_string());
-        }
-        if connected_role == Some(serves_device) {
-            if !serves_device {
-                return Ok(devices);
-            }
-            let local_id = DeviceIdentity::from_current_machine()
-                .ok()
-                .map(|d| d.device_id);
-            let local_known = local_id
-                .as_ref()
-                .is_some_and(|id| devices.iter().any(|d| d.device_id == *id));
-            if local_known {
-                return Ok(devices);
-            }
-            log::info!(
-            "Device WS connected but local device_id not in online set; reconnecting to heal identity"
-        );
-        }
-    }
-
-    route.cancel();
-    let routing_lifecycle = route.lifecycle().write().await;
-
-    // Invalidate the prior loop before `start_device_connection` swaps the
-    // service client. Its compare-and-clear exit path must not touch this new
-    // connection's controllers or presence.
-    clear_device_routing_state_on_route(route);
-    clear_route_delivery_targets(route, "Device routing reconnecting");
-
-    let (mut event_rx, auth_device_id, service_connection_id) = match service
-        .start_device_connection(
-            &relay_url,
-            &session,
-            &device_name,
-            // Desktop serves the device ahead of a CLI/daemon on this machine.
-            serves_device.then_some(openbitfun_core::service::remote_connect::relay_client::DeviceRoutingPriority::Primary),
-            Arc::new(DesktopHostStreamNotifier(route)),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            let msg = format!("{e}");
-            clear_device_routing_state_on_route(route);
-            // The reconnect kept the previous roster; without a connection it
-            // no longer describes reachable devices.
-            if route == RelayRoute::Official {
-                emit_device_presence(&[], false);
-            }
-            // Token invalidation re-enters the account transition path, so the
-            // current account-operation lease must be released first.
-            drop(routing_lifecycle);
-            drop(operation_guard);
-            drop(holder);
-            if route == RelayRoute::Official && error_indicates_expired_token(&msg) {
-                invalidate_local_account_session_if_current(
-                    account_generation,
-                    &session.token,
-                    &msg,
-                )
-                .await;
-            }
-            return Err(msg);
-        }
-    };
-
-    if !route.matches(account_generation, &session.token).await {
-        service.stop_device_connection().await;
-        clear_device_routing_state_on_route(route);
-        return Err("account context changed".to_string());
-    }
-    let mut routing_owner =
-        new_device_routing_owner(account_generation, &session.token, service_connection_id);
-    routing_owner.route = route;
-    install_device_routing_owner(routing_owner.clone());
-
-    if route == RelayRoute::Official {
-        match session_store::record_authenticated_device(&session.token, &auth_device_id) {
-            Ok(true) => RENEWAL_WAKE.notify_one(),
-            Ok(false) => {}
-            Err(error) => log::warn!("Failed to persist AuthOk device_id into session: {error}"),
-        }
-    }
-
-    if let Err(error) = AccountClient::new()
-        .report_local_metadata(&relay_url, &session, &auth_device_id)
-        .await
-    {
-        log::warn!("Failed to report device metadata on connection: {error}");
-    }
-
-    // Background task: consume events (presence / device messages / auth errors)
-    // Note: AuthOk is consumed inside start_device_connection (adopt happens there).
-    let event_relay_url = relay_url.clone();
-    let event_session = session.clone();
-    let event_owner = routing_owner.clone();
-    tokio::spawn(async move {
-        use openbitfun_core::service::remote_connect::relay_client::RelayEvent;
-        'routing_events: while let Some(event) = event_rx.recv().await {
-            if !device_routing_owner_is_current(&event_owner).await {
-                break;
-            }
-            match event {
-                RelayEvent::AuthOk { user_id, device_id } => {
-                    // Should not normally arrive — start_device_connection consumes AuthOk.
-                    log::info!(
-                        "Device routing auth ok (forwarded unexpectedly): user={user_id} device={device_id}"
-                    );
-                }
-                RelayEvent::AuthError { message } => {
-                    log::warn!("Device routing auth error: {message}");
-                    // The socket can be rejected while the account panel is
-                    // closed. Fully invalidate local state here so desktop
-                    // capabilities and every UI surface agree immediately.
-                    if route == RelayRoute::Official {
-                        invalidate_local_account_session_if_current(
-                            account_generation,
-                            &event_session.token,
-                            &message,
-                        )
-                        .await;
-                    }
-                    break;
-                }
-                RelayEvent::DevicePresence { devices } => {
-                    let Some(_routing_effect) = lock_current_device_routing(&event_owner).await
-                    else {
-                        break 'routing_events;
-                    };
-                    if !replace_device_presence_if_owner(&event_owner, devices.clone()) {
-                        break 'routing_events;
-                    }
-                    log::info!("Device presence updated: {} online", devices.len());
-                    // Presence is authoritative for who can still receive stream
-                    // hints; a device that dropped off stops holding streams alive.
-                    if let Some(hub) = route_host_stream_hub(route).await {
-                        let online: Vec<String> =
-                            devices.iter().map(|d| d.device_id.clone()).collect();
-                        hub.retain_online(&online);
-                    }
-                    // Peer controllers are presence-scoped as well. A controller
-                    // that dropped off must stop being a fanout target, otherwise
-                    // every peer event for it is rejected by the relay and the log
-                    // fills with failures that never resolve on their own.
-                    let online_ids: HashSet<String> =
-                        devices.iter().map(|d| d.device_id.clone()).collect();
-                    crate::api::peer_host_invoke::retain_online_controllers(route, &online_ids);
-                    // Offline presence does not revoke an account device or its
-                    // permission mailbox. Reconnect resumes the same ownership.
-                    if !device_routing_owner_is_current(&event_owner).await {
-                        break 'routing_events;
-                    }
-                    if route == RelayRoute::Official {
-                        emit_device_presence(&devices, !serves_device);
-                    }
-                }
-                RelayEvent::DeviceMessageReceived {
-                    source_device_id,
-                    correlation_id,
-                    encoding_offer,
-                    encrypted_data,
-                    nonce,
-                } => {
-                    match event_session
-                        .decrypt_peer_message(
-                            &event_relay_url,
-                            &source_device_id,
-                            &encrypted_data,
-                            &nonce,
-                            encoding_offer,
-                        )
-                        .await
-                    {
-                        Ok(plaintext) => {
-                            use openbitfun_core::service::remote_connect::remote_server::RemoteCommand;
-                            match serde_json::from_str::<RemoteCommand>(&plaintext) {
-                                Ok(RemoteCommand::DeviceEvent { event, payload }) => {
-                                    let Some(_routing_effect) =
-                                        lock_current_device_routing(&event_owner).await
-                                    else {
-                                        break 'routing_events;
-                                    };
-                                    // Controller receiving peer UI events — re-emit locally
-                                    // under the same event name so PeerDeviceTransport listen
-                                    // works. The source device is tagged onto the payload so a
-                                    // controller that is also running local work can route each
-                                    // stream to the right device surface.
-                                    log::debug!("DeviceEvent from {source_device_id}: {event}");
-                                    if event_session.deliver_device_event(
-                                        &source_device_id,
-                                        &event,
-                                        &payload,
-                                    ) {
-                                        // Host stream hints drive Rust subscribers; the
-                                        // webview only sees the records they read back.
-                                        continue;
-                                    }
-                                    if should_fanout_peer_ui_event(&event)
-                                        || event == "account://settings-applied"
-                                        || (serves_device
-                                            && device::remote_control_allowed().unwrap_or(false))
-                                    {
-                                        emit_account_event(
-                                            &event,
-                                            tag_peer_event_source(payload, &source_device_id),
-                                        );
-                                    }
-                                }
-                                Ok(_)
-                                    if !serves_device
-                                        || device::require_remote_control().is_err() =>
-                                {
-                                    continue
-                                }
-                                Ok(RemoteCommand::ExecuteOnDevice {
-                                    session_id,
-                                    content,
-                                    agent_type,
-                                    workspace_path,
-                                }) => {
-                                    let Some(_routing_effect) =
-                                        lock_current_device_routing(&event_owner).await
-                                    else {
-                                        break 'routing_events;
-                                    };
-                                    log::info!(
-                                        "ExecuteOnDevice from {source_device_id}: \
-                                         session={:?} content_len={}",
-                                        session_id,
-                                        content.len()
-                                    );
-                                    if let Some(scheduler) = DIALOG_SCHEDULER.get() {
-                                        use openbitfun_core::agentic::coordination::{
-                                            DialogSubmissionPolicy, DialogTriggerSource,
-                                        };
-                                        let session_id = session_id
-                                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                                        let policy = DialogSubmissionPolicy::for_source(
-                                            DialogTriggerSource::RemoteRelay,
-                                        );
-                                        let wp = match resolve_requested_local_workspace_path(
-                                            workspace_path.as_deref(),
-                                        ) {
-                                            Ok(path) => path,
-                                            Err(error) => {
-                                                log::warn!(
-                                                    "ExecuteOnDevice rejected invalid workspace: {error}"
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                        let agent =
-                                            agent_type.unwrap_or_else(|| "Standard".to_string());
-                                        if let Err(e) = scheduler
-                                            .submit(
-                                                session_id,
-                                                content,
-                                                None,
-                                                None,
-                                                agent,
-                                                Some(wp),
-                                                None,
-                                                None,
-                                                policy,
-                                                None,
-                                                None,
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            log::warn!("ExecuteOnDevice failed: {e}");
-                                        }
-                                    } else {
-                                        log::warn!(
-                                            "DialogScheduler not available for ExecuteOnDevice"
-                                        );
-                                    }
-                                    if !device_routing_owner_is_current(&event_owner).await {
-                                        break 'routing_events;
-                                    }
-                                }
-                                Ok(cmd) => {
-                                    // The lease is taken here, on the loop, so a
-                                    // retiring loop still notices it has been
-                                    // replaced and stops reading events at once.
-                                    let mut cancelled = route.cancellation().subscribe();
-                                    let Some(routing_effect) =
-                                        lock_current_device_routing(&event_owner).await
-                                    else {
-                                        break 'routing_events;
-                                    };
-                                    // HTTP RPC request from another device via relay.
-                                    // Execute the command locally and send back
-                                    // the encrypted response (including errors).
-                                    log::info!(
-                                        "RPC request received from relay: corr={correlation_id}"
-                                    );
-                                    // Spawned rather than awaited. Most commands
-                                    // are answered by the webview, which can take
-                                    // up to DEFAULT_INVOKE_TIMEOUT (120s) to reply;
-                                    // awaiting here meant one slow command stalled
-                                    // every device behind it, so a `ping` from the
-                                    // watch could take 40s to come back for no
-                                    // reason of its own. Each RPC carries its own
-                                    // correlation id, so nothing about the reply
-                                    // path depends on them finishing in order.
-                                    let rpc_owner = event_owner.clone();
-                                    let rpc_session = event_session.clone();
-                                    let ping_generation = control_ping_generation(&rpc_owner);
-                                    let ping_received_at = std::time::Instant::now();
-                                    tokio::spawn(async move {
-                                        use openbitfun_core::service::remote_connect::rpc_execution::run_rpc_stage;
-
-                                        // Keep the routing lease until an accepted
-                                        // model write finishes, even after retirement.
-                                        let _routing_effect = routing_effect;
-                                        let model_write =
-                                            matches!(&cmd, RemoteCommand::SetSessionModel { .. });
-                                        let execute = async {
-                                            let hub = route_host_stream_hub(route).await;
-                                            match openbitfun_core::service::remote_connect::handle_host_stream_command(
-                                                hub.as_ref(),
-                                                &source_device_id,
-                                                &cmd,
-                                            )
-                                            .await
-                                            {
-                                                Some(response) => serde_json::to_value(response)
-                                                    .map_err(anyhow::Error::from),
-                                                None => execute_local_remote_command(&cmd, route, &source_device_id).await,
-                                            }
-                                        };
-                                        let Some(execution) =
-                                            run_rpc_stage(&mut cancelled, model_write, execute)
-                                                .await
-                                        else {
-                                            return;
-                                        };
-                                        let reply = async {
-                                            if !device_routing_owner_is_current(&rpc_owner).await {
-                                                return;
-                                            }
-                                            match execution {
-                                                Ok(resp_value) => {
-                                                    let control_ping = is_successful_control_ping(
-                                                        &cmd,
-                                                        &resp_value,
-                                                    );
-                                                    let sent = send_rpc_envelope(
-                                                        &rpc_owner,
-                                                        &rpc_session,
-                                                        &source_device_id,
-                                                        &correlation_id,
-                                                        encoding_offer.accepts_zstd(),
-                                                        resp_value,
-                                                    )
-                                                    .await;
-                                                    if let Some(generation) = ping_generation
-                                                        .filter(|_| sent && control_ping)
-                                                    {
-                                                        record_control_ping_if_owner(
-                                                            &rpc_owner,
-                                                            generation,
-                                                            ping_received_at,
-                                                            match &cmd {
-                                                                RemoteCommand::Ping { client } => {
-                                                                    client.as_ref()
-                                                                }
-                                                                _ => None,
-                                                            },
-                                                        );
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    log::warn!("RPC: execute command failed: {e}");
-                                                    send_rpc_error(
-                                                        &rpc_owner,
-                                                        &rpc_session,
-                                                        &source_device_id,
-                                                        &correlation_id,
-                                                        encoding_offer.accepts_zstd(),
-                                                        format!("RPC execute failed: {e}"),
-                                                    )
-                                                    .await;
-                                                }
-                                            }
-                                        };
-                                        let _ = run_rpc_stage(&mut cancelled, false, reply).await;
-                                    });
-                                }
-                                Err(e) => {
-                                    log::warn!("Could not parse device command: {e}");
-                                    if !correlation_id.is_empty() {
-                                        let Some(_routing_effect) =
-                                            lock_current_device_routing(&event_owner).await
-                                        else {
-                                            break 'routing_events;
-                                        };
-                                        send_rpc_error(
-                                            &event_owner,
-                                            &event_session,
-                                            &source_device_id,
-                                            &correlation_id,
-                                            encoding_offer.accepts_zstd(),
-                                            format!("invalid RPC command: {e}"),
-                                        )
-                                        .await;
-                                        if !device_routing_owner_is_current(&event_owner).await {
-                                            break 'routing_events;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to decrypt device message: {e}");
-                            if !correlation_id.is_empty() {
-                                let Some(_routing_effect) =
-                                    lock_current_device_routing(&event_owner).await
-                                else {
-                                    break 'routing_events;
-                                };
-                                send_rpc_error(
-                                    &event_owner,
-                                    &event_session,
-                                    &source_device_id,
-                                    &correlation_id,
-                                    false, // The request could not be authenticated.
-                                    format!("failed to decrypt RPC request: {e}"),
-                                )
-                                .await;
-                                if !device_routing_owner_is_current(&event_owner).await {
-                                    break 'routing_events;
-                                }
-                            }
-                        }
-                    }
-                }
-                RelayEvent::Disconnected => {
-                    let Some(_routing_effect) = lock_current_device_routing(&event_owner).await
-                    else {
-                        break 'routing_events;
-                    };
-                    if !replace_device_presence_if_owner(&event_owner, Vec::new()) {
-                        break 'routing_events;
-                    }
-                    clear_control_ping_if_owner(&event_owner);
-                    log::info!("Device routing disconnected");
-                    // Preserve pending permissions across network loss. Explicit
-                    // account retirement retains the revocation path.
-                    if !device_routing_owner_is_current(&event_owner).await {
-                        break 'routing_events;
-                    }
-                    if route == RelayRoute::Official {
-                        emit_device_presence(&[], false);
-                    }
-                }
-                RelayEvent::Reconnected => {
-                    let Some(_routing_effect) = lock_current_device_routing(&event_owner).await
-                    else {
-                        break 'routing_events;
-                    };
-                    if let Ok(identity) = current_device_identity() {
-                        if let Err(error) = AccountClient::new()
-                            .report_local_metadata(
-                                &event_relay_url,
-                                &event_session,
-                                &identity.device_id,
-                            )
-                            .await
-                        {
-                            log::warn!("Failed to report device metadata after reconnect: {error}");
-                        }
-                    }
-                    log::info!("Device routing reconnected — AuthConnect re-sent by transport");
-                }
-                _ => {}
-            }
-        }
-        finish_device_routing_event_loop(&event_owner).await;
-    });
-
-    drop(routing_lifecycle);
-    if !route.matches(account_generation, &session.token).await {
-        return Err("account context changed".to_string());
-    }
-    Ok(
-        device_presence_for_account_on_route(route, account_generation, &session.token)
-            .unwrap_or_default(),
-    )
-}
-
-/// Get the current online device list.
-// @backend-command
-pub async fn account_online_devices() -> Result<Vec<OnlineDeviceInfo>, String> {
-    let account_generation = account_context_generation();
-    let (session, _) = read_account_context_for_generation(account_generation).await?;
-    let _lifecycle = RelayRoute::Official.lifecycle().read().await;
-    if !account_context_matches(account_generation, &session.token).await {
-        return Err("account context changed".to_string());
-    }
-    Ok(device_presence_for_account(account_generation, &session.token).unwrap_or_default())
-}
-
-/// Send an encrypted session to a peer device. The `session_json` is encrypted
-/// with the master key before being sent over the relay.
-// ── P4: Session / settings sync commands ─────────────────────────────────
-
-/// Execute a task on a remote device — sends an ExecuteOnDevice command
-/// over the device-messaging WS pathway.
-// @backend-command
-pub async fn account_execute_on_device(
-    target_device_id: String,
-    session_id: Option<String>,
-    content: String,
-    agent_type: Option<String>,
-    workspace_path: Option<String>,
-) -> Result<(), String> {
-    let account_generation = account_context_generation();
-    let (session, relay_url) = read_account_context_for_generation(account_generation).await?;
-
-    use openbitfun_core::service::remote_connect::remote_server::RemoteCommand;
-    if !device::remote_control_allowed().map_err(|e| e.to_string())? {
-        // User-scoped sockets can call peer commands, but only a machine host
-        // can send the legacy one-way ExecuteOnDevice event.
-        use openbitfun_core::service::remote_connect::remote_server::RemoteResponse;
-        let request = RemoteCommand::HostInvoke {
-            command: "start_dialog_turn".into(),
-            args: serde_json::json!({ "request": {
-                "sessionId": session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                "turnId": uuid::Uuid::new_v4().to_string(),
-                "userInput": content,
-                "agentType": agent_type.unwrap_or_else(|| "Standard".into()),
-                "workspacePath": workspace_path,
-            }}),
-        };
-        let command_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-        let response = AccountClient::new()
-            .device_rpc(&relay_url, &session, &target_device_id, &command_json)
-            .await
-            .map_err(|e| e.to_string())?;
-        if !account_context_matches(account_generation, &session.token).await {
-            return Err("account context changed".into());
-        }
-        return match serde_json::from_str(&response)
-            .map_err(|e| format!("Invalid peer reply: {e}"))?
-        {
-            RemoteResponse::HostInvokeResult { ok: true, .. } => Ok(()),
-            RemoteResponse::HostInvokeResult {
-                error: Some(message),
-                ..
-            }
-            | RemoteResponse::Error { message } => Err(message),
-            _ => Err("The peer did not acknowledge the remote turn".into()),
-        };
-    }
-    let envelope = serde_json::to_string(&RemoteCommand::ExecuteOnDevice {
-        session_id,
-        content,
-        agent_type,
-        workspace_path,
-    })
-    .map_err(|e| format!("serialize envelope: {e}"))?;
-
-    let _routing_effect = RelayRoute::Official.lifecycle().read().await;
-    let routing_owner = device_routing_owner_for_account(account_generation, &session.token)
-        .ok_or_else(|| "device routing not connected for current account".to_string())?;
-    if !device_routing_owner_is_current(&routing_owner).await {
-        return Err("device routing changed".to_string());
-    }
-    let before_send = session.peer_message_guard();
-    let (encrypted_data, nonce, uses_zstd) = session
-        .encrypt_for_peer_with_encoding(&relay_url, &target_device_id, &envelope)
-        .await
-        .map_err(|e| format!("{e}"))?;
-
-    let correlation_id = uuid::Uuid::new_v4().to_string();
-    send_device_message_with_routing_lease(
-        &routing_owner,
-        &target_device_id,
-        &correlation_id,
-        &encrypted_data,
-        &nonce,
-        || before_send(uses_zstd),
-    )
-    .await
-}
-
-/// List all online devices in the account via the relay HTTP API.
-/// Returns `(device_id, device_name)` pairs.
+/// One device of the account, from the account directory.
 #[derive(Serialize)]
 pub struct AccountDeviceInfo {
     pub device_id: String,
@@ -2977,36 +1330,14 @@ pub struct AccountDeviceInfo {
     pub device_client_version: Option<String>,
     pub device_client_protocol: Option<u32>,
     pub compatible: Option<bool>,
-    /// Directory presence merged with the live relay presence this host holds.
+    /// Directory presence.
     pub online: bool,
     pub last_seen_at: Option<i64>,
-    /// `live` (this host's relay socket sees it now), `directory` (the account
-    /// directory says online) or `offline`. Absent on hosts that predate the
-    /// merge; such a list carries directory presence only.
+    /// `directory` (the account directory says online) or `offline`. (1.x
+    /// hosts also sent `live` for their relay socket's presence.)
     pub presence: &'static str,
     /// The device this host runs on.
     pub is_local: bool,
-}
-
-/// Merges the live relay presence into the directory rows, so every client
-/// shows the same online state without reading two lists and joining them.
-fn merge_device_presence(
-    devices: &mut [AccountDeviceInfo],
-    live: &[OnlineDeviceInfo],
-    local_device_id: Option<&str>,
-) {
-    for device in devices.iter_mut() {
-        let live_now = live.iter().any(|entry| entry.device_id == device.device_id);
-        device.is_local = local_device_id == Some(device.device_id.as_str());
-        device.presence = if live_now {
-            "live"
-        } else if device.online {
-            "directory"
-        } else {
-            "offline"
-        };
-        device.online = live_now || device.online;
-    }
 }
 
 // @backend-command
@@ -3027,13 +1358,14 @@ pub async fn account_list_devices() -> Result<Vec<AccountDeviceInfo>, String> {
     if !account_context_is_current(generation) {
         return Err("account context changed".to_string());
     }
-    let live = device_presence_for_account(generation, &session.token).unwrap_or_default();
     let local_device_id = DeviceIdentity::from_current_machine()
         .ok()
         .map(|identity| identity.device_id);
-    let mut devices: Vec<AccountDeviceInfo> = devices
+    let devices: Vec<AccountDeviceInfo> = devices
         .into_iter()
         .map(|d| AccountDeviceInfo {
+            is_local: local_device_id.as_deref() == Some(d.device_id.as_str()),
+            presence: if d.online { "directory" } else { "offline" },
             device_id: d.device_id,
             device_name: d.device_name,
             device_kind: d.device_kind,
@@ -3046,11 +1378,8 @@ pub async fn account_list_devices() -> Result<Vec<AccountDeviceInfo>, String> {
             compatible: d.compatible,
             online: d.online,
             last_seen_at: d.last_seen_at,
-            presence: "offline",
-            is_local: false,
         })
         .collect();
-    merge_device_presence(&mut devices, &live, local_device_id.as_deref());
     Ok(devices)
 }
 
@@ -3076,20 +1405,6 @@ pub async fn account_update_device_alias(
         )
         .await
         .map_err(|error| error.to_string())
-}
-
-// @backend-command
-pub async fn account_relay_capabilities() -> Result<Vec<String>, String> {
-    let generation = account_context_generation();
-    let (_, relay_url) = read_account_context_for_generation(generation).await?;
-    let capabilities = AccountClient::new()
-        .relay_capabilities(&relay_url)
-        .await
-        .map_err(|error| error.to_string())?;
-    if !account_context_is_current(generation) {
-        return Err("account context changed".into());
-    }
-    Ok(capabilities)
 }
 
 /// Remove a device from the account.
@@ -3122,175 +1437,8 @@ pub async fn account_delete_device(targetDeviceId: String) -> Result<(), String>
     Ok(())
 }
 
-/// Send any RemoteCommand to a target device via HTTP RPC.
-/// The command is encrypted with the master_key, sent to the relay,
-/// which routes it to the target device's WS. The target executes it
-/// and the response is returned (decrypted).
-/// Returns the decrypted response JSON.
-const ACCOUNT_DEVICE_RPC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
-const ACCOUNT_DEVICE_RPC_MIN_TIMEOUT_MS: u64 = 1_000;
-/// Upper bound for a controller-requested deadline. Ordinary commands keep
-/// the 120 s default; Browser Control setup asks for 185 s because it waits
-/// on browser-owned consent (see `peer_host_invoke::invoke_timeout_for`).
-const ACCOUNT_DEVICE_RPC_MAX_TIMEOUT_MS: u64 = 190_000;
-
-fn account_device_rpc_timeout_ms(requested: Option<u64>) -> u64 {
-    requested
-        .unwrap_or(ACCOUNT_DEVICE_RPC_DEFAULT_TIMEOUT_MS)
-        .clamp(
-            ACCOUNT_DEVICE_RPC_MIN_TIMEOUT_MS,
-            ACCOUNT_DEVICE_RPC_MAX_TIMEOUT_MS,
-        )
-}
-
-// @backend-command
-pub async fn account_device_rpc(
-    target_device_id: String,
-    command_json: String,
-    timeout_ms: Option<u64>,
-) -> Result<String, String> {
-    let account_generation = account_context_generation();
-    let (session, relay_url) = read_account_context_for_generation(account_generation).await?;
-    let client = AccountClient::new();
-    let timeout_ms = account_device_rpc_timeout_ms(timeout_ms);
-    let timeout = std::time::Duration::from_millis(timeout_ms);
-    // The relay forwards this deadline to the target as `timeoutMs`; the local
-    // guard below only bounds the controller wait for the same budget.
-    let response = tokio::time::timeout(
-        timeout + std::time::Duration::from_secs(5),
-        client.device_rpc_with_timeout(
-            &relay_url,
-            &session,
-            &target_device_id,
-            &command_json,
-            timeout,
-        ),
-    )
-    .await
-    .map_err(|_| format!("device RPC timed out after {timeout_ms}ms"))?
-    .map_err(|e| format!("{e}"))?;
-    if !account_context_matches(account_generation, &session.token).await {
-        return Err("account context changed".to_string());
-    }
-    Ok(response)
-}
-
-/// Result of an auto-sync operation, returned to the frontend.
-fn resolve_requested_local_workspace_path(workspace_path: Option<&str>) -> Result<String, String> {
-    let requested = workspace_path
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| "workspace_path is required".to_string())?;
-    let path = std::path::PathBuf::from(requested);
-    if !path.is_absolute() {
-        return Err("workspace_path must be absolute".to_string());
-    }
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("resolve workspace_path: {error}"))?;
-    if !canonical.is_dir() {
-        return Err("workspace_path is not a directory".to_string());
-    }
-    canonical
-        .to_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| "workspace_path is not valid UTF-8".to_string())
-}
-
-/// Execute a RemoteCommand locally (for RPC requests from other devices).
-/// Returns the RemoteResponse serialized as JSON to be encrypted and sent back.
-async fn execute_local_remote_command(
-    cmd: &openbitfun_core::service::remote_connect::remote_server::RemoteCommand,
-    route: RelayRoute,
-    source_device_id: &str,
-) -> anyhow::Result<serde_json::Value> {
-    use openbitfun_core::service::remote_connect::remote_server::{RemoteCommand, RemoteResponse};
-
-    match cmd {
-        RemoteCommand::HostInvoke { command, args } => {
-            // Detached jobs are independent of Peer controller attachment.
-            // Route their distinct target command family directly to the
-            // durable dispatch runner before the generic webview bridge.
-            if crate::api::dispatch_host::is_target_command(command) {
-                let result = crate::api::dispatch_host::dispatch(command, args.clone()).await;
-                let (ok, value, error) = match result {
-                    Ok(value) => (true, Some(value), None),
-                    Err(error) => (false, None, Some(format!("{error:#}"))),
-                };
-                return serde_json::to_value(RemoteResponse::HostInvokeResult { ok, value, error })
-                    .map_err(|e| anyhow::anyhow!("serialize response: {e}"));
-            }
-
-            // Control-plane peer attach/detach/ping can run without webview bridge.
-            if command == "peer_control_attach" {
-                crate::api::peer_host_invoke::attach_route_controller(
-                    route,
-                    source_device_id.to_string(),
-                );
-                return serde_json::to_value(RemoteResponse::HostInvokeResult {
-                    ok: true,
-                    value: Some(serde_json::json!({ "attached": true })),
-                    error: None,
-                })
-                .map_err(|e| anyhow::anyhow!("serialize response: {e}"));
-            }
-            if command == "peer_control_detach" {
-                let request_ids =
-                    crate::api::peer_host_invoke::detach_route_controller(route, source_device_id);
-                crate::api::peer_host_invoke::fail_closed_permission_requests(
-                    request_ids,
-                    "Last Peer controller detached",
-                )
-                .await
-                .map_err(anyhow::Error::msg)?;
-                return serde_json::to_value(RemoteResponse::HostInvokeResult {
-                    ok: true,
-                    value: Some(serde_json::json!({ "detached": true })),
-                    error: None,
-                })
-                .map_err(|e| anyhow::anyhow!("serialize response: {e}"));
-            }
-            if command == "peer_mode_ping" {
-                let value = crate::api::peer_host_invoke::peer_mode_ping_for_caller(
-                    route,
-                    source_device_id,
-                );
-                return serde_json::to_value(RemoteResponse::HostInvokeResult {
-                    ok: true,
-                    value: Some(value),
-                    error: None,
-                })
-                .map_err(|e| anyhow::anyhow!("serialize response: {e}"));
-            }
-
-            let result = crate::api::peer_host_invoke::dispatch(command, args.clone()).await;
-            serde_json::to_value(RemoteResponse::HostInvokeResult {
-                ok: result.ok,
-                value: result.value,
-                error: result.error,
-            })
-            .map_err(|e| anyhow::anyhow!("serialize response: {e}"))
-        }
-        RemoteCommand::DeviceEvent { event, payload } => {
-            // Peer→controller events are handled on the controller; on peer this is a no-op ack.
-            let _ = (event, payload);
-            serde_json::to_value(RemoteResponse::DeviceEventAccepted)
-                .map_err(|e| anyhow::anyhow!("serialize response: {e}"))
-        }
-        other => {
-            // RemoteServer uses the global dispatcher internally — no need for
-            // manual coordinator access. The dummy shared secret is irrelevant
-            // because we call dispatch() directly (encryption is handled at the
-            // RPC envelope level, not here).
-            let server = openbitfun_core::service::remote_connect::RemoteServer::new([0u8; 32]);
-            let response = server.dispatch(other).await;
-            serde_json::to_value(&response).map_err(|e| anyhow::anyhow!("serialize response: {e}"))
-        }
-    }
-}
-
 #[cfg(test)]
-mod sync_state_tests {
+mod account_context_tests {
     use super::*;
 
     /// Serializes these tests against the process-global account context.
@@ -3301,225 +1449,10 @@ mod sync_state_tests {
         tokio::sync::Mutex::const_new(());
 
     #[test]
-    fn account_control_clients_deduplicate_expire_and_fence_disconnects() {
-        use openbitfun_services_integrations::remote_connect::{
-            relay_client::RELAY_INBOUND_IDLE_TIMEOUT, RemoteControlClient,
-        };
-        let _test_guard = ACCOUNT_CONTEXT_TEST_LOCK.blocking_lock();
-        let owner = new_device_routing_owner(1, "clients", 1);
-        install_device_routing_owner(owner.clone());
-        let now = std::time::Instant::now();
-        let later = now + std::time::Duration::from_secs(10);
-        let phone = RemoteControlClient {
-            id: "phone".into(),
-            name: "Safari · iOS".into(),
-        };
-        let browser = RemoteControlClient {
-            id: "browser".into(),
-            name: "Chrome · Windows".into(),
-        };
-        record_control_ping_if_owner(&owner, 0, now, Some(&phone));
-        record_control_ping_if_owner(&owner, 0, later, Some(&browser));
-        record_control_ping_if_owner(&owner, 0, now, Some(&browser));
-        assert_eq!(
-            account_control_clients(&owner, later),
-            (vec![browser.clone(), phone], false)
-        );
-        assert_eq!(
-            account_control_clients(&owner, now + RELAY_INBOUND_IDLE_TIMEOUT),
-            (vec![browser], false)
-        );
-        record_control_ping_if_owner(&owner, 0, later, None);
-        assert!(account_control_clients(&owner, later).1);
-        clear_control_ping_if_owner(&owner);
-        record_control_ping_if_owner(&owner, 0, later, None);
-        assert_eq!(account_control_clients(&owner, later), (vec![], false));
-        install_device_routing_owner(new_device_routing_owner(2, "replacement", 2));
-        assert_eq!(account_control_clients(&owner, later), (vec![], false));
-        clear_device_routing_state();
-    }
-
-    #[test]
-    fn account_control_ping_requires_a_successful_control_response() {
-        use openbitfun_core::service::remote_connect::remote_server::RemoteCommand;
-        assert!(is_successful_control_ping(
-            &RemoteCommand::Ping { client: None },
-            &serde_json::json!({"resp": "pong"})
-        ));
-        assert!(!is_successful_control_ping(
-            &RemoteCommand::Ping { client: None },
-            &serde_json::json!({"resp": "error"})
-        ));
-        let peer_ping = RemoteCommand::HostInvoke {
-            command: "peer_mode_ping".into(),
-            args: serde_json::json!({}),
-        };
-        assert!(!is_successful_control_ping(
-            &peer_ping,
-            &serde_json::json!({"resp": "host_invoke_result", "ok": true})
-        ));
-        assert!(!is_successful_control_ping(
-            &peer_ping,
-            &serde_json::json!({"resp": "host_invoke_result", "ok": false})
-        ));
-        let directory = RemoteCommand::HostInvoke {
-            command: "account_list_devices".into(),
-            args: serde_json::json!({}),
-        };
-        assert!(!is_successful_control_ping(
-            &directory,
-            &serde_json::json!({"resp": "host_invoke_result", "ok": true})
-        ));
-    }
-
-    #[test]
-    fn account_control_ping_expires_disconnects_and_fences_replaced_routes() {
-        use openbitfun_services_integrations::remote_connect::relay_client::RELAY_INBOUND_IDLE_TIMEOUT;
-        let _test_guard = ACCOUNT_CONTEXT_TEST_LOCK.blocking_lock();
-        let first = new_device_routing_owner(1, "first", 1);
-        let second = new_device_routing_owner(2, "second", 2);
-        let now = std::time::Instant::now();
-        install_device_routing_owner(first.clone());
-        assert!(!has_recent_control_ping(&first, now));
-        record_control_ping_if_owner(&first, 0, now, None);
-        assert!(has_recent_control_ping(&first, now));
-        assert!(!has_recent_control_ping(
-            &first,
-            now + RELAY_INBOUND_IDLE_TIMEOUT
-        ));
-        clear_control_ping_if_owner(&first);
-        assert!(!has_recent_control_ping(&first, now));
-        record_control_ping_if_owner(&first, 0, now, None);
-        assert!(
-            !has_recent_control_ping(&first, now),
-            "a queued pre-disconnect ping must not revive connectivity"
-        );
-        let reconnected = control_ping_generation(&first).unwrap();
-        record_control_ping_if_owner(&first, reconnected, now, None);
-        assert!(has_recent_control_ping(&first, now));
-        install_device_routing_owner(second.clone());
-        record_control_ping_if_owner(&first, 0, now, None);
-        assert!(!has_recent_control_ping(&first, now));
-        assert!(!has_recent_control_ping(&second, now));
-        record_control_ping_if_owner(&second, 0, now, None);
-        clear_control_ping_if_owner(&first);
-        assert!(has_recent_control_ping(&second, now));
-        let newer = now + std::time::Duration::from_secs(1);
-        record_control_ping_if_owner(&second, 0, newer, None);
-        record_control_ping_if_owner(&second, 0, now, None);
-        assert!(has_recent_control_ping(
-            &second,
-            now + RELAY_INBOUND_IDLE_TIMEOUT
-        ));
-        assert!(!has_recent_control_ping(
-            &second,
-            newer + RELAY_INBOUND_IDLE_TIMEOUT
-        ));
-        clear_device_routing_state();
-        assert!(!has_recent_control_ping(&second, now));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn account_control_status_uses_its_own_route_without_a_room_invitation() {
-        use openbitfun_services_integrations::remote_connect::relay_client::RELAY_INBOUND_IDLE_TIMEOUT;
-        let _test_guard = ACCOUNT_CONTEXT_TEST_LOCK.lock().await;
-        let relay_url = "https://relay.example/base/";
-        *get_account_context().write().await = Some(AccountContextState {
-            session: AccountSession::new("control-token".into(), "control-user".into(), [7; 32]),
-            relay_url: relay_url.into(),
-        });
-        let owner = new_device_routing_owner(account_context_generation(), "control-token", 1);
-        install_device_routing_owner(owner.clone());
-        let now = std::time::Instant::now();
-        assert_eq!(
-            account_control_relay_url(now).await,
-            None,
-            "login alone is not a connection"
-        );
-
-        record_control_ping_if_owner(&owner, 0, now, None);
-        assert_eq!(
-            account_control_relay_url(now).await.as_deref(),
-            Some(relay_url)
-        );
-        assert_eq!(
-            account_control_relay_url(now + RELAY_INBOUND_IDLE_TIMEOUT).await,
-            None
-        );
-        clear_control_ping_if_owner(&owner);
-        assert_eq!(account_control_relay_url(now).await, None);
-
-        let reconnect_generation = control_ping_generation(&owner).unwrap();
-        record_control_ping_if_owner(&owner, reconnect_generation, now, None);
-        assert_eq!(
-            account_control_relay_url(now).await.as_deref(),
-            Some(relay_url)
-        );
-        let transition = AccountContextTransitionPermit::begin();
-        assert_eq!(account_control_relay_url(now).await, None);
-        drop(transition);
-        assert_eq!(
-            account_control_relay_url(now).await,
-            None,
-            "a previous account route cannot revive after a transition"
-        );
-        clear_device_routing_state();
-        *get_account_context().write().await = None;
-    }
-
-    #[test]
-    fn relay_status_has_one_account_device_contract_for_both_endpoints() {
-        for (method, endpoint) in [
-            (
-                serde_json::json!("openbitfun_server"),
-                "https://remote.openbitfun.com/v/1.0.2",
-            ),
-            (
-                serde_json::json!({"lan":{"ip":"192.168.1.2"}}),
-                "http://192.168.1.2:9700",
-            ),
-        ] {
-            let payload = serde_json::json!({
-                "relay_connected": true, "relay_url": endpoint, "active_method": method,
-                "clients": [{"id":"phone","name":"Safari"}],
-                "bot_connected": null, "bot_verbose_mode": false,
-            });
-            let status: RemoteConnectStatusResponse =
-                serde_json::from_value(payload.clone()).unwrap();
-            assert_eq!(serde_json::to_value(status).unwrap(), payload);
-        }
-    }
-
-    #[test]
     fn relay_url_normalization_removes_all_trailing_slashes() {
         assert_eq!(
             normalize_relay_url("https://relay.example.com///").unwrap(),
             "https://relay.example.com"
-        );
-    }
-
-    #[test]
-    fn device_rpc_timeout_is_bounded_for_peer_requests() {
-        assert_eq!(
-            account_device_rpc_timeout_ms(None),
-            ACCOUNT_DEVICE_RPC_DEFAULT_TIMEOUT_MS
-        );
-        assert_eq!(account_device_rpc_timeout_ms(Some(10_000)), 10_000);
-        assert_eq!(
-            account_device_rpc_timeout_ms(Some(100)),
-            ACCOUNT_DEVICE_RPC_MIN_TIMEOUT_MS
-        );
-        assert_eq!(
-            account_device_rpc_timeout_ms(Some(u64::MAX)),
-            ACCOUNT_DEVICE_RPC_MAX_TIMEOUT_MS
-        );
-        // Browser Control setup's Peer budget must survive the clamp and
-        // still exceed the host invoke limit for those commands.
-        assert_eq!(account_device_rpc_timeout_ms(Some(185_000)), 185_000);
-        assert!(
-            account_device_rpc_timeout_ms(Some(185_000))
-                > crate::api::peer_host_invoke::BROWSER_CONTROL_SETUP_INVOKE_TIMEOUT.as_millis()
-                    as u64
         );
     }
 
@@ -3590,314 +1523,37 @@ mod sync_state_tests {
     }
 
     #[test]
-    fn stale_routing_owner_cannot_clear_or_update_replacement() {
-        let _test_guard = ACCOUNT_CONTEXT_TEST_LOCK.blocking_lock();
-        clear_device_routing_state();
-        let owner_a = DeviceRoutingOwner {
-            route: RelayRoute::Official,
-            account_generation: 10,
-            account_token: "token-a".to_string(),
-            connection_id: 1,
-            service_connection_id: 101,
-        };
-        let owner_b = DeviceRoutingOwner {
-            route: RelayRoute::Official,
-            account_generation: 12,
-            account_token: "token-b".to_string(),
-            connection_id: 2,
-            service_connection_id: 102,
-        };
-        install_device_routing_owner(owner_a.clone());
-        assert!(replace_device_presence_if_owner(
-            &owner_a,
-            vec![OnlineDeviceInfo {
-                device_id: "a-device".to_string(),
-                device_name: "A".to_string(),
-                ..Default::default()
-            }],
-        ));
-
-        install_device_routing_owner(owner_b.clone());
-        assert!(!replace_device_presence_if_owner(
-            &owner_a,
-            vec![OnlineDeviceInfo {
-                device_id: "late-a-device".to_string(),
-                device_name: "Late A".to_string(),
-                ..Default::default()
-            }],
-        ));
-        assert!(!clear_device_routing_if_owner(&owner_a));
-        assert_eq!(
-            device_presence_for_account(owner_b.account_generation, &owner_b.account_token),
-            Some(Vec::new())
-        );
-        assert!(clear_device_routing_if_owner(&owner_b));
-    }
-
-    #[test]
-    fn routing_presence_is_bound_to_account_generation_and_token() {
-        let _test_guard = ACCOUNT_CONTEXT_TEST_LOCK.blocking_lock();
-        clear_device_routing_state();
-        let owner = DeviceRoutingOwner {
-            route: RelayRoute::Official,
-            account_generation: 20,
-            account_token: "token-current".to_string(),
-            connection_id: 3,
-            service_connection_id: 103,
-        };
-        install_device_routing_owner(owner.clone());
-        assert!(replace_device_presence_if_owner(
-            &owner,
-            vec![OnlineDeviceInfo {
-                device_id: "current-device".to_string(),
-                device_name: "Current".to_string(),
-                device_alias: Some("My laptop".into()),
-                device_model: Some("Mac14,7".into()),
-                device_os: Some("macos".into()),
-                device_os_version: Some("15".into()),
-                ..Default::default()
-            }],
-        ));
-
-        let presence = device_presence_for_account(20, "token-current").unwrap();
-        let payload = serde_json::json!({ "devices": presence });
-        assert_eq!(payload["devices"][0]["device_alias"], "My laptop");
-        assert_eq!(payload["devices"][0]["device_name"], "Current");
-        assert_eq!(payload["devices"][0]["device_model"], "Mac14,7");
-        assert_eq!(payload["devices"][0]["device_os"], "macos");
-        assert_eq!(payload["devices"][0]["device_os_version"], "15");
-        assert!(device_presence_for_account(21, "token-current").is_none());
-        assert!(device_presence_for_account(20, "token-replaced").is_none());
-        clear_device_routing_state();
-    }
-}
-
-#[cfg(test)]
-mod peer_event_tests {
-    use super::should_fanout_peer_ui_event;
-
-    #[test]
-    fn permission_events_are_fanned_out_to_peer_controllers() {
-        assert!(should_fanout_peer_ui_event("permission://event"));
-        assert!(!should_fanout_peer_ui_event("permission://internal"));
-    }
-
-    #[test]
-    fn model_catalog_updates_are_fanned_out_to_peer_controllers() {
-        assert!(should_fanout_peer_ui_event("ai://model-catalog-updated"));
-    }
-
-    #[test]
-    fn workspace_catalog_hints_are_fanned_out_to_peer_controllers() {
-        assert!(should_fanout_peer_ui_event("workspace-catalog-changed"));
-        assert!(!should_fanout_peer_ui_event("workspace-identity-changed"));
-    }
-
-    #[test]
-    fn cron_job_change_hints_are_fanned_out_to_peer_controllers() {
-        assert!(should_fanout_peer_ui_event("cron://jobs-changed"));
-        assert!(!should_fanout_peer_ui_event("cron://internal"));
-    }
-}
-
-static SESSION_SUBSCRIPTIONS: OnceLock<
-    std::sync::Mutex<
-        std::collections::HashMap<
-            String,
-            openbitfun_core::service::remote_connect::host_stream_subscriber::HostStreamSubscriber,
-        >,
-    >,
-> = OnceLock::new();
-
-fn clear_session_subscriptions() {
-    if let Some(subscriptions) = SESSION_SUBSCRIPTIONS.get() {
-        if let Ok(mut subscriptions) = subscriptions.lock() {
-            subscriptions.clear();
-        }
-    }
-}
-
-#[derive(Deserialize)]
-pub struct SubscribeSessionRequest {
-    target_device_id: String,
-    session_id: String,
-}
-#[derive(Deserialize)]
-pub struct UnsubscribeSessionRequest {
-    subscription_id: String,
-}
-
-// @backend-command
-pub async fn account_load_older_session(request: UnsubscribeSessionRequest) -> Result<(), String> {
-    let load = {
-        let subscriptions = SESSION_SUBSCRIPTIONS
-            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-            .lock()
-            .map_err(|_| "session subscription owner unavailable")?;
-        subscriptions
-            .get(&request.subscription_id)
-            .ok_or("session subscription is no longer active")?
-            .load_older()
-    };
-    load.await.map_err(|error| error.to_string())
-}
-
-// @backend-command
-pub async fn account_subscribe_session(request: SubscribeSessionRequest) -> Result<String, String> {
-    let generation = account_context_generation();
-    let (session, relay) = read_account_context_for_generation(generation).await?;
-    // Events can arrive before this command returns. Give every attempt an
-    // identity so a late error/page from a retired reader cannot poison its successor.
-    let id = uuid::Uuid::new_v4().to_string();
-    let event_subscription_id = id.clone();
-    let error_subscription_id = id.clone();
-    let source = request.target_device_id.clone();
-    let error_source = source.clone();
-    let error_session_id = request.session_id.clone();
-    let subscriber =
-        openbitfun_core::service::remote_connect::host_stream_subscriber::HostStreamSubscriber::start(
-            session,
-            relay,
-            request.target_device_id,
-            request.session_id,
-            Arc::new(move |event| {
-                if !account_context_is_current(generation) {
-                    anyhow::bail!("account subscription retired");
-                }
-                let mut payload = tag_peer_event_source(event.payload, &source);
-                payload["subscriptionId"] = event_subscription_id.clone().into();
-                emit_account_event(&event.event, payload);
-                Ok(())
-            }),
-            Arc::new(move |error| {
-                if account_context_is_current(generation) {
-                    emit_account_event(
-                        "account://session-sync-error",
-                        serde_json::json!({"message":error,"sessionId":error_session_id,"targetDeviceId":error_source,
-                            "subscriptionId":error_subscription_id,"retrying":true}),
-                    );
-                }
-            }),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut subscriptions = SESSION_SUBSCRIPTIONS
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-        .lock()
-        .map_err(|_| "session subscription owner unavailable")?;
-    if !account_context_is_current(generation) {
-        return Err("account context changed".into());
-    }
-    subscriptions.insert(id.clone(), subscriber);
-    Ok(id)
-}
-
-// @backend-command
-pub async fn account_unsubscribe_session(request: UnsubscribeSessionRequest) -> Result<(), String> {
-    if let Some(subscriptions) = SESSION_SUBSCRIPTIONS.get() {
-        subscriptions
-            .lock()
-            .map_err(|_| "session subscription owner unavailable")?
-            .remove(&request.subscription_id);
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod relay_account_login_tests {
-    use super::relay_requires_account_login;
-
-    #[test]
-    fn version_parameter_does_not_change_the_endpoint_identity() {
-        let official = "https://remote.openbitfun.com/relay?v=1.0.9";
-        for current in [
-            "https://remote.openbitfun.com/relay",
-            "https://remote.openbitfun.com/relay/",
-            "https://remote.openbitfun.com/relay?v=1.0.8",
-            official,
-        ] {
-            assert!(
-                !relay_requires_account_login(Some(current), official),
-                "{current}"
+    fn retired_relay_methods_are_refused_and_never_listed() {
+        for method in ["openbitfun_server", "lan"] {
+            assert_eq!(
+                parse_connection_method(method).unwrap_err(),
+                RELAY_METHOD_RETIRED
             );
         }
+        let listed = connection_method_infos(vec![
+            ConnectionMethod::Lan { ip: None },
+            ConnectionMethod::OpenBitFunServer,
+            ConnectionMethod::BotTelegram,
+        ]);
+        let ids: Vec<_> = listed.iter().map(|info| info.id.as_str()).collect();
+        assert_eq!(ids, vec!["bot_telegram"]);
     }
 
-    #[test]
-    fn missing_or_different_endpoint_requires_login() {
-        let official = "https://remote.openbitfun.com/relay?v=1.0.9";
-        assert!(relay_requires_account_login(None, official));
-        // The legacy alias migrates to the current endpoint through one login.
-        assert!(relay_requires_account_login(
-            Some("https://remote.openbitfun.com/v/1.0.2"),
-            official
-        ));
-        assert!(relay_requires_account_login(
-            Some("http://192.168.1.2:9700"),
-            official
-        ));
-    }
-}
-
-#[cfg(test)]
-mod device_presence_merge_tests {
-    use super::{merge_device_presence, AccountDeviceInfo, OnlineDeviceInfo};
-
-    fn device(id: &str, online: bool) -> AccountDeviceInfo {
-        AccountDeviceInfo {
-            device_id: id.to_string(),
-            device_name: id.to_string(),
-            device_kind: None,
-            device_alias: None,
-            device_model: None,
-            device_os: None,
-            device_os_version: None,
-            device_client_version: None,
-            device_client_protocol: None,
-            compatible: None,
-            online,
-            last_seen_at: None,
-            presence: "offline",
-            is_local: false,
-        }
-    }
-
-    #[test]
-    fn live_presence_marks_directory_offline_rows_online() {
-        let mut devices = vec![
-            device("live-only", false),
-            device("directory", true),
-            device("gone", false),
-            device("me", false),
-        ];
-        let live = vec![OnlineDeviceInfo {
-            device_id: "live-only".to_string(),
-            device_name: "Live".to_string(),
-            ..Default::default()
-        }];
-        merge_device_presence(&mut devices, &live, Some("me"));
-        let states: Vec<_> = devices
-            .iter()
-            .map(|device| {
-                (
-                    device.device_id.as_str(),
-                    device.online,
-                    device.presence,
-                    device.is_local,
-                )
-            })
-            .collect();
+    #[tokio::test(flavor = "current_thread")]
+    async fn stopping_the_retired_relay_has_nothing_to_stop() {
+        assert!(remote_connect_stop(None).await.is_ok());
+        assert!(remote_connect_stop(Some(StopRemoteConnectRequest {
+            method: "openbitfun_server".into(),
+        }))
+        .await
+        .is_ok());
         assert_eq!(
-            states,
-            vec![
-                ("live-only", true, "live", false),
-                ("directory", true, "directory", false),
-                ("gone", false, "offline", false),
-                ("me", false, "offline", true),
-            ]
+            remote_connect_stop(Some(StopRemoteConnectRequest {
+                method: "lan".into(),
+            }))
+            .await
+            .unwrap_err(),
+            RELAY_METHOD_RETIRED
         );
-        let value = serde_json::to_value(&devices[0]).unwrap();
-        assert_eq!(value["presence"], "live");
-        assert_eq!(value["is_local"], false);
     }
 }

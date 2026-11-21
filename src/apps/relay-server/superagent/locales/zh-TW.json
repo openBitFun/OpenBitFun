@@ -1,0 +1,6 @@
+{
+  "composer.placeholder": "讓 OpenBitFun 在你的裝置上做點事",
+  "composer.suggestion.1": "在我所有的裝置上執行測試，告訴我哪些失敗了",
+  "composer.suggestion.2": "在 Linux 上建置，然後在 macOS 和 Windows 上測試",
+  "composer.suggestion.3": "我的裝置現在在做什麼？"
+}

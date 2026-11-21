@@ -1,8 +1,27 @@
 # Unified client architecture: one UI, one protocol, display-only frontend
 
 Status: adopted (2026-11). The native NSH app is the desktop client; the Tauri desktop shell and the React
-desktop UI were retired (wave 4 sunset, below). This document is the owner for the target shape; per-phase
-status lives in the phase tables.
+desktop UI were retired (Tauri sunset, below). This document owns the target shape; the Status table at the end
+lists what remains.
+
+## Product model
+
+OpenBitFun is a distributed Agent runtime with one display-and-control surface.
+
+| Node | Runs | Where |
+|---|---|---|
+| Runtime node | An Agent runtime (backend) and the UI | The native desktop (`src/apps/desktop-nsh` over `src/apps/desktop`) and the CLI host (`src/apps/cli`) |
+| Frontend-only client | The UI only | A browser (`https://super.openbitfun.com/`), the NSH phone app (`src/apps/mobile-nsh`), IM bots |
+| Cloud node | The account's superagent: a model loop and management tools, no Agent runtime | `openbitfun-superagent` (`src/apps/relay-server/superagent`), shown as "OpenBitFun" |
+
+- Any frontend displays and operates any runtime of the account through one fleet entry (below). Which device
+  executes a session is a backend fact shown as a label ("on <device>", a device badge), never a mode the user
+  switches into.
+- Runtime nodes are symmetric peers: any desktop or CLI host can be the entry; there is no home device.
+- The cloud superagent is the main entry of the UI (the OpenBitFun conversation). It is on by default, and full
+  access is the default: jobs it dispatches auto-approve, and per-device switches fence a device off or turn
+  auto-approval off.
+- The OpenBitFun server is reachable only through its domain over HTTPS.
 
 ## Goals
 
@@ -25,7 +44,8 @@ The backend exposes one service, `BackendService` (`src/apps/desktop/src/backend
 The wire itself (event ring, JSON-RPC framing, scopes, listeners, the Link handshake, the `obp-e2e-v1` channel
 and the controller client) is one crate, `openbitfun-obp` (`src/crates/adapters/obp`, adapters layer: protocol
 and transport projection with no product rules): feature `server` for hosts (the desktop backend, the CLI host),
-feature `client` for controllers (the desktop's Peer Device Mode, Detached Dispatch and IM bots, the phone app).
+feature `client` for controllers (the desktop's Peer Device Mode, Detached Dispatch and IM bots, the phone app),
+feature `fleet` for the fleet layer every runtime host runs (below).
 A host plugs in its dispatcher and event source through `server::ObpBackend` (plus its kind, its same-account
 host verbs and their capabilities); the desktop's `backend_protocol::ws` and the CLI's `obp_host` are thin
 adapters over it.
@@ -45,9 +65,9 @@ Transports carry this unchanged:
 |---|---|---|
 | In-process | Native desktop host (`src/apps/desktop-nsh`) | NSH native module `openbitfun/native`: `Backend.invoke`, `Backend.nextEvents`, `Backend.ready` |
 | WebSocket, loopback | Browser on the same machine | JSON-RPC 2.0; `hello` carries protocol version, capabilities, registry digest, `last_seq` |
-| Relay tunnel | Any client, anywhere | The relay forwards opaque frames between same-account devices; end-to-end encryption uses the existing device X25519 keys |
 | Browser gateway (`wss://<domain>/obp/<deviceId>`) | A browser anywhere (the web controller) | A byte pipe into the account's Link network; the browser and the device run the `obp-e2e-v1` end-to-end channel inside it (X25519 device keys, AES-256-GCM), so the gateway sees ciphertext |
-| Device mesh (OpenBitFun Link, an EasyTier fork in-process) | Another desktop of the same account, anywhere (same network included) | TLS WebSocket to the device's mesh virtual IP; P2P (LAN, IPv4, IPv6) with relay fallback through another account device or the server; `account-device` handshake with the device X25519 keys, or a `paired-client` QR credential for a phone browser (wave 4, below). The only multi-device transport of the new version (wave 6) |
+| Cloud node endpoint (`wss://super.openbitfun.com/agent/obp`) | Runtime hosts reaching the account's cloud superagent | The `obp-e2e-v1` channel inside a WebSocket to the server's loopback service; the server front end and nginx see ciphertext |
+| Device mesh (OpenBitFun Link, an EasyTier fork in-process) | Another runtime host of the same account, anywhere (same network included) | TLS WebSocket to the device's mesh virtual IP; P2P (LAN, IPv4, IPv6) with relay fallback through another account device or the server; `account-device` handshake with the device X25519 keys, or a `paired-client` QR credential for a phone browser (wave 4, below). The only multi-device transport of the new version (wave 6) |
 
 The backend serves the UI bundle (NSH web target) on its listener, so a browser or phone opening the backend
 URL gets the same UI that then connects to `/obp`.
@@ -55,13 +75,14 @@ URL gets the same UI that then connects to `/obp`.
 ### Scopes and controller-local commands
 
 Each connection is bound to a scope: `owner` (in-process, or loopback with a per-launch token and Origin check),
-`account-device` (same-account device key handshake), `paired-client` (revocable QR credential) or `observer`
-(read-only). The Product Operation Registry (`remote_surface/table.rs`) decides per command: `Proxied` runs for any
+`account-device` (same-account device key handshake), `cloud-agent` (the same handshake from the account's cloud
+node: the `account-device` allowlist plus the model relay, under the device's superagent switches),
+`paired-client` (revocable QR credential) or `observer` (read-only). The Product Operation Registry (`remote_surface/table.rs`) decides per command: `Proxied` runs for any
 authorized scope; `ControllerLocal` / `OperatorOnly` run only for `owner`. The registry gains an event stance so
 account, window and updater events never leave the owner scope.
 
-A client that has a local backend (a desktop controlling another desktop) routes `ControllerLocal` commands to its
-own backend and everything else to the selected device's backend. A phone or browser has no local backend, so
+A client that has a local backend (the native desktop) routes `ControllerLocal` commands to its own backend and
+everything else through the fleet to the device that owns it (`fleet_call`, below). A phone or browser has no local backend, so
 controller-local features are hidden by capability, not faked.
 
 ### Backpressure
@@ -110,17 +131,25 @@ overrides the preferred loopback port (47610, ephemeral when taken).
   `backendResync.ts` re-reads sessions, the open transcript, permission prompts and the question mailbox on
   `events-dropped`.
 
-Remaining after phase 3 (wave 4 delivered the relay tunnel as the device mesh and Peer Device Mode on OBP, below;
-wave 6 retired the LAN listener and the embedded LAN relay): retiring `mobile-web` (still served by the cloud relay
-for older hosts and clients), a native NSH mobile client that pins the QR fingerprint (browsers show the
-self-signed warning; the user compares the fingerprint).
-
 ### Device mesh: OBP between account devices over OpenBitFun Link (wave 4, Link core wave 7)
 
 The devices of one account connect through **OpenBitFun Link**, an EasyTier v2.7.1 fork
 (`third_party/easytier`, LGPL-3.0, changes in its `OPENBITFUN-PATCH.md`) that every end embeds, instead of
-the old relay transport. The relay server stays the account's device directory (names, X25519 public keys);
-it carries no Link traffic. Wave 4 ran the official EasyTier binaries as a sidecar; wave 7 replaced them.
+the old relay transport. The account's device directory (names, X25519 public keys, the cloud node's row) is
+OpenBitFun 2.0's own directory, `https://super.openbitfun.com/directory` (a relay-service instance with its own
+database, `openbitfun-directory`, `deploy/super`); it carries no Link traffic. Wave 4 ran the official EasyTier
+binaries as a sidecar; wave 7 replaced them.
+
+- **One service host for 2.0.** Every 2.0 component (desktop, CLI, phone, web UI, gateway, issuer, cloud agent)
+  uses only `super.openbitfun.com`: `/` the web UI, `/b/` and `/cas/` its device bundles, `/obp/` the browser
+  gateway, `/mesh/et/` the Link relay node, `/mesh/v1/*` the issuer, `/agent/` the cloud agent and `/directory/`
+  the account directory (`DEFAULT_ACCOUNT_DIRECTORY_URL`, override `OPENBITFUN_ACCOUNT_DIRECTORY_URL`). Hosts sign
+  in to the directory from the account identity alone (`remote_connect::directory_session`) and keep that
+  session in the profile's credential vault (under `OPENBITFUN_USER_ROOT` for a profile with its own user root),
+  reusing its token across starts until it is 15 days old and revoking a token they replace; the first session of
+  an account also asks the cloud agent to create the account's node (`/agent/api/v1/ensure`, as does a browser's
+  first sign-in at the gateway). `remote.openbitfun.com` (the 1.0 relay and its pages) serves released 1.0 clients
+  only; no 2.0 component uses it, and 2.0 is compatible with 1.0 for session records and configuration only.
 
 - **In-process node** (`openbitfun-link`, services layer). The desktop backend and the CLI host (wave 9) run
   the fork on its own Tokio runtime: no TUN, no root, no child process, no SOCKS5 or other proxy port. DHCP
@@ -129,7 +158,7 @@ it carries no Link traffic. Wave 4 ran the official EasyTier binaries as a sidec
   fallback. `Link` (`session.rs`) follows the account: joins on sign-in, leaves on sign-out and quit, restarts
   a stopped node with backoff. Hosts get tokio `AsyncRead + AsyncWrite` streams: `Link::accept()` (inbound
   streams on the OBP port) and `connect(device_id, port)` (outbound, through the fork's userspace stack).
-- **Credentials and join tokens.** `POST https://remote.openbitfun.com/mesh/v1/credentials`
+- **Credentials and join tokens.** `POST https://super.openbitfun.com/mesh/v1/credentials`
   (`relay-service::mesh_issuer`, deployed as `openbitfun-mesh-issuer`, `deploy/easytier`) verifies the
   OpenBitFun identity access token and returns `{networkName: "obf-" + HMAC(key, accountId), networkSecret,
   peers, easytierVersion, joinToken, joinTokenExpiresAt}`: every device of the account gets the same network,
@@ -159,7 +188,7 @@ it carries no Link traffic. Wave 4 ran the official EasyTier binaries as a sidec
 - **Controls.** `OPENBITFUN_MESH=off` disables it; `OPENBITFUN_MESH_API_URL` points at another issuer;
   `OPENBITFUN_MESH_DISABLE_P2P=1` forces relaying.
 - **Browsers: the web controller and the gateway (wave 8).** Browsers do not run Link (no WASM, no
-  `easytier-js`). `https://<domain>/app/` serves the NSH web bundle with `#nsh-params` `{controller: {api,
+  `easytier-js`). `https://super.openbitfun.com/` serves the NSH web bundle with `#nsh-params` `{controller: {api,
   gateway}}` (`pnpm run web-controller:build`); the page installs the web `ControllerPort`
   (`src/nsh-ui/src/controller/`) and shows the controller shell: email, code, the account's devices, connect.
   The browser gateway (`openbitfun-link-gateway`, `src/apps/relay-server/link-gateway`, on loopback behind
@@ -178,29 +207,153 @@ it carries no Link traffic. Wave 4 ran the official EasyTier binaries as a sidec
   without the channel hangs up on the hello and the page asks to update it; a device off Link answers
   `4404` from the gateway.
 
-### Peer Device Mode, dispatch, bots and phones over the mesh (wave 4, implemented)
+### Fleet: every runtime of the account in one surface
 
-New-version devices no longer use the old relay transport (`account_device_rpc`, relay `rpc-call`,
-`machine-event`, `HostStream`) between each other. Older devices keep it, negotiated per device; hosts keep
-serving it for older peers and clients.
+Every desktop and CLI host runs the same fleet layer (`openbitfun-obp` feature `fleet`, `src/crates/adapters/obp/src/fleet`;
+contract and pure policy in `openbitfun_product_domains::fleet`). A frontend connects to one runtime host, the
+**entry**, and through it sees and operates every runtime of the account. All runtime hosts are equal peers:
+any of them can be the entry, there is no home device, and the user never picks one.
 
-- **Peer Device Mode** ([peer-device-mode.md](peer-device-mode.md#obp-over-the-device-mesh-new-hosts)). A
-  device in the account mesh whose listener advertises `obp_v1` + `mesh_v1` is driven over OBP: the
-  controller's backend holds the authenticated link (`mesh/peer_link.rs`; `peer_link_connect`, `peer_link_call`,
-  `peer_link_events` long poll with the peer's own `seq` and resume, `peer_link_disconnect`, all
-  `ControllerLocal`), and the NSH bridge makes it the surface's data backend: registry `ControllerLocal`
-  commands and owner-only events stay local, everything else is the peer's, unchanged and live. Chosen over a
-  UI-side socket because the device handshake key stays in the backend; the extra hop is in-process. The hello
-  adds `hostCapabilities` (the registry's peer-host list) for feature gates and `hostKind` (`desktop`, `cli`;
-  additive, display only). A device on the mesh is never sent to the relay, also while the mesh cannot reach
-  it (reported instead); devices never seen on the mesh, and hosts that run no mesh (older Tauri desktops,
-  CLI builds before wave 9), keep the relay path. The banner and Devices say which path is in use.
+- **Placement.** Desktop: `src/apps/desktop/src/fleet` (`DesktopFleetBackend`, links through
+  `mesh::peer_link::global`). CLI: `src/apps/cli/src/fleet_host.rs` (dials over its own Link node with
+  `LinkPeerConnector`). Both start the fleet with the mesh listener, before the first hello, so `hello` and
+  `/obp/mesh/info` advertise `fleet_v1`; without a running fleet every fleet verb answers `fleet_unavailable: ...`.
+  The shared glue is `fleet::host::FleetHost`; hosts provide a `FleetBackend` (local digest and dispatcher) and a
+  `FleetPeerTransport`.
+- **Owner partitions.** The index (`fleet/index.rs`) holds one single-writer partition per device, keyed by the
+  owner's `(instanceId, revision)`. A partition comes only from its owner (no gossip, no merge, no CRDT), so
+  same-named ids on two devices stay distinct: the global key is `(deviceId, entityId)`. The owner side is
+  `openbitfun_core::service::fleet::digest` (`fleet_digest {sinceRevision, instanceId}` answers a delta inside
+  the tombstone window, otherwise a full snapshot; changes coalesce for 300 ms into `fleet://digest-changed
+  {revision}`). Only summaries are replicated: workspaces (opened and recent, at most 250), sessions (the newest
+  50 top-level per workspace plus every running, waiting or unread one, at most 500 per device), pending prompts
+  (at most 256, payloads over 16 KiB marked `payloadTruncated`, Detached Dispatch prompts with `answerRoute:
+  "dispatch"`), at most 1 MiB per partition and 32 indexed devices. Transcripts, files, terminal output, config
+  and credentials are never replicated; they are read from the owner on demand. The index is cached at
+  `<data>/fleet/index.json`, read per device record, and an unreadable file is kept aside, never deleted. An
+  unreachable owner keeps its partition, marked with its state and `asOfMs`.
+- **Replication** (`fleet/sync.rs`). The entry keeps an index-only link to every reachable peer (hello `events:
+  {prefixes: ["fleet://"]}`; a peer that ignores the filter is filtered locally). A `fleet_v1` peer is pulled on
+  connect, on every digest hint and on an instance change, with a full snapshot every 5 minutes (anti-entropy).
+  A device-network host without `fleet_v1` is a leaf owner, indexed by polling its navigator, first sessions
+  page and pending permissions (on events and every 60 s); a relay-only host is never dialed and shows
+  `update_required`.
+- **Device states.** Decided by the backend with a reason: `online`, `offline`, `stale`, `unreachable`,
+  `update_required`, `not_indexed`.
+- **Commands: routing by owner.** A frontend sends every product command as `fleet_call {target, command, args}`
+  with the args unchanged. The entry runs it when it is the target and otherwise makes a plain `call` on its link
+  to the target, which applies its own allowlist; the owner's results and errors come back unchanged. The
+  per-command side table `remote_surface/fleet_routing.rs` says how the target is found: `ByOwner {entity, path}`
+  (the id at `path` must belong to the target, otherwise `fleet_owner_mismatch: <owner>`, never a silent
+  reroute; a missing target resolves to the owner when the index knows exactly one, otherwise
+  `fleet_target_required`), `ByTarget` (device-scoped commands; the UI passes its device context), `EntryLocal`
+  (controller-local and host-control-plane rows, native desktop only). Other refusals: `fleet_device_offline`,
+  `fleet_device_outdated`, `fleet_nested_call` (a `fleet_*` verb wrapped in `fleet_call`).
+- **Entry verbs** (`PeerStance::FleetEntry`, answered by the entry for the `owner`, `account-device` and
+  `cloud-agent` scopes, never forwarded, refused for paired clients): `fleet_call`, `fleet_navigator
+  {sinceRevision?}` (devices, workspaces, sessions, totals and per-device action gates, all ordered and counted
+  by the backend), `fleet_prompts`, `fleet_attention` / `fleet_attention_mark_read` (the Inbox: every device's
+  prompts, the cloud agent's blocked, done and failed jobs, and failed sessions; read state per entry;
+  `fleet://attention-changed`), `fleet_recent_sessions {limit?, cursor?}` (All sessions › Recent: every runtime
+  device's top-level sessions newest first, with device and workspace labels, paged by an opaque cursor over the
+  index window), `fleet_device_detail {deviceId}` (the device page: the navigator row, user and dispatch sessions
+  running now, jobs waiting to start or waiting on the user from the device's dispatch sessions and prompts and the
+  cloud agent's queued jobs, capability ids, and the update line of an `update_required` device),
+  `fleet_subscribe {follow}`, `fleet_events` (the native desktop's long poll for peer origins) and
+  `fleet_ui_bundle`. Owner verbs on the device network: `fleet_digest`, `fleet_replay`.
+- **Events: per-origin cursors** (`fleet/mux.rs`). A client that sends `fleet: {protocol: 1, cursor: {[deviceId]:
+  {instanceId, seq}}}` on its hello gets one stream of frames `{seq, event, payload, origin, originInstance}`,
+  where `seq` is the origin's own and the payload is unchanged. Order holds within an origin only. The entry keeps
+  4,096 events / 16 MiB per origin; an older cursor is replayed from the owner (`fleet_replay`), and when that
+  history is gone or the owner restarted the client gets `backend://events-dropped {origin, reason, resumeSeq}`
+  and re-hydrates that origin alone. A full upstream stream is kept only for devices a client follows
+  (`fleet_subscribe`); every other link stays index-only. A slow client is skipped forward for the lagging origin
+  only. A hello without `fleet` (an older client) gets unchanged frames.
+- **Entry selection and failover.** The native desktop enters through its own backend. The browser (gateway
+  `entryCandidates`) and the phone (`rank_entry_candidates` in its native module) use one ranking: online, then
+  `fleet_v1`, then a desktop, then lowest latency, then fewest attached clients (`fleetLoad` on
+  `/obp/mesh/info`), then newest version; the account's cloud node comes last. `src/nsh-ui/src/controller/fleetEntry.ts`
+  walks the list: on loss, calls in flight fail with `entry_lost` (mutations are not retried; reads are), and the
+  next entry gets the same vector cursor. The user is told only when every candidate fails. Losing the entry or
+  the client never cancels a turn: it belongs to its owner's runtime.
+- **Device context.** The UI's device context is the device of the selected workspace; device-scoped surfaces
+  (settings, models, MCP, skills, agents, routines, usage, files, Git, terminals) follow it and say which device
+  they show. The native folder picker exists only for the client's own machine; other devices use the in-app
+  browser over `fleet_call get_directory_children`. An SSH workspace belongs to the device holding the SSH
+  profile; two devices on one SSH root are two rows.
+- **Compatibility.** An entry without `fleet` on its hello leaves the UI on that one backend (with an "update
+  this device" notice) and its legacy Peer Device Mode ([peer-device-mode.md](peer-device-mode.md)). Fleet DTOs
+  read tolerantly: every field defaults, unknown fields are ignored, every enum has an `Unknown` variant.
+
+### The cloud superagent node
+
+Each account has one cloud node, the OpenBitFun superagent (`openbitfun-superagent`,
+`src/apps/relay-server/superagent`; contract and pure policy in `openbitfun_product_domains::superagent`;
+deployment in `deploy/superagent/README.md`). It is the main entry of the UI: one input box, a model, and the
+management tools. There is no fixed workflow; the model chooses devices, fans out and compares results through
+the tools.
+
+- **Place in the fleet.** `hostKind: "cloud"`, device id `cloud-<hash(account)>`, display name "OpenBitFun", its
+  own X25519 key in the 2.0 account directory under the server-only kind `cloud_agent`
+  (`relay-service/src/routes/cloud_agent.rs`, enabled on `openbitfun-directory` with a 0600 key file; client
+  logins can never write that kind). The node is created on the account's first sign-in (`/agent/api/v1/ensure`). It is a fleet owner
+  (`fleet_digest` / `fleet_replay`: one assistant workspace whose sessions are its conversations) and serves the
+  `superagent_*` commands. It is not on the device network: entries reach it at `wss://super.openbitfun.com/agent/obp` with
+  the `obp-e2e-v1` end-to-end channel (`openbitfun_obp::client::cloud`, `WithCloudNode` routes `cloud-*` ids
+  there). Frontends call it as `fleet_call {target: "cloud-…", command: "superagent_…"}`. The browser's entry
+  ranking always lists it last, so it is the entry when no runtime host answers; it answers the hello without
+  the fleet layer, so the conversation works but no device index is shown.
+- **Reaching devices.** It joins an account's Link network as its own member (minted from the issuer key) only
+  while a job is live or a turn is unfinished. A device that sees the `cloud_agent` row grants the `cloud-agent`
+  scope: the `account-device` allowlist plus the model relay, under the device's switches
+  `superagent.acceptDispatch` (fence the device off; only probe, status, list, cancel, the owner verbs and the
+  relay stay open) and `superagent.allowAutoApproval` (refuse `approvalPolicy: auto` and prompt answers). Both
+  default on. Devices advertise `cloud_agent_scope_v1`; a device without it is never dialed
+  (`superagent_requires_update`).
+- **Model rounds without server credentials.** `fleet_model_start` / `fleet_model_poll` / `fleet_model_cancel`
+  (`fleet_model_v1`, `cloud-agent` scope only) run one completion on a device with the provider configured
+  there (`openbitfun_core::service::superagent_relay`); no tool runs on the device for it, polling resumes by
+  sequence, and usage is recorded there as "OpenBitFun agent". The holder is ranked by policy and a lost holder's
+  round retries elsewhere; with no holder the turn parks and says so.
+- **Work through Detached Dispatch.** Tools: `fleet_list_runtimes`, `fleet_dispatch`, `fleet_wait`,
+  `fleet_job_status`, `fleet_job_result`, `fleet_job_transcript`, `fleet_job_message`, `fleet_job_cancel`,
+  `fleet_job_answer`, `fleet_publish_branch` (closed set, strict parsing). Jobs default to `approval: auto`
+  (full access); the agent may answer a job's permission prompt (`answeredBy: superagent` on the card). Target
+  capabilities it negotiates are in [detached-task-dispatch.md](detached-task-dispatch.md#cloud-controller-and-superagent-target-capabilities).
+- **Commands and events for frontends.** `superagent_status`, `_enable`, `_disable`, `_list_conversations`,
+  `_get_conversation`, `_rename_conversation`, `_delete_conversation`, `_send {conversationId?, message,
+  clientMessageId}` (idempotent), `_cancel_turn`, `_job_action`, `_delete_data`; events
+  `superagent://turn-delta`, `superagent://card-changed`. Job cards, their states, reasons and allowed actions are
+  projected by the node. On by default: an account's node is created on first use; turning it off and deleting
+  its data are each one step.
+- **Runtime shape.** A control-plane node, not an Agent Runtime deployment
+  ([agent-runtime-deployment-design.md](agent-runtime-deployment-design.md#10-cloud-superagent-control-plane-node)).
+
+### Dispatch, bots, phones and Peer Device Mode over the mesh
+
+OpenBitFun 2.0 devices talk to each other only over OBP on Link. The 1.x relay transport
+(`account_device_rpc`, relay `rpc-call`, `machine-event`, `HostStream`, HostInvoke, pairing invitations) is not
+part of 2.0: its commands are `retired(...)` registry rows (`RELAY_TRANSPORT_RETIRED`,
+`RELAY_HOST_INVOKE_RETIRED`), and nothing in 2.0 falls back to it. A device that is not on Link (offline, or an
+OpenBitFun 1.x device) gets an explicit refusal, never a silent fallback.
+
+- **Peer Device Mode** ([peer-device-mode.md](peer-device-mode.md#obp-over-the-device-mesh-new-hosts)), the
+  path for a backend without the fleet layer; on a fleet entry the device context replaces it. A device in the
+  account mesh whose listener advertises `obp_v1` + `mesh_v1` is driven over OBP: the controller's backend holds
+  the authenticated link (`mesh/peer_link.rs`; `peer_link_connect`, `peer_link_call`, `peer_link_events` long poll
+  with the peer's own `seq` and resume, `peer_link_disconnect`, all `ControllerLocal`), and the NSH bridge makes
+  it the surface's data backend: registry `ControllerLocal` commands and owner-only events stay local, everything
+  else is the peer's, unchanged and live. Chosen over a UI-side socket because the device handshake key stays in
+  the backend; the extra hop is in-process. The hello adds `hostCapabilities` (the registry's peer-host list) for
+  feature gates and `hostKind` (`desktop`, `cli`, `cloud`; additive, display only). HTML preview of a peer's
+  workspace reads `html_preview_read_resource` over the same kind of link (`workspace_html_preview_v1` in
+  `hostCapabilities`).
 - **Detached Dispatch and IM bots.** The `account-device` scope also runs `dispatch_target_*` and
   `obp_remote_command` (a bot `RemoteCommand`), advertised as `dispatch_target_v1` / `remote_command_v1`.
-  Controllers go through the `remote_connect::mesh_route` port (desktop implementation `mesh/route.rs`): a mesh
-  device with the capability gets OBP (errors are reported, never retried over the relay); older targets keep
-  the relay RPC with the same agent-identity translation. Both bot lanes use it: turns (`RemoteBotTarget`) and,
-  since wave 9, the command router's menu commands (sessions, assistants, models; `exec_remote_rpc`).
+  Controllers go through `remote_connect::mesh_route::call_mesh` (desktop route `mesh/route.rs`, CLI route
+  `src/apps/cli/src/mesh_route.rs`): a mesh device with the capability gets OBP; anything else answers
+  `device_not_on_link: …`. Both bot lanes use it: turns (`RemoteBotTarget`) and the command router's menu
+  commands (sessions, assistants, models; `exec_remote_rpc`), on a desktop and on the CLI daemon alike.
 - **Phones and browsers.** Phones join Link in the OpenBitFun app (native data plane through FFI, signed in
   with the account, `src/apps/mobile-nsh`); browsers reach devices through the gateway (above). Both run the
   same controller shell over the `ControllerPort` interface (`src/nsh-ui/src/controller/controllerPort.ts`:
@@ -208,44 +361,47 @@ serving it for older peers and clients.
   wave-4 path through the official EasyTier app is retired with `mesh_phone_join_info` (network credentials are
   never shown); Devices › "Use on phone or in a browser" shows the web controller's address and its QR only. The mesh listener keeps serving the UI bundle and the `paired-client` routes to requests
   without the device handshake (own cookie, the one pairing store and revocation) for clients on Link.
-  `mobile-web` and the relay pairing stay only for older hosts and the OpenBitFun-Mobile native clients.
+  `mobile-web` (the 1.x phone web UI) and the relay pairing were removed from the 2.0 tree.
 
 | Client | Same network or anywhere |
 |---|---|
-| Phone (Android, iOS) | The NSH phone app (`src/apps/mobile-nsh`) joins Link as a controller with the email-code sign-in (wave 8, below); the OpenBitFun-Mobile apps keep the legacy relay |
-| A browser anywhere (phone or computer) | `https://<domain>/app/`: email sign-in, the account's devices, OBP through the gateway with the end-to-end channel (wave 8); on this computer, the loopback owner link |
-| Another OpenBitFun desktop (native) | Peer Device Mode over the mesh |
-| A CLI host (`openbitfun`, the daemon) as the driven device | Wave 9: joins Link as a device while it serves this machine's device identity, OBP on its port like a desktop (below) |
-| Older OpenBitFun host or client | Legacy cloud relay / `mobile-web` (the LAN relay of older hosts still works against those hosts) |
+| Phone (Android, iOS) | The NSH phone app (`src/apps/mobile-nsh`) joins Link as a controller with the email-code sign-in and enters the fleet through the best-ranked runtime host; the OpenBitFun-Mobile apps are 1.x clients and do not reach 2.0 hosts |
+| A browser anywhere (phone or computer) | `https://super.openbitfun.com/`: email sign-in, then the device's own web UI over the gateway with the end-to-end channel, entering the fleet through the best-ranked runtime host; on this computer, the loopback owner link |
+| The native desktop | Its own backend is its fleet entry; every other device of the account appears in the same surface (legacy Peer Device Mode only toward a backend without the fleet layer) |
+| A CLI host (`openbitfun`, the daemon) | A runtime node: joins Link while it serves this machine's device identity, OBP on its port like a desktop, fleet owner and entry (below) |
+| OpenBitFun 1.x host or client | Not supported by 2.0: 1.x clients keep using the 1.x relay against 1.x hosts only |
 
-### CLI host as a remotely controlled device (wave 9)
+### CLI host as a runtime node
 
 The CLI process that serves this machine's device identity (the daemon, or an interactive `openbitfun` when no
 daemon runs; a desktop app on the same machine is the primary host and wins) joins the account's Link network as
-a device and serves OBP on its port (`src/apps/cli/src/obp_host.rs` over `openbitfun-obp`), so the desktop's Peer
-Device Mode, the phone app and the browser controller drive it like a desktop host, with the same protocol.
+a device and serves OBP on its port (`src/apps/cli/src/obp_host.rs` over `openbitfun-obp`), so every frontend
+drives it like a desktop host, with the same protocol. It is a full runtime node: it runs the fleet layer
+(`fleet_host.rs`) as an owner (its digest and replay for the other hosts) and as an entry (a phone or browser
+connected to it sees and drives every device of the account), serves its own embedded web UI bundle, relays model
+rounds for the cloud agent (`fleet_model_*`), and is the durable Detached Dispatch target.
 
 - **When.** Signed in, remote control on (the machine-wide switch shared with the desktop app, `openbitfun
-  remote-control [status|on|off]`; on by default), and this process owns device routing (its relay routing is
-  not standing by for a desktop). Link re-checks on routing changes and every 15 s; `OPENBITFUN_MESH=off`
+  remote-control [status|on|off]`; on by default), and this process serves the machine's device identity: it
+  holds the secondary device routing claim (`routing_lease::DeviceRoutingLease`, an OS lock next to
+  `device_identity.json`) while no desktop holds the primary one (a signed-in desktop with remote control on). Link re-checks on routing changes and every 15 s; `OPENBITFUN_MESH=off`
   turns it off. State lives in `<user data>/cli-host/` (`mesh/` credential cache, `obp/` TLS identity and
   pairings, `remote-control.json` status without secrets). No loopback listener (the terminal is the CLI's UI).
 - **Calls.** `account-device` connections run the Peer Device host's registry-derived handlers
   (`peer_host::handle_obp_call`: the registry verdict for `PeerHostKind::Cli`, arguments and results in the
   canonical agent-identity dialect like every OBP host). A command the CLI does not run answers with the
   registry's refusal (`command 'x' is not supported on CLI peer host: …`, typed `data.kind = "unsupported"`);
-  the relay control plane (`peer_mode_ping`, attach, detach) is not an OBP command. Host verbs:
+  the retired relay control plane (`peer_mode_ping`, attach, detach) is gone. Host verbs:
   `dispatch_target_*` (the durable CLI runner) and `obp_remote_command` (bots), advertised as
   `dispatch_target_v1` / `remote_command_v1`.
 - **Capabilities and events.** The `hello` carries `hostKind: "cli"` and the registry's CLI capability set in
   `hostCapabilities`, so the UI hides what the CLI does not serve. Events are the Peer Device host's fan-out
   (agentic events with their session cursors, permission requests, catalog, file watch, settings), published to
-  the host's own ring in the canonical dialect; relay controllers keep their legacy DeviceEvents.
-- **Compatibility.** Older controllers keep the relay path to the CLI (it still serves relay routing); older
-  CLI builds are never on Link, so controllers keep their relay path to them. Remaining: an IM bot hosted by
-  the CLI daemon reaches other devices through the relay only (the CLI installs no `mesh_route`).
+  the host's own ring in the canonical dialect (terminal output included).
+- **Bots.** The CLI installs its own `mesh_route` while it serves Link, so an IM bot hosted by the CLI daemon
+  reaches other devices through the fleet over Link, like a desktop-hosted bot. The CLI opens no relay socket.
 
-### Phone app: the NSH UI as a Link controller (wave 8)
+### Phone app: the NSH UI as a Link controller
 
 The phone app (`src/apps/mobile-nsh`, iOS and Android) is the same NSH UI built with a native module of its own,
 `openbitfun/mobile` (crate `openbitfun-mobile-native`). It has no backend: the UI's controller port
@@ -255,7 +411,7 @@ The phone app (`src/apps/mobile-nsh`, iOS and Android) is the same NSH UI built 
 - **Sign-in.** The email code goes through the account APIs every device uses: a device sign-in transaction of
   the identity service (`/auth/desktop/start?methods=all`) whose ticket takes the code (`/auth/email/send`,
   `/auth/email/verify`), then `/auth/desktop/poll` returns this phone's token pair. The phone registers its own
-  X25519 public key in the account directory (`/relay/api/auth/login`, kind `mobile`); desktops derive the pair
+  X25519 public key in the account directory (`/directory/api/auth/login`, kind `mobile`); desktops derive the pair
   key from it exactly as for another desktop. The key, the token pair and the directory token are one record in
   the platform keystore (iOS Keychain `AfterFirstUnlockThisDeviceOnly`; Android an app-private 0600 file until
   NSH exposes the JVM for a Keystore wrap).
@@ -266,6 +422,8 @@ The phone app (`src/apps/mobile-nsh`, iOS and Android) is the same NSH UI built 
 - **Devices.** Directory rows joined with the Link route (`direct_lan`, `direct_ipv4`, `direct_ipv6`,
   `relayed_peer` with the relaying device's name, `relayed_server`); controllers are left out; a device that is
   online but not on Link says `update_required`, one that is offline says `offline` (no relay fallback).
+- **Fleet entry.** The native module ranks the runtime hosts (`rank_entry_candidates`, the gateway's ranking),
+  and `controller/fleetEntry.ts` walks them with the vector cursor (above).
 - **Connections.** OBP over a Link stream with the account-device handshake (the shared client,
   `openbitfun_obp::client`, the code the desktop's `ws/mesh_client.rs` re-exports): `account-device` scope, `Proxied` commands only, owner-only
   events withheld, credit/ack backpressure. A dropped connection redials on the next call and resumes after the
@@ -274,6 +432,58 @@ The phone app (`src/apps/mobile-nsh`, iOS and Android) is the same NSH UI built 
 - **Packaging.** `pnpm run mobile-nsh:package:{ios-sim,ios,android}` (`scripts/package-mobile-nsh.mjs`, NSH
   `nsh package`); the module and Link build for `aarch64-apple-ios(-sim)` in NSH's generated workspace (libc is
   pinned to 0.2.189 there: 0.2.191 limits `RTAX_MAX` to macOS, which breaks EasyTier's `netdev` on iOS).
+
+### Browsers load the web UI from the device
+
+A browser runs the exact web UI bundle of the device it controls, never a server-picked version: the launcher
+(`https://super.openbitfun.com/`) signs in, gets the device's manifest over the end-to-end channel, and a Service Worker
+runs the device's bundle from a content-addressed pool on the server, verifying every byte against that manifest.
+
+- **Launcher and loader** (`src/nsh-ui/web/ui-loader.js`, `host.js`). After sign-in the launcher opens the newest
+  connectable device by itself (`pickUiSourceDevice`, the next one on failure) and calls `ui_bundle_manifest`. When
+  the bundleId is the launcher's own it drives the device in place; otherwise it stores `{bundleId, manifest,
+  deviceId}` and navigates to `/b/<bundleId>/index.html#device=<deviceId>`, where the Service Worker (scope
+  `/b/`) serves each file from Cache Storage or from `/cas/<sha256>?device=<deviceId>` after checking its
+  SHA-256 against the manifest (the `.br` variant is decoded, then checked). A mismatch or failure is an error page
+  naming the file; nothing unverified runs. The handoff is sessionStorage `obf.controller.handoff.v1` `{v: 1,
+  deviceId, at}`, a frozen contract (fields are only added). A device without a bundle, or too old to answer, gets
+  "update OpenBitFun on this device".
+- **Pool** (`openbitfun-link-gateway`, `src/apps/relay-server/link-gateway/src/pool.rs`, deployment in
+  `deploy/easytier/README.md`). Untrusted and content-addressed: one copy per hash for every account and device,
+  pulled through on a miss from the requesting device over Link (`GET /obp-ui/v1/<sha256>`), then from the other
+  holders named in `&holders=`, hashed before it is stored; files unused for 30 days are deleted. The entry verb
+  `fleet_ui_bundle` names the newest usable bundle among online fleet hosts (manifest `minEntryFleetProtocol` at
+  most the entry's protocol) with every holder of it.
+
+Device side:
+
+- **Manifest.** Every web package (`pnpm run desktop-nsh:web`, the desktop packages' `nsh-web`, the CLI's embedded
+  copy, the web controller build) carries `ui-bundle.json`, schema 1: `{schema, product, version, nsh, entry,
+  files: [{path, sha256, size, br?: {sha256, size}}]}`, written by `scripts/write-ui-bundle-manifest.mjs` over the
+  untouched `nsh package` output (the device injects `#nsh-params` only when it serves `/`). `files` lists every
+  runtime file except `.br`/`.gz` siblings, sorted by path; paths are POSIX and relative, with no `.`/`..`/empty
+  segments, backslash, colon or control character. The **bundleId** is the lowercase hex SHA-256 of the canonical
+  manifest (keys sorted by UTF-16 code units, no whitespace, `JSON.stringify` string escapes, safe integers
+  only), recomputed by every party. The JavaScript writer and the Rust reader (`openbitfun_obp::ui_bundle`) are
+  checked against one fixture (`src/crates/adapters/obp/src/ui_bundle_fixture.json`).
+- **`ui_bundle_manifest`** (`request: {}`) answers `{manifest, bundleId}` with the manifest exactly as shipped, or
+  `ui_bundle_unavailable: <reason>` (no bundle, no manifest, a file that no longer matches). Registry row:
+  `Agnostic` (public build output, the same for any workspace), `Proxied` (it must answer on the device, under
+  `account-device`), CLI `HANDLED`. Loading checks every listed file; a directory bundle is reloaded when its
+  manifest changes. A device older than this answers `-32003 forbidden_for_scope: ... unknown to this OpenBitFun
+  backend version`; both cases mean "update OpenBitFun on this device". `hello` adds `uiBundleId` as a hint
+  (additive; never trusted over the manifest).
+- **Fetch by hash.** The mesh listener tells three openings apart by a stream's first byte: 0x16 TLS, `O` the
+  end-to-end channel, `G` a plain `GET /obp-ui/v1/<sha256> HTTP/1.1` from the server pool over Link. It answers
+  `200` (`application/octet-stream`, `Content-Length`, `Content-Encoding: br` exactly when it served a `.br`
+  sibling) with bytes re-checked against the hash on every read, `404` for any hash not in the current manifest
+  (also when the device ships none), `400`/`405`/`431` for malformed requests and `503` when its 8 fetch slots
+  stay busy for 10 s; one request per stream, then close. It serves only listed bundle files (public code, no
+  user data) and only account network members reach it.
+- **The CLI's bundle** is compiled into the executable (`src/apps/cli/build.rs` from `OPENBITFUN_CLI_WEB_UI_DIR`,
+  which `pnpm run cli:build` and the installers build from the same tree), so it cannot drift from the binary
+  through self-update, `cargo install` or a copied executable; a build without it answers
+  `ui_bundle_unavailable`. The desktop's is `Resources/nsh-web` (or `nsh-web/` next to the executable).
 
 ### Mesh only: LAN sunset and a domain-only server
 
@@ -291,15 +501,14 @@ separate LAN options are gone:
   reason; `obp_create_pairing {via: "lan"}` answers `obp_lan_retired: …` (the default route is now `mesh`);
   `remote_connect_start`/`_stop` with `lan` answer `unsupported: the LAN relay was retired; …` before touching
   any service, and `remote_connect_get_methods` no longer lists it. No silent fallback to the cloud relay.
-- **Compatibility.** Older mobile-web clients that paired through a LAN relay invitation
-  (`http://<lan-ip>:9700`) cannot reach new hosts that way; they use the cloud relay invitation, which new and
-  older hosts both still serve (older hosts also keep their own LAN relay). Phones paired on the LAN listener
+- **Compatibility.** The cloud relay invitation and `remote_connect` `openbitfun_server` were retired in 2.0 as
+  well (`remote_connect_start` answers `RELAY_METHOD_RETIRED`). Phones paired on the LAN listener
   keep their credential record in `<data>/obp/paired-clients.json` and the same certificate
   (`lan-identity.json`), but must join the mesh and pair again (the browser cookie was per listener). The
   retired `<data>/obp/settings.json` (`lanEnabled`, `lanPort`) is no longer read and is left on disk untouched.
 - **Domain-only server.** The OpenBitFun server opens no port of its own: it is reached only through its domain
   over HTTPS, and the hosting provider's front end forwards that traffic to nginx. The relay node listens on
-  `ws://127.0.0.1:11011/` only and is reached as `wss://remote.openbitfun.com/mesh/et/` (the issuer hands out
+  `ws://127.0.0.1:11011/` only and is reached as `wss://super.openbitfun.com/mesh/et/` (the issuer hands out
   only that URL); no `0.0.0.0` or `[::]` TCP/UDP listener exists. This does not limit direct connections: hole
   punching runs between the devices themselves (addresses from public STUN servers, exchanged over the existing
   connection), and the server carries only coordination and the relayed fallback for devices that cannot connect
@@ -425,18 +634,22 @@ The desktop product builds, runs, packages and ships only as the native NSH app.
 | `host_invoke` envelopes over `account_device_rpc`, executed by bouncing into the host's webview (`PeerHostInvokeBridge`) | `call` over OBP straight into `BackendService::dispatch` |
 | `DeviceEvent` fan-out allowlist and source-device tagging | Per-connection event stream with scope filtering |
 | Remote session records via "nudge then pull" (`host-stream-changed` + `read_stream`), no token streaming | Live seq-numbered events; durable records stay the history read through commands |
-| `mobile-web` and its `RemoteCommand` DTOs | The same NSH UI served by the backend |
+| `mobile-web` (removed in 2.0) | The same NSH UI served by the backend |
 | Embedded LAN relay, LAN OBP listener | The device mesh (it picks the direct LAN path for devices on one network) |
 | Duplicated CLI peer handlers | One generated dispatch shared by Desktop and CLI hosts |
 
 ## Upgrade compatibility
 
-Existing paired devices keep their identities and keys; the tunnel handshake reuses them, so nothing is re-paired.
-Clients probe for OBP (`obp_v1` + `mesh_v1` on the device's mesh listener; `dispatch_target_v1` and
-`remote_command_v1` for dispatch and bots) and fall back to `host_invoke` / `read_stream` against older hosts
-that never join the mesh. Hosts keep serving `RemoteCommand`, `HostStream` and `machine-event` until no supported peer needs them
-(including the native clients in OpenBitFun-Mobile). Every phase ships old-peer/new-peer round-trip tests in both
-directions.
+OpenBitFun 2.0 is compatible with 1.0 for session records and config only: persisted sessions, transcripts,
+workspace records, the account credential record (`relay_url` kept as the directory URL field) and settings
+files written by 1.x still read. Frontends, remote control, peers and accounts do not interoperate with 1.x:
+`remote.openbitfun.com` and its relay serve the released 1.x clients only. Between 2.0 builds everything is
+negotiated: clients probe for OBP (`obp_v1` + `mesh_v1` on the device's mesh listener; `dispatch_target_v1` and
+`remote_command_v1` for dispatch and bots), the fleet entry advertises `fleet_v1` and answers `fleet` on the hello,
+a peer without `fleet_v1` is indexed by polling, and the cloud node is dialed only on devices advertising
+`cloud_agent_scope_v1`; an older 2.0 client that sends no `fleet` gets unchanged frames. The retired relay
+commands keep `retired(...)` rows so a caller gets the reason instead of an unknown-command error. Every change
+ships old-peer/new-peer round-trip tests in both directions.
 
 ## Display-only frontend: logic migration
 
@@ -488,12 +701,14 @@ gets an explicit "update the host" state in the NSH UI, never the deleted client
 
 Running turn and live channel (wave 5). `get_session_transcript_view` also answers `runningTurn` (Routed row unchanged; additive field): the runtime journal's projection of the turn running now, as the same `agentic://*` events the live wire carries plus the delivery cursor they reached. A client that connects or reopens a session mid-turn replays them through its own live handlers and drops live events at or below that cursor, so no client-side snapshot of a running turn is needed. Decision on the typed live-delta stream (`transcript://delta`): not built. The `agentic://*` events stay the live channel because they are already the typed, journaled, cursor-carrying stream (the journal behind `load_session_event_backfill` and `runningTurn` is built from them), and the per-frame smoothness rests on them: the host coalesces text chunks, the client merges once per frame (`textChunkCoalescer.ts`, which now records the cursor span of every merged part) and reveals per round on its own signals. A second delta stream would duplicate that path, re-project every chunk into view items on the host, and double the bytes on the mesh for no change in what a client draws; the view keeps the durable record and the settle signal. Remaining: the backend-held peer scope belongs to the Peer Device Mode work; marketplace `installed` flags are still derived by the client.
 
-## Phases
+## Status
 
-| Phase | Deliverable | Retires |
+| Area | Delivered | Remaining |
 |---|---|---|
-| 1 | Native NSH desktop host with in-process `BackendService`; host shim makes every command callable without Tauri; shell channel, native updater, MiniApp windows and Windows/Linux runners (wave 4); the Tauri shell and React UI retired (wave 4 sunset); wave 5 ports the MiniApp market into Spaces (browse, listing detail, install/update with the host's permission and overwrite confirmations, rating, favorites, submissions with withdraw, `.bfminiapp` import, installed marks from `miniapp_market_installed_origins`) on the existing `miniapp_market_*` commands; submitting a new release stays retired with its Tauri window capture | WebView at runtime, Tauri desktop shell, `src/web-ui` |
-| 2 | OBP for Peer Device Mode: live token streaming desktop-to-desktop, calls go straight to dispatch. Wave 4: done over the device mesh (`peer_link_*`, NSH bridge routing, per-device negotiation, legacy relay kept for older devices) | Webview bounce for peer calls, fan-out allowlist, nudge-then-pull for live content (new-to-new) |
-| 3 | WebSocket listener, UI bundle serving, QR pairing; logic batches 1-3. Wave 6: the LAN listener and LAN pairing retired (mesh only) | Embedded LAN relay (retired wave 6), `mobile-web` on LAN (retired wave 6), `apps/server` dispatcher |
-| 4 | Relay tunnel with end-to-end encryption; logic batch 4. Wave 4 delivers the transport as the EasyTier device mesh (sidecar, issuer, `account-device` listener, client helper; wave 7 replaces the sidecar with the in-process Link fork and join tokens), Peer Device Mode, Detached Dispatch and IM bots on it, and phones over the mesh (paired-client on the mesh listener). Then: mesh only, domain-only server node | `mobile-web` and the relay for new clients (kept for older hosts and clients); typed `RemoteCommand` still carries bot calls (`obp_remote_command`) |
-| 5 | Bots, dispatch observers and the CLI host on `BackendService`; logic batch 5. Wave 9: one OBP crate (`openbitfun-obp`) for the desktop, the CLI host and the phone; the CLI host serves OBP over Link with registry-derived handlers and capabilities; bot menu commands use the `mesh_route` port like bot turns | Poll paths, duplicate CLI handlers (the desktop's Tauri crate dependency is gone since the wave 4 sunset), the phone's copy of the OBP client |
+| Desktop | Native NSH host with the in-process `BackendService`, shell channel, native updater, MiniApp windows, macOS/Windows/Linux runners; Tauri shell and React UI retired | In-place update on Windows and Linux; non-macOS folder picker |
+| Protocol and transport | One OBP crate (`openbitfun-obp`) for desktop, CLI, phone and cloud node; loopback owner listener; OpenBitFun Link device network with join tokens; browser gateway with the end-to-end channel; domain-only server | Retiring `mobile-web` and the relay transport once no supported peer needs them |
+| Fleet | Symmetric fleet layer on desktop and CLI: owner partitions, `fleet_call` routing by owner, per-origin cursors, entry ranking and failover, Inbox (`fleet_attention`) | Retiring `peer_link_*` and legacy Peer Device Mode once no supported backend lacks `fleet_v1` |
+| Cloud superagent | Cloud node service, encrypted per-account slots, model relay, Detached Dispatch tools, frontend commands | Frontends switched on in deployment (`SUPERAGENT_FRONTENDS`); the target side of peer branch import and publish (`workspace_peer_import_v1`, `workspace_publish_v1`), a Windows detached runner, a worker-question mailbox |
+| Browsers | The device's own web UI from the content-addressed pool | The browser does not yet load through `fleet_ui_bundle` holders |
+| Bots and dispatch | Bot turns and menu commands over OBP (`mesh_route`); Detached Dispatch over OBP with the relay for older targets | IM bots hosted by the CLI daemon still reach other devices through the relay only |
+| Display-only frontend | Logic batches 1-5 (table above) | Marketplace `installed` flags are still derived by the client |

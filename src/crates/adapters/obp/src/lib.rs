@@ -22,13 +22,16 @@
 
 mod authority;
 pub mod events;
+pub mod ui_bundle;
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "fleet")]
+pub mod fleet;
 #[cfg(feature = "server")]
 pub mod server;
 
-pub use authority::{MeshAuthority, MeshInfo, MeshIo, PairKeyFuture};
+pub use authority::{DeviceKindFuture, MeshAuthority, MeshInfo, MeshIo, PairKeyFuture};
 pub use events::{
     BackendEvent, EventBatch, EventHub, EventSubscription, DEFAULT_EVENT_REPLAY_CAPACITY,
     EVENTS_DROPPED_EVENT,

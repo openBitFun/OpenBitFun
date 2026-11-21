@@ -28,7 +28,7 @@ This opens a private channel visible only to the maintainers. If you are unable 
 To help us triage quickly, please include where you can:
 
 - A clear description of the vulnerability and its impact
-- The affected component (Rust core, desktop/Tauri, web UI, mobile-web pairing, server/relay, CLI, installer, etc.)
+- The affected component (Rust core, desktop/Tauri, web UI, remote control, server/relay, CLI, installer, etc.)
 - Step-by-step reproduction instructions or a proof of concept
 - Affected version(s), operating system, and configuration
 - Any suggested mitigation or fix, if you have one
@@ -44,7 +44,7 @@ To help us triage quickly, please include where you can:
 
 In scope:
 
-- The OpenBitFun runtime, official Agents, desktop/CLI/server apps, web UI, and the mobile-web pairing/remote-control flow in this repository.
+- The OpenBitFun runtime, official Agents, desktop/CLI/server apps, web UI, and the remote-control flow in this repository.
 
 Out of scope:
 

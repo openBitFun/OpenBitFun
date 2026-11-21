@@ -24,7 +24,7 @@ import { palette, radii, textLineHeight, textSize, textTracking } from "../theme
 import { Icon, type IconName } from "./icons";
 import { MOTION_DURATION, paintTransition } from "./motion";
 import { DropdownMenu, type DropdownMenuItem } from "./overlays";
-import { IconButton } from "./primitives";
+import { EmptyStateCard, IconButton } from "./primitives";
 import { encodeQr, type QrMatrix } from "./qr";
 
 /** The studio content column (design spec: 720). */
@@ -555,57 +555,16 @@ export interface StudioEmptyProps {
   accessibilityLabel?: string;
 }
 
-/** Boxless centred empty state: 28 px muted icon, 15/600 title, one 13 px line, one button. */
+/** The empty state of visual spec §3: it renders `EmptyStateCard` (icon 28, title 16/600, one line, one button). */
 export function StudioEmpty(props: StudioEmptyProps) {
   return (
-    <View
+    <EmptyStateCard
       accessibilityLabel={props.accessibilityLabel}
-      style={{
-        minHeight: 200,
-        paddingVertical: 32,
-        paddingHorizontal: 24,
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 8,
-      }}
-    >
-      <Icon
-        name={props.icon}
-        size={28}
-        color={props.tone === "danger" ? palette().danger : palette().textMuted}
-      />
-      <Text
-        style={{
-          marginTop: 4,
-          color: props.tone === "danger" ? palette().danger : palette().text,
-          fontSize: textSize(15),
-          fontWeight: "600",
-          textAlign: "center",
-          maxWidth: 460,
-          lineHeight: textLineHeight(15, 1.4),
-        }}
-      >
-        {props.message}
-      </Text>
-      <If when={props.detail ?? ""}>
-        {detail => (
-          <Text
-            style={{
-              color: palette().textSecondary,
-              fontSize: textSize(13),
-              textAlign: "center",
-              maxWidth: 460,
-              lineHeight: textLineHeight(13, 1.45),
-            }}
-          >
-            {detail()}
-          </Text>
-        )}
-      </If>
-      <If when={Boolean(props.action)}>
-        <View style={{ marginTop: 8 }}>{props.action}</View>
-      </If>
-    </View>
+      icon={props.icon}
+      title={props.message}
+      subtitle={props.detail}
+      action={props.action}
+    />
   );
 }
 

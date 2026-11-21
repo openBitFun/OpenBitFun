@@ -8,6 +8,8 @@
 // which shell draws the window. Window, menu and tray work is the shell's
 // (`windowShell.ts`), never the connection's.
 
+import type { FleetHelloAnswer } from "./fleetTypes";
+
 /** Which wire a connection uses. `dev` answers from fixtures and proves nothing. */
 export type TransportKind = "tauri" | "dev" | "native" | "websocket" | "mesh";
 
@@ -23,8 +25,13 @@ export interface BackendEvent {
   seq?: number;
   event: string;
   payload: unknown;
-  /** Peer attribution a legacy host adds beside the payload. */
-  peerDeviceId?: string;
+  /**
+   * On a fleet stream: the device the event comes from (`seq` is then that
+   * origin's own) and its backend instance. Absent on a plain stream and for
+   * the entry's own events on the native in-process stream.
+   */
+  origin?: string;
+  originInstance?: string;
 }
 
 /** What the backend says about itself once it finished starting. */
@@ -32,6 +39,11 @@ export interface BackendInfo {
   version: string | null;
   platform: string | null;
   dataDir: string | null;
+  /**
+   * The `fleet` answer of the hello (or the native ready info): the backend is
+   * a fleet entry. Absent on an older backend, which keeps the UI single-device.
+   */
+  fleet?: FleetHelloAnswer | null;
 }
 
 export interface InvokeOptions {
@@ -74,6 +86,12 @@ export interface BackendConnection {
    * legacy page host does), so the bridge does not merge them twice.
    */
   readonly coalescesTextChunks?: boolean;
+  /**
+   * The fleet answer of the current handshake (a signal read), or `null` when
+   * this backend is not a fleet entry. A connection that cannot tell leaves it
+   * out and reports it through `ready()`'s `fleet` instead.
+   */
+  fleet?(): FleetHelloAnswer | null;
 }
 
 /** The message a rejected `invoke` carries, whatever the wire rejected with. */

@@ -129,7 +129,8 @@ pub extern "C" fn obf_backend_abi_version() -> u32 {
 
 /// Starts the backend once: builds its runtime and bootstraps it in the
 /// background. `callback` receives the host info JSON
-/// (`{version, platform, dataDir}`) or the fatal startup error. Calling it
+/// (`{version, platform, dataDir, fleet?: {protocol, deviceId}}`) or the
+/// fatal startup error. Calling it
 /// again reports the same outcome.
 #[no_mangle]
 pub extern "C" fn obf_backend_start(callback: ObfResultCallback, ctx: *mut c_void) {
@@ -179,7 +180,15 @@ pub extern "C" fn obf_backend_start(callback: ObfResultCallback, ctx: *mut c_voi
     backend.handle.spawn(async move {
         let backend = BACKEND.get().expect("backend initialized");
         let result = ready_service(backend).await.and_then(|service| {
-            serde_json::to_string(&service.info()).map_err(|error| error.to_string())
+            let mut info =
+                serde_json::to_value(service.info()).map_err(|error| error.to_string())?;
+            // The fleet protocol and this device's id (the native UI keys its
+            // own device with it); absent while the device has no identity.
+            if let (Some(object), Some(fleet)) = (info.as_object_mut(), crate::fleet::ready_info())
+            {
+                object.insert("fleet".to_string(), fleet);
+            }
+            serde_json::to_string(&info).map_err(|error| error.to_string())
         });
         respond(callback, ctx, result);
     });

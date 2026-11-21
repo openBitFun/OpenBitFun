@@ -76,13 +76,10 @@ fn http_client(roots: TlsRoots) -> Result<reqwest::Client, String> {
         TlsRoots::Bundled => {
             let roots =
                 rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .map_err(|error| error.to_string())?
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+            openbitfun_services_core::tls_provider::ensure_ring_crypto_provider();
+            let tls = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
             builder.tls_backend_preconfigured(tls)
         }
     };

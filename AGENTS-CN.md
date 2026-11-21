@@ -2,7 +2,7 @@
 
 # AGENTS-CN.md
 
-OpenBitFun 由 Rust workspace 与 TypeScript 前端组成，通过多种宿主交付（原生 NSH 桌面应用、CLI/TUI、server、mobile、mobile-web、installer）。
+OpenBitFun 由 Rust workspace 与 TypeScript 前端组成，通过多种宿主交付（原生 NSH 桌面应用、CLI/TUI、server、mobile、installer）。
 
 仓库核心原则：**先保持产品逻辑平台无关，再通过平台适配层对外暴露能力**。
 
@@ -17,7 +17,7 @@ OpenBitFun 由 Rust workspace 与 TypeScript 前端组成，通过多种宿主�
 
 | # | 层级 | 路径 | 负责 | 不得 | 指南 |
 |---|---|---|---|---|---|
-| 1 | 接口与入口层 | `src/apps/*`, `src/nsh-ui`, `src/mobile-web`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | 产品宿主、命令、UI 入口、协议接口和跨形态测试 | 保留可复用行为；应下移 | 最近的本地 `AGENTS.md`；[interfaces](src/crates/interfaces/AGENTS.md) |
+| 1 | 接口与入口层 | `src/apps/*`, `src/nsh-ui`, `src/*-market-web`, `OpenBitFun-Installer`, `tests/e2e`, `src/crates/interfaces` | 产品宿主、命令、UI 入口、协议接口和跨形态测试 | 保留可复用行为；应下移 | 最近的本地 `AGENTS.md`；[interfaces](src/crates/interfaces/AGENTS.md) |
 | 2 | 产品组装层 | `src/crates/assembly` | 兼容导出、产品能力选择、product-full 接线、不可变内置 Agent 内容、adapter/service 注册和生态无关的来源协调 | 实现具体 adapter、OS 或 service 细节 | [AGENTS.md](src/crates/assembly/AGENTS.md) |
 | 3 | 适配层 | `src/crates/adapters` | 协议、transport、本地 IPC、WebDriver、AI provider 和外部 AI work source 的 adapter；外部 provider 转换 | 拥有产品能力选择或可复用 OS service 行为 | [AGENTS.md](src/crates/adapters/AGENTS.md) |
 | 4 | 服务实现层 | `src/crates/services` | 可复用的 OS、filesystem、terminal、MCP、remote、git、watch、process、network、session persistence 和 MiniApp runtime IO 实现 | 拥有协议/transport 投影或产品能力选择 | [AGENTS.md](src/crates/services/AGENTS.md) |
@@ -100,7 +100,7 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 
 - `src/shared/i18n/contract/locales.json` 统一管理 locale id、alias、fallback 规则和各形态默认语言。修改后运行 `pnpm run i18n:generate`。
 - 跨形态稳定标签放在 `src/shared/i18n/resources/shared/<locale>/terms.json`；流程文案留在所属产品形态。
-- 任何形态都不得导入其他形态的 locale catalog。`src/mobile-web`、`OpenBitFun-Installer` 和静态页面不得导入桌面 UI（`src/nsh-ui`）locale 资源；静态自包含页面使用生成的 page-scoped shared-term 文件。
+- 任何形态都不得导入其他形态的 locale catalog。`OpenBitFun-Installer` 和静态页面不得导入桌面 UI（`src/nsh-ui`）locale 资源；静态自包含页面使用生成的 page-scoped shared-term 文件。
 - 用户可见的日期、时间和数字使用共享 i18n 格式化 helper，不直接调用 `Intl.*` 或 `toLocale*`。
 - 修改 locale 资源或用户可见文案后运行 `pnpm run i18n:audit`。它检查 key / 占位符一致性、静态与动态 key 证明，以及 literal fallback、直接 locale 格式化和源码硬编码 CJK 文案的零增长基线。
 - 细则见 [`docs/architecture/i18n.md`](docs/architecture/i18n.md)。
@@ -125,12 +125,20 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 
 工作区、执行这一轮的 runtime、以及正在操作的人，可能分别位于不同机器。下面四种场景是每次改动都要一并覆盖的一等目标，不是事后再补的适配。
 
+产品模型：OpenBitFun 是一个分布式 Agent runtime，只有一个显示与操作界面。
+
+- **Runtime 节点**（后端 + 前端）是桌面端和 CLI。每个节点运行 Agent runtime、执行工作，并且都可以作为其他客户端接入的 fleet entry。
+- **其他所有客户端**（浏览器、手机 App、IM Bot）都只是前端。
+- **任何前端都能显示并操作账号下的任何 runtime。** 由哪台设备执行只是一个标签，不是需要切换进入的模式。见 [unified-client-architecture.md](docs/architecture/unified-client-architecture.md#fleet-every-runtime-of-the-account-in-one-surface) 中的 fleet 层。
+- **账号的云端 superagent（"OpenBitFun"）是主入口**：一个输入框、一个模型和一组管理工具，没有固定工作流。它默认开启，默认完全访问：它派发的任务自动批准，每台设备的开关 `superagent.acceptDispatch` 和 `superagent.allowAutoApproval` 可以把设备隔离出去或关闭自动批准。它是控制平面节点，不拥有任何工作区 runtime（[agent-runtime-deployment-design.md](docs/architecture/agent-runtime-deployment-design.md#10-cloud-superagent-control-plane-node)）。
+- OpenBitFun 服务器只能通过其域名经 HTTPS 访问。
+
 | 场景 | 含义 | 设计入口 |
 |---|---|---|
 | 远程工作区 | 当前工作区位于 SSH 主机、跳板机链路或 Docker 容器；文件、终端、搜索和 Agent 子进程都必须在那一侧执行 | [remote-workspace-transport.md](docs/architecture/remote-workspace-transport.md)、[remote-workspaces.md](docs/features/remote-workspaces.md) |
-| 远程控制 | 手机或浏览器用账号（邮箱验证码）登录，对新版桌面宿主运行同一套 NSH UI：手机 App 经账号设备组网（新版唯一的多设备连接方式；同一网络内的设备经组网直连），浏览器经服务器网关（`https://<domain>/app/`，与设备端到端加密）；飞书 / Telegram / 微信 Bot 通过组网上的 OBP（新版宿主）或 Remote Connect relay（旧版宿主，旧客户端仍用 `mobile-web`）驱动会话 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（设备组网、浏览器网关）、[`src/mobile-web`](src/mobile-web/AGENTS.md)、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect`、[relay-service](src/crates/services/relay-service/AGENTS.md) |
-| 多端互控（Peer Device Mode） | 同账号的一台设备成为另一台的数据平面：控制端外壳仍在本地，invoke 和事件来自 peer；新版宿主之间走设备组网上的 OBP，旧版宿主走 relay HostInvoke | [peer-device-mode.md](docs/architecture/peer-device-mode.md)、[NSH peer 路由](src/nsh-ui/AGENTS.md) |
-| Dispatch 分离任务 | 控制端把持久化任务提交到另一台 OpenBitFun 宿主后即可断开；目标端拥有 job、session、worktree、事件日志和权限信箱 | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
+| 远程控制 | 只有前端的客户端用账号（邮箱验证码）登录，通过一个 fleet entry（桌面或 CLI 宿主，自动选择并自动故障切换）操作账号下的所有 runtime：NSH 手机 App 经 OpenBitFun Link，浏览器经服务器网关（`https://<domain>/app/`，与设备端到端加密，运行设备自带的 Web UI 包）；飞书 / Telegram / 微信 Bot 通过设备网络上的 OBP（`mesh_route`）驱动会话，没有 relay 回退 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（fleet、设备网络、浏览器网关）、[services-integrations](src/crates/services/services-integrations/AGENTS.md) 的 `remote_connect` |
+| 设备上下文（原 Peer Device Mode） | 任意前端操作账号下任意运行时：命令携带目标设备，由 fleet 路由到其所属设备（`fleet_call`），窗口装饰、更新器与本地 OS 自动化仍留在客户端自己的后端。2.0 已退役整个界面切换到某台 peer 的模式 | [unified-client-architecture.md](docs/architecture/unified-client-architecture.md)（fleet）、[peer-device-mode.md](docs/architecture/peer-device-mode.md)（不变量与历史） |
+| Dispatch 分离任务 | 控制端（桌面、CLI 或账号的云端 superagent）把持久化任务提交到另一台 OpenBitFun 宿主后即可断开；目标端拥有 job、session、worktree、事件日志和权限信箱 | [detached-task-dispatch.md](docs/architecture/detached-task-dispatch.md) |
 
 四种场景共同适用的规则：
 
@@ -144,8 +152,9 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 各场景的具体约束：
 
 - **远程工作区**：每个已注册的后端命令在 Product Operation Registry（[`remote_surface/table.rs`](src/crates/contracts/product-domains/src/remote_surface/table.rs)）中有且只有一行，声明其远程工作区立场。桌面端闭包测试与能力生成器会拒绝没有对应行的命令，新行不得使用 `Unaudited`（该存量清单只减不增）；被删除的命令保留一行 `retired(...)`，让旧客户端得到退役原因。修改该表后运行 `pnpm run capabilities:generate`。见 [remote-surface-contract.md](docs/architecture/remote-surface-contract.md)。
-- **远程控制**：mobile web 和 IM Bot 通过 `RemoteCommand` wire 协议和 bot command router / menu 触达会话，不走桌面 UI。新增或迁移会话级能力时（工作区或助手选择、会话生命周期、模式、模型、审批、附件），要同步扩展这些形态，或让它们给出明确的不支持回复。
-- **多端互控**：产品命令默认代理到 peer 执行。必须留在控制端的命令（窗口装饰、更新器、账号身份、本地 OS 自动化）在同一注册表行中声明为 `ControllerLocal`；桌面端 peer host、CLI peer host 和 NSH UI 路由（`src/nsh-ui/src/generated/peerSurface.ts`）都从它派生拒绝集合，`pnpm run check:core-boundaries` 会拒绝手写清单。CLI host 要执行的命令需要处理分支加行内 `cli_peer: HANDLED`；`src/apps/cli/src/peer_host/commands/mod.rs` 的闭包测试保持两者一致。Peer 能力是类型化的 `PeerHostCapability`，由注册表发布。改动 session、account 或 hydrate 路径前，先读 [peer-device-mode.md](docs/architecture/peer-device-mode.md) 中的多端互控 invariants。
+- **远程控制**：IM Bot 通过 `RemoteCommand` wire 协议（经 Link 的 `obp_remote_command`）和 bot command router / menu 触达会话，不走桌面 UI。新增或迁移会话级能力时（工作区或助手选择、会话生命周期、模式、模型、审批、附件），要同步扩展这些形态，或让它们给出明确的不支持回复。
+- **Fleet**：经 fleet entry 发出的每个产品命令都以 `fleet_call {target, command, args}` 传输，并在拥有它的设备上执行。被转发且请求中携带 session、workspace 或 terminal id 的命令，需要在 [`remote_surface/fleet_routing.rs`](src/crates/contracts/product-domains/src/remote_surface/fleet_routing.rs) 中有一行 `ByOwner`；缺少时 `pnpm run desktop-nsh:check-dispatch` 会拒绝。Fleet 数据形状跨版本传输：宽松读取，新增字段带默认值。
+- **设备上下文（fleet 路由）**：产品命令默认路由到其所属设备执行。必须留在控制端的命令（窗口装饰、更新器、账号身份、本地 OS 自动化）在同一注册表行中声明为 `ControllerLocal`（fleet 将其路由为 `EntryLocal`）；桌面端 peer host、CLI peer host 和 NSH UI 路由（`src/nsh-ui/src/generated/peerSurface.ts`）都从它派生拒绝集合，`pnpm run check:core-boundaries` 会拒绝手写清单。CLI host 要执行的命令需要处理分支加行内 `cli_peer: HANDLED`；`src/apps/cli/src/peer_host/commands/mod.rs` 的闭包测试保持两者一致。Peer 能力是类型化的 `PeerHostCapability`，由注册表发布。改动 session、account 或 hydrate 路径前，先读 [peer-device-mode.md](docs/architecture/peer-device-mode.md) 中的多端互控 invariants。
 - **Dispatch 分离任务**：任务在目标端以 CLI delivery profile 无界面运行，没有交互宿主，也不保证控制端在线。控制端只是观察者，不是 runtime 或文件系统代理。不要引入依赖提交方常驻的行为。dispatch 协议版本和目标端必备 capability 属于兼容契约：新的目标端要求要走协商 capability，而不是默认假设。
 
 说明改动在哪些远程场景下验证过。只跑本地测试不能作为远程行为的证据。
@@ -154,9 +163,11 @@ await invokeCommand('your_command', { ... }); // 发送 { request: { ... } }
 
 用户是原地升级的，而上述远程场景经常让两个不同版本的 OpenBitFun 连在同一条链路上。任何改动都必须保证已有安装无需手工修复即可继续工作。
 
+OpenBitFun 2.0（本仓库）只在**会话记录与配置**上兼容 1.0：1.x 写下的会话、对话记录、工作区记录、连接配置和设置文件必须仍能读取。前端、远程控制、peer 与账号不与 1.x 客户端或宿主互通；1.x 的 relay（`remote.openbitfun.com/relay`、配对邀请、relay RPC 与 HostInvoke、`mobile-web`）只属于已发布的 1.x 客户端，2.0 的任何组件都不使用它。下文的 peer 与远程兼容指 2.0 与另一个 2.0 构建之间，仍按 capability 协商。
+
 - **落盘结构会被新旧两侧代码同时读取。** 对配置、设置、会话、连接配置、worktree 和 dispatch 记录：新增字段要带默认值，反序列化保持容错，绝不重新定义或收窄已落盘字段的语义，也绝不把旧数据给不出的字段变成必填。
 - **不要用删除或重置用户数据的方式来“恢复”解析不了的内容。** 保留记录、降级功能并给出明确状态。凭证缺失、配置读不出、超时或主机离线，都不构成丢弃会话、工作区或连接的理由。销毁性删除只能是用户的显式操作。
-- **跨版本边界要协商，不能假设。** Peer HostInvoke、dispatch 协议、relay 与 mobile web、IM Bot，对面都是你控制不了的构建版本。先声明 capability 并在使用前检查（包版本相同不等于行为相同），并让旧版本一侧留在可用路径上，而不是直接判失败。
+- **跨版本边界要协商，不能假设。** OBP peer 与 fleet、dispatch 协议、浏览器网关、手机 App、IM Bot，对面都是你控制不了的 2.0 构建版本。先声明 capability 并在使用前检查（包版本相同不等于行为相同），并让旧版本一侧留在可用路径上，而不是直接判失败。
 - **改名就是一次迁移。** 在所有受支持的对端都不可能再发送旧名称、旧 id 或旧结构之前，必须继续兼容读取；被改名对象所引用的数据（vault 条目、工作区指针）要一并迁移。
 - **用测试证明。** 覆盖旧数据反序列化和旧载荷往返，而不只是新结构。只验证当前代码自己写出的数据，不算升级兼容性覆盖。
 
@@ -199,4 +210,4 @@ NSH 手机应用（iOS 与 Android，与桌面端相同的 `src/nsh-ui` 界面�
 控制账号下的设备）位于本仓库 [`src/apps/mobile-nsh`](src/apps/mobile-nsh/README.md)。
 旧版 Kotlin 与 HarmonyOS 应用及其 Kotlin 共享模块、原生 WebView 资源和移动端设计工具
 仍在 [OpenBitFun-Mobile](https://github.com/openBitFun/OpenBitFun-Mobile)。
-`src/mobile-web` 和主机侧移动端／Relay 协议契约仍由本仓库维护。
+手机 App 的主机侧协议契约（OBP、Link）仍由本仓库维护。

@@ -2,6 +2,8 @@
 
 适用范围：OpenBitFun 1.0 系列的 SSH / Docker 工作区、Remote Connect、mobile-web、飞书 / Telegram / 微信 bot、Peer Device Mode、Detached Dispatch，以及它们依赖的账号、同步、权限、文件和事件通道。补充覆盖 Server / App Server、Shared TUI IPC、MCP、ACP、模型流式连接。此文是可重复执行的验证规范；用例存在、代码审阅或单测通过均不表示真机通过。
 
+2.0 说明：mobile-web（1.0 的手机网页端，`src/mobile-web`）已在 OpenBitFun 2.0 中移除，下文涉及 mobile-web 的用例只适用于 1.0 发布分支；2.0 的手机和浏览器使用 NSH UI（`src/nsh-ui`）。
+
 本手册不要求兼容 0.2.xx 旧产品。1.0 的通信双方仍需协商协议、产品身份和行为能力，不能用版本字符串相同代替能力检查。拒绝不兼容连接应保留用户数据；不能借升级重置账号、会话或远程配置。
 
 ## 1. 事实源和执行位置
@@ -9,7 +11,7 @@
 | 链路 | 请求和状态的所有者 | 验证时必须区分的事实 |
 | --- | --- | --- |
 | SSH / Docker 工作区 | [SSH 服务](../../src/crates/services/services-integrations/src/remote_ssh)、[工作区传输设计](../architecture/remote-workspace-transport.md) | Agent Runtime 在 OpenBitFun 宿主，工作区文件和子进程在所选 SSH / 容器目标；目标不需要安装 Agent 守护程序 |
-| 手机房间通道 | [mobile-web](../../src/mobile-web)、[RemoteCommand](../../src/crates/services/services-integrations/src/remote_connect.rs)、[Relay](../../src/crates/services/relay-service) | 手机发 HTTP，Relay 经宿主 WebSocket 桥接；二维码配对与账号设备身份是不同通道 |
+| 手机房间通道 | mobile-web（1.0，已移除）、[RemoteCommand](../../src/crates/services/services-integrations/src/remote_connect.rs)、[Relay](../../src/crates/services/relay-service) | 手机发 HTTP，Relay 经宿主 WebSocket 桥接；二维码配对与账号设备身份是不同通道 |
 | IM bot | [共享 provider](../../src/crates/services/services-integrations/src/remote_connect/bot)、[产品路由](../../src/crates/assembly/core/src/service/remote_connect/bot) | provider 投递游标、聊天对象、设备选择、会话及交互请求各有范围；IM 平台是外部依赖 |
 | Peer Device | [设计](../architecture/peer-device-mode.md)、[前端路由](../../src/nsh-ui/src/peerRouting.ts)、[CLI host](../../src/apps/cli/src/peer_host) | A 保持本地界面，B 拥有产品执行；切换所显示设备不等于取消 B 的任务 |
 | Dispatch | [设计](../architecture/detached-task-dispatch.md)、[CLI 目标](../../src/apps/cli/src/dispatch)、[控制端](../../src/nsh-ui/src/dispatchStore.ts) | 目标拥有 job、session、worktree、worker、事件及权限邮箱；控制端是观察者 |
@@ -293,8 +295,6 @@ SSH 与账号设备 RPC 两种传输各跑一轮；目标分别为 CLI daemon �
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm --dir src/mobile-web run type-check
-pnpm run build:mobile-web
 pnpm run check:core-boundaries
 ```
 
@@ -312,7 +312,6 @@ cargo test --locked -p openbitfun-app-server-protocol --test legacy_wire_contrac
 ```
 
 ```bash
-pnpm --dir src/mobile-web run test:relay-transport
 cd src/nsh-ui && nsh test .   # native desktop UI: peer mesh, OBP, external import, dispatch observer
 ```
 

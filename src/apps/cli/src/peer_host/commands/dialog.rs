@@ -44,7 +44,7 @@ fn dialog_submissions() -> &'static Mutex<HashMap<String, CachedDialogSubmission
 /// Reserve the slot that records the outcome of one `(sessionId, turnId)`
 /// submission.
 ///
-/// A Relay timeout leaves the controller unable to tell "never arrived" from
+/// A transport timeout leaves the controller unable to tell "never arrived" from
 /// "already running". Holding the outcome behind a per-identity async lock
 /// makes a replay wait for the original attempt and then observe its result,
 /// instead of starting the prompt a second time. Desktop Peer Hosts get this
@@ -744,7 +744,7 @@ mod tests {
         *outcome = Some(Ok(json!({ "success": true })));
         drop(outcome);
 
-        // The Relay timed out, so the controller replays the exact payload. It
+        // The transport timed out, so the controller replays the exact payload. It
         // must observe the recorded outcome, not submit the prompt again.
         let replay = dialog_submission_slot("session-1", "turn-1").expect("replay slot");
         assert_eq!(
