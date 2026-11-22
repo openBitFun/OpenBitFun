@@ -617,7 +617,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.press("connector-bot-verbose");
   expect(backend.verboseWrites).toEqual([true]);
 
-  // The 1.x mobile web relay and 1.x pairing card are retired in 2.0: only bot methods start.
+  // The 1.x mobile web relay is retired in 2.0, and the OBP paired-client card stays hidden when no paired clients exist.
   expect(app.shows("channel-toggle-relay")).toBe(false);
   expect(app.shows("obp-pairing-card")).toBe(false);
   expect(backend.startedConnections.every(item => item.method.startsWith("bot_"))).toBe(true);

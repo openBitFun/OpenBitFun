@@ -321,6 +321,9 @@ test("Devices lists paired devices and revokes one; no LAN switch", async () => 
   expect(app.shows("label:obp-pair-device")).toBe(false);
 
   await app.press("label:obp-revoke-c1");
+  await app.waitFor("label:obp-revoke-confirm-dialog");
+  expect(host.calls.some(call => call.command === "obp_revoke_paired_client")).toBe(false);
+  await app.press("label:obp-revoke-confirm");
   await app.waitUntil(() => host.calls.some(call => call.command === "obp_revoke_paired_client"));
   expect(host.calls.find(call => call.command === "obp_revoke_paired_client")?.args).toEqual({ request: { clientId: "c1" } });
   expect(host.calls.some(call => call.command === "obp_set_lan_enabled")).toBe(false);

@@ -413,7 +413,7 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "agents.reloadCatalog": "重新整理目錄",
   "agents.createBot": "建立模式",
   "agents.deleteBot": "刪除模式",
-  "agents.searchPlaceholder": "搜尋模式…",
+  "agents.searchPlaceholder": "搜尋智能體…",
   "agents.allSources": "全部來源",
   "agents.allBots": "全部",
   "agents.primaryAgents": "主智能體",

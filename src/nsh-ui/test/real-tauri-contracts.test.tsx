@@ -341,15 +341,15 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await openSession(app, "Primary check");
-  // Must resolve symbolic "primary" to "Claude Sonnet 4.5" instead of showing "Model: primary"!
-  await app.waitFor("Model: Claude Sonnet 4.5");
+  // Must resolve symbolic "primary" to "Claude Sonnet 4.5" instead of showing raw "primary"!
+  await app.waitFor("label:bot-capsule-trigger >> text:Claude Sonnet 4.5");
 
   // Embedded reasoning presets must be available without extra `project_ai_model_reasoning_catalog` RPC!
   await app.waitFor("Reasoning: Default");
   expect(backend.actions()).not.toContain("project_ai_model_reasoning_catalog");
 
   // Picker offers `"text_chat"` enabled models and hides disabled + image-only models.
-  await app.press("Model: Claude Sonnet 4.5");
+  await app.press("label:bot-capsule-trigger");
   await app.waitFor("Claude Haiku 4.5 · anthropic");
   expect(app.texts()).not.toContain("Disabled Model · openai");
   expect(app.texts()).not.toContain("DALL-E · openai");
@@ -361,7 +361,7 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
     sessionId: "session-primary",
     modelName: "cfg-claude-haiku",
   });
-  await app.waitFor("Model: Claude Haiku 4.5");
+  await app.waitFor("label:bot-capsule-trigger >> text:Claude Haiku 4.5");
 });
 
 test("real Rust snake_case ToolAwaitingUserInput renders live prompt and submits answers", async () => {

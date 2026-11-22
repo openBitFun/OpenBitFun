@@ -540,7 +540,7 @@ test("the composer's agent comes from the host catalogue and the shared preferen
     sessionName: "New session",
     agentType: "Creative",
   });
-  await app.waitFor("Agent: Creative");
+  await app.waitFor("label:agent-picker >> text:Creative");
   // The catalogue is asked for by workspace: that is what the host resolves an
   // agent against, and what makes a remote workspace answer with its own agents.
   // Its order, eligibility and default are the host's (`get_session_mode_catalog`).
@@ -590,7 +590,7 @@ test("a started session keeps its agent; one with no turn takes the pick", async
   // The host records the pick as `last_mode_id` itself; this surface no longer
   // writes the preference.
   expect(backend.settingsWrites.some(write => write.path === "app.flow_chat.last_mode_id")).toBe(false);
-  await app.waitFor("Agent: Ultimate");
+  await app.waitFor("label:agent-picker >> text:Ultimate");
 
   // The next turn runs as the agent the session is bound to, not as a constant.
   await app.type("composer", "Run as Ultimate");
@@ -620,7 +620,7 @@ test("a host without an agent catalogue says so and stays on Standard", async ()
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
   await openSession(app, "NSH skeleton");
-  await app.waitFor("Agent: Standard");
+  await app.waitFor("label:agent-picker >> text:Standard");
   await app.press("agent-picker");
   // The panel names the command that did not answer, and offers a re-read rather
   // than pretending the catalogue is empty.
@@ -843,9 +843,9 @@ test("the composer picks the model the next turn runs on", async () => {
   await openSessionRow(app, "NSH skeleton >> nth=0");
   await app.waitFor("Port the session list.");
   // The catalog's default names the model in the composer bar before the user picks one.
-  await app.waitFor("Model: Primary model");
+  await app.waitFor("label:bot-capsule-trigger >> text:Primary model");
 
-  await app.press("Model: Primary model");
+  await app.press("label:bot-capsule-trigger");
   // A model that cannot chat is not offered.
   await app.waitFor("Fast model · openai");
   expect(app.texts()).not.toContain("Image model · openai");
@@ -857,12 +857,12 @@ test("the composer picks the model the next turn runs on", async () => {
     modelName: "fast-small",
     workspaceId: "workspace-1",
   });
-  await app.waitFor("Model: Fast model");
+  await app.waitFor("label:bot-capsule-trigger >> text:Fast model");
 
   // Another session shows the model its own record carries, not this one's pick,
   // and a model the catalog does not list is shown by its own id.
   await openSessionRow(app, "Terminal migration >> nth=0");
-  await app.waitFor("Model: session-only-model");
+  await app.waitFor("label:bot-capsule-trigger >> text:session-only-model");
 });
 
 test("the composer offers the reasoning the chosen model supports", async () => {
@@ -903,7 +903,7 @@ test("a host that declares no reasoning settings draws no control", async () => 
 
   await showAllSessions(app, "NSH skeleton");
   await openSessionRow(app, "NSH skeleton >> nth=0");
-  await app.waitFor("Model: Primary model");
+  await app.waitFor("label:bot-capsule-trigger >> text:Primary model");
   expect(app.texts().some(text => text.startsWith("Reasoning:"))).toBe(false);
 });
 

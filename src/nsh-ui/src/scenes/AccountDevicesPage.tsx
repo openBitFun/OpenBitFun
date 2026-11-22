@@ -39,9 +39,11 @@ import {
 } from "../connectorsStore";
 import { fleetDevices } from "../fleetStore";
 import { localizeHostError, tr, type MessageKey } from "../i18n";
+import { loadObpStatus, obpStatus } from "../obpStore";
 import * as navigation from "../state";
 import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { DeviceGlyph, deviceException, stateColor } from "../ui/fleet";
+import { ObpPairingCard } from "./ObpPairingCard";
 import { UseOnPhonePanel } from "./UseOnPhonePanel";
 import { Icon, type IconName } from "../ui/icons";
 import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
@@ -748,9 +750,13 @@ function AccountDevicesSection() {
 
 /** The page body Settings draws for Account › Devices and chat apps. */
 export function AccountDevicesPage() {
+  void loadObpStatus();
   return (
     <View style={{ gap: layout.sectionGap }}>
       <AccountDevicesSection />
+      <If when={obpStatus()?.available === true && (obpStatus()?.pairedClients?.length ?? 0) > 0}>
+        <ObpPairingCard autoload={false} />
+      </If>
       <ChannelsSection />
       <RemoteDisclaimerModal />
     </View>

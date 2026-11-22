@@ -414,7 +414,7 @@ export const enUSMessages = {
   "agents.reloadCatalog": "Reload Catalog",
   "agents.createBot": "Create mode",
   "agents.deleteBot": "Delete mode",
-  "agents.searchPlaceholder": "Search modes…",
+  "agents.searchPlaceholder": "Search agents…",
   "agents.allSources": "All sources",
   "agents.allBots": "All modes",
   "agents.primaryAgents": "Primary Agents",

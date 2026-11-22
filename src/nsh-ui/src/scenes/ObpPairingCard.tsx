@@ -1,8 +1,9 @@
 // Devices scene: "Browser and paired devices" — this backend's own listener.
 //
-// Retained for standalone/legacy compatibility (not mounted on 2.0 Account ›
-// Devices, which uses email-code sign-in). Errors are sanitized through
-// `localizeHostError` and destructive revocations require explicit confirmation.
+// Mounted in 2.0 Account › Devices when `obp_get_status` reports active paired
+// clients so users can inspect the loopback URL and revoke paired browsers/devices.
+// Errors are sanitized through `localizeHostError` and destructive revocations
+// require explicit confirmation.
 
 import { signal, Text, View } from "nsh";
 import { formatRelativeTime } from "../format";
@@ -16,7 +17,7 @@ import {
   revokeObpClient,
   type ObpPairedClient,
 } from "../obpStore";
-import { palette, space, textStyle } from "../theme";
+import { compactLayout, layout, palette, space, textStyle } from "../theme";
 import { InsetGroup, InsetRow, StudioSection } from "../ui/studio";
 import { ModalDialog } from "../ui/overlays";
 import { Button, InlineBanner } from "../ui/primitives";
@@ -35,9 +36,9 @@ function clientDetail(client: ObpPairedClient): string {
   return tr("devices.obp.clientNeverSeen");
 }
 
-export function ObpPairingCard() {
+export function ObpPairingCard(props: { autoload?: boolean } = {}) {
   const pendingRevoke = signal<ObpPairedClient | null>(null);
-  void loadObpStatus();
+  if (props.autoload !== false) void loadObpStatus();
   return (
     <StudioSection
       title={tr("devices.obp.title")}
@@ -69,15 +70,20 @@ export function ObpPairingCard() {
                 first
                 icon="monitor"
                 label={tr("devices.obp.browserHere")}
-                detail={status().webUi ? undefined : tr("devices.obp.noWebUi")}
+                detail={
+                  status().webUi
+                    ? (status().loopbackUrl ?? tr("devices.obp.noLoopback"))
+                    : tr("devices.obp.noWebUi")
+                }
                 trailing={
                   <Button
                     label={tr("devices.obp.openBrowser")}
                     variant="secondary"
-                    size="sm"
+                    size={compactLayout() ? "md" : "sm"}
                     leadingIcon="external-link"
                     disabled={!status().ownerUrl || !status().webUi || obpBusy()}
                     accessibilityLabel="obp-open-browser"
+                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                     onPress={() => void openOwnerBrowser()}
                   />
                 }
@@ -92,9 +98,10 @@ export function ObpPairingCard() {
                       <Button
                         label={tr("devices.obp.revoke")}
                         variant="danger"
-                        size="sm"
+                        size={compactLayout() ? "md" : "sm"}
                         disabled={obpBusy()}
                         accessibilityLabel={`obp-revoke-${client().id}`}
+                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                         onPress={() => pendingRevoke.set(client())}
                       />
                     }

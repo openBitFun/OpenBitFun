@@ -1161,7 +1161,7 @@ export const layout = {
   /** The inspector becomes a sheet when the canvas would drop below this. */
   canvasMinWidth: 560,
   topBarHeight: 44,
-  phoneTopBarHeight: 48,
+  phoneTopBarHeight: 56,
   /** Left space kept for the macOS traffic lights while the sidebar is hidden. */
   trafficLightInset: 76,
   phoneTabBarHeight: 56,

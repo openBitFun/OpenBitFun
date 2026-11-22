@@ -107,7 +107,7 @@ test("the picker groups every device's models in the entry's order and stores an
   expect(update.target).toBe("dev-a");
   expect((update.args.request as { modelName?: string }).modelName).toBe("fleet:dev-b/big");
   // The chip names the model and the device it lives on.
-  await app.waitFor("text:Model: Big model · linux-box");
+  await app.waitFor("label:bot-capsule-trigger >> text:Big model · linux-box");
 });
 
 test("a session on another device reads the catalog relative to that device", async () => {

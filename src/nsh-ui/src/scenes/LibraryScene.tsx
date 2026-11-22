@@ -106,7 +106,7 @@ export function LibraryScopeChip() {
           height: compactLayout() ? layout.touchTarget : controlHeight.sm,
           minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
           maxWidth: "100%",
-          paddingHorizontal: space.sm,
+          paddingHorizontal: compactLayout() ? space.md : space.sm,
           borderRadius: radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
@@ -143,10 +143,11 @@ export function LibraryScopeChip() {
   );
 }
 
-function LibraryTabs() {
+function LibraryTabs(props: { scrollable?: boolean } = {}) {
   return (
     <SegmentedTabs
       size="sm"
+      scrollable={props.scrollable}
       options={LIBRARY_TABS.map(tab => ({
         value: tab,
         label: tr(TAB_LABEL[tab]),
@@ -185,7 +186,7 @@ function LibraryHeader() {
           <LibraryScopeChip />
         </View>
       </If>
-      <View style={{ gap: space.sm }}>
+      <View style={{ gap: space.sm, minWidth: 0 }}>
         <If
           when={studioCompact()}
           else={
@@ -194,8 +195,14 @@ function LibraryHeader() {
             </View>
           }
         >
-          <Scroll horizontal accessibilityLabel="library-tabs-scroll" style={{ flexShrink: 0 }}>
-            <LibraryTabs />
+          <Scroll
+            horizontal
+            scrollbar={false}
+            accessibilityLabel="library-tabs-scroll"
+            style={{ width: "100%", minWidth: 0, flexShrink: 0 }}
+            contentStyle={{ flexDirection: "row" }}
+          >
+            <LibraryTabs scrollable />
           </Scroll>
         </If>
         <Text

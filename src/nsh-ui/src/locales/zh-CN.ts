@@ -413,7 +413,7 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "agents.reloadCatalog": "刷新目录",
   "agents.createBot": "创建模式",
   "agents.deleteBot": "删除模式",
-  "agents.searchPlaceholder": "搜索模式…",
+  "agents.searchPlaceholder": "搜索智能体…",
   "agents.allSources": "全部来源",
   "agents.allBots": "全部",
   "agents.primaryAgents": "主智能体",

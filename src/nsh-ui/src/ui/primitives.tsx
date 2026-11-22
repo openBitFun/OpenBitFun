@@ -1336,6 +1336,8 @@ export interface SegmentedTabsProps<T extends string> {
   options: ReadonlyArray<SegmentedTabOption<T>>;
   value: T;
   size?: "sm" | "md";
+  /** When inside a horizontal `<Scroll>`, keep each tab at its intrinsic width instead of truncating. */
+  scrollable?: boolean;
   style?: StyleProp<ViewStyle>;
   onChange: (value: T) => void;
 }
@@ -1356,7 +1358,7 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
           alignItems: "center",
           width: "fit-content",
           flexShrink: 0,
-          maxWidth: "100%",
+          maxWidth: props.scrollable ? undefined : "100%",
           gap: 2,
           padding: SEGMENT_PADDING,
           borderRadius: radii.pill,
@@ -1380,8 +1382,8 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
               height: "100%",
               flexDirection: "row",
               alignItems: "center",
-              flexShrink: 1,
-              minWidth: 0,
+              flexShrink: props.scrollable ? 0 : 1,
+              minWidth: props.scrollable ? undefined : 0,
               gap: space.xs,
               paddingHorizontal: (props.size ?? "md") === "sm" ? space.sm : space.md,
               paddingVertical: 0,
@@ -1420,15 +1422,15 @@ export function SegmentedTabs<T extends string>(props: SegmentedTabsProps<T>) {
             </If>
             <Text
               style={{
-                flexShrink: 1,
-                minWidth: 0,
+                flexShrink: props.scrollable ? 0 : 1,
+                minWidth: props.scrollable ? undefined : 0,
                 color:
                   option().value === props.value ? palette().text : palette().textSecondary,
                 fontSize: textSize((props.size ?? "md") === "sm" ? 12 : 13),
                 fontWeight: option().value === props.value ? "500" : "400",
                 lineHeight: textLineHeight((props.size ?? "md") === "sm" ? 12 : 13, 1.24),
                 numberOfLines: 1,
-                textOverflow: "ellipsis",
+                textOverflow: props.scrollable ? undefined : "ellipsis",
               }}
             >
               {option().label}

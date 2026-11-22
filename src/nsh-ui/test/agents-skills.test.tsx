@@ -691,7 +691,7 @@ test("AgentsScene loads catalog with exact raw flags, filters, and Start Thread 
   await app.press("agent-start-thread-Reviewer");
   await app.waitFor("How can I help today?");
   await app.press("bot-capsule-trigger");
-  await app.waitFor("Agent: Reviewer");
+  await app.waitFor("label:agent-picker >> text:Reviewer");
   const createSessionCall = mock.calls.find(call => call.action === "create_session");
   expect(createSessionCall?.request).toMatchObject({
     agentType: "Reviewer",

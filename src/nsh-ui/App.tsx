@@ -2567,7 +2567,7 @@ function phoneTitle(scene: SceneId): string {
 }
 
 /**
- * The phone top bar, 48: ☰ conversations | title | avatar on OpenBitFun; the
+ * The phone top bar, 56: ☰ conversations | title | avatar on OpenBitFun; the
  * page title on the other tabs (Library adds its scope chip on the right); ‹
  * and the title on pushed pages. A session draws its own header, so there is
  * none here.
@@ -2581,7 +2581,7 @@ function PhoneTopBar() {
       style={{
         height: layout.phoneTopBarHeight,
         flexShrink: 0,
-        paddingHorizontal: space.xs,
+        paddingHorizontal: space.sm,
         flexDirection: "row",
         alignItems: "center",
         gap: space.xs,
@@ -2590,7 +2590,7 @@ function PhoneTopBar() {
         borderColor: palette().borderSubtle,
       }}
     >
-      <View style={{ minWidth: isLibrary() ? space.sm : layout.touchTarget, alignItems: "flex-start", flexShrink: 0 }}>
+      <View style={{ minWidth: isLibrary() ? space.xs : layout.touchTarget, alignItems: "flex-start", flexShrink: 0 }}>
         <If
           when={isTab()}
           else={
