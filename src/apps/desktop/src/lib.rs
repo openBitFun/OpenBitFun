@@ -1114,17 +1114,6 @@ backend_commands![
     api::remote_connect_api::account_list_devices,
     api::remote_connect_api::account_update_device_alias,
     api::remote_connect_api::account_delete_device,
-    // OpenBitFun Page API
-    api::pages_api::page_publish,
-    api::pages_api::page_save_version,
-    api::pages_api::page_list,
-    api::pages_api::page_list_versions,
-    api::pages_api::page_create_open_link,
-    api::pages_api::page_deploy,
-    api::pages_api::page_delete_version,
-    api::pages_api::page_update,
-    api::pages_api::page_unpublish,
-    api::pages_api::page_delete,
     // MiniApp API
     api::miniapp_api::list_miniapps,
     api::miniapp_api::get_miniapp,

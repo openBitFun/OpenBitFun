@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:96616cb3b53493e6",
+  "digest": "fnv1a64:e3ef76243833b6ae",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -2928,11 +2928,11 @@
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -2940,11 +2940,11 @@
       "surface": "tauri_command",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "controller_local"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
       }
     },
     {
@@ -6031,122 +6031,132 @@
     },
     {
       "id": "page_create_open_link",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_delete",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_delete_version",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_deploy",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_list",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_list_versions",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_publish",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_save_version",
-      "surface": "tauri_command",
+      "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_unpublish",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
       "id": "page_update",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "proxied"
+        "kind": "retired",
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the CLI peer host has no handler for this command"
+        "reason": "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices"
       }
     },
     {
@@ -11004,13 +11014,13 @@
     {
       "id": "get_clipboard_files",
       "route": {
-        "kind": "by_target"
+        "kind": "entry_local"
       }
     },
     {
       "id": "get_clipboard_image",
       "route": {
-        "kind": "by_target"
+        "kind": "entry_local"
       }
     },
     {
@@ -12731,66 +12741,6 @@
       "route": {
         "kind": "by_target",
         "reason": "opens or reopens a workspace on the chosen device; workspace ids are per device (the same root on two devices shares one), so the id cannot pick the device"
-      }
-    },
-    {
-      "id": "page_create_open_link",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_delete",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_delete_version",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_deploy",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_list",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_list_versions",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_publish",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_save_version",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_unpublish",
-      "route": {
-        "kind": "by_target"
-      }
-    },
-    {
-      "id": "page_update",
-      "route": {
-        "kind": "by_target"
       }
     },
     {

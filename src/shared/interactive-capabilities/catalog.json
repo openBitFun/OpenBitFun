@@ -6653,7 +6653,7 @@
             ]
           },
           "evidence": [
-            "command:page_list"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_manage_tool.rs#PageManageTool"
           ]
         },
         {
@@ -6675,8 +6675,7 @@
             ]
           },
           "evidence": [
-            "command:page_save_version",
-            "command:page_list_versions"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_manage_tool.rs#PageManageTool"
           ]
         },
         {
@@ -6698,8 +6697,8 @@
             ]
           },
           "evidence": [
-            "command:page_publish",
-            "command:page_deploy"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_publish_tool.rs#PagePublishTool",
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_deploy_tool.rs#PageDeployTool"
           ]
         },
         {
@@ -6721,7 +6720,7 @@
             ]
           },
           "evidence": [
-            "command:page_update"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_manage_tool.rs#PageManageTool"
           ]
         },
         {
@@ -6737,7 +6736,7 @@
             "reasonEn": "\"Create and open a shareable access link for any Page\" generates an openable session link or copies it in the UI; the Agent opens the Pages scene so you can launch or share it directly."
           },
           "evidence": [
-            "command:page_create_open_link"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_manage_tool.rs#PageManageTool"
           ]
         },
         {
@@ -6759,7 +6758,7 @@
             ]
           },
           "evidence": [
-            "command:page_unpublish"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_manage_tool.rs#PageManageTool"
           ]
         },
         {
@@ -6781,8 +6780,7 @@
             ]
           },
           "evidence": [
-            "command:page_delete_version",
-            "command:page_delete"
+            "source:src/crates/assembly/core/src/agentic/tools/implementations/page_manage_tool.rs#PageManageTool"
           ]
         }
       ],
@@ -13472,9 +13470,6 @@
     },
     "subagent": {
       "capabilityId": "feature.agents"
-    },
-    "pages": {
-      "capabilityId": "feature.pages"
     },
     "review_launch": {
       "capabilityId": "feature.code-review"

@@ -2287,7 +2287,7 @@
         "sceneId": "pages"
       },
       "evidence": [
-        "command:page_create_open_link"
+        "source:src/crates/assembly/core/src/agentic/tools/implementations/page_manage_tool.rs#PageManageTool"
       ]
     },
     {

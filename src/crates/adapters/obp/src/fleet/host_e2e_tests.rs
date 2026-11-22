@@ -35,7 +35,7 @@ impl MeshAuthority for SharedKey {
     }
 }
 
-/// A runtime host: `page_list` (a registry `Proxied` command) publishes
+/// A runtime host: `list_miniapps` (a registry `Proxied` command) publishes
 /// `count` text chunks tagged with `tag`; fleet verbs go to its fleet.
 struct HostBackend {
     hub: Arc<EventHub>,
@@ -59,7 +59,7 @@ impl ObpBackend for HostBackend {
                     .unwrap_or_else(|| Err("not a fleet verb".into()));
             }
             match command.as_str() {
-                "page_list" => {
+                "list_miniapps" => {
                     let count = args["request"]["count"].as_u64().unwrap_or(1);
                     let tag = args["request"]["tag"].as_str().unwrap_or_default();
                     for index in 0..count {
@@ -460,7 +460,7 @@ async fn fleet_navigator_and_forwarded_call_over_two_hosts() {
     let answer = client
         .call(
             "fleet_call",
-            json!({ "request": { "target": "fh-b", "command": "page_list",
+            json!({ "request": { "target": "fh-b", "command": "list_miniapps",
                     "args": { "request": { "count": 2, "tag": "turn" } } } }),
         )
         .await
@@ -478,7 +478,7 @@ async fn fleet_navigator_and_forwarded_call_over_two_hosts() {
     let local = client
         .call(
             "fleet_call",
-            json!({ "request": { "target": "fh-a", "command": "page_list",
+            json!({ "request": { "target": "fh-a", "command": "list_miniapps",
                     "args": { "request": { "count": 1, "tag": "here" } } } }),
         )
         .await
@@ -780,4 +780,100 @@ async fn an_entry_without_the_cloud_connector_lists_the_node_unknown_and_gated()
     client.close().await;
     old.fleet.shutdown();
     old.server.shutdown();
+}
+
+/// Native desktop `fleet_events` (detached `FleetMux::poll`) must receive
+/// events from a peer that connects *after* `fleet_subscribe`, even when
+/// events arrive before the first poll or between zero-wait polls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn detached_fleet_events_receives_events_from_peer_connected_after_subscribe() {
+    let ports: Ports = Arc::default();
+    let a = host("de-a", "de-b", &ports).await;
+
+    // Subscribe to `de-b` BEFORE `de-b` exists or has any link.
+    let mut follow = std::collections::BTreeMap::new();
+    follow.insert(
+        "de-b".to_string(),
+        FleetFollow {
+            all: Some(true),
+            sessions: None,
+            terminals: None,
+        },
+    );
+    a.fleet
+        .subscribe(FleetSubscribeRequest { follow })
+        .await
+        .unwrap();
+
+    // First detached poll while `de-b` is absent: empty.
+    let initial = a
+        .fleet
+        .events(FleetEventsRequest {
+            cursor: FleetCursor::default(),
+            wait_ms: Some(0),
+        })
+        .await;
+    assert!(initial.events.is_empty());
+
+    // Now `de-b` comes online after subscribe.
+    let b = host("de-b", "de-a", &ports).await;
+
+    // Wait until `de-a` has linked to `de-b` (first detached poll discovers `de-b`
+    // and persists its starting position in `ClientState.start`, returning empty).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let _ = a
+            .fleet
+            .events(FleetEventsRequest {
+                cursor: FleetCursor::default(),
+                wait_ms: Some(0),
+            })
+            .await;
+        if a.fleet.index().device_state("de-b") == Some(FleetDeviceState::Online) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "de-b did not come online in time"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Publish an event *between* zero-wait detached polls while the caller's
+    // cursor still does not mention `de-b`.
+    b.hub.publish(
+        "agentic://text-chunk",
+        json!({ "tag": "late", "index": 42 }),
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut got_late = false;
+    while tokio::time::Instant::now() < deadline {
+        let response = a
+            .fleet
+            .events(FleetEventsRequest {
+                cursor: FleetCursor::default(),
+                wait_ms: Some(0),
+            })
+            .await;
+        if response.events.iter().any(|frame| {
+            frame.origin == "de-b"
+                && frame.event == "agentic://text-chunk"
+                && frame.payload["tag"] == "late"
+                && frame.payload["index"] == 42
+        }) {
+            got_late = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(
+        got_late,
+        "detached fleet_events missed event published by peer connected after subscribe"
+    );
+
+    a.fleet.shutdown();
+    b.fleet.shutdown();
+    a.server.shutdown();
+    b.server.shutdown();
 }

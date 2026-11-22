@@ -137,3 +137,28 @@ impl FleetEventSink for crate::events::EventHub {
         self.publish(event, payload);
     }
 }
+
+static NEXT_ATOMIC_TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Atomically writes `bytes` to `path` via a unique sibling temp file, so
+/// concurrent writers or an earlier crash never collide on a fixed `.tmp` name.
+pub(crate) fn atomic_write_bytes(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let seq = NEXT_ATOMIC_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!("{file_name}.{}.{seq}.tmp", std::process::id()));
+    if let Err(error) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    Ok(())
+}

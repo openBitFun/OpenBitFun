@@ -470,16 +470,6 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("open_html_file_in_browser", NativeCommandSupport::Adapter),
     ("open_remote_workspace", NativeCommandSupport::Native),
     ("open_workspace", NativeCommandSupport::Native),
-    ("page_create_open_link", NativeCommandSupport::Native),
-    ("page_delete", NativeCommandSupport::Native),
-    ("page_delete_version", NativeCommandSupport::Native),
-    ("page_deploy", NativeCommandSupport::Native),
-    ("page_list", NativeCommandSupport::Native),
-    ("page_list_versions", NativeCommandSupport::Native),
-    ("page_publish", NativeCommandSupport::Native),
-    ("page_save_version", NativeCommandSupport::Native),
-    ("page_unpublish", NativeCommandSupport::Native),
-    ("page_update", NativeCommandSupport::Native),
     ("paste_files", NativeCommandSupport::Native),
     ("peer_link_call", NativeCommandSupport::Native),
     ("peer_link_connect", NativeCommandSupport::Native),
@@ -1214,16 +1204,6 @@ pub(super) fn dispatch<'a>(
         "open_html_file_in_browser" => super::native_commands::open_html_file_in_browser(host, args),
         "open_remote_workspace" => command_open_remote_workspace(host, args),
         "open_workspace" => command_open_workspace(host, args),
-        "page_create_open_link" => command_page_create_open_link(host, args),
-        "page_delete" => command_page_delete(host, args),
-        "page_delete_version" => command_page_delete_version(host, args),
-        "page_deploy" => command_page_deploy(host, args),
-        "page_list" => command_page_list(host, args),
-        "page_list_versions" => command_page_list_versions(host, args),
-        "page_publish" => command_page_publish(host, args),
-        "page_save_version" => command_page_save_version(host, args),
-        "page_unpublish" => command_page_unpublish(host, args),
-        "page_update" => command_page_update(host, args),
         "paste_files" => command_paste_files(host, args),
         "peer_link_call" => command_peer_link_call(host, args),
         "peer_link_connect" => command_peer_link_connect(host, args),
@@ -6029,104 +6009,6 @@ fn command_open_workspace(host: &Arc<NativeHost>, args: Value) -> DispatchFuture
             host.command_state("open_workspace")?,
             HostHandle::new(Arc::clone(host)),
             arg(&args, "request", "open_workspace")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_create_open_link(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_create_open_link(
-            arg(&args, "request", "page_create_open_link")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_delete(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_delete(
-            arg(&args, "request", "page_delete")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_delete_version(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_delete_version(
-            arg(&args, "request", "page_delete_version")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_deploy(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_deploy(
-            arg(&args, "request", "page_deploy")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_list(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_list().await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_list_versions(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_list_versions(
-            arg(&args, "request", "page_list_versions")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_publish(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_publish(
-            arg(&args, "request", "page_publish")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_save_version(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_save_version(
-            arg(&args, "request", "page_save_version")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_unpublish(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_unpublish(
-            arg(&args, "request", "page_unpublish")?,
-        ).await;
-        (&result).dispatch_kind().finish(result)
-    })
-}
-
-#[inline(never)]
-fn command_page_update(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
-    Box::pin(async move {
-        let result = crate::api::pages_api::page_update(
-            arg(&args, "request", "page_update")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })

@@ -120,6 +120,8 @@ const RELAY_HOST_INVOKE_RETIRED: &str =
     "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)";
 const MESH_PHONE_JOIN_RETIRED: &str =
     "phones no longer join the device network with the EasyTier app; network credentials are never shown";
+const PAGES_RETIRED: &str =
+    "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices";
 
 const HANDLED: HostSupport = HostSupport::Handled;
 /// Cell used by every `ControllerLocal` / `OperatorOnly` row: the verdict refuses
@@ -266,6 +268,10 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("compile_workspace_latex",                                    Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("compress_path",                                              Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("compute_diff",                                               Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
+    // Computer-use status, permissions, and screen sharing (`computer_use_sharing_v1`):
+    // intentionally `Proxied` so a frontend can inspect and control a Desktop peer's
+    // OS-automation state; CLI peers answer `CLI_NO_BROWSER_OR_OS_AUTOMATION`, and the
+    // cloud agent (`Scope::CloudAgent`) is refused in the OBP scope check.
     op("computer_use_control_preview",                               LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
     op("computer_use_control_status",                                LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
     op("computer_use_control_stop",                                  LocalOnly,   Proxied,          CLI_NO_BROWSER_OR_OS_AUTOMATION),
@@ -449,8 +455,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("get_available_tools",                                        Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_baseline_snapshot_diff",                                 Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("get_chat_mcp_catalog",                                       Unsupported, Proxied,          HANDLED),
-    op("get_clipboard_files",                                        LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("get_clipboard_image",                                        LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
+    op("get_clipboard_files",                                        LocalOnly,   ControllerLocal,  REFUSED),
+    op("get_clipboard_image",                                        LocalOnly,   ControllerLocal,  REFUSED),
     op("get_config",                                                 Unaudited,   Proxied,          HANDLED),
     op("get_configs",                                                Unaudited,   Proxied,          HANDLED),
     op("get_current_workspace",                                      Agnostic,    Proxied,          HANDLED),
@@ -723,16 +729,16 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("open_html_file_in_browser",                                  LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("open_remote_workspace",                                      Routed,      Proxied,          HANDLED),
     op("open_workspace",                                             Routed,      Proxied,          HANDLED),
-    op("page_create_open_link",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_delete",                                                Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_delete_version",                                        Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_deploy",                                                Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_list",                                                  Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_list_versions",                                         Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_publish",                                               LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_save_version",                                          LocalOnly,   Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_unpublish",                                             Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
-    op("page_update",                                                Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
+    retired("page_create_open_link", PAGES_RETIRED),
+    retired("page_delete", PAGES_RETIRED),
+    retired("page_delete_version", PAGES_RETIRED),
+    retired("page_deploy", PAGES_RETIRED),
+    retired("page_list", PAGES_RETIRED),
+    retired("page_list_versions", PAGES_RETIRED),
+    retired("page_publish", PAGES_RETIRED),
+    retired("page_save_version", PAGES_RETIRED),
+    retired("page_unpublish", PAGES_RETIRED),
+    retired("page_update", PAGES_RETIRED),
     op("paste_files",                                                Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
     retired("peer_control_attach", RELAY_HOST_INVOKE_RETIRED),
     retired("peer_control_detach", RELAY_HOST_INVOKE_RETIRED),

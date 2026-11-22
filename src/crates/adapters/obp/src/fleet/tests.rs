@@ -1179,6 +1179,7 @@ async fn router_serves_navigator_prompts_and_digest() {
     let fleet = fleet();
     with_peer(&fleet, "dev-b", "B", &[("ws-1", "s1")]).await;
     fleet.sync.refresh_local().await.unwrap();
+    fleet.transport.calls.lock().unwrap().clear();
     let navigator = fleet
         .router
         .handle("fleet_navigator", json!({"request": {}}))
@@ -1208,4 +1209,42 @@ async fn router_serves_navigator_prompts_and_digest() {
         .unwrap();
     assert!(prompts["prompts"].as_array().unwrap().is_empty());
     let _ = &fleet.local;
+}
+
+#[tokio::test]
+async fn router_refuses_fleet_call_for_cloud_agent_and_paired_client() {
+    let fleet = fleet();
+    with_peer(&fleet, "dev-b", "B", &[("ws-1", "s1")]).await;
+    fleet.sync.refresh_local().await.unwrap();
+    fleet.transport.calls.lock().unwrap().clear();
+
+    for scope in [
+        crate::server::Scope::CloudAgent {
+            device_id: "cloud-1".into(),
+        },
+        crate::server::Scope::PairedClient {
+            client_id: "paired-1".into(),
+        },
+    ] {
+        for target in ["dev-a", "dev-b"] {
+            let err = fleet
+                .router
+                .fleet_call_for_scope(
+                    &scope,
+                    FleetCallRequest {
+                        target: Some(target.into()),
+                        command: "open_workspace".into(),
+                        args: json!({ "request": { "path": "/w" } }),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, -32003, "{target}: {err}");
+            assert!(err.message.starts_with("forbidden_for_scope:"), "{err}");
+        }
+    }
+    assert!(
+        fleet.transport.calls.lock().unwrap().is_empty(),
+        "cloud agent fleet_call must never forward to a peer"
+    );
 }

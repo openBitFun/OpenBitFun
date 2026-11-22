@@ -78,6 +78,7 @@ const CLOUD_AGENT_FENCED_COMMANDS: &[&str] = &[
 /// cannot be bypassed through the ordinary product commands.
 const CLOUD_AGENT_ANSWER_COMMANDS: &[&str] = &[
     "dispatch_target_answer",
+    "obp_remote_command",
     "respond_permission",
     "respond_permission_batch",
     "submit_user_answers",
@@ -88,8 +89,24 @@ const CLOUD_AGENT_ANSWER_COMMANDS: &[&str] = &[
     "set_approval_settings",
     "set_acp_client_permission_mode",
     "upsert_permission_rule",
+    "delete_permission_rule",
     "save_project_permission_rules",
 ];
+
+/// Commands the cloud agent is never permitted to invoke on a device,
+/// regardless of `superagent.*` switches: they modify device configuration
+/// (including `superagent.acceptDispatch` / `superagent.allowAutoApproval`
+/// itself) and would allow the cloud agent to un-fence or escalate itself.
+const CLOUD_AGENT_FORBIDDEN_COMMANDS: &[&str] = &[
+    "set_superagent_settings",
+    "set_config",
+    "import_config",
+    "reset_config",
+];
+
+fn is_cloud_agent_forbidden(command: &str) -> bool {
+    CLOUD_AGENT_FORBIDDEN_COMMANDS.contains(&command) || command.starts_with("computer_use_")
+}
 
 /// The device's switches for the cloud agent (`superagent.acceptDispatch`,
 /// `superagent.allowAutoApproval`), read per call.
@@ -153,6 +170,11 @@ pub fn check_command(
     }
     if command.is_empty() {
         return Err("forbidden_for_scope: the command name is empty".to_string());
+    }
+    if matches!(scope, Scope::CloudAgent { .. }) && is_cloud_agent_forbidden(command) {
+        return Err(format!(
+            "forbidden_for_scope: command '{command}' changes device policy, configuration, or local OS automation and is never served to the cloud agent"
+        ));
     }
     // The model relay serves the account's cloud agent and the account's
     // other devices (a session there running one of this device's models;
@@ -222,10 +244,13 @@ pub fn check_command(
         PeerStance::Retired { reason } => Err(format!(
             "command '{command}' is unsupported because {reason}"
         )),
-        // Fleet verbs: answered by this host's fleet layer for the owner and
-        // the account's own devices and frontends (account-device,
-        // cloud-agent); never for a paired client.
-        PeerStance::FleetEntry if scope.is_mesh_device() => Ok(()),
+        // Fleet entry verbs (`fleet_call`, `fleet_navigator`, etc.): answered by
+        // this host's fleet layer for the owner and the account's own devices
+        // (`account-device`), never for a paired client and never for the cloud
+        // agent (otherwise `fleet_call` would execute locally under
+        // `Scope::AccountDevice` or pivot to another device as an account device,
+        // bypassing `superagent.acceptDispatch` and `superagent.allowAutoApproval`).
+        PeerStance::FleetEntry if matches!(scope, Scope::AccountDevice { .. }) => Ok(()),
         PeerStance::FleetEntry => Err(format!(
             "forbidden_for_scope: command '{command}' is a fleet command and this backend does not serve it for this connection"
         )),
@@ -239,6 +264,11 @@ pub fn check_cloud_agent_call(
     args: &Value,
     policy: &CloudAgentPolicy,
 ) -> Result<(), String> {
+    if command == "fleet_call" || is_cloud_agent_forbidden(command) {
+        return Err(format!(
+            "forbidden_for_scope: command '{command}' is never served to the cloud agent"
+        ));
+    }
     if !policy.accept_dispatch && !CLOUD_AGENT_FENCED_COMMANDS.contains(&command) {
         return Err(format!(
             "superagent_dispatch_disabled: this device does not accept work from the cloud agent (superagent.acceptDispatch is off); command '{command}' is refused"
@@ -511,9 +541,11 @@ mod tests {
         );
         for command in [
             "dispatch_target_answer",
+            "obp_remote_command",
             "respond_permission",
             "submit_user_answers",
             "update_session_permission_mode",
+            "delete_permission_rule",
         ] {
             let error = check_cloud_agent_call(command, &answer, &off).unwrap_err();
             assert!(
@@ -651,15 +683,53 @@ mod tests {
                     check_command(&device, command, &no_verbs).is_ok(),
                     "{command}"
                 );
-                assert!(
-                    check_command(&cloud, command, &no_verbs).is_ok(),
-                    "{command}"
-                );
             }
+            // The cloud agent never reaches fleet_call or other fleet entry verbs
+            // (preventing local Scope::AccountDevice escalation and cross-device pivot).
+            let cloud_refused = check_command(&cloud, command, &no_verbs).unwrap_err();
+            assert!(
+                cloud_refused.starts_with("forbidden_for_scope:"),
+                "{command}: {cloud_refused}"
+            );
             let refused = check_command(&paired, command, &no_verbs).unwrap_err();
             assert!(
                 refused.starts_with("forbidden_for_scope:"),
                 "{command}: {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_agent_cannot_rewrite_device_policy_or_config_or_drive_os_automation() {
+        let cloud = cloud();
+        let device = Scope::AccountDevice {
+            device_id: "d1".into(),
+        };
+        let policy = CloudAgentPolicy::default();
+        let args = serde_json::json!({ "request": {} });
+        for command in [
+            "fleet_call",
+            "set_superagent_settings",
+            "set_config",
+            "import_config",
+            "reset_config",
+            "computer_use_get_status",
+            "computer_use_share_input",
+        ] {
+            let error = check_command(&cloud, command, &cloud_host_verbs).unwrap_err();
+            assert!(
+                error.starts_with("forbidden_for_scope:"),
+                "{command}: {error}"
+            );
+            let call_err = check_cloud_agent_call(command, &args, &policy).unwrap_err();
+            assert!(
+                call_err.starts_with("forbidden_for_scope:"),
+                "{command}: {call_err}"
+            );
+            // Account devices (user frontends) keep access to Proxied/FleetEntry commands.
+            assert!(
+                check_command(&device, command, &cloud_host_verbs).is_ok(),
+                "{command}"
             );
         }
     }

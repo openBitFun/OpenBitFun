@@ -740,9 +740,7 @@ impl FleetIndex {
                 );
             }
             let bytes = serde_json::to_vec(&file).map_err(std::io::Error::other)?;
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, bytes)?;
-            std::fs::rename(&tmp, &path)
+            super::atomic_write_bytes(&path, &bytes)
         };
         write().map_err(|error| {
             self.lock().dirty = true;

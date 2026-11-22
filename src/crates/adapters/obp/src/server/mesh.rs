@@ -376,11 +376,13 @@ impl ObpServer {
         }
     }
 
-    /// Records `nonce` as used; false when it was already used.
+    /// Records `nonce` as used; false when it was already used or when the
+    /// replay-cache cap is saturated.
     pub(super) fn consume_mesh_nonce(&self, nonce: &str, now: u64) -> bool {
+        const MAX_NONCES: usize = 65_536;
         let mut nonces = lock(&self.mesh.nonces);
         nonces.retain(|_, expires| *expires > now);
-        if nonces.contains_key(nonce) {
+        if nonces.contains_key(nonce) || nonces.len() >= MAX_NONCES {
             return false;
         }
         nonces.insert(
@@ -643,29 +645,41 @@ pub(super) async fn account_device_upgrade(
         Scope::AccountDevice { device_id } | Scope::CloudAgent { device_id } => device_id.clone(),
         Scope::Owner | Scope::PairedClient { .. } => String::new(),
     };
-    let (id, stop) = server.register_connection(scope.clone());
-    let context = ConnectionContext {
-        backend: Arc::clone(&server.backend),
-        scope,
-        instance_id: server.instance_id.clone(),
-        registry_digest: server.registry_digest.clone(),
-        limits: server.options.limits.clone(),
-        ui_bundle_id: server.ui_bundle.cached_bundle_id(),
-        fleet_clients: Arc::clone(&server.fleet_clients),
-        stop,
-    };
     log::info!(
         "OBP mesh connection accepted: device={}, scope={}",
         device_id,
-        context.scope.wire_name()
+        scope.wire_name()
     );
     let served = Arc::clone(&server);
     let mut response =
         upgrade
             .max_message_size(32 * 1024 * 1024)
             .on_upgrade(move |socket| async move {
+                let (id, stop) = served.register_connection(scope.clone());
+                struct UnregisterGuard {
+                    server: Arc<ObpServer>,
+                    id: u64,
+                }
+                impl Drop for UnregisterGuard {
+                    fn drop(&mut self) {
+                        self.server.unregister_connection(self.id);
+                    }
+                }
+                let _guard = UnregisterGuard {
+                    server: Arc::clone(&served),
+                    id,
+                };
+                let context = ConnectionContext {
+                    backend: Arc::clone(&served.backend),
+                    scope,
+                    instance_id: served.instance_id.clone(),
+                    registry_digest: served.registry_digest.clone(),
+                    limits: served.options.limits.clone(),
+                    ui_bundle_id: served.ui_bundle.cached_bundle_id(),
+                    fleet_clients: Arc::clone(&served.fleet_clients),
+                    stop,
+                };
                 connection::serve(socket, context).await;
-                served.unregister_connection(id);
             });
     if let Ok(value) = HeaderValue::from_str(&server_proof) {
         response

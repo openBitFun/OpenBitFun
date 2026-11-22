@@ -322,13 +322,15 @@ struct Holds {
     index: bool,
     /// A fleet client follows the device.
     followed: bool,
+    /// Ad-hoc RPC call (index-level interest, released when idle).
+    rpc: bool,
 }
 
 impl Holds {
     fn interest(self) -> Option<LinkInterest> {
         if self.driven || self.followed {
             Some(LinkInterest::Full)
-        } else if self.index {
+        } else if self.index || self.rpc {
             Some(LinkInterest::Index)
         } else {
             None
@@ -340,6 +342,7 @@ impl Holds {
 enum Hold {
     Driven,
     Index,
+    Rpc,
 }
 
 /// The calls running on one connection of a link.
@@ -757,20 +760,24 @@ impl PeerLinks {
         links
     }
 
-    /// Releases Peer Device Mode holds nobody used for `idle`, closing links
-    /// nobody else holds.
+    /// Releases idle-expirable holds (`driven` and `rpc`) nobody used for
+    /// `idle`, closing links nobody else holds.
     async fn close_idle(&self, idle: Duration) {
         let mut links = self.links.lock().await;
         let stale: Vec<String> = links
             .iter()
             .filter(|(_, link)| {
-                lock(&link.shared.holds).driven && lock(&link.shared.touched).elapsed() > idle
+                let holds = *lock(&link.shared.holds);
+                (holds.driven || holds.rpc) && lock(&link.shared.touched).elapsed() > idle
             })
             .map(|(id, _)| id.clone())
             .collect();
         for id in stale {
             let Some(link) = links.get(&id) else { continue };
-            if link.shared.update_holds(|holds| holds.driven = false) {
+            if link.shared.update_holds(|holds| {
+                holds.driven = false;
+                holds.rpc = false;
+            }) {
                 continue;
             }
             if let Some(link) = links.remove(&id) {
@@ -825,6 +832,13 @@ impl PeerLinks {
         self.open(device_id, Hold::Index).await
     }
 
+    /// Opens (or reuses) an ad-hoc RPC link to `device_id`: index-level event
+    /// interest that is automatically released after five idle minutes unless
+    /// another hold (`index`, `followed`, `driven`) keeps it alive.
+    pub async fn connect_rpc(&self, device_id: &str) -> Result<PeerLinkInfo, String> {
+        self.open(device_id, Hold::Rpc).await
+    }
+
     async fn open(&self, device_id: &str, hold: Hold) -> Result<PeerLinkInfo, String> {
         if !openbitfun_link::handshake::valid_device_id(device_id) {
             return Err(format!("peer_link: invalid device id {device_id:?}"));
@@ -832,6 +846,7 @@ impl PeerLinks {
         let apply = |holds: &mut Holds| match hold {
             Hold::Driven => holds.driven = true,
             Hold::Index => holds.index = true,
+            Hold::Rpc => holds.rpc = true,
         };
         {
             let mut links = self.links.lock().await;
@@ -872,12 +887,15 @@ impl PeerLinks {
         shared.adopt(&connection, interest, None);
         let mut links = self.links.lock().await;
         if let Some(existing) = links.get(device_id) {
-            // A concurrent connect won the race; keep its link.
+            // A concurrent connect won the race; keep its link and close the
+            // duplicate outside `self.links` so other peers are never stalled.
             if existing.shared.state().0 != LinkState::Closed {
-                connection.close().await;
                 existing.shared.update_holds(apply);
                 existing.shared.touch();
-                return Ok(self.info(&existing.shared));
+                let info = self.info(&existing.shared);
+                drop(links);
+                connection.close().await;
+                return Ok(info);
             }
         }
         let task = tokio::spawn(pump(
@@ -1105,6 +1123,22 @@ impl PeerLinks {
         let link = links.get(device_id)?;
         let ring = lock(&link.shared.ring);
         Some((ring.instance_id.clone()?, ring.position().unwrap_or(0)))
+    }
+
+    /// `(instance, start seq)` where the link began reading the complete
+    /// stream for `device_id` (used when a peer connects after `fleet_subscribe`
+    /// so events arriving before the first poll are not skipped).
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    pub(crate) async fn start_position_of(&self, device_id: &str) -> Option<(String, u64)> {
+        let links = self.links.lock().await;
+        let link = links.get(device_id)?;
+        let ring = lock(&link.shared.ring);
+        let seq = ring
+            .complete_from()
+            .or(ring.start_seq)
+            .or_else(|| ring.position())
+            .unwrap_or(0);
+        Some((ring.instance_id.clone()?, seq))
     }
 
     /// Closes the link to `device_id`; `false` when there was none.

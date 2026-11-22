@@ -417,9 +417,14 @@ impl FleetSync {
                                 // Nothing to re-index.
                             } else {
                                 // A leaf owner has no digest: any event may
-                                // change its summaries. Coalesce.
+                                // change its summaries. Coalesce without
+                                // swallowing a link-closed signal.
                                 tokio::time::sleep(self.config.legacy_hint_window).await;
-                                while subscription.signals.try_recv().is_ok() {}
+                                while let Ok(queued) = subscription.signals.try_recv() {
+                                    if let FleetPeerSignal::Closed { reason } = queued {
+                                        return Some(reason);
+                                    }
+                                }
                                 break;
                             }
                         }

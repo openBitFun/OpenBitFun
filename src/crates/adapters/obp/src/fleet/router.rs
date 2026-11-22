@@ -131,7 +131,41 @@ impl FleetRouter {
             .map_err(FleetCallError::command)
     }
 
+    /// `fleet_call` gated by the caller's OBP [`crate::server::Scope`].
+    /// Only `Owner` and `AccountDevice` may route through `fleet_call`;
+    /// `CloudAgent` and `PairedClient` are always refused so the cloud agent
+    /// can never execute locally under `Scope::AccountDevice` or pivot to
+    /// another device over `PeerLinks`.
+    pub async fn fleet_call_for_scope(
+        &self,
+        scope: &crate::server::Scope,
+        request: FleetCallRequest,
+    ) -> Result<Value, FleetCallError> {
+        if !matches!(
+            scope,
+            crate::server::Scope::Owner | crate::server::Scope::AccountDevice { .. }
+        ) {
+            return Err(FleetCallError {
+                code: -32003,
+                message: format!(
+                    "forbidden_for_scope: command 'fleet_call' is not served for scope '{}'",
+                    scope.wire_name()
+                ),
+                data: Some(serde_json::json!({
+                    "kind": "forbidden",
+                    "command": "fleet_call",
+                    "scope": scope.wire_name(),
+                })),
+            });
+        }
+        self.fleet_call(request).await
+    }
+
     /// `fleet_call`.
+    ///
+    /// Callers must enforce OBP scope admission (`Owner` or `AccountDevice`
+    /// only, never `CloudAgent`) via [`crate::server::check_command`] or
+    /// [`Self::fleet_call_for_scope`] before calling this method.
     pub async fn fleet_call(&self, request: FleetCallRequest) -> Result<Value, FleetCallError> {
         let self_id = self
             .backend

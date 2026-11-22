@@ -138,6 +138,10 @@ fn to_value<T: serde::Serialize>(value: T) -> Result<Value, String> {
 /// (a forbidden command is `-32003`, `data.kind = "forbidden"`), then the
 /// host's dispatcher (a failure is `-32000`, `data.kind` `unsupported` or
 /// `command`). The local and the forwarded path answer alike.
+///
+/// Only `Owner` and `AccountDevice` callers may reach `fleet_call` (enforced
+/// by [`crate::server::check_command`] and [`FleetRouter::fleet_call_for_scope`]);
+/// `Scope::CloudAgent` is never admitted here.
 pub async fn dispatch_as_account_device(
     backend: &dyn crate::server::ObpBackend,
     device_id: &str,
@@ -643,11 +647,12 @@ impl FleetPeerTransport for LinksPeerTransport {
         let device_id = device_id.to_string();
         let command = command.to_string();
         Box::pin(async move {
-            // A forwarded call opens the link when the index has none yet
-            // (a legacy peer polled earlier, or a link that was released).
+            // A forwarded call opens an idle-expirable RPC link when the index
+            // has none yet (a legacy peer polled earlier, or a link that was
+            // released), so it never permanently pins `holds.index`.
             if self.links.state_of(&device_id).await.is_none() {
                 self.links
-                    .connect_index(&device_id)
+                    .connect_rpc(&device_id)
                     .await
                     .map_err(FleetCallError::transport)?;
             }

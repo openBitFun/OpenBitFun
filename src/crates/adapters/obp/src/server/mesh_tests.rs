@@ -69,7 +69,7 @@ impl ObpBackend for EchoBackend {
                 "open_workspace" => Ok(json!({ "command": command, "args": args })),
                 // A registry `Proxied` command stands in for any command that
                 // produces events (non-owner scopes run registry commands only).
-                "page_list" => {
+                "list_miniapps" => {
                     let count = args["count"].as_u64().unwrap_or(1);
                     for index in 0..count {
                         hub.publish("agentic://text-chunk", json!({ "index": index }));
@@ -226,7 +226,7 @@ async fn account_devices_call_and_stream_with_the_device_handshake() {
     assert_eq!(refused.code, -32003);
 
     connection
-        .call("page_list", json!({ "count": 5 }))
+        .call("list_miniapps", json!({ "count": 5 }))
         .await
         .unwrap();
     let mut names = Vec::new();
@@ -768,9 +768,35 @@ async fn cloud_agent_handshake_gets_full_access_and_the_model_relay() {
     // Owner-only commands stay with the owner, as for any account device.
     let refused = connection.call("mesh_status", json!({})).await.unwrap_err();
     assert_eq!(refused.code, -32003, "{refused}");
+    // Even with both switches enabled, the cloud agent can never invoke
+    // fleet_call (which would bypass scope locally or pivot to another device)
+    // or rewrite device policy/configuration.
+    for (command, args) in [
+        (
+            "fleet_call",
+            json!({ "request": { "target": "cloud-scope-target", "command": "dispatch_target_submit", "args": { "request": { "approvalPolicy": "auto" } } } }),
+        ),
+        (
+            "set_superagent_settings",
+            json!({ "request": { "allowAutoApproval": true } }),
+        ),
+        (
+            "set_config",
+            json!({ "request": { "path": "superagent.allowAutoApproval", "value": true } }),
+        ),
+        ("import_config", json!({ "request": {} })),
+        ("reset_config", json!({ "request": {} })),
+    ] {
+        let refused = connection.call(command, args).await.unwrap_err();
+        assert_eq!(refused.code, -32003, "{command}: {refused}");
+        assert!(
+            refused.message.starts_with("forbidden_for_scope:"),
+            "{command}: {refused}"
+        );
+    }
     // The same events as any account device.
     connection
-        .call("page_list", json!({ "count": 1 }))
+        .call("list_miniapps", json!({ "count": 1 }))
         .await
         .unwrap();
     let mut names = Vec::new();
@@ -830,6 +856,41 @@ async fn cloud_agent_device_switches_refuse_per_call() {
                     json!({ "request": { "approvalPolicy": "auto" } }),
                     "superagent_auto_approval_refused:",
                 ),
+                (
+                    "delete_permission_rule",
+                    json!({ "request": {} }),
+                    "superagent_auto_approval_refused:",
+                ),
+                (
+                    "obp_remote_command",
+                    json!({ "request": {} }),
+                    "superagent_auto_approval_refused:",
+                ),
+                (
+                    "fleet_call",
+                    json!({ "request": { "target": "other-dev", "command": "dispatch_target_submit", "args": { "request": { "approvalPolicy": "auto" } } } }),
+                    "forbidden_for_scope:",
+                ),
+                (
+                    "set_superagent_settings",
+                    json!({ "request": { "allowAutoApproval": true } }),
+                    "forbidden_for_scope:",
+                ),
+                (
+                    "set_config",
+                    json!({ "request": { "path": "superagent.allowAutoApproval", "value": true } }),
+                    "forbidden_for_scope:",
+                ),
+                (
+                    "import_config",
+                    json!({ "request": {} }),
+                    "forbidden_for_scope:",
+                ),
+                (
+                    "reset_config",
+                    json!({ "request": {} }),
+                    "forbidden_for_scope:",
+                ),
             ],
             vec![
                 (
@@ -854,6 +915,21 @@ async fn cloud_agent_device_switches_refuse_per_call() {
                     "open_workspace",
                     json!({ "request": { "path": "/w" } }),
                     "superagent_dispatch_disabled:",
+                ),
+                (
+                    "fleet_call",
+                    json!({ "request": { "target": "other-dev", "command": "open_workspace", "args": {} } }),
+                    "forbidden_for_scope:",
+                ),
+                (
+                    "set_superagent_settings",
+                    json!({ "request": { "acceptDispatch": true } }),
+                    "forbidden_for_scope:",
+                ),
+                (
+                    "set_config",
+                    json!({ "request": { "path": "superagent.acceptDispatch", "value": true } }),
+                    "forbidden_for_scope:",
                 ),
             ],
             vec![

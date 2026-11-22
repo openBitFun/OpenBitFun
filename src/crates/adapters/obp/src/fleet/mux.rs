@@ -197,6 +197,17 @@ impl FleetMux {
             .and_then(|state| state.start.get(device).cloned().flatten())
     }
 
+    /// Persists the initial `(instance, seq)` for a followed device that was
+    /// not yet linked when `set_follow` ran, so detached `fleet_events` polls
+    /// do not lose events that arrive before or between polls.
+    fn set_start_if_unset(&self, client: FleetClientKey, device: &str, position: (String, u64)) {
+        if let Some(state) = lock(&self.clients).get_mut(&client) {
+            if let Some(slot @ None) = state.start.get_mut(device) {
+                *slot = Some(position);
+            }
+        }
+    }
+
     /// `fleet_events` for the native desktop's in-process UI: the frames of
     /// the peer origins `client` follows after `cursor`, waiting up to
     /// `wait` for the first one. The UI's own events stay in-process.
@@ -674,12 +685,17 @@ impl FleetStream {
             None => match self.mux.start_of(self.client, device) {
                 Some(start) => start,
                 None => {
-                    // Not linked yet when following started: begin at the
-                    // ring's newest once it is known.
-                    if let Some(position) = self.mux.links.position_of(device).await {
-                        self.peers.insert(device.to_string(), position);
-                    }
-                    return;
+                    // Not linked yet when following started: persist the link's
+                    // starting position on `ClientState.start` once known (so
+                    // detached `fleet_events` polls keep it across calls) and
+                    // immediately read any events already buffered since link open.
+                    let Some(position) = self.mux.links.start_position_of(device).await else {
+                        return;
+                    };
+                    self.mux
+                        .set_start_if_unset(self.client, device, position.clone());
+                    self.peers.insert(device.to_string(), position.clone());
+                    position
                 }
             },
         };

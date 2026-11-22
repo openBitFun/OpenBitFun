@@ -310,25 +310,35 @@ async fn upgrade(
         );
     };
     let server = Arc::clone(&state.server);
-    let (id, stop) = server.register_connection_via(
-        scope.clone(),
-        matches!(state.kind, ListenerKind::Mesh { .. }),
-    );
-    let context = ConnectionContext {
-        backend: Arc::clone(&server.backend),
-        scope,
-        instance_id: server.instance_id.clone(),
-        registry_digest: server.registry_digest.clone(),
-        limits: server.options.limits.clone(),
-        ui_bundle_id: server.ui_bundle.cached_bundle_id(),
-        fleet_clients: Arc::clone(&server.fleet_clients),
-        stop,
-    };
+    let via_mesh = matches!(state.kind, ListenerKind::Mesh { .. });
     upgrade
         .max_message_size(MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
+            let (id, stop) = server.register_connection_via(scope.clone(), via_mesh);
+            struct UnregisterGuard {
+                server: Arc<ObpServer>,
+                id: u64,
+            }
+            impl Drop for UnregisterGuard {
+                fn drop(&mut self) {
+                    self.server.unregister_connection(self.id);
+                }
+            }
+            let _guard = UnregisterGuard {
+                server: Arc::clone(&server),
+                id,
+            };
+            let context = ConnectionContext {
+                backend: Arc::clone(&server.backend),
+                scope,
+                instance_id: server.instance_id.clone(),
+                registry_digest: server.registry_digest.clone(),
+                limits: server.options.limits.clone(),
+                ui_bundle_id: server.ui_bundle.cached_bundle_id(),
+                fleet_clients: Arc::clone(&server.fleet_clients),
+                stop,
+            };
             connection::serve(socket, context).await;
-            server.unregister_connection(id);
         })
 }
 
@@ -513,8 +523,9 @@ fn resolve(root: &Path, path: &str) -> Option<PathBuf> {
             _ => return None,
         }
     }
+    let canonical_root = root.canonicalize().ok()?;
     let canonical = target.canonicalize().ok()?;
-    (canonical.starts_with(root) && canonical.is_file()).then_some(canonical)
+    (canonical.starts_with(&canonical_root) && canonical.is_file()).then_some(canonical)
 }
 
 async fn static_files(

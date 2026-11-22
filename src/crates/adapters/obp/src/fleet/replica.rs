@@ -74,6 +74,12 @@ pub const HOLDERS_COLLECTION: &str = "replica.holders";
 pub const MAX_RECORDS: usize = 200_000;
 /// Largest replica (records only), a safety net over the budgets.
 pub const MAX_REPLICA_BYTES: usize = 64 * 1024 * 1024;
+/// Target JSON payload budget per `fleet_replica_pull` / `fleet_replica_push`
+/// frame, kept well below OBP's 32 MiB WebSocket frame limit.
+pub const REPLICA_FRAME_BUDGET: usize = 8 * 1024 * 1024;
+/// Hard ceiling for a single `fleet_replica_pull` response so even an older
+/// caller that omits `maxBytes` never exceeds OBP's 32 MiB frame limit.
+const MAX_PULL_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Largest blob.
 pub const MAX_BLOB_BYTES: usize = 4 * 1024 * 1024;
 /// Unpinned blobs a device keeps (least recently used go first).
@@ -553,12 +559,8 @@ impl AccountReplica {
             pinned: inner.pinned.iter().cloned().collect(),
         };
         let result = (|| -> std::io::Result<()> {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&file)?)?;
-            std::fs::rename(&tmp, path)
+            let bytes = serde_json::to_vec(&file)?;
+            super::atomic_write_bytes(path, &bytes)
         })();
         if let Err(error) = result {
             log::warn!("Account replica not saved: {error}");
@@ -763,17 +765,51 @@ impl AccountReplica {
 
     /// Every record of a collection, tombstones included.
     pub fn records(&self, collection: &str) -> Vec<ReplicaRecord> {
+        let start = (collection.to_string(), String::new());
         self.lock()
             .records
-            .values()
-            .filter(|record| record.collection == collection)
-            .cloned()
+            .range(start..)
+            .take_while(|((c, _), _)| c == collection)
+            .map(|(_, record)| record.clone())
             .collect()
     }
 
     /// Every record.
     pub fn snapshot(&self) -> Vec<ReplicaRecord> {
         self.lock().records.values().cloned().collect()
+    }
+
+    /// One deterministic page of records after `after_key`, bounded to
+    /// `max_bytes` (always returning at least one record when any remain).
+    fn pull_page(
+        &self,
+        after_key: Option<(String, String)>,
+        max_bytes: usize,
+    ) -> (String, Vec<ReplicaRecord>, bool, Option<(String, String)>) {
+        let inner = self.lock();
+        let digest = Self::digest_inner(&inner);
+        let budget = max_bytes.clamp(1, MAX_PULL_FRAME_BYTES);
+        let range = match after_key {
+            Some(after) => inner
+                .records
+                .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded)),
+            None => inner.records.range::<(String, String), _>(..),
+        };
+        let mut page = Vec::new();
+        let mut used = 0usize;
+        let mut more = false;
+        let mut last_key = None;
+        for (key, record) in range {
+            let size = encoded_len(record).max(1);
+            if !page.is_empty() && used.saturating_add(size) > budget {
+                more = true;
+                break;
+            }
+            used = used.saturating_add(size);
+            last_key = Some(key.clone());
+            page.push(record.clone());
+        }
+        (digest, page, more, if more { last_key } else { None })
     }
 
     /// Merges records from a peer; returns the ones that changed here. A
@@ -795,16 +831,27 @@ impl AccountReplica {
                 if record.is_tombstone() && record.hlc.wall_ms < horizon {
                     continue;
                 }
-                if let Some(path) = record
-                    .value
-                    .as_ref()
-                    .and_then(|value| secret_in(&record.collection, value))
-                {
-                    log::warn!(
-                        "Account replica record with a secret refused: collection={}, path={path}",
-                        record.collection
-                    );
-                    continue;
+                if let Some(value) = record.value.as_ref() {
+                    let size = serde_json::to_vec(value)
+                        .map(|bytes| bytes.len())
+                        .unwrap_or(0);
+                    let max_value_bytes = self.policy(&record.collection).max_value_bytes;
+                    if size > max_value_bytes {
+                        log::warn!(
+                            "Account replica record over value limit refused: collection={}, bytes={}, limit={}",
+                            record.collection,
+                            size,
+                            max_value_bytes
+                        );
+                        continue;
+                    }
+                    if let Some(path) = secret_in(&record.collection, value) {
+                        log::warn!(
+                            "Account replica record with a secret refused: collection={}, path={path}",
+                            record.collection
+                        );
+                        continue;
+                    }
                 }
                 if record.hlc.wall_ms > ceiling {
                     record.hlc.wall_ms = ceiling;
@@ -846,10 +893,7 @@ impl AccountReplica {
         changed
     }
 
-    /// A digest of every record's key and clock: equal digests hold the
-    /// same records.
-    pub fn digest(&self) -> String {
-        let inner = self.lock();
+    fn digest_inner(inner: &Inner) -> String {
         let mut hasher = Sha256::new();
         for record in inner.records.values() {
             hasher.update(record.collection.as_bytes());
@@ -863,6 +907,13 @@ impl AccountReplica {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    /// A digest of every record's key and clock: equal digests hold the
+    /// same records.
+    pub fn digest(&self) -> String {
+        let inner = self.lock();
+        Self::digest_inner(&inner)
     }
 
     /// The local writes no peer acknowledged.
@@ -1052,15 +1103,15 @@ impl AccountReplica {
     /// The devices that pin a blob (from their holder records).
     pub fn holders(&self, hash: &str) -> Vec<String> {
         let prefix = format!("{hash}@");
+        let start = (HOLDERS_COLLECTION.to_string(), prefix.clone());
         self.lock()
             .records
-            .values()
-            .filter(|record| {
-                record.collection == HOLDERS_COLLECTION
-                    && !record.is_tombstone()
-                    && record.id.starts_with(&prefix)
+            .range(start..)
+            .take_while(|((collection, id), _)| {
+                collection == HOLDERS_COLLECTION && id.starts_with(&prefix)
             })
-            .map(|record| record.id[prefix.len()..].to_string())
+            .filter(|(_, record)| !record.is_tombstone())
+            .map(|((_, id), _)| id[prefix.len()..].to_string())
             .collect()
     }
 
@@ -1194,10 +1245,30 @@ impl AccountReplica {
                 "digest": self.digest(),
                 "deviceId": self.device_id,
             })),
-            "fleet_replica_pull" => Ok(json!({
-                "digest": self.digest(),
-                "records": self.snapshot(),
-            })),
+            "fleet_replica_pull" => {
+                let after_key = request
+                    .get("afterKey")
+                    .and_then(Value::as_array)
+                    .filter(|pair| pair.len() == 2)
+                    .and_then(|pair| {
+                        Some((pair[0].as_str()?.to_string(), pair[1].as_str()?.to_string()))
+                    });
+                let max_bytes = request
+                    .get("maxBytes")
+                    .and_then(Value::as_u64)
+                    .map(|bytes| (bytes as usize).clamp(1, MAX_PULL_FRAME_BYTES))
+                    .unwrap_or(MAX_PULL_FRAME_BYTES);
+                let (digest, records, more, next_after_key) = self.pull_page(after_key, max_bytes);
+                let mut answer = json!({
+                    "digest": digest,
+                    "records": records,
+                    "more": more,
+                });
+                if let Some((collection, id)) = next_after_key {
+                    answer["nextAfterKey"] = json!([collection, id]);
+                }
+                Ok(answer)
+            }
             "fleet_replica_push" => self.push_verb(&request, access),
             "fleet_replica_list" => self.list_verb(&request, access),
             "fleet_blob_holders" => {
@@ -1217,7 +1288,11 @@ impl AccountReplica {
                 let holders: serde_json::Map<String, Value> = hashes
                     .into_iter()
                     .map(|hash| {
-                        let holders = self.holders(&hash);
+                        let holders = if restricted && !self.blob_visible_to(&hash, access) {
+                            Vec::new()
+                        } else {
+                            self.holders(&hash)
+                        };
                         (hash, json!(holders))
                     })
                     .collect();
@@ -1279,7 +1354,10 @@ impl AccountReplica {
                 )
             })
             .collect();
-        let accepted = self.merge(records).len();
+        let changed = self.merge(records);
+        let accepted = changed.len();
+        let accepted_keys: BTreeSet<(String, String)> =
+            changed.iter().map(ReplicaRecord::key).collect();
         let durable: BTreeSet<String> = self
             .durable_blobs()
             .into_iter()
@@ -1324,11 +1402,15 @@ impl AccountReplica {
             .into_iter()
             .map(|(collection, id, hlc)| {
                 let current = self.get(&collection, &id);
+                // Stored: accepted in this push (even if its future clock was
+                // clamped), or this device already holds that write or a later one.
+                let was_accepted = accepted_keys.contains(&(collection.clone(), id.clone()));
+                let stored =
+                    was_accepted || current.as_ref().is_some_and(|current| current.hlc >= hlc);
                 json!({
                     "collection": collection,
                     "id": id,
-                    // Stored: this device now holds that write or a later one.
-                    "stored": current.as_ref().is_some_and(|current| current.hlc >= hlc),
+                    "stored": stored,
                     "stamp": current.map(|current| current.hlc.stamp()),
                 })
             })
@@ -1396,7 +1478,7 @@ impl AccountReplica {
 // Exchange
 // ---------------------------------------------------------------------------
 
-/// Timers of the exchange.
+/// Timers and frame sizing of the exchange.
 #[derive(Debug, Clone)]
 pub struct ReplicaSyncConfig {
     /// Digest comparison with every online peer.
@@ -1405,6 +1487,9 @@ pub struct ReplicaSyncConfig {
     pub presence_poll: Duration,
     /// How long one call to a peer may take.
     pub call_timeout: Duration,
+    /// Target JSON byte budget per `fleet_replica_pull` / `fleet_replica_push`
+    /// call so large replicas never exceed OBP's 32 MiB frame limit.
+    pub max_frame_bytes: usize,
 }
 
 impl Default for ReplicaSyncConfig {
@@ -1413,8 +1498,29 @@ impl Default for ReplicaSyncConfig {
             anti_entropy: Duration::from_secs(60),
             presence_poll: Duration::from_secs(10),
             call_timeout: Duration::from_secs(15),
+            max_frame_bytes: REPLICA_FRAME_BUDGET,
         }
     }
+}
+
+fn chunk_records(records: &[ReplicaRecord], max_bytes: usize) -> Vec<Vec<ReplicaRecord>> {
+    let budget = max_bytes.max(1);
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut used = 0usize;
+    for record in records {
+        let size = encoded_len(record).max(1);
+        if !current.is_empty() && used.saturating_add(size) > budget {
+            chunks.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        used = used.saturating_add(size);
+        current.push(record.clone());
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
 }
 
 fn unsupported(error: &FleetCallError) -> bool {
@@ -1484,9 +1590,11 @@ impl ReplicaSync {
         self.wake.notify_one();
     }
 
-    /// The runtime peers that serve the replica: the online ones and how
-    /// many there are in all.
-    async fn online_peers(&self) -> (Vec<String>, usize) {
+    /// The runtime peers that serve the replica: the online ones, how many
+    /// there are in all, and the raw online runtime peer set before
+    /// `unsupported` filtering (used to drop `unsupported` entries only when
+    /// a peer actually disconnects).
+    async fn online_peers_with_raw(&self) -> (Vec<String>, usize, BTreeSet<String>) {
         let presence = self.peers.presence().await;
         let unsupported = self
             .unsupported
@@ -1508,11 +1616,23 @@ impl ReplicaSync {
             .iter()
             .filter(|peer| !unsupported.contains(&peer.device_id))
             .count();
-        let online = runtime
-            .into_iter()
-            .filter(|peer| peer.online && peer.mesh && !unsupported.contains(&peer.device_id))
-            .map(|peer| peer.device_id)
-            .collect();
+        let mut raw_online = BTreeSet::new();
+        let mut online = Vec::new();
+        for peer in runtime {
+            if peer.online && peer.mesh {
+                raw_online.insert(peer.device_id.clone());
+                if !unsupported.contains(&peer.device_id) {
+                    online.push(peer.device_id);
+                }
+            }
+        }
+        (online, total, raw_online)
+    }
+
+    /// The runtime peers that serve the replica: the online ones and how
+    /// many there are in all.
+    async fn online_peers(&self) -> (Vec<String>, usize) {
+        let (online, total, _) = self.online_peers_with_raw().await;
         (online, total)
     }
 
@@ -1542,27 +1662,32 @@ impl ReplicaSync {
         }
     }
 
-    /// Sends the undelivered local writes to every online peer.
+    /// Sends the undelivered local writes to every online peer, chunked to
+    /// stay under the OBP frame size limit.
     pub async fn push_local(&self, peers: &[String]) -> bool {
         let records = self.replica.undelivered();
         if records.is_empty() {
             return true;
         }
+        let chunks = chunk_records(&records, self.config.max_frame_bytes);
         let mut delivered = false;
         for device_id in peers {
-            match self
-                .call(
-                    device_id,
-                    "fleet_replica_push",
-                    json!({ "records": records }),
-                )
-                .await
-            {
-                Ok(_) => delivered = true,
-                Err(error) => log::debug!(
-                    "Account replica push failed: device={device_id}, error={}",
-                    error.message
-                ),
+            let mut all_ok = true;
+            for chunk in &chunks {
+                if let Err(error) = self
+                    .call(device_id, "fleet_replica_push", json!({ "records": chunk }))
+                    .await
+                {
+                    log::debug!(
+                        "Account replica push failed: device={device_id}, error={}",
+                        error.message
+                    );
+                    all_ok = false;
+                    break;
+                }
+            }
+            if all_ok {
+                delivered = true;
             }
         }
         if delivered {
@@ -1571,7 +1696,9 @@ impl ReplicaSync {
         delivered
     }
 
-    /// Compares digests with one peer and makes both sides equal.
+    /// Compares digests with one peer and makes both sides equal, paging
+    /// pulls and chunking pushes so replicas up to `MAX_REPLICA_BYTES` never
+    /// exceed OBP's 32 MiB frame limit.
     pub async fn exchange(&self, device_id: &str) -> Result<(), FleetCallError> {
         let theirs = self
             .call(device_id, "fleet_replica_digest", json!({}))
@@ -1580,29 +1707,82 @@ impl ReplicaSync {
             self.replica.delivered(&self.replica.undelivered());
             return Ok(());
         }
-        let pulled = self
-            .call(device_id, "fleet_replica_pull", json!({}))
-            .await?;
-        let records: Vec<ReplicaRecord> = pulled
-            .get("records")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| FleetCallError::command(format!("invalid replica: {error}")))?
-            .unwrap_or_default();
-        let changed = self.replica.merge(records);
-        if !changed.is_empty() {
+        let mut after_key: Option<(String, String)> = None;
+        let mut peer_clocks: HashMap<(String, String), Hlc> = HashMap::new();
+        let mut last_peer_digest: Option<String> = None;
+        let mut total_changed = 0usize;
+        for _ in 0..=MAX_RECORDS {
+            let mut request = json!({ "maxBytes": self.config.max_frame_bytes });
+            if let Some((collection, id)) = &after_key {
+                request["afterKey"] = json!([collection, id]);
+            }
+            let pulled = self.call(device_id, "fleet_replica_pull", request).await?;
+            if let Some(digest) = pulled.get("digest").and_then(Value::as_str) {
+                last_peer_digest = Some(digest.to_string());
+            }
+            let records: Vec<ReplicaRecord> = pulled
+                .get("records")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| FleetCallError::command(format!("invalid replica: {error}")))?
+                .unwrap_or_default();
+            for record in &records {
+                peer_clocks.insert(record.key(), record.hlc.clone());
+            }
+            total_changed += self.replica.merge(records).len();
+            let more = pulled.get("more").and_then(Value::as_bool).unwrap_or(false);
+            if !more {
+                break;
+            }
+            let next = pulled
+                .get("nextAfterKey")
+                .and_then(Value::as_array)
+                .filter(|pair| pair.len() == 2)
+                .and_then(|pair| {
+                    Some((pair[0].as_str()?.to_string(), pair[1].as_str()?.to_string()))
+                });
+            match next {
+                Some(next_key) if after_key.as_ref() != Some(&next_key) => {
+                    after_key = Some(next_key);
+                }
+                _ => break,
+            }
+        }
+        if total_changed > 0 {
             log::info!(
-                "Account replica merged from a peer: device={device_id}, records={}",
-                changed.len()
+                "Account replica merged from a peer: device={device_id}, records={total_changed}"
             );
         }
-        // What the peer still lacks goes back to it.
-        let ours = self.replica.snapshot();
-        let answer = self
-            .call(device_id, "fleet_replica_push", json!({ "records": ours }))
-            .await?;
-        if answer.get("digest").and_then(Value::as_str) == Some(self.replica.digest().as_str()) {
+        // Only records the peer lacks or holds at an older clock go back,
+        // chunked to fit inside one OBP frame.
+        let delta: Vec<ReplicaRecord> = self
+            .replica
+            .snapshot()
+            .into_iter()
+            .filter(|record| {
+                peer_clocks
+                    .get(&record.key())
+                    .is_none_or(|peer_hlc| record.hlc > *peer_hlc)
+            })
+            .collect();
+        if delta.is_empty() {
+            if last_peer_digest.as_deref() == Some(self.replica.digest().as_str()) {
+                self.replica.delivered(&self.replica.undelivered());
+            }
+            return Ok(());
+        }
+        let mut last_answer_digest: Option<String> = None;
+        for chunk in chunk_records(&delta, self.config.max_frame_bytes) {
+            let answer = self
+                .call(device_id, "fleet_replica_push", json!({ "records": chunk }))
+                .await?;
+            last_answer_digest = answer
+                .get("digest")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if last_answer_digest.as_deref() == Some(self.replica.digest().as_str()) {
             self.replica.delivered(&self.replica.undelivered());
         }
         Ok(())
@@ -1719,13 +1899,15 @@ impl ReplicaSync {
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(self.config.presence_poll) => {}
             }
-            let (online, _) = self.online_peers().await;
+            let (online, _, raw_online) = self.online_peers_with_raw().await;
             let online: BTreeSet<String> = online.into_iter().collect();
             let newcomer = online.difference(&known_online).next().is_some();
-            // A peer that left and came back may have been updated.
+            // A peer that actually disconnected and later returns may have been
+            // updated; while it stays online, keep it in `unsupported` so we do
+            // not re-probe it every poll interval.
             {
                 let mut unsupported = self.unsupported.lock().unwrap_or_else(|p| p.into_inner());
-                unsupported.retain(|device| online.contains(device));
+                unsupported.retain(|device| raw_online.contains(device));
             }
             known_online = online;
             if newcomer

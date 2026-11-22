@@ -43,7 +43,7 @@ impl ObpBackend for EchoBackend {
                 "open_workspace" => Ok(json!({ "command": command, "args": args })),
                 // A registry `Proxied` command stands in for any command that
                 // produces events (non-owner scopes run registry commands only).
-                "page_list" => {
+                "list_miniapps" => {
                     let count = args["count"].as_u64().unwrap_or(1);
                     for index in 0..count {
                         hub.publish("agentic://text-chunk", json!({ "index": index }));
@@ -473,7 +473,7 @@ async fn live_round(disable_p2p: bool) {
 
     let stream_started = Instant::now();
     connection
-        .call("page_list", json!({ "count": 500 }))
+        .call("list_miniapps", json!({ "count": 500 }))
         .await
         .unwrap();
     let mut received = 0usize;
@@ -623,7 +623,7 @@ async fn peer_device_mode_links_call_stream_and_resume_over_the_mesh() {
 
     // Live events: the peer's seq, owner-only events withheld.
     links
-        .call("dana-device", "page_list", json!({ "count": 3 }))
+        .call("dana-device", "list_miniapps", json!({ "count": 3 }))
         .await
         .unwrap();
     let events = wait_for_events(&links, "dana-device", None, |seen| {
@@ -911,7 +911,7 @@ async fn peer_link_e2e_streams_live_tokens_over_the_relay_node() {
 
 /// A desktop backend with its fleet: fleet verbs go to the fleet layer as the
 /// desktop routes them (entry verbs, owner verbs as mesh host verbs), the
-/// rest to [`EchoBackend`] (`page_list` stands in for a turn's events).
+/// rest to [`EchoBackend`] (`list_miniapps` stands in for a turn's events).
 struct FleetEchoBackend {
     echo: EchoBackend,
     fleet: std::sync::OnceLock<Arc<openbitfun_obp::fleet::host::FleetHost>>,
@@ -1222,7 +1222,7 @@ async fn fleet_navigator_and_forwarded_turn_over_mesh() {
     let turn = client
         .call(
             "fleet_call",
-            json!({ "request": { "target": "fleet-owner-desk", "command": "page_list",
+            json!({ "request": { "target": "fleet-owner-desk", "command": "list_miniapps",
                     "args": { "count": 3 } } }),
         )
         .await

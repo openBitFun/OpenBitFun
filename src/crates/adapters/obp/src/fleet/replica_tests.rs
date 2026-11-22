@@ -970,3 +970,285 @@ mod account_collections {
         assert!(b.is_pinned(&hash));
     }
 }
+
+#[test]
+fn merge_enforces_collection_max_value_bytes() {
+    let replica = AccountReplica::open("a", None);
+    replica.declare(CollectionPolicy {
+        name: "tiny",
+        max_records: 10,
+        max_bytes: 1024,
+        max_value_bytes: 32,
+        durable_holders: 0,
+    });
+    let ok_record = ReplicaRecord {
+        collection: "tiny".into(),
+        id: "small".into(),
+        value: Some(json!("ok")),
+        hlc: Hlc {
+            wall_ms: now_ms(),
+            counter: 0,
+            device_id: "b".into(),
+        },
+        blobs: Vec::new(),
+    };
+    let too_big = ReplicaRecord {
+        collection: "tiny".into(),
+        id: "big".into(),
+        value: Some(json!("x".repeat(64))),
+        hlc: Hlc {
+            wall_ms: now_ms(),
+            counter: 1,
+            device_id: "b".into(),
+        },
+        blobs: Vec::new(),
+    };
+    let merged = replica.merge(vec![ok_record, too_big]);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].id, "small");
+    assert!(replica.get("tiny", "big").is_none());
+}
+
+#[test]
+fn fleet_blob_holders_hides_blobs_outside_restricted_access() {
+    let dir = tempfile::tempdir().unwrap();
+    let replica = AccountReplica::open("a", Some(replica_path(dir.path(), "acct")));
+    replica.declare(history_policy());
+    let (private_bytes, private_ref) = chunk("private-skill-content");
+    let (cloud_bytes, cloud_ref) = chunk("superagent-history-chunk");
+    replica.put_blob(&private_bytes, true).unwrap();
+    replica.put_blob(&cloud_bytes, true).unwrap();
+    replica
+        .put_with_blobs(
+            "settings",
+            "private_item",
+            json!({}),
+            vec![private_ref.clone()],
+        )
+        .unwrap();
+    replica
+        .put_with_blobs(
+            "superagent.conversations",
+            "c1",
+            json!({ "title": "hi" }),
+            vec![cloud_ref.clone()],
+        )
+        .unwrap();
+
+    let cloud = ReplicaAccess::Collections(vec!["superagent.".into()]);
+    let answer = replica
+        .handle_as(
+            "fleet_blob_holders",
+            &json!({ "request": { "hashes": [private_ref.hash, cloud_ref.hash] } }),
+            &cloud,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        answer["holders"][&private_ref.hash],
+        json!([]),
+        "restricted caller must not probe holders of non-allowed collection blobs"
+    );
+    assert_eq!(answer["holders"][&cloud_ref.hash], json!(["a"]));
+
+    // Full runtime device access still sees both.
+    let device_answer = replica
+        .handle(
+            "fleet_blob_holders",
+            &json!({ "request": { "hashes": [private_ref.hash, cloud_ref.hash] } }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(device_answer["holders"][&private_ref.hash], json!(["a"]));
+    assert_eq!(device_answer["holders"][&cloud_ref.hash], json!(["a"]));
+}
+
+#[test]
+fn push_verb_reports_stored_true_when_future_clock_is_clamped() {
+    let replica = AccountReplica::open("a", None);
+    let far_future = now_ms() + 48 * 3600 * 1000;
+    let answer = replica
+        .handle(
+            "fleet_replica_push",
+            &json!({ "request": { "records": [{
+                "collection": "settings",
+                "id": "theme",
+                "value": "dark",
+                "hlc": { "wallMs": far_future, "counter": 0, "deviceId": "skewed" }
+            }] } }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["accepted"], 1);
+    assert_eq!(answer["records"][0]["stored"], true);
+    assert_eq!(value(&replica, "theme"), Some(json!("dark")));
+}
+
+#[tokio::test]
+async fn paginated_pull_and_chunked_push_converge_under_small_frame_budget() {
+    let network = Arc::new(Network::default());
+    let a = AccountReplica::open("a", None);
+    let b = AccountReplica::open("b", None);
+    network.add(&a);
+    network.add(&b);
+    for i in 0..12 {
+        a.put("settings", &format!("a-{i:02}"), json!("a".repeat(200)))
+            .unwrap();
+        b.put("settings", &format!("b-{i:02}"), json!("b".repeat(200)))
+            .unwrap();
+    }
+    // Force multiple pull pages and multiple push chunks per exchange.
+    let small_frame = ReplicaSyncConfig {
+        max_frame_bytes: 600,
+        ..ReplicaSyncConfig::default()
+    };
+    let sync_a = ReplicaSync::new(
+        Arc::clone(&a),
+        Arc::new(Transport {
+            me: "a".into(),
+            network: Arc::clone(&network),
+            stopped: AtomicBool::new(false),
+        }),
+        small_frame,
+    );
+
+    // Direct page check: pull_page must paginate with `more: true` and `nextAfterKey`.
+    let page1 = b
+        .handle(
+            "fleet_replica_pull",
+            &json!({ "request": { "maxBytes": 600 } }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(page1["more"], true);
+    assert!(page1["nextAfterKey"].is_array());
+    assert!(page1["records"].as_array().unwrap().len() < 12);
+
+    sync_a.exchange("b").await.unwrap();
+    assert_eq!(a.digest(), b.digest());
+    assert_eq!(a.records("settings").len(), 24);
+    assert_eq!(b.records("settings").len(), 24);
+    assert!(a.undelivered().is_empty());
+}
+
+#[tokio::test]
+async fn unsupported_peer_stays_skipped_while_online_and_retries_after_reconnect() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingUnsupportedTransport {
+        peer_online: Mutex<bool>,
+        calls: AtomicUsize,
+    }
+
+    impl FleetPeerTransport for CountingUnsupportedTransport {
+        fn presence(&self) -> FleetFuture<'_, Vec<FleetPeerPresence>> {
+            let online = *self.peer_online.lock().unwrap();
+            Box::pin(async move {
+                vec![FleetPeerPresence {
+                    device_id: "old-peer".into(),
+                    name: "old-peer".into(),
+                    host_kind: FleetHostKind::Desktop,
+                    online,
+                    mesh: online,
+                    route: None,
+                    version: None,
+                    as_of_ms: 0,
+                    unsupported: None,
+                }]
+            })
+        }
+
+        fn subscribe_index(
+            &self,
+            _device_id: &str,
+        ) -> FleetFuture<'_, Result<FleetPeerSubscription, String>> {
+            Box::pin(async { Err("unused".into()) })
+        }
+
+        fn call(
+            &self,
+            _device_id: &str,
+            _command: &str,
+            _args: Value,
+        ) -> FleetFuture<'_, Result<Value, FleetCallError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err(FleetCallError {
+                    code: -32003,
+                    message: "forbidden_for_scope: unknown fleet owner verb".into(),
+                    data: Some(json!({ "kind": "forbidden" })),
+                })
+            })
+        }
+    }
+
+    let transport = Arc::new(CountingUnsupportedTransport {
+        peer_online: Mutex::new(true),
+        calls: AtomicUsize::new(0),
+    });
+    let replica = AccountReplica::open("self-dev", None);
+    let sync = ReplicaSync::new(
+        Arc::clone(&replica),
+        Arc::clone(&transport) as _,
+        ReplicaSyncConfig {
+            presence_poll: Duration::from_millis(20),
+            anti_entropy: Duration::from_millis(30),
+            call_timeout: Duration::from_secs(2),
+            max_frame_bytes: REPLICA_FRAME_BUDGET,
+        },
+    );
+    sync.start();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let calls_while_online = transport.calls.load(Ordering::SeqCst);
+    assert_eq!(
+        calls_while_online, 1,
+        "unsupported peer must not be re-probed every presence_poll while it stays online"
+    );
+
+    // Peer disconnects and reconnects -> retried once.
+    *transport.peer_online.lock().unwrap() = false;
+    sync.wake();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    *transport.peer_online.lock().unwrap() = true;
+    sync.wake();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let calls_after_reconnect = transport.calls.load(Ordering::SeqCst);
+    assert_eq!(
+        calls_after_reconnect, 2,
+        "unsupported peer must be retried once after disconnecting and reconnecting"
+    );
+    sync.shutdown();
+}
+
+#[test]
+fn legacy_on_disk_replica_round_trips_tolerantly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = replica_path(dir.path(), "legacy-acct");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // Minimal legacy v1 JSON: omits `undelivered`, `pinned`, `blobs`, `counter`,
+    // `deviceId` in HLC, and includes an unknown future field.
+    let legacy = json!({
+        "version": 1,
+        "deviceId": "dev-1",
+        "records": [
+            {
+                "collection": "settings",
+                "id": "language",
+                "value": "en-US",
+                "hlc": { "wallMs": 1_700_000_000_000u64 }
+            }
+        ],
+        "futureField": { "ignored": true }
+    });
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+    let opened = AccountReplica::open("dev-1", Some(path.clone()));
+    assert_eq!(value(&opened, "language"), Some(json!("en-US")));
+    assert!(opened.undelivered().is_empty());
+
+    // Round-trip: add a new write, persist, and reopen.
+    opened.put("settings", "theme", json!("dark")).unwrap();
+    let reopened = AccountReplica::open("dev-1", Some(path));
+    assert_eq!(value(&reopened, "language"), Some(json!("en-US")));
+    assert_eq!(value(&reopened, "theme"), Some(json!("dark")));
+}

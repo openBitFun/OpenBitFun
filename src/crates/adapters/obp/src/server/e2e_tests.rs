@@ -264,7 +264,7 @@ async fn browser_controllers_call_and_stream_over_the_end_to_end_channel() {
     client
         .rpc(
             "call",
-            json!({ "command": "page_list", "args": { "count": 3 } }),
+            json!({ "command": "list_miniapps", "args": { "count": 3 } }),
         )
         .await;
     let mut names = Vec::new();

@@ -10,7 +10,7 @@
 //! backlog, consecutive text/thinking chunks of one stream are merged (the
 //! merged event carries the last merged `seq`).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -164,22 +164,59 @@ impl Drop for FleetClientSlot {
     }
 }
 
-/// Bytes sent and not yet acknowledged, by `seq`.
+/// Bytes sent and not yet acknowledged, by `seq` (plain streams) or per
+/// origin/instance (fleet streams).
 struct Credit {
     window: u64,
     inner: Mutex<CreditInner>,
     changed: Notify,
 }
 
-/// One sent frame: `(seq, bytes, origin)`.
-type SentFrame = (u64, u64, Option<(String, String)>);
+/// One sent frame on a fleet stream.
+struct FleetSentFrame {
+    send_id: u64,
+    instance: String,
+    seq: u64,
+    bytes: u64,
+}
+
+const MAX_TRACKED_ORIGIN_INSTANCES: usize = 16;
 
 #[derive(Default)]
 struct CreditInner {
-    /// `(seq, bytes, origin)` in send order; `origin` is `(device,
-    /// instance)` on a fleet stream.
-    sent: VecDeque<SentFrame>,
+    /// `(seq, bytes)` in send order for single-origin (non-fleet) streams.
+    sent: VecDeque<(u64, u64)>,
+    /// Per-origin FIFO queues for fleet streams so one stalled, restarted, or
+    /// omitted origin never head-of-line blocks credit for other origins.
+    fleet_by_origin: HashMap<String, VecDeque<FleetSentFrame>>,
+    /// Ordered instance history per origin (oldest -> newest) seen on this
+    /// connection, so acks for a newer instance after an origin restart drain
+    /// frames from superseded instances while stale pre-connection cursors
+    /// cannot falsely drain live frames.
+    origin_instances: HashMap<String, VecDeque<String>>,
+    next_send_id: u64,
     unacked_bytes: u64,
+}
+
+impl CreditInner {
+    fn note_instance(&mut self, origin: &str, instance: &str) {
+        let history = self.origin_instances.entry(origin.to_string()).or_default();
+        if history.back().map(String::as_str) == Some(instance) {
+            return;
+        }
+        if let Some(pos) = history.iter().position(|existing| existing == instance) {
+            history.remove(pos);
+        }
+        history.push_back(instance.to_string());
+        while history.len() > MAX_TRACKED_ORIGIN_INSTANCES {
+            history.pop_front();
+        }
+    }
+
+    #[cfg(test)]
+    fn fleet_frame_count(&self) -> usize {
+        self.fleet_by_origin.values().map(VecDeque::len).sum()
+    }
 }
 
 impl Credit {
@@ -204,7 +241,7 @@ impl Credit {
 
     fn record(&self, seq: u64, bytes: u64) {
         let mut inner = self.lock();
-        inner.sent.push_back((seq, bytes, None));
+        inner.sent.push_back((seq, bytes));
         inner.unacked_bytes += bytes;
     }
 
@@ -212,16 +249,59 @@ impl Credit {
     #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
     fn record_origin(&self, origin: &str, instance: &str, seq: u64, bytes: u64) {
         let mut inner = self.lock();
+        inner.note_instance(origin, instance);
+        let send_id = inner.next_send_id;
+        inner.next_send_id = inner.next_send_id.wrapping_add(1);
         inner
-            .sent
-            .push_back((seq, bytes, Some((origin.to_string(), instance.to_string()))));
+            .fleet_by_origin
+            .entry(origin.to_string())
+            .or_default()
+            .push_back(FleetSentFrame {
+                send_id,
+                instance: instance.to_string(),
+                seq,
+                bytes,
+            });
         inner.unacked_bytes += bytes;
+    }
+
+    /// Records that `origin` has advanced to `instance` (for example via an
+    /// `events-dropped` notice on peer restart) without counting bytes.
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    fn note_origin_instance(&self, origin: &str, instance: &str) {
+        self.lock().note_instance(origin, instance);
+    }
+
+    /// Drops credit accounting for fleet origins this connection no longer
+    /// follows (for example after `fleet_subscribe` unfollows a device).
+    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
+    fn retain_fleet_origins(&self, kept: &BTreeSet<String>) {
+        let released = {
+            let mut inner = self.lock();
+            let mut freed = 0u64;
+            inner.fleet_by_origin.retain(|origin, queue| {
+                if kept.contains(origin) {
+                    true
+                } else {
+                    freed += queue.iter().map(|frame| frame.bytes).sum::<u64>();
+                    false
+                }
+            });
+            inner
+                .origin_instances
+                .retain(|origin, _| kept.contains(origin));
+            inner.unacked_bytes = inner.unacked_bytes.saturating_sub(freed);
+            freed > 0
+        };
+        if released {
+            self.changed.notify_one();
+        }
     }
 
     fn ack(&self, seq: u64) {
         {
             let mut inner = self.lock();
-            while let Some((sent_seq, bytes, _)) = inner.sent.front() {
+            while let Some((sent_seq, bytes)) = inner.sent.front() {
                 if *sent_seq > seq {
                     break;
                 }
@@ -233,39 +313,101 @@ impl Credit {
         self.changed.notify_one();
     }
 
-    /// An ack on a fleet stream. With the client's vector `cursor`, every
-    /// frame at the front that the cursor covers (same origin instance, seq
-    /// not newer) is returned. With `seq` alone, frames up to the first one
-    /// with that seq are returned (seqs are per origin, so the plain rule
-    /// would stall on a mixed stream).
+    /// An ack on a fleet stream. With the client's vector `cursor`, each
+    /// origin is acknowledged independently: frames of a matching instance up
+    /// to `seq`, plus any frames from strictly older instances superseded by
+    /// that instance after an origin restart, are returned immediately even
+    /// when another origin is missing from `cursor` or still unacked. With
+    /// `seq` alone, frames up to the earliest sent frame with that `seq` are
+    /// returned.
     fn ack_fleet(&self, seq: u64, cursor: Option<&Value>) {
         {
             let mut inner = self.lock();
-            let covered = |origin: &Option<(String, String)>, sent_seq: u64| match (cursor, origin)
-            {
-                (Some(cursor), Some((device, instance))) => {
-                    let position = &cursor[device.as_str()];
-                    position["instanceId"].as_str() == Some(instance.as_str())
-                        && position["seq"]
-                            .as_u64()
-                            .is_some_and(|acked| sent_seq <= acked)
-                }
-                _ => false,
-            };
-            if cursor.is_some_and(Value::is_object) {
-                while let Some((sent_seq, bytes, origin)) = inner.sent.front() {
-                    if !covered(origin, *sent_seq) {
-                        break;
+            if let Some(cursor_map) = cursor.and_then(Value::as_object) {
+                let mut freed = 0u64;
+                let origins: Vec<String> = inner.fleet_by_origin.keys().cloned().collect();
+                for origin in origins {
+                    let Some(position) = cursor_map.get(&origin) else {
+                        continue;
+                    };
+                    let Some(acked_instance) = position.get("instanceId").and_then(Value::as_str)
+                    else {
+                        continue;
+                    };
+                    let Some(acked_seq) = position.get("seq").and_then(Value::as_u64) else {
+                        continue;
+                    };
+                    let acked_pos = inner
+                        .origin_instances
+                        .get(&origin)
+                        .and_then(|history| history.iter().position(|inst| inst == acked_instance));
+                    let Some(acked_pos) = acked_pos else {
+                        // A foreign or pre-connection instance covers nothing.
+                        continue;
+                    };
+                    let mut drained_superseded = true;
+                    {
+                        let inner = &mut *inner;
+                        let history = inner.origin_instances.get(&origin);
+                        if let Some(queue) = inner.fleet_by_origin.get_mut(&origin) {
+                            while let Some(front) = queue.front() {
+                                let covered = if front.instance == acked_instance {
+                                    front.seq <= acked_seq
+                                } else {
+                                    history
+                                        .and_then(|history| {
+                                            history.iter().position(|inst| inst == &front.instance)
+                                        })
+                                        .is_none_or(|front_pos| front_pos < acked_pos)
+                                };
+                                if !covered {
+                                    break;
+                                }
+                                if let Some(frame) = queue.pop_front() {
+                                    freed += frame.bytes;
+                                }
+                            }
+                            if let Some(front) = queue.front() {
+                                if let Some(front_pos) = history.and_then(|history| {
+                                    history.iter().position(|inst| inst == &front.instance)
+                                }) {
+                                    if front_pos < acked_pos {
+                                        drained_superseded = false;
+                                    }
+                                }
+                            }
+                        }
                     }
-                    let bytes = *bytes;
-                    inner.sent.pop_front();
-                    inner.unacked_bytes = inner.unacked_bytes.saturating_sub(bytes);
-                }
-            } else if let Some(position) = inner.sent.iter().position(|(sent, _, _)| *sent == seq) {
-                for _ in 0..=position {
-                    if let Some((_, bytes, _)) = inner.sent.pop_front() {
-                        inner.unacked_bytes = inner.unacked_bytes.saturating_sub(bytes);
+                    if drained_superseded && acked_pos > 0 {
+                        if let Some(history) = inner.origin_instances.get_mut(&origin) {
+                            history.drain(..acked_pos);
+                        }
                     }
+                }
+                inner.fleet_by_origin.retain(|_, queue| !queue.is_empty());
+                inner.unacked_bytes = inner.unacked_bytes.saturating_sub(freed);
+            } else {
+                let target_send_id = inner
+                    .fleet_by_origin
+                    .values()
+                    .flatten()
+                    .filter(|frame| frame.seq == seq)
+                    .map(|frame| frame.send_id)
+                    .min();
+                if let Some(target_send_id) = target_send_id {
+                    let mut freed = 0u64;
+                    for queue in inner.fleet_by_origin.values_mut() {
+                        while queue
+                            .front()
+                            .is_some_and(|frame| frame.send_id <= target_send_id)
+                        {
+                            if let Some(frame) = queue.pop_front() {
+                                freed += frame.bytes;
+                            }
+                        }
+                    }
+                    inner.fleet_by_origin.retain(|_, queue| !queue.is_empty());
+                    inner.unacked_bytes = inner.unacked_bytes.saturating_sub(freed);
                 }
             }
         }
@@ -878,7 +1020,7 @@ async fn handle_message(
                     return;
                 }
             }
-            if let Some(frame) = answer_fleet_verb(&id, &params, context, fleet).await {
+            if let Some(frame) = answer_fleet_verb(&id, &params, context, fleet, credit).await {
                 send_text(outbox, frame).await;
                 return;
             }
@@ -1069,6 +1211,7 @@ async fn answer_fleet_verb(
     params: &CallParams,
     context: &ConnectionContext,
     fleet: Option<&FleetBinding>,
+    credit: Option<&Credit>,
 ) -> Option<String> {
     match params.command.as_str() {
         "fleet_events" => Some(error_frame(
@@ -1100,11 +1243,18 @@ async fn answer_fleet_verb(
                         ))
                     }
                 };
+            let mut kept: BTreeSet<String> = request.follow.keys().cloned().collect();
+            if let Some(local) = binding.mux.local_device_id() {
+                kept.insert(local);
+            }
             binding.mux.set_follow(binding.key, request.follow).await;
+            if let Some(credit) = credit {
+                credit.retain_fleet_origins(&kept);
+            }
             Some(result_frame(id, &serde_json::json!({ "applied": true })))
         }
         _ => {
-            let _ = (context, fleet);
+            let _ = (context, fleet, credit);
             None
         }
     }
@@ -1241,10 +1391,14 @@ async fn pump_fleet(
                 event,
                 payload,
             );
-            // Notices are not counted: a client acks the frames it applied
-            // by cursor, and a notice moves no cursor of its own.
-            if let (Some(credit), false) = (&credit, item.notice) {
-                credit.record_origin(&item.origin, &item.instance, seq, frame.len() as u64);
+            // Notices are not counted in bytes, but still record any instance
+            // transition so acks for the new instance drain superseded frames.
+            if let Some(credit) = &credit {
+                if item.notice {
+                    credit.note_origin_instance(&item.origin, &item.instance);
+                } else {
+                    credit.record_origin(&item.origin, &item.instance, seq, frame.len() as u64);
+                }
             }
             if !send_text(&outbox, frame).await {
                 return;
@@ -1349,20 +1503,65 @@ mod tests {
         // `seq` alone must not pop frames of another origin with higher seqs
         // stalled behind a lower one, nor stall on them.
         credit.ack_fleet(3, None);
-        assert_eq!(credit.lock().sent.len(), 2);
+        assert_eq!(credit.lock().fleet_frame_count(), 2);
         let cursor = serde_json::json!({
             "a": { "instanceId": "ia", "seq": 41 },
             "b": { "instanceId": "ib", "seq": 3 },
         });
         credit.ack_fleet(41, Some(&cursor));
-        assert_eq!(credit.lock().sent.len(), 1);
-        // Another instance's cursor covers nothing.
+        assert_eq!(credit.lock().fleet_frame_count(), 1);
+        // Another instance's cursor covers nothing when not known as newer.
         let foreign = serde_json::json!({ "b": { "instanceId": "old", "seq": 9 } });
         credit.ack_fleet(4, Some(&foreign));
-        assert_eq!(credit.lock().sent.len(), 1);
+        assert_eq!(credit.lock().fleet_frame_count(), 1);
         let cursor = serde_json::json!({ "b": { "instanceId": "ib", "seq": 4 } });
         credit.ack_fleet(4, Some(&cursor));
         assert_eq!(credit.lock().unacked_bytes, 0);
+    }
+
+    #[test]
+    fn fleet_credit_does_not_deadlock_on_origin_restart_or_missing_cursor() {
+        let credit = Credit::new(100);
+        credit.record_origin("devA", "inst1", 10, 40);
+        credit.record_origin("devB", "inst1", 1, 40);
+        credit.record_origin("devB", "inst1", 2, 30);
+        assert!(credit.exhausted());
+
+        // Origin missing from cursor must not head-of-line block other origins.
+        let partial = serde_json::json!({
+            "devB": { "instanceId": "inst1", "seq": 2 },
+        });
+        credit.ack_fleet(2, Some(&partial));
+        assert_eq!(credit.lock().unacked_bytes, 40);
+        assert!(!credit.exhausted());
+
+        // devA restarts from inst1 to inst2 (via an events-dropped notice or
+        // a new event); acking inst2 must drain the superseded inst1 frames.
+        credit.record_origin("devB", "inst1", 3, 40);
+        credit.note_origin_instance("devA", "inst2");
+        credit.record_origin("devA", "inst2", 1, 30);
+        assert!(credit.exhausted());
+
+        let after_restart = serde_json::json!({
+            "devA": { "instanceId": "inst2", "seq": 1 },
+            "devB": { "instanceId": "inst1", "seq": 3 },
+        });
+        credit.ack_fleet(1, Some(&after_restart));
+        assert_eq!(credit.lock().unacked_bytes, 0);
+        assert_eq!(credit.lock().fleet_frame_count(), 0);
+        assert!(!credit.exhausted());
+    }
+
+    #[test]
+    fn fleet_credit_releases_bytes_when_origin_is_unfollowed() {
+        let credit = Credit::new(100);
+        credit.record_origin("devA", "inst1", 1, 70);
+        credit.record_origin("devB", "inst1", 1, 40);
+        assert!(credit.exhausted());
+        let kept: BTreeSet<String> = ["devB".to_string()].into_iter().collect();
+        credit.retain_fleet_origins(&kept);
+        assert_eq!(credit.lock().unacked_bytes, 40);
+        assert!(!credit.exhausted());
     }
 
     #[test]
