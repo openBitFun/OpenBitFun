@@ -967,7 +967,7 @@ test("a persisted reasoning block stays collapsed until it is opened", async () 
   expect(collapsed).not.toContain("46 characters");
   expect(collapsed).not.toContain("Weigh the two options");
 
-  await app.press("label:thinking-turn-2|thinking|Weigh the two options before writing anything.");
+  await app.press("label:thinking-turn-2|thinking|0");
   await app.waitFor("Weigh the two options before writing anything.");
   expect(app.texts().join("\n")).toContain("Weigh the two options before writing anything.");
 });

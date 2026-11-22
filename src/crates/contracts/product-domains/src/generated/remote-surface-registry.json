@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:e3ef76243833b6ae",
+  "digest": "fnv1a64:43c1f3ff79890fcc",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -10298,7 +10298,9 @@
     {
       "id": "compress_path",
       "route": {
-        "kind": "by_target"
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
       }
     },
     {
@@ -10494,7 +10496,9 @@
     {
       "id": "decompress_path",
       "route": {
-        "kind": "by_target"
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
       }
     },
     {
@@ -13494,7 +13498,9 @@
     {
       "id": "save_merged_diff_content",
       "route": {
-        "kind": "by_target"
+        "kind": "by_owner",
+        "entity": "workspace",
+        "path": "request.workspaceId"
       }
     },
     {

@@ -210,6 +210,7 @@ function recentRows(): RecentRow[] {
     );
   }
   const workspace = workspaces().find(item => item.id === activeWorkspaceId());
+  const status = statusOfSession();
   return sessions()
     .filter(row => !isSessionArchived(row))
     .map(row => ({
@@ -221,7 +222,7 @@ function recentRows(): RecentRow[] {
       workspaceName: workspace ? workspaceLabel(workspace) : "",
       sessionId: row.sessionId,
       title: row.sessionName || tr("allSessions.untitled"),
-      mark: localSessionMarkState(statusOfSession()(row.sessionId)?.kind),
+      mark: localSessionMarkState(status(row.sessionId)?.kind),
       ageMs: sessionLastActivityMs(row),
     }));
 }

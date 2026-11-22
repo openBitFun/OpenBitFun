@@ -232,53 +232,51 @@ type StatusOfSessionFn = (
   deviceId?: string,
 ) => SessionStatusMark | null;
 
-let statusOfSessionComputed: ReturnType<typeof computed<StatusOfSessionFn>> | null = null;
-
 /**
  * The mark one row shows, matching backend fleet roll-up priority:
  * approval (`needs_you`) ranks above `running`, then queued, failed, unread.
- * Lazily initializes its `computed` on first read to avoid module-init cycles with `state.ts`.
+ *
+ * Reads the underlying signals directly (rather than caching a lazily-created
+ * `computed` that would bind to and be disposed with the first mounted scene,
+ * or creating a top-level `computed` that would hit a module-init cycle with
+ * `state.ts`). Heavy indexes (`approvalSessionKeys`, `fleetOwnerBySession`,
+ * `getSessionRowsByKey`) are already memoized in O(1).
  */
 export function statusOfSession(): StatusOfSessionFn {
-  if (!statusOfSessionComputed) {
-    statusOfSessionComputed = computed<StatusOfSessionFn>(() => {
-      // Reading these keeps the derived function live when any of them changes.
-      const running = runningTurns();
-      const approvals = approvalSessionKeys();
-      const queued = queuedCounts();
-      const failed = failedAt();
-      const acknowledged = acknowledgedAt();
-      const owners = fleetOwnerBySession();
-      const active = fleetActive();
-      const ctx = active ? deviceContext() : "";
-      const rowsByKey = getSessionRowsByKey(sessions(), active, ctx);
-      const openId = activeSessionId();
-      const openDevice = activeSessionDevice();
+  // Reading these subscribes the caller's reactive scope to any status change.
+  const running = runningTurns();
+  const approvals = approvalSessionKeys();
+  const queued = queuedCounts();
+  const failed = failedAt();
+  const acknowledged = acknowledgedAt();
+  const owners = fleetOwnerBySession();
+  const active = fleetActive();
+  const ctx = active ? deviceContext() : "";
+  const rowsByKey = getSessionRowsByKey(sessions(), active, ctx);
+  const openId = activeSessionId();
+  const openDevice = activeSessionDevice();
 
-      return (sessionId, _lastActivityMs, _messageCount, deviceId) => {
-        const device = !active
-          ? ""
-          : deviceId !== undefined
-            ? deviceId
-            : sessionId === openId && openDevice
-              ? openDevice
-              : (owners.get(sessionId) ?? ctx);
-        const key = `${device}/${sessionId}`;
+  return (sessionId, _lastActivityMs, _messageCount, deviceId) => {
+    const device = !active
+      ? ""
+      : deviceId !== undefined
+        ? deviceId
+        : sessionId === openId && openDevice
+          ? openDevice
+          : (owners.get(sessionId) ?? ctx);
+    const key = `${device}/${sessionId}`;
 
-        if (approvals.has(key)) return { kind: "approval", label: tr("chat.status.approval") };
-        if (running[key] || (!active && running[sessionKey(sessionId, "")])) {
-          return { kind: "running", label: tr("chat.status.running") };
-        }
-        const queuedCount = queued[key] ?? (!active || device === ctx ? queued[sessionId] : 0) ?? 0;
-        if (queuedCount > 0) return { kind: "queued", label: tr("chat.status.queued") };
-        if (failed[key] || (!active && failed[sessionId])) return { kind: "failed", label: tr("chat.status.failed") };
-        const row = rowsByKey.get(key);
-        if (!row || isAcknowledged(row, acknowledged, device)) return null;
-        if (row.failed) return { kind: "failed", label: tr("chat.status.failed") };
-        if (row.unread) return { kind: "unread", label: tr("chat.status.unread") };
-        return null;
-      };
-    });
-  }
-  return statusOfSessionComputed();
+    if (approvals.has(key)) return { kind: "approval", label: tr("chat.status.approval") };
+    if (running[key] || (!active && running[sessionKey(sessionId, "")])) {
+      return { kind: "running", label: tr("chat.status.running") };
+    }
+    const queuedCount = queued[key] ?? (!active || device === ctx ? queued[sessionId] : 0) ?? 0;
+    if (queuedCount > 0) return { kind: "queued", label: tr("chat.status.queued") };
+    if (failed[key] || (!active && failed[sessionId])) return { kind: "failed", label: tr("chat.status.failed") };
+    const row = rowsByKey.get(key);
+    if (!row || isAcknowledged(row, acknowledged, device)) return null;
+    if (row.failed) return { kind: "failed", label: tr("chat.status.failed") };
+    if (row.unread) return { kind: "unread", label: tr("chat.status.unread") };
+    return null;
+  };
 }
