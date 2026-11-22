@@ -8,6 +8,8 @@
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
 import { tr } from "./i18n";
+import { currentDeviceScopeKey, isRemotePeerContext } from "./shared/deviceScope";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { activeWorkspace, activeWorkspaceId, activeWorkspaceRoot } from "./state";
 
 export type SkillTab = "installed" | "marketplace";
@@ -262,7 +264,7 @@ export const filteredInstalledSkills = computed<SkillRecord[]>(() => {
 });
 
 export const folderInstallUnsupportedReason = computed<string | null>(() => {
-  if (activeWorkspace()?.workspaceKind === "remote") {
+  if (isRemoteWorkspace(activeWorkspace()) || isRemotePeerContext()) {
     return "Remote workspace active: installing skills from a local folder path is unsupported.";
   }
   return null;
@@ -321,7 +323,7 @@ export function canToggleInstalledSkill(skill: SkillRecord): boolean {
   if (!directSkillManagementSupported()) return false;
   if (skill.canToggle !== undefined) return skill.canToggle;
   // Compatibility read for a host older than the `canToggle` flag.
-  return !(activeWorkspace()?.workspaceKind === "remote" && skill.level === "project");
+  return !(isRemoteWorkspace(activeWorkspace()) && skill.level === "project");
 }
 
 let skillsLoadTicket = 0;
@@ -349,8 +351,8 @@ export async function loadSkillsCatalog(forceRefresh = false, contextKey?: strin
   const workspace = activeWorkspace();
   const workspaceId = workspace?.id ?? activeWorkspaceId() ?? null;
   const workspacePath = workspace?.rootPath || activeWorkspaceRoot() || null;
-  const isRemote = workspace?.workspaceKind === "remote";
-  const key = contextKey ?? `local:${workspaceId ?? "none"}:${workspacePath ?? ""}`;
+  const isRemote = isRemoteWorkspace(workspace);
+  const key = contextKey ?? `${currentDeviceScopeKey()}:${workspaceId ?? "none"}:${workspacePath ?? ""}`;
 
   skillsLoading.set(true);
   skillsError.set(null);

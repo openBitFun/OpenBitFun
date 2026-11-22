@@ -107,6 +107,10 @@ export interface InsightsReportView {
   markdown: string;
   /** The HTML rendering the host wrote beside the report, when it wrote one. */
   htmlPath: string;
+  /** True when the host reported failed sections or fewer analyzed than total sessions. */
+  partialReport?: boolean;
+  /** Number of report sections that failed during generation. */
+  failedSections?: number;
 }
 
 /** The ranges and models the desktop's insights generator offers. */
@@ -614,6 +618,12 @@ function formatInsightsReport(raw: Record<string, unknown>, fallbackPath = ""): 
   const totalSessions = readNumber(raw, ["total_sessions", "totalSessions"]);
   const analyzedSessions = readNumber(raw, ["analyzed_sessions", "analyzedSessions"]);
   const totalMessages = readNumber(raw, ["total_messages", "totalMessages"]);
+  const failedSections = readNumber(raw, ["failed_sections", "failedSections"]) ?? 0;
+  const partialReport =
+    raw.partial_report === true ||
+    raw.partialReport === true ||
+    failedSections > 0 ||
+    (analyzedSessions !== null && totalSessions !== null && analyzedSessions < totalSessions);
   const generatedMs = parseTimestampMs(raw.generated_at ?? raw.generatedAt);
 
   const explicitTitle = readString(raw, ["title"]);
@@ -627,26 +637,46 @@ function formatInsightsReport(raw: Record<string, unknown>, fallbackPath = ""): 
     subtitleParts.push(`${formatCount(analyzedSessions)}/${formatCount(totalSessions)} sessions`);
   }
   if (totalMessages !== null) subtitleParts.push(`${formatCount(totalMessages)} messages`);
+  if (partialReport) {
+    subtitleParts.push(
+      failedSections > 0 ? `Partial report (${formatCount(failedSections)} failed sections)` : "Partial report",
+    );
+  }
   if (generatedMs) {
     const ts = formatTimestamp(generatedMs);
     if (ts) subtitleParts.push(ts);
   }
   const subtitle = subtitleParts.join(" · ");
 
+  const partialBanner = partialReport
+    ? failedSections > 0
+      ? `> Partial report: ${formatCount(failedSections)} report section${failedSections === 1 ? "" : "s"} failed to generate.`
+      : "> Partial report: some sessions could not be analyzed."
+    : "";
+
   const directMarkdown = readString(raw, ["markdown", "content", "reportMarkdown"]);
   if (directMarkdown) {
+    const markdownWithPartial =
+      partialBanner && !/partial report/i.test(directMarkdown)
+        ? `${partialBanner}\n\n${directMarkdown}`
+        : directMarkdown;
     return {
       path,
       title,
       subtitle,
-      markdown: directMarkdown,
+      markdown: markdownWithPartial,
       htmlPath: readString(raw, ["html_report_path", "htmlReportPath"]),
+      partialReport,
+      failedSections,
     };
   }
 
   const lines: string[] = [];
   lines.push(`# ${title}`);
   if (subtitle) lines.push(`_${subtitle}_`);
+  if (partialBanner) {
+    lines.push("", partialBanner);
+  }
 
   const summary = readString(raw, ["summary"]);
   if (summary) {
@@ -752,7 +782,7 @@ function formatInsightsReport(raw: Record<string, unknown>, fallbackPath = ""): 
 
   const markdown = lines.join("\n").trim() || "No structured report content was returned.";
   const htmlPath = readString(raw, ["html_report_path", "htmlReportPath"]);
-  return { path, title, subtitle, markdown, htmlPath };
+  return { path, title, subtitle, markdown, htmlPath, partialReport, failedSections };
 }
 
 export async function loadLatestInsights(): Promise<void> {
@@ -802,12 +832,16 @@ export function closeInsightsModal(): void {
   insightsModalOpen.set(false);
 }
 
+let activeInsightsGenerationId: string | null = null;
+
 export async function generateInsightsReport(
   days: number = insightsDays(),
   modelId: string = insightsModel(),
 ): Promise<void> {
   ensureHomeEventSubscriptions();
   if (insightsGenerating()) return;
+  const generationId = `insights-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  activeInsightsGenerationId = generationId;
   insightsGenerating.set(true);
   insightsError.set("");
   insightsNotice.set("");
@@ -817,9 +851,10 @@ export async function generateInsightsReport(
       await invokeCommand<Record<string, unknown>>("generate_insights", {
         days,
         ...(modelId ? { modelId } : {}),
+        generationId,
       }),
     );
-    if (!insightsGenerating()) return;
+    if (!insightsGenerating() || activeInsightsGenerationId !== generationId) return;
     const view = formatInsightsReport(report);
     activeInsightsReport.set(view);
     if (view.path) selectedInsightsPath.set(view.path);
@@ -827,11 +862,14 @@ export async function generateInsightsReport(
     insightsModalOpen.set(true);
     void loadLatestInsights();
   } catch (error) {
-    if (!insightsGenerating()) return;
+    if (!insightsGenerating() || activeInsightsGenerationId !== generationId) return;
     insightsError.set(errorMessage(error));
   } finally {
-    insightsGenerating.set(false);
-    insightsProgress.set("");
+    if (activeInsightsGenerationId === generationId) {
+      activeInsightsGenerationId = null;
+      insightsGenerating.set(false);
+      insightsProgress.set("");
+    }
   }
 }
 
@@ -850,8 +888,13 @@ export async function revealInsightsHtml(path: string): Promise<void> {
 
 export async function cancelInsights(): Promise<void> {
   if (!insightsGenerating()) return;
+  const generationId = activeInsightsGenerationId;
+  activeInsightsGenerationId = null;
   try {
-    await invokeRawCommand<unknown>("cancel_insights_generation", {});
+    await invokeCommand<unknown>(
+      "cancel_insights_generation",
+      generationId ? { generationId } : {},
+    );
   } catch (error) {
     insightsError.set(errorMessage(error));
   } finally {

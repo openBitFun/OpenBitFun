@@ -1,12 +1,14 @@
 // Git Workbench state and Tauri command orchestration.
 
-import { computed, signal } from "nsh";
+import { computed, effect, lifecycle, signal } from "nsh";
 import { type GitFileStatus, type GitStatus, type WorkspaceRecord } from "./api";
-import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { invokeCommand, invokeRawCommand } from "./bridge";
 import { subscribeWorkspaceFileChanges } from "./fileStore";
 import { gitLiveMode, holdGitStatusLive, renewGitStatusLive, type GitStatusChange } from "./gitStatusLive";
 import { isCommandUnavailable } from "./hostCommands";
 import { tr } from "./i18n";
+import { currentDeviceScopeKey } from "./shared/deviceScope";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -160,7 +162,7 @@ export const newWorktreeCreateBranch = signal(true);
 export const confirmingRemoveWorktree = signal<string | null>(null);
 
 function isRemoteWs(ws: WorkspaceRecord | null): boolean {
-  return Boolean(ws && (ws.workspaceKind === "remote" || ws.connectionId));
+  return isRemoteWorkspace(ws);
 }
 
 let currentScopeKey = "";
@@ -329,8 +331,9 @@ function clearGitState(): void {
 }
 
 export function workspaceScopeKey(ws: WorkspaceRecord | null): string {
-  if (!ws) return `local::none`;
-  return `local::${ws.id}::${ws.rootPath}::${ws.workspaceKind ?? "local"}`;
+  const deviceKey = currentDeviceScopeKey();
+  if (!ws) return `${deviceKey}::none`;
+  return `${deviceKey}::${ws.id}::${ws.rootPath}::${ws.workspaceKind ?? "local"}`;
 }
 
 export async function syncGitWorkspace(ws: WorkspaceRecord | null): Promise<void> {
@@ -586,6 +589,7 @@ export async function refreshGitStatusQuietly(): Promise<boolean> {
 function applyPushedStatus(change: GitStatusChange): void {
   const ws = activeWorkspace();
   if (!ws || ws.id !== change.workspaceId || gitRepoState() !== "trusted") return;
+  if (change.deviceId && change.deviceId !== currentDeviceScopeKey()) return;
   if (workspaceScopeKey(ws) !== currentScopeKey) return;
   // The running action re-reads when it finishes; a pushed status in between
   // would only repaint twice.
@@ -608,13 +612,19 @@ let liveRefreshInstalled = false;
 function installLiveRefresh(): void {
   if (liveRefreshInstalled) return;
   liveRefreshInstalled = true;
-  // The window coming back to the front re-reads once (an event can be lost
-  // while the connection was down). A host that does not push status still
-  // re-reads on a disk change the explorer watch reports; there is no timer.
+  // A host that does not push status still re-reads on a disk change the
+  // explorer watch reports, and returning from background refreshes once.
   subscribeWorkspaceFileChanges(() => {
     if (gitLiveMode() === "unsupported") scheduleQuietRefresh();
   });
-  listenEvent<unknown>("tauri://focus", () => scheduleQuietRefresh(0));
+  let lastState = lifecycle();
+  effect(() => {
+    const nextState = lifecycle();
+    if (lastState !== "active" && nextState === "active") {
+      scheduleQuietRefresh(0);
+    }
+    lastState = nextState;
+  });
 }
 
 /**

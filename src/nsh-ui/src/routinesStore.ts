@@ -1,10 +1,12 @@
 // Scheduled agent routines (cron jobs) store and calendar projection.
 
 import { computed, signal } from "nsh";
-import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
+import { fleetActive, invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { formatMonthYear, formatTimestamp } from "./format";
 import { tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
+import { currentDeviceScopeKey } from "./shared/deviceScope";
+import { basenameOfPath } from "./shared/workspaceUtils";
 import { activeWorkspace, activeWorkspaceId, workspaces } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -72,6 +74,9 @@ export interface RoutineDraft {
   reportPolicy: RoutineReportPolicy;
   enabled: boolean;
   preservedTarget: CronJobTarget | null;
+  /** Preserved remote SSH metadata when editing an existing remote-workspace routine. */
+  remoteConnectionId?: string | null;
+  remoteSshHost?: string | null;
   /** A new session per run in the workspace, or one existing session (the desktop's two targets). */
   targetKind?: "workspace" | "session";
   sessionId?: string;
@@ -312,9 +317,10 @@ export function routineTargetLabel(job: CronJobRecord): string {
     });
   }
   const path = job.target.workspace.workspacePath;
+  const isRemote = Boolean(job.target.workspace.remoteConnectionId || job.target.workspace.remoteSshHost);
   const wsName =
     workspaces().find(w => w.id === job.target.workspace.workspaceId)?.name ||
-    (path ? path.split("/").filter(Boolean).pop() || path : tr("nav.workspaceFallback"));
+    (path ? basenameOfPath(path, isRemote) || path : tr("nav.workspaceFallback"));
   return `${wsName} / ${job.target.launch.agentType || "Standard"}`;
 }
 
@@ -637,15 +643,19 @@ export function selectCalendarDay(dayKey: string): void {
 
 // --- Host actions & subscriptions ---
 
+const cronHostReadyDevices = new Set<string>();
+
 export function ensureCronHostReady(): void {
-  if (cronHostReadySignaled) return;
-  cronHostReadySignaled = true;
+  const scope = currentDeviceScopeKey();
+  if (cronHostReadyDevices.has(scope)) return;
+  cronHostReadyDevices.add(scope);
   routinePreviewUnavailable.set(false);
   void invokeRawCommand<unknown>("notify_cron_host_ready", {}).catch(() => undefined);
 }
 
 export function subscribeRoutinesChanged(): () => void {
-  return listenEvent("cron://jobs-changed", () => {
+  return listenEvent("cron://jobs-changed", (_payload, meta) => {
+    if (fleetActive() && meta.origin && meta.origin !== currentDeviceScopeKey()) return;
     void loadRoutines();
   });
 }
@@ -752,6 +762,10 @@ export function openEditRoutineDraft(job: CronJobRecord): void {
     reportPolicy,
     enabled: job.enabled,
     preservedTarget: job.target.kind === "session" ? job.target : null,
+    targetKind: job.target.kind,
+    sessionId: job.target.kind === "session" ? job.target.sessionId : "",
+    remoteConnectionId: job.target.workspace.remoteConnectionId ?? null,
+    remoteSshHost: job.target.workspace.remoteSshHost ?? null,
   });
   editorOpen.set(true);
   scheduleDraftPreview(0);
@@ -816,28 +830,33 @@ export async function saveRoutineDraft(): Promise<void> {
     return;
   }
 
+  const remoteConnectionId = wsRecord?.connectionId ?? draft.remoteConnectionId ?? undefined;
+  const remoteSshHost = wsRecord?.sshHost ?? draft.remoteSshHost ?? undefined;
+  const workspaceRef: CronWorkspaceRef | null = wsRecord
+    ? {
+        workspaceId: wsRecord.id,
+        workspacePath: wsRecord.rootPath,
+        ...(remoteConnectionId ? { remoteConnectionId } : {}),
+        ...(remoteSshHost ? { remoteSshHost } : {}),
+      }
+    : null;
+
   const target: CronJobTarget = draft.preservedTarget
     ? draft.preservedTarget
     : draft.targetKind === "session"
       ? {
           kind: "session",
           sessionId: (draft.sessionId ?? "").trim(),
-          workspace: {
-            workspaceId: wsRecord!.id,
-            workspacePath: wsRecord!.rootPath,
-          },
+          workspace: workspaceRef!,
         }
       : {
-        kind: "workspace",
-        workspace: {
-          workspaceId: wsRecord!.id,
-          workspacePath: wsRecord!.rootPath,
-        },
-        launch: {
-          agentType: draft.agentType.trim() || "Standard",
-          modelId: null,
-        },
-      };
+          kind: "workspace",
+          workspace: workspaceRef!,
+          launch: {
+            agentType: draft.agentType.trim() || "Standard",
+            modelId: null,
+          },
+        };
 
   const reportPolicyPayload = draft.reportPolicy
     ? { reportPolicy: draft.reportPolicy }

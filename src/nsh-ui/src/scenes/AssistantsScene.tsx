@@ -1,5 +1,8 @@
-import { cleanup, computed, effect, Overlay, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
+import { cleanup, computed, effect, openUrl, Overlay, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
 import { Input } from "nsh/base";
+import { revealPath } from "../fileStore";
+import { isRemoteWorkspace, resolveWorkspaceMarkdownLink } from "../shared/workspaceUtils";
+import { activeWorkspace, navigateScene } from "../state";
 import {
   ASSISTANT_AVATAR_PRESETS,
   ASSISTANT_EMOJI_PRESETS,
@@ -1672,7 +1675,26 @@ function PersonaStudioPane() {
                                 </View>
                               }
                             >
-                              {md => <MarkdownPreview markdown={md()} links="open" />}
+                              {md => (
+                                <MarkdownPreview
+                                  markdown={md()}
+                                  links="report"
+                                  onLinkPress={event => {
+                                    const baseDir = assistant().rootPath || activeWorkspace()?.rootPath || "";
+                                    const resolved = resolveWorkspaceMarkdownLink(
+                                      event.url,
+                                      baseDir,
+                                      isRemoteWorkspace(activeWorkspace()),
+                                    );
+                                    if (resolved.kind === "external") {
+                                      void openUrl(resolved.target).catch(() => undefined);
+                                    } else if (resolved.kind === "workspace") {
+                                      void revealPath(resolved.target);
+                                      navigateScene("files");
+                                    }
+                                  }}
+                                />
+                              )}
                             </If>
                           </View>
                         </Scroll>

@@ -29,6 +29,15 @@ import {
 } from "nsh/base";
 import { basename, extensionOf, formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
+import { isDesktopLocalShell, isRemotePeerContext } from "../shared/deviceScope";
+import {
+  basenameOfPath,
+  dirnameOfPath,
+  isPathAtOrUnder,
+  isRemoteWorkspace as isRemoteWorkspaceRecord,
+  joinWorkspacePath,
+  resolveWorkspaceMarkdownLink,
+} from "../shared/workspaceUtils";
 import {
   beginEditFile,
   cancelCloseTab,
@@ -409,20 +418,33 @@ interface BreadcrumbSegment {
 }
 
 function buildBreadcrumbs(filePath: string, rootPath: string): BreadcrumbSegment[] {
-  const normalizedRoot = rootPath.replace(/[\\/]+$/, "");
-  if (normalizedRoot && filePath.startsWith(normalizedRoot)) {
-    const rest = filePath.slice(normalizedRoot.length).replace(/^[\\/]+/, "");
-    const parts = rest ? rest.split(/[\\/]+/).filter(Boolean) : [];
+  const remote = isRemoteWorkspace();
+  const normalizedRoot = remote
+    ? rootPath === "/"
+      ? "/"
+      : rootPath.replace(/\/+$/, "")
+    : /^[A-Za-z]:[\\/]+$/.test(rootPath)
+      ? rootPath.slice(0, 3)
+      : rootPath === "/"
+        ? "/"
+        : rootPath.replace(/[\\/]+$/, "");
+  if (normalizedRoot && isPathAtOrUnder(filePath, normalizedRoot, remote)) {
+    const restRaw =
+      normalizedRoot === "/" || /^[A-Za-z]:[\\/]$/.test(normalizedRoot)
+        ? filePath.slice(normalizedRoot.length)
+        : filePath.slice(normalizedRoot.length);
+    const rest = remote ? restRaw.replace(/^\/+/, "") : restRaw.replace(/^[\\/]+/, "");
+    const parts = rest ? rest.split(remote ? /\/+/ : /[\\/]+/).filter(Boolean) : [];
     const segments: BreadcrumbSegment[] = [
       {
-        label: basename(normalizedRoot) || normalizedRoot,
+        label: basenameOfPath(normalizedRoot, remote) || normalizedRoot,
         path: normalizedRoot,
         isLast: parts.length === 0,
       },
     ];
     let current = normalizedRoot;
     parts.forEach((part, index) => {
-      current = joinPath(current, part);
+      current = joinWorkspacePath(current, part, remote);
       segments.push({
         label: part,
         path: current,
@@ -431,12 +453,12 @@ function buildBreadcrumbs(filePath: string, rootPath: string): BreadcrumbSegment
     });
     return segments;
   }
-  const parts = filePath.split(/[\\/]+/).filter(Boolean);
+  const parts = filePath.split(remote ? /\/+/ : /[\\/]+/).filter(Boolean);
   if (parts.length === 0) return [{ label: filePath, path: filePath, isLast: true }];
   const prefix = filePath.startsWith("/") ? "/" : "";
   let current = "";
   return parts.map((part, index) => {
-    current = current ? joinPath(current, part) : `${prefix}${part}`;
+    current = current ? joinWorkspacePath(current, part, remote) : `${prefix}${part}`;
     return {
       label: part,
       path: current,
@@ -463,10 +485,18 @@ function isDirectoryPath(path: string): boolean {
 }
 
 function isRemoteWorkspace(): boolean {
-  return activeWorkspace()?.workspaceKind === "remote" || Boolean(activeWorkspace()?.connectionId);
+  return isRemoteWorkspaceRecord(activeWorkspace());
+}
+
+function revealInExplorerDisabled(): boolean {
+  return isRemoteWorkspace() || isRemotePeerContext() || !isDesktopLocalShell();
 }
 
 async function revealInSystemExplorer(path: string): Promise<void> {
+  if (revealInExplorerDisabled()) {
+    pushToast(tr("files.revealLocalOnly"), "error");
+    return;
+  }
   const workspaceId = activeWorkspaceId();
   try {
     await invokeCommand<unknown>("reveal_in_explorer", { path, ...(workspaceId ? { workspaceId } : {}) });
@@ -555,9 +585,9 @@ function fileMenuItems(target: string | null = selectedPath()): DropdownMenuItem
       },
       {
         id: "reveal",
-        label: isRemoteWorkspace() ? tr("files.revealLocalOnly") : tr("files.revealInFinder"),
+        label: revealInExplorerDisabled() ? tr("files.revealLocalOnly") : tr("files.revealInFinder"),
         icon: "external-link",
-        disabled: isRemoteWorkspace(),
+        disabled: revealInExplorerDisabled(),
         onSelect: () => void revealInSystemExplorer(selected),
       },
       {
@@ -2338,14 +2368,18 @@ function MarkdownImage(props: { image: TextViewImage; documentPath: string }) {
   );
 }
 
-/** A link in a Markdown preview: web links open outside, workspace files open here. */
+/** A link in a Markdown preview: web/mailto links open outside, workspace/file:// links open here. */
 function openMarkdownLink(url: string, documentPath: string): void {
-  if (!url || url.startsWith("#")) return;
-  if (isExternalUrl(url)) {
-    if (/^https?:/i.test(url)) void openUrl(url).catch(() => undefined);
+  const remote = isRemoteWorkspace();
+  const baseDir = dirnameOfPath(documentPath, remote) || activeWorkspaceRoot();
+  const resolved = resolveWorkspaceMarkdownLink(url, baseDir, remote);
+  if (resolved.kind === "external") {
+    void openUrl(resolved.target).catch(() => undefined);
     return;
   }
-  void revealPath(resolveDocumentPath(documentPath, url));
+  if (resolved.kind === "workspace") {
+    void revealPath(resolved.target);
+  }
 }
 
 /**

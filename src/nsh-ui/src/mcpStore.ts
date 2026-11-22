@@ -9,7 +9,7 @@
 // does not draw) is not guessed at: the row points at the JSON editor, which is the
 // one place a whole document can be edited without losing fields.
 
-import { Clipboard, openUrl, signal } from "nsh";
+import { Clipboard, lifecycle as appLifecycle, openUrl, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
 
 export type McpTransport = "stdio" | "streamable-http" | "sse";
@@ -117,11 +117,14 @@ const OAUTH_FINISHED = ["authorized", "failed", "cancelled"];
 /** How often the session is re-read while the flow runs, as the desktop polls. */
 const OAUTH_POLL_MS = 1000;
 
-let oauthTimer: ReturnType<typeof setInterval> | null = null;
+const OAUTH_POLL_DEADLINE_MS = 10 * 60_000;
+let oauthTimer: ReturnType<typeof setTimeout> | null = null;
+let oauthPollGen = 0;
 
 function stopOAuthPolling(): void {
+  oauthPollGen += 1;
   if (oauthTimer === null) return;
-  clearInterval(oauthTimer);
+  clearTimeout(oauthTimer);
   oauthTimer = null;
 }
 
@@ -185,9 +188,23 @@ async function readOAuthOnce(serverId: string): Promise<void> {
 
 function startOAuthPolling(serverId: string): void {
   stopOAuthPolling();
-  oauthTimer = setInterval(() => {
-    void readOAuthOnce(serverId);
-  }, OAUTH_POLL_MS);
+  const gen = oauthPollGen;
+  const deadline = Date.now() + OAUTH_POLL_DEADLINE_MS;
+  const step = async (): Promise<void> => {
+    oauthTimer = null;
+    if (gen !== oauthPollGen || mcpOAuthServer() !== serverId) return;
+    if (Date.now() > deadline) {
+      stopOAuthPolling();
+      mcpOAuthNotice.set(`Authorization timed out for ${serverId}`);
+      return;
+    }
+    if (appLifecycle() !== "background") {
+      await readOAuthOnce(serverId);
+    }
+    if (gen !== oauthPollGen || mcpOAuthServer() !== serverId) return;
+    oauthTimer = setTimeout(() => void step(), OAUTH_POLL_MS);
+  };
+  oauthTimer = setTimeout(() => void step(), OAUTH_POLL_MS);
 }
 
 /** Opens the authorization panel for one server and reads any session it already has. */

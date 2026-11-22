@@ -111,16 +111,25 @@ function startAutoPoll(visible: () => boolean): void {
       stopAutoPoll();
       if (shown && flow && flow.status === "pending") {
         const intervalMs = Math.max(flow.intervalSeconds || 5, 2) * 1000;
+        let inFlight = false;
         autoPollTimer = setInterval(() => {
           const active = githubAuthFlow();
           if (!active || active.status !== "pending") {
             stopAutoPoll();
             return;
           }
-          void pollGitHubSignIn({ silent: true });
+          if (inFlight) return;
+          inFlight = true;
+          void pollGitHubSignIn({ silent: true }).finally(() => {
+            inFlight = false;
+          });
         }, intervalMs);
       }
     });
+  });
+  cleanup(() => {
+    stopAutoPoll();
+    clearCopiedTimer();
   });
 }
 

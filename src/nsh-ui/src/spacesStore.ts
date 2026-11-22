@@ -3,6 +3,8 @@
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand, listenEvent, windowShellId } from "./bridge";
 import { tr } from "./i18n";
+import { isDesktopLocalShell, isRemotePeerContext } from "./shared/deviceScope";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { activeWorkspace, startQuickPromptInSession } from "./state";
 import { pushToast } from "./ui/overlays";
 
@@ -422,9 +424,8 @@ export const spaceOpening = signal<string | null>(null);
  * another device, in a remote workspace, or from a browser tab.
  */
 export function spaceWindowBlockedReason(): string {
-  const shellId = windowShellId();
-  if (shellId !== "nsh-desktop" && shellId !== "host-page") return tr("spaces.openWindowBrowser");
-  if ((activeWorkspace()?.workspaceKind ?? "").toLowerCase() === "remote") return tr("spaces.openWindowRemote");
+  if (!isDesktopLocalShell()) return tr("spaces.openWindowBrowser");
+  if (isRemotePeerContext() || isRemoteWorkspace(activeWorkspace())) return tr("spaces.openWindowRemote");
   return "";
 }
 

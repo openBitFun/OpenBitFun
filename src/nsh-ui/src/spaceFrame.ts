@@ -13,7 +13,7 @@
 // write the clipboard). Agent bridge requests polled from the device are
 // claimed, forwarded into the page and answered the same way.
 
-import { signal } from "nsh";
+import { lifecycle, signal } from "nsh";
 
 /** The page's `window.parent` is the page itself; its posts reach `onMessage`. */
 export const SPACE_FRAME_SHIM = `(function(){
@@ -192,15 +192,44 @@ export class SpaceFrameSession {
     this.error.set(message);
   }
 
+  private pollSleepTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollSleepResolve: (() => void) | null = null;
+
   private stop(): void {
     this.generation++;
+    if (this.pollSleepTimer !== null) {
+      clearTimeout(this.pollSleepTimer);
+      this.pollSleepTimer = null;
+    }
+    if (this.pollSleepResolve) {
+      const resolve = this.pollSleepResolve;
+      this.pollSleepResolve = null;
+      resolve();
+    }
     for (const timer of this.agentTimers.values()) clearTimeout(timer);
     this.agentTimers.clear();
+  }
+
+  private sleepPoll(ms: number, generation: number): Promise<void> {
+    if (generation !== this.generation) return Promise.resolve();
+    return new Promise(resolve => {
+      this.pollSleepResolve = resolve;
+      this.pollSleepTimer = setTimeout(() => {
+        this.pollSleepTimer = null;
+        this.pollSleepResolve = null;
+        resolve();
+      }, ms);
+    });
   }
 
   private async poll(generation: number): Promise<void> {
     let failures = 0;
     while (generation === this.generation) {
+      if (lifecycle() === "background") {
+        await this.sleepPoll(500, generation);
+        continue;
+      }
+      const startedAt = Date.now();
       try {
         const batch = (await this.call("poll", { after: this.cursor, waitMs: this.deps.pollWaitMs ?? 1500 })) as Record<
           string,
@@ -235,7 +264,11 @@ export class SpaceFrameSession {
           return;
         }
       }
-      await new Promise(resolve => setTimeout(resolve, 50));
+      // If a host ignores `waitMs` and returns immediately with no events, back off
+      // slightly so we never spin a tight 20 Hz RPC loop.
+      const elapsed = Date.now() - startedAt;
+      const delay = elapsed < 25 ? Math.min(250, 50 * Math.max(1, failures + 1)) : 50;
+      await this.sleepPoll(delay, generation);
     }
   }
 

@@ -14,6 +14,8 @@ import { computed, signal } from "nsh";
 import { getRecentWorkspaces, type WorkspaceRecord } from "./api";
 import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { isCommandUnavailable } from "./hostCommands";
+import { currentDeviceScopeKey } from "./shared/deviceScope";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import {
   activeScene,
   activeWorkspace,
@@ -2869,7 +2871,7 @@ function setLinkState(connectionId: string, state: RemoteLinkState, error?: stri
 
 /** The link state of a remote workspace, or null for a local one (or one not checked yet). */
 export function remoteLinkStateOf(ws: WorkspaceRecord | null): RemoteLinkState | null {
-  if (!ws || ws.workspaceKind !== "remote" || !ws.connectionId) return null;
+  if (!ws || !isRemoteWorkspace(ws) || !ws.connectionId) return null;
   return remoteLinkStates()[ws.connectionId] ?? null;
 }
 
@@ -2944,7 +2946,10 @@ function bindLinkEvents(): void {
     applyHostLink(payload);
   });
   // Missed events (a slow client, a restarted backend): read the host's current links again.
-  listenEvent("backend://events-dropped", () => void rehydrateLinkStates());
+  listenEvent("backend://events-dropped", (_payload, meta) => {
+    if (meta.origin && meta.origin !== currentDeviceScopeKey()) return;
+    void rehydrateLinkStates();
+  });
 }
 
 async function rehydrateLinkStates(): Promise<void> {
@@ -2970,6 +2975,7 @@ async function requestEnsureConnected(
   let answer: EnsureConnectedAnswer;
   try {
     answer = await invokeCommand<EnsureConnectedAnswer>("remote_workspace_ensure_connected", {
+      ...(target.workspaceId ? { workspaceId: target.workspaceId } : {}),
       connectionId: target.connectionId,
       remotePath: target.remotePath,
       activate,
@@ -2995,7 +3001,7 @@ export function ensureRemoteConnected(
   ws: WorkspaceRecord | null,
   options: { activate?: boolean } = {},
 ): Promise<boolean> {
-  if (!ws || ws.workspaceKind !== "remote" || !ws.connectionId) return Promise.resolve(true);
+  if (!ws || !isRemoteWorkspace(ws) || !ws.connectionId) return Promise.resolve(true);
   const connectionId = ws.connectionId;
   const running = ensureInFlight.get(connectionId);
   if (running) return running;

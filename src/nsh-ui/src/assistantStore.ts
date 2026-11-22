@@ -7,6 +7,7 @@
 
 import { computed, signal } from "nsh";
 import { invokeCommand, invokeRawCommand } from "./bridge";
+import { contentHash } from "./fileStore";
 import { tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
 
@@ -276,6 +277,9 @@ export function setPersonaDraftText(text: string): void {
   personaNotice.set("");
 }
 
+let personaOriginalHash: string | null = null;
+let personaFileExistsOnDisk = false;
+
 export async function loadPersonaFile(
   assistant: AssistantWorkspaceView,
   fileName: PersonaFileName,
@@ -284,6 +288,8 @@ export async function loadPersonaFile(
   personaLoading.set(true);
   personaError.set("");
   personaNotice.set("");
+  personaOriginalHash = null;
+  personaFileExistsOnDisk = false;
 
   if (!assistant.rootPath) {
     personaDraft.set("");
@@ -302,15 +308,23 @@ export async function loadPersonaFile(
     });
     if (ticket !== fileReadTicket) return;
     const text = typeof content === "string" ? content : "";
+    const hash = await contentHash(text);
+    if (ticket !== fileReadTicket) return;
+    personaOriginalHash = hash;
+    personaFileExistsOnDisk = true;
     personaDraft.set(text);
     personaOriginal.set(text);
   } catch (error) {
     if (ticket !== fileReadTicket) return;
     if (isMissingFileError(error)) {
+      personaOriginalHash = null;
+      personaFileExistsOnDisk = false;
       personaDraft.set("");
       personaOriginal.set("");
       personaNotice.set(tr("assistants.store.fileMissing", { file: fileName }));
     } else {
+      personaOriginalHash = null;
+      personaFileExistsOnDisk = false;
       personaDraft.set("");
       personaOriginal.set("");
       personaError.set(errorMessage(error));
@@ -333,13 +347,19 @@ export async function savePersonaFile(): Promise<void> {
   personaError.set("");
   personaNotice.set("");
   try {
+    const expectedHash = personaFileExistsOnDisk
+      ? (personaOriginalHash ?? (await contentHash(personaOriginal())))
+      : null;
     await invokeCommand<unknown>("write_file_content", {
       workspaceId: assistant.id,
       workspacePath: assistant.rootPath,
       filePath,
       content,
+      ...(expectedHash !== null ? { expectedHash } : {}),
     });
     personaOriginal.set(content);
+    personaFileExistsOnDisk = true;
+    personaOriginalHash = await contentHash(content);
     personaNotice.set(tr("assistants.store.savedFile", { file: fileName }));
     if (fileName === "IDENTITY.md") {
       void loadAssistants(assistant.id);

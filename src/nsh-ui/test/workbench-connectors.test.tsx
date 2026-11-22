@@ -1046,6 +1046,15 @@ test("a subscription provider signs in through the host's login session", async 
           transport: "dev",
         };
       }
+      if (
+        action === "logout_subscription_account_instance" ||
+        action === "logout_subscription_account"
+      ) {
+        if (!args.request) throw new Error(`${action} takes a request struct`);
+        loginCalls.push({ action, request: args.request });
+        signedIn = false;
+        return { ok: true, value: { provider: "codex", logged_out: true }, transport: "dev" };
+      }
       if (action === "list_subscription_accounts" && signedIn) {
         return {
           ok: true,
@@ -1070,4 +1079,15 @@ test("a subscription provider signs in through the host's login session", async 
   await app.waitFor("Signed in", { timeout: 6000 });
   expect(loginCalls.some(call => call.action === "get_subscription_login_status")).toBe(true);
   await app.waitFor("dev@example.com");
+
+  // Connected subscription slots expose Sign out backed by logout_subscription_account_instance / logout_subscription_account.
+  await app.waitFor("subscription-signout-codex");
+  await app.press("subscription-signout-codex");
+  await app.waitUntil(() =>
+    loginCalls.some(
+      call =>
+        call.action === "logout_subscription_account_instance" ||
+        call.action === "logout_subscription_account",
+    ),
+  );
 });

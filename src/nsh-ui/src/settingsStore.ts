@@ -24,6 +24,7 @@ import {
   type MessageKey,
 } from "./i18n";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
+import { currentDeviceScopeKey } from "./shared/deviceScope";
 import { runStep } from "./state";
 
 export type FieldKind = "boolean" | "select" | "number" | "text" | "model";
@@ -1080,8 +1081,9 @@ export function optionLabel(option: FieldOption): string {
 export function fieldPlaceholder(spec: FieldSpec): string {
   if (spec.placeholderKey) return tr(spec.placeholderKey);
   if (spec.placeholder) return spec.placeholder;
-  if (spec.defaultValue !== undefined && spec.defaultValue !== "") {
-    return String(spec.defaultValue);
+  const fallback = defaultForField(spec);
+  if (fallback !== undefined && fallback !== "") {
+    return String(fallback);
   }
   return tr("settings.field.newValuePlaceholder");
 }
@@ -1151,7 +1153,7 @@ export function fieldMissing(spec: FieldSpec): boolean {
 /** What the row shows: the stored value, or the default the host applies instead. */
 export function fieldDisplay(spec: FieldSpec): unknown {
   const stored = fieldValue(spec);
-  return stored === undefined ? spec.defaultValue : stored;
+  return stored === undefined ? defaultForField(spec) : stored;
 }
 
 /**
@@ -1179,30 +1181,96 @@ export async function writeAppLanguage(locale: string): Promise<void> {
   });
 }
 
-export async function loadSettingsValues(): Promise<void> {
-  // `app` is read whole only for the keyboard-shortcut overrides it carries;
-  // nothing writes it back from here.
-  const paths = new Set<string>(["app"]);
+function readNestedPath(rootDoc: unknown, segments: readonly string[]): unknown {
+  let node: unknown = rootDoc;
+  for (const segment of segments) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[segment];
+  }
+  return node;
+}
+
+/** Deduplicates concurrent `loadSettingsValues` calls targeting the same device. */
+const settingsLoadInFlight = new Map<string, Promise<void>>();
+
+export function loadSettingsValues(): Promise<void> {
+  const deviceKey = currentDeviceScopeKey();
+  const existing = settingsLoadInFlight.get(deviceKey);
+  if (existing) return existing;
+
+  const flight = runLoadSettingsValues(deviceKey).finally(() => {
+    if (settingsLoadInFlight.get(deviceKey) === flight) {
+      settingsLoadInFlight.delete(deviceKey);
+    }
+  });
+  settingsLoadInFlight.set(deviceKey, flight);
+  return flight;
+}
+
+async function runLoadSettingsValues(deviceKey: string): Promise<void> {
+  // Collect all leaf paths and their top-level parent sections (`app`, `ai`,
+  // `memories`, `editor`, `terminal`, `superagent`). Reading the 6 parent
+  // documents once resolves all nested leaves on real hosts (instead of 63
+  // individual `get_config` RPCs); only leaves absent from a parent document
+  // fall back to a leaf read (e.g. flat mock fixtures or sparse legacy configs).
+  const leafPaths = new Set<string>();
   const optional = new Set<string>();
+  const rootSections = new Set<string>(["app"]);
   for (const section of SETTINGS_SECTIONS) {
     for (const field of section.fields) {
-      paths.add(leafPath(field));
-      if (field.optional) optional.add(leafPath(field));
+      const path = leafPath(field);
+      leafPaths.add(path);
+      if (field.optional) optional.add(path);
+      const root = path.split(".")[0];
+      if (root) rootSections.add(root);
     }
   }
   await runStep(async () => {
     const entries: Record<string, unknown> = {};
+    const rootDocs: Record<string, unknown> = {};
     await Promise.all(
-      [...paths].map(async path => {
+      [...rootSections].map(async root => {
         try {
-          entries[path] = await getConfig(path, optional.has(path));
+          rootDocs[root] = await getConfig(root, true);
         } catch {
-          entries[path] = undefined;
+          rootDocs[root] = undefined;
         }
       }),
     );
+    entries["app"] = rootDocs["app"];
+
+    const missingLeaves: string[] = [];
+    for (const path of leafPaths) {
+      const segments = path.split(".");
+      const root = segments[0] ?? "";
+      const doc = rootDocs[root];
+      if (doc && typeof doc === "object" && !Array.isArray(doc)) {
+        const resolved = readNestedPath(doc, segments.slice(1));
+        if (resolved !== undefined) {
+          entries[path] = resolved;
+          continue;
+        }
+      }
+      missingLeaves.push(path);
+    }
+
+    if (missingLeaves.length > 0) {
+      await Promise.all(
+        missingLeaves.map(async path => {
+          try {
+            entries[path] = await getConfig(path, optional.has(path));
+          } catch {
+            entries[path] = undefined;
+          }
+        }),
+      );
+    }
+
+    // Drop stale results if the user switched device scope while this read was in flight.
+    if (currentDeviceScopeKey() !== deviceKey) return;
     settingsValues.set(entries);
-    await loadSettingsDescriptor([...paths].filter(path => path !== "app"));
+    await loadSettingsDescriptor([...leafPaths], deviceKey);
+    if (currentDeviceScopeKey() !== deviceKey) return;
     settingsLoaded.set(true);
   });
 }
@@ -1225,51 +1293,78 @@ export interface SettingsFieldDescriptor {
 /** `null` until read; `false` when the host cannot describe its settings. */
 export const settingsDescriptor = signal<Record<string, SettingsFieldDescriptor> | false | null>(null);
 
+/** Per-device schema overrides so `SETTINGS_SECTIONS` is never mutated in place. */
+const deviceDescriptors = signal<Record<string, Record<string, SettingsFieldDescriptor>>>({});
+
+function descriptorForField(spec: FieldSpec): SettingsFieldDescriptor | undefined {
+  const byDevice = deviceDescriptors()[currentDeviceScopeKey()];
+  if (byDevice) return byDevice[leafPath(spec)];
+  const current = settingsDescriptor();
+  return current && typeof current === "object" ? current[leafPath(spec)] : undefined;
+}
+
 /**
- * Bounds and defaults come from the host that enforces them: the value schema
- * its product-control catalog validates writes against, and the default its
- * config applies to an absent path. Labels, copy and layout stay here.
+ * Records host-supplied bounds and defaults per device without mutating the
+ * shared `SETTINGS_SECTIONS` table, so switching fleet devices never leaks one
+ * device's limits or defaults onto another.
  */
-export function applySettingsDescriptor(fields: Record<string, SettingsFieldDescriptor>): void {
-  for (const section of SETTINGS_SECTIONS) {
-    for (const spec of section.fields) {
-      const described = fields[leafPath(spec)];
-      if (!described) continue;
-      if (described.constrained) {
-        if (typeof described.minimum === "number") spec.min = described.minimum;
-        if (typeof described.maximum === "number") spec.max = described.maximum;
-      }
-      const fallback = described.default;
-      if (
-        spec.defaultValue === undefined &&
-        (typeof fallback === "string" || typeof fallback === "number" || typeof fallback === "boolean")
-      ) {
-        spec.defaultValue = fallback;
-      }
-    }
+export function applySettingsDescriptor(
+  fields: Record<string, SettingsFieldDescriptor>,
+  deviceKey: string = currentDeviceScopeKey(),
+): void {
+  const snapshot: Record<string, SettingsFieldDescriptor> = { ...fields };
+  deviceDescriptors.update(current => ({ ...current, [deviceKey]: snapshot }));
+  if (deviceKey === currentDeviceScopeKey()) {
+    settingsDescriptor.set(snapshot);
   }
 }
 
-async function loadSettingsDescriptor(paths: string[]): Promise<void> {
+async function loadSettingsDescriptor(paths: string[], deviceKey: string): Promise<void> {
   try {
     const answer = await invokeSettingsMutation<{ fields?: Record<string, SettingsFieldDescriptor> }>(
       "get_settings_schema",
       { paths },
     );
+    if (currentDeviceScopeKey() !== deviceKey) return;
     const fields = answer?.fields && typeof answer.fields === "object" ? answer.fields : {};
-    applySettingsDescriptor(fields);
-    settingsDescriptor.set(fields);
+    applySettingsDescriptor(fields, deviceKey);
   } catch (error) {
+    if (currentDeviceScopeKey() !== deviceKey) return;
     // An older host stores the values but cannot say their limits or defaults;
-    // the page says so instead of drawing limits it guessed.
+    // clear any stale descriptor for this device instead of drawing guessed limits.
+    deviceDescriptors.update(current => {
+      if (!(deviceKey in current)) return current;
+      const next = { ...current };
+      delete next[deviceKey];
+      return next;
+    });
     settingsDescriptor.set(false);
     settingsNotice.set(errorText(error));
   }
 }
 
-/** The ceiling a field accepts, as the host described it (see `applySettingsDescriptor`). */
+/** The floor a field accepts for the active device (schema override or static spec). */
+export function minForField(spec: FieldSpec): number | undefined {
+  const described = descriptorForField(spec);
+  if (described?.constrained && typeof described.minimum === "number") return described.minimum;
+  return spec.min;
+}
+
+/** The ceiling a field accepts for the active device (schema override or static spec). */
 export function maxForField(spec: FieldSpec): number | undefined {
+  const described = descriptorForField(spec);
+  if (described?.constrained && typeof described.maximum === "number") return described.maximum;
   return spec.max;
+}
+
+/** The fallback default a field uses when unset on the active device. */
+export function defaultForField(spec: FieldSpec): string | number | boolean | undefined {
+  if (spec.defaultValue !== undefined) return spec.defaultValue;
+  const fallback = descriptorForField(spec)?.default;
+  if (typeof fallback === "string" || typeof fallback === "number" || typeof fallback === "boolean") {
+    return fallback;
+  }
+  return undefined;
 }
 
 /**
@@ -1422,16 +1517,24 @@ export async function resetMemory(): Promise<void> {
 
 /** The browsers the host can drive, as `browser_control_list_browsers` lists them. */
 export const browserChoices = signal<Array<{ value: string; label: string; installed: boolean }> | null>(null);
-let browserChoicesLoading = false;
+let browserChoicesLoadingFor: string | null = null;
+let browserChoicesLoadedFor: string | null = null;
 
-export async function loadBrowserChoices(): Promise<void> {
-  if (browserChoicesLoading || browserChoices() !== null) return;
-  browserChoicesLoading = true;
+export async function loadBrowserChoices(force = false): Promise<void> {
+  const deviceKey = currentDeviceScopeKey();
+  if (!force && (browserChoicesLoadingFor === deviceKey || (browserChoicesLoadedFor === deviceKey && browserChoices() !== null))) {
+    return;
+  }
+  browserChoicesLoadingFor = deviceKey;
+  if (browserChoicesLoadedFor !== deviceKey) {
+    browserChoices.set(null);
+  }
   try {
     const result = await invokeRawCommand<{ options?: Array<{ value?: string; label?: string; installed?: boolean }> }>(
       "browser_control_list_browsers",
       {},
     );
+    if (currentDeviceScopeKey() !== deviceKey) return;
     const options = Array.isArray(result?.options) ? result.options : [];
     browserChoices.set(
       options
@@ -1442,11 +1545,16 @@ export async function loadBrowserChoices(): Promise<void> {
           installed: option.installed !== false,
         })),
     );
+    browserChoicesLoadedFor = deviceKey;
   } catch {
+    if (currentDeviceScopeKey() !== deviceKey) return;
     // A host without browser control offers the system default only.
     browserChoices.set([]);
+    browserChoicesLoadedFor = deviceKey;
   } finally {
-    browserChoicesLoading = false;
+    if (browserChoicesLoadingFor === deviceKey) {
+      browserChoicesLoadingFor = null;
+    }
   }
 }
 

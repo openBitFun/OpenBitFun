@@ -416,3 +416,45 @@ test("phone: the document pane is full screen with the same Preview | Edit", asy
   expect(backend.writes[0].content).toContain("Phone Project");
   await app.waitFor("file-markdown-preview");
 });
+
+test("workspaceUtils handles POSIX roots, Windows drives, remote backslashes, prefix boundaries, and markdown links", async () => {
+  const {
+    dirnameOfPath,
+    fileUrlToPath,
+    isPathAtOrUnder,
+    isRemoteWorkspace,
+    joinWorkspacePath,
+    resolveWorkspaceMarkdownLink,
+  } = await import("../src/shared/workspaceUtils");
+
+  expect(dirnameOfPath("/README.md")).toBe("/");
+  expect(dirnameOfPath("/")).toBe("/");
+  expect(dirnameOfPath("C:\\foo")).toBe("C:\\");
+  expect(dirnameOfPath("C:\\")).toBe("C:\\");
+  // Remote POSIX workspaces treat `\` as a literal filename character, never a separator.
+  expect(dirnameOfPath("/srv/app/a\\b.txt", true)).toBe("/srv/app");
+  expect(joinWorkspacePath("C:\\repo", "src/main.rs", false)).toBe("C:\\repo\\src\\main.rs");
+  // Prefix matching requires a separator boundary.
+  expect(isPathAtOrUnder("/srv/app-v2", "/srv/app", true)).toBe(false);
+  expect(isPathAtOrUnder("/srv/app/src", "/srv/app", true)).toBe(true);
+  // Windows file:// URLs drop the leading slash before the drive letter.
+  expect(fileUrlToPath("file:///C:/Users/me/my%20doc.md")).toBe("C:/Users/me/my doc.md");
+  // Markdown links resolve mailto:, file://, computer://, and relative paths with line suffixes.
+  expect(resolveWorkspaceMarkdownLink("mailto:ops@example.com", "/repo", false)).toEqual({
+    kind: "external",
+    target: "mailto:ops@example.com",
+  });
+  expect(resolveWorkspaceMarkdownLink("file:///repo/docs/guide.md#L12", "/repo", false)).toEqual({
+    kind: "workspace",
+    target: "/repo/docs/guide.md",
+  });
+  expect(resolveWorkspaceMarkdownLink("../src/app.ts:42", "/repo/docs", true)).toEqual({
+    kind: "workspace",
+    target: "/repo/src/app.ts",
+  });
+  // Unified remote workspace classification across remote, remote_ssh, docker, wsl, assistant.
+  expect(isRemoteWorkspace({ id: "1", rootPath: "/srv", workspaceKind: "remote_ssh" })).toBe(true);
+  expect(isRemoteWorkspace({ id: "2", rootPath: "/srv", workspaceKind: "docker" })).toBe(true);
+  expect(isRemoteWorkspace({ id: "3", rootPath: "/srv", workspaceKind: "wsl" })).toBe(true);
+  expect(isRemoteWorkspace({ id: "4", rootPath: "/home/a", workspaceKind: "assistant" })).toBe(false);
+});

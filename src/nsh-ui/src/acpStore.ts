@@ -10,9 +10,21 @@
 // and the list report this machine only.
 
 import { signal } from "nsh";
-import { invokeCommand, invokeRawCommand } from "./bridge";
+import { fleetActive, invokeCommand, invokeRawCommand } from "./bridge";
+import { refreshFleetNavigator } from "./fleetStore";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
-import { runStep } from "./state";
+import { errorMessageOf } from "./shared/errorUtils";
+import {
+  activeSessionDevice,
+  activeSessionId,
+  activeWorkspaceId,
+  deviceContext,
+  openSessionKeys,
+  runStep,
+  sessionKey,
+  sessionTurns,
+  sessions,
+} from "./state";
 
 /** One client, as `get_acp_clients` reports it. */
 export interface AcpClient {
@@ -286,4 +298,79 @@ export function acpRowStatus(client: AcpClient): string {
   if (probe.adapter && !probe.adapter.installed) missing.push(probe.adapter.name || "adapter");
   if (missing.length > 0) return `missing ${missing.join(", ")}`;
   return probe.notes[0] ?? "not runnable";
+}
+
+/** True when `archive_session` reports that a stale ACP session has no persisted metadata. */
+export function isSessionMetadataNotFoundError(error: unknown): boolean {
+  return /session metadata not found/i.test(errorMessageOf(error));
+}
+
+/**
+ * Verifies whether a stale ACP session is truly absent on the owning device
+ * (`load_persisted_session_metadata`). When confirmed absent, dismisses the
+ * ghost row from local session lists and refreshes the fleet navigator.
+ * Returns `true` if the stale entry was dismissed.
+ */
+export async function dismissStaleAcpSessionIfAbsent(
+  sessionId: string,
+  workspaceId: string = activeWorkspaceId() ?? "",
+  deviceId?: string,
+): Promise<boolean> {
+  if (!sessionId) return false;
+  const targetDevice = deviceId ?? deviceContext();
+  const route = fleetActive() && targetDevice ? { target: targetDevice } : undefined;
+  let confirmedAbsent = false;
+  try {
+    const metadata = await invokeCommand<unknown>(
+      "load_persisted_session_metadata",
+      {
+        sessionId,
+        ...(workspaceId ? { workspaceId } : {}),
+      },
+      route,
+    );
+    confirmedAbsent = metadata === null || metadata === undefined;
+  } catch (error) {
+    if (isSessionMetadataNotFoundError(error) || /not found/i.test(errorMessageOf(error))) {
+      confirmedAbsent = true;
+    } else {
+      return false;
+    }
+  }
+  if (!confirmedAbsent) return false;
+  sessions.update(current => current.filter(item => item.sessionId !== sessionId));
+  const key = sessionKey(sessionId, targetDevice || undefined);
+  openSessionKeys.set(openSessionKeys().filter(item => item !== key));
+  if (activeSessionId() === sessionId) {
+    activeSessionDevice.set("");
+    activeSessionId.set(null);
+    sessionTurns.set([]);
+  }
+  if (fleetActive()) {
+    void refreshFleetNavigator();
+  }
+  return true;
+}
+
+/**
+ * Archives a session on its owning device, cleanly dismissing stale empty ACP
+ * entries when `archive_session` fails with `"Session metadata not found"`.
+ */
+export async function archiveAcpAwareSession(
+  sessionId: string,
+  workspaceId: string = activeWorkspaceId() ?? "",
+  deviceId?: string,
+): Promise<"archived" | "dismissed"> {
+  const targetDevice = deviceId ?? deviceContext();
+  const route = fleetActive() && targetDevice ? { target: targetDevice } : undefined;
+  try {
+    await invokeCommand<unknown>("archive_session", { sessionId, workspaceId }, route);
+    return "archived";
+  } catch (error) {
+    if (isSessionMetadataNotFoundError(error)) {
+      const dismissed = await dismissStaleAcpSessionIfAbsent(sessionId, workspaceId, targetDevice);
+      if (dismissed) return "dismissed";
+    }
+    throw error;
+  }
 }

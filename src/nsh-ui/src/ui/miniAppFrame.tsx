@@ -6,7 +6,7 @@
 // that use device capabilities), Stop and Close; the agent's "operate this
 // Space" requests show as one quiet line above the frame.
 
-import { Clipboard, signal, Text, View, WebView, type WebViewRef } from "nsh";
+import { cleanup, Clipboard, signal, Text, View, WebView, type WebViewRef } from "nsh";
 import { localizeHostError, tr } from "../i18n";
 import { fleetActive } from "../bridge";
 import { fleetDeviceById } from "../fleetStore";
@@ -571,6 +571,9 @@ function pageMenuItems(): DropdownMenuItem[] {
 /** The open Space: header, the agent line, the frame and its sheets. */
 export function SpacePage(props: { permissionLabel: (id: string) => string }) {
   const agentOpen = signal(false);
+  cleanup(() => {
+    closeSpacePage();
+  });
   return (
     <If when={openSpace()}>
       {current => (

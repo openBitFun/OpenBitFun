@@ -47,6 +47,8 @@ function fleetNavigator() {
 interface SettingsOptions {
   /** The cloud agent's `superagent_status`; `null` makes it a node without the commands. */
   superagent?: Record<string, unknown> | null;
+  /** Optional custom invoke override run before default fixture dispatch. */
+  onInvoke?: (action: string, request: Record<string, unknown> | undefined) => unknown | undefined;
 }
 
 async function openSettings(options: SettingsOptions = {}, size: typeof DESKTOP | typeof PHONE = DESKTOP) {
@@ -55,7 +57,11 @@ async function openSettings(options: SettingsOptions = {}, size: typeof DESKTOP 
   let status = options.superagent === undefined ? { enabled: true, deviceId: "cloud-1" } : options.superagent;
   const superagentCalls: Array<{ action: string; request: unknown }> = [];
   backend.handlers["openbitfun.invoke"] = (data: unknown) => {
-    const { action, request } = data as { action?: string; request?: unknown };
+    const { action, request } = data as { action?: string; request?: Record<string, unknown> };
+    if (options.onInvoke && action) {
+      const custom = options.onInvoke(action, request);
+      if (custom !== undefined) return custom;
+    }
     if (status && action?.startsWith("superagent_")) {
       superagentCalls.push({ action, request });
       if (action === "superagent_status") return { ok: true, value: status };
@@ -226,4 +232,111 @@ test("switching device scope guards unsaved drafts, masks secrets, and Default m
   await app.press("settings-unsaved-discard");
   await app.waitUntil(() => !app.shows("settings-unsaved-dialog"));
   await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_config"));
+});
+
+test("Device › Archived sessions queries list_archived_sessions on the selected fleet device and restores there", async () => {
+  const archivedByWorkspace: Record<string, Array<Record<string, unknown>>> = {
+    "workspace-1": [{ session_id: "arch-a1", session_name: "Archived on MacBook", workspace_id: "workspace-1" }],
+    "workspace-2": [{ session_id: "arch-b1", session_name: "Archived on Linux", workspace_id: "workspace-2" }],
+  };
+  const { app, host } = await openSettings({
+    onInvoke: (action, request) => {
+      if (action === "list_archived_sessions") {
+        const wsId = String(request?.workspace_id ?? "");
+        return { ok: true, value: archivedByWorkspace[wsId] ?? [] };
+      }
+      if (action === "unarchive_session") {
+        const wsId = String(request?.workspaceId ?? "");
+        const sessionId = String(request?.sessionId ?? "");
+        if (archivedByWorkspace[wsId]) {
+          archivedByWorkspace[wsId] = archivedByWorkspace[wsId].filter(row => row.session_id !== sessionId);
+        }
+        return { ok: true, value: null };
+      }
+      return undefined;
+    },
+  });
+  await app.press("nav-settings-page-archived");
+  await app.waitFor("settings-archived-restore-arch-a1");
+  expect(host.fleetCalls.some(call => call.target === "dev-a" && call.command === "list_archived_sessions")).toBe(true);
+  await app.press("settings-archived-restore-arch-a1");
+  await app.waitUntil(() =>
+    host.fleetCalls.some(call => call.target === "dev-a" && call.command === "unarchive_session"),
+  );
+  await app.waitFor("settings-archived-restore-arch-a1", { state: "gone" });
+});
+
+test("Settings coalesces parent config reads when the host returns full section documents", async () => {
+  const fullDocs: Record<string, Record<string, unknown>> = {
+    app: {
+      language: "en-US",
+      auto_update: true,
+      prevent_sleep: false,
+      close_button_behavior: "minimize_to_tray",
+      notifications: { dialog_completion_notify: true, permission_request_notify: false },
+      flow_chat: { auto_show_selection_toolbar: true },
+      ai_experience: {
+        enable_session_title_generation: true,
+        enable_prompt_suggestion: true,
+        enable_workspace_search: false,
+        enable_git_commit_coauthor: true,
+        voice_input: { enabled: true, default_language: "auto", max_recording_seconds: 60, microphone_device_id: "" },
+      },
+      worktrees: { rootPath: "~/.openbitfun/worktrees", branchPrefix: "openbitfun/", copyLocalChanges: false, autoDeleteEnabled: true, autoDeleteLimit: 15 },
+      logging: { level: "info", include_sensitive_diagnostics: false },
+      hooks: { enabled: true, project_hooks_enabled: false },
+      keybindings: {},
+    },
+    ai: {
+      enable_deferred_tool_loading: true,
+      subagent_max_concurrency: 4,
+      swarm_max_concurrency: 4,
+      subagent_batch_execution_policy: "force_parallel",
+      tool_execution_timeout_secs: 120,
+      user_question_timeout_secs: 180,
+      tool_presentation_mode: "native",
+      proxy: { enabled: false, url: "", username: "", password: "" },
+      stream_idle_timeout_secs: 60,
+      stream_ttft_timeout_secs: 30,
+      computer_use_enabled: true,
+      browser_control_auto_connect_on_startup: false,
+      browser_control_preferred_browser: "default",
+    },
+    memories: {
+      generate_memories: true,
+      use_memories: true,
+      generate_for_btw_sessions: false,
+      external_context_policy: "clear_tool_results",
+      max_unused_days: 30,
+      max_raw_memories_for_consolidation: 64,
+      extract_model: "",
+      consolidation_model: "",
+      min_rollout_idle_hours: 6,
+      max_rollout_age_days: 10,
+      max_rollouts_per_startup: 5,
+      max_rollouts_scan_limit: 2000,
+      phase1_max_concurrency: 1,
+    },
+    editor: { font_size: 14, tab_size: 4, word_wrap: "off", line_numbers: "on", minimap: { enabled: true } },
+    terminal: { font_size: 14, scrollback: 1000, cursor_style: "block" },
+    superagent: { allowAutoApproval: true, acceptDispatch: true },
+  };
+  const readPaths: string[] = [];
+  const { app } = await openSettings({
+    onInvoke: (action, request) => {
+      if (action === "get_config") {
+        const path = String(request?.path ?? "");
+        readPaths.push(path);
+        if (path in fullDocs) return { ok: true, value: fullDocs[path] };
+      }
+      return undefined;
+    },
+  });
+  await app.waitFor("nav-settings-page-general");
+  // Wait for the initial settings load to settle.
+  await app.waitUntil(() => readPaths.includes("terminal") && readPaths.includes("memories"));
+  // Coalesced parent reads: only the 6 section roots are read for SETTINGS_SECTIONS (never 63 leaf RPCs).
+  const settingsRootReads = readPaths.filter(p => p in fullDocs);
+  expect(new Set(settingsRootReads).size).toBe(6);
+  expect(readPaths.filter(p => p.startsWith("editor.") || p.startsWith("terminal.") || p.startsWith("memories.")).length).toBe(0);
 });

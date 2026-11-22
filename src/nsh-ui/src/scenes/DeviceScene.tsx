@@ -9,12 +9,12 @@
 // layer the page shows this device.
 
 import { cleanup, Clipboard, effect, Scroll, signal, Text, View, type JSX, type ViewRef } from "nsh";
-import { fleetActive, invokeCommand } from "../bridge";
+import { entryDeviceId, fleetActive, invokeCommand } from "../bridge";
 import { localDeviceId } from "../devicePrefsStore";
 import { fleetDeviceById } from "../fleetStore";
 import type { FleetDevice, FleetWorkspace } from "../fleetTypes";
 import { formatPlural, formatRelativeTime, formatTime } from "../format";
-import { FLEET_ENTRY_COMMANDS } from "../generated/peerSurface";
+import { isCommandUnavailable } from "../hostCommands";
 import { tr } from "../i18n";
 import type { MessageKey } from "../locales/en-US";
 import { savedConnections, openNewWorkspaceModal, openSshConnectionModal } from "../sshRemoteStore";
@@ -105,7 +105,6 @@ const detailFor = signal("");
 const renameOpen = signal(false);
 const renameDraft = signal("");
 const removeOpen = signal(false);
-const remoteUpdateBusy = signal(false);
 const copiedCommand = signal(false);
 
 const CAPABILITY_WORDS: Readonly<Record<string, MessageKey>> = {
@@ -162,8 +161,11 @@ function currentView(): DeviceView | null {
   };
 }
 
+const detailUnsupportedEntries = new Set<string>();
+
 async function loadDetail(deviceId: string): Promise<void> {
-  if (!fleetActive() || !FLEET_ENTRY_COMMANDS.has("fleet_device_detail")) {
+  const entryKey = entryDeviceId() ?? "default";
+  if (!fleetActive() || detailUnsupportedEntries.has(entryKey)) {
     detail.set(null);
     return;
   }
@@ -172,7 +174,11 @@ async function loadDetail(deviceId: string): Promise<void> {
     const answer = await invokeCommand<DeviceDetail>("fleet_device_detail", { deviceId });
     if (detailFor() === deviceId) detail.set(answer ?? null);
   } catch (error) {
-    console.warn(`fleet_device_detail failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (isCommandUnavailable(error, "fleet_device_detail")) {
+      detailUnsupportedEntries.add(entryKey);
+    } else {
+      console.warn(`fleet_device_detail failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (detailFor() === deviceId) detail.set(null);
   }
 }
@@ -283,21 +289,6 @@ function DeviceOverflowMenu(props: { items: ReadonlyArray<DropdownMenuItem>; acc
   );
 }
 
-async function triggerRemoteUpdate(view: DeviceView): Promise<void> {
-  if (remoteUpdateBusy()) return;
-  remoteUpdateBusy.set(true);
-  pushToast(tr("device.remoteUpdateStarting", { device: view.name }), "info");
-  try {
-    await invokeCommand("fleet_device_update", { deviceId: view.deviceId });
-    await loadDetail(view.deviceId);
-  } catch (error) {
-    console.warn(`fleet_device_update failed: ${error instanceof Error ? error.message : String(error)}`);
-    pushToast(tr("device.remoteUpdateFailed", { device: view.name }), "error");
-  } finally {
-    remoteUpdateBusy.set(false);
-  }
-}
-
 function UpdateBlock(props: { view: DeviceView; menuItems: ReadonlyArray<DropdownMenuItem> }) {
   const update = () => detail()?.update;
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -330,20 +321,6 @@ function UpdateBlock(props: { view: DeviceView; menuItems: ReadonlyArray<Dropdow
           <DeviceOverflowMenu items={props.menuItems} accessibilityLabel="device-menu-phone" />
         </If>
       </View>
-      <If when={Boolean(update()?.canUpdateRemotely)}>
-        <View style={{ flexDirection: "row" }}>
-          <Button
-            label={tr("device.update")}
-            variant="primary"
-            size="md"
-            loading={remoteUpdateBusy()}
-            disabled={remoteUpdateBusy()}
-            accessibilityLabel="device-remote-update"
-            style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
-            onPress={() => void triggerRemoteUpdate(props.view)}
-          />
-        </View>
-      </If>
       <If when={update()?.command ?? ""}>
         {command => (
           <View style={{ gap: space.xs }}>

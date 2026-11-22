@@ -54,10 +54,63 @@ export function installBrowserSessionHooks(hooks: BrowserSessionHooks): void {
 }
 
 export const BROWSER_DEFAULT_URL = "https://openbitfun.com/";
+export const MAX_LIVE_BROWSER_PAGES = 6;
+const IDLE_PAGE_EVICT_MS = 10 * 60_000;
 const USER_LABEL_PREFIX = "embedded-browser-view-";
 const AGENT_LABEL_PREFIX = "embedded-browser-panel-view-";
 const HANDLE_WAIT_MS = 8_000;
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
+
+/** Last activity timestamp per page label for LRU eviction of idle off-screen WebViews. */
+const pageLastActive = new Map<string, number>();
+
+function touchBrowserPage(label: string): void {
+  pageLastActive.set(label, Date.now());
+}
+
+function hasPendingEvaluations(label: string): boolean {
+  for (const entry of pendingEvaluations.values()) {
+    if (entry.label === label) return true;
+  }
+  return false;
+}
+
+/**
+ * Evicts idle off-screen WebViews beyond `MAX_LIVE_BROWSER_PAGES` (or older than
+ * `IDLE_PAGE_EVICT_MS`), always preserving the presented page and any page with
+ * in-flight evaluations.
+ */
+export function evictIdleBrowserPages(now = Date.now(), maxPages = MAX_LIVE_BROWSER_PAGES): number {
+  const presented = presentedLabel();
+  const pages = browserPages();
+  const expired = new Set<string>();
+  for (const page of pages) {
+    if (page.label === presented || hasPendingEvaluations(page.label)) continue;
+    const last = pageLastActive.get(page.label) ?? now;
+    if (now - last > IDLE_PAGE_EVICT_MS) {
+      expired.add(page.label);
+    }
+  }
+  let remaining = pages.filter(page => !expired.has(page.label));
+  if (remaining.length > maxPages) {
+    const candidates = remaining
+      .filter(page => page.label !== presented && !hasPendingEvaluations(page.label))
+      .sort((a, b) => (pageLastActive.get(a.label) ?? 0) - (pageLastActive.get(b.label) ?? 0));
+    const overflow = remaining.length - maxPages;
+    for (let i = 0; i < overflow && i < candidates.length; i += 1) {
+      expired.add(candidates[i]!.label);
+    }
+    remaining = remaining.filter(page => !expired.has(page.label));
+  }
+  if (expired.size === 0) return 0;
+  for (const label of expired) {
+    abortEvaluations(label, "the idle page was evicted");
+    handles.delete(label);
+    pageLastActive.delete(label);
+  }
+  browserPages.set(remaining);
+  return expired.size;
+}
 
 /** The input `sendInput` gives a page as the user's own. */
 export type BrowserInput =
@@ -422,6 +475,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
     const label = requireLabel(args);
     const url = typeof args.url === "string" ? args.url : BROWSER_DEFAULT_URL;
     const conversationId = typeof args.conversationId === "string" && args.conversationId ? args.conversationId : null;
+    touchBrowserPage(label);
     if (!pageOf(label)) {
       browserPages.set([
         ...browserPages(),
@@ -439,6 +493,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
           height: numberArg(args, "height", 768),
         },
       ]);
+      evictIdleBrowserPages();
     }
     if (!presentedLabel() || !pageOf(presentedLabel() ?? "")) {
       presentedLabel.set(label);
@@ -450,6 +505,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
     const label = requireLabel(args);
     const url = typeof args.url === "string" ? args.url : "";
     if (!url) throw new Error("browser.navigate needs a url");
+    touchBrowserPage(label);
     const handle = await waitForHandle(label);
     updatePage(label, { url, loading: true, error: null });
     handle.load({ src: url });
@@ -457,6 +513,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
   },
   "browser.reload": async args => {
     const label = requireLabel(args);
+    touchBrowserPage(label);
     const handle = await waitForHandle(label);
     updatePage(label, { loading: true, error: null });
     handle.reload();
@@ -465,6 +522,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
   "browser.inject": async args => {
     const label = requireLabel(args);
     const script = typeof args.script === "string" ? args.script : "";
+    touchBrowserPage(label);
     (await waitForHandle(label)).injectJavaScript(script);
     return null;
   },
@@ -472,6 +530,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
     const label = requireLabel(args);
     const script = typeof args.script === "string" ? args.script : "";
     const timeout = typeof args.timeoutMs === "number" && args.timeoutMs > 0 ? args.timeoutMs : DEFAULT_SCRIPT_TIMEOUT_MS;
+    touchBrowserPage(label);
     const handle = await waitForHandle(label);
     const reply = await evaluateInPage(label, handle, script, timeout);
     return reply.ok
@@ -482,6 +541,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
     const label = requireLabel(args);
     const input = args.input as BrowserInput | undefined;
     if (!input || typeof input !== "object") throw new Error("browser.input needs an input");
+    touchBrowserPage(label);
     const trusted = viewDriver ? viewDriver.inputAvailable : webViewInputAvailable;
     // Trusted input lands where the page is on screen; a hidden page gets
     // the backend's DOM events instead.
@@ -493,6 +553,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
     const label = requireLabel(args);
     const page = pageOf(label);
     if (!page) return null;
+    touchBrowserPage(label);
     return {
       url: page.url,
       title: page.title,
@@ -505,6 +566,7 @@ export const BROWSER_SHELL_OPERATIONS: Record<string, (args: Record<string, unkn
   "browser.setBounds": async args => {
     const label = requireLabel(args);
     if (!pageOf(label)) throw new Error(`Webview not found: ${label}`);
+    touchBrowserPage(label);
     updatePage(label, { width: numberArg(args, "width", 1024), height: numberArg(args, "height", 768) });
     return null;
   },
@@ -518,6 +580,7 @@ function closeBrowserPageLocally(label: string): void {
   abortEvaluations(label, "the page was closed");
   browserPages.set(browserPages().filter(page => page.label !== label));
   handles.delete(label);
+  pageLastActive.delete(label);
   if (presentedLabel() === label) presentedLabel.set(browserPages()[0]?.label ?? null);
 }
 
@@ -664,9 +727,11 @@ export async function stopBrowserLoading(): Promise<void> {
 export async function presentBrowserPage(label: string): Promise<void> {
   const page = pageOf(label);
   if (!page) return;
+  touchBrowserPage(label);
   presentedLabel.set(label);
   browserAddress.set(page.url);
   browserNotice.set(null);
+  evictIdleBrowserPages();
   try {
     await presentAsAgentTarget(label);
   } catch (error) {
@@ -966,14 +1031,52 @@ function liveViewOutdated(error: unknown): boolean {
   return isCommandUnavailable(error, CAPTURE_COMMAND) || /missing field `label`/.test(message);
 }
 
+const LIVE_VIEW_MAX_BACKOFF_MS = 8_000;
+
+function sameLiveView(a: BrowserLiveView, b: BrowserLiveView): boolean {
+  if (a.status !== b.status) return false;
+  switch (a.status) {
+    case "snapshot":
+      return (
+        b.status === "snapshot" &&
+        a.label === b.label &&
+        a.url === b.url &&
+        a.title === b.title &&
+        a.html === b.html &&
+        a.viewportWidth === b.viewportWidth &&
+        a.viewportHeight === b.viewportHeight
+      );
+    case "ready":
+      return b.status === "ready" && a.dataUrl === b.dataUrl && a.url === b.url;
+    case "tooLarge":
+      return b.status === "tooLarge" && a.url === b.url && a.title === b.title;
+    case "unsupported":
+      return b.status === "unsupported" && a.reason === b.reason;
+    case "failed":
+      return b.status === "failed" && a.message === b.message;
+    case "loading":
+    case "noPage":
+    case "outdated":
+      return true;
+  }
+}
+
+function isTerminalLiveViewStatus(view: BrowserLiveView): boolean {
+  return view.status === "outdated" || view.status === "unsupported";
+}
+
 /**
  * Polls the live view of `source()` until the returned function is called.
- * A read is skipped while the app is in the background.
+ * Skips reads while the app is in the background, avoids rewriting the signal
+ * (and reloading the WebView) when the snapshot is unchanged, backs off on
+ * consecutive unchanged reads, and stops polling on terminal `outdated` or
+ * `unsupported` responses.
  */
 export function startBrowserLiveView(source: () => LiveViewSource): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastKey = "";
+  let unchangedStreak = 0;
   browserLiveView.set({ status: "loading" });
   const tick = async () => {
     timer = null;
@@ -982,8 +1085,10 @@ export function startBrowserLiveView(source: () => LiveViewSource): () => void {
     const key = `${deviceId ?? ""}/${conversationId ?? ""}`;
     if (key !== lastKey) {
       lastKey = key;
+      unchangedStreak = 0;
       browserLiveView.set({ status: "loading" });
     }
+    let terminal = false;
     if (lifecycle() !== "background") {
       try {
         const reply = await invokeCommand<unknown>(
@@ -991,16 +1096,37 @@ export function startBrowserLiveView(source: () => LiveViewSource): () => void {
           conversationId ? { conversationId } : {},
           deviceId ? { target: deviceId } : undefined,
         );
-        if (!stopped && key === lastKey) browserLiveView.set(readLiveView(reply));
+        if (!stopped && key === lastKey) {
+          const next = readLiveView(reply);
+          terminal = isTerminalLiveViewStatus(next);
+          if (sameLiveView(browserLiveView(), next)) {
+            unchangedStreak += 1;
+          } else {
+            unchangedStreak = 0;
+            browserLiveView.set(next);
+          }
+        }
       } catch (error) {
         if (!stopped && key === lastKey) {
-          browserLiveView.set(
-            liveViewOutdated(error) ? { status: "outdated" } : { status: "failed", message: localizeHostError(errorMessage(error)) },
-          );
+          const next: BrowserLiveView = liveViewOutdated(error)
+            ? { status: "outdated" }
+            : { status: "failed", message: localizeHostError(errorMessage(error)) };
+          terminal = isTerminalLiveViewStatus(next);
+          unchangedStreak = 0;
+          if (!sameLiveView(browserLiveView(), next)) {
+            browserLiveView.set(next);
+          }
         }
       }
     }
-    if (!stopped) timer = setTimeout(() => void tick(), LIVE_VIEW_INTERVAL_MS);
+    if (!stopped && !terminal) {
+      // Keep the first follow-up prompt (2 s), then back off while the page is static.
+      const delay =
+        unchangedStreak >= 2
+          ? Math.min(LIVE_VIEW_MAX_BACKOFF_MS, LIVE_VIEW_INTERVAL_MS * unchangedStreak)
+          : LIVE_VIEW_INTERVAL_MS;
+      timer = setTimeout(() => void tick(), delay);
+    }
   };
   void tick();
   return () => {

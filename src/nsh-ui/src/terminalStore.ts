@@ -15,6 +15,8 @@ import {
 } from "./api";
 import { invokeCommand, listenEvent, setFleetOwnerLookup } from "./bridge";
 import { Storage } from "nsh";
+import { currentDeviceScopeKey } from "./shared/deviceScope";
+import { errorMessageOf } from "./shared/errorUtils";
 import { activeWorkspaceId, deviceContext } from "./state";
 
 /**
@@ -61,11 +63,84 @@ export interface TerminalTab {
 /** Upper bound on in-memory scrollback per terminal tab (prevents unbounded growth). */
 const MAX_BUFFER_CHARS = 200_000;
 
+interface ScrollbackRing {
+  chunks: string[];
+  totalChars: number;
+}
+
+/** Non-reactive per-tab scrollback rings keyed by `(deviceId, id)` so 60 Hz output never clones `terminalTabs`. */
+const scrollbackRings = new Map<string, ScrollbackRing>();
+
+/** Monotonic version bumped on PTY flushes for lightweight observers without rebuilding `terminalTabs`. */
+export const terminalOutputVersion = signal(0);
+
+function terminalTabKey(deviceId: string | undefined, id: string): string {
+  return `${deviceId ?? ""}/${id}`;
+}
+
 function trimBuffer(text: string): string {
   if (text.length <= MAX_BUFFER_CHARS) return text;
   const sliced = text.slice(text.length - MAX_BUFFER_CHARS);
   const newline = sliced.indexOf("\n");
   return newline >= 0 && newline < 4096 ? sliced.slice(newline + 1) : sliced;
+}
+
+function appendScrollback(key: string, chunk: string): void {
+  if (!chunk) return;
+  let ring = scrollbackRings.get(key);
+  if (!ring) {
+    ring = { chunks: [], totalChars: 0 };
+    scrollbackRings.set(key, ring);
+  }
+  if (chunk.length >= MAX_BUFFER_CHARS) {
+    const trimmed = trimBuffer(chunk);
+    ring.chunks = trimmed ? [trimmed] : [];
+    ring.totalChars = trimmed.length;
+    return;
+  }
+  ring.chunks.push(chunk);
+  ring.totalChars += chunk.length;
+  while (ring.totalChars > MAX_BUFFER_CHARS && ring.chunks.length > 1) {
+    const dropped = ring.chunks.shift()!;
+    ring.totalChars -= dropped.length;
+  }
+  if (ring.totalChars > MAX_BUFFER_CHARS && ring.chunks.length === 1) {
+    const trimmed = trimBuffer(ring.chunks[0]!);
+    ring.chunks[0] = trimmed;
+    ring.totalChars = trimmed.length;
+  }
+}
+
+function setScrollback(key: string, text: string): void {
+  if (!text) {
+    scrollbackRings.delete(key);
+    return;
+  }
+  const trimmed = trimBuffer(text);
+  scrollbackRings.set(key, { chunks: trimmed ? [trimmed] : [], totalChars: trimmed.length });
+}
+
+/** Returns the buffered scrollback text for one terminal tab on demand. */
+export function getTerminalScrollback(id: string, deviceId: string = deviceContext()): string {
+  const ring = scrollbackRings.get(terminalTabKey(deviceId, id));
+  if (!ring || ring.chunks.length === 0) return "";
+  if (ring.chunks.length === 1) return ring.chunks[0]!;
+  const joined = ring.chunks.join("");
+  ring.chunks = [joined];
+  ring.totalChars = joined.length;
+  return joined;
+}
+
+function findTab(id: string, deviceId?: string): TerminalTab | undefined {
+  const tabs = terminalTabs();
+  if (deviceId !== undefined) {
+    return tabs.find(item => item.id === id && (item.deviceId ?? "") === deviceId);
+  }
+  const currentDevice = deviceContext();
+  return (
+    tabs.find(item => item.id === id && (item.deviceId ?? "") === currentDevice) ??
+    tabs.find(item => item.id === id)
+  );
 }
 
 function decodeBinaryPayload(data: unknown): string {
@@ -125,7 +200,12 @@ export const terminalMessage = signal<string>("");
 export const activeTerminalTab = computed<TerminalTab | null>(() => {
   const id = terminalId();
   if (!id) return null;
-  return terminalTabs().find(tab => tab.id === id) ?? null;
+  const device = deviceContext();
+  return (
+    terminalTabs().find(tab => tab.id === id && (tab.deviceId ?? "") === device) ??
+    terminalTabs().find(tab => tab.id === id) ??
+    null
+  );
 });
 /** The shells this host reports; a host without shell detection answers with none. */
 export const terminalShells = signal<TerminalShell[]>([]);
@@ -144,8 +224,8 @@ let resetter: (() => void) | null = null;
 let starting = false;
 let subscribed = false;
 
-/** Pending PTY data coalesced per animation frame (eliminates per-chunk array clones). */
-const pendingPtyData = new Map<string, string>();
+/** Pending PTY data coalesced per animation frame, keyed by `(deviceId, id)`. */
+const pendingPtyData = new Map<string, string[]>();
 let ptyFlushRafId: number | null = null;
 
 function flushPendingPtyData(): void {
@@ -158,26 +238,28 @@ function flushPendingPtyData(): void {
   pendingPtyData.clear();
 
   const activeId = terminalId();
-  terminalTabs.update(current => {
-    let changed = false;
-    const next = current.map(tab => {
-      const chunk = batch.get(tab.id);
-      if (!chunk) return tab;
-      changed = true;
-      return { ...tab, buffer: trimBuffer(tab.buffer + chunk) };
-    });
-    return changed ? next : current;
-  });
+  const activeKey = activeId ? terminalTabKey(deviceContext(), activeId) : null;
+  let activeChunk = "";
 
-  if (activeId) {
-    const activeChunk = batch.get(activeId);
-    if (activeChunk) outputWriter?.(activeChunk);
+  for (const [key, parts] of batch) {
+    const chunk = parts.length === 1 ? parts[0]! : parts.join("");
+    if (!chunk) continue;
+    appendScrollback(key, chunk);
+    if (key === activeKey) {
+      activeChunk = chunk;
+    }
   }
+
+  terminalOutputVersion.update(v => v + 1);
+  if (activeChunk) outputWriter?.(activeChunk);
 }
 
-function enqueuePtyChunk(id: string, chunk: string): void {
+function enqueuePtyChunk(id: string, chunk: string, deviceId: string = deviceContext()): void {
   if (!chunk) return;
-  pendingPtyData.set(id, (pendingPtyData.get(id) ?? "") + chunk);
+  const key = terminalTabKey(deviceId, id);
+  const existing = pendingPtyData.get(key);
+  if (existing) existing.push(chunk);
+  else pendingPtyData.set(key, [chunk]);
   if (typeof requestAnimationFrame === "function") {
     if (ptyFlushRafId === null) {
       ptyFlushRafId = requestAnimationFrame(() => {
@@ -197,34 +279,43 @@ export function attachTerminalWriter(writer: (data: string) => void, reset: () =
   resetter = reset;
 }
 
-function updateTab(id: string, patch: Partial<TerminalTab>): void {
-  terminalTabs.update(current => current.map(tab => (tab.id === id ? { ...tab, ...patch } : tab)));
-  const active = terminalTabs().find(tab => tab.id === terminalId());
-  if (active && active.id === id && patch.status) terminalStatus.set(patch.status);
+function updateTab(id: string, patch: Partial<TerminalTab>, deviceId?: string): void {
+  const targetDevice = deviceId ?? deviceContext();
+  terminalTabs.update(current =>
+    current.map(tab =>
+      tab.id === id && (deviceId === undefined || (tab.deviceId ?? "") === targetDevice)
+        ? { ...tab, ...patch }
+        : tab,
+    ),
+  );
+  const active = findTab(terminalId() ?? "");
+  if (active && active.id === id && (deviceId === undefined || (active.deviceId ?? "") === targetDevice) && patch.status) {
+    terminalStatus.set(patch.status);
+  }
 }
 
 function subscribeOutput(): void {
   if (subscribed) return;
   subscribed = true;
-  // A remote shell's output notice carries no bytes: pull what is new.
+  // A remote shell's output notice carries no bytes: pull what is new (single-flight).
   listenEvent<{ session_id?: string; sessionId?: string }>("terminal-output", (event, meta) => {
     const id = event?.sessionId ?? event?.session_id;
-    if (id && terminalTabs().some(tab => tab.id === id && (tab.deviceId ?? "") === meta.origin)) void resyncTerminal(id);
+    if (id && findTab(id, meta.origin)) void resyncTerminal(id, meta.origin);
   });
   listenEvent<TerminalEventPayload>("terminal_event", (event, meta) => {
     const payload = event?.payload;
     if (!payload?.session_id) return;
     const id = payload.session_id;
     // Only the shell of the device that emitted it (terminal ids repeat across devices).
-    const tab = terminalTabs().find(item => item.id === id && (item.deviceId ?? "") === meta.origin);
+    const tab = findTab(id, meta.origin);
     if (!tab) return;
     if (event?.type === "Data" && typeof payload.data === "string" && payload.data) {
-      enqueuePtyChunk(id, payload.data);
+      enqueuePtyChunk(id, payload.data, meta.origin);
       return;
     }
     if (event?.type === "BinaryData" && payload.data !== undefined) {
       const decoded = decodeBinaryPayload(payload.data);
-      if (decoded) enqueuePtyChunk(id, decoded);
+      if (decoded) enqueuePtyChunk(id, decoded, meta.origin);
       return;
     }
     // Flush any buffered PTY chunks before state transitions (`Exit` / `TitleChanged`).
@@ -232,8 +323,8 @@ function subscribeOutput(): void {
     if (event?.type === "Exit") {
       const code = typeof payload.exit_code === "number" ? payload.exit_code : null;
       const status = code !== null ? `exited (${code})` : "exited";
-      updateTab(id, { status, exitCode: code });
-      if (terminalId() === id) {
+      updateTab(id, { status, exitCode: code }, meta.origin);
+      if (terminalId() === id && (tab.deviceId ?? "") === deviceContext()) {
         terminalStatus.set("exited");
         // Exit status is surfaced through the localized §4.10 bottom bar, not raw English text.
         terminalMessage.set("");
@@ -241,7 +332,7 @@ function subscribeOutput(): void {
       return;
     }
     if (event?.type === "TitleChanged" && typeof payload.title === "string") {
-      applyTerminalTitle(id, payload.title);
+      applyTerminalTitle(id, payload.title, meta.origin);
     }
   });
 }
@@ -250,26 +341,28 @@ function subscribeOutput(): void {
  * A shell's own title (`vim notes.md`, the ssh host it is in). A tab the user named
  * is left alone, so a profile keeps the name it was saved under.
  */
-export function applyTerminalTitle(id: string, title: string): void {
+export function applyTerminalTitle(id: string, title: string, deviceId?: string): void {
   const next = title.trim();
   if (!next) return;
-  const tab = terminalTabs().find(item => item.id === id);
+  const tab = findTab(id, deviceId);
   if (!tab || tab.named || tab.title === next) return;
-  updateTab(id, { title: next });
+  updateTab(id, { title: next }, tab.deviceId ?? "");
 }
 
-async function replayHistory(sessionId: string): Promise<void> {
+async function replayHistory(sessionId: string, deviceId: string = deviceContext()): Promise<void> {
+  const key = terminalTabKey(deviceId, sessionId);
   try {
     const history = await getTerminalHistory(sessionId);
-    if (typeof history?.nextOffset === "number") updateTab(sessionId, { nextOffset: history.nextOffset });
+    if (typeof history?.nextOffset === "number") updateTab(sessionId, { nextOffset: history.nextOffset }, deviceId);
     if (!history?.data) return;
     flushPendingPtyData();
-    const tab = terminalTabs().find(item => item.id === sessionId);
+    const tab = findTab(sessionId, deviceId);
     if (!tab) return;
-    const existing = tab.buffer;
+    const isActive = terminalId() === sessionId && deviceContext() === deviceId;
+    const existing = getTerminalScrollback(sessionId, deviceId);
     if (!existing) {
-      updateTab(sessionId, { buffer: trimBuffer(history.data) });
-      if (terminalId() === sessionId) outputWriter?.(history.data);
+      setScrollback(key, history.data);
+      if (isActive) outputWriter?.(history.data);
       return;
     }
     // Deduplicate against live `Data` chunks that arrived while `terminal_get_history`
@@ -278,19 +371,17 @@ async function replayHistory(sessionId: string): Promise<void> {
       return;
     }
     if (history.data.endsWith(existing)) {
-      const merged = trimBuffer(history.data);
-      updateTab(sessionId, { buffer: merged });
-      if (terminalId() === sessionId) {
+      setScrollback(key, history.data);
+      if (isActive) {
         resetter?.();
-        outputWriter?.(merged);
+        outputWriter?.(getTerminalScrollback(sessionId, deviceId));
       }
       return;
     }
-    const merged = trimBuffer(history.data + existing);
-    updateTab(sessionId, { buffer: merged });
-    if (terminalId() === sessionId) {
+    setScrollback(key, history.data + existing);
+    if (isActive) {
       resetter?.();
-      outputWriter?.(merged);
+      outputWriter?.(getTerminalScrollback(sessionId, deviceId));
     }
   } catch {
     // A host that has no replay for this session still gets live output.
@@ -339,8 +430,11 @@ export async function openTerminal(
   if (starting) return null;
   starting = true;
   subscribeOutput();
+  const device = deviceContext();
   const index = visibleTerminalTabs().length + 1;
-  if (!terminalShells().length) await loadTerminalShells();
+  if (!terminalShells().length || shellsLoadedForDevice !== currentDeviceScopeKey()) {
+    await loadTerminalShells();
+  }
   const shellId = override?.shellId ?? selectedShellId() ?? "";
   const shell = terminalShells().find(entry => entry.id === shellId);
   try {
@@ -363,14 +457,14 @@ export async function openTerminal(
         buffer: "",
         named: Boolean(override?.title),
         workspaceId: workspaceId ?? null,
-        deviceId: deviceContext(),
+        deviceId: device,
       },
     ]);
     selectTerminal(session.id);
-    await replayHistory(session.id);
+    await replayHistory(session.id, device);
     return session.id;
   } catch (error) {
-    terminalMessage.set(error instanceof Error ? error.message : String(error));
+    terminalMessage.set(errorMessageOf(error));
     if (!terminalTabs().length) terminalStatus.set("failed");
     return null;
   } finally {
@@ -392,28 +486,45 @@ export function shellRequestFor(shell: TerminalShell): { shellId?: string; shell
 }
 
 /**
- * Reads the host's shells once, and the shell the last run left selected. The
- * first shell waits for this list: a stored shell id is only usable once the
- * shells it names are known.
+ * Reads the host's shells per device, and the shell the last run left selected.
+ * Switching `deviceContext()` reloads shells for the new device instead of
+ * reusing a stale global promise from another OS/host.
  */
-export function loadTerminalShells(): Promise<void> {
-  if (!shellsLoad) shellsLoad = readShells();
-  return shellsLoad;
+const shellsLoadByDevice = new Map<string, Promise<void>>();
+let shellsLoadedForDevice: string | null = null;
+
+export function loadTerminalShells(force = false): Promise<void> {
+  const deviceKey = currentDeviceScopeKey();
+  if (force) {
+    shellsLoadByDevice.delete(deviceKey);
+  }
+  let flight = shellsLoadByDevice.get(deviceKey);
+  if (!flight) {
+    flight = readShells(deviceKey).finally(() => {
+      if (shellsLoadByDevice.get(deviceKey) === flight && shellsLoadedForDevice !== deviceKey) {
+        shellsLoadByDevice.delete(deviceKey);
+      }
+    });
+    shellsLoadByDevice.set(deviceKey, flight);
+  }
+  return flight;
 }
 
-let shellsLoad: Promise<void> | null = null;
-
-async function readShells(): Promise<void> {
+async function readShells(deviceKey: string): Promise<void> {
   const saved = await readStoredShellId();
-  if (saved) selectedShellId.set(saved);
+  if (saved && currentDeviceScopeKey() === deviceKey) selectedShellId.set(saved);
   try {
     const shells = await listTerminalShells();
+    if (currentDeviceScopeKey() !== deviceKey) return;
     // A shell the host reports as unavailable is not offered, and a stored choice
     // that no longer exists falls back to the host's default.
     terminalShells.set(shells.filter(shell => shell.id && shell.available !== false));
+    shellsLoadedForDevice = deviceKey;
   } catch {
+    if (currentDeviceScopeKey() !== deviceKey) return;
     // Shell detection is not required to run a shell: the host's default works.
     terminalShells.set([]);
+    shellsLoadedForDevice = deviceKey;
   }
 }
 
@@ -445,18 +556,20 @@ export function selectedShellLabel(): string {
 /** Draws one tab: its own scrollback replaces whatever the view held. */
 export function selectTerminal(id: string): void {
   flushPendingPtyData();
-  const tab = terminalTabs().find(item => item.id === id);
+  const tab = findTab(id);
   if (!tab) return;
+  const tabDevice = tab.deviceId ?? "";
   terminalId.set(id);
   terminalStatus.set(tab.status.toLowerCase().startsWith("exited") ? "exited" : tab.status);
   terminalMessage.set("");
   resetter?.();
-  if (tab.buffer) outputWriter?.(tab.buffer);
+  const buffered = getTerminalScrollback(id, tabDevice);
+  if (buffered) outputWriter?.(buffered);
   // A shell that was off screen still has the size it had then: give it the
   // view's size, or its output wraps at the old width.
   if (lastSizeKnown) void resizeTerminal(id, lastSize.cols, lastSize.rows).catch(() => undefined);
   // A shell this surface attached to (an agent's) has no scrollback here yet.
-  if (!tab.buffer && tab.nextOffset === undefined) void replayHistory(id);
+  if (!buffered && tab.nextOffset === undefined) void replayHistory(id, tabDevice);
 }
 
 /** One shell for the workspace, created on first use. */
@@ -514,29 +627,60 @@ export async function reattachTerminals(workspaceId: string | null): Promise<voi
   if (added.length) terminalTabs.update(current => [...current, ...added]);
 }
 
+const resyncInFlight = new Map<string, Promise<void>>();
+const resyncAgain = new Set<string>();
+
 /**
  * Catches a shell up after a gap (a remote output notice, a reconnect): reads
  * only what the host printed after the last offset this surface has, and
  * replays the whole scrollback when the host says that window was trimmed.
+ * Single-flight per `(deviceId, sessionId)` so concurrent notices never read
+ * the same `nextOffset` and duplicate output.
  */
-export async function resyncTerminal(sessionId: string): Promise<void> {
-  const tab = terminalTabs().find(item => item.id === sessionId);
+export function resyncTerminal(sessionId: string, deviceId?: string): Promise<void> {
+  const tab = findTab(sessionId, deviceId);
+  if (!tab) return Promise.resolve();
+  const tabDevice = tab.deviceId ?? "";
+  const key = terminalTabKey(tabDevice, sessionId);
+  const existing = resyncInFlight.get(key);
+  if (existing) {
+    resyncAgain.add(key);
+    return existing;
+  }
+  const run = (async () => {
+    try {
+      await runResyncTerminalOnce(sessionId, tabDevice);
+    } finally {
+      resyncInFlight.delete(key);
+      if (resyncAgain.delete(key)) {
+        void resyncTerminal(sessionId, tabDevice);
+      }
+    }
+  })();
+  resyncInFlight.set(key, run);
+  return run;
+}
+
+async function runResyncTerminalOnce(sessionId: string, deviceId: string): Promise<void> {
+  const tab = findTab(sessionId, deviceId);
   if (!tab) return;
   if (tab.nextOffset === undefined) {
-    await replayHistory(sessionId);
+    await replayHistory(sessionId, deviceId);
     return;
   }
   try {
     const page = await getTerminalHistory(sessionId, tab.nextOffset);
     if (!page) return;
+    const key = terminalTabKey(deviceId, sessionId);
     if (page.truncated) {
-      updateTab(sessionId, { buffer: "", nextOffset: undefined });
-      if (terminalId() === sessionId) resetter?.();
-      await replayHistory(sessionId);
+      setScrollback(key, "");
+      updateTab(sessionId, { nextOffset: undefined }, deviceId);
+      if (terminalId() === sessionId && deviceContext() === deviceId) resetter?.();
+      await replayHistory(sessionId, deviceId);
       return;
     }
-    updateTab(sessionId, { nextOffset: page.nextOffset });
-    if (page.data) enqueuePtyChunk(sessionId, page.data);
+    updateTab(sessionId, { nextOffset: page.nextOffset }, deviceId);
+    if (page.data) enqueuePtyChunk(sessionId, page.data, deviceId);
   } catch {
     // The live stream still delivers; the next notice tries again.
   }
@@ -547,7 +691,9 @@ export function clearTerminalView(): void {
   const id = terminalId();
   if (!id) return;
   flushPendingPtyData();
-  updateTab(id, { buffer: "" });
+  const tab = findTab(id);
+  const tabDevice = tab?.deviceId ?? deviceContext();
+  setScrollback(terminalTabKey(tabDevice, id), "");
   resetter?.();
 }
 
@@ -560,7 +706,7 @@ export function renameTerminalTab(id: string, title: string): void {
 
 /** Closing a running shell asks first: it ends whatever runs in it. */
 export function requestCloseTerminalTab(id: string): void {
-  const tab = terminalTabs().find(item => item.id === id);
+  const tab = findTab(id);
   if (tab && tab.status === "running") {
     confirmingCloseTerminal.set(id);
     return;
@@ -577,8 +723,13 @@ let lastSizeKnown = false;
 
 export async function closeTerminalTab(id: string): Promise<void> {
   if (confirmingCloseTerminal() === id) confirmingCloseTerminal.set(null);
-  pendingPtyData.delete(id);
-  const remaining = terminalTabs().filter(tab => tab.id !== id);
+  const target = findTab(id);
+  const tabDevice = target?.deviceId ?? deviceContext();
+  const key = terminalTabKey(tabDevice, id);
+  pendingPtyData.delete(key);
+  scrollbackRings.delete(key);
+  resyncAgain.delete(key);
+  const remaining = terminalTabs().filter(tab => !(tab.id === id && (tab.deviceId ?? "") === tabDevice));
   terminalTabs.set(remaining);
   await closeTerminal(id).catch(() => undefined);
   if (terminalId() !== id) return;
@@ -604,6 +755,8 @@ export function forgetTerminals(): void {
   }
   ptyFlushRafId = null;
   pendingPtyData.clear();
+  scrollbackRings.clear();
+  resyncAgain.clear();
   attachedWorkspaces.clear();
   terminalTabs.set([]);
   terminalId.set(null);

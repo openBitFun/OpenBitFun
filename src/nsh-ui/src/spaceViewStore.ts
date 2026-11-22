@@ -14,6 +14,8 @@ import { computed, Clipboard, openUrl, signal } from "nsh";
 import { invokeCommand, invokeRawCommand, listenEvent, windowShellId } from "./bridge";
 import { fleetActive, entryDeviceId } from "./bridge";
 import { tr } from "./i18n";
+import { isDesktopLocalShell, isRemotePeerContext } from "./shared/deviceScope";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { activeWorkspace, deviceContext, openLibrary } from "./state";
 import { resolvedScheme } from "./theme";
 import { pushToast } from "./ui/overlays";
@@ -189,11 +191,11 @@ export function reopenSpace(): void {
 
 /** "Open in window" on a desktop over its own backend (the MiniApp Shell). */
 export function spaceWindowAvailable(): boolean {
-  const shell = windowShellId();
-  if (shell !== "nsh-desktop" && shell !== "host-page") return false;
+  if (!isDesktopLocalShell()) return false;
   const space = openSpace();
   if (!space) return false;
-  return !fleetActive() || !space.deviceId || space.deviceId === entryDeviceId();
+  if (isRemoteWorkspace(activeWorkspace())) return false;
+  return !isRemotePeerContext(space.deviceId);
 }
 
 // Sheets on the Space page
@@ -241,6 +243,7 @@ export async function rollbackSpace(version: number): Promise<void> {
     spaceSheet.set(null);
     pushToast(tr("spaces.p4.rolledBack", { version }), "success");
     void loadSpaceVersions();
+    reopenSpace();
   } catch (error) {
     failSheet(error);
   } finally {
@@ -366,6 +369,7 @@ export async function applySpaceDraft(): Promise<void> {
     spaceSheet.set(null);
     pushToast(tr("spaces.p4.draftApplied"), "success");
     void loadSpaceVersions();
+    reopenSpace();
   } catch (error) {
     failSheet(error);
   } finally {

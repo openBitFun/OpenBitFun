@@ -30,8 +30,10 @@ import {
 import { PetCharacterGrid } from "../ui/companion";
 import { STATIC_MARKDOWN_OPTIONS, createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
 import { fleetActive, invokeCommand, windowShellId } from "../bridge";
-import { fleetDeviceById, fleetDevices } from "../fleetStore";
+import { fleetDeviceById, fleetDevices, refreshFleetNavigator } from "../fleetStore";
 import { isCommandUnavailable } from "../hostCommands";
+import { isRemotePeerContext } from "../shared/deviceScope";
+import { errorMessageOf } from "../shared/errorUtils";
 import {
   fetchUsageActivity,
   UsageActivityUnavailable,
@@ -268,8 +270,10 @@ import {
   toggleDiscoveredModel,
   cancelSubscriptionSignIn,
   copySubscriptionLoginUrl,
+  signOutSubscriptionAccount,
   startSubscriptionSignIn,
   subscriptionLogin,
+  subscriptionSigningOut,
   type QuotaMeterRow,
   type SubscriptionQuotaSummary,
 } from "../modelDiscoveryStore";
@@ -400,6 +404,7 @@ import {
 import {
   SETTINGS_SECTIONS,
   appLanguageValue,
+  defaultForField,
   fieldDisplay,
   fieldEmptyLabel,
   fieldHint,
@@ -426,6 +431,7 @@ import {
   type GeneralControlOption,
   loadSettingsValues,
   maxForField,
+  minForField,
   optionLabel,
   sectionNotice,
   sectionOfField,
@@ -440,7 +446,7 @@ import {
   type SettingsPageId,
 } from "../settingsStore";
 import { loadTerminalShells, terminalShells } from "../terminalStore";
-import { setConfig } from "../api";
+import { setConfig, type SessionSummary } from "../api";
 import {
   TASK_MODEL_ROWS,
   chooseTaskModel,
@@ -561,6 +567,7 @@ import {
   isSessionArchived,
   loadSessions,
   selectDeviceContext,
+  sessionTotal,
   sessions,
 } from "../state";
 import {
@@ -1280,14 +1287,14 @@ function dirtyFields(): FieldSpec[] {
 }
 
 function clampNumber(spec: FieldSpec, value: number): number {
-  const min = spec.min ?? Number.NEGATIVE_INFINITY;
+  const min = minForField(spec) ?? Number.NEGATIVE_INFINITY;
   const max = maxForField(spec) ?? Number.POSITIVE_INFINITY;
   return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
 /** A step that moves a wide range in useful increments. */
 function stepFor(spec: FieldSpec): number {
-  const span = (spec.max ?? 0) - (spec.min ?? 0);
+  const span = (maxForField(spec) ?? 0) - (minForField(spec) ?? 0);
   if (span >= 10000) return 100;
   if (span >= 1000) return 10;
   return 1;
@@ -1334,7 +1341,7 @@ function stepNumber(spec: FieldSpec, direction: 1 | -1): void {
   const current = Number(fieldDisplay(spec));
   const base = Number.isFinite(current) && fieldDisplay(spec) !== null
     ? current
-    : Number(spec.defaultValue ?? spec.min ?? 0);
+    : Number(defaultForField(spec) ?? minForField(spec) ?? 0);
   clearDraft(spec);
   void writeField(spec, clampNumber(spec, base + direction * stepFor(spec)));
 }
@@ -1894,13 +1901,14 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
  */
 function NumberControl(props: { spec: FieldSpec }) {
   const spec = props.spec;
-  const unavailable = () => fieldMissing(spec) && spec.defaultValue === undefined && !spec.clearable;
+  const unavailable = () => fieldMissing(spec) && defaultForField(spec) === undefined && !spec.clearable;
   const value = (): number | null => {
     const raw = fieldDisplay(spec);
     if (raw === undefined || raw === null || raw === "") return null;
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : null;
   };
+  const min = () => minForField(spec);
   const max = () => maxForField(spec);
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
@@ -1926,7 +1934,7 @@ function NumberControl(props: { spec: FieldSpec }) {
           variant="ghost"
           size="xs"
           accessibilityLabel={`${spec.id}-decrease`}
-          disabled={unavailable() || fieldSaving(spec) || (value() !== null && value()! <= (spec.min ?? Number.NEGATIVE_INFINITY))}
+          disabled={unavailable() || fieldSaving(spec) || (value() !== null && value()! <= (min() ?? Number.NEGATIVE_INFINITY))}
           style={{
             width: compactLayout() ? 36 : controlHeight.sm,
             minHeight: compactLayout() ? 36 : controlHeight.xs,
@@ -1993,7 +2001,7 @@ function NumberControl(props: { spec: FieldSpec }) {
 /** A text field prefilled with what is stored; Save appears once it differs. */
 function TextControl(props: { spec: FieldSpec }) {
   const spec = props.spec;
-  const unavailable = () => fieldMissing(spec) && spec.defaultValue === undefined;
+  const unavailable = () => fieldMissing(spec) && defaultForField(spec) === undefined;
   return (
     <View
       style={{
@@ -2026,7 +2034,7 @@ function TextControl(props: { spec: FieldSpec }) {
 
 function fieldDescription(spec: FieldSpec): string {
   const hint = fieldHint(spec) ?? "";
-  const isDefault = fieldMissing(spec) && spec.defaultValue !== undefined;
+  const isDefault = fieldMissing(spec) && defaultForField(spec) !== undefined;
   if (isDefault) return hint ? `${hint} · ${tr("common.default")}` : tr("settings.field.defaultSetting");
   return hint;
 }
@@ -5818,18 +5826,36 @@ function SubscriptionsSection() {
                         size="sm"
                         leadingIcon="log-in"
                         disabled={
-                          subscriptionLogin()?.provider === item().provider &&
+                          (subscriptionLogin()?.accountId === (item().account_id || item().provider)) &&
                           (subscriptionLogin()?.status === "pending" || subscriptionLogin()?.status === "starting")
                         }
-                        accessibilityLabel={`subscription-connect-${item().provider}`}
+                        accessibilityLabel={`subscription-connect-${item().account_id || item().provider}`}
                         onPress={() =>
-                          void startSubscriptionSignIn(item().provider, false, item().login_methods ?? [])
+                          void startSubscriptionSignIn(
+                            item().provider,
+                            isRemotePeerContext(),
+                            item().login_methods ?? [],
+                            item().account_id || item().provider,
+                          )
+                        }
+                      />
+                    </If>
+                    <If when={Boolean(item().connected)}>
+                      <Button
+                        label={tr("devices.signOut")}
+                        variant="ghost"
+                        size="sm"
+                        loading={subscriptionSigningOut() === (item().account_id || item().provider)}
+                        disabled={subscriptionSigningOut() === (item().account_id || item().provider)}
+                        accessibilityLabel={`subscription-signout-${item().account_id || item().provider}`}
+                        onPress={() =>
+                          void signOutSubscriptionAccount(item().provider, item().account_id || undefined)
                         }
                       />
                     </If>
                   </View>
 
-                  <If when={subscriptionLogin()?.provider === item().provider}>
+                  <If when={subscriptionLogin()?.accountId === (item().account_id || item().provider)}>
                     <SubscriptionLoginPanel />
                   </If>
 
@@ -7468,7 +7494,7 @@ function AccountRow() {
  * host picks (auto-detect), as the desktop's terminal page offers it.
  */
 function DefaultShellRow() {
-  useDeviceScopedLoad("terminal-shells", () => void loadTerminalShells(), () => void loadTerminalShells());
+  useDeviceScopedLoad("terminal-shells", () => void loadTerminalShells(), () => void loadTerminalShells(true));
   const stored = (): string => {
     const value = settingsValues()["terminal.default_shell"];
     return typeof value === "string" ? value : "";
@@ -8575,6 +8601,128 @@ function ActivityPage() {
 const archivedRestoring = signal<string | null>(null);
 const archivedDeleteAllOpen = signal(false);
 const archivedDeletingAll = signal(false);
+/**
+ * Archived sessions loaded from `list_archived_sessions` for the selected
+ * device and workspace; `null` means the host does not offer the command (an
+ * older build or legacy fixture), in which case we fall back to filtering the
+ * loaded `sessions()` catalogue.
+ */
+const archivedSessionsFromHost = signal<SessionSummary[] | null>(null);
+const archivedSessionsLoading = signal(false);
+const archivedSessionsError = signal("");
+let archivedLoadTicket = 0;
+
+function normalizeArchivedSession(raw: unknown): SessionSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const sessionId = String(record.sessionId ?? record.session_id ?? "").trim();
+  if (!sessionId) return null;
+  const sessionName = String(record.sessionName ?? record.session_name ?? record.title ?? "");
+  const workspaceId =
+    typeof record.workspaceId === "string"
+      ? record.workspaceId
+      : typeof record.workspace_id === "string"
+        ? record.workspace_id
+        : undefined;
+  return {
+    sessionId,
+    sessionName,
+    workspaceId,
+    status: "archived",
+    persistedStatus: "archived",
+    lastUpdated:
+      typeof record.lastActiveAt === "number"
+        ? record.lastActiveAt
+        : typeof record.lastUpdated === "number"
+          ? record.lastUpdated
+          : undefined,
+    messageCount:
+      typeof record.turnCount === "number"
+        ? record.turnCount
+        : typeof record.messageCount === "number"
+          ? record.messageCount
+          : undefined,
+  };
+}
+
+function archivedTargetOptions(): { target: string } | undefined {
+  const ctx = deviceContext();
+  return fleetActive() && ctx ? { target: ctx } : undefined;
+}
+
+async function loadArchivedSessions(): Promise<void> {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    archivedSessionsFromHost.set(null);
+    archivedSessionsError.set("");
+    return;
+  }
+  const ticket = ++archivedLoadTicket;
+  archivedSessionsLoading.set(true);
+  archivedSessionsError.set("");
+  try {
+    const raw = await invokeCommand<unknown[]>(
+      "list_archived_sessions",
+      {
+        workspace_id: workspace.id,
+        workspace_path: workspace.rootPath,
+        ...(workspace.connectionId ? { remote_connection_id: workspace.connectionId } : {}),
+        ...(workspace.sshHost ? { remote_ssh_host: workspace.sshHost } : {}),
+      },
+      archivedTargetOptions(),
+    );
+    if (ticket !== archivedLoadTicket) return;
+    const list = (Array.isArray(raw) ? raw : [])
+      .map(normalizeArchivedSession)
+      .filter((item): item is SessionSummary => item !== null);
+    archivedSessionsFromHost.set(list);
+  } catch (error) {
+    if (ticket !== archivedLoadTicket) return;
+    if (isCommandUnavailable(error, "list_archived_sessions")) {
+      archivedSessionsFromHost.set(null);
+      archivedSessionsError.set("");
+    } else {
+      archivedSessionsFromHost.set([]);
+      archivedSessionsError.set(localizeHostError(errorMessageOf(error)));
+    }
+  } finally {
+    if (ticket === archivedLoadTicket) {
+      archivedSessionsLoading.set(false);
+    }
+  }
+}
+
+async function restoreArchivedSession(row: SessionSummary): Promise<void> {
+  const workspace = activeWorkspace();
+  if (!workspace || archivedRestoring() === row.sessionId) return;
+  archivedRestoring.set(row.sessionId);
+  try {
+    if (archivedSessionsFromHost() !== null) {
+      await invokeCommand<unknown>(
+        "unarchive_session",
+        {
+          sessionId: row.sessionId,
+          workspaceId: row.workspaceId || workspace.id,
+        },
+        archivedTargetOptions(),
+      );
+      archivedSessionsFromHost.update(list => (list ? list.filter(item => item.sessionId !== row.sessionId) : list));
+      if (fleetActive()) {
+        void refreshFleetNavigator();
+      } else {
+        await loadSessions();
+      }
+    } else {
+      await archiveSessionRow(row.sessionId, false);
+    }
+  } catch (error) {
+    pushToast(localizeHostError(errorMessageOf(error)), "error");
+  } finally {
+    if (archivedRestoring() === row.sessionId) {
+      archivedRestoring.set(null);
+    }
+  }
+}
 
 /** `delete_all_archived_sessions` for the open workspace; the catalogue is read again after. */
 async function deleteAllArchived(): Promise<void> {
@@ -8582,24 +8730,54 @@ async function deleteAllArchived(): Promise<void> {
   if (!workspace || archivedDeletingAll()) return;
   archivedDeletingAll.set(true);
   try {
-    const deleted = await invokeCommand<number>("delete_all_archived_sessions", {
-      workspace_id: workspace.id,
-      workspace_path: workspace.rootPath,
-    });
+    const deleted = await invokeCommand<number>(
+      "delete_all_archived_sessions",
+      {
+        workspace_id: workspace.id,
+        workspace_path: workspace.rootPath,
+        ...(workspace.connectionId ? { remote_connection_id: workspace.connectionId } : {}),
+        ...(workspace.sshHost ? { remote_ssh_host: workspace.sshHost } : {}),
+      },
+      archivedTargetOptions(),
+    );
     archivedDeleteAllOpen.set(false);
     pushToast(tr("settings.archived.deletedAll", { count: typeof deleted === "number" ? deleted : 0 }), "success");
+    if (archivedSessionsFromHost() !== null) {
+      archivedSessionsFromHost.set([]);
+    }
+    await loadArchivedSessions();
     await loadSessions();
   } catch (error) {
-    pushToast(localizeHostError(error instanceof Error ? error.message : String(error)), "error");
+    pushToast(localizeHostError(errorMessageOf(error)), "error");
   } finally {
     archivedDeletingAll.set(false);
   }
 }
 
 function ArchivedSessionsSection() {
-  const rows = () => sessions().filter(item => isSessionArchived(item));
+  effect(() => {
+    const _device = deviceContext();
+    const _wsId = activeWorkspace()?.id ?? "";
+    const _wsPath = activeWorkspace()?.rootPath ?? "";
+    const _total = sessionTotal();
+    void _device;
+    void _wsId;
+    void _wsPath;
+    void _total;
+    untracked(() => {
+      void loadArchivedSessions();
+    });
+  });
+  const rows = () => {
+    const hostRows = archivedSessionsFromHost();
+    if (hostRows !== null) return hostRows;
+    return sessions().filter(item => isSessionArchived(item));
+  };
   return (
     <View accessibilityLabel="settings-archived" style={{ gap: space.md }}>
+      <If when={archivedSessionsError()}>
+        {error => <Text style={textStyle("caption", { color: palette().danger })}>{error()}</Text>}
+      </If>
       <If when={rows().length > 1}>
         <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
           <Button
@@ -8638,9 +8816,11 @@ function ArchivedSessionsSection() {
       <If
         when={rows().length > 0}
         else={
-          <Text accessibilityLabel="settings-archived-empty" style={textStyle("body", { color: palette().textMuted })}>
-            {tr("settings.archived.empty")}
-          </Text>
+          <If when={!archivedSessionsLoading()} else={<Spinner size={14} color={palette().accent} />}>
+            <Text accessibilityLabel="settings-archived-empty" style={textStyle("body", { color: palette().textMuted })}>
+              {tr("settings.archived.empty")}
+            </Text>
+          </If>
         }
       >
         <SettingsGroup id="archived" title={tr("settings.page.archived")} hideTitle={true}>
@@ -8657,7 +8837,7 @@ function ArchivedSessionsSection() {
                       openSessionDelete({
                         sessionId: row().sessionId,
                         deviceId: deviceContext(),
-                        workspaceId: activeWorkspace()?.id ?? "",
+                        workspaceId: row().workspaceId || activeWorkspace()?.id || "",
                         title: row().sessionName || row().sessionId,
                         archived: true,
                       })
@@ -8669,11 +8849,7 @@ function ArchivedSessionsSection() {
                     size="sm"
                     loading={archivedRestoring() === row().sessionId}
                     accessibilityLabel={`settings-archived-restore-${row().sessionId}`}
-                    onPress={() => {
-                      const id = row().sessionId;
-                      archivedRestoring.set(id);
-                      void archiveSessionRow(id, false).finally(() => archivedRestoring.set(null));
-                    }}
+                    onPress={() => void restoreArchivedSession(row())}
                   />
                 </View>
               </SettingsRow>
@@ -9451,8 +9627,9 @@ export function SettingsScene() {
     }
     lastSettingsLocale = activeLocale;
   });
-  // Leaving Settings resets compact state, search filter, and per-device load markers.
+  // Leaving Settings resets compact state, search filter, OAuth pollers, and per-device load markers.
   cleanup(() => {
+    closeMcpAuth();
     compactPageOpen.set(false);
     settingsSearchQuery.set("");
     loadedDeviceForSection.clear();

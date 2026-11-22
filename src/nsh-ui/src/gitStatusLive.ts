@@ -14,13 +14,15 @@
 
 import { signal } from "nsh";
 import type { GitStatus, WorkspaceRecord } from "./api";
-import { invokeCommand, listenEvent } from "./bridge";
+import { fleetActive, invokeCommand, listenEvent } from "./bridge";
 import { isCommandUnavailable } from "./hostCommands";
+import { currentDeviceScopeKey } from "./shared/deviceScope";
 import { activeWorkspace, onWorkspaceChanged } from "./state";
 
 export const GIT_STATUS_CHANGED_EVENT = "git://status-changed";
 
 export interface GitStatusChange {
+  deviceId: string;
   workspaceId: string;
   repositoryPath: string;
   revision: number;
@@ -47,7 +49,7 @@ const WATCHER_ID = `nsh-git-${Math.random().toString(36).slice(2, 10)}`;
 
 type Listener = (change: GitStatusChange) => void;
 const listeners = new Set<Listener>();
-let watched: { workspaceId: string; repositoryPath: string } | null = null;
+let watched: { deviceId: string; scopeKey: string; workspaceId: string; repositoryPath: string } | null = null;
 let lastRevision = -1;
 let installed = false;
 let leaseTicket = 0;
@@ -62,23 +64,27 @@ function deliver(change: GitStatusChange): void {
   }
 }
 
-function matchesWatched(workspaceId: unknown, repositoryPath: unknown): boolean {
+function matchesWatched(origin: string, workspaceId: unknown, repositoryPath: unknown): boolean {
   if (!watched) return false;
-  if (typeof workspaceId === "string" && workspaceId === watched.workspaceId) return true;
+  if (fleetActive() && origin && watched.deviceId && origin !== watched.deviceId) return false;
+  if (typeof workspaceId === "string" && workspaceId) {
+    return workspaceId === watched.workspaceId;
+  }
   return typeof repositoryPath === "string" && repositoryPath === watched.repositoryPath;
 }
 
 function install(): void {
   if (installed) return;
   installed = true;
-  listenEvent<Record<string, unknown>>(GIT_STATUS_CHANGED_EVENT, payload => {
+  listenEvent<Record<string, unknown>>(GIT_STATUS_CHANGED_EVENT, (payload, meta) => {
     if (!payload || typeof payload !== "object") return;
-    if (!matchesWatched(payload.workspaceId, payload.repositoryPath)) return;
+    if (!matchesWatched(meta.origin, payload.workspaceId, payload.repositoryPath)) return;
     const revision = typeof payload.revision === "number" ? payload.revision : 0;
     // Revisions only grow; an older or repeated one was already rendered.
     if (revision <= lastRevision) return;
     lastRevision = revision;
     deliver({
+      deviceId: watched?.scopeKey ?? currentDeviceScopeKey(),
       workspaceId: String(payload.workspaceId ?? watched?.workspaceId ?? ""),
       repositoryPath: String(payload.repositoryPath ?? watched?.repositoryPath ?? ""),
       revision,
@@ -87,9 +93,11 @@ function install(): void {
     });
   });
   // Events were lost (slow client) or the backend restarted (its revisions
-  // start over): take the lease again, which answers the status now.
-  listenEvent<unknown>("backend://events-dropped", () => {
+  // start over): take the lease again only when the dropped origin matches
+  // the watched device (or the gap is unscoped).
+  listenEvent<unknown>("backend://events-dropped", (_payload, meta) => {
     if (listeners.size === 0) return;
+    if (fleetActive() && meta.origin && watched?.deviceId && meta.origin !== watched.deviceId) return;
     watched = null;
     lastRevision = -1;
     void watchWorkspace(activeWorkspace());
@@ -106,7 +114,16 @@ async function unwatchCurrent(): Promise<void> {
   lastRevision = -1;
   if (!previous || gitLiveMode() !== "live") return;
   try {
-    await invokeCommand<boolean>("git_unwatch_status", { ...previous, watcherId: WATCHER_ID });
+    const target = fleetActive() && previous.deviceId ? { target: previous.deviceId } : undefined;
+    await invokeCommand<boolean>(
+      "git_unwatch_status",
+      {
+        workspaceId: previous.workspaceId,
+        repositoryPath: previous.repositoryPath,
+        watcherId: WATCHER_ID,
+      },
+      target,
+    );
   } catch {
     // The host may be gone; its lease ends with it.
   }
@@ -114,13 +131,23 @@ async function unwatchCurrent(): Promise<void> {
 
 async function watchWorkspace(ws: WorkspaceRecord | null): Promise<void> {
   const ticket = ++leaseTicket;
-  if (watched && ws && watched.workspaceId === ws.id && watched.repositoryPath === ws.rootPath) return;
+  const scopeKey = currentDeviceScopeKey();
+  const deviceId = fleetActive() && scopeKey !== "local" ? scopeKey : "";
+  if (
+    watched &&
+    ws &&
+    watched.scopeKey === scopeKey &&
+    watched.workspaceId === ws.id &&
+    watched.repositoryPath === ws.rootPath
+  ) {
+    return;
+  }
   await unwatchCurrent();
   if (!ws || ticket !== leaseTicket) {
     if (!ws) gitLiveMode.set("idle");
     return;
   }
-  watched = { workspaceId: ws.id, repositoryPath: ws.rootPath };
+  watched = { deviceId, scopeKey, workspaceId: ws.id, repositoryPath: ws.rootPath };
   let snapshot: WatchSnapshot | null;
   try {
     snapshot = await invokeCommand<WatchSnapshot>("git_watch_status", {
@@ -146,6 +173,7 @@ async function watchWorkspace(ws: WorkspaceRecord | null): Promise<void> {
   if (snapshot?.status && revision > lastRevision) {
     lastRevision = revision;
     deliver({
+      deviceId: scopeKey,
       workspaceId: ws.id,
       repositoryPath: ws.rootPath,
       revision,

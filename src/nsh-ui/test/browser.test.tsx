@@ -467,6 +467,16 @@ test("an older desktop without the live view request gets an update sentence", a
   await openToolScene(app, "browser");
   await app.waitFor("browser-live-empty");
   expect(app.texts().some(text => text.startsWith("Update OpenBitFun on "))).toBe(true);
+  // Terminal outdated response stops the live-view poll loop instead of retrying every 2 s.
+  let captureCount = 0;
+  const wrapped = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const { action } = data as { action: string };
+    if (action === "browser_webview_capture_preview") captureCount += 1;
+    return wrapped(data);
+  };
+  await new Promise(resolve => setTimeout(resolve, 2400));
+  expect(captureCount).toBe(0);
 });
 
 const DEVICE_SETTINGS = "./fixtures/settingsApp.tsx";

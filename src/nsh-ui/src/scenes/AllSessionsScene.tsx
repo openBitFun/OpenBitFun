@@ -10,12 +10,11 @@
 
 import { effect, Scroll, Text, View, signal, type JSX, type ViewRef } from "nsh";
 import { listSessions, type SessionSummary } from "../api";
-import { fleetActive } from "../bridge";
+import { entryDeviceId, fleetActive, invokeCommand } from "../bridge";
 import { fleetDevices, fleetNavigator } from "../fleetStore";
 import type { FleetDevice, FleetSession, FleetWorkspace } from "../fleetTypes";
 import { formatRelativeTime } from "../format";
-import { FLEET_ENTRY_COMMANDS } from "../generated/peerSurface";
-import { invokeCommand } from "../bridge";
+import { isCommandUnavailable } from "../hostCommands";
 import { localizeHostError, tr } from "../i18n";
 import { localDeviceId } from "../devicePrefsStore";
 import { statusOfSession } from "../sessionStatusStore";
@@ -141,12 +140,17 @@ async function newSessionHere(workspaceId: string, deviceId: string): Promise<vo
 
 // ── Sources ──────────────────────────────────────────────────────────────────
 
-/** Whether the entry serves the flat, backend-ordered Recent list. */
+const recentUnsupportedEntries = new Set<string>();
+
+/** Whether the active fleet entry is known to serve `fleet_recent_sessions`. */
 function entryServesRecent(): boolean {
-  return FLEET_ENTRY_COMMANDS.has("fleet_recent_sessions");
+  if (!fleetActive()) return false;
+  const entryKey = entryDeviceId() ?? "default";
+  return !recentUnsupportedEntries.has(entryKey);
 }
 
 async function loadRecentFromEntry(): Promise<void> {
+  const entryKey = entryDeviceId() ?? "default";
   recentLoading.set(true);
   recentError.set("");
   try {
@@ -154,10 +158,12 @@ async function loadRecentFromEntry(): Promise<void> {
     recentFromEntry.set(Array.isArray(answer?.sessions) ? answer.sessions : []);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`fleet_recent_sessions failed: ${message}`);
     recentFromEntry.set(null);
     // An older entry without `fleet_recent_sessions` falls back quietly to the navigator.
-    if (!/unknown command|not found|unsupported|no fixture/i.test(message)) {
+    if (isCommandUnavailable(error, "fleet_recent_sessions")) {
+      recentUnsupportedEntries.add(entryKey);
+    } else {
+      console.warn(`fleet_recent_sessions failed: ${message}`);
       recentError.set(message);
     }
   } finally {

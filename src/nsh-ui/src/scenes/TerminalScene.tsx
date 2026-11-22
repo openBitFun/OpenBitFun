@@ -15,6 +15,7 @@ import {
   closeTerminalTab,
   confirmingCloseTerminal,
   ensureTerminal,
+  getTerminalScrollback,
   renameTerminalTab,
   renamingTerminal,
   requestCloseTerminalTab,
@@ -370,9 +371,10 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
     const activeId = terminalId();
     if (!activeId) return;
     const active = terminalTabs().find(tab => tab.id === activeId);
-    if (active?.buffer) {
+    const buffered = getTerminalScrollback(activeId, active?.deviceId);
+    if (buffered) {
       el.reset();
-      el.write(active.buffer);
+      el.write(buffered);
     }
   };
 

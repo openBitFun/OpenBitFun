@@ -33,7 +33,7 @@ import {
 } from "nsh";
 import { inboxSheetOpen } from "../attentionStore";
 import { backgroundOutputOpen } from "../backgroundCommandsStore";
-import { entryDeviceId } from "../bridge";
+import { entryDeviceId, fleetActive } from "../bridge";
 import { sideQuestionOpen } from "../btwStore";
 // Installs the browser's session hooks (inspector, composer, HTML preview).
 import "../browserSession";
@@ -54,6 +54,7 @@ import {
   closeBrowserPage,
   closeHtmlPreview,
   ensureUserPage,
+  evictIdleBrowserPages,
   htmlPreview,
   htmlPreviewNotice,
   htmlPreviewOpensHere,
@@ -86,7 +87,7 @@ import {
   remoteFileBrowserOpen,
   sshConnectionModalOpen,
 } from "../sshRemoteStore";
-import { activeSessionDevice, activeSessionId, activeWorkspaceKey, drawerOpen } from "../state";
+import { activeSessionDevice, activeSessionId, activeWorkspaceKey, deviceContext, drawerOpen } from "../state";
 import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
 import { aboutOpen } from "../ui/AboutDialog";
 import { accountAuthModalOpen } from "../ui/AccountAuthModal";
@@ -791,11 +792,12 @@ function LiveView(props: { source: () => LiveViewSource; compact: boolean }) {
 }
 
 /** The device whose pages a live view shows, and the conversation that owns them. */
-function liveSource(): LiveViewSource {
-  return {
-    deviceId: activeSessionDevice() || activeWorkspaceKey()?.deviceId || null,
-    conversationId: activeSessionId(),
-  };
+function liveSource(compact: boolean): LiveViewSource {
+  const ctx = deviceContext();
+  const sessionDevice = activeSessionDevice();
+  const deviceId = (compact ? sessionDevice : ctx) || sessionDevice || activeWorkspaceKey()?.deviceId || ctx || null;
+  const conversationId = compact || !fleetActive() || !deviceId || deviceId === sessionDevice ? activeSessionId() : null;
+  return { deviceId, conversationId };
 }
 
 type BrowserMode = "checking" | "native" | "preview" | "live" | "unavailable";
@@ -803,22 +805,31 @@ type BrowserMode = "checking" | "native" | "preview" | "live" | "unavailable";
 export function BrowserScene(props: { compact?: boolean }) {
   startBrowserEvents();
   const compact = () => props.compact === true;
+  cleanup(() => {
+    evictIdleBrowserPages();
+  });
 
-  // Beside a session on another device, its pages are that device's: the
-  // inspector shows them live instead of this desktop's own browser.
-  const sessionElsewhere = () => {
-    if (!compact() || !activeSessionId()) return false;
-    const device = activeSessionDevice();
-    return Boolean(device) && device !== entryDeviceId();
+  // Beside a session on another device, or when full-screen Browser targets a
+  // remote fleet device, show that device's live view instead of this desktop's.
+  const targetElsewhere = () => {
+    const entry = entryDeviceId();
+    if (compact()) {
+      if (!activeSessionId()) return false;
+      const device = activeSessionDevice();
+      return Boolean(device) && Boolean(entry) && device !== entry;
+    }
+    const ctx = deviceContext();
+    return fleetActive() && Boolean(ctx) && Boolean(entry) && ctx !== entry;
   };
+  const source = () => liveSource(compact());
   const mode = computed((): BrowserMode => {
     if (htmlPreview() || htmlPreviewNotice()) return "preview";
     const availability = browserAvailability();
     if (availability === "checking") return "checking";
-    if (availability === "available") return sessionElsewhere() ? "live" : "native";
+    if (availability === "available") return targetElsewhere() ? "live" : "native";
     if (availability === "noWebView") return "unavailable";
     // A phone or a browser: the page of the device in context, live.
-    return liveSource().deviceId || activeSessionId() ? "live" : "unavailable";
+    return source().deviceId || activeSessionId() ? "live" : "unavailable";
   });
 
   return (
@@ -842,7 +853,7 @@ export function BrowserScene(props: { compact?: boolean }) {
         <PreviewBody compact={compact()} />
       </If>
       <If when={mode() === "live"}>
-        <LiveView source={liveSource} compact={compact()} />
+        <LiveView source={source} compact={compact()} />
       </If>
       <If when={mode() === "unavailable"}>
         <UnavailableState

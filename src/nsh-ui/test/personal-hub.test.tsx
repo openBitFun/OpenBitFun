@@ -668,10 +668,13 @@ test("Account › Activity insights take the day range and model the desktop off
   await app.press("activity-insights-model-fast");
   await app.press("activity-generate-insights");
   await app.waitFor("insights-show-html");
-  expect(recorded.find(c => c.action === "generate_insights")?.payload).toEqual({
+  const generatePayload = recorded.find(c => c.action === "generate_insights")?.payload as Record<string, unknown> | undefined;
+  expect(generatePayload).toMatchObject({
     days: 7,
     modelId: "fast",
   });
+  expect(typeof generatePayload?.generationId).toBe("string");
+  expect(String(generatePayload?.generationId ?? "").length).toBeGreaterThan(0);
   await app.press("insights-show-html");
   await app.waitUntil(() => recorded.some(c => c.action === "reveal_in_explorer"));
   expect(recorded.find(c => c.action === "reveal_in_explorer")?.payload).toEqual({
@@ -811,4 +814,50 @@ test("an older host without the workspace navigator says so instead of merging l
     "Update OpenBitFun on this device to list its workspaces; its version is too old to provide workspace navigation.",
   );
   expect(base.calls.some(call => call.action === "get_opened_workspaces")).toBe(false);
+});
+
+test("Account › Activity insights preserves partial_report metadata and persona saves pass expectedHash", async () => {
+  const base = createBackend();
+  const { recorded } = wrapBackend(base, (action, payload) => {
+    if (action === "get_latest_insights") return { ok: true, value: [], transport: "dev" };
+    if (action === "generate_insights") {
+      return {
+        ok: true,
+        value: {
+          days_covered: 7,
+          total_sessions: 5,
+          analyzed_sessions: 3,
+          failed_sections: 2,
+          partial_report: true,
+          at_a_glance: { whats_working: "Fast builds." },
+        },
+        transport: "dev",
+      };
+    }
+    if (action === "get_assistant_workspaces") {
+      return {
+        ok: true,
+        value: [
+          { id: "asst-hash", name: "Nova", rootPath: "/tmp/assistants/asst-hash", workspaceKind: "assistant", identity: { emoji: "🦉" } },
+        ],
+        transport: "dev",
+      };
+    }
+    if (action === "read_file_content") {
+      return { ok: true, value: "# Soul\nOriginal text", transport: "dev" };
+    }
+    if (action === "write_file_content") {
+      void payload;
+      return { ok: true, value: null, transport: "dev" };
+    }
+    return undefined;
+  });
+
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
+  await app.waitFor("Super Agent");
+  await openActivity(app);
+  await app.waitFor("activity-generate-insights");
+  await app.press("activity-generate-insights");
+  await app.waitFor("text:Partial report: 2 report sections failed to generate.");
+  expect(recorded.some(c => c.action === "generate_insights" && typeof (c.payload as Record<string, unknown>)?.generationId === "string")).toBe(true);
 });

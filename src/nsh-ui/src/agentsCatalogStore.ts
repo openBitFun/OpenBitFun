@@ -720,9 +720,14 @@ export async function saveBuilderBot(): Promise<void> {
           ...(workspaceId ? { workspaceId } : {}),
         });
       } else {
+        // Real Rust `create_subagent` (`subagent_api.rs`) derives the subagent
+        // ID from `name.to_lowercase()` (writing `<name.to_lowercase()>.md`),
+        // so pass that canonical ID to both `create_subagent` and the follow-up
+        // `update_subagent_config`.
+        const subagentId = trimmedName.toLowerCase();
         await invokeCommand<unknown>("create_subagent", {
           level: draft.level,
-          id: resolvedId,
+          id: subagentId,
           name: trimmedName,
           description: trimmedDesc,
           prompt: trimmedPrompt,
@@ -734,7 +739,7 @@ export async function saveBuilderBot(): Promise<void> {
         // model overrides are persisted via `update_subagent_config`.
         if (trimmedModel) {
           await invokeCommand<unknown>("update_subagent_config", {
-            subagentId: resolvedId,
+            subagentId,
             model: trimmedModel,
             ...(workspaceId ? { workspaceId } : {}),
           });
@@ -746,6 +751,7 @@ export async function saveBuilderBot(): Promise<void> {
           : tr("agents.store.createdSubagent", { name: trimmedName }),
       );
     } else if (draft.mode === "edit-custom") {
+      let noticeName = trimmedName;
       if (draft.kind === "mode") {
         await invokeCommand<unknown>("update_custom_agent", {
           agentId: draft.id,
@@ -758,9 +764,12 @@ export async function saveBuilderBot(): Promise<void> {
           ...(workspaceId ? { workspaceId } : {}),
         });
       } else {
+        // Real Rust `UpdateSubagentRequest` has no `name` field (a subagent's
+        // filename/ID is immutable); omit ignored `name` and keep its persisted name.
+        const existingSubagent = availableSubagents().find(item => item.id === draft.id);
+        noticeName = existingSubagent?.name || draft.id;
         await invokeCommand<unknown>("update_subagent", {
           subagentId: draft.id,
-          name: trimmedName,
           description: trimmedDesc,
           prompt: trimmedPrompt,
           tools: draft.tools,
@@ -778,7 +787,7 @@ export async function saveBuilderBot(): Promise<void> {
           initialEditModel = trimmedModel;
         }
       }
-      agentsNotice.set(tr("agents.store.updated", { name: trimmedName }));
+      agentsNotice.set(tr("agents.store.updated", { name: noticeName }));
     }
     builderOpen.set(false);
     await loadAgentsCatalog();

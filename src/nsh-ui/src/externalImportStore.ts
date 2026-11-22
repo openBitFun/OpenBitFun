@@ -15,6 +15,8 @@
 
 import { signal } from "nsh";
 import { invokeCommand } from "./bridge";
+import { currentDeviceScopeKey } from "./shared/deviceScope";
+import { isRemoteWorkspace } from "./shared/workspaceUtils";
 import { activeWorkspace } from "./state";
 import type { WorkspaceRecord } from "./api";
 
@@ -171,10 +173,6 @@ export function isCommandMissing(command: string, error: unknown): boolean {
   return /unknown command|not found|not registered|not supported on cli peer host|no fixture|no answer/i.test(raw);
 }
 
-function isRemoteWorkspace(workspace: WorkspaceRecord | null): boolean {
-  return (workspace?.workspaceKind ?? "").toLowerCase() === "remote";
-}
-
 /**
  * The workspace fields one request carries: none for the user scope, the id
  * otherwise.
@@ -185,7 +183,7 @@ export function workspaceFields(workspace: WorkspaceRecord | null): Record<strin
 }
 
 function scopeKey(): string {
-  return `local|${activeWorkspace()?.id ?? ""}`;
+  return `${currentDeviceScopeKey()}|${activeWorkspace()?.id ?? ""}`;
 }
 
 function mapCatalog(raw: unknown, discovery: ExternalDiscoveryState | null): ExternalImportSnapshot {

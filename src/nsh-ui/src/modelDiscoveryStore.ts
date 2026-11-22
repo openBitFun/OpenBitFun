@@ -14,7 +14,9 @@ import {
   type ModelDraft,
   type StoredModel,
 } from "./modelSettingsStore";
+import { isCommandUnavailable } from "./hostCommands";
 import { isMissingCommand } from "./settingsMutations";
+import { errorMessageOf } from "./shared/errorUtils";
 import { runStep } from "./state";
 
 export interface RemoteModelRouting {
@@ -771,6 +773,7 @@ export async function loadSubscriptions(force = false): Promise<void> {
 /** A subscription sign-in in progress, as `get_subscription_login_status` reports it. */
 export interface SubscriptionLoginState {
   provider: string;
+  accountId: string;
   sessionId: string;
   status: "starting" | "pending" | "authorized" | "failed" | "cancelled";
   method?: string;
@@ -783,6 +786,7 @@ export interface SubscriptionLoginState {
 }
 
 export const subscriptionLogin = signal<SubscriptionLoginState | null>(null);
+export const subscriptionSigningOut = signal<string | null>(null);
 let loginPoll: ReturnType<typeof setTimeout> | null = null;
 const LOGIN_POLL_MS = 1500;
 const LOGIN_DEADLINE_MS = 10 * 60_000;
@@ -801,12 +805,19 @@ function stopLoginPoll(): void {
  * another device is driven the sign-in runs there, so only the device-code method
  * (which needs no browser on that machine) is used; a provider without it says so.
  */
-export async function startSubscriptionSignIn(provider: string, remote: boolean, methods: string[] = []): Promise<void> {
+export async function startSubscriptionSignIn(
+  provider: string,
+  remote: boolean,
+  methods: string[] = [],
+  accountId: string = provider,
+): Promise<void> {
   stopLoginPoll();
+  const slotId = accountId || provider;
   const method = remote ? "device" : methods.includes("browser") || methods.length === 0 ? undefined : methods[0];
   if (remote && methods.length > 0 && !methods.includes("device")) {
     subscriptionLogin.set({
       provider,
+      accountId: slotId,
       sessionId: "",
       status: "failed",
       error: "This provider signs in through a browser on the machine being driven; sign in there.",
@@ -814,7 +825,7 @@ export async function startSubscriptionSignIn(provider: string, remote: boolean,
     return;
   }
   const sessionId = `nsh-login-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  subscriptionLogin.set({ provider, sessionId, status: "starting" });
+  subscriptionLogin.set({ provider, accountId: slotId, sessionId, status: "starting" });
   try {
     const started = await invokeCommand<{
       authorization_url?: string;
@@ -833,6 +844,7 @@ export async function startSubscriptionSignIn(provider: string, remote: boolean,
     }
     subscriptionLogin.set({
       provider,
+      accountId: slotId,
       sessionId,
       status: "pending",
       method: started?.method,
@@ -859,14 +871,17 @@ export async function startSubscriptionSignIn(provider: string, remote: boolean,
         }
         if (status === "failed" || status === "cancelled") {
           subscriptionLogin.set({ ...current, status, error: snapshot?.error ?? undefined });
+          void loadSubscriptions(true);
           return;
         }
       } catch (error) {
-        subscriptionLogin.set({ ...current, status: "failed", error: error instanceof Error ? error.message : String(error) });
+        subscriptionLogin.set({ ...current, status: "failed", error: errorMessageOf(error) });
+        void loadSubscriptions(true);
         return;
       }
       if (Date.now() > deadline) {
         subscriptionLogin.set({ ...current, status: "failed", error: "The sign-in timed out" });
+        void loadSubscriptions(true);
         return;
       }
       loginPoll = setTimeout(() => void poll(), LOGIN_POLL_MS);
@@ -875,10 +890,12 @@ export async function startSubscriptionSignIn(provider: string, remote: boolean,
   } catch (error) {
     subscriptionLogin.set({
       provider,
+      accountId: slotId,
       sessionId,
       status: "failed",
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessageOf(error),
     });
+    void loadSubscriptions(true);
   }
 }
 
@@ -890,6 +907,47 @@ export async function cancelSubscriptionSignIn(): Promise<void> {
     await invokeCommand("cancel_subscription_login", { provider: current.provider, sessionId: current.sessionId }).catch(
       () => null,
     );
+    void loadSubscriptions(true);
+  }
+}
+
+/**
+ * Signs out / forgets one subscription account slot. Prefers the per-slot
+ * `logout_subscription_account_instance` command and falls back to provider-wide
+ * `logout_subscription_account` on older hosts.
+ */
+export async function signOutSubscriptionAccount(provider: string, accountId?: string): Promise<void> {
+  const slotId = accountId || provider;
+  if (!provider || subscriptionSigningOut() === slotId) return;
+  subscriptionSigningOut.set(slotId);
+  try {
+    if (accountId) {
+      try {
+        await invokeCommand("logout_subscription_account_instance", { provider, accountId });
+      } catch (error) {
+        if (!isCommandUnavailable(error, "logout_subscription_account_instance")) throw error;
+        await invokeCommand("logout_subscription_account", { provider });
+      }
+    } else {
+      await invokeCommand("logout_subscription_account", { provider });
+    }
+    if (subscriptionLogin()?.accountId === slotId) {
+      stopLoginPoll();
+      subscriptionLogin.set(null);
+    }
+    subscriptionQuotas.update(current => {
+      if (!(slotId in current)) return current;
+      const next = { ...current };
+      delete next[slotId];
+      return next;
+    });
+    await loadSubscriptions(true);
+  } catch (error) {
+    modelSettingsNotice.set(errorMessageOf(error));
+  } finally {
+    if (subscriptionSigningOut() === slotId) {
+      subscriptionSigningOut.set(null);
+    }
   }
 }
 

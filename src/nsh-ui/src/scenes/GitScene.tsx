@@ -1,6 +1,7 @@
 import { ToolPaneHeader } from "../ui/toolPane";
 import { Canvas, cleanup, Clipboard, computed, effect, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
-import { ensureWorkspaceWatch, joinPath, openFileAt } from "../fileStore";
+import { ensureWorkspaceWatch, openFileAt } from "../fileStore";
+import { isRemoteWorkspace as isRemoteWorkspaceRecord, joinWorkspacePath } from "../shared/workspaceUtils";
 import { DiffView, Input } from "nsh/base";
 import { basename, formatCount, formatPlural, formatRelativeTime } from "../format";
 import { currentLocale, localizeHostError, tr } from "../i18n";
@@ -295,7 +296,7 @@ function fileLetterColor(tone: "danger" | "success" | "warning" | "muted"): stri
 }
 
 const isRemoteWorkspace = computed(
-  () => activeWorkspace()?.workspaceKind === "remote" || Boolean(activeWorkspace()?.connectionId),
+  () => isRemoteWorkspaceRecord(activeWorkspace()),
 );
 
 function diffBadgeFor(
@@ -734,11 +735,11 @@ function GitFileRow(props: GitFileRowProps) {
 
 /** Opens a changed file's working copy in the Files editor (the aux pane when compact). */
 function openWorkingCopyInFiles(path: string, compact: boolean): void {
-  const root = activeWorkspace()?.rootPath ?? "";
-  const fullPath =
-    path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || !root
-      ? path
-      : joinPath(root, path.replace(/^[\\/]+/, ""));
+  const ws = activeWorkspace();
+  const root = ws?.rootPath ?? "";
+  const remote = isRemoteWorkspaceRecord(ws);
+  const isAbs = path.startsWith("/") || (!remote && /^[A-Za-z]:[\\/]/.test(path));
+  const fullPath = isAbs || !root ? path : joinWorkspacePath(root, path, remote);
   if (compact) {
     openInAuxPane("files", fullPath);
     return;

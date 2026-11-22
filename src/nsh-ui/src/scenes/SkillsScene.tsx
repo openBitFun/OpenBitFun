@@ -1,6 +1,9 @@
-import { computed, effect, lifecycle, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
+import { computed, effect, lifecycle, openUrl, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
+import { revealPath } from "../fileStore";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
+import { dirnameOfPath, isRemoteWorkspace, resolveWorkspaceMarkdownLink } from "../shared/workspaceUtils";
+import { navigateScene } from "../state";
 import {
   addingFolderSkill,
   canDeleteInstalledSkill,
@@ -755,7 +758,28 @@ function SkillInspectModal() {
                         </Text>
                       }
                     >
-                      <MarkdownPreview markdown={inspectedSkillContent() ?? ""} links="open" compact={true} />
+                      <MarkdownPreview
+                        markdown={inspectedSkillContent() ?? ""}
+                        links="report"
+                        compact={true}
+                        onLinkPress={event => {
+                          const remote = isRemoteWorkspace(activeWorkspace());
+                          const skillPath = inspectedSkill()?.entryFile || inspectedSkill()?.path || "";
+                          const baseDir = skillPath
+                            ? skillPath.endsWith(".md")
+                              ? dirnameOfPath(skillPath, remote)
+                              : skillPath
+                            : activeWorkspace()?.rootPath || "";
+                          const resolved = resolveWorkspaceMarkdownLink(event.url, baseDir, remote);
+                          if (resolved.kind === "external") {
+                            void openUrl(resolved.target).catch(() => undefined);
+                          } else if (resolved.kind === "workspace") {
+                            closeSkillInspector();
+                            void revealPath(resolved.target);
+                            navigateScene("files");
+                          }
+                        }}
+                      />
                     </If>
                   </View>
                 </View>

@@ -6,8 +6,19 @@
 // authority on what a directory now contains.
 
 import { Clipboard, computed, signal } from "nsh";
-import { invokeCommand, listenEvent, windowShellId } from "./bridge";
+import { fleetActive, invokeCommand, listenEvent, windowShellId } from "./bridge";
 import { holdGitStatusLive } from "./gitStatusLive";
+import { currentDeviceScopeKey, isRemotePeerContext } from "./shared/deviceScope";
+import { errorMessageOf } from "./shared/errorUtils";
+import {
+  dirnameOfPath,
+  fileUrlToPath,
+  isPathAtOrUnder,
+  isRemoteWorkspace,
+  joinWorkspacePath,
+  pathSepFor,
+  resolveWorkspaceMarkdownLink,
+} from "./shared/workspaceUtils";
 import {
   createWorkspaceDirectory,
   createWorkspaceFile,
@@ -257,22 +268,20 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   makefile: "makefile",
 };
 
+function activeIsRemote(): boolean {
+  return isRemoteWorkspace(activeWorkspace());
+}
+
 export function pathSep(path: string): string {
-  const slash = path.lastIndexOf("/");
-  const backslash = path.lastIndexOf("\\");
-  return backslash > slash ? "\\" : "/";
+  return pathSepFor(path, activeIsRemote());
 }
 
 export function dirnameOf(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, "");
-  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  return index > 0 ? trimmed.slice(0, index) : trimmed.slice(0, 0);
+  return dirnameOfPath(path, activeIsRemote());
 }
 
 export function joinPath(parent: string, name: string): string {
-  if (!parent) return name;
-  const sep = pathSep(parent);
-  return parent.endsWith("/") || parent.endsWith("\\") ? `${parent}${name}` : `${parent}${sep}${name}`;
+  return joinWorkspacePath(parent, name, activeIsRemote());
 }
 
 function previewKindOf(path: string): PreviewKind {
@@ -484,7 +493,8 @@ export async function setExpanded(path: string, expanded: boolean): Promise<void
     if (!current.includes(path)) expandedDirs.set([...current, path]);
     if (!dirChildren()[path]) await loadDirectory(path);
   } else {
-    expandedDirs.set(current.filter(item => item !== path && !item.startsWith(`${path}/`)));
+    const remote = activeIsRemote();
+    expandedDirs.set(current.filter(item => !isPathAtOrUnder(item, path, remote)));
   }
 }
 
@@ -511,9 +521,14 @@ export async function openFileAt(path: string): Promise<void> {
   const kind = previewKindOf(path);
   const name = basename(path);
   if (kind === "image" || kind === "video") {
-    // Media travels as base64 inside the command result, so a file far past a
-    // preview's needs would be a slow round trip and a large string to hold.
-    const size = knownSizeOf(path);
+    // Media travels as base64 inside the command result, so always enforce the
+    // byte limit even when the file was opened outside a cached directory listing.
+    let size = knownSizeOf(path);
+    if (size === undefined) {
+      const meta = await readDiskVersion(workspaceId, path);
+      if (ticket !== openTicket) return;
+      size = meta?.size;
+    }
     if (size !== undefined && size > MEDIA_PREVIEW_LIMIT_BYTES) {
       openFile.set({
         path,
@@ -540,7 +555,7 @@ export async function openFileAt(path: string): Promise<void> {
         });
       } catch (error) {
         if (ticket !== openTicket) return;
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessageOf(error);
         openFile.set({ path, name, kind: "binary", language: "", content: "", note: message });
       }
     });
@@ -553,7 +568,12 @@ export async function openFileAt(path: string): Promise<void> {
       openFile.set({ path, name, kind, language: "", content: "" });
       return;
     }
-    const size = knownSizeOf(path);
+    let size = knownSizeOf(path);
+    if (size === undefined) {
+      const meta = await readDiskVersion(workspaceId, path);
+      if (ticket !== openTicket) return;
+      size = meta?.size;
+    }
     if (size !== undefined && size > MEDIA_PREVIEW_LIMIT_BYTES) {
       openFile.set({
         path,
@@ -746,6 +766,12 @@ export async function pasteFromClipboard(target?: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
   const root = activeWorkspaceRoot();
   if (!workspaceId || !root) return;
+  if (isRemotePeerContext() || activeIsRemote()) {
+    // Never forward controller-local clipboard filesystem paths to a remote peer
+    // or remote SSH/Docker workspace: the remote host would read its own disk.
+    fileNotice.set("Pasting local clipboard file paths is unsupported on remote workspaces or remote devices.");
+    return;
+  }
   const targetDirectory = directoryTargetOf(target ?? selectedPath(), root);
   await runStep(async () => {
     let paths: string[] = [];
@@ -753,7 +779,7 @@ export async function pasteFromClipboard(target?: string): Promise<void> {
       const urls = await Clipboard.readFiles();
       paths = urls.map(fileUrlToPath).filter(path => Boolean(path));
     } catch (error) {
-      fileNotice.set(error instanceof Error ? error.message : String(error));
+      fileNotice.set(errorMessageOf(error));
       return;
     }
     if (!paths.length) {
@@ -772,7 +798,7 @@ export async function pasteFromClipboard(target?: string): Promise<void> {
           : `Pasted ${copied} item${copied === 1 ? "" : "s"}`,
       );
     } catch (error) {
-      fileNotice.set(error instanceof Error ? error.message : String(error));
+      fileNotice.set(errorMessageOf(error));
     }
   });
 }
@@ -784,20 +810,9 @@ function directoryTargetOf(target: string | null, root: string): string {
   return parentOf(target) || root;
 }
 
-/** `file:///a/b%20c` → `/a/b c`; anything else is left as it came. */
-function fileUrlToPath(url: string): string {
-  if (!url.startsWith("file://")) return url;
-  const withoutScheme = url.slice("file://".length);
-  try {
-    return decodeURIComponent(withoutScheme);
-  } catch {
-    return withoutScheme;
-  }
-}
-
-/** `path` itself or anything below it. */
+/** `path` itself or anything below it, on a separator boundary. */
 function isAtOrUnder(candidate: string, path: string): boolean {
-  return candidate === path || candidate.startsWith(`${path}/`) || candidate.startsWith(`${path}\\`);
+  return isPathAtOrUnder(candidate, path, activeIsRemote());
 }
 
 function rebase(candidate: string, from: string, to: string): string {
@@ -973,19 +988,24 @@ export async function runFileSearch(): Promise<void> {
 export async function revealPath(path: string): Promise<void> {
   const root = activeWorkspaceRoot();
   if (!root) return;
+  const remote = activeIsRemote();
+  const resolvedLink = resolveWorkspaceMarkdownLink(path, root, remote);
+  const target = resolvedLink.kind === "workspace" ? resolvedLink.target : path;
+  if (!target) return;
   const expanded = new Set(expandedDirs());
   expanded.add(root);
-  let current = path;
+  let current = target;
   while (current.length > root.length) {
-    current = dirnameOf(current);
-    if (!current) break;
-    expanded.add(current);
+    const parent = dirnameOf(current);
+    if (!parent || parent === current) break;
+    expanded.add(parent);
+    current = parent;
   }
   expandedDirs.set([...expanded]);
   for (const directory of expanded) {
     if (!dirChildren()[directory]) await loadDirectory(directory);
   }
-  await openFileAt(path);
+  await openFileAt(target);
 }
 
 /** Starts live editing for text, code, or markdown files currently open in preview. */
@@ -1022,7 +1042,7 @@ export function setEditingContent(text: string): void {
  * `write_file_content` checks `expectedHash` against. `null` when this runtime
  * has no digest at all.
  */
-async function contentHash(text: string): Promise<string | null> {
+export async function contentHash(text: string): Promise<string | null> {
   try {
     if (typeof crypto?.createHash === "function") {
       return crypto.createHash("sha256").update(text).digest("hex");
@@ -1175,7 +1195,7 @@ let snapshotKey: string | null = null;
 
 function currentWorkspaceKey(): string | null {
   const id = activeWorkspaceId();
-  return id ? `local::${id}` : null;
+  return id ? `${currentDeviceScopeKey()}::${id}` : null;
 }
 
 function rememberWorkspaceKey(): void {
@@ -1195,6 +1215,7 @@ export const fileWatchState = signal<FileWatchState>({ kind: "idle" });
 
 interface WatchedRoot {
   key: string;
+  deviceId: string;
   workspaceId: string;
   root: string;
 }
@@ -1221,8 +1242,7 @@ interface FsEventRecord {
 }
 
 function isUnderRoot(path: string, root: string): boolean {
-  const clean = root.replace(/[\\/]+$/, "");
-  return path === clean || path.startsWith(`${clean}/`) || path.startsWith(`${clean}\\`);
+  return isPathAtOrUnder(path, root, activeIsRemote());
 }
 
 function handleFileSystemEvents(payload: unknown): void {
@@ -1317,8 +1337,12 @@ const EDITABLE_VIEW_KINDS = new Set<PreviewKind>(["code", "markdown", "text"]);
 function installWatchListeners(): void {
   if (watchListenersInstalled) return;
   watchListenersInstalled = true;
-  listenEvent<unknown>("file-system-changed", handleFileSystemEvents);
-  listenEvent<unknown>("file-watch-status-changed", payload => {
+  listenEvent<unknown>("file-system-changed", (payload, meta) => {
+    if (fleetActive() && meta.origin && meta.origin !== currentDeviceScopeKey()) return;
+    handleFileSystemEvents(payload);
+  });
+  listenEvent<unknown>("file-watch-status-changed", (payload, meta) => {
+    if (fleetActive() && meta.origin && meta.origin !== currentDeviceScopeKey()) return;
     const status = (payload ?? {}) as { healthy?: unknown; failure?: { detail?: unknown; hint?: unknown } | null };
     if (status.healthy === false) {
       fileWatchState.set({
@@ -1342,18 +1366,23 @@ export function ensureWorkspaceWatch(): void {
   installWatchListeners();
   const ws = activeWorkspace();
   if (!ws) return;
-  const key = `local::${ws.id}::${ws.rootPath}`;
+  const deviceKey = currentDeviceScopeKey();
+  const deviceId = fleetActive() && deviceKey !== "local" ? deviceKey : "";
+  const key = `${deviceKey}::${ws.id}::${ws.rootPath}`;
   if (watchedRoot?.key === key) return;
   const previous = watchedRoot;
-  watchedRoot = { key, workspaceId: ws.id, root: ws.rootPath };
-  if (previous && !previous.key.startsWith(`local::`)) {
-    // The previous root belonged to another device; its watcher is not ours to stop.
-  } else if (previous) {
-    void invokeCommand<unknown>("stop_file_watch", { workspaceId: previous.workspaceId, path: previous.root }).catch(
-      () => undefined,
-    );
+  watchedRoot = { key, deviceId, workspaceId: ws.id, root: ws.rootPath };
+  if (previous) {
+    // Route `stop_file_watch` explicitly to the device that owns the previous
+    // watched root so switching devices never tears down a watch on the new device.
+    const stopTarget = fleetActive() && previous.deviceId ? { target: previous.deviceId } : undefined;
+    void invokeCommand<unknown>(
+      "stop_file_watch",
+      { workspaceId: previous.workspaceId, path: previous.root },
+      stopTarget,
+    ).catch(() => undefined);
   }
-  if (ws.workspaceKind === "remote") {
+  if (isRemoteWorkspace(ws)) {
     fileWatchState.set({ kind: "unsupported" });
     return;
   }
@@ -1364,7 +1393,7 @@ export function ensureWorkspaceWatch(): void {
     })
     .catch(error => {
       if (watchedRoot?.key !== key) return;
-      fileWatchState.set({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
+      fileWatchState.set({ kind: "failed", message: errorMessageOf(error) });
     });
 }
 
@@ -1376,7 +1405,7 @@ export async function retryFileWatch(): Promise<void> {
     if (key && watchedRoot?.key === key) fileWatchState.set({ kind: "live" });
   } catch (error) {
     if (key && watchedRoot?.key === key) {
-      fileWatchState.set({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
+      fileWatchState.set({ kind: "failed", message: errorMessageOf(error) });
     }
   }
 }
@@ -1387,10 +1416,16 @@ export async function retryFileWatch(): Promise<void> {
  * without it keeps the status read when the workspace opens.
  */
 export function holdFilesStatusWatch(): () => void {
+  let lastAppliedRevision = -1;
+  let lastAppliedScope = "";
   return holdGitStatusLive(change => {
+    const scope = currentWorkspaceKey() ?? "";
     if (change.workspaceId !== activeWorkspaceId()) return;
-    const next = change.status ?? null;
-    if (JSON.stringify(next) !== JSON.stringify(gitStatus())) gitStatus.set(next);
+    if (change.deviceId && change.deviceId !== currentDeviceScopeKey()) return;
+    if (scope === lastAppliedScope && change.revision <= lastAppliedRevision) return;
+    lastAppliedScope = scope;
+    lastAppliedRevision = change.revision;
+    gitStatus.set(change.status ?? null);
   });
 }
 
