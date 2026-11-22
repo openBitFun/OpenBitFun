@@ -325,8 +325,7 @@ function isMacPackageInput(file) {
 }
 
 function isLinuxDesktopPackageInput(file) {
-  return file === 'scripts/ci/verify-linux-desktop-package.sh'
-    || file === 'scripts/ci/check-glibc-floor.sh'
+  return file === 'scripts/ci/check-glibc-floor.sh'
     || file.startsWith('scripts/linux/')
     || file.includes('/linux/')
     || /(?:appimage|linuxdeploy|\.deb\b|\.rpm\b)/i.test(file);
