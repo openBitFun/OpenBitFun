@@ -22,7 +22,11 @@ function viewOf(turn: unknown): TranscriptTurnView | null {
 /** A short summary of what a turn said (its user and answer text, not its reasoning). */
 export function turnToText(turn: unknown, limit = 400): string {
   const parts = turnParts(turn).filter(part => part.role !== "thinking");
-  const text = parts.map(part => part.text).join(" ").replace(/\s+/g, " ").trim();
+  const text = parts
+    .map(part => part.text.replace(/\uE200visualize\uE202[\s\S]*?\uE201/g, ""))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (text.length <= limit) return text;
   return `${text.slice(0, limit)}…`;
 }
@@ -137,7 +141,7 @@ export function turnItems(turn: unknown): TranscriptItem[] {
     if (item.kind === "thinking") {
       return {
         kind: "thinking",
-        key: `${view.turnId}|thinking|${item.text}`,
+        key: `${view.turnId}|thinking|${index}`,
         text: item.text,
         ...(item.reasoningKind ? { reasoningKind: item.reasoningKind } : {}),
       };

@@ -718,3 +718,232 @@ export function inferCodeLanguage(filePath?: string | null): string | undefined 
   const ext = base.slice(dot + 1);
   return EXT_LANGUAGE_MAP[ext];
 }
+
+// ── Inline figure directives (`visualize{...}`) ──────────────────────────
+
+const VISUALIZE_START = "\uE200visualize\uE202";
+const VISUALIZE_END = "\uE201";
+const VISUALIZE_DIRECTIVE_RE = /\uE200visualize\uE202([\s\S]*?)\uE201/g;
+const VISUALIZE_TRAILING_PARTIAL_RE = /\uE200(?:v(?:i(?:s(?:u(?:a(?:l(?:i(?:z(?:e(?:\uE202[^\uE201]*)?)?)?)?)?)?)?)?)?)?$/;
+
+/** A parsed inline visualization figure reference from assistant prose. */
+export interface InlineFigureDirective {
+  path: string;
+  slug: string;
+  title?: string;
+}
+
+function slugFromFigurePath(path: string): string {
+  const clean = path.split(/[?#]/)[0] ?? path;
+  const base = clean.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? clean;
+  return base.replace(/\.html?$/i, "") || "figure";
+}
+
+/**
+ * Strips Private-Use `visualize{...}` directives from assistant Markdown so
+ * raw PUA JSON never renders in `TextView`, returning the clean prose and any
+ * parsed figure descriptors. When `streaming` is true, also hides a trailing
+ * incomplete directive until its closing delimiter arrives.
+ */
+export function extractVisualizeDirectives(
+  markdown: string,
+  options?: { streaming?: boolean },
+): { text: string; figures: InlineFigureDirective[] } {
+  if (!markdown || !markdown.includes("\uE200")) {
+    return { text: markdown, figures: [] };
+  }
+  const figures: InlineFigureDirective[] = [];
+  const seen = new Set<string>();
+  let cleaned = markdown.replace(VISUALIZE_DIRECTIVE_RE, (_match, rawJson: string) => {
+    try {
+      const parsed: unknown = JSON.parse(rawJson.trim());
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        const path = typeof record.path === "string" ? record.path.trim() : "";
+        const title = typeof record.title === "string" && record.title.trim() ? record.title.trim() : undefined;
+        if (path && !seen.has(path)) {
+          seen.add(path);
+          figures.push({ path, slug: slugFromFigurePath(path), ...(title ? { title } : {}) });
+        }
+      }
+    } catch {
+      // Malformed payload is still stripped so raw Private-Use tokens never leak.
+    }
+    return "";
+  });
+  if (options?.streaming && cleaned.includes("\uE200")) {
+    cleaned = cleaned.replace(VISUALIZE_TRAILING_PARTIAL_RE, "");
+  }
+  if (cleaned !== markdown) {
+    cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  }
+  return { text: cleaned, figures };
+}
+
+/** Fast helper that removes `visualize{...}` markers from plain text / summaries. */
+export function stripVisualizeDirectives(text: string): string {
+  if (!text || (!text.includes(VISUALIZE_START) && !text.includes(VISUALIZE_END))) return text;
+  return extractVisualizeDirectives(text, { streaming: true }).text;
+}
+
+// ── Workspace-relative Markdown link resolution ─────────────────────────────
+
+export type ResolvedMarkdownLink =
+  | { kind: "external"; url: string }
+  | { kind: "workspace"; path: string; line?: number; endLine?: number }
+  | { kind: "ignore" };
+
+const COMPUTER_LINK_PREFIX = "computer://";
+const FILE_LINK_PREFIX = "file://";
+const WORKSPACE_FOLDER_PLACEHOLDER = "{{workspaceFolder}}";
+
+function normalizePosixSegments(input: string): string {
+  const isAbs = input.startsWith("/");
+  const parts = input.split("/");
+  const stack: string[] = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (stack.length > 0 && stack[stack.length - 1] !== "..") {
+        stack.pop();
+      } else if (!isAbs) {
+        stack.push("..");
+      }
+      continue;
+    }
+    stack.push(part);
+  }
+  return `${isAbs ? "/" : ""}${stack.join("/")}` || (isAbs ? "/" : "");
+}
+
+function normalizeWindowsSegments(input: string): string {
+  const normalized = input.replace(/\//g, "\\");
+  const driveMatch = /^([A-Za-z]:)(.*)$/.exec(normalized);
+  const drive = driveMatch ? driveMatch[1] : "";
+  const rest = driveMatch ? driveMatch[2] : normalized;
+  const isAbs = rest.startsWith("\\");
+  const parts = rest.split("\\");
+  const stack: string[] = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (stack.length > 0 && stack[stack.length - 1] !== "..") {
+        stack.pop();
+      } else if (!isAbs && !drive) {
+        stack.push("..");
+      }
+      continue;
+    }
+    stack.push(part);
+  }
+  return `${drive}${isAbs ? "\\" : ""}${stack.join("\\")}` || (drive ? `${drive}\\` : "");
+}
+
+function parseLineSuffix(
+  target: string,
+  hash: string,
+): { path: string; line?: number; endLine?: number } {
+  const cleanHash = hash.replace(/^#/, "");
+  const hashMatch = /^L(\d+)(?:-L?(\d+))?$/i.exec(cleanHash) ?? /^(\d+)(?:-(\d+))?$/.exec(cleanHash);
+  if (hashMatch) {
+    const start = Number.parseInt(hashMatch[1]!, 10);
+    const end = hashMatch[2] ? Number.parseInt(hashMatch[2], 10) : undefined;
+    return { path: target, line: start, ...(end !== undefined ? { endLine: end } : {}) };
+  }
+  const colonMatch = /:(\d+)(?::\d+)?$/.exec(target);
+  if (colonMatch && colonMatch.index > 1) {
+    const start = Number.parseInt(colonMatch[1]!, 10);
+    return { path: target.slice(0, colonMatch.index), line: start };
+  }
+  return { path: target };
+}
+
+/**
+ * Resolves a Markdown link target against the active workspace or document base
+ * directory. External `http(s):` and `mailto:` links stay external; `file://`,
+ * `computer://`, absolute paths, and relative workspace paths (`./foo.ts`,
+ * `docs/a.md#L10`, `src/main.rs:42`) resolve to workspace paths using POSIX
+ * semantics for remote workspaces and native separators for local Windows paths.
+ */
+export function resolveWorkspaceMarkdownLink(
+  rawUrl: string,
+  baseDirOrRoot = "",
+  isRemoteWorkspace = false,
+): ResolvedMarkdownLink {
+  const trimmed = rawUrl.trim();
+  if (!trimmed || /^[?#]/.test(trimmed) || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    return { kind: "ignore" };
+  }
+  if (/^(https?:|mailto:)/i.test(trimmed)) {
+    return { kind: "external", url: trimmed };
+  }
+  if (/^openbitfun:\/\//i.test(trimmed)) {
+    return { kind: "workspace", path: trimmed };
+  }
+  // Reject unknown URI schemes (e.g. `javascript:`, `data:`) while allowing
+  // Windows drive paths (`C:\...`), `file:`, and `computer://`.
+  const isFileScheme = /^file:/i.test(trimmed);
+  const isComputerScheme = trimmed.toLowerCase().startsWith(COMPUTER_LINK_PREFIX);
+  const isWindowsDrive = /^[A-Za-z]:[\\/]/.test(trimmed);
+  if (!isFileScheme && !isComputerScheme && !isWindowsDrive && /^[A-Za-z][A-Za-z0-9+.-]*:/.test(trimmed)) {
+    return { kind: "ignore" };
+  }
+
+  const hashIndex = trimmed.indexOf("#");
+  const hash = hashIndex >= 0 ? trimmed.slice(hashIndex) : "";
+  const withoutHash = hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
+  const queryIndex = withoutHash.indexOf("?");
+  let rawPath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+
+  if (rawPath.toLowerCase().startsWith(COMPUTER_LINK_PREFIX)) {
+    rawPath = rawPath.slice(COMPUTER_LINK_PREFIX.length);
+  } else if (rawPath.toLowerCase().startsWith(FILE_LINK_PREFIX)) {
+    rawPath = rawPath.slice(FILE_LINK_PREFIX.length);
+  } else if (/^file:/i.test(rawPath)) {
+    rawPath = rawPath.slice("file:".length);
+  }
+
+  if (rawPath.startsWith(WORKSPACE_FOLDER_PLACEHOLDER)) {
+    rawPath = rawPath.slice(WORKSPACE_FOLDER_PLACEHOLDER.length).replace(/^[/\\]+/, "");
+  }
+
+  if (/^\/{2,}[A-Za-z]:[\\/]/.test(rawPath)) {
+    rawPath = rawPath.replace(/^\/+/, "/");
+  }
+  if (/^\/[A-Za-z]:[\\/]/.test(rawPath)) {
+    rawPath = rawPath.slice(1);
+  }
+
+  try {
+    rawPath = decodeURIComponent(rawPath);
+  } catch {
+    // Keep undecodable sequences verbatim.
+  }
+
+  const { path: pathOnly, line, endLine } = parseLineSuffix(rawPath, hash);
+  if (!pathOnly) return { kind: "ignore" };
+
+  const useWindows = !isRemoteWorkspace && (/^[A-Za-z]:[\\/]/.test(baseDirOrRoot) || /^[A-Za-z]:[\\/]/.test(pathOnly));
+  const isAbsolute = useWindows
+    ? /^[A-Za-z]:[\\/]/.test(pathOnly)
+    : pathOnly.startsWith("/");
+
+  let resolved: string;
+  if (isAbsolute || !baseDirOrRoot.trim()) {
+    resolved = useWindows ? normalizeWindowsSegments(pathOnly) : normalizePosixSegments(pathOnly);
+  } else if (useWindows) {
+    const base = baseDirOrRoot.replace(/[\\/]+$/, "");
+    resolved = normalizeWindowsSegments(`${base}\\${pathOnly.replace(/\//g, "\\")}`);
+  } else {
+    const base = baseDirOrRoot.replace(/\/+$/, "");
+    resolved = normalizePosixSegments(`${base}/${pathOnly}`);
+  }
+
+  if (!resolved) return { kind: "ignore" };
+  return {
+    kind: "workspace",
+    path: resolved,
+    ...(line !== undefined ? { line } : {}),
+    ...(endLine !== undefined ? { endLine } : {}),
+  };
+}

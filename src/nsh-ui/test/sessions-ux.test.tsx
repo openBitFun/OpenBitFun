@@ -159,9 +159,7 @@ test("tauri transcript progressively discloses thinking, compact tool strips, ch
   await app.waitFor("Primary model · 1.2s");
 
   // Expanding thinking reveals the reasoning notes.
-  await app.press(
-    "label:thinking-turn-rich-1|thinking|Checking git status and cargo workspace before patching.",
-  );
+  await app.press("label:thinking-turn-rich-1|thinking|0");
   await app.waitFor("Checking git status and cargo workspace before patching.");
 
   // Expanding checklist displays visual progress and todo rows.
@@ -987,4 +985,68 @@ test("a live turn gives way when the host's view reports it settled, and re-read
   expect(viewReads.length).toBeGreaterThanOrEqual(3);
   // After the first full read every re-read names the last settled turn.
   expect(viewReads[viewReads.length - 1].cursor ?? "").toContain("tv1:0:");
+});
+
+test("/model switches models locally, bare /goal & /btw open dialogs, and visualize/Skill cards render cleanly", async () => {
+  const backend = createBackend();
+  withCustomTurns(backend, {
+    "session-1": [
+      {
+        id: "turn-vis",
+        turnIndex: 0,
+        status: "completed",
+        userMessage: { id: "u-vis", content: "Plot latency" },
+        modelRounds: [
+          {
+            toolItems: [
+              {
+                id: "tool-skill-1",
+                toolName: "Skill",
+                toolCall: { input: { command: "visualize" } },
+                toolResult: { result: "Loaded visualize skill", success: true },
+              },
+            ],
+            textItems: [
+              {
+                id: "txt-vis",
+                content:
+                  'Latency summary:\n\uE200visualize\uE202{"path":"openbitfun://current-session/artifacts/visualizations/v2/p99-latency.html","title":"P99 Latency"}\uE201',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await openSession(app, "NSH skeleton");
+  await app.waitFor("Latency summary:");
+
+  // Raw Private-Use visualize marker must never appear in transcript prose.
+  const allText = app.texts().join("\n");
+  expect(allText).not.toContain("\uE200visualize");
+  expect(allText).not.toContain("openbitfun://current-session/artifacts/visualizations/v2/p99-latency.html\uE201");
+  await app.waitFor("id:inline-figure-p99-latency");
+  expect(app.shows("id:inline-figure-p99-latency >> text:P99 Latency")).toBe(true);
+
+  // Skill({ command: "visualize" }) renders as Skills card, never shell "Ran".
+  expect(app.shows("text:Skills")).toBe(true);
+  expect(app.shows("text:visualize")).toBe(true);
+  expect(app.shows("text:Ran")).toBe(false);
+
+  // `/model` opens picker without sending literal text to the AI.
+  await app.type("composer", "/model");
+  await app.waitFor("slash-command-model");
+  await app.submit("composer");
+  expect(app.value("composer")).toBe("");
+  expect(backend.actions()).not.toContain("submit_user_message");
+
+  // Bare `/goal` and `/btw` do not fall through as literal prompts.
+  await app.type("composer", "/goal");
+  await app.submit("composer");
+  expect(app.value("composer")).toBe("");
+  await app.type("composer", "/btw");
+  await app.submit("composer");
+  expect(app.value("composer")).toBe("");
+  expect(backend.actions()).not.toContain("submit_user_message");
 });

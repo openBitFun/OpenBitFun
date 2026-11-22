@@ -10,6 +10,7 @@ import { cleanup, effect, Image, lifecycle, reduceMotion, signal, Text, untracke
 import { Menu } from "nsh/desktop";
 import {
   companionBusy,
+  companionEnabled,
   companionPets,
   deleteCompanionPet,
   loadPetSheet,
@@ -44,12 +45,31 @@ export interface PetSpriteProps {
   state: MarkState | null;
   /** The cell's height in points. */
   height: number;
+  /**
+   * Whether to fetch and decode the full spritesheet right now (default `true`).
+   * Unselected tiles in the character grid pass `false` so opening Settings › Pet
+   * does not decode all 14 sheets (~190 MB of RGBA bitmaps) at once.
+   */
+  load?: boolean;
+}
+
+/** Keeps only the requested spritesheet paths in `petSheets` so unused bitmaps can be freed. */
+function retainPetSheets(keepPaths: ReadonlySet<string>): void {
+  const current = petSheets();
+  const keys = Object.keys(current);
+  if (keys.every(path => keepPaths.has(path))) return;
+  const next: Record<string, string> = {};
+  for (const path of keys) {
+    if (keepPaths.has(path)) next[path] = current[path];
+  }
+  petSheets.set(next);
 }
 
 /** One cell of the pet's spritesheet, stepping through its row's frames. */
 export function PetSprite(props: PetSpriteProps) {
-  const sheet = () => petSheets()[props.pet.spritesheetPath] ?? "";
-  const failed = () => petSheetErrors()[props.pet.spritesheetPath] ?? "";
+  const shouldLoad = () => props.load !== false;
+  const sheet = () => (shouldLoad() ? (petSheets()[props.pet.spritesheetPath] ?? "") : "");
+  const failed = () => (shouldLoad() ? (petSheetErrors()[props.pet.spritesheetPath] ?? "") : "");
   const aspect = signal(DEFAULT_CELL_ASPECT);
   const frame = signal(0);
   const rows = () => petRows(props.pet.spriteVersionNumber);
@@ -57,6 +77,7 @@ export function PetSprite(props: PetSpriteProps) {
   const width = () => Math.round(props.height * aspect());
 
   effect(() => {
+    if (!shouldLoad()) return;
     const path = props.pet.spritesheetPath;
     untracked(() => void loadPetSheet(path));
   });
@@ -69,9 +90,9 @@ export function PetSprite(props: PetSpriteProps) {
       })
       .catch(() => undefined);
   });
-  // Animated rows only; freeze at frame 0 for still previews, reduced motion, or hidden windows.
+  // Animated rows only; freeze at frame 0 for still previews, idle rest state, reduced motion, or hidden windows.
   effect(() => {
-    if (props.state === null || reduceMotion() || lifecycle() === "background") {
+    if (props.state === null || props.state === "idle" || reduceMotion() || lifecycle() === "background") {
       frame.set(0);
       return;
     }
@@ -102,11 +123,19 @@ export function PetSprite(props: PetSpriteProps) {
           />
         )}
       </If>
-      <If when={!sheet() && !failed()}>
+      <If when={shouldLoad() && !sheet() && !failed()}>
         <SkeletonBlock width={width()} height={props.height} borderRadius={radii.sm} />
       </If>
-      <If when={!sheet() && failed()}>
-        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      <If when={!shouldLoad() || (!sheet() && failed())}>
+        <View
+          style={{
+            flex: 1,
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: radii.sm,
+            backgroundColor: palette().surfaceTertiary,
+          }}
+        >
           <Icon name="bot" size={20} color={palette().textMuted} />
         </View>
       </If>
@@ -170,11 +199,27 @@ export function PetWindowContent(props: PetWindowContentProps) {
 /** Settings › Pet: the characters to pick from, the chosen one ringed. */
 export function PetCharacterGrid() {
   const pendingDelete = signal<CompanionPet | null>(null);
+  const previewPath = signal<string | null>(null);
   const busy = () => companionBusy() !== null;
   const isSelected = (pet: CompanionPet) => {
     const current = selectedPet();
     return Boolean(current && (current.spritesheetPath === pet.spritesheetPath || (current.id === pet.id && current.source === pet.source)));
   };
+  // Keep at most the selected pet (and at most one hovered preview) decoded in memory.
+  effect(() => {
+    const keep = new Set<string>();
+    const chosen = selectedPet()?.spritesheetPath;
+    if (chosen) keep.add(chosen);
+    const hovered = previewPath();
+    if (hovered) keep.add(hovered);
+    untracked(() => retainPetSheets(keep));
+  });
+  cleanup(() => {
+    const keep = new Set<string>();
+    const chosen = selectedPet()?.spritesheetPath;
+    if (companionEnabled() !== false && chosen) keep.add(chosen);
+    retainPetSheets(keep);
+  });
   return (
     <View style={{ gap: space.sm }}>
       <If when={companionPets() === null}>
@@ -211,6 +256,12 @@ export function PetCharacterGrid() {
                   accessibilityState={{ selected: isSelected(pet()), disabled: busy() }}
                   disabled={busy()}
                   tooltip={compactLayout() ? undefined : <TooltipBubble text={pet().displayName} />}
+                  onMouseEnter={() => {
+                    if (!compactLayout()) previewPath.set(pet().spritesheetPath);
+                  }}
+                  onMouseLeave={() => {
+                    if (previewPath() === pet().spritesheetPath) previewPath.set(null);
+                  }}
                   onPress={() => {
                     if (busy()) return;
                     void selectCompanionPet(pet());
@@ -228,7 +279,12 @@ export function PetCharacterGrid() {
                     ...pressTransition(120),
                   }}
                 >
-                  <PetSprite pet={pet()} state={null} height={PET_PREVIEW_HEIGHT} />
+                  <PetSprite
+                    pet={pet()}
+                    state={null}
+                    height={PET_PREVIEW_HEIGHT}
+                    load={isSelected(pet()) || previewPath() === pet().spritesheetPath}
+                  />
                   <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.xs, alignSelf: "stretch", minWidth: 0 }}>
                     <If when={isSelected(pet())}>
                       <Icon name="check" size={12} color={palette().textSecondary} />

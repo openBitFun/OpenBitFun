@@ -12,7 +12,7 @@
 // the machine this window runs on, and says why otherwise.
 
 import { Clipboard, signal, Text, View, type JSX } from "nsh";
-import { archiveSession, deletePersistedSession, revealInExplorer, unarchiveSession } from "../api";
+import { revealInExplorer } from "../api";
 import { entryDeviceId, fleetActive, invokeCommand } from "../bridge";
 import { controllerPort } from "../controller/controllerPort";
 import { fleetDeviceById, refreshFleetNavigator } from "../fleetStore";
@@ -81,7 +81,11 @@ export async function setSessionArchived(target: SessionActionTarget, archived: 
     if (inOpenCatalogue(target)) {
       await archiveSessionRow(target.sessionId, archived);
     } else {
-      await (archived ? archiveSession : unarchiveSession)(target.sessionId, target.workspaceId);
+      await invokeCommand<unknown>(
+        archived ? "archive_session" : "unarchive_session",
+        { session_id: target.sessionId, workspace_id: target.workspaceId },
+        routeOptions(target),
+      );
       afterRemoteChange();
     }
     pushToast(
@@ -124,7 +128,11 @@ export async function deleteSessionTarget(target: SessionActionTarget): Promise<
     if (inOpenCatalogue(target)) {
       await deleteSessionRow(target.sessionId);
     } else {
-      await deletePersistedSession(target.sessionId, target.workspaceId);
+      await invokeCommand<unknown>(
+        "delete_persisted_session",
+        { session_id: target.sessionId, workspace_id: target.workspaceId },
+        routeOptions(target),
+      );
       afterRemoteChange();
     }
   } catch (error) {

@@ -318,6 +318,8 @@ function cardList(value: unknown): JobCard[] {
   return Array.isArray(value) ? (value.filter(card => card && typeof card === "object" && card.jobId) as JobCard[]) : [];
 }
 
+const MAX_CACHED_JOB_CARDS = 200;
+
 function mergeCards(cards: JobCard[]): void {
   if (cards.length === 0) return;
   jobCards.update(current => {
@@ -327,8 +329,27 @@ function mergeCards(cards: JobCard[]): void {
   });
 }
 
+function pruneStaleJobCards(): void {
+  const current = jobCards();
+  const keys = Object.keys(current);
+  if (keys.length <= MAX_CACHED_JOB_CARDS) return;
+  const keep = new Set<string>();
+  const workingNow = superagentStatus()?.workingNow;
+  for (const card of cardList(workingNow?.needsYou)) keep.add(card.jobId);
+  for (const card of cardList(workingNow?.working)) keep.add(card.jobId);
+  for (const card of conversationView()?.cards ?? []) keep.add(card.jobId);
+  const next: Record<string, JobCard> = {};
+  for (const id of keep) {
+    if (current[id]) next[id] = current[id];
+  }
+  jobCards.set(next);
+}
+
 /** Reads `superagent_status`: whether the composer can send, the suggestions, Working now. */
 let statusTicket = 0;
+let statusInFlight: Promise<void> | null = null;
+let statusAgain = false;
+let statusRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * A failed read is tried again a few times (2 s, 5 s, 10 s): the entry's
@@ -340,13 +361,15 @@ let statusRetries = 0;
 
 function retryStatusLater(ticket: number): void {
   if (statusRetries >= STATUS_RETRY_MS.length) return;
+  if (statusRetryTimer) clearTimeout(statusRetryTimer);
   const delay = STATUS_RETRY_MS[statusRetries++];
-  setTimeout(() => {
+  statusRetryTimer = setTimeout(() => {
+    statusRetryTimer = null;
     if (ticket === statusTicket) void refreshSuperagentStatus();
   }, delay);
 }
 
-export async function refreshSuperagentStatus(): Promise<void> {
+async function runSuperagentStatusRead(): Promise<void> {
   const ticket = ++statusTicket;
   if (!fleetActive() && accountStatus()?.loggedIn === false) {
     batch(() => {
@@ -394,6 +417,24 @@ export async function refreshSuperagentStatus(): Promise<void> {
   }
 }
 
+export async function refreshSuperagentStatus(): Promise<void> {
+  if (statusInFlight) {
+    statusAgain = true;
+    return statusInFlight;
+  }
+  statusInFlight = (async () => {
+    try {
+      do {
+        statusAgain = false;
+        await runSuperagentStatusRead();
+      } while (statusAgain);
+    } finally {
+      statusInFlight = null;
+    }
+  })();
+  return statusInFlight;
+}
+
 interface ConversationsAnswer {
   conversations?: ConversationSummary[];
   groups?: ConversationGroup[];
@@ -417,8 +458,11 @@ function historyRequest(): Record<string, unknown> {
 
 /** Reads the conversation history (the sidebar slot). */
 let conversationsRetries = 0;
+let conversationsInFlight: Promise<void> | null = null;
+let conversationsAgain = false;
+let conversationsRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
-export async function refreshConversations(): Promise<void> {
+async function runConversationsRead(): Promise<void> {
   try {
     const answer = await call<ConversationsAnswer>("superagent_list_conversations", historyRequest());
     conversationsRetries = 0;
@@ -435,9 +479,31 @@ export async function refreshConversations(): Promise<void> {
     });
     // Tried again by itself like the status read (a reconnecting link).
     if (!isAuthRequiredError(error) && conversationsRetries < STATUS_RETRY_MS.length) {
-      setTimeout(() => void refreshConversations(), STATUS_RETRY_MS[conversationsRetries++]);
+      if (conversationsRetryTimer) clearTimeout(conversationsRetryTimer);
+      conversationsRetryTimer = setTimeout(() => {
+        conversationsRetryTimer = null;
+        void refreshConversations();
+      }, STATUS_RETRY_MS[conversationsRetries++]);
     }
   }
+}
+
+export async function refreshConversations(): Promise<void> {
+  if (conversationsInFlight) {
+    conversationsAgain = true;
+    return conversationsInFlight;
+  }
+  conversationsInFlight = (async () => {
+    try {
+      do {
+        conversationsAgain = false;
+        await runConversationsRead();
+      } while (conversationsAgain);
+    } finally {
+      conversationsInFlight = null;
+    }
+  })();
+  return conversationsInFlight;
 }
 
 /** "Show more": the next page the backend offered, appended in its order. */
@@ -486,6 +552,7 @@ export async function refreshConversation(): Promise<void> {
       });
       mergeCards(cardList(view?.cards));
       turnStep.set(view?.conversation?.turn?.step ?? "");
+      clearPendingLiveReply();
       liveReply.set("");
       conversationError.set("");
       const pending = pendingSend();
@@ -505,6 +572,7 @@ export async function refreshConversation(): Promise<void> {
 
 /** Starts a new conversation (sidebar ✎, ⌘N, phone top bar). */
 export function newConversation(): void {
+  clearPendingLiveReply();
   batch(() => {
     activeConversationId.set(null);
     conversationView.set(null);
@@ -518,12 +586,17 @@ export function newConversation(): void {
     draftModelPick.set(undefined);
     modelPickError.set("");
   });
+  pruneStaleJobCards();
   void refreshSuperagentStatus();
 }
 
 /** Opens one conversation from the history. */
 export function openConversation(id: string): void {
-  if (activeConversationId() === id && conversationView()) return;
+  if (activeConversationId() === id && conversationView()?.conversation.id === id) {
+    void refreshConversation();
+    return;
+  }
+  clearPendingLiveReply();
   batch(() => {
     activeConversationId.set(id);
     conversationView.set(null);
@@ -533,6 +606,7 @@ export function openConversation(id: string): void {
     sendError.set("");
     citedJobId.set(null);
   });
+  pruneStaleJobCards();
   void refreshConversation();
 }
 
@@ -641,6 +715,32 @@ export async function chooseSuperagentModel(pick: SuperagentModelPick): Promise<
     modelPickError.set(errorMessageOf(error));
     return false;
   }
+}
+
+/**
+ * Retries the last failed turn in the open conversation by resending its user
+ * message; falls back to refreshing status/conversation when no user message
+ * exists or Super Agent is not ready.
+ */
+export async function retryLastTurn(): Promise<boolean> {
+  if (superagentPhase() !== "ready") {
+    await Promise.allSettled([refreshSuperagentStatus(), refreshConversation()]);
+    return false;
+  }
+  const openId = activeConversationId();
+  const pending = pendingSend();
+  if (pending && pending.conversationId === openId && pending.text.trim()) {
+    return sendToSuperagent(pending.text);
+  }
+  const messages = conversationView()?.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user" && message.text?.trim()) {
+      return sendToSuperagent(message.text);
+    }
+  }
+  await refreshConversation();
+  return false;
 }
 
 /** Stops the running turn; jobs it started keep running on their devices. */
@@ -766,6 +866,65 @@ interface CardChanged {
 }
 
 let conversationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let conversationsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Frame-coalesced buffer for `superagent://turn-delta` text chunks. */
+const LIVE_DELTA_MAX_LATENCY_MS = 24;
+const EVENT_REFRESH_DEBOUNCE_MS = 400;
+const EVENT_REFRESH_MAX_WAIT_MS = 1200;
+let statusRefreshFirstMs = 0;
+let conversationsRefreshFirstMs = 0;
+let pendingLiveText = "";
+let pendingLiveStep: string | null = null;
+let liveDeltaRafId: number | null = null;
+let liveDeltaTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelLiveDeltaSchedule(): void {
+  if (liveDeltaRafId !== null && typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(liveDeltaRafId);
+  }
+  liveDeltaRafId = null;
+  if (liveDeltaTimer !== null) {
+    clearTimeout(liveDeltaTimer);
+    liveDeltaTimer = null;
+  }
+}
+
+function flushPendingLiveReply(): void {
+  cancelLiveDeltaSchedule();
+  if (!pendingLiveText && !pendingLiveStep) return;
+  const text = pendingLiveText;
+  const step = pendingLiveStep;
+  pendingLiveText = "";
+  pendingLiveStep = null;
+  batch(() => {
+    if (text) liveReply.update(current => current + text);
+    if (step) turnStep.set(step);
+  });
+}
+
+function clearPendingLiveReply(): void {
+  cancelLiveDeltaSchedule();
+  pendingLiveText = "";
+  pendingLiveStep = null;
+}
+
+function enqueueLiveReplyDelta(text: string, step?: string | null): void {
+  pendingLiveText += text;
+  if (step) pendingLiveStep = step;
+  if (liveDeltaRafId !== null || liveDeltaTimer !== null) return;
+  if (typeof requestAnimationFrame === "function") {
+    liveDeltaRafId = requestAnimationFrame(() => {
+      liveDeltaRafId = null;
+      flushPendingLiveReply();
+    });
+  }
+  liveDeltaTimer = setTimeout(() => {
+    liveDeltaTimer = null;
+    flushPendingLiveReply();
+  }, LIVE_DELTA_MAX_LATENCY_MS);
+}
 
 function scheduleConversationRefresh(): void {
   if (conversationRefreshTimer) return;
@@ -775,24 +934,48 @@ function scheduleConversationRefresh(): void {
   }, 60);
 }
 
+function scheduleStatusRefresh(delayMs = EVENT_REFRESH_DEBOUNCE_MS): void {
+  const now = Date.now();
+  if (!statusRefreshFirstMs) statusRefreshFirstMs = now;
+  const remaining = Math.max(0, EVENT_REFRESH_MAX_WAIT_MS - (now - statusRefreshFirstMs));
+  const wait = Math.min(delayMs, remaining);
+  if (statusRefreshTimer) clearTimeout(statusRefreshTimer);
+  statusRefreshTimer = setTimeout(() => {
+    statusRefreshTimer = null;
+    statusRefreshFirstMs = 0;
+    void refreshSuperagentStatus();
+  }, wait);
+}
+
+function scheduleConversationsRefresh(delayMs = EVENT_REFRESH_DEBOUNCE_MS): void {
+  const now = Date.now();
+  if (!conversationsRefreshFirstMs) conversationsRefreshFirstMs = now;
+  const remaining = Math.max(0, EVENT_REFRESH_MAX_WAIT_MS - (now - conversationsRefreshFirstMs));
+  const wait = Math.min(delayMs, remaining);
+  if (conversationsRefreshTimer) clearTimeout(conversationsRefreshTimer);
+  conversationsRefreshTimer = setTimeout(() => {
+    conversationsRefreshTimer = null;
+    conversationsRefreshFirstMs = 0;
+    void refreshConversations();
+  }, wait);
+}
+
 function onTurnDelta(payload: TurnDelta): void {
   if (!payload) return;
   const open = activeConversationId();
   if (payload.conversationId && payload.conversationId === open) {
     if (typeof payload.text === "string" && payload.text) {
-      batch(() => {
-        liveReply.update(current => current + payload.text);
-        if (payload.step) turnStep.set(payload.step);
-      });
+      enqueueLiveReplyDelta(payload.text, payload.step);
     } else {
+      flushPendingLiveReply();
       if (payload.step) turnStep.set(payload.step);
       scheduleConversationRefresh();
     }
   }
   if (typeof payload.text !== "string" || !payload.text) {
-    // A step change moves the history row's mark.
-    void refreshConversations();
-    void refreshSuperagentStatus();
+    // A step change moves the history row's mark; coalesce bursts instead of refetching every step.
+    scheduleConversationsRefresh();
+    scheduleStatusRefresh();
   }
 }
 
@@ -803,13 +986,13 @@ function onCardChanged(payload: CardChanged): void {
       conversationGroups.set([]);
     });
     newConversation();
-    void refreshConversations();
+    scheduleConversationsRefresh(60);
     return;
   }
   const card = payload?.card;
   if (!card?.jobId) return;
   mergeCards([card]);
-  void refreshSuperagentStatus();
+  scheduleStatusRefresh();
 }
 
 let started = false;
@@ -839,8 +1022,33 @@ export function startSuperagentStore(): void {
 
 /** Test hook: forgets everything the store holds. */
 export function resetSuperagentStoreForTests(): void {
+  clearPendingLiveReply();
+  if (statusRetryTimer) {
+    clearTimeout(statusRetryTimer);
+    statusRetryTimer = null;
+  }
+  if (conversationsRetryTimer) {
+    clearTimeout(conversationsRetryTimer);
+    conversationsRetryTimer = null;
+  }
+  if (conversationRefreshTimer) {
+    clearTimeout(conversationRefreshTimer);
+    conversationRefreshTimer = null;
+  }
+  if (statusRefreshTimer) {
+    clearTimeout(statusRefreshTimer);
+    statusRefreshTimer = null;
+  }
+  statusRefreshFirstMs = 0;
+  if (conversationsRefreshTimer) {
+    clearTimeout(conversationsRefreshTimer);
+    conversationsRefreshTimer = null;
+  }
+  conversationsRefreshFirstMs = 0;
   statusRetries = 0;
   conversationsRetries = 0;
+  statusAgain = false;
+  conversationsAgain = false;
   batch(() => {
     superagentPhase.set("loading");
     superagentUnavailable.set(null);

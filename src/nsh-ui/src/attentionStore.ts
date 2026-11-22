@@ -20,7 +20,8 @@
 import { computed, effect, signal, untracked } from "nsh";
 import { errorMessageOf } from "./backendConnection";
 import { connectionState, fleetActive, invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
-import { fleetDeviceById, fleetPromptList, fleetPrompts, fleetTotals } from "./fleetStore";
+import { fleetDeviceById, fleetPromptList, fleetPrompts, fleetTotals, refreshFleetPrompts } from "./fleetStore";
+import { isCommandUnavailable } from "./hostCommands";
 import {
   FLEET_ENTRY_LOST,
   fleetErrorKind,
@@ -147,14 +148,7 @@ let inFlight: Promise<void> | null = null;
 let again = false;
 
 function isUnknownCommand(error: unknown): boolean {
-  const message = errorMessageOf(error).toLowerCase();
-  return (
-    message.includes("unknown command") ||
-    message.includes("unknown_command") ||
-    message.includes("not found") ||
-    message.includes("no fixture") ||
-    message.includes("unsupported")
-  );
+  return isCommandUnavailable(errorMessageOf(error), "fleet_attention");
 }
 
 async function readAttention(): Promise<void> {
@@ -241,10 +235,13 @@ export function startAttentionStore(): void {
       }
     });
   });
-  // Answers held while offline go out on reconnect.
+  // Answers held while offline go out on reconnect after refreshing prompt revisions.
   effect(() => {
     if (connectionState() !== "connected") return;
-    untracked(() => void flushHeldAnswers());
+    untracked(() => {
+      if (held.size === 0) return;
+      void refreshAndFlushHeldAnswers();
+    });
   });
 }
 
@@ -406,12 +403,32 @@ export function resetPromptStatus(prompt: Pick<FleetPrompt, "deviceId" | "prompt
   setStatus(promptKey(prompt), null);
 }
 
+function findLivePrompt(key: string): FleetPrompt | undefined {
+  const fromTray = fleetPromptList().find(item => promptKey(item) === key);
+  if (fromTray) return fromTray;
+  for (const group of attentionView()?.groups ?? []) {
+    for (const item of group.items) {
+      if (item.prompt && promptKey(item.prompt) === key) return item.prompt;
+    }
+  }
+  return undefined;
+}
+
+async function refreshAndFlushHeldAnswers(): Promise<void> {
+  if (held.size === 0) return;
+  if (fleetActive()) {
+    await Promise.allSettled([refreshAttention(), refreshFleetPrompts()]);
+  }
+  if (connectionState() !== "connected") return;
+  await flushHeldAnswers();
+}
+
 async function flushHeldAnswers(): Promise<void> {
   if (held.size === 0) return;
   const entries = [...held.entries()];
   held.clear();
   for (const [key, { prompt, answer }] of entries) {
-    const live = fleetActive() ? fleetPromptList().find(item => promptKey(item) === key) : prompt;
+    const live = fleetActive() ? findLivePrompt(key) : prompt;
     if (!live) {
       // Gone while offline: someone else answered it.
       setStatus(key, { phase: "answered", answeredLabel: answeredLabelOf(prompt) });

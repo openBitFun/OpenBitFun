@@ -14,7 +14,17 @@ import {
 import { entryDeviceId, fleetActive, invokeCommand, listenEvent } from "./bridge";
 import { FLEET_INDEX_CHANGED_EVENT } from "./fleetTypes";
 import { loadModels as loadStoredModels, storedModels, type StoredModel } from "./modelSettingsStore";
-import { activeSessionId, activeWorkspaceId, deviceOfSession, onWorkspaceChanged, runStep, sessions } from "./state";
+import {
+  activeSessionDevice,
+  activeSessionId,
+  activeSessionKey,
+  activeWorkspaceId,
+  deviceOfSession,
+  onWorkspaceChanged,
+  runStep,
+  sessionKey,
+  sessions,
+} from "./state";
 
 // ── The account-wide catalog (`fleet_models`) ─────────────────────────────────
 // Every device's models, grouped by device, as the entry projects them: the
@@ -123,7 +133,7 @@ export const models = signal<ModelOption[]>([]);
 export const defaultModels = signal<Record<string, string | null | undefined>>({});
 /** The workspace's default when the session has not been bound to one yet. */
 export const defaultModelId = signal<string | null>(null);
-/** Session id → the model the user picked in this surface. */
+/** `sessionKey` → the model the user picked in this surface. */
 export const sessionModels = signal<Record<string, string>>({});
 export const modelPickerOpen = signal(false);
 
@@ -173,14 +183,17 @@ export function resolveModelRef(raw: string | null | undefined): string | null {
 
 export const activeModelId = computed<string | null>(() => {
   const sessionId = activeSessionId();
-  if (!sessionId) return resolveModelRef(defaultModelId());
-  const raw = sessionModels()[sessionId] ?? boundModelOf(sessionId) ?? defaultModelId();
+  const key = activeSessionKey();
+  if (!sessionId || !key) return resolveModelRef(defaultModelId());
+  const raw = sessionModels()[key] ?? boundModelOf(sessionId, activeSessionDevice()) ?? defaultModelId();
   return resolveModelRef(raw);
 });
 
 /** The model the host already has this session on, from its own record. */
-function boundModelOf(sessionId: string): string | undefined {
-  const name = sessions().find(row => row.sessionId === sessionId)?.modelName;
+function boundModelOf(sessionId: string, deviceId?: string): string | undefined {
+  const name = sessions().find(
+    row => row.sessionId === sessionId && (!fleetActive() || !row.deviceId || !deviceId || row.deviceId === deviceId),
+  )?.modelName;
   return name && name.trim() ? name.trim() : undefined;
 }
 
@@ -283,8 +296,9 @@ function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): Mod
 /** Binds the selected session to a model, the way the composer's picker does. */
 export async function chooseModel(modelId: string): Promise<void> {
   const sessionId = activeSessionId();
+  const key = activeSessionKey();
   modelPickerOpen.set(false);
-  if (!sessionId) return;
+  if (!sessionId || !key) return;
   const resolved = findOption(modelId)?.id ?? modelId;
   const workspaceId = activeWorkspaceId();
   await runStep(async () => {
@@ -297,8 +311,8 @@ export async function chooseModel(modelId: string): Promise<void> {
       ...(workspaceId ? { workspaceId } : {}),
       includeInternal: false,
     });
-    sessionModels.update(current => ({ ...current, [sessionId]: resolved }));
-    if (!reasoningOfferedFor(resolved)) applyReasoningToSession(sessionId, null);
+    sessionModels.update(current => ({ ...current, [key]: resolved }));
+    if (!reasoningOfferedFor(resolved)) applyReasoningToSession(key, null);
   });
 }
 
@@ -308,14 +322,14 @@ export interface ReasoningChoice {
   label: string;
 }
 
-/** Session id → the reasoning setting the host reported or this surface wrote. */
+/** `sessionKey` → the reasoning setting the host reported or this surface wrote. */
 export const sessionReasoning = signal<Record<string, string | null>>({});
 /** Model id → the settings that model offers; `null` before the host answered. */
 export const reasoningByModel = signal<Record<string, ReasoningChoice[] | null>>({});
 export const reasoningPickerOpen = signal(false);
 
 /**
- * Session id → the model whose reasoning was already read. The composer's effect
+ * `sessionKey` → the model whose reasoning was already read. The composer's effect
  * recomputes the active model whenever the session catalog moves, and a host round
  * trip per pass would be paid for nothing.
  */
@@ -327,9 +341,9 @@ const reasoningReadFor: Record<string, string> = {};
  * value, which is also how the host reports a session nobody has set.
  */
 export const activeReasoningId = computed<string | null>(() => {
-  const sessionId = activeSessionId();
-  if (!sessionId) return null;
-  return sessionReasoning()[sessionId] ?? null;
+  const key = activeSessionKey();
+  if (!key) return null;
+  return sessionReasoning()[key] ?? null;
 });
 
 export const activeReasoningChoices = computed<ReasoningChoice[]>(() => {
@@ -354,8 +368,8 @@ function reasoningOfferedFor(modelId: string): boolean {
   return id !== null && choices.some(choice => choice.id === id);
 }
 
-function applyReasoningToSession(sessionId: string, preset: string | null): void {
-  sessionReasoning.update(current => ({ ...current, [sessionId]: preset }));
+function applyReasoningToSession(key: string, preset: string | null): void {
+  sessionReasoning.update(current => ({ ...current, [key]: preset }));
 }
 
 /**
@@ -365,12 +379,13 @@ function applyReasoningToSession(sessionId: string, preset: string | null): void
  */
 export async function ensureReasoningLoaded(): Promise<void> {
   const sessionId = activeSessionId();
+  const key = activeSessionKey() ?? (sessionId ? sessionKey(sessionId) : null);
   const modelId = activeModelId();
-  if (!sessionId || !modelId) return;
+  if (!sessionId || !key || !modelId) return;
   // The effect that asks for this re-runs whenever the model binding is recomputed,
   // so a session already read is not read again on every pass.
-  if (reasoningReadFor[sessionId] === modelId) return;
-  reasoningReadFor[sessionId] = modelId;
+  if (reasoningReadFor[key] === modelId) return;
+  reasoningReadFor[key] = modelId;
   const workspaceId = activeWorkspaceId();
   const alreadyKnown = reasoningByModel()[modelId];
   await runStep(
@@ -387,7 +402,7 @@ export async function ensureReasoningLoaded(): Promise<void> {
       // A host older than the field omits it; that is not a session set to the
       // default, so nothing is written for it.
       if (!target || target.reasoningPreset === undefined) return;
-      applyReasoningToSession(sessionId, target.reasoningPreset ?? null);
+      applyReasoningToSession(key, target.reasoningPreset ?? null);
     },
     { trackBusy: false, clearError: false },
   );
@@ -396,15 +411,26 @@ export async function ensureReasoningLoaded(): Promise<void> {
 /** The presets a model's provider compiles its reasoning into (fallback when catalog omitted `reasoning`). */
 async function reasoningChoicesFor(modelId: string): Promise<ReasoningChoice[]> {
   const entry = await storedModelEntry(modelId);
-  if (!entry) return [];
-  const block = entry.reasoning;
+  if (entry) {
+    const block = entry.reasoning;
+    const projection = await projectAiModelReasoningCatalog({
+      provider: entry.provider,
+      modelName: entry.model_name,
+      baseUrl: entry.base_url ?? "",
+      ...(typeof entry.context_window === "number" ? { contextWindow: entry.context_window } : {}),
+      ...(typeof entry.max_tokens === "number" ? { maxTokens: entry.max_tokens } : {}),
+      reasoning: block && typeof block === "object" ? (block as Record<string, unknown>) : {},
+    });
+    return projectionToChoices(projection) ?? [];
+  }
+  const fleetMatch = fleetChoiceOf(modelId);
+  if (!fleetMatch) return [];
   const projection = await projectAiModelReasoningCatalog({
-    provider: entry.provider,
-    modelName: entry.model_name,
-    baseUrl: entry.base_url ?? "",
-    ...(typeof entry.context_window === "number" ? { contextWindow: entry.context_window } : {}),
-    ...(typeof entry.max_tokens === "number" ? { maxTokens: entry.max_tokens } : {}),
-    reasoning: block && typeof block === "object" ? (block as Record<string, unknown>) : {},
+    provider: fleetMatch.choice.provider,
+    modelName: fleetMatch.choice.modelName || fleetMatch.choice.modelId,
+    baseUrl: "",
+    ...(typeof fleetMatch.choice.contextWindow === "number" ? { contextWindow: fleetMatch.choice.contextWindow } : {}),
+    reasoning: {},
   });
   return projectionToChoices(projection) ?? [];
 }
@@ -439,9 +465,10 @@ async function storedModelEntry(modelId: string): Promise<StoredModel | null> {
 /** Sets the reasoning the next turn runs at, alongside the model it is bound to. */
 export async function chooseReasoning(presetId: string | null): Promise<void> {
   const sessionId = activeSessionId();
+  const key = activeSessionKey();
   const modelId = activeModelId();
   reasoningPickerOpen.set(false);
-  if (!sessionId || !modelId) return;
+  if (!sessionId || !key || !modelId) return;
   const workspaceId = activeWorkspaceId();
   await runStep(async () => {
     await updateSessionModel({
@@ -451,7 +478,7 @@ export async function chooseReasoning(presetId: string | null): Promise<void> {
       ...(workspaceId ? { workspaceId } : {}),
       includeInternal: false,
     });
-    applyReasoningToSession(sessionId, presetId);
+    applyReasoningToSession(key, presetId);
   });
 }
 
@@ -467,6 +494,7 @@ onWorkspaceChanged(() => {
   reasoningPickerOpen.set(false);
   sessionReasoning.set({});
   reasoningByModel.set({});
-  for (const sessionId of Object.keys(reasoningReadFor)) delete reasoningReadFor[sessionId];
+  for (const key of Object.keys(reasoningReadFor)) delete reasoningReadFor[key];
   void loadModels().catch(() => undefined);
+  void refreshFleetModels();
 });

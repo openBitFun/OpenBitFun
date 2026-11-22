@@ -350,3 +350,30 @@ test("the copy follows the locale", async () => {
   expect(app.shows("text:正在运行")).toBe(true);
   expect(app.shows("text:今天")).toBe(true);
 });
+
+test("bursts of card-changed and step turn-delta events coalesce status and history refetches", async () => {
+  const { app, backend } = await openRelease();
+  await app.waitFor("id:job-job-test-linux");
+  const statusBefore = backend.callsOf("superagent_status").length;
+  const historyBefore = backend.callsOf("superagent_list_conversations").length;
+
+  for (let i = 0; i < 6; i += 1) {
+    const card = backend.setCard("job-test-linux", { summaryLine: `cargo test ${813 + i}/1400`, updatedMs: Date.now() });
+    await app.host.send("openbitfun.event", {
+      event: "superagent://card-changed",
+      payload: { conversationId: "conv-release", card },
+    });
+  }
+  await app.waitFor("id:job-job-test-linux >> text:cargo test 818/1400");
+  await new Promise(resolve => setTimeout(resolve, 450));
+  expect(backend.callsOf("superagent_status").length - statusBefore).toBeLessThanOrEqual(2);
+
+  for (let i = 0; i < 6; i += 1) {
+    await app.host.send("openbitfun.event", {
+      event: "superagent://turn-delta",
+      payload: { conversationId: "conv-release", turnId: "turn-3", step: "tools" },
+    });
+  }
+  await new Promise(resolve => setTimeout(resolve, 450));
+  expect(backend.callsOf("superagent_list_conversations").length - historyBefore).toBeLessThanOrEqual(2);
+});

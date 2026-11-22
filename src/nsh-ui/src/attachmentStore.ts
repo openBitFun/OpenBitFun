@@ -1,6 +1,46 @@
 import { Buffer } from "buffer";
+import { entryDeviceId, fleetActive } from "./bridge";
+import { controllerPort } from "./controller/controllerPort";
+import { fleetDeviceById } from "./fleetStore";
 import { tr } from "./i18n";
+import { activeSessionDevice, activeWorkspace, deviceContext } from "./state";
 import { Clipboard, Picker, signal } from "nsh";
+
+/**
+ * Whether the active session runs on this machine with a local workspace, so
+ * controller-side `imagePath` files can be read directly by the backend.
+ * Remote peers, remote SSH/Docker/WSL workspaces, and browser/phone controllers
+ * MUST send image bytes (`dataUrl`) and never controller-local paths.
+ */
+export function isLocalAttachmentPathAllowed(): boolean {
+  if (controllerPort()) return false;
+  if (fleetActive()) {
+    const targetDevice = activeSessionDevice() || deviceContext();
+    if (
+      targetDevice &&
+      targetDevice !== entryDeviceId() &&
+      fleetDeviceById(targetDevice)?.isClientDevice !== true
+    ) {
+      return false;
+    }
+  }
+  const ws = activeWorkspace() as
+    | ({ workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined);
+  if (ws) {
+    const kind = (ws.workspaceKind ?? "").toLowerCase();
+    if (
+      kind === "remote" ||
+      kind === "remote_ssh" ||
+      kind === "docker" ||
+      kind === "wsl" ||
+      Boolean(ws.sshHost) ||
+      Boolean(ws.remoteConnectionId)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /**
  * An image the composer carries into the next turn. The React surface sends the
@@ -45,7 +85,7 @@ export async function attachImageFromClipboard(): Promise<void> {
   }
 
   const { width, height } = image.size;
-  if (image.url.startsWith("file://")) {
+  if (image.url.startsWith("file://") && isLocalAttachmentPathAllowed()) {
     addAttachment({
       id: `attachment-${++nextId}`,
       name: nameOfPath(image.url),
@@ -60,11 +100,16 @@ export async function attachImageFromClipboard(): Promise<void> {
 
   try {
     const response = await fetch(image.url);
+    if (!response.ok) {
+      throw new Error(tr("error.unsupported"));
+    }
     const bytes = new Uint8Array(await response.arrayBuffer());
-    const contentType = response.headers.get("content-type") ?? "image/png";
+    const contentType =
+      response.headers.get("content-type") ??
+      (image.url.startsWith("file://") ? mimeOfPath(image.url) : "image/png");
     addAttachment({
       id: `attachment-${++nextId}`,
-      name: `clipboard-${nextId}.${extensionOf(contentType)}`,
+      name: image.url.startsWith("file://") ? nameOfPath(image.url) : `clipboard-${nextId}.${extensionOf(contentType)}`,
       mimeType: contentType,
       fileSize: bytes.byteLength,
       width,
@@ -72,7 +117,13 @@ export async function attachImageFromClipboard(): Promise<void> {
       dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}`,
     });
   } catch (error) {
-    attachmentNotice.set(error instanceof Error ? error.message : String(error));
+    attachmentNotice.set(
+      image.url.startsWith("file://")
+        ? tr("error.unsupported")
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    );
   }
 }
 
@@ -132,21 +183,30 @@ export function clearAttachments(): void {
 
 /** The request field `start_dialog_turn` takes, empty when nothing is attached. */
 export function attachmentContexts() {
-  return imageAttachments().map(entry => ({
-    id: entry.id,
-    mime_type: entry.mimeType,
-    image_name: entry.name,
-    file_size: entry.fileSize,
-    source: "clipboard" as const,
-    ...(entry.imagePath ? { image_path: entry.imagePath } : {}),
-    ...(entry.dataUrl ? { data_url: entry.dataUrl } : {}),
-    ...(entry.width ? { width: entry.width } : {}),
-    ...(entry.height ? { height: entry.height } : {}),
-  }));
+  const allowLocalPath = isLocalAttachmentPathAllowed();
+  return imageAttachments()
+    .filter(entry => Boolean(entry.dataUrl) || (allowLocalPath && Boolean(entry.imagePath)))
+    .map(entry => ({
+      id: entry.id,
+      mime_type: entry.mimeType,
+      image_name: entry.name,
+      file_size: entry.fileSize,
+      source: "clipboard" as const,
+      ...(allowLocalPath && entry.imagePath ? { image_path: entry.imagePath } : {}),
+      ...(entry.dataUrl ? { data_url: entry.dataUrl } : {}),
+      ...(entry.width ? { width: entry.width } : {}),
+      ...(entry.height ? { height: entry.height } : {}),
+    }));
 }
 
-function pathOfFileUrl(url: string): string {
-  const withoutScheme = url.slice("file://".length);
+export function pathOfFileUrl(url: string): string {
+  let withoutScheme = url.startsWith("file://") ? url.slice("file://".length) : url;
+  if (/^localhost\//i.test(withoutScheme)) {
+    withoutScheme = withoutScheme.slice("localhost".length);
+  }
+  if (/^\/+[A-Za-z]:[\\/]/.test(withoutScheme)) {
+    withoutScheme = withoutScheme.replace(/^\/+/, "");
+  }
   try {
     return decodeURIComponent(withoutScheme);
   } catch {
@@ -156,7 +216,7 @@ function pathOfFileUrl(url: string): string {
 
 function nameOfPath(url: string): string {
   const path = pathOfFileUrl(url);
-  const name = path.split("/").filter(Boolean).pop();
+  const name = path.split(/[\\/]/).filter(Boolean).pop();
   return name ?? "image.png";
 }
 

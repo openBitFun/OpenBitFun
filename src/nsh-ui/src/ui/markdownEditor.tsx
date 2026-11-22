@@ -16,7 +16,7 @@
 //
 // Inline AI asks the document's device through `editorAiStore.ts`.
 
-import { cleanup, effect, Scroll, signal, Text, untracked, View, WebView, type JSX } from "nsh";
+import { cleanup, effect, openUrl, Scroll, signal, Text, untracked, View, WebView, type JSX } from "nsh";
 import {
   createRichEditor,
   RichEditor,
@@ -56,8 +56,14 @@ import {
   uiFontBasePx,
   type Palette,
 } from "../theme";
+import { activeWorkspace, activeWorkspaceRoot, openInAuxPane } from "../state";
 import { Icon } from "./icons";
-import { createMarkdownCodeActions, createMarkdownStyles, STATIC_MARKDOWN_OPTIONS } from "./markdown";
+import {
+  createMarkdownCodeActions,
+  createMarkdownStyles,
+  resolveWorkspaceMarkdownLink,
+  STATIC_MARKDOWN_OPTIONS,
+} from "./markdown";
 import { popoverEnterMotion, Spinner } from "./motion";
 import { registerEscapeDismiss } from "./overlays";
 import { Button, InputBox } from "./primitives";
@@ -176,9 +182,93 @@ function rendererFiles(kind: IslandKind): { script: string; style: string | null
 interface IslandRenderer {
   script: string;
   style: string;
+  /** When set, loaded via `<script src>` against `baseUrl` instead of duplicating the 3.26 MB script string inline. */
+  scriptSrc?: string;
+  baseUrl?: string;
 }
 
+interface CachedDiagramSvg {
+  svg: string;
+  height: number;
+}
+
+const MAX_CACHED_SVG_DIAGRAMS = 32;
+const MAX_CONCURRENT_MERMAID_ISLANDS = 2;
+const MERMAID_SCRIPT_EVICT_MS = 2000;
+
+const renderedSvgCache = new Map<string, CachedDiagramSvg>();
 const rendererLoads = new Map<IslandKind, Promise<IslandRenderer>>();
+let activeMermaidCompiles = 0;
+let mermaidEvictTimer: ReturnType<typeof setTimeout> | null = null;
+const mermaidSlotWaiters: Array<() => void> = [];
+
+function cacheDiagramSvg(key: string, entry: CachedDiagramSvg): void {
+  if (renderedSvgCache.has(key)) renderedSvgCache.delete(key);
+  renderedSvgCache.set(key, entry);
+  if (renderedSvgCache.size > MAX_CACHED_SVG_DIAGRAMS) {
+    const oldest = renderedSvgCache.keys().next().value;
+    if (oldest !== undefined) renderedSvgCache.delete(oldest);
+  }
+}
+
+function acquireMermaidSlot(onReady: () => void): () => void {
+  if (activeMermaidCompiles < MAX_CONCURRENT_MERMAID_ISLANDS) {
+    activeMermaidCompiles += 1;
+    if (mermaidEvictTimer) {
+      clearTimeout(mermaidEvictTimer);
+      mermaidEvictTimer = null;
+    }
+    onReady();
+    return () => releaseMermaidSlot();
+  }
+  let granted = false;
+  const waiter = () => {
+    granted = true;
+    activeMermaidCompiles += 1;
+    if (mermaidEvictTimer) {
+      clearTimeout(mermaidEvictTimer);
+      mermaidEvictTimer = null;
+    }
+    onReady();
+  };
+  mermaidSlotWaiters.push(waiter);
+  return () => {
+    if (granted) {
+      releaseMermaidSlot();
+      return;
+    }
+    const idx = mermaidSlotWaiters.indexOf(waiter);
+    if (idx >= 0) mermaidSlotWaiters.splice(idx, 1);
+  };
+}
+
+function releaseMermaidSlot(): void {
+  activeMermaidCompiles = Math.max(0, activeMermaidCompiles - 1);
+  const next = mermaidSlotWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  if (activeMermaidCompiles === 0 && rendererLoads.has("mermaid")) {
+    if (mermaidEvictTimer) clearTimeout(mermaidEvictTimer);
+    mermaidEvictTimer = setTimeout(() => {
+      mermaidEvictTimer = null;
+      if (activeMermaidCompiles === 0) rendererLoads.delete("mermaid");
+    }, MERMAID_SCRIPT_EVICT_MS);
+  }
+}
+
+function resolveDirectScriptAsset(scriptUrl: string): { scriptSrc: string; baseUrl: string } | null {
+  const loc = typeof globalThis !== "undefined" ? (globalThis as { location?: { href?: string; origin?: string } }).location : undefined;
+  if (!loc?.href || !loc?.origin || !/^https?:\/\//i.test(loc.href)) return null;
+  try {
+    const resolved = new URL(scriptUrl, loc.href);
+    if (resolved.origin !== loc.origin) return null;
+    return { scriptSrc: resolved.href, baseUrl: loc.origin };
+  } catch {
+    return null;
+  }
+}
 
 async function readAsset(url: string): Promise<string> {
   const response = await fetch(url);
@@ -191,11 +281,21 @@ function inlineSafe(text: string): string {
   return text.replace(/<\/(script|style)/gi, "<\\/$1").replace(/<!--/g, "<\\!--");
 }
 
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
 function loadRenderer(kind: IslandKind): Promise<IslandRenderer> {
   let load = rendererLoads.get(kind);
   if (!load) {
     const assets = rendererFiles(kind);
     if (!assets) return Promise.reject(new Error("this app registered no document renderers"));
+    if (kind === "mermaid") {
+      const direct = resolveDirectScriptAsset(assets.script);
+      if (direct) {
+        return Promise.resolve({ script: "", style: "", scriptSrc: direct.scriptSrc, baseUrl: direct.baseUrl });
+      }
+    }
     load = Promise.all([readAsset(assets.script), assets.style ? readAsset(assets.style) : Promise.resolve("")]).then(
       ([script, style]) => ({ script: inlineSafe(script), style: inlineSafe(style) }),
     );
@@ -213,10 +313,26 @@ type IslandKind = "mermaid" | "math";
 
 const ISLAND_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:";
+const ISLAND_SELF_SCRIPT_CSP =
+  "default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline'; font-src data:; img-src data:";
+const STATIC_SVG_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; img-src data:";
 
 /** A JSON string literal that is safe inside a `<script>` element. */
 function scriptLiteral(value: string): string {
   return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
+function staticSvgIslandHtml(svg: string, colors: { text: string; background: string }): string {
+  const style =
+    `<style>html,body{margin:0;padding:0;background:${colors.background};color:${colors.text};` +
+    `font-family:-apple-system,system-ui,sans-serif;overflow:hidden}#out{display:flex;justify-content:center}` +
+    `#out svg{max-width:100%;height:auto}</style>`;
+  return (
+    `<!doctype html><html><head><meta charset="utf-8">` +
+    `<meta http-equiv="Content-Security-Policy" content="${STATIC_SVG_CSP}">` +
+    `${style}</head><body><div id="out">${svg}</div></body></html>`
+  );
 }
 
 function islandHtml(
@@ -239,12 +355,17 @@ function islandHtml(
     kind === "math"
       ? `try{katex.render(${scriptLiteral(source)},document.getElementById('out'),{displayMode:true,throwOnError:true});done()}catch(e){fail()}`
       : `try{mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:${scriptLiteral(dark ? "dark" : "default")}});` +
-        `mermaid.render('d',${scriptLiteral(source)}).then(function(r){document.getElementById('out').innerHTML=r.svg;done()}).catch(fail)}catch(e){fail()}`;
+        `mermaid.render('d',${scriptLiteral(source)}).then(function(r){var o=document.getElementById('out');o.innerHTML=r.svg;` +
+        `var h=Math.ceil(o.getBoundingClientRect().height);post('svg:'+h+':'+r.svg);post('h:'+h)}).catch(fail)}catch(e){fail()}`;
+  const csp = renderer.scriptSrc ? ISLAND_SELF_SCRIPT_CSP : ISLAND_CSP;
+  const scriptTag = renderer.scriptSrc
+    ? `<script src="${escapeAttr(renderer.scriptSrc)}"></script>`
+    : `<script>${renderer.script}</script>`;
   return (
     `<!doctype html><html><head><meta charset="utf-8">` +
-    `<meta http-equiv="Content-Security-Policy" content="${ISLAND_CSP}">` +
+    `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
     `${renderer.style ? `<style>${renderer.style}</style>` : ""}${style}<script>${report}</script>` +
-    `<script>${renderer.script}</script></head><body><div id="out"></div>` +
+    `${scriptTag}</head><body><div id="out"></div>` +
     `<script>if(typeof ${kind === "math" ? "katex" : "mermaid"}==='undefined'){fail()}else{${draw}}</script></body></html>`
   );
 }
@@ -300,64 +421,148 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
   const height = signal(0);
   const failed = signal(false);
   const renderer = signal<IslandRenderer | null>(null);
+  const cachedSvg = signal<CachedDiagramSvg | null>(null);
   let disposed = false;
+  let releaseSlot: (() => void) | null = null;
+  const freeSlot = () => {
+    if (releaseSlot) {
+      releaseSlot();
+      releaseSlot = null;
+    }
+  };
   cleanup(() => {
     disposed = true;
+    freeSlot();
+    renderer.set(null);
   });
+
+  const cacheKey = () => `${props.kind}:${resolvedScheme() === "dark" ? "d" : "l"}:${props.source}`;
+
   effect(() => {
-    void props.kind;
+    const kind = props.kind;
     void props.source;
+    const key = cacheKey();
+    const hit = kind === "mermaid" ? renderedSvgCache.get(key) ?? null : null;
+    if (hit) {
+      freeSlot();
+      cachedSvg.set(hit);
+      height.set(hit.height);
+      failed.set(false);
+      return;
+    }
+    cachedSvg.set(null);
     height.set(0);
     failed.set(false);
     const timer = setTimeout(() => {
-      if (!disposed && height() === 0) failed.set(true);
+      if (!disposed && height() === 0 && !cachedSvg()) {
+        freeSlot();
+        renderer.set(null);
+        failed.set(true);
+      }
     }, ISLAND_TIMEOUT_MS);
     cleanup(() => clearTimeout(timer));
   });
+
   effect(() => {
     const kind = props.kind;
-    if (islandsAvailable() !== true) return;
+    if (islandsAvailable() !== true || cachedSvg()) return;
     untracked(() => {
       if (renderer()) return;
-      loadRenderer(kind)
-        .then(loaded => {
-          if (!disposed) renderer.set(loaded);
-        })
-        .catch(() => {
-          if (!disposed) failed.set(true);
+      const startLoad = () => {
+        loadRenderer(kind)
+          .then(loaded => {
+            if (!disposed && !cachedSvg()) renderer.set(loaded);
+            else freeSlot();
+          })
+          .catch(() => {
+            freeSlot();
+            if (!disposed) failed.set(true);
+          });
+      };
+      if (kind === "mermaid") {
+        releaseSlot = acquireMermaidSlot(() => {
+          if (!disposed && !cachedSvg()) startLoad();
+          else freeSlot();
         });
+      } else {
+        startLoad();
+      }
     });
   });
+
   return (
     <If
-      when={islandsAvailable() === true && !failed() ? renderer() : null}
+      when={islandsAvailable() === true && !failed() ? (cachedSvg() ?? renderer()) : null}
       else={<IslandSource kind={props.kind} source={props.source} />}
     >
-      {loaded => (
-      <WebView
-        accessibilityLabel={`doc-${props.kind}-view`}
-        html={islandHtml(
-          props.kind,
-          props.source,
-          loaded(),
-          { text: palette().text, background: palette().canvas },
-          resolvedScheme() === "dark",
-        )}
-        scrollable={false}
-        incognito={true}
-        style={{ alignSelf: "stretch", height: Math.max(height(), space.x4l) }}
-        onMessage={event => {
-          const data = String(event.data ?? "");
-          if (data === "error") {
-            failed.set(true);
-            return;
-          }
-          const match = /^h:(\d+)/.exec(data);
-          if (match) height.set(Math.max(1, Number(match[1])));
-        }}
-        onError={() => failed.set(true)}
-      />
-      )}
+      {() => {
+        const hit = cachedSvg();
+        if (hit) {
+          return (
+            <WebView
+              accessibilityLabel={`doc-${props.kind}-view`}
+              html={staticSvgIslandHtml(hit.svg, { text: palette().text, background: palette().canvas })}
+              javaScriptEnabled={false}
+              scrollable={false}
+              incognito={true}
+              style={{ alignSelf: "stretch", height: Math.max(hit.height, space.x4l) }}
+              onError={() => {
+                cachedSvg.set(null);
+                failed.set(true);
+              }}
+            />
+          );
+        }
+        const loaded = renderer()!;
+        return (
+          <WebView
+            accessibilityLabel={`doc-${props.kind}-view`}
+            html={islandHtml(
+              props.kind,
+              props.source,
+              loaded,
+              { text: palette().text, background: palette().canvas },
+              resolvedScheme() === "dark",
+            )}
+            baseUrl={loaded.baseUrl}
+            scrollable={false}
+            incognito={true}
+            style={{ alignSelf: "stretch", height: Math.max(height(), space.x4l) }}
+            onMessage={event => {
+              const data = String(event.data ?? "");
+              if (data === "error") {
+                freeSlot();
+                renderer.set(null);
+                failed.set(true);
+                return;
+              }
+              if (props.kind === "mermaid" && data.startsWith("svg:")) {
+                const secondColon = data.indexOf(":", 4);
+                if (secondColon > 4) {
+                  const h = Math.max(1, Number(data.slice(4, secondColon)) || space.x4l);
+                  const svg = data.slice(secondColon + 1);
+                  if (svg.includes("<svg")) {
+                    const entry = { svg, height: h };
+                    cacheDiagramSvg(cacheKey(), entry);
+                    height.set(h);
+                    cachedSvg.set(entry);
+                    renderer.set(null);
+                    freeSlot();
+                    return;
+                  }
+                }
+              }
+              const match = /^h:(\d+)/.exec(data);
+              if (match) height.set(Math.max(1, Number(match[1])));
+            }}
+            onError={() => {
+              freeSlot();
+              renderer.set(null);
+              failed.set(true);
+            }}
+          />
+        );
+      }}
     </If>
   );
 }
@@ -375,6 +580,17 @@ export interface MarkdownPreviewProps {
   accessibilityLabel?: string;
 }
 
+function defaultPreviewLinkPress(event: TextViewLinkPressEvent): void {
+  const ws = activeWorkspace() as ({ workspaceKind?: string; sshHost?: string } | null | undefined);
+  const isRemote = Boolean(ws && (ws.workspaceKind === "remote" || ws.workspaceKind === "remote_ssh" || ws.sshHost));
+  const resolved = resolveWorkspaceMarkdownLink(event.url, activeWorkspaceRoot(), isRemote);
+  if (resolved.kind === "external") {
+    void openUrl(resolved.url).catch(() => undefined);
+  } else if (resolved.kind === "workspace") {
+    openInAuxPane("files", resolved.path);
+  }
+}
+
 /** A Markdown document as a reader sees it, with Mermaid diagrams and display formulas. */
 export function MarkdownPreview(props: MarkdownPreviewProps) {
   return (
@@ -382,13 +598,13 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
     <TextView
       markdown={props.markdown}
       selectable={true}
-      links={props.links}
+      links={props.onLinkPress ? (props.links ?? "report") : (props.links ?? "report")}
       options={STATIC_MARKDOWN_OPTIONS}
       extensions={MERMAID_EXTENSIONS}
       styles={createMarkdownStyles({ compact: props.compact })}
       codeBlockActions={createMarkdownCodeActions()}
       renderImage={props.renderImage}
-      onLinkPress={props.onLinkPress}
+      onLinkPress={props.onLinkPress ?? defaultPreviewLinkPress}
       renderCustom={node =>
         node.name === "mermaid" ? (
           <DiagramIsland kind="mermaid" source={node.text ?? ""} />
@@ -759,7 +975,15 @@ function InlineAiPanel(props: {
                     </View>
                   }
                 >
-                  {text => <MarkdownPreview markdown={text()} compact={true} accessibilityLabel="doc-ai-answer" />}
+                  {text => (
+                    <MarkdownPreview
+                      markdown={text()}
+                      compact={true}
+                      links="report"
+                      onLinkPress={defaultPreviewLinkPress}
+                      accessibilityLabel="doc-ai-answer"
+                    />
+                  )}
                 </If>
               </Scroll>
             </If>

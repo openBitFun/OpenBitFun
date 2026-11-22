@@ -335,6 +335,9 @@ export function AttentionItem(props: AttentionItemProps) {
 interface PermissionPayload {
   action: string;
   resources: string[];
+  saveResources: string[];
+  shellPath: string;
+  workdir: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -343,14 +346,36 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readPermission(prompt: FleetPrompt): PermissionPayload {
   const payload = asRecord(prompt.payload);
+  const metadata = asRecord(payload.displayMetadata ?? payload.display_metadata);
+  const rawSave = payload.saveResources ?? payload.save_resources;
   return {
     action: typeof payload.action === "string" ? payload.action : "",
     resources: Array.isArray(payload.resources) ? payload.resources.map(String) : [],
+    saveResources: Array.isArray(rawSave) ? rawSave.map(String) : [],
+    shellPath: typeof metadata.shellPath === "string" ? metadata.shellPath : typeof metadata.shell_path === "string" ? metadata.shell_path : "",
+    workdir: typeof metadata.workdir === "string" ? metadata.workdir : "",
   };
 }
 
-const RUN_ACTIONS = new Set(["bash", "execute", "run_command", "shell"]);
+const RUN_ACTIONS = new Set(["bash", "execute", "run_command", "shell", "process.execute", "process.execute.read_only"]);
 const EDIT_ACTIONS = new Set(["edit", "write", "write_file", "edit_file", "write_notebook"]);
+const DELETE_ACTIONS = new Set(["delete", "delete_file"]);
+
+/** Command-context scope detail for "Always allow" when the host bound the grant to shell/workdir/exec-plan. */
+export function permissionAlwaysContext(prompt: FleetPrompt): string {
+  const { action, resources, saveResources, shellPath, workdir } = readPermission(prompt);
+  if (!RUN_ACTIONS.has(action)) return "";
+  const isContextPlan =
+    action === "process.execute" &&
+    saveResources.some(entry => /^exec-plan:[a-f0-9]{64}$/.test(entry));
+  const parts: string[] = [];
+  if (shellPath) parts.push(shellPath);
+  if (workdir) parts.push(workdir);
+  if (parts.length > 0) return parts.join(" · ");
+  if (isContextPlan && resources[0]) return resources[0];
+  const nonPlan = saveResources.filter(entry => !entry.startsWith("exec-plan:"));
+  return nonPlan.join(" · ");
+}
 
 /** The request line of a permission prompt (spec §4.3 `prompt.*`). */
 export function permissionRequestText(prompt: FleetPrompt): { request: string; command: string } {
@@ -362,6 +387,9 @@ export function permissionRequestText(prompt: FleetPrompt): { request: string; c
       request: resources.length > 1 ? tr("prompt.wantsEdit", { count: resources.length }) : tr("prompt.wantsEditOne"),
       command,
     };
+  }
+  if (DELETE_ACTIONS.has(action)) {
+    return { request: tr("prompt.wantsAccess", { tool: tr("chat.tool.delete.done") }), command };
   }
   const tool = prompt.toolName || action || prompt.title;
   return { request: tool ? tr("prompt.wantsAccess", { tool }) : prompt.title, command };
@@ -501,6 +529,7 @@ export function PromptAttention(props: PromptAttentionProps) {
   const isQuestion = () => props.prompt.kind === "question";
   const questions = () => (isQuestion() ? readQuestionPayload(props.prompt.payload) : []);
   const permission = () => permissionRequestText(props.prompt);
+  const alwaysContext = () => (isQuestion() ? "" : permissionAlwaysContext(props.prompt));
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   cleanup(() => {
     if (settleTimer) clearTimeout(settleTimer);
@@ -600,7 +629,26 @@ export function PromptAttention(props: PromptAttentionProps) {
       onOpen={props.onOpen}
       onShowAll={props.onShowAll}
       accessibilityLabel={props.source ?? props.prompt.title}
-      children={props.children}
+      children={
+        <>
+          <If when={alwaysContext()}>
+            {ctx => (
+              <Text
+                testID={`prompt-always-context-${props.prompt.promptId}`}
+                style={{
+                  ...textStyle("caption", { color: palette().textMuted }),
+                  fontFamily: fontMono,
+                  numberOfLines: 2,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {`${tr("prompt.always")}: ${ctx()}`}
+              </Text>
+            )}
+          </If>
+          {props.children}
+        </>
+      }
       actions={
         <If
           when={isQuestion()}
@@ -618,6 +666,7 @@ export function PromptAttention(props: PromptAttentionProps) {
               />
               <Button
                 label={tr("prompt.always")}
+                tooltip={alwaysContext() ? `${tr("prompt.always")}: ${alwaysContext()}` : undefined}
                 variant="secondary"
                 size="sm"
                 accessibilityLabel={`allow-always-${props.prompt.promptId}`}

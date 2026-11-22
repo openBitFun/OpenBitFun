@@ -11,10 +11,11 @@
 // model picker chooses only where the model rounds run: Auto (the cloud node
 // picks) or a device and one of its models, as the cloud node lists them.
 
-import { Scroll, Text, View, cleanup, openUrl, signal, type ScrollRef, type ViewRef } from "nsh";
+import { Scroll, Text, View, cleanup, computed, openUrl, signal, type ScrollRef, type ViewRef } from "nsh";
 import { TextView } from "nsh/base";
 import { contentWidth } from "../contentWidthStore";
-import { tr } from "../i18n";
+import { FLEET_ENTRY_LOST, fleetErrorKind } from "../fleetTypes";
+import { localizeHostError, tr } from "../i18n";
 import {
   activeConversationId,
   cancelTurn,
@@ -34,6 +35,7 @@ import {
   pendingSend,
   refreshConversation,
   refreshSuperagentStatus,
+  retryLastTurn,
   sendError,
   sendToSuperagent,
   startSuperagentStore,
@@ -224,6 +226,21 @@ function ModelPicker() {
   );
 }
 
+function sendErrorText(): string {
+  const raw = sendError();
+  if (!raw) return "";
+  if (fleetErrorKind(raw) === FLEET_ENTRY_LOST || raw.toLowerCase().includes("entry_lost")) {
+    return tr("job.unconfirmed");
+  }
+  return localizeHostError(raw) || tr("job.unconfirmed");
+}
+
+function modelPickErrorText(): string {
+  const raw = modelPickError();
+  if (!raw) return "";
+  return localizeHostError(raw) || tr("models.pickFailed");
+}
+
 function Composer(props: { maxFieldHeight: number }) {
   const pickNote = () => modelPickNote(currentModelSelection());
   return (
@@ -239,20 +256,24 @@ function Composer(props: { maxFieldHeight: number }) {
         blocked={composerBlocked()}
         maxFieldHeight={props.maxFieldHeight}
       />
-      <If when={sendError()}>
-        <Text testID="sa-send-error" style={{ ...textStyle("caption", { color: palette().danger }), paddingHorizontal: space.lg }}>
-          {tr("job.unconfirmed")}
-        </Text>
+      <If when={sendErrorText()}>
+        {message => (
+          <Text testID="sa-send-error" style={{ ...textStyle("caption", { color: palette().danger }), paddingHorizontal: space.lg }}>
+            {message()}
+          </Text>
+        )}
       </If>
       <If when={pickNote()}>
         <Text testID="sa-model-note" style={{ ...textStyle("caption", { color: palette().warning }), paddingHorizontal: space.lg }}>
           {pickNote()}
         </Text>
       </If>
-      <If when={modelPickError()}>
-        <Text testID="sa-model-error" style={{ ...textStyle("caption", { color: palette().danger }), paddingHorizontal: space.lg }}>
-          {tr("models.pickFailed")}
-        </Text>
+      <If when={modelPickErrorText()}>
+        {message => (
+          <Text testID="sa-model-error" style={{ ...textStyle("caption", { color: palette().danger }), paddingHorizontal: space.lg }}>
+            {message()}
+          </Text>
+        )}
       </If>
     </View>
   );
@@ -352,8 +373,20 @@ function threadItemOf(message: ConversationMessage): ThreadItem | null {
   }
 }
 
-/** The thread in the cloud node's order: an assistant item that also carries cards draws its text, then its stack. */
-function threadItems(): ThreadItem[] {
+type ThreadRow = ThreadItem & { gap: number };
+
+function gapBetween(previous: ThreadItem | undefined, current: ThreadItem): number {
+  if (!previous) return 0;
+  if (current.kind === "jobs" && previous.kind === "assistant") return space.md;
+  if (current.kind === "assistant" && previous.kind === "assistant") return space.md;
+  return space.xxl;
+}
+
+/**
+ * The settled thread in the cloud node's order, with precomputed inter-row gaps.
+ * Excludes `liveReply()` so streamed deltas never re-evaluate settled rows.
+ */
+const settledThreadItems = computed<ThreadRow[]>(() => {
   const items: ThreadItem[] = [];
   for (const message of conversationView()?.messages ?? []) {
     const item = threadItemOf(message);
@@ -371,18 +404,15 @@ function threadItems(): ThreadItem[] {
   if (pending && pending.conversationId === activeConversationId()) {
     items.push({ kind: "user", key: `pending:${pending.clientMessageId}`, text: pending.text, pending: true });
   }
-  if (liveReply()) items.push({ kind: "assistant", key: "live", text: liveReply(), citations: [], live: true });
-  return items;
-}
+  return items.map((item, index) => ({ ...item, gap: gapBetween(items[index - 1], item) }));
+});
 
-function gapBefore(items: ThreadItem[], index: number): number {
-  if (index === 0) return 0;
-  const previous = items[index - 1];
-  const current = items[index];
-  if (current?.kind === "jobs" && previous?.kind === "assistant") return space.md;
-  if (current?.kind === "assistant" && previous?.kind === "assistant") return space.md;
-  return space.xxl;
-}
+const hasLiveReply = computed<boolean>(() => liveReply().length > 0);
+const liveReplyGap = computed<number>(() => {
+  const rows = settledThreadItems();
+  if (rows.length === 0) return 0;
+  return rows[rows.length - 1]?.kind === "assistant" ? space.md : space.xxl;
+});
 
 function handleLink(event: { url: string }): void {
   const url = event.url.trim();
@@ -630,10 +660,10 @@ function Thread(props: { height: number }) {
             <If when={conversationLoading() && !conversationView()}>
               <ConversationSkeleton />
             </If>
-            <Each of={threadItems()} key={item => item.key}>
-              {(item, index) => (
+            <Each of={settledThreadItems()} key={item => item.key}>
+              {item => (
                 <View
-                  style={{ marginTop: gapBefore(threadItems(), index()) }}
+                  style={{ marginTop: item().gap }}
                   onLayout={event => {
                     const current = item();
                     if (current.kind === "jobs") for (const id of current.jobIds) offsets.set(id, event.bounds.origin.y);
@@ -657,14 +687,19 @@ function Thread(props: { height: number }) {
                     <Notice
                       text={(item() as { text: string }).text}
                       failed={(item() as { failed: boolean }).failed}
-                      onRetry={(item() as { failed: boolean }).failed ? () => void refreshConversation() : undefined}
+                      onRetry={(item() as { failed: boolean }).failed ? () => void retryLastTurn() : undefined}
                     />
                   </If>
                 </View>
               )}
             </Each>
-            <If when={(turnStep() === "model_round" || turnStep() === "tools") && !liveReply()}>
-              <View style={{ marginTop: threadItems().length > 0 ? space.lg : 0 }}>
+            <If when={hasLiveReply()}>
+              <View style={{ marginTop: liveReplyGap() }}>
+                <AssistantProse text={liveReply()} live={true} citations={[]} onCite={cite} />
+              </View>
+            </If>
+            <If when={(turnStep() === "model_round" || turnStep() === "tools") && !hasLiveReply()}>
+              <View style={{ marginTop: settledThreadItems().length > 0 ? space.lg : 0 }}>
                 <ThinkingLine />
               </View>
             </If>

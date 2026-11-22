@@ -23,9 +23,11 @@ import {
   inboxIsLocal,
   markInboxRead,
 } from "../localInboxStore";
-import { answerPermission } from "../permissionStore";
+import { invokeCommand, invokeRawCommand } from "../bridge";
+import { pendingPermissions } from "../permissionStore";
+import { questionPrompts } from "../userQuestionStore";
 import { tr } from "../i18n";
-import { activeConversationId } from "../superagentStore";
+import { openConversation } from "../superagentStore";
 import { navigateScene, openDevicePage, selectSession } from "../state";
 import { compactLayout, elevationScrim, elevationShadow, layout, palette, radii, space, textStyle } from "../theme";
 import { AttentionTray } from "../ui/attention";
@@ -39,7 +41,7 @@ export { inboxSheetOpen };
 export function openAttentionEntry(entry: AttentionEntry): void {
   inboxSheetOpen.set(false);
   if (entry.source.conversationId) {
-    activeConversationId.set(entry.source.conversationId);
+    openConversation(entry.source.conversationId);
     navigateScene("openbitfun");
     return;
   }
@@ -64,10 +66,28 @@ function canMarkRead(): boolean {
   return inboxHasReadable();
 }
 
-/** Without the fleet layer an approval is this backend's own: `permissionStore` answers it and drops it. */
+/** Without the fleet layer prompts belong to this backend: send directly so failures propagate to `answerPrompt`. */
 async function sendLocalPrompt(prompt: FleetPrompt, answer: PromptAnswer): Promise<void> {
-  if (answer.kind !== "permission") return;
-  await answerPermission(prompt.promptId, answer.reply);
+  const target = prompt.deviceId ? { target: prompt.deviceId } : undefined;
+  if (answer.kind === "permission") {
+    await invokeCommand<unknown>(
+      "respond_permission",
+      { requestId: prompt.promptId, reply: answer.reply },
+      target,
+    );
+    pendingPermissions.update(current =>
+      current.filter(item => !(item.requestId === prompt.promptId && item.deviceId === prompt.deviceId)),
+    );
+    return;
+  }
+  await invokeRawCommand<unknown>(
+    "submit_user_answers",
+    { toolId: prompt.promptId, answers: answer.answers, sessionId: prompt.sessionId },
+    target,
+  );
+  questionPrompts.update(current =>
+    current.filter(item => !(item.toolId === prompt.promptId && item.deviceId === prompt.deviceId)),
+  );
 }
 
 function sendPrompt() {

@@ -5,9 +5,14 @@ import {
   toolCallsOf,
   turnDurationMs,
   turnEffectiveModel,
+  turnItems,
   turnParts,
 } from "../src/format";
+import { PERMISSION_ACTIONS, PERMISSION_MODES } from "../src/permissionPolicyStore";
 import { getAppearancePreset } from "../src/theme";
+import { permissionAlwaysContext, permissionRequestText } from "../src/ui/attention";
+import { extractVisualizeDirectives, resolveWorkspaceMarkdownLink } from "../src/ui/markdown";
+import { toolKindOf, toolTargetOf } from "../src/ui/toolCards";
 import { createBackend, fakeTranscriptTurns, openSession, showAllSessions } from "./support";
 
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
@@ -651,4 +656,88 @@ test("host.js dev-mode start_dialog_turn streams chunks and persists real Rust t
   } finally {
     if (prevTauri !== undefined) (globalThis as Record<string, unknown>).__TAURI__ = prevTauri;
   }
+});
+
+test("upstream parity helpers: visualize directives, relative links, Skill aliases, permission context, and thinking keys", () => {
+  // 1. Visualize 1.0.109 Private-Use directives are stripped cleanly (complete and streaming partial).
+  const raw =
+    'Here is the chart:\n\uE200visualize\uE202{"path":"openbitfun://current-session/artifacts/visualizations/v2/latency-chart.html","title":"Latency"} \uE201\nDone.';
+  const parsed = extractVisualizeDirectives(raw);
+  expect(parsed.text).toBe("Here is the chart:\n\nDone.");
+  expect(parsed.text).not.toContain("\uE200");
+  expect(parsed.figures).toEqual([
+    {
+      path: "openbitfun://current-session/artifacts/visualizations/v2/latency-chart.html",
+      slug: "latency-chart",
+      title: "Latency",
+    },
+  ]);
+  const streaming = extractVisualizeDirectives('Partial \uE200visualize\uE202{"path":"openbit', { streaming: true });
+  expect(streaming.text).toBe("Partial");
+
+  // 2. Relative Markdown links resolve against POSIX and Windows workspace roots.
+  expect(resolveWorkspaceMarkdownLink("./src/main.rs#L10-L20", "/repo")).toEqual({
+    kind: "workspace",
+    path: "/repo/src/main.rs",
+    line: 10,
+    endLine: 20,
+  });
+  expect(resolveWorkspaceMarkdownLink("docs/guide.md:42", "/repo", true)).toEqual({
+    kind: "workspace",
+    path: "/repo/docs/guide.md",
+    line: 42,
+  });
+  expect(resolveWorkspaceMarkdownLink("file:///C:/work/app/src/index.ts", "C:\\work\\app", false)).toEqual({
+    kind: "workspace",
+    path: "C:\\work\\app\\src\\index.ts",
+  });
+  expect(resolveWorkspaceMarkdownLink("https://openbitfun.com", "/repo")).toEqual({
+    kind: "external",
+    url: "https://openbitfun.com",
+  });
+
+  // 3. Skill({ command }) is classified as "skill", never shell "exec".
+  const skillByCommand = { name: "Skill", detail: "", input: { command: "visualize" } };
+  const skillByAlias = { name: "Skill", detail: "", input: { skill: "pdf" } };
+  expect(toolKindOf(skillByCommand)).toBe("skill");
+  expect(toolTargetOf(skillByCommand)).toBe("visualize");
+  expect(toolKindOf(skillByAlias)).toBe("skill");
+  expect(toolTargetOf(skillByAlias)).toBe("pdf");
+
+  // 4. Ask-mode permissions & command-context Always-allow metadata.
+  expect(PERMISSION_MODES.find(m => m.value === "ask")?.hint).toContain("read-only");
+  expect(PERMISSION_ACTIONS).toContain("delete");
+  expect(PERMISSION_ACTIONS).toContain("process.execute");
+  expect(PERMISSION_ACTIONS).toContain("process.execute.read_only");
+  const cmdPrompt = {
+    deviceId: "dev-1",
+    workspaceId: "ws-1",
+    sessionId: "s-1",
+    kind: "permission",
+    promptId: "p-1",
+    revision: 1,
+    title: "process.execute",
+    payload: {
+      action: "process.execute",
+      resources: ["npm run build"],
+      saveResources: ["exec-plan:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+      displayMetadata: { shellPath: "/bin/zsh", workdir: "/repo" },
+    },
+    payloadTruncated: false,
+    answerable: true,
+  };
+  expect(permissionRequestText(cmdPrompt).request).toBe("Wants to run");
+  expect(permissionAlwaysContext(cmdPrompt)).toBe("/bin/zsh · /repo");
+
+  // 5. Thinking item keys use index rather than embedding the full thinking text.
+  const view = fakeTranscriptTurns([
+    {
+      turnId: "turn-k",
+      userMessage: { id: "u1", content: "hi" },
+      modelRounds: [{ thinkingItems: [{ id: "th-1", content: "A very long thinking text..." }] }],
+    },
+  ])[0];
+  const items = turnItems(view);
+  expect(items[0]?.kind).toBe("thinking");
+  expect(items[0]?.key).toBe("turn-k|thinking|0");
 });

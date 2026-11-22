@@ -261,7 +261,23 @@ export interface SlashCommand {
   /** Whether the host would run it right now. */
   available: boolean;
   args: string[];
+  /** True for client-local composer commands (e.g. `/model`) that never send a host RPC or turn. */
+  local?: boolean;
 }
+
+/** Client-local slash commands always available in the session composer. */
+export const LOCAL_SLASH_COMMANDS: ReadonlyArray<SlashCommand> = [
+  {
+    id: "model",
+    command: "/model",
+    labelKey: "sessions.model",
+    description: "Switch model",
+    idleOnly: false,
+    available: true,
+    args: [],
+    local: true,
+  },
+];
 
 /** The commands the host offers for the open session; empty until it answers. */
 export const sessionCommandList = signal<SlashCommand[]>([]);
@@ -269,6 +285,13 @@ export const sessionCommandList = signal<SlashCommand[]>([]);
 export const sessionCommandsUnsupported = signal(false);
 
 let commandsKey: string | null = null;
+
+function mergedSlashCommands(): SlashCommand[] {
+  const host = sessionCommandList();
+  const seen = new Set(host.map(entry => entry.id));
+  const local = LOCAL_SLASH_COMMANDS.filter(entry => !seen.has(entry.id));
+  return [...host, ...local];
+}
 
 /** Reads the host's command list for a session; repeated calls for it are free. */
 export async function loadSessionCommands(sessionId: string | null, force = false): Promise<void> {
@@ -308,19 +331,25 @@ export function slashCommandLabel(command: SlashCommand): string {
 export function slashCommandsFor(text: string, running: boolean): SlashCommand[] | null {
   if (!text.startsWith("/") || /\s/.test(text)) return null;
   const query = text.slice(1).toLowerCase();
-  return sessionCommandList().filter(
+  return mergedSlashCommands().filter(
     entry => entry.command.slice(1).startsWith(query) && (!running || !entry.idleOnly),
   );
 }
 
-/** The command a whole message names (`/reload skills` included), if the host offers it. */
+/** The command a whole message names (`/reload skills`, `/model claude` included), if offered. */
 export function parseSlashCommand(text: string): { command: SlashCommand; arg: string } | null {
   const trimmed = text.trim();
-  const match = /^\/([a-z_]+)(?:\s+(\S+))?$/i.exec(trimmed);
+  const match = /^\/([a-z_]+)(?:\s+([\s\S]+))?$/i.exec(trimmed);
   if (!match) return null;
-  const command = sessionCommandList().find(entry => entry.id === match[1].toLowerCase());
+  const id = match[1]!.toLowerCase();
+  const command = mergedSlashCommands().find(entry => entry.id === id);
   if (!command) return null;
-  const arg = (match[2] ?? "").toLowerCase();
+  const rawArg = (match[2] ?? "").trim();
+  if (command.local) {
+    return { command, arg: rawArg };
+  }
+  if (/\s/.test(rawArg)) return null;
+  const arg = rawArg.toLowerCase();
   if (arg && !command.args.includes(arg)) return null;
   return { command, arg };
 }

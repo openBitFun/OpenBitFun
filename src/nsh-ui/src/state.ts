@@ -746,7 +746,7 @@ export async function renameWorkspace(workspaceId: string, name: string): Promis
 
 export function selectWorkspace(
   workspaceId: string,
-  options?: { syncHost?: boolean; deviceId?: string },
+  options?: { syncHost?: boolean; deviceId?: string; loadSessions?: boolean },
 ): void {
   const device = fleetActive() ? (options?.deviceId ?? deviceContext()) : "";
   const current = activeWorkspaceKey();
@@ -771,14 +771,14 @@ export function selectWorkspace(
   if (fleetActive()) {
     // The host's own current workspace is that host's preference, not this view's.
     applyFleetWorkspaceRows();
-    void loadSessions();
+    if (options?.loadSessions !== false) void loadSessions();
     return;
   }
   if (options?.syncHost !== false) {
     // A refused switch leaves the host on another workspace; say so.
     void setActiveWorkspace(workspaceId).catch(reportError);
   }
-  void loadSessions();
+  if (options?.loadSessions !== false) void loadSessions();
 }
 
 export async function openPathWorkspace(rootPath: string): Promise<void> {
@@ -929,6 +929,8 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
   setActiveSession(sessionId, device);
   if (!openSessionKeys().includes(key)) openSessionKeys.update(keys => [...keys, key]);
   if (previousKey !== key) {
+    evictTurnWindow(previousKey);
+    transcriptCursor = null;
     notifySessionSwitch("leave", previous, previousKey);
     swapComposerDraft(previousKey, key);
     sessionTurns.set([]);
@@ -951,10 +953,13 @@ export function selectSession(sessionId: string, deviceId?: string, workspaceId?
 /** Closes one tab; the neighbour takes over when the closed tab was on screen. */
 export function closeSessionTab(sessionId: string, deviceId?: string): void {
   const key = deviceId !== undefined ? `${deviceId}/${sessionId}` : sessionKey(sessionId);
+  evictTurnWindow(key);
+  composerDrafts.delete(key);
   const remaining = openSessionKeys().filter(item => item !== key);
   openSessionKeys.set(remaining);
   if (activeSessionKey() !== key) return;
   const fallback = remaining[remaining.length - 1];
+  transcriptCursor = null;
   notifySessionSwitch("leave", sessionId, key);
   swapComposerDraft(key, null);
   setActiveSession(null);
@@ -967,11 +972,38 @@ export function closeSessionTab(sessionId: string, deviceId?: string): void {
 
 /** How many of the newest turns a session loads; "Load earlier" widens it. */
 export const TURN_WINDOW_STEP = 30;
+const MAX_TURN_WINDOW_ENTRIES = 16;
 /** Turn window per `sessionKey`. */
 export const turnWindows = signal<Record<string, number>>({});
 
-function turnWindowOf(sessionId: string): number {
-  return turnWindows()[sessionKey(sessionId)] ?? TURN_WINDOW_STEP;
+function evictTurnWindow(key: string | null | undefined): void {
+  if (!key) return;
+  if (!(key in turnWindows())) return;
+  turnWindows.update(current => {
+    if (!(key in current)) return current;
+    const next = { ...current };
+    delete next[key];
+    return next;
+  });
+}
+
+function setTurnWindow(key: string, value: number): void {
+  turnWindows.update(current => {
+    const next = { ...current, [key]: value };
+    const keys = Object.keys(next);
+    if (keys.length > MAX_TURN_WINDOW_ENTRIES) {
+      const keep = activeSessionKey();
+      for (const candidate of keys) {
+        if (Object.keys(next).length <= MAX_TURN_WINDOW_ENTRIES) break;
+        if (candidate !== key && candidate !== keep) delete next[candidate];
+      }
+    }
+    return next;
+  });
+}
+
+function turnWindowOf(sessionId: string, key = sessionKey(sessionId)): number {
+  return turnWindows()[key] ?? TURN_WINDOW_STEP;
 }
 
 /**
@@ -987,19 +1019,20 @@ export const hasEarlierTurns = computed(() => {
     | (SessionSummary & { turnCount?: number })
     | undefined;
   if (typeof row?.turnCount === "number") return row.turnCount > loaded;
-  return loaded >= turnWindowOf(sessionId);
+  return loaded >= turnWindowOf(sessionId, activeSessionKey() ?? sessionKey(sessionId));
 });
 
 /** Widens the open session's window by one step and reloads it. */
 export async function loadEarlierTurns(): Promise<void> {
   const sessionId = activeSessionId();
-  if (!sessionId) return;
-  turnWindows.update(current => ({ ...current, [sessionKey(sessionId)]: turnWindowOf(sessionId) + TURN_WINDOW_STEP }));
+  const key = activeSessionKey();
+  if (!sessionId || !key) return;
+  setTurnWindow(key, turnWindowOf(sessionId, key) + TURN_WINDOW_STEP);
   await loadTurns(sessionId, { silent: true });
 }
 
 /** What the last view read returned, so the next one asks only for what changed. */
-let transcriptCursor: { sessionId: string; limit: number; cursor: string } | null = null;
+let transcriptCursor: { sessionKey: string; limit: number; cursor: string } | null = null;
 
 /**
  * Re-reads the open session's transcript view. With the cursor of the previous
@@ -1013,16 +1046,17 @@ export async function loadTurns(
 ): Promise<TranscriptTurnView[] | null> {
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return null;
+  const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
   let loaded: TranscriptTurnView[] | null = null;
   await runStep(
     async () => {
-      const limit = turnWindowOf(sessionId);
+      const limit = turnWindowOf(sessionId, key);
       const held = sessionTurns();
       const cursor =
         transcriptCursor &&
-        transcriptCursor.sessionId === sessionId &&
+        transcriptCursor.sessionKey === key &&
         transcriptCursor.limit === limit &&
-        activeSessionId() === sessionId &&
+        activeSessionKey() === key &&
         held.length > 0
           ? transcriptCursor.cursor
           : undefined;
@@ -1035,7 +1069,7 @@ export async function loadTurns(
         }
       } catch (error) {
         if (isMissingCommand(error, "get_session_transcript_view")) {
-          if (activeSessionId() === sessionId) {
+          if (activeSessionKey() === key) {
             transcriptCursor = null;
             transcriptNotice.set(tr("sessions.transcriptHostOutdated"));
             sessionTurns.set([]);
@@ -1045,19 +1079,19 @@ export async function loadTurns(
         }
         throw error;
       } finally {
-        if (activeSessionId() === sessionId) turnsLoading.set(false);
+        if (activeSessionKey() === key) turnsLoading.set(false);
       }
-      if (activeSessionId() !== sessionId || !view) return;
+      if (activeSessionKey() !== key || !view) return;
       const list =
         view.mode === "after"
           ? [...held.filter(turn => turn.turnIndex <= (view.keptThroughIndex ?? -1)), ...view.turns]
           : Array.isArray(view.turns)
             ? view.turns
             : [];
-      transcriptCursor = view.cursor ? { sessionId, limit, cursor: view.cursor } : null;
+      transcriptCursor = view.cursor ? { sessionKey: key, limit, cursor: view.cursor } : null;
       transcriptNotice.set("");
       sessionTurns.set(list);
-      reconcilePendingTurnWithPersisted(sessionId, list);
+      reconcilePendingTurnWithPersisted(sessionId, list, key);
       if (view.runningTurn?.activeTurnId) notifyRunningTurn(sessionId, view.runningTurn);
       loaded = list;
     },
@@ -1068,6 +1102,8 @@ export async function loadTurns(
 
 export interface PendingTurnState {
   sessionId: string;
+  /** Device-scoped session key (`"<deviceId>/<sessionId>"`) to prevent cross-device collisions. */
+  sessionKey?: string;
   turnId?: string;
   userText: string;
   createdAt: number;
@@ -1088,32 +1124,42 @@ export const streamText = signal<string>("");
  */
 export const thinkingText = signal<string>("");
 
+function matchesPendingSession(pending: PendingTurnState, sessionId: string, key?: string): boolean {
+  const targetKey = key ?? sessionKey(sessionId);
+  if (pending.sessionKey) return pending.sessionKey === targetKey;
+  return pending.sessionId === sessionId;
+}
+
 export function setPendingTurn(sessionId: string, userText: string, turnId?: string): void {
   const trimmed = userText.trim();
   if (!sessionId || !trimmed) return;
+  const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
   // The new turn joins the window instead of pushing the oldest loaded one out.
-  turnWindows.update(current => ({ ...current, [sessionKey(sessionId)]: turnWindowOf(sessionId) + 1 }));
+  setTurnWindow(key, turnWindowOf(sessionId, key) + 1);
   pendingTurnState.set({
     sessionId,
+    sessionKey: key,
     ...(turnId ? { turnId } : {}),
     userText: trimmed,
     createdAt: Date.now(),
     baselineTurnCount: sessionTurns().length,
   });
-  if (activeSessionId() === sessionId) {
+  if (activeSessionKey() === key) {
     pendingTurn.set(trimmed);
   }
 }
 
 export function bindPendingTurnId(sessionId: string, turnId: string, userText?: string): void {
   const current = pendingTurnState();
-  if (current && current.sessionId === sessionId) {
+  const key = activeSessionId() === sessionId && activeSessionKey() ? activeSessionKey()! : sessionKey(sessionId);
+  if (current && matchesPendingSession(current, sessionId, key)) {
     pendingTurnState.set({
       ...current,
+      sessionKey: current.sessionKey ?? key,
       turnId,
       ...(userText && !current.userText ? { userText } : {}),
     });
-    if (activeSessionId() === sessionId && pendingTurn() !== (current.userText || userText || "")) {
+    if (activeSessionKey() === key && pendingTurn() !== (current.userText || userText || "")) {
       pendingTurn.set(current.userText || userText || "");
     }
     return;
@@ -1123,22 +1169,22 @@ export function bindPendingTurnId(sessionId: string, turnId: string, userText?: 
   }
 }
 
-export function clearPendingTurn(sessionId?: string): void {
+export function clearPendingTurn(sessionId?: string, key?: string): void {
   const current = pendingTurnState();
-  if (sessionId && current && current.sessionId !== sessionId) return;
+  if (sessionId && current && !matchesPendingSession(current, sessionId, key)) return;
   pendingTurnState.set(null);
-  if (!sessionId || activeSessionId() === sessionId) {
+  if (!sessionId || activeSessionKey() === (key ?? sessionKey(sessionId))) {
     pendingTurn.set("");
   }
 }
 
-function reconcilePendingTurnWithPersisted(sessionId: string, turns: TranscriptTurnView[]): void {
+function reconcilePendingTurnWithPersisted(sessionId: string, turns: TranscriptTurnView[], key?: string): void {
   const pending = pendingTurnState();
-  if (!pending || pending.sessionId !== sessionId) return;
+  if (!pending || !matchesPendingSession(pending, sessionId, key)) return;
   if (pending.turnId) {
     const matched = turns.some(turn => turn.turnId === pending.turnId);
     if (matched) {
-      clearPendingTurn(sessionId);
+      clearPendingTurn(sessionId, key);
     }
     return;
   }
@@ -1148,7 +1194,7 @@ function reconcilePendingTurnWithPersisted(sessionId: string, turns: TranscriptT
   if (turns.length > pending.baselineTurnCount) {
     const content = (turns[turns.length - 1]?.user?.text ?? "").trim();
     if (!content || content === pending.userText) {
-      clearPendingTurn(sessionId);
+      clearPendingTurn(sessionId, key);
     }
   }
 }
@@ -1448,9 +1494,12 @@ export async function archiveSessionRow(sessionId: string, archived: boolean): P
     if (archived) {
       // An archived session leaves the tab strip with its header actions.
       const key = sessionKey(sessionId);
+      evictTurnWindow(key);
+      composerDrafts.delete(key);
       openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     }
     if (archived && activeSessionId() === sessionId) {
+      transcriptCursor = null;
       setActiveSession(null);
       sessionTurns.set([]);
     }
@@ -1467,8 +1516,11 @@ export async function deleteSessionRow(sessionId: string): Promise<void> {
     // than waiting for a reload the user did not ask for.
     sessionTotal.update(total => Math.max(0, total - 1));
     const key = sessionKey(sessionId);
+    evictTurnWindow(key);
+    composerDrafts.delete(key);
     openSessionKeys.set(openSessionKeys().filter(item => item !== key));
     if (activeSessionId() === sessionId) {
+      transcriptCursor = null;
       setActiveSession(null);
       sessionTurns.set([]);
     }
@@ -1661,7 +1713,7 @@ export async function selectDeviceContext(deviceId: string): Promise<void> {
   const device = fleetDeviceById(deviceId);
   const next = device?.workspaces.find(item => item.isHostCurrent) ?? device?.workspaces[0] ?? null;
   if (next) {
-    selectWorkspace(next.workspaceId, { deviceId });
+    selectWorkspace(next.workspaceId, { deviceId, loadSessions: false });
     await loadSessions();
   } else {
     clearWorkspaceSelection();

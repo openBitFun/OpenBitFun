@@ -63,6 +63,8 @@ import {
   attachImageFromClipboard,
   attachImagesFromPicker,
   imageAttachments,
+  isLocalAttachmentPathAllowed,
+  pathOfFileUrl,
   removeAttachment,
   type ImageAttachment,
 } from "../attachmentStore";
@@ -194,6 +196,7 @@ import {
   activeSessionId,
   activeSessionKey,
   activeWorkspace,
+  activeWorkspaceRoot,
   auxPaneOpen,
   auxPaneTab,
   canGoBack,
@@ -254,7 +257,11 @@ import {
   createDiffViewStyles,
   createMarkdownCodeActions,
   createMarkdownStyles,
+  extractVisualizeDirectives,
   inferCodeLanguage,
+  resolveWorkspaceMarkdownLink,
+  stripVisualizeDirectives,
+  type InlineFigureDirective,
 } from "../ui/markdown";
 import {
   MOTION_DURATION,
@@ -633,12 +640,7 @@ function isImageMimeOrPath(mime: string, nameOrUri: string): boolean {
 }
 
 function decodeFileUri(uri: string): string {
-  const withoutScheme = uri.startsWith("file://") ? uri.slice("file://".length) : uri;
-  try {
-    return decodeURIComponent(withoutScheme);
-  } catch {
-    return withoutScheme;
-  }
+  return pathOfFileUrl(uri);
 }
 
 function mimeFromFilename(name: string): string {
@@ -660,8 +662,37 @@ function mimeFromFilename(name: string): string {
   }
 }
 
+async function attachRemoteDroppedImage(uri: string, name: string, mime: string): Promise<boolean> {
+  try {
+    const response = await fetch(uri);
+    if (!response.ok) return false;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") ?? (mime || mimeFromFilename(name));
+    const attachment: ImageAttachment = {
+      id: `attachment-drop-${++nextDroppedAttachmentId}`,
+      name,
+      mimeType: contentType,
+      fileSize: bytes.byteLength,
+      dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}`,
+    };
+    imageAttachments.update(list => [...list, attachment]);
+    attachmentNotice.set("");
+    pushToast(
+      tr("sessions.attachedImages", {
+        images: formatPlural(1, "format.imageOne", "format.imageOther"),
+      }),
+      "success",
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
   let attachedImages = 0;
+  let blockedRemoteImages = 0;
+  const allowLocalPath = isLocalAttachmentPathAllowed();
   const referencedNames: string[] = [];
 
   for (let i = 0; i < uris.length; i += 1) {
@@ -671,6 +702,18 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
     const filePath = decodeFileUri(uri);
     const name = basename(filePath) || "file";
     if (isImageMimeOrPath(mime, name)) {
+      if (!allowLocalPath) {
+        // Never send controller-local `imagePath` to a remote peer or remote workspace;
+        // try reading bytes into a `dataUrl`, else refuse loudly.
+        void attachRemoteDroppedImage(uri, name, mime).then(ok => {
+          if (!ok) {
+            attachmentNotice.set(tr("error.unsupported"));
+            pushToast(tr("error.unsupported"), "error");
+          }
+        });
+        blockedRemoteImages += 1;
+        continue;
+      }
       const attachment: ImageAttachment = {
         id: `attachment-drop-${++nextDroppedAttachmentId}`,
         name,
@@ -688,6 +731,7 @@ function attachOrReferenceFileUris(uris: string[], mimeTypes: string[]): void {
   if (attachedImages > 0) {
     attachmentNotice.set("");
   }
+  void blockedRemoteImages;
 
   if (referencedNames.length > 0) {
     const tags = referencedNames.map(name => `#file:${name}`).join(" ");
@@ -2131,16 +2175,119 @@ function ThinkingBlock(props: {
   );
 }
 
-/** A link in a reply: a web address leaves the app, anything else is a workspace path. */
+function isRemoteActiveWorkspace(): boolean {
+  const ws = activeWorkspace() as
+    | ({ workspaceKind?: string; sshHost?: string; remoteConnectionId?: string } | null | undefined);
+  if (!ws) return false;
+  const kind = (ws.workspaceKind ?? "").toLowerCase();
+  return kind === "remote" || kind === "remote_ssh" || kind === "docker" || kind === "wsl" || Boolean(ws.sshHost) || Boolean(ws.remoteConnectionId);
+}
+
+/** A link in a reply: external links open via OS, relative or file paths resolve against the workspace root. */
 function handleMarkdownLink(event: { url: string }): void {
-  const url = event.url.trim();
-  if (!url || url.startsWith("#")) return;
-  if (/^(https?:|mailto:)/i.test(url)) {
-    void openUrl(url).catch(() => undefined);
+  const resolved = resolveWorkspaceMarkdownLink(event.url, activeWorkspaceRoot(), isRemoteActiveWorkspace());
+  if (resolved.kind === "external") {
+    void openUrl(resolved.url).catch(() => undefined);
     return;
   }
-  const path = url.replace(/^file:\/\//i, "").split("#")[0] ?? url;
-  if (path) openInAuxPane("files", decodeFileUri(path));
+  if (resolved.kind === "workspace") {
+    openInAuxPane("files", resolved.path);
+  }
+}
+
+/** Structured summary card for an inline visualization figure (`visualize{...}` or `publishedFigures`). */
+function InlineFigureCard(props: { figure: InlineFigureDirective }) {
+  const canOpenInFiles = () => !props.figure.path.startsWith("openbitfun://");
+  return (
+    <View
+      testID={`inline-figure-${props.figure.slug}`}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.sm,
+        paddingHorizontal: space.md,
+        paddingVertical: space.sm,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().borderSubtle,
+        backgroundColor: palette().surfaceTertiary,
+      }}
+    >
+      <Icon name="sparkles" size={14} color={palette().accent} />
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text
+          style={{
+            ...textStyle("label", { color: palette().text }),
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {props.figure.title || props.figure.slug}
+        </Text>
+        <Text
+          style={{
+            color: palette().textMuted,
+            fontFamily: fontMono,
+            fontSize: textSize(11),
+            lineHeight: textLineHeight(11, 1.3),
+            numberOfLines: 1,
+            textOverflow: "ellipsis-middle",
+          }}
+        >
+          {props.figure.path}
+        </Text>
+      </View>
+      <If when={canOpenInFiles()}>
+        <Button
+          label={tr("common.open")}
+          variant="ghost"
+          size="xs"
+          accessibilityLabel={`open-figure-${props.figure.slug}`}
+          onPress={() => openInAuxPane("files", props.figure.path)}
+        />
+      </If>
+      <Button
+        label={tr("pane.files.copyPath")}
+        variant="ghost"
+        size="xs"
+        accessibilityLabel={`copy-figure-${props.figure.slug}`}
+        onPress={() => {
+          void Clipboard.writeText(props.figure.path).then(
+            () => pushToast(tr("common.copied"), "success"),
+            () => undefined,
+          );
+        }}
+      />
+    </View>
+  );
+}
+
+/** Reads any backend-projected `publishedFigures` attached to a turn that weren't already emitted inline. */
+function publishedFiguresOf(turn: unknown): InlineFigureDirective[] {
+  if (!turn || typeof turn !== "object") return [];
+  const record = turn as Record<string, unknown>;
+  const raw = record.publishedFigures ?? record.published_figures;
+  if (!Array.isArray(raw)) return [];
+  const inlinePaths = new Set<string>();
+  for (const part of turnParts(turn)) {
+    if (part.role === "assistant" && part.text.includes("\uE200")) {
+      for (const fig of extractVisualizeDirectives(part.text).figures) inlinePaths.add(fig.path);
+    }
+  }
+  const figures: InlineFigureDirective[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+    const path = typeof item.uri === "string" ? item.uri.trim() : typeof item.path === "string" ? item.path.trim() : "";
+    if (!path || inlinePaths.has(path)) continue;
+    inlinePaths.add(path);
+    const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : undefined;
+    const base = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
+    const slug = base.replace(/\.html?$/i, "") || "figure";
+    figures.push({ path, slug, ...(title ? { title } : {}) });
+  }
+  return figures;
 }
 
 /** Which oversized replies the reader opened in full, one signal per item key. */
@@ -2156,16 +2303,28 @@ function fullReplySignal(key: string): Signal<boolean> {
 }
 
 function MarkdownBody(props: { text: string; live?: boolean }) {
+  const parsed = computed(() => extractVisualizeDirectives(props.text, { streaming: props.live }));
   return (
-    <TextView
-      markdown={props.text}
-      selectable
-      links="report"
-      onLinkPress={handleMarkdownLink}
-      options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
-      codeBlockActions={createMarkdownCodeActions()}
-      styles={createMarkdownStyles()}
-    />
+    <View style={{ width: "100%", gap: space.sm }}>
+      <If when={parsed().text}>
+        <TextView
+          markdown={parsed().text}
+          selectable
+          links="report"
+          onLinkPress={handleMarkdownLink}
+          options={props.live ? STREAMING_MARKDOWN_OPTIONS : STATIC_MARKDOWN_OPTIONS}
+          codeBlockActions={createMarkdownCodeActions()}
+          styles={createMarkdownStyles()}
+        />
+      </If>
+      <If when={parsed().figures.length > 0}>
+        <View style={{ gap: space.xs }}>
+          <Each of={parsed().figures} key={fig => fig.path}>
+            {fig => <InlineFigureCard figure={fig()} />}
+          </Each>
+        </View>
+      </If>
+    </View>
   );
 }
 
@@ -2328,25 +2487,39 @@ function liveRoundItems(round: LiveModelRound, singleRound: boolean): Transcript
   return groupExploreItems(items);
 }
 
-const liveItems = computed<TranscriptItem[]>(() => {
-  const rounds = liveTurn()?.rounds ?? [];
-  if (rounds.length === 0) {
-    // Flat stream signals without structured rounds (a host that sends no round ids).
-    const fallback: TranscriptItem[] = [];
-    if (thinkingText()) {
-      fallback.push({ kind: "thinking", key: "live-thinking", text: thinkingText(), live: !streamText() });
-    }
-    if (streamText()) fallback.push({ kind: "text", key: "live-text", text: streamText() });
-    return fallback;
+const liveRounds = computed<LiveModelRound[]>(() => liveTurn()?.rounds ?? []);
+
+/**
+ * Per-round live view: each round owns its own `computed`, so when round N
+ * streams text or thinking, completed rounds 0..N-1 never re-slice text or
+ * rebuild their item lists.
+ */
+function LiveRoundView(props: { round: () => LiveModelRound; singleRound: () => boolean }) {
+  const items = computed<TranscriptItem[]>(() => liveRoundItems(props.round(), props.singleRound()));
+  return (
+    <If when={items().length > 0}>
+      <TranscriptItems items={items()} live={true} />
+    </If>
+  );
+}
+
+/** Fallback live items when a legacy host streams flat text without structured rounds. */
+const liveFallbackItems = computed<TranscriptItem[]>(() => {
+  if (liveRounds().length > 0) return [];
+  const fallback: TranscriptItem[] = [];
+  if (thinkingText()) {
+    fallback.push({ kind: "thinking", key: "live-thinking", text: thinkingText(), live: !streamText() });
   }
-  return rounds.flatMap(round => liveRoundItems(round, rounds.length === 1));
+  if (streamText()) fallback.push({ kind: "text", key: "live-text", text: streamText() });
+  return fallback;
 });
 
 /** The answer text of one persisted turn, for its footer's copy button. */
 function turnAnswerText(turn: unknown): string {
   return turnParts(turn)
     .filter(part => part.role === "assistant")
-    .map(part => part.text)
+    .map(part => stripVisualizeDirectives(part.text))
+    .filter(Boolean)
     .join("\n\n")
     .trim();
 }
@@ -2870,10 +3043,15 @@ const isTranscriptEmpty = computed(
  * switching back to its session, or one another surface started).
  */
 const optimisticUserText = computed(() => {
-  const pending = pendingTurnState()?.userText || pendingTurn();
-  if (pending) return pending;
+  const pending = pendingTurnState();
+  const openKey = activeSessionKey();
+  const pendingMatches = pending && (!pending.sessionKey || !openKey || pending.sessionKey === openKey);
+  const text = pendingMatches ? pending.userText || pendingTurn() : pendingTurn();
+  if (text) return text;
   const live = liveTurn();
-  return live?.turnId && live.sessionId === activeSessionId() ? live.userText : "";
+  return live?.turnId && live.sessionId === activeSessionId() && (live.deviceId ?? "") === activeSessionDevice()
+    ? live.userText
+    : "";
 });
 
 
@@ -2883,6 +3061,9 @@ const optimisticUserText = computed(() => {
  * row the transcript already drew, so its `turn()` never changes and nothing
  * under it is evaluated again; only new or changed turns re-render, and turns
  * prepended by "Load earlier" never shift the rows below them.
+ *
+ * Uses an O(items) structural fingerprint instead of `JSON.stringify(turn)` so
+ * long sessions never serialize or duplicate the full transcript into memory.
  */
 interface TurnRow {
   key: string;
@@ -2893,18 +3074,58 @@ let turnRowCache = new Map<string, { row: TurnRow; signature: string }>();
 let turnRowSession: string | null = null;
 
 function turnSignature(turn: unknown): string {
-  try {
-    return JSON.stringify(turn) ?? "";
-  } catch {
-    return `unserializable:${Math.random()}`;
+  if (!turn || typeof turn !== "object") return String(turn ?? "");
+  const view = turn as Partial<TranscriptTurnView> & { publishedFigures?: unknown[]; published_figures?: unknown[] };
+  const userText = view.user?.text ?? "";
+  const userImages = Array.isArray(view.user?.images) ? view.user.images.length : 0;
+  const items = Array.isArray(view.items) ? view.items : [];
+  const figures = Array.isArray(view.publishedFigures)
+    ? view.publishedFigures.length
+    : Array.isArray(view.published_figures)
+      ? view.published_figures.length
+      : 0;
+  const parts: string[] = [
+    String(view.turnId ?? ""),
+    String(view.turnIndex ?? ""),
+    String(view.status ?? ""),
+    view.settled ? "1" : "0",
+    String(view.assistantTimestampMs ?? ""),
+    String(view.durationMs ?? ""),
+    String(view.effectiveModel ?? ""),
+    String(view.error ?? ""),
+    `${userText.length}:${userText.slice(0, 24)}:${userText.slice(-16)}:${userImages}`,
+    String(view.tokenUsage?.totalTokens ?? ""),
+    `${view.recovery?.status ?? ""}:${view.recovery?.executionGeneration ?? ""}`,
+    String(figures),
+    String(items.length),
+  ];
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (!item) continue;
+    if (item.kind === "text" || item.kind === "thinking") {
+      const len = item.text.length;
+      parts.push(`${item.kind[0]}:${item.id ?? i}:${len}:${item.text.slice(-16)}`);
+    } else if (item.kind === "tool") {
+      const tool = item.tool;
+      const resultTag =
+        tool.result === undefined || tool.result === null
+          ? "0"
+          : typeof tool.result === "string"
+            ? `s${tool.result.length}`
+            : "o";
+      parts.push(
+        `T:${tool.id ?? i}:${tool.name}:${tool.status ?? ""}:${tool.success ?? ""}:${tool.durationMs ?? ""}:${tool.error?.length ?? 0}:${tool.subagentItems?.length ?? 0}:${resultTag}`,
+      );
+    }
   }
+  return parts.join("|");
 }
 
 const stableTurnRows = computed<TurnRow[]>(() => {
   const turns = sessionTurns();
-  const sessionId = activeSessionId();
-  if (sessionId !== turnRowSession) {
-    turnRowSession = sessionId;
+  const sessionKeyId = activeSessionKey() ?? activeSessionId();
+  if (sessionKeyId !== turnRowSession) {
+    turnRowSession = sessionKeyId;
     turnRowCache = new Map();
   }
   const next = new Map<string, { row: TurnRow; signature: string }>();
@@ -2912,11 +3133,18 @@ const stableTurnRows = computed<TurnRow[]>(() => {
     const id = turnKeyOf(turn);
     // A host that repeats an id (or sends none) gets a positional key, so the
     // keyed list never sees two rows under one key.
-    // Keys carry the session, so switching sessions (a fork shares its parent's
-    // turn ids) disposes the previous transcript's rows instead of reusing them.
-    const key = id && !next.has(`${sessionId}|turn:${id}`) ? `${sessionId}|turn:${id}` : `${sessionId}|index:${index}`;
-    const signature = turnSignature(turn);
+    // Keys carry the device-scoped session key, so switching sessions disposes
+    // the previous transcript's rows instead of reusing them.
+    const key =
+      id && !next.has(`${sessionKeyId}|turn:${id}`)
+        ? `${sessionKeyId}|turn:${id}`
+        : `${sessionKeyId}|index:${index}`;
     const previous = turnRowCache.get(key);
+    if (previous && previous.row.turn === turn) {
+      next.set(key, previous);
+      return previous.row;
+    }
+    const signature = turnSignature(turn);
     const row = previous && previous.signature === signature ? previous.row : { key, turn };
     next.set(key, { row, signature });
     return row;
@@ -3038,6 +3266,14 @@ function TranscriptTurn(props: { turn: () => unknown }) {
       </If>
 
       <TranscriptItems items={items()} />
+
+      <If when={publishedFiguresOf(props.turn()).length > 0}>
+        <View style={{ gap: space.xs }}>
+          <Each of={publishedFiguresOf(props.turn())} key={fig => fig.path}>
+            {fig => <InlineFigureCard figure={fig()} />}
+          </Each>
+        </View>
+      </If>
 
       <If when={turnFailureOf(props.turn())}>
         {failure => <TurnFailureNotice turn={props.turn()} failure={failure()} />}
@@ -3194,8 +3430,15 @@ function Transcript() {
             )}
           </If>
 
-          <If when={liveItems().length > 0}>
-            <TranscriptItems items={liveItems()} live={true} />
+          <If when={liveRounds().length > 0}>
+            <View style={{ gap: 8 }}>
+              <Each of={liveRounds()} key={round => round.roundId}>
+                {round => <LiveRoundView round={round} singleRound={() => liveRounds().length === 1} />}
+              </Each>
+            </View>
+          </If>
+          <If when={liveFallbackItems().length > 0}>
+            <TranscriptItems items={liveFallbackItems()} live={true} />
           </If>
 
           <If when={turnError()}>
@@ -3237,9 +3480,57 @@ function Transcript() {
 /** The tool the running turn is in right now, as its row would title it. */
 const slashMatches = computed(() => slashCommandsFor(composerText(), Boolean(runningTurnId())));
 
+/** Resolves `/model [query]`: opens the model picker or switches directly to a unique match. */
+async function runModelSlashCommand(arg: string): Promise<void> {
+  composerText.set("");
+  ensureModelsLoaded();
+  const query = arg.trim().toLowerCase();
+  if (!query) {
+    modelPickerOpen.set(true);
+    return;
+  }
+  const candidates: Array<{ ref: string; label: string; keys: string[] }> = [];
+  const groups = fleetModelGroups();
+  if (groups && groups.length > 0) {
+    for (const device of groups) {
+      for (const model of device.models) {
+        if (!model.selectable) continue;
+        const label = device.isThisDevice
+          ? model.displayName || model.modelId
+          : tr("models.onDevice", { model: model.displayName || model.modelId, device: device.name });
+        candidates.push({
+          ref: model.modelRef,
+          label,
+          keys: [model.modelRef, model.modelId, model.displayName, model.modelName ?? ""].map(v => v.toLowerCase()),
+        });
+      }
+    }
+  } else {
+    for (const option of chatModels()) {
+      candidates.push({
+        ref: option.id,
+        label: option.label,
+        keys: [option.id, option.configId, option.modelName, option.label].map(v => v.toLowerCase()),
+      });
+    }
+  }
+  const exact = candidates.filter(entry => entry.keys.includes(query));
+  const matches = exact.length > 0 ? exact : candidates.filter(entry => entry.keys.some(k => k && k.includes(query)));
+  if (matches.length === 1) {
+    await chooseModel(matches[0]!.ref);
+    pushToast(tr("sessions.modelLabel", { name: matches[0]!.label }), "success");
+    return;
+  }
+  modelPickerOpen.set(true);
+}
+
 async function executeSlashCommand(command: SlashCommand, arg = ""): Promise<void> {
   const sessionId = activeSessionId();
   if (!sessionId) return;
+  if (command.local && command.id === "model") {
+    await runModelSlashCommand(arg);
+    return;
+  }
   if (command.idleOnly && runningTurnId()) {
     pushToast(tr("sessions.steeringRunning"), "info");
     return;
@@ -3354,6 +3645,20 @@ function SlashCommandSurface(props: { placement: Placement }) {
         )}
       </Each>
       <McpPromptRows />
+      <If when={sessionCommandsUnsupported()}>
+        <Text
+          style={{
+            paddingHorizontal: space.sm,
+            paddingTop: space.xs,
+            paddingBottom: space.hair,
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.4),
+          }}
+        >
+          {tr("chat.slash.hostUpdateRequired")}
+        </Text>
+      </If>
     </View>
   );
 }
@@ -3372,10 +3677,23 @@ async function submitComposer(sendDuringTurn?: "immediate" | "queue"): Promise<v
     await executeSlashCommand(slash.command, slash.arg);
     return;
   }
-  // wave22-p5: `/goal <objective>` and `/btw <question>`.
-  if (activeSessionId() && runExtrasCommand(composerText())) {
-    composerText.set("");
-    return;
+  // wave22-p5: `/goal [objective]` and `/btw [question]`; bare commands open their dialogs instead of sending literal prompts.
+  if (activeSessionId()) {
+    const trimmed = composerText().trim();
+    if (/^\/goal$/i.test(trimmed)) {
+      composerText.set("");
+      openGoalDialog();
+      return;
+    }
+    if (/^\/btw$/i.test(trimmed)) {
+      composerText.set("");
+      openSideQuestion();
+      return;
+    }
+    if (runExtrasCommand(composerText())) {
+      composerText.set("");
+      return;
+    }
   }
   const sessionId = activeSessionId();
   const text = composerText();
@@ -4545,7 +4863,7 @@ function ComposerDock() {
         </Overlay>
       </If>
 
-      <If when={sessionCommandsUnsupported() && composerText().startsWith("/") && !/\s/.test(composerText()) && !mentionOpen()}>
+      <If when={sessionCommandsUnsupported() && (slashMatches()?.length ?? 0) === 0 && mcpPromptMatches().length === 0 && composerText().startsWith("/") && !/\s/.test(composerText()) && !mentionOpen()}>
         <Overlay
           anchor={composerCardAnchor()}
           placement="top"

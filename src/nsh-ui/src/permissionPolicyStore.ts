@@ -19,7 +19,11 @@ import { runStep } from "./state";
 export type PermissionMode = "ask" | "auto" | "full_access";
 
 export const PERMISSION_MODES: ReadonlyArray<{ value: PermissionMode; label: string; hint: string }> = [
-  { value: "ask", label: "Ask", hint: "Every tool call waits for you" },
+  {
+    value: "ask",
+    label: "Ask",
+    hint: "Ordinary workspace edits and read-only commands run automatically; other commands, deletions, and sensitive operations ask",
+  },
   { value: "auto", label: "Auto", hint: "A model answers the prompts for you" },
   { value: "full_access", label: "Full access", hint: "Every tool call runs without asking" },
 ];
@@ -33,6 +37,9 @@ export const PERMISSION_ACTIONS: readonly string[] = [
   "*",
   "read",
   "edit",
+  "delete",
+  "process.execute",
+  "process.execute.read_only",
   "bash",
   "git",
   "websearch",
@@ -41,7 +48,29 @@ export const PERMISSION_ACTIONS: readonly string[] = [
   "skill",
   "mcp",
   "computer_use",
-  "custom_tool",
+  "process.control",
+  "process.read_output",
+  "process.write_input",
+  "terminal.read",
+  "terminal.control",
+  "schedule.manage",
+  "image.generate",
+  "session.read",
+  "session.manage",
+  "session.message",
+  "goal.read",
+  "goal.create",
+  "goal.update",
+  "browser.read",
+  "browser.interact",
+  "review.read",
+  "review.write",
+  "miniapp.create",
+  "miniapp.finalize",
+  "miniapp.publish",
+  "miniapp.read",
+  "miniapp.interact",
+  "control.describe",
   "external_directory",
 ];
 

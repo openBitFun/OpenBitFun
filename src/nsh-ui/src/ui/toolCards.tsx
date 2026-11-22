@@ -33,7 +33,7 @@ import { activeSessionKey, openInAuxPane, selectSession } from "../state";
 import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
-import { createDiffViewStyles, inferCodeLanguage } from "./markdown";
+import { createDiffViewStyles, extractVisualizeDirectives, inferCodeLanguage, stripVisualizeDirectives } from "./markdown";
 import {
   animateLayout,
   BrandSpinner,
@@ -60,6 +60,7 @@ export type ToolKind =
   | "task"
   | "question"
   | "image"
+  | "skill"
   | "mcp"
   | "generic";
 
@@ -106,6 +107,10 @@ const KIND_BY_NAME: Record<string, ToolKind> = {
   viewimage: "image",
   generateimage: "image",
   analyzeimage: "image",
+  skill: "skill",
+  loadskill: "skill",
+  useskill: "skill",
+  invokeskill: "skill",
 };
 
 /** `mcp__server__tool` → `{ server, tool }`, the desktop's own split. */
@@ -128,7 +133,7 @@ export function toolKindOf(call: ToolCallView): ToolKind {
   return "generic";
 }
 
-const VERB_KEYS: Record<Exclude<ToolKind, "mcp" | "generic">, { done: MessageKey; running: MessageKey }> = {
+const VERB_KEYS: Record<Exclude<ToolKind, "mcp" | "generic" | "skill">, { done: MessageKey; running: MessageKey }> = {
   exec: { done: "chat.tool.exec.done", running: "chat.tool.exec.running" },
   read: { done: "chat.tool.read.done", running: "chat.tool.read.running" },
   write: { done: "chat.tool.write.done", running: "chat.tool.write.running" },
@@ -160,6 +165,7 @@ const ICON_BY_KIND: Record<ToolKind, IconName> = {
   task: "bot",
   question: "help-circle",
   image: "image",
+  skill: "sparkles",
   mcp: "plug",
   generic: "wrench",
 };
@@ -235,7 +241,42 @@ export function resultTextOf(call: ToolCallView): string {
     }
   }
   if (!text && call.resultForAssistant) text = call.resultForAssistant;
+  text = stripVisualizeDirectives(text);
   return text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n…` : text;
+}
+
+/** Extracts any inline visualization figure references emitted by a tool result. */
+export function visualizationFiguresOf(call: ToolCallView): Array<{ path: string; slug: string; title?: string }> {
+  const figures: Array<{ path: string; slug: string; title?: string }> = [];
+  const seen = new Set<string>();
+  const add = (path: string, title?: string) => {
+    const trimmed = path.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    const base = trimmed.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? trimmed;
+    const slug = base.replace(/\.html?$/i, "") || "figure";
+    figures.push({ path: trimmed, slug, ...(title ? { title } : {}) });
+  };
+  const scanText = (raw: string | undefined) => {
+    if (!raw || !raw.includes("\uE200")) return;
+    for (const fig of extractVisualizeDirectives(raw).figures) add(fig.path, fig.title);
+  };
+  if (typeof call.result === "string") scanText(call.result);
+  scanText(call.resultForAssistant);
+  const record = resultRecord(call.result);
+  if (record) {
+    for (const key of ["output", "content", "text", "stdout", "result", "summary", "message"]) {
+      const value = record[key];
+      if (typeof value === "string") scanText(value);
+    }
+    const uri = firstStringOf(record, ["uri", "figure_uri", "figureUri"]);
+    if (uri && uri.includes("artifacts/visualizations/")) add(uri, firstStringOf(record, ["title"]) || undefined);
+  }
+  const inputPath = pathOf(inputRecord(call));
+  if (inputPath && inputPath.includes("artifacts/visualizations/") && inputPath.endsWith(".html")) {
+    add(inputPath);
+  }
+  return figures;
 }
 
 function execCommandOf(call: ToolCallView): string {
@@ -341,6 +382,13 @@ export function toolTargetOf(call: ToolCallView, kind: ToolKind = toolKindOf(cal
       const path = firstStringOf(input, ["path", "image_path", "file_path"]);
       return path ? basename(path) : firstStringOf(input, ["prompt", "description"]) || call.detail;
     }
+    case "skill": {
+      const fromInput = firstStringOf(input, ["skill", "command", "skill_name", "skillName", "name"]);
+      if (fromInput) return fromInput;
+      const rec = resultRecord(call.result);
+      const fromResult = rec ? firstStringOf(rec, ["skill_name", "skillName", "skill", "name"]) : "";
+      return fromResult || call.detail;
+    }
     default:
       return call.detail;
   }
@@ -352,6 +400,7 @@ export function toolTitleOf(call: ToolCallView, state: ToolRunState, kind: ToolK
     const parsed = parseMcpToolName(call.name);
     return parsed ? `${parsed.server} · ${parsed.tool}` : call.name;
   }
+  if (kind === "skill") return tr("nav.skills");
   if (kind === "generic") return call.name;
   const keys = VERB_KEYS[kind];
   return tr(state === "running" || state === "confirmation" ? keys.running : keys.done);
@@ -1208,7 +1257,50 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
       <If when={kind() === "image" ? imageSourceOf(props.call) : ""}>
         {src => <ToolImagePreview src={src()} />}
       </If>
-      <If when={kind() === "mcp" || kind() === "generic" || kind() === "question" ? argumentsTextOf(props.call) : ""}>
+      <If when={visualizationFiguresOf(props.call).length > 0}>
+        <View style={{ gap: space.xs }}>
+          <Each of={visualizationFiguresOf(props.call)} key={fig => fig.path}>
+            {fig => (
+              <View
+                testID={`tool-figure-${fig().slug}`}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.sm,
+                  paddingHorizontal: space.md,
+                  paddingVertical: space.sm,
+                  borderRadius: radii.md,
+                  borderCurve: "continuous",
+                  borderWidth: 1,
+                  borderColor: palette().borderSubtle,
+                  backgroundColor: palette().surfaceTertiary,
+                }}
+              >
+                <Icon name="sparkles" size={14} color={palette().accent} />
+                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                  <Text style={{ color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.35), fontWeight: "500" }}>
+                    {fig().title || fig().slug}
+                  </Text>
+                  <Text
+                    style={{
+                      color: palette().textMuted,
+                      fontFamily: fontMono,
+                      fontSize: textSize(11),
+                      lineHeight: textLineHeight(11, 1.3),
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis-middle",
+                    }}
+                  >
+                    {fig().path}
+                  </Text>
+                </View>
+                <SmallCopyButton copyKey={`${props.cardId}-fig-${fig().slug}`} text={fig().path} />
+              </View>
+            )}
+          </Each>
+        </View>
+      </If>
+      <If when={kind() === "mcp" || kind() === "generic" || kind() === "question" || kind() === "skill" ? argumentsTextOf(props.call) : ""}>
         {args => (
           <MonoBlock copyKey={`${props.cardId}-args`} label={tr("chat.tool.arguments")} text={args()} maxHeight={160} />
         )}
@@ -1240,7 +1332,8 @@ function hasBody(call: ToolCallView, kind: ToolKind): boolean {
   if (kind === "task") {
     return Boolean(firstStringOf(inputRecord(call), ["prompt"]) || subagentSessionOf(call) || call.subagentItems?.length);
   }
-  if (kind === "mcp" || kind === "generic" || kind === "question") return Boolean(argumentsTextOf(call));
+  if (kind === "mcp" || kind === "generic" || kind === "question" || kind === "skill") return Boolean(argumentsTextOf(call));
+  if (visualizationFiguresOf(call).length > 0) return true;
   return false;
 }
 

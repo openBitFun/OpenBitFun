@@ -32,7 +32,7 @@ import {
   type Signal,
 } from "nsh";
 import type { RunningTurnSnapshot } from "./api";
-import { listenEvent } from "./bridge";
+import { backendConnection, listenEvent, windowShellId } from "./bridge";
 import { loadQueueForSession } from "./queueStore";
 import { markSessionFailed, markSessionSeen } from "./sessionStatusStore";
 import {
@@ -205,9 +205,11 @@ export const streamScrollTick = signal<number>(0);
 /** True while any buffered live text or thinking is still smoothly draining. */
 export const isStreamDraining = signal<boolean>(false);
 
-/** Coarse boolean guards so scene `<If>` checks don't re-evaluate on every token. */
-export const hasLiveText = computed<boolean>(() => streamText().length > 0);
-export const hasLiveThinking = computed<boolean>(() => thinkingText().length > 0);
+/** Coarse boolean guards updated in O(1) so scene `<If>` checks don't re-evaluate on every token. */
+const hasAnyRoundText = signal<boolean>(false);
+const hasAnyRoundThinking = signal<boolean>(false);
+export const hasLiveText = computed<boolean>(() => hasAnyRoundText() || streamText().length > 0);
+export const hasLiveThinking = computed<boolean>(() => hasAnyRoundThinking() || thinkingText().length > 0);
 export const hasLiveTools = computed<boolean>(() => {
   const live = liveTurn();
   return Boolean(live?.rounds.some(round => round.tools.length > 0));
@@ -336,13 +338,21 @@ function snapGraphemeEnd(target: string, requestedEnd: number, knownBoundary: nu
   return Math.min(len, end);
 }
 
+function isHeadlessTestHost(): boolean {
+  return (
+    platform.os !== "web" &&
+    windowShellId() === "host-page" &&
+    backendConnection().kind === "dev"
+  );
+}
+
 function shouldCoalesceToFrame(): boolean {
   if (typeof requestAnimationFrame !== "function") return false;
   if (smoothingOverride !== null) return smoothingOverride;
-  // Live browser dev mode and packaged Tauri desktop WebView both run on
-  // NSH's web target (`platform.os === "web"`). Headless `nsh test` simulates
-  // `macos`/`ios` and expects synchronous chunk updates without waiting for rAF.
-  return platform.os === "web";
+  // Enable frame-paced coalescing on web, native desktop (`nsh-desktop` /
+  // `native`), and mobile (`mesh`), while keeping headless `nsh test`
+  // (`host-page` shell + `host-page` connection on simulated OS) synchronous.
+  return !isHeadlessTestHost();
 }
 
 function shouldSmoothStream(): boolean {
@@ -498,8 +508,14 @@ function bumpScrollTick(): void {
 function syncFlatStreamSignals(updateText = true, updateThinking = true): void {
   const count = roundOrder.length;
   if (count === 0) {
-    if (updateText && streamText() !== "") streamText.set("");
-    if (updateThinking && thinkingText() !== "") thinkingText.set("");
+    if (updateText) {
+      if (hasAnyRoundText()) hasAnyRoundText.set(false);
+      if (streamText() !== "") streamText.set("");
+    }
+    if (updateThinking) {
+      if (hasAnyRoundThinking()) hasAnyRoundThinking.set(false);
+      if (thinkingText() !== "") thinkingText.set("");
+    }
     return;
   }
 
@@ -508,33 +524,41 @@ function syncFlatStreamSignals(updateText = true, updateThinking = true): void {
     const only = roundStreams.get(roundOrder[0]);
     if (updateText) {
       const nextText = only ? only.text.displayedText : "";
+      const nonEmpty = nextText.length > 0;
+      if (hasAnyRoundText() !== nonEmpty) hasAnyRoundText.set(nonEmpty);
       if (streamText() !== nextText) streamText.set(nextText);
     }
     if (updateThinking) {
       const nextThinking = only ? only.thinking.displayedText : "";
+      const nonEmpty = nextThinking.length > 0;
+      if (hasAnyRoundThinking() !== nonEmpty) hasAnyRoundThinking.set(nonEmpty);
       if (thinkingText() !== nextThinking) thinkingText.set(nextThinking);
     }
     return;
   }
 
+  // Multi-round turns render from per-round channels directly (`liveTurn().rounds`),
+  // so avoid O(total turn text) concatenation every frame and only update coarse booleans.
   if (updateText) {
-    let combined = "";
+    let any = false;
     for (let i = 0; i < count; i += 1) {
-      const part = roundStreams.get(roundOrder[i])?.text.displayedText ?? "";
-      if (!part) continue;
-      combined = combined ? `${combined}\n\n${part}` : part;
+      if (roundStreams.get(roundOrder[i])?.text.displayedText) {
+        any = true;
+        break;
+      }
     }
-    if (streamText() !== combined) streamText.set(combined);
+    if (hasAnyRoundText() !== any) hasAnyRoundText.set(any);
   }
 
   if (updateThinking) {
-    let combined = "";
+    let any = false;
     for (let i = 0; i < count; i += 1) {
-      const part = roundStreams.get(roundOrder[i])?.thinking.displayedText ?? "";
-      if (!part) continue;
-      combined = combined ? `${combined}\n\n${part}` : part;
+      if (roundStreams.get(roundOrder[i])?.thinking.displayedText) {
+        any = true;
+        break;
+      }
     }
-    if (thinkingText() !== combined) thinkingText.set(combined);
+    if (hasAnyRoundThinking() !== any) hasAnyRoundThinking.set(any);
   }
 }
 
@@ -666,22 +690,26 @@ export function roundThinkingSignal(roundId: string): Accessor<string> {
 
 /** Reactive reader for a live round's displayed text (tracks only that round). */
 export function getLiveRoundText(roundId: string): string {
-  return ensureRoundStream(roundId).text.displayed();
+  const entry = roundStreams.get(roundId);
+  return entry ? entry.text.displayed() : "";
 }
 
 /** Reactive reader for a live round's displayed thinking (tracks only that round). */
 export function getLiveRoundThinking(roundId: string): string {
-  return ensureRoundStream(roundId).thinking.displayed();
+  const entry = roundStreams.get(roundId);
+  return entry ? entry.thinking.displayed() : "";
 }
 
 /** Coarse boolean reactive guard for whether a live round has any displayed text. */
 export function hasLiveRoundText(roundId: string): boolean {
-  return ensureRoundStream(roundId).text.hasAny();
+  const entry = roundStreams.get(roundId);
+  return entry ? entry.text.hasAny() : false;
 }
 
 /** Coarse boolean reactive guard for whether a live round has any displayed thinking. */
 export function hasLiveRoundThinking(roundId: string): boolean {
-  return ensureRoundStream(roundId).thinking.hasAny();
+  const entry = roundStreams.get(roundId);
+  return entry ? entry.thinking.hasAny() : false;
 }
 
 function makeLiveRound(meta: LiveRoundMeta, entry: RoundStreamEntry): LiveModelRound {
@@ -1061,6 +1089,8 @@ function clearAllRoundStreams(): void {
   }
   roundStreams.clear();
   roundOrder = [];
+  if (hasAnyRoundText()) hasAnyRoundText.set(false);
+  if (hasAnyRoundThinking()) hasAnyRoundThinking.set(false);
   if (isStreamDraining()) {
     isStreamDraining.set(false);
   }
@@ -1112,7 +1142,9 @@ function upsertRoundMeta(
   const entry = ensureRoundStream(roundId);
   const index = state.rounds.findIndex(item => item.roundId === roundId);
   if (index >= 0) {
-    const updatedMeta = updater(extractRoundMeta(state.rounds[index]));
+    const prevMeta = extractRoundMeta(state.rounds[index]);
+    const updatedMeta = updater(prevMeta);
+    if (updatedMeta === prevMeta) return state;
     const rounds = [...state.rounds];
     rounds[index] = makeLiveRound(updatedMeta, entry);
     return { ...state, rounds };
@@ -1245,15 +1277,28 @@ function applyToolEvent(
 
   switch (eventType) {
     case "EarlyDetected":
-    case "ParamsPartial":
+    case "ParamsPartial": {
+      const nextStatus = existing.status === "completed" ? "completed" : "running";
+      const nextDetail =
+        typeof rawToolEvent.params === "string" && rawToolEvent.params
+          ? summarizeLiveInput(rawToolEvent.params)
+          : next.detail;
+      if (
+        existingIdx >= 0 &&
+        nextStatus === existing.status &&
+        nextDetail === existing.detail &&
+        next.toolName === existing.toolName &&
+        next.effectiveToolName === existing.effectiveToolName
+      ) {
+        return round;
+      }
       next = {
         ...next,
-        status: existing.status === "completed" ? "completed" : "running",
-        ...(typeof rawToolEvent.params === "string" && rawToolEvent.params
-          ? { detail: summarizeLiveInput(rawToolEvent.params) }
-          : {}),
+        status: nextStatus,
+        detail: nextDetail,
       };
       break;
+    }
     case "GenUIStream": {
       // The decoded OpenUI source of a GenerativeUI call, delta by delta; `reset`
       // starts the source over (a new message), `seq` drops a repeated delta.
@@ -1712,15 +1757,23 @@ export function subscribeAgentEvents(): void {
         meta => applyToolEvent(meta, rawTool, ensureRoundStream(roundId).text.target.length),
         { attemptId },
       );
-      liveTurn.set(updated);
-      bumpScrollTick();
+      if (updated !== base || liveTurn() !== base) {
+        liveTurn.set(updated);
+        bumpScrollTick();
+      }
     });
   });
 
   onAgentEvent<TurnEventPayload>("agentic://dialog-turn-started", payload => {
     const running = turnOf(payload);
     const sessionId = sessionOf(payload);
-    if (running && !replayingSnapshot) followedTurns.add(running);
+    if (running && !replayingSnapshot) {
+      if (followedTurns.size >= 256) {
+        const oldest = followedTurns.values().next().value;
+        if (oldest !== undefined) followedTurns.delete(oldest);
+      }
+      followedTurns.add(running);
+    }
     const key = keyOf(sessionId);
     if (sessionId) turnStarts.set(key, Date.now());
     if (sessionId) {

@@ -20,6 +20,7 @@ import {
 } from "./notificationStore";
 import { pendingPermissions, type PermissionRequestView } from "./permissionStore";
 import { activeWorkspaceId, sessions } from "./state";
+import { questionPrompts, type QuestionPrompt } from "./userQuestionStore";
 
 /** Whether the Inbox draws this window's own history (no fleet layer). */
 export const inboxIsLocal = computed<boolean>(() => !fleetActive());
@@ -44,9 +45,27 @@ export function localPermissionPrompt(request: PermissionRequestView): FleetProm
   };
 }
 
+/** A pending AskUserQuestion prompt as the attention atoms draw it; `userQuestionStore` keeps the request. */
+export function localQuestionPrompt(prompt: QuestionPrompt): FleetPrompt {
+  const first = prompt.questions[0];
+  return {
+    deviceId: prompt.deviceId,
+    workspaceId: activeWorkspaceId() ?? "",
+    sessionId: prompt.sessionId,
+    kind: "question",
+    promptId: prompt.toolId,
+    revision: 0,
+    title: first?.question || first?.header || tr("inbox.needsYou"),
+    toolName: "AskUserQuestion",
+    payload: { questions: prompt.questions },
+    payloadTruncated: false,
+    answerable: true,
+  };
+}
+
 function localGroups(): AttentionGroup[] {
   const groups: AttentionGroup[] = [];
-  const waiting = pendingPermissions().map<AttentionEntry>(request => ({
+  const waitingPermissions = pendingPermissions().map<AttentionEntry>(request => ({
     itemId: `local-permission/${request.requestId}`,
     kind: "permission",
     source: { deviceId: request.deviceId, sessionId: request.sessionId },
@@ -54,6 +73,15 @@ function localGroups(): AttentionGroup[] {
     prompt: localPermissionPrompt(request),
     answerable: true,
   }));
+  const waitingQuestions = questionPrompts().map<AttentionEntry>(prompt => ({
+    itemId: `local-question/${prompt.deviceId}/${prompt.toolId}`,
+    kind: "question",
+    source: { deviceId: prompt.deviceId, sessionId: prompt.sessionId },
+    title: sessionTitle(prompt.sessionId) || prompt.questions[0]?.header || tr("inbox.needsYou"),
+    prompt: localQuestionPrompt(prompt),
+    answerable: true,
+  }));
+  const waiting = [...waitingPermissions, ...waitingQuestions];
   if (waiting.length) groups.push({ id: "needs_you", items: waiting });
   const now = Date.now();
   const history = (kind: "turn-completed" | "turn-failed"): AttentionEntry[] =>
@@ -78,8 +106,10 @@ function localGroups(): AttentionGroup[] {
 /** The groups the Inbox draws: the backend's on a fleet entry, else this window's own. */
 export const inboxGroups = computed<AttentionGroup[]>(() => (inboxIsLocal() ? localGroups() : attentionGroups()));
 
-/** The sidebar pill and phone tab badge: the backend's count, else the approvals waiting here. */
-export const inboxBadgeCount = computed<number>(() => (inboxIsLocal() ? pendingPermissions().length : inboxBadge()));
+/** The sidebar pill and phone tab badge: the backend's count, else the approvals and questions waiting here. */
+export const inboxBadgeCount = computed<number>(() =>
+  inboxIsLocal() ? pendingPermissions().length + questionPrompts().length : inboxBadge(),
+);
 
 /** Whether "Mark all as read" has something to mark. */
 export const inboxHasReadable = computed<boolean>(() =>
