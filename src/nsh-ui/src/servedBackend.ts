@@ -140,6 +140,59 @@ export function installWebSocketBackend(
   return connection;
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", ""]);
+
+/**
+ * Returns a loud failure reason when a page was clearly served as a real
+ * backend/controller page (HTTPS, non-loopback origin, `/b/<bundleId>/` path,
+ * or malformed `#nsh-params` carrying `obp`/`controller`) so it never silently
+ * falls back to `host.js` development fixtures.
+ */
+export function missingServedBackendReason(params: unknown = safeHostParams(), base: string | null = pageBase()): string | null {
+  if (params && typeof params === "object") {
+    const record = params as Record<string, unknown>;
+    if ("controller" in record && record.controller !== undefined && record.controller !== null) {
+      return "This page's controller parameters are incomplete; reload it from OpenBitFun";
+    }
+    if ("obp" in record && record.obp !== undefined && record.obp !== null) {
+      return "This page did not say where its backend listens; reload it from the backend address";
+    }
+  }
+  if (!base) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(base);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol === "https:") {
+    return "This page is missing its backend connection parameters; reload it from OpenBitFun";
+  }
+  if (parsed.protocol === "http:") {
+    if (/\/b\/[0-9a-f]{64}(\/|$)/.test(parsed.pathname)) {
+      return "This device interface page is missing its controller parameters; open it again from the launcher";
+    }
+    if (!LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) {
+      return "This page is missing its backend connection parameters; reload it from the backend address";
+    }
+  }
+  return null;
+}
+
+function installFailedServedBackend(reason: string): void {
+  console.error(reason);
+  installWindowShell(createBrowserShell());
+  installBackendConnection({
+    kind: "websocket",
+    invoke: () => Promise.reject(new Error(reason)),
+    subscribe: () => () => undefined,
+    ready: () => Promise.reject(new Error(reason)),
+    state: () => "failed",
+    error: () => reason,
+    lastSeq: () => null,
+  });
+}
+
 /**
  * Picks the backend-protocol connection when this page was served by a
  * backend. A connection another entry installed first (native desktop, a test
@@ -148,7 +201,8 @@ export function installWebSocketBackend(
 export function installServedBackend(): boolean {
   const kind = backendConnection().kind;
   if (kind !== "dev" && kind !== "tauri") return false;
-  const controller = controllerParams();
+  const rawParams = safeHostParams();
+  const controller = controllerParams(rawParams);
   if (controller) {
     // The controller shell connects to a device later; until then nothing
     // reaches the page host's fixtures.
@@ -157,20 +211,20 @@ export function installServedBackend(): boolean {
     installBackendConnection(createIdleConnection());
     return true;
   }
-  const params = servedBackendParams();
-  if (!params) return false;
+  const params = servedBackendParams(rawParams);
+  if (!params) {
+    const failure = missingServedBackendReason(rawParams);
+    if (!failure) return false;
+    installFailedServedBackend(failure);
+    return true;
+  }
   if (params.protocol !== null && params.protocol !== undefined && params.protocol !== OBP_PROTOCOL_VERSION) {
     console.warn(`The page names OBP version ${params.protocol}; this UI speaks ${OBP_PROTOCOL_VERSION}`);
   }
   const url = endpointUrl(params);
   if (!url) {
     // Never fall back to the page host's fixtures: say what is wrong instead.
-    console.error("The backend-served page has no usable protocol address");
-    installWebSocketBackend("ws://invalid/obp", {
-      createSocket: () => {
-        throw new Error("This page did not say where its backend listens; reload it from the backend address");
-      },
-    });
+    installFailedServedBackend("This page did not say where its backend listens; reload it from the backend address");
     return true;
   }
   installWebSocketBackend(url);

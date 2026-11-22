@@ -12,10 +12,9 @@
 // that state onto a sprite row and draws nothing else into it.
 
 import { computed, signal } from "nsh";
-import { setConfig, getConfig } from "./api";
 import { attentionGroups } from "./attentionStore";
 import { errorMessageOf } from "./backendConnection";
-import { invokeCommand, windowShellId } from "./bridge";
+import { entryDeviceId, fleetActive, invokeCommand, windowShellId } from "./bridge";
 import { fleetTotals } from "./fleetStore";
 import type { MarkState } from "./ui/fleet";
 
@@ -91,13 +90,21 @@ function readPet(value: unknown): CompanionPet | null {
   };
 }
 
+/** Companion pet & desktop cards belong to this local desktop (`entryDeviceId()`), never a remote peer. */
+function localTarget(): { target: string } | undefined {
+  if (!fleetActive()) return undefined;
+  const entry = entryDeviceId();
+  return entry ? { target: entry } : undefined;
+}
+
 /** Reads the three settings once more. */
 export async function loadCompanionSettings(): Promise<void> {
+  const target = localTarget();
   try {
     const [enabled, pet, cards] = await Promise.all([
-      getConfig(COMPANION_ENABLED_PATH, true),
-      getConfig(COMPANION_PET_PATH, true),
-      getConfig(DESKTOP_CARDS_ENABLED_PATH, true),
+      invokeCommand<unknown>("get_config", { path: COMPANION_ENABLED_PATH, skipRetryOnNotFound: true }, target),
+      invokeCommand<unknown>("get_config", { path: COMPANION_PET_PATH, skipRetryOnNotFound: true }, target),
+      invokeCommand<unknown>("get_config", { path: DESKTOP_CARDS_ENABLED_PATH, skipRetryOnNotFound: true }, target),
     ]);
     companionEnabled.set(enabled !== false);
     selectedPet.set(readPet(pet));
@@ -122,7 +129,7 @@ async function write(path: string, value: unknown, busy: string): Promise<boolea
   companionBusy.set(busy);
   companionNotice.set("");
   try {
-    await setConfig(path, value);
+    await invokeCommand<unknown>("set_config", { path, value }, localTarget());
     return true;
   } catch (error) {
     companionNotice.set(errorMessageOf(error));

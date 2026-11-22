@@ -18,6 +18,8 @@ import {
   type EventMeta,
 } from "../src/bridge";
 import { fleetNavigator, refreshFleetNavigator, resetFleetStore } from "../src/fleetStore";
+import { loadCompanionSettings, setCompanionEnabled } from "../src/companionStore";
+import { keybindingOverrides, loadKeybindings, setShortcut } from "../src/shortcutsStore";
 import type { FleetHelloAnswer, FleetNavigator } from "../src/fleetTypes";
 import { fleetOwnerKeyOf, fleetRouteFor, isFleetPlainCommand } from "../src/peerRouting";
 import { activeSessionKey, activeWorkspaceKey, deviceContext, selectSession, sessionKey } from "../src/state";
@@ -98,6 +100,11 @@ test("routing table: owner ids are read at the registry path; fleet verbs and co
   expect(fleetOwnerKeyOf("get_session_transcript_view", { request: { session_id: "s-1" } })).toEqual({
     entity: "session",
     id: "s-1",
+  });
+  // Alias spelling (`camelCase` <-> `snake_case`) matches Rust's `owner_key_value`.
+  expect(fleetOwnerKeyOf("get_session_transcript_view", { request: { sessionId: "s-alias" } })).toEqual({
+    entity: "session",
+    id: "s-alias",
   });
   expect(fleetOwnerKeyOf("get_session_transcript_view", { request: {} })).toBe(null);
   const context = { ownerOf: (_entity: string, id: string) => (id === "s-b1" ? "dev-b" : null), deviceContext: () => "dev-a" };
@@ -365,4 +372,71 @@ test("the shared UI over an older entry sends no fleet_call and keeps today's li
   expect(host.calls.some(call => call.command === "fleet_call")).toBe(false);
   expect(host.calls.some(call => call.command === "fleet_navigator")).toBe(false);
   expect(host.calls.some(call => call.command === "get_workspace_navigator")).toBe(true);
+});
+
+test("local desktop companion and shortcut configs target entryDeviceId() even when deviceContext() is a remote peer", async () => {
+  const calls: Array<{ command: string; args: Record<string, unknown> | undefined }> = [];
+  let storedKeybindings: Record<string, unknown> = {
+    __version__: 1,
+    overrides: { "other.action": { key: "p", ctrl: true } },
+  };
+  const connection: BackendConnection = {
+    kind: "websocket",
+    async invoke(command, args) {
+      calls.push({ command, args });
+      if (command === "fleet_navigator") return NAVIGATOR;
+      if (command === "fleet_prompts") return { revision: 1, prompts: [] };
+      if (command === "fleet_call") {
+        const inner = (args as { request: { command: string; args?: { request?: { path?: string; value?: unknown } } } }).request;
+        if (inner.command === "get_config" && inner.args?.request?.path === "app.keybindings") {
+          return JSON.parse(JSON.stringify(storedKeybindings));
+        }
+        if (inner.command === "set_config" && inner.args?.request?.path === "app.keybindings") {
+          storedKeybindings = inner.args.request.value as Record<string, unknown>;
+          return null;
+        }
+      }
+      return null;
+    },
+    subscribe: () => () => undefined,
+    ready: async () => ({ version: "2.0.0", platform: "macos", dataDir: null, fleet: ENTRY }),
+    state: () => "connected",
+    error: () => "",
+    lastSeq: () => null,
+    fleet: () => ENTRY,
+  };
+  installBackendConnection(connection);
+  await connection.ready();
+  resetFleetStore();
+  await refreshFleetNavigator({ full: true });
+  await settle();
+  // Move device context to remote peer `dev-b` while local entry is `dev-a`.
+  activeWorkspaceKey.set({ deviceId: "dev-b", workspaceId: "ws-1" });
+  expect(deviceContext()).toBe("dev-b");
+  calls.length = 0;
+
+  await loadCompanionSettings();
+  await setCompanionEnabled(false);
+  await loadKeybindings();
+  // Simulate a concurrent external write before saving a shortcut override.
+  storedKeybindings = {
+    __version__: 1,
+    overrides: {
+      "other.action": { key: "p", ctrl: true },
+      "synced.external": { key: "y", ctrl: true },
+    },
+  };
+  await setShortcut("panel.toggleLeft", "mod+shift+b");
+
+  const configTargets = calls
+    .filter(c => c.command === "fleet_call")
+    .map(c => (c.args as { request: { target?: string; command: string } }).request)
+    .filter(r => r.command === "get_config" || r.command === "set_config")
+    .map(r => r.target);
+  expect(configTargets.length).toBeGreaterThan(0);
+  expect([...new Set(configTargets)]).toEqual(["dev-a"]);
+  // Fresh merge preserved the concurrent `synced.external` override instead of writing a stale snapshot.
+  expect((storedKeybindings.overrides as Record<string, unknown>)["synced.external"]).toEqual({ key: "y", ctrl: true });
+  expect(keybindingOverrides()["panel.toggleLeft"]).toBe("mod+shift+b");
+  activeWorkspaceKey.set(null);
 });

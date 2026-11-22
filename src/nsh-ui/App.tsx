@@ -22,9 +22,13 @@ import {
 } from "nsh";
 import { Input } from "nsh/base";
 import {
+  backendConnection,
   closeWindow,
   connectionError,
   connectionState,
+  entryDeviceId,
+  fleetActive,
+  fleetHandshakePending,
   hideMainWindowAfterCloseRequest,
   inAppUpdatesAvailable,
   initWindowChrome,
@@ -38,6 +42,7 @@ import {
   pageDrawsWindowControls,
   pickLocalDirectory,
   quitApplication,
+  settleFleetHandshake,
   shellMenuShortcutIds,
   startShellIntegration,
   startWindowDrag,
@@ -94,6 +99,7 @@ import {
   closeSceneTab,
   collapsedWorkspaces,
   deleteSessionRow,
+  deviceContext,
   drawerOpen,
   goBackScene,
   goForwardScene,
@@ -1465,7 +1471,9 @@ function pathFromFileUri(uri: string): string | null {
   try {
     const url = new URL(uri);
     if (url.protocol !== "file:") return null;
+    const host = url.hostname && url.hostname.toLowerCase() !== "localhost" ? `//${url.hostname}` : "";
     const path = decodeURIComponent(url.pathname);
+    if (host) return `${host}${path}`;
     return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
   } catch {
     return null;
@@ -1474,9 +1482,9 @@ function pathFromFileUri(uri: string): string | null {
 
 /**
  * A file dropped on a scene outside the composer (which attaches drops itself)
- * opens in Files when it lives in the active local workspace. A dropped local
- * file cannot be opened in a remote workspace, which is said rather than
- * opened from this machine's disk.
+ * opens in Files when it lives in the active local workspace on this machine.
+ * A dropped local file cannot be opened in a remote workspace or on another
+ * peer device, which is said rather than forwarded to a remote disk.
  */
 async function handleSceneFileDrop(uris: string[]): Promise<void> {
   const paths = uris.map(pathFromFileUri).filter((p): p is string => Boolean(p));
@@ -1486,18 +1494,31 @@ async function handleSceneFileDrop(uris: string[]): Promise<void> {
     pushToast(tr("shell.drop.noWorkspace"), "warning");
     return;
   }
-  if (isRemoteWorkspaceRecord(ws)) {
+  const onRemotePeer =
+    Boolean(controllerPort()) ||
+    (fleetActive() && Boolean(deviceContext()) && Boolean(entryDeviceId()) && deviceContext() !== entryDeviceId());
+  if (isRemoteWorkspaceRecord(ws) || onRemotePeer) {
     pushToast(tr("shell.drop.remoteUnsupported"), "warning");
     return;
   }
-  const root = ws.rootPath.replace(/[\\/]+$/, "");
-  const inside = paths.find(path => path === root || path.startsWith(`${root}/`) || path.startsWith(`${root}\\`));
+  const isWindowsRoot = /^[A-Za-z]:[\\/]/.test(ws.rootPath) || ws.rootPath.startsWith("\\\\");
+  const normalizeForCompare = (value: string) =>
+    isWindowsRoot ? value.replace(/\//g, "\\").toLowerCase() : value;
+  const rootRaw = ws.rootPath === "/" ? "/" : ws.rootPath.replace(/[\\/]+$/, "");
+  const rootCmp = normalizeForCompare(rootRaw);
+  const sep = isWindowsRoot ? "\\" : "/";
+  const inside = paths.find(path => {
+    const cmp = normalizeForCompare(path);
+    if (rootCmp === "/") return cmp.startsWith("/");
+    return cmp === rootCmp || cmp.startsWith(`${rootCmp}${sep}`);
+  });
   if (!inside) {
     pushToast(tr("shell.drop.outsideWorkspace", { name: basenameLabel(ws.rootPath, ws.name) }), "warning");
     return;
   }
+  const openPath = isWindowsRoot ? inside.replace(/\//g, "\\") : inside;
   navigateScene("files");
-  await openFileAt(inside);
+  await openFileAt(openPath);
 }
 
 /**
@@ -1704,6 +1725,7 @@ function BackendConnectionBanner() {
             size="xs"
             accessibilityLabel="backend-connection-retry"
             onPress={() => {
+              backendConnection().retry?.();
               openHostEventChannel();
               void loadWorkspaces();
             }}
@@ -2923,7 +2945,10 @@ function FleetUpdateNotice() {
 function StudioApp() {
   syncGlobalNativeTheme();
   void initAppLocale();
-  void initWindowChrome();
+  // Probe window chrome once before `startShellIntegration` so deferred tray init waits for it.
+  void initWindowChrome().then(() => {
+    if (nativeWindow()) void readPendingUpdate();
+  });
   // The page's remembered appearance first (no flash), then the host's, which
   // account settings sync may have changed on another device.
   void loadAppearance().then(() => syncAppearanceFromHost({ initial: true }));
@@ -2941,14 +2966,26 @@ function StudioApp() {
   void loadSeenSessions();
   void loadAccountState();
   void loadShellLayout();
-  void loadWorkspaces({ autoOpenRecent: true });
+  // In fleet mode `state.ts`'s `fleetActive` effect loads workspaces from the
+  // fleet navigator once; only load workspaces here on non-fleet connections
+  // (or after a pending handshake settles as non-fleet) to avoid duplicate navigator reads.
+  if (!fleetActive()) {
+    if (fleetHandshakePending()) {
+      void settleFleetHandshake().then(() => {
+        if (!fleetActive()) void loadWorkspaces({ autoOpenRecent: true });
+      });
+    } else {
+      void loadWorkspaces({ autoOpenRecent: true });
+    }
+  }
   void loadSavedConnections();
   void startPermissionPrompts();
   void startQuestionPrompts();
   startNotifications();
   startAttentionStore();
   startSuperagentStore();
-  installSpaceAgentSurface(); // wave22-p4: the agent opens Spaces inside the app
+  const stopSpaceAgentSurface = installSpaceAgentSurface(); // wave22-p4: the agent opens Spaces inside the app
+  cleanup(() => stopSpaceAgentSurface());
   installAboutUpdates({
     supported: () => inAppUpdatesAvailable(),
     phase: () => updatePhase(),
@@ -3000,10 +3037,6 @@ function StudioApp() {
     newSession: () => runShellShortcut("chat.newSession"),
   });
   cleanup(() => stopControlPresenter());
-
-  void initWindowChrome().then(() => {
-    if (nativeWindow()) void readPendingUpdate();
-  });
 
   bindShellShortcuts();
 
@@ -3102,6 +3135,8 @@ function StudioApp() {
           marginRight: compactShell() ? 0 : layout.canvasInset,
           marginBottom: compactShell() ? 0 : layout.canvasInset,
           marginLeft: compactShell() || sidebarDocked() ? 0 : layout.canvasInset,
+          paddingLeft: compactShell() ? safeArea().left : 0,
+          paddingRight: compactShell() ? safeArea().right : 0,
           borderRadius: compactShell() ? 0 : layout.canvasRadius,
           borderCurve: "continuous",
           borderWidth: compactShell() ? 0 : 1,

@@ -162,6 +162,21 @@ test("the NSH desktop shell owns the window: menu shortcuts, close press, About 
   await app.keyboard.press("mod+b");
   await app.waitFor("label:nav-split-handle");
 
+  // Remapping a menu-owned shortcut updates the native application menu reactively.
+  await backend.handlers["openbitfun.invoke"]({
+    action: "set_config",
+    request: {
+      path: "app.keybindings",
+      value: { __version__: 1, overrides: { "panel.toggleLeft": { key: "b", ctrl: true, shift: true } } },
+    },
+  });
+  await app.host.send("openbitfun.wireEvents", wire.batch([{ event: "account://settings-applied", payload: { keys: ["app.keybindings"] } }]));
+  await app.wait(80);
+  await app.keyboard.press("mod+shift+b");
+  await app.waitUntil(() => !app.shows("label:nav-split-handle"));
+  await app.keyboard.press("mod+shift+b");
+  await app.waitFor("label:nav-split-handle");
+
   // About reads this build's version from the backend's ready() answer.
   await app.press("label:account-row");
   await app.press("About OpenBitFun");

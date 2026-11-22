@@ -6,7 +6,7 @@
 // `set_config`; the shell rebinds when the overrides change.
 
 import { signal } from "nsh";
-import { invokeCommand } from "./bridge";
+import { entryDeviceId, fleetActive, invokeCommand } from "./bridge";
 import type { MessageKey } from "./locales/en-US";
 
 export interface ShortcutDefinition {
@@ -93,10 +93,21 @@ export function applyStoredKeybindings(raw: unknown): void {
   keybindingsLoaded.set(true);
 }
 
+/** Shortcuts belong to this client's entry device, never a remote peer `deviceContext()`. */
+function localTarget(): { target: string } | undefined {
+  if (!fleetActive()) return undefined;
+  const entry = entryDeviceId();
+  return entry ? { target: entry } : undefined;
+}
+
 export async function loadKeybindings(): Promise<void> {
   try {
     applyStoredKeybindings(
-      await invokeCommand<unknown>("get_config", { path: "app.keybindings", skipRetryOnNotFound: true }),
+      await invokeCommand<unknown>(
+        "get_config",
+        { path: "app.keybindings", skipRetryOnNotFound: true },
+        localTarget(),
+      ),
     );
   } catch {
     // No document yet: every shortcut is its default.
@@ -114,9 +125,27 @@ export function shortcutUsing(keystroke: string, exceptId: string): ShortcutDefi
   return SHORTCUT_DEFINITIONS.find(item => item.id !== exceptId && effectiveKeystroke(item) === keystroke) ?? null;
 }
 
-async function writeEntries(entries: Record<string, unknown>): Promise<void> {
-  const document = { __version__: 1, overrides: entries };
-  await invokeCommand<unknown>("set_config", { path: "app.keybindings", value: document });
+/**
+ * Re-reads the latest `app.keybindings` from this client's entry device before
+ * applying `mutate` so concurrent or synced changes are never clobbered by a
+ * stale load-time snapshot.
+ */
+async function updateStoredEntries(mutate: (entries: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+  const target = localTarget();
+  let base: Record<string, unknown>;
+  try {
+    const fresh = await invokeCommand<unknown>(
+      "get_config",
+      { path: "app.keybindings", skipRetryOnNotFound: true },
+      target,
+    );
+    base = fresh != null ? readStoredEntries(fresh) : { ...storedEntries };
+  } catch {
+    base = { ...storedEntries };
+  }
+  const next = mutate(base);
+  const document = { __version__: 1, overrides: next };
+  await invokeCommand<unknown>("set_config", { path: "app.keybindings", value: document }, target);
   applyStoredKeybindings(document);
 }
 
@@ -124,21 +153,27 @@ async function writeEntries(entries: Record<string, unknown>): Promise<void> {
 export async function setShortcut(id: string, keystroke: string): Promise<void> {
   const definition = SHORTCUT_DEFINITIONS.find(item => item.id === id);
   if (!definition) return;
-  const entries = { ...storedEntries };
-  if (keystroke === definition.keystroke) delete entries[id];
-  else entries[id] = bindingFromKeystroke(keystroke);
-  await writeEntries(entries);
+  await updateStoredEntries(entries => {
+    const next = { ...entries };
+    if (keystroke === definition.keystroke) delete next[id];
+    else next[id] = bindingFromKeystroke(keystroke);
+    return next;
+  });
 }
 
 export async function resetShortcut(id: string): Promise<void> {
-  const entries = { ...storedEntries };
-  delete entries[id];
-  await writeEntries(entries);
+  await updateStoredEntries(entries => {
+    const next = { ...entries };
+    delete next[id];
+    return next;
+  });
 }
 
 export async function resetAllShortcuts(): Promise<void> {
   const listed = new Set(SHORTCUT_DEFINITIONS.map(item => item.id));
-  await writeEntries(Object.fromEntries(Object.entries(storedEntries).filter(([id]) => !listed.has(id))));
+  await updateStoredEntries(entries =>
+    Object.fromEntries(Object.entries(entries).filter(([id]) => !listed.has(id))),
+  );
 }
 
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "OS", "CapsLock", "Fn"]);

@@ -283,6 +283,11 @@ function Launcher() {
         flex: 1,
         minHeight: 0,
         backgroundColor: palette().canvas,
+        // Safe-area insets belong to the launcher steps; once connected, `StudioApp` owns them once.
+        paddingTop: safeArea().top,
+        paddingBottom: safeArea().bottom,
+        paddingLeft: safeArea().left,
+        paddingRight: safeArea().right,
       }}
       contentStyle={{
         flexGrow: 1,
@@ -329,11 +334,6 @@ export function ControllerShell(props: { children: () => JSX.Element }) {
         flex: 1,
         minHeight: 0,
         backgroundColor: palette().canvas,
-        // A phone's status bar, notch and home indicator (zero elsewhere).
-        paddingTop: safeArea().top,
-        paddingBottom: safeArea().bottom,
-        paddingLeft: safeArea().left,
-        paddingRight: safeArea().right,
       }}
     >
       <If when={controllerPhase() === "connected"}>

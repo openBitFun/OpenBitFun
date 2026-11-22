@@ -463,6 +463,9 @@ test("pickUiSourceDevice: usable full devices, the newest build first, then the 
   expect(pickUiSourceDevice(devices, new Set(["lan", "relayed", "old"]))?.deviceId).toBe("unknown");
   expect(pickUiSourceDevice(devices, new Set(["lan", "relayed", "old", "unknown"]))).toBe(null);
   expect(pickUiSourceDevice([device("a", { clientVersion: "1.0.10" }), device("b", { clientVersion: "1.0.9" })])?.deviceId).toBe("a");
+  // Backend-ranked `entryCandidates` strictly takes precedence over client-side semver/route sort.
+  expect(pickUiSourceDevice(devices, new Set(), ["relayed", "old", "lan"])?.deviceId).toBe("relayed");
+  expect(pickUiSourceDevice(devices, new Set(["relayed"]), ["relayed", "old", "lan"])?.deviceId).toBe("old");
 });
 
 test("manifest refusals and page launch states map to explicit states", () => {

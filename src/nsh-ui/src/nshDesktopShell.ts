@@ -8,6 +8,7 @@ import { effect, Notifications, platform, signal } from "nsh";
 import { Application, isAvailable, Menu, Tray, Window, type MenuItem, type WindowRef } from "nsh/desktop";
 import { startDesktopPresence } from "./desktopPresence";
 import { tr } from "./i18n";
+import { effectiveKeystroke, SHORTCUT_DEFINITIONS } from "./shortcutsStore";
 import type { ShellActions, WindowChromeSink, WindowShell } from "./windowShell";
 
 export interface NshDesktopShellDeps {
@@ -68,6 +69,11 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
     win.on("closePress", () => requestClose());
   }
 
+  function menuShortcut(id: string, fallback: string): string {
+    const def = SHORTCUT_DEFINITIONS.find(item => item.id === id);
+    return def ? effectiveKeystroke(def) : fallback;
+  }
+
   function buildApplicationMenu(actions: ShellActions): MenuItem[] {
     return [
       {
@@ -75,7 +81,7 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
         submenu: [
           { label: tr("shell.about.title"), onSelect: () => actions.about() },
           { type: "separator" },
-          { label: tr("shell.menu.settings"), shortcut: "mod+,", onSelect: () => actions.openSettings() },
+          { label: tr("shell.menu.settings"), shortcut: menuShortcut("scene.openSettings", "mod+,"), onSelect: () => actions.openSettings() },
           { type: "separator" },
           os === "macos" && { label: tr("shell.menu.hide"), role: "hide" },
           os === "macos" && { label: tr("shell.menu.hideOthers"), role: "hideOthers" },
@@ -87,7 +93,7 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
       {
         label: tr("shell.menu.file"),
         submenu: [
-          { label: tr("nav.newSession"), shortcut: "mod+n", onSelect: () => actions.newSession() },
+          { label: tr("nav.newSession"), shortcut: menuShortcut("chat.newSession", "mod+n"), onSelect: () => actions.newSession() },
           { label: tr("nav.newWorkspace"), onSelect: () => actions.newWorkspace() },
           { label: tr("shell.openFolder"), shortcut: "mod+o", onSelect: () => actions.openFolder() },
         ],
@@ -109,7 +115,7 @@ export function createNshDesktopShell(deps: NshDesktopShellDeps = {}): WindowShe
       {
         label: tr("shell.menu.view"),
         submenu: [
-          { label: tr("nav.toggleSidebar"), shortcut: "mod+b", onSelect: () => actions.toggleSidebar() },
+          { label: tr("nav.toggleSidebar"), shortcut: menuShortcut("panel.toggleLeft", "mod+b"), onSelect: () => actions.toggleSidebar() },
           { type: "separator" },
           { label: tr("shell.fullscreen"), role: "toggleFullScreen" },
         ],

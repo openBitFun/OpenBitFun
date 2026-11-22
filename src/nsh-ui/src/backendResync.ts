@@ -9,10 +9,26 @@
 // connection that can drop events delivers the same event.
 
 import { forgetFollowedTurns, settleLiveTurnFromView } from "./agentEvents";
+import { refreshAttention } from "./attentionStore";
 import { fleetActive, listenEvent } from "./bridge";
-import { refreshFleetNavigator, refreshFleetPrompts } from "./fleetStore";
+import { fleetDevices, refreshFleetNavigator, refreshFleetPrompts } from "./fleetStore";
 import { resetPermissions } from "./permissionStore";
-import { activeSessionDevice, activeSessionId, deviceContext, loadTurns, refreshSessionsSilently } from "./state";
+import {
+  activeSessionDevice,
+  activeSessionId,
+  activeWorkspaceId,
+  deviceContext,
+  loadTurns,
+  refreshSessionsSilently,
+} from "./state";
+import {
+  activeConversationId,
+  conversationsLoaded,
+  refreshConversation,
+  refreshConversations,
+  refreshSuperagentStatus,
+  superagentPhase,
+} from "./superagentStore";
 import { resyncTerminal, terminalTabs } from "./terminalStore";
 import { loadQuestionMailbox, resetQuestionPrompts } from "./userQuestionStore";
 
@@ -23,35 +39,89 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 /** Origins with a pending re-hydration; `null` stands for the whole stream. */
 let pendingOrigins = new Set<string | null>();
 
+function cloudNodeDeviceId(): string | null {
+  return fleetDevices().find(device => device.hostKind === "cloud")?.deviceId ?? null;
+}
+
 /**
- * Re-reads what events would have kept current. On a fleet stream a gap names
- * its origin, and only that device is re-read: its sessions (when it is the
- * device context), the open transcript and question mailbox (when the open
- * session is on it), its pending permissions, and its shells. A gap without an
- * origin (a plain stream, or the entry's own stream restarting) re-reads
- * everything, as before.
+ * Re-hydrates one batch of dropped origins in a single pass. When `origins`
+ * is `null` (or off fleet), the whole stream is re-read: sessions, open
+ * transcript, all question prompts, all terminals, Inbox and Super Agent.
+ * When `origins` names specific fleet devices, the fleet navigator, prompts
+ * and Inbox are each read once for the whole batch (never once per origin),
+ * live turns are only cleared if the currently viewed session lives on a
+ * dropped origin, and terminals/permissions/questions are scoped to those
+ * origins.
  */
-export async function rehydrateAfterDroppedEvents(origin?: string | null): Promise<void> {
-  const scoped = typeof origin === "string" && fleetActive();
+async function rehydrateDroppedBatch(origins: ReadonlySet<string> | null): Promise<void> {
+  const fleet = fleetActive();
+  const scoped = origins !== null && fleet;
   const sessionId = activeSessionId();
-  const openHere = Boolean(sessionId) && (!scoped || activeSessionDevice() === origin);
-  // A running turn may have lost events: the next read's snapshot replaces it.
-  forgetFollowedTurns();
+  const openHere = Boolean(sessionId) && (!scoped || origins.has(activeSessionDevice()));
+  // Only forget followed live turns when the gap affects the viewed session's device.
+  if (!scoped || openHere) forgetFollowedTurns();
+
+  // Clear stale question prompts before re-reading the mailbox so fresh answers are kept.
+  if (scoped) {
+    for (const origin of origins) resetQuestionPrompts(origin);
+  } else {
+    resetQuestionPrompts();
+  }
+
   const reads: Array<Promise<unknown>> = [];
-  if (!scoped || deviceContext() === origin) reads.push(refreshSessionsSilently());
+  const contextAffected = !scoped || origins.has(deviceContext());
+  if (fleet) {
+    // In fleet mode `refreshSessionsSilently()` already calls `refreshFleetNavigator()`;
+    // avoid firing two navigator reads back to back.
+    if (contextAffected && activeWorkspaceId()) {
+      reads.push(refreshSessionsSilently());
+    } else {
+      reads.push(refreshFleetNavigator());
+    }
+    reads.push(refreshFleetPrompts(), refreshAttention());
+  } else if (contextAffected) {
+    reads.push(refreshSessionsSilently());
+  }
+
   if (openHere && sessionId) {
     reads.push(loadTurns(sessionId, { silent: true }), loadQuestionMailbox(sessionId));
   }
-  // The index events of the gap may be lost too.
-  if (fleetActive()) reads.push(refreshFleetNavigator(), refreshFleetPrompts());
-  if (scoped) {
-    resetQuestionPrompts(origin);
-    for (const tab of terminalTabs()) if ((tab.deviceId ?? "") === origin) reads.push(resyncTerminal(tab.id));
+
+  // Re-hydrate Super Agent when the gap is unscoped or names the cloud node.
+  const cloudId = cloudNodeDeviceId();
+  const cloudAffected = !scoped || (cloudId !== null && origins.has(cloudId));
+  const superagentActive =
+    superagentPhase() === "ready" || conversationsLoaded() || activeConversationId() !== null;
+  if (cloudAffected && superagentActive) {
+    reads.push(refreshSuperagentStatus(), refreshConversations());
+    if (activeConversationId()) reads.push(refreshConversation());
   }
+
+  // Resync terminals for matching origins (or every open terminal on an unscoped gap).
+  for (const tab of terminalTabs()) {
+    if (!scoped || origins.has(tab.deviceId ?? "")) {
+      reads.push(resyncTerminal(tab.id));
+    }
+  }
+
   await Promise.allSettled(reads);
   // A turn whose terminal events were lost settles from the view the host sent.
   if (openHere && sessionId) settleLiveTurnFromView(sessionId);
-  resetPermissions(scoped ? origin : undefined);
+  if (scoped) {
+    for (const origin of origins) resetPermissions(origin);
+  } else {
+    resetPermissions();
+  }
+}
+
+/**
+ * Re-reads what events would have kept current. On a fleet stream a gap names
+ * its origin, and only that device is re-read; a gap without an origin
+ * re-reads everything.
+ */
+export async function rehydrateAfterDroppedEvents(origin?: string | null): Promise<void> {
+  const scoped = typeof origin === "string" && origin.length > 0 && fleetActive();
+  await rehydrateDroppedBatch(scoped ? new Set([origin]) : null);
 }
 
 function originOf(payload: unknown): string | null {
@@ -65,17 +135,19 @@ export function installBackendResync(): () => void {
   const stop = listenEvent<unknown>(EVENTS_DROPPED, payload => {
     console.info(`Backend events were dropped; re-hydrating: ${JSON.stringify(payload ?? null)}`);
     pendingOrigins.add(fleetActive() ? originOf(payload) : null);
-    // Several gaps in a row (a long stall) re-read once per origin.
+    // Several gaps in a row (e.g. entry failover) coalesce into one batch pass.
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
       const origins = pendingOrigins;
       pendingOrigins = new Set();
       if (origins.has(null)) {
-        void rehydrateAfterDroppedEvents(null);
+        void rehydrateDroppedBatch(null);
         return;
       }
-      for (const origin of origins) void rehydrateAfterDroppedEvents(origin);
+      const named = new Set<string>();
+      for (const origin of origins) if (typeof origin === "string" && origin) named.add(origin);
+      void rehydrateDroppedBatch(named.size > 0 ? named : null);
     }, 50);
   });
   installed = () => {

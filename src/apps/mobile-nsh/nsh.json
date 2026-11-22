@@ -6,12 +6,16 @@
   "rust": "./native",
   "icon": "../../../assets/brand/exports/openbitfun-app-icon-1024.png",
   "capabilities": {
-    "host": [
-      "openbitfun.*"
-    ],
     "clipboard": true,
+    "notifications": true,
     "picker": true,
+    "speech": true,
     "statusBar": true,
+    "webview": {
+      "hosts": [
+        "*"
+      ]
+    },
     "openUrl": {
       "schemes": [
         "https",

@@ -112,3 +112,59 @@ test("Account › Profile surfaces an inline error when saving the sync switch f
   await app.waitFor("account-sync-write-failed");
   expect(app.shows("text:sync store read-only")).toBe(true);
 });
+
+test("account://settings-applied reloads keybindings and ignores events from remote peer origins", async () => {
+  const backend = createBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 1,
+      full: true,
+      devices: [fleetDeviceRow("dev-a", "MacBook", [])],
+      removedDeviceIds: [],
+      totals: { running: 0, waiting: 0, unread: 0 },
+    },
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.press("Settings");
+  await app.waitFor("settings-synced");
+
+  // A sync-state event from a remote peer (`dev-b`) must not overwrite this entry (`dev-a`)'s state.
+  await app.host.send("openbitfun.obpFrames", [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "event",
+      params: {
+        seq: 1,
+        origin: "dev-b",
+        originInstance: "b-1",
+        event: "account://settings-sync-state",
+        payload: { enabled: false, phase: "off", active: false, pending: 0 },
+      },
+    }),
+  ]);
+  await app.wait(60);
+  expect(app.shows("settings-synced")).toBe(true);
+
+  // An applied-settings event on the entry triggers a keybindings reload.
+  const countKeybindingReads = () =>
+    backend.calls.filter(
+      c => c.action === "get_config" && (c.request as { path?: string } | undefined)?.path === "app.keybindings",
+    ).length;
+  const beforeReads = countKeybindingReads();
+  await app.host.send("openbitfun.obpFrames", [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "event",
+      params: {
+        seq: 2,
+        origin: "dev-a",
+        originInstance: "a-1",
+        event: "account://settings-applied",
+        payload: { keys: ["app.keybindings"] },
+      },
+    }),
+  ]);
+  await app.waitUntil(() => countKeybindingReads() > beforeReads);
+  expect(host.calls.length).toBeGreaterThan(0);
+});

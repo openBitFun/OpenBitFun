@@ -221,12 +221,28 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
         // (`resumeSeq - 1`), and the UI re-hydrates that origin.
         const resume = (params.payload as { resumeSeq?: unknown } | null)?.resumeSeq;
         const at = seq ?? (typeof resume === "number" ? resume - 1 : undefined);
-        if (at !== undefined) fleetCursor[origin] = { instanceId: instance, seq: at };
+        if (at !== undefined) {
+          const prev = fleetCursor[origin];
+          if (prev && prev.instanceId && instance && prev.instanceId !== instance && ackTimer !== null) {
+            sendAck();
+          }
+          fleetCursor[origin] = { instanceId: instance, seq: at };
+        }
       } else if (seq !== undefined) {
         if (fleetCursorHasSeen(fleetCursor, origin, instance, seq)) return;
+        const prev = fleetCursor[origin];
+        if (prev && prev.instanceId && instance && prev.instanceId !== instance && ackTimer !== null) {
+          // Flush credits for the previous origin instance before moving the cursor to a restarted one.
+          sendAck();
+        }
         advanceFleetCursor(fleetCursor, origin, instance, seq);
       }
-      if (seq !== undefined) lastSeq = seq;
+      // In fleet mode `seq` is per-origin: never overwrite the entry's scalar
+      // `lastSeq` with another peer's sequence number.
+      const entryId = helloAnswer()?.fleet?.deviceId;
+      if (seq !== undefined && entryId && origin === entryId) {
+        if (params.event === EVENTS_DROPPED_EVENT || lastSeq === null || seq > lastSeq) lastSeq = seq;
+      }
       noteReceived(bytes);
       deliver([item]);
       return;
@@ -452,10 +468,23 @@ export function createWebSocketConnection(options: WebSocketConnectionOptions): 
     scope: () => scope(),
     hello: () => helloAnswer(),
     fleet: () => helloAnswer()?.fleet ?? null,
+    retry() {
+      if (closedByUser || fatal !== null || state() === "connected") return;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      backoffMs = minBackoffMs;
+      error.set("");
+      state.set("reconnecting");
+      if (!socket) connect();
+    },
     close() {
       closedByUser = true;
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);
       reconnectTimer = null;
+      if (ackTimer !== null) clearTimeout(ackTimer);
+      ackTimer = null;
       socket?.close(1000, "client closed");
       socket = null;
       open = false;

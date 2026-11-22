@@ -5,8 +5,9 @@
 // controller shell (sign-in, devices, then the full UI on the chosen device)
 // draws over that port.
 //
-// Order matters: the controller port is installed before the UI's modules run,
-// and the UI's `App.tsx` mounts itself.
+// Order matters: in ESM, module side effects run strictly in import order.
+// `nativeController` installs the mobile window shell, idle connection and
+// controller port before `../../nsh-ui/App` initializes and mounts.
 
 import "./src/nativeController";
 import "./src/documentRenderers";

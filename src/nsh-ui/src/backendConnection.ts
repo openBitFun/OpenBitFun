@@ -92,6 +92,11 @@ export interface BackendConnection {
    * out and reports it through `ready()`'s `fleet` instead.
    */
   fleet?(): FleetHelloAnswer | null;
+  /**
+   * Triggers an immediate reconnect attempt (cancelling backoff or retrying
+   * after every candidate failed). Connections that cannot reconnect omit it.
+   */
+  retry?(): void;
 }
 
 /** The message a rejected `invoke` carries, whatever the wire rejected with. */

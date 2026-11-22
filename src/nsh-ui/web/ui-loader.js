@@ -37,6 +37,7 @@
   const UNUSED_MS = 30 * 24 * 60 * 60 * 1000;
   const TOUCH_MS = 60 * 60 * 1000;
   const MAX_DEVICES = 4;
+  const MAX_CACHED_BUNDLES = 4;
   const HEX64 = /^[0-9a-f]{64}$/;
   const STORE_MESSAGE = "obf-ui-store";
   // The blank page a device UI page runs the NSH realm in (`host.js`,
@@ -237,15 +238,94 @@
       return { bundleId };
     }
 
-    /** Drops bundles nobody opened for 30 days, with their cached files. */
+    /**
+     * Drops bundles unused for 30 days, enforces an LRU cap (`MAX_CACHED_BUNDLES`),
+     * and sweeps orphaned `obf-ui-*` caches that have no surviving record.
+     */
     async function prune(keep, now) {
       const all = await env.records.all();
+      const survivors = [];
       for (const record of all) {
-        if (!record || record.bundleId === keep) continue;
-        if (typeof record.usedAt === "number" && now - record.usedAt < UNUSED_MS) continue;
+        if (!record || !record.bundleId) continue;
+        if (record.bundleId === keep) {
+          survivors.push(record);
+          continue;
+        }
+        if (typeof record.usedAt === "number" && now - record.usedAt >= UNUSED_MS) {
+          verified.delete(record.bundleId);
+          await env.records.remove(record.bundleId);
+          await env.caches.delete(`${CACHE_PREFIX}${record.bundleId}`);
+          continue;
+        }
+        survivors.push(record);
+      }
+      // Evict oldest bundles beyond the bounded LRU cap (always preserving `keep`).
+      if (survivors.length > MAX_CACHED_BUNDLES) {
+        const evictable = survivors
+          .filter(record => record.bundleId !== keep)
+          .sort((a, b) => (typeof a.usedAt === "number" ? a.usedAt : 0) - (typeof b.usedAt === "number" ? b.usedAt : 0));
+        const toDrop = survivors.length - MAX_CACHED_BUNDLES;
+        for (let i = 0; i < toDrop && i < evictable.length; i += 1) {
+          const record = evictable[i];
+          verified.delete(record.bundleId);
+          await env.records.remove(record.bundleId);
+          await env.caches.delete(`${CACHE_PREFIX}${record.bundleId}`);
+        }
+      }
+      // Sweep any orphaned `obf-ui-*` caches whose manifest record is gone.
+      if (typeof env.caches.keys === "function") {
+        const remaining = await env.records.all();
+        const activeIds = new Set(remaining.filter(Boolean).map(record => record.bundleId));
+        if (keep) activeIds.add(keep);
+        const names = await env.caches.keys();
+        for (const name of names) {
+          if (typeof name !== "string" || !name.startsWith(CACHE_PREFIX)) continue;
+          const id = name.slice(CACHE_PREFIX.length);
+          if (!activeIds.has(id)) await env.caches.delete(name);
+        }
+      }
+    }
+
+    function isQuotaError(error) {
+      if (!error) return false;
+      if (error.name === "QuotaExceededError" || error.code === 22) return true;
+      return /quota/i.test(String(error.message || ""));
+    }
+
+    /** Frees space on quota pressure by evicting older bundle caches (never `keep`). */
+    async function evictOtherBundleCaches(keep) {
+      const all = await env.records.all().catch(() => []);
+      const others = all
+        .filter(record => record && record.bundleId && record.bundleId !== keep)
+        .sort((a, b) => (typeof a.usedAt === "number" ? a.usedAt : 0) - (typeof b.usedAt === "number" ? b.usedAt : 0));
+      for (const record of others) {
         verified.delete(record.bundleId);
-        await env.records.remove(record.bundleId);
-        await env.caches.delete(`${CACHE_PREFIX}${record.bundleId}`);
+        await env.records.remove(record.bundleId).catch(() => undefined);
+        await env.caches.delete(`${CACHE_PREFIX}${record.bundleId}`).catch(() => undefined);
+      }
+      if (typeof env.caches.keys === "function") {
+        const names = await env.caches.keys().catch(() => []);
+        for (const name of names) {
+          if (typeof name === "string" && name.startsWith(CACHE_PREFIX) && name !== `${CACHE_PREFIX}${keep}`) {
+            await env.caches.delete(name).catch(() => undefined);
+          }
+        }
+      }
+    }
+
+    /** Writes a verified response into Cache Storage; quota failures never brick the load. */
+    async function putCached(cache, bundleId, key, response) {
+      if (!cache) return;
+      try {
+        await cache.put(key, response.clone());
+      } catch (error) {
+        if (!isQuotaError(error)) return;
+        await evictOtherBundleCaches(bundleId);
+        try {
+          await cache.put(key, response.clone());
+        } catch {
+          // Still over quota: serve the verified bytes without caching them.
+        }
       }
     }
 
@@ -355,13 +435,13 @@
       if (!file) return new Response("Not in this bundle", { status: 404, headers: { "Content-Type": "text/plain" } });
       await touch(record).catch(() => undefined);
       const key = `${env.scopeUrl}${bundleId}/${file.path.split("/").map(encodeURIComponent).join("/")}`;
-      const cache = await env.caches.open(`${CACHE_PREFIX}${bundleId}`);
-      const hit = await cache.match(key);
+      const cache = await env.caches.open(`${CACHE_PREFIX}${bundleId}`).catch(() => null);
+      const hit = cache ? await cache.match(key).catch(() => undefined) : undefined;
       if (hit) return hit;
       try {
         const body = await pull(record, file);
         const response = new Response(body, { status: 200, headers: headersFor(file.path) });
-        await cache.put(key, response.clone());
+        await putCached(cache, bundleId, key, response);
         return response;
       } catch (error) {
         const failure =
@@ -517,6 +597,10 @@
   /** Resolves with `registration`'s worker once it is activated. */
   function activeWorker(registration, timeoutMs) {
     return new Promise((resolve, reject) => {
+      if (registration.active && registration.active.state === "activated") {
+        resolve(registration.active);
+        return;
+      }
       const worker = registration.installing || registration.waiting || registration.active;
       if (!worker) {
         reject(new Error("no worker"));
@@ -526,16 +610,27 @@
         resolve(worker);
         return;
       }
-      const timer = setTimeout(() => reject(new Error("the UI loader did not start in time")), timeoutMs);
-      worker.addEventListener("statechange", () => {
-        if (worker.state === "activated") {
-          clearTimeout(timer);
-          resolve(worker);
-        } else if (worker.state === "redundant") {
-          clearTimeout(timer);
-          reject(new Error("the UI loader was replaced while starting"));
+      const finish = (err, value) => {
+        clearTimeout(timer);
+        if (typeof worker.removeEventListener === "function") {
+          worker.removeEventListener("statechange", onStateChange);
         }
-      });
+        if (err) reject(err);
+        else resolve(value);
+      };
+      const onStateChange = () => {
+        if (worker.state === "activated") {
+          finish(null, worker);
+        } else if (worker.state === "redundant") {
+          if (registration.active && registration.active.state === "activated") {
+            finish(null, registration.active);
+          } else {
+            finish(new Error("the UI loader was replaced while starting"));
+          }
+        }
+      };
+      const timer = setTimeout(() => finish(new Error("the UI loader did not start in time")), timeoutMs);
+      worker.addEventListener("statechange", onStateChange);
     });
   }
 

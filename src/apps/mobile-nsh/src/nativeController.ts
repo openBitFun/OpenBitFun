@@ -11,12 +11,16 @@
 
 import { Controller } from "openbitfun/mobile";
 import { errorMessageOf } from "../../../nsh-ui/src/backendConnection";
+import { installBackendConnection, installWindowShell } from "../../../nsh-ui/src/bridge";
+import { createIdleConnection } from "../../../nsh-ui/src/controller/controllerStore";
 import { createJsonWireConnection } from "../../../nsh-ui/src/jsonWireConnection";
+import { createMobileShell } from "./mobileShell";
 import {
   ControllerError,
   installControllerPort,
   type ControllerAccount,
   type ControllerCodeChallenge,
+  type ControllerConnectOptions,
   type ControllerConnection,
   type ControllerDevice,
   type ControllerErrorCode,
@@ -124,7 +128,7 @@ export function readEntryCandidates(value: unknown): string[] {
   return list.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
-async function connect(deviceId: string, options?: { fleet?: unknown }): Promise<ControllerConnection> {
+async function connect(deviceId: string, options?: ControllerConnectOptions): Promise<ControllerConnection> {
   let handle: number;
   try {
     // The fleet entry walker passes its vector cursor; the module sends it in the hello.
@@ -145,8 +149,17 @@ async function connect(deviceId: string, options?: { fleet?: unknown }): Promise
             : Controller.nextEvents(handle, afterSeq),
       ready: () => Controller.hello(handle),
     },
-    { kind: "mesh" },
+    { kind: "mesh", fleetCursor: options?.fleet?.cursor },
   );
+  try {
+    // Resolve hello before returning so `opened.fleet()` is populated for `withFleetFailover`.
+    await wire.ready();
+  } catch (reason) {
+    closed = true;
+    wire.close();
+    void Controller.disconnect(handle).catch(() => undefined);
+    throw nativePortError(reason);
+  }
   return {
     ...wire,
     kind: wire.kind,
@@ -154,6 +167,7 @@ async function connect(deviceId: string, options?: { fleet?: unknown }): Promise
     close() {
       if (closed) return;
       closed = true;
+      wire.close();
       void Controller.disconnect(handle).catch(() => undefined);
     },
   };
@@ -189,4 +203,6 @@ export const nativeController: ControllerPort = {
     : {}),
 };
 
+installWindowShell(createMobileShell());
+installBackendConnection(createIdleConnection());
 installControllerPort(nativeController);

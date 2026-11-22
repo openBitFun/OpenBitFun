@@ -9,6 +9,7 @@ import { signal } from "nsh";
 import type { BackendEvent, ConnectionState } from "../src/backendConnection";
 import { fleetActive, installBackendConnection, entryDeviceId } from "../src/bridge";
 import { installBackendResync } from "../src/backendResync";
+import { createJsonWireConnection } from "../src/jsonWireConnection";
 import type { ControllerConnection } from "../src/controller/controllerPort";
 import { createFleetEntryConnection, ENTRY_CHANGED_REASON, withFleetFailover } from "../src/controller/fleetEntry";
 import type { ControllerPort } from "../src/controller/controllerPort";
@@ -234,6 +235,7 @@ test("the controller keeps the device it opened as the first entry, and an older
   opened.drop();
   await tick(150);
   expect(connects).toEqual(["dev-b"]);
+  expect(wrapped.deviceId).toBe("dev-b");
   expect(await wrapped.invoke("get_config", {})).toEqual({ ranOn: "dev-b", command: "get_config" });
   wrapped.close();
 
@@ -243,4 +245,147 @@ test("the controller keeps the device it opened as the first entry, and an older
   expect((await withFleetFailover(port([]), "dev-ui", plain, cursor)) === plain).toBe(true);
   const old = { ...fakeEntry("dev-old", hello, { protocol: 1, cursorState: {} }), fleet: () => null };
   expect((await withFleetFailover(port(["dev-b"]), "dev-old", old, cursor)) === old).toBe(true);
+});
+
+test("transient disconnect across all candidates retries with backoff, refreshes candidates, and supports retry()", async () => {
+  let online = false;
+  let candidateList = ["dev-a", "dev-b"];
+  const opened: FakeEntry[] = [];
+  const connection = createFleetEntryConnection({
+    candidates: candidateList,
+    minRetryMs: 25,
+    maxRetryMs: 60,
+    maxAutoRetries: 3,
+    refreshCandidates: async () => candidateList,
+    connect: async (deviceId, hello) => {
+      if (opened.length > 0 && !online) throw new Error(`unreachable: ${deviceId}`);
+      const entry = fakeEntry(deviceId, hello.fleet, { protocol: 1, cursorState: {}, deviceId });
+      opened.push(entry);
+      return entry;
+    },
+  });
+  await connection.ready();
+  expect(connection.entryDeviceId()).toBe("dev-a");
+
+  // Drop entry while every candidate is briefly unreachable: stays reconnecting and recovers automatically.
+  opened[0]!.drop();
+  await tick(15);
+  expect(connection.state()).toBe("reconnecting");
+  expect(connection.allFailed()).toBe(false);
+
+  candidateList = ["dev-c", "dev-a"];
+  online = true;
+  await tick(100);
+  expect(connection.state()).toBe("connected");
+  expect(connection.entryDeviceId()).toBe("dev-c");
+
+  // Exhaust auto-retries -> enters failed; explicit retry() recovers cleanly.
+  online = false;
+  opened[1]!.drop();
+  await tick(260);
+  expect(connection.state()).toBe("failed");
+  expect(connection.allFailed()).toBe(true);
+
+  online = true;
+  connection.retry();
+  await tick(40);
+  expect(connection.state()).toBe("connected");
+  expect(connection.allFailed()).toBe(false);
+  connection.close();
+});
+
+test("single-candidate transient drop preserves the underlying connection reconnect loop", async () => {
+  const state = signal<ConnectionState>("connected");
+  let retried = 0;
+  let closed = false;
+  const single: ControllerConnection = {
+    kind: "websocket",
+    deviceId: "dev-solo",
+    invoke: async command => ({ ranOn: "dev-solo", command }),
+    subscribe: () => () => undefined,
+    ready: async () => ({ version: "2.0.0", platform: "macos", dataDir: null, fleet: { protocol: 1, cursorState: {}, deviceId: "dev-solo" } }),
+    state: () => state(),
+    error: () => (state() === "connected" ? "" : "socket dropped"),
+    lastSeq: () => null,
+    fleet: () => ({ protocol: 1, cursorState: {}, deviceId: "dev-solo" }),
+    retry() {
+      retried += 1;
+      state.set("connected");
+    },
+    close() {
+      closed = true;
+    },
+  };
+  const connection = createFleetEntryConnection({
+    candidates: ["dev-solo"],
+    connect: async () => single,
+  });
+  await connection.ready();
+  state.set("reconnecting");
+  await tick(20);
+  expect(closed).toBe(false);
+  expect(connection.state()).toBe("reconnecting");
+  connection.retry();
+  await tick(20);
+  expect(retried).toBe(1);
+  expect(connection.state()).toBe("connected");
+  connection.close();
+});
+
+test("jsonWireConnection exposes fleet(), advances shared FleetCursor, works with withFleetFailover, and preserves plain events-dropped", async () => {
+  const sharedCursor: FleetCursor = {};
+  const batches: string[] = [
+    JSON.stringify([
+      { seq: 10, origin: "dev-a", originInstance: "a-1", event: "agentic://text-chunk", payload: {} },
+      { seq: 12, event: "agentic://tool-event", payload: { n: 12 } },
+      // Plain-stream restart with lower seq: events-dropped resets lastSeq so seq 4 passes.
+      { seq: 3, event: "backend://events-dropped", payload: { reason: "backend_restarted" } },
+      { seq: 4, event: "agentic://tool-event", payload: { n: 4 } },
+    ]),
+  ];
+  let resolveWait: ((value: string) => void) | undefined;
+  const wire = createJsonWireConnection(
+    {
+      invoke: async command => JSON.stringify({ ran: command }),
+      nextEvents: async () => {
+        const next = batches.shift();
+        if (next) return next;
+        return new Promise<string>(resolve => {
+          resolveWait = resolve;
+        });
+      },
+      ready: async () =>
+        JSON.stringify({
+          version: "2.0.0",
+          platform: "ios",
+          dataDir: null,
+          fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+        }),
+    },
+    { kind: "mesh", fleetCursor: sharedCursor },
+  );
+  await wire.ready();
+  expect(wire.fleet()).toEqual({ protocol: 1, cursorState: {}, deviceId: "dev-a" });
+  const received: BackendEvent[] = [];
+  wire.subscribe(batch => received.push(...batch));
+  await tick(30);
+  expect(sharedCursor).toEqual({ "dev-a": { instanceId: "a-1", seq: 10 } });
+  expect(received.map(e => `${e.event}:${e.seq}`)).toEqual([
+    "agentic://text-chunk:10",
+    "agentic://tool-event:12",
+    "backend://events-dropped:3",
+    "agentic://tool-event:4",
+  ]);
+  const opened: ControllerConnection = { ...wire, deviceId: "dev-a" };
+  const port = {
+    kind: "native",
+    entryCandidates: async () => ["dev-a", "dev-b"],
+    connect: async (deviceId: string, opts?: { fleet?: FleetHello }) =>
+      fakeEntry(deviceId, opts?.fleet ?? { protocol: 1, cursor: sharedCursor }, { protocol: 1, cursorState: {}, deviceId }),
+  } as unknown as ControllerPort;
+  const wrapped = await withFleetFailover(port, "dev-a", opened, sharedCursor);
+  expect(wrapped === opened).toBe(false);
+  expect(wrapped.deviceId).toBe("dev-a");
+  wrapped.close();
+  if (resolveWait) resolveWait("[]");
 });

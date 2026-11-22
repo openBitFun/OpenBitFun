@@ -29,10 +29,19 @@ export function isFleetPlainCommand(command: string): boolean {
   return FLEET_ENTRY_COMMANDS.has(command) || PEER_CONTROLLER_LOCAL_COMMANDS.has(command);
 }
 
+/** `sessionId` <-> `session_id`, mirroring Rust `fleet_routing::other_spelling`. */
+function otherSpelling(key: string): string {
+  if (key.includes("_")) {
+    return key.replace(/_([a-z0-9])/gi, (_, ch: string) => ch.toUpperCase());
+  }
+  return key.replace(/[A-Z]/g, ch => `_${ch.toLowerCase()}`);
+}
+
 /**
  * The id a command acts on (`FLEET_OWNER_KEYS`), read from its Tauri args at
- * the registry's path; `null` for commands without an owner key or when the
- * call does not carry the id.
+ * the registry's path (checking both exact spelling and `camelCase`/`snake_case`
+ * alias on the leaf segment, matching Rust's `owner_key_value`); `null` for
+ * commands without an owner key or when the call does not carry the id.
  */
 export function fleetOwnerKeyOf(
   command: string,
@@ -40,12 +49,20 @@ export function fleetOwnerKeyOf(
 ): { entity: FleetOwnerEntity; id: string } | null {
   const key = FLEET_OWNER_KEYS[command];
   if (!key || !args) return null;
-  let value: unknown = args;
-  for (const part of key.path.split(".")) {
-    if (!value || typeof value !== "object") return null;
-    value = (value as Record<string, unknown>)[part];
+  const parts = key.path.split(".");
+  const leaf = parts.pop();
+  if (!leaf) return null;
+  let parent: unknown = args;
+  for (const part of parts) {
+    if (!parent || typeof parent !== "object") return null;
+    parent = (parent as Record<string, unknown>)[part];
   }
-  return typeof value === "string" && value ? { entity: key.entity, id: value } : null;
+  if (!parent || typeof parent !== "object") return null;
+  const record = parent as Record<string, unknown>;
+  const direct = record[leaf];
+  if (typeof direct === "string" && direct) return { entity: key.entity, id: direct };
+  const alias = record[otherSpelling(leaf)];
+  return typeof alias === "string" && alias ? { entity: key.entity, id: alias } : null;
 }
 
 export interface FleetRouteContext {

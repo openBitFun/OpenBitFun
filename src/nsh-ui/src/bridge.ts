@@ -175,7 +175,7 @@ export function fleetHandshakePending(): boolean {
   const connection = activeConnection();
   return connection.fleet
     ? connection.fleet() === null && connection.state() === "connecting"
-    : connection.kind === "native" && !readyFleetSettled;
+    : (connection.kind === "native" || connection.kind === "mesh") && !readyFleetSettled;
 }
 
 /** Resolves once `fleetHandshakePending()` is over (or after the handshake wait). */
@@ -378,7 +378,7 @@ function stopFleetEventPoll(): void {
 
 function startFleetEventPollIfNeeded(): void {
   const connection = activeConnection();
-  if (fleetPoll || !channelOpen || connection.kind !== "native" || connection.fleet || !fleetActive()) return;
+  if (fleetPoll || !channelOpen || connection.kind !== "native" || !fleetActive()) return;
   let stopped = false;
   fleetPoll = { stop: () => (stopped = true) };
   const cursor: FleetCursor = {};

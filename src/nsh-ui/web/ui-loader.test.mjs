@@ -309,3 +309,62 @@ test('bundles unused for 30 days are dropped with their cached files', async () 
   assert.equal(world.caches.has(`obf-ui-${first.bundleId}`), false);
   assert.equal(world.records.has(second.bundleId), true);
 });
+
+test('bounded LRU eviction caps stored bundles and sweeps orphaned obf-ui-* caches', async () => {
+  const base = bundle();
+  const world = environment();
+  world.env.caches.keys = async () => [...world.caches.keys()];
+  world.pool.set(sha(base.index), base.index);
+  // Plant an orphaned cache with no record in IndexedDB.
+  world.caches.set(`obf-ui-${'9'.repeat(64)}`, new Map());
+  const ui = loader.createUiLoader(world.env);
+  const ids = [];
+  for (let i = 1; i <= 6; i += 1) {
+    world.clock.now += 1000;
+    const stored = await ui.storeManifest({ manifest: { ...base.manifest, version: `2.0.${i}` }, deviceId: 'desk-1' });
+    await ui.handle(navigate(`${SCOPE}${stored.bundleId}/index.html`), 'c1');
+    ids.push(stored.bundleId);
+  }
+  // Orphaned cache was swept and only the 4 most recently used bundles remain.
+  assert.equal(world.caches.has(`obf-ui-${'9'.repeat(64)}`), false);
+  assert.equal(world.records.size, 4);
+  assert.equal(world.records.has(ids[0]), false);
+  assert.equal(world.records.has(ids[1]), false);
+  assert.equal(world.caches.has(`obf-ui-${ids[0]}`), false);
+  assert.equal(world.records.has(ids[5]), true);
+});
+
+test('QuotaExceededError during cache.put evicts older caches and still serves verified bytes', async () => {
+  const base = bundle();
+  const world = environment();
+  world.env.caches.keys = async () => [...world.caches.keys()];
+  world.pool.set(sha(base.index), base.index);
+  const ui = loader.createUiLoader(world.env);
+  const old = await ui.storeManifest({ manifest: { ...base.manifest, version: '1.9.0' }, deviceId: 'desk-1' });
+  await ui.handle(navigate(`${SCOPE}${old.bundleId}/index.html`), 'c1');
+  assert.equal(world.caches.has(`obf-ui-${old.bundleId}`), true);
+
+  // Inject QuotaExceededError on every cache.put for the new bundle.
+  const baseOpen = world.env.caches.open;
+  let putAttempts = 0;
+  world.env.caches.open = async name => {
+    const store = await baseOpen(name);
+    return {
+      match: store.match,
+      put: async () => {
+        putAttempts += 1;
+        const err = new Error('Storage quota exceeded');
+        err.name = 'QuotaExceededError';
+        throw err;
+      },
+    };
+  };
+
+  world.clock.now += 5000;
+  const fresh = await ui.storeManifest({ manifest: { ...base.manifest, version: '2.0.0' }, deviceId: 'desk-1' });
+  const response = await ui.handle(navigate(`${SCOPE}${fresh.bundleId}/index.html`), 'c1');
+  assert.equal(response.status, 200);
+  assert.equal(Buffer.from(await response.arrayBuffer()).toString(), base.index.toString());
+  assert.equal(putAttempts, 2);
+  assert.equal(world.caches.has(`obf-ui-${old.bundleId}`), false);
+});

@@ -85,16 +85,6 @@ export function resolveControllerUrl(value: string, socket: boolean, base: strin
   return url.href.replace(/\/$/, "");
 }
 
-/** Where the gateway says the account's cloud node is reached (`GET /devices` `cloudNode`). */
-let cloudNode: { deviceId: string; path: string } | null = null;
-
-function rememberCloudNode(value: unknown): void {
-  const node = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-  const deviceId = typeof node?.deviceId === "string" ? node.deviceId : "";
-  const path = typeof node?.path === "string" ? node.path : "";
-  cloudNode = deviceId && path.startsWith("/") ? { deviceId, path } : null;
-}
-
 const API_CODES: Record<string, ControllerErrorCode> = {
   invalid_email: "invalid_email",
   invalid_code: "invalid_code",
@@ -209,6 +199,15 @@ export function createWebController(options: WebControllerOptions): ControllerPo
   const api = resolveControllerUrl(options.api, false);
   const gateway = resolveControllerUrl(options.gateway, true);
   const connectTimeoutMs = options.connectTimeoutMs ?? 45_000;
+  /** Where the gateway says the account's cloud node is reached (`GET /devices` `cloudNode`). */
+  let cloudNode: { deviceId: string; path: string } | null = null;
+
+  function rememberCloudNode(value: unknown): void {
+    const node = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+    const deviceId = typeof node?.deviceId === "string" ? node.deviceId : "";
+    const path = typeof node?.path === "string" ? node.path : "";
+    cloudNode = deviceId && path.startsWith("/") ? { deviceId, path } : null;
+  }
 
   async function request(path: string, init: { method?: string; body?: unknown } = {}): Promise<Record<string, unknown>> {
     const fetcher = options.fetch ?? (globalThis as { fetch?: Fetcher }).fetch;
@@ -275,6 +274,7 @@ export function createWebController(options: WebControllerOptions): ControllerPo
       return accountOf(answer.account);
     },
     async signOut() {
+      cloudNode = null;
       try {
         await request("/auth/sign-out", { method: "POST" });
       } finally {

@@ -13,10 +13,12 @@
 // Account page says so.
 
 import { signal } from "nsh";
-import { invokeCommand, listenEvent } from "./bridge";
+import { entryDeviceId, fleetActive, invokeCommand, listenEvent } from "./bridge";
 import { syncContentWidthFromHost } from "./contentWidthStore";
 import { loadFontPreference } from "./fontPreferenceStore";
+import { isCommandUnavailable } from "./hostCommands";
 import { loadSendPolicy } from "./sendPolicyStore";
+import { loadKeybindings } from "./shortcutsStore";
 import { syncAppearanceFromHost } from "./themeStore";
 
 export const SETTINGS_SYNC_STATE_EVENT = "account://settings-sync-state";
@@ -57,9 +59,10 @@ export function clearAccountSyncWriteError(): void {
   accountSyncWriteError.set("");
 }
 
-function isUnknownCommand(error: unknown): boolean {
-  const text = error instanceof Error ? error.message : String(error);
-  return /not found|unknown command|no answer for|unsupported/i.test(text);
+function isForThisEntry(origin: string): boolean {
+  if (!fleetActive()) return true;
+  const entry = entryDeviceId();
+  return !entry || !origin || origin === entry;
 }
 
 let subscribed = false;
@@ -74,13 +77,15 @@ export function onAccountSettingsApplied(listener: (keys: string[]) => void): ()
 function subscribe(): void {
   if (subscribed) return;
   subscribed = true;
-  listenEvent<AccountSyncStatus>(SETTINGS_SYNC_STATE_EVENT, payload => {
+  listenEvent<AccountSyncStatus>(SETTINGS_SYNC_STATE_EVENT, (payload, meta) => {
+    if (!isForThisEntry(meta.origin)) return;
     if (payload && typeof payload === "object") {
       accountSync.set(payload);
       accountSyncLoad.set("ready");
     }
   });
-  listenEvent<{ keys?: unknown }>(SETTINGS_APPLIED_EVENT, payload => {
+  listenEvent<{ keys?: unknown }>(SETTINGS_APPLIED_EVENT, (payload, meta) => {
+    if (!isForThisEntry(meta.origin)) return;
     const keys = Array.isArray(payload?.keys) ? payload.keys.map(String) : [];
     for (const listener of appliedListeners) {
       try {
@@ -104,7 +109,7 @@ export async function loadAccountSync(): Promise<void> {
     accountSyncNote.set("");
   } catch (error) {
     accountSync.set(null);
-    accountSyncLoad.set(isUnknownCommand(error) ? "unsupported" : "failed");
+    accountSyncLoad.set(isCommandUnavailable(error, "account_settings_sync_status") ? "unsupported" : "failed");
     accountSyncNote.set(error instanceof Error ? error.message : String(error));
   }
 }
@@ -146,6 +151,7 @@ export function initAccountSync(): void {
     void loadFontPreference();
     void syncContentWidthFromHost();
     void loadSendPolicy();
+    void loadKeybindings();
   });
   void loadAccountSync();
 }

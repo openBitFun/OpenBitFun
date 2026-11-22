@@ -5,7 +5,7 @@
 // the page host's fixtures.
 
 import { expect, open, test } from "nsh/test";
-import { endpointUrl, servedBackendParams } from "../src/servedBackend";
+import { endpointUrl, missingServedBackendReason, servedBackendParams } from "../src/servedBackend";
 import { createWebSocketConnection, type ObpSocket } from "../src/webSocketConnection";
 import type { BackendEvent } from "../src/backendConnection";
 import { showAllSessions, openSession, createBackend, createDeviceBackend } from "./support";
@@ -213,6 +213,53 @@ test("the served page's parameters name the endpoint", () => {
   expect(endpointUrl({ path: "/obp" }, "https://192.168.1.5:47611/index.html")).toBe("wss://192.168.1.5:47611/obp");
   expect(endpointUrl({ path: "/obp" }, "http://127.0.0.1:47610/")).toBe("ws://127.0.0.1:47610/obp");
   expect(endpointUrl({ path: "/obp" }, null)).toBe(null);
+
+  // Real served pages missing `#nsh-params` never silently fall back to dev fixtures.
+  expect(missingServedBackendReason(null, "https://super.openbitfun.com/")).toBeTruthy();
+  expect(missingServedBackendReason(null, "http://192.168.1.5:47610/")).toBeTruthy();
+  expect(missingServedBackendReason(null, `http://127.0.0.1:8790/b/${"a".repeat(64)}/index.html`)).toBeTruthy();
+  expect(missingServedBackendReason({ obp: {} }, "http://127.0.0.1:8790/")).toBeTruthy();
+  expect(missingServedBackendReason({ controller: {} }, "http://127.0.0.1:8790/")).toBeTruthy();
+  // Local loopback dev pages / headless tests without served params stay allowed.
+  expect(missingServedBackendReason(null, "http://127.0.0.1:5173/")).toBe(null);
+  expect(missingServedBackendReason(null, null)).toBe(null);
+});
+
+test("fleet frames from other origins never overwrite scalar lastSeq, and retry() reconnects immediately", async () => {
+  const { sockets, factory } = fakeSockets();
+  const connection = createWebSocketConnection({
+    url: "ws://backend/obp",
+    createSocket: factory,
+    minBackoffMs: 5000,
+    fleet: { cursor: {} },
+  });
+  sockets[0].accept();
+  sockets[0].push(helloResult({ lastSeq: 10, fleet: { protocol: 1, cursorState: {}, deviceId: "dev-entry" } }));
+  expect(connection.lastSeq()).toBe(10);
+
+  // Another origin's seq must not clobber the entry's scalar lastSeq.
+  sockets[0].push({
+    method: "event",
+    params: { seq: 999, origin: "dev-remote", originInstance: "r-1", event: "agentic://tool-event", payload: {} },
+  });
+  expect(connection.lastSeq()).toBe(10);
+
+  // Entry's own origin advances scalar lastSeq.
+  sockets[0].push({
+    method: "event",
+    params: { seq: 11, origin: "dev-entry", originInstance: "e-1", event: "agentic://tool-event", payload: {} },
+  });
+  expect(connection.lastSeq()).toBe(11);
+
+  // Drop with a 5s backoff -> retry() reconnects immediately without waiting 5s.
+  sockets[0].drop(1006);
+  expect(connection.state()).toBe("reconnecting");
+  expect(sockets.length).toBe(1);
+  connection.retry?.();
+  expect(sockets.length).toBe(2);
+  sockets[1].accept();
+  expect(sockets[1].sent[0].params).toMatchObject({ lastSeq: 11, instanceId: "instance-a" });
+  connection.close();
 });
 
 /** Plays the backend behind the socket: `hello`, `call` from the simulated backend, `obp_*`. */

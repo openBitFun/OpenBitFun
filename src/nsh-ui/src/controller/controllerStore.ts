@@ -11,7 +11,7 @@
 import { signal } from "nsh";
 import { installBackendConnection } from "../bridge";
 import { FLEET_PROTOCOL_VERSION, type FleetCursor } from "../fleetTypes";
-import { withFleetFailover } from "./fleetEntry";
+import { fleetEntryCandidates, withFleetFailover } from "./fleetEntry";
 import { currentLocale } from "../i18n";
 import {
   controllerErrorCode,
@@ -105,16 +105,24 @@ function routeRank(device: ControllerDevice): number {
 }
 
 /**
- * The device whose UI this page loads and drives, among those not yet tried:
- * a connectable full device (the server marks phones and browsers not
- * connectable), the newest build first, then the closest route, then one the
- * server sees online. `null` when none is left.
+ * The device whose UI this page loads and drives, among those not yet tried.
+ * When the backend supplies ranked `entryCandidates`, that server/native order
+ * is respected verbatim (display-only); only older hosts without
+ * `entryCandidates` fall back to version/route ranking. `null` when none is left.
  */
 export function pickUiSourceDevice(
   devices: readonly ControllerDevice[],
   tried: ReadonlySet<string> = new Set(),
+  rankedIds?: readonly string[] | null,
 ): ControllerDevice | null {
   const candidates = devices.filter(device => device.connectable && !device.unavailable && !tried.has(device.deviceId));
+  if (rankedIds && rankedIds.length > 0) {
+    const byId = new Map(candidates.map(device => [device.deviceId, device]));
+    for (const id of rankedIds) {
+      const match = byId.get(id);
+      if (match) return match;
+    }
+  }
   candidates.sort(
     (a, b) =>
       compareVersions(b.clientVersion, a.clientVersion) ||
@@ -192,21 +200,22 @@ async function openUiSourceDevice(): Promise<void> {
     controllerPhase.set("devices");
     return;
   }
+  const ranked = await fleetEntryCandidates(port);
   const tried = new Set<string>();
   const first = launchDevice ? devices.find(device => device.deviceId === launchDevice && device.connectable) : undefined;
   launchDevice = null;
-  let next: ControllerDevice | null = first ?? pickUiSourceDevice(devices, tried);
+  let next: ControllerDevice | null = first ?? pickUiSourceDevice(devices, tried, ranked);
   let tooOld = 0;
   while (next) {
     tried.add(next.deviceId);
-    const outcome = await connectControllerDevice(next, { fromList: false });
+    const outcome = await connectControllerDevice(next, { fromList: false, rankedCandidates: ranked });
     if (outcome === "connected" || outcome === "away") return;
     const reason = controllerFailure();
     if (reason?.code === "signed_out") return;
     // This page itself must be reloaded: another device would not help.
     if (reason?.code === "page_outdated") break;
     if (reason?.code === "device_ui_unavailable") tooOld += 1;
-    next = pickUiSourceDevice(devices, tried);
+    next = pickUiSourceDevice(devices, tried, ranked);
   }
   if (tried.size > 1 && tooOld === tried.size) {
     controllerFailure.set({
@@ -264,7 +273,7 @@ export type ConnectOutcome = "connected" | "away" | "failed";
  */
 export async function connectControllerDevice(
   device: ControllerDevice,
-  options: { fromList?: boolean } = {},
+  options: { fromList?: boolean; rankedCandidates?: readonly string[] | null } = {},
 ): Promise<ConnectOutcome> {
   const port = controllerPort();
   if (!port || controllerConnecting()) return "failed";
@@ -292,7 +301,7 @@ export async function connectControllerDevice(
       return "away";
     }
     connection?.close();
-    connection = await withFleetFailover(port, device.deviceId, opened, cursor);
+    connection = await withFleetFailover(port, device.deviceId, opened, cursor, options.rankedCandidates);
     controllerConnectMs.set(Date.now() - started);
     installBackendConnection(connection);
     controllerDevice.set(device);

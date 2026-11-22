@@ -48,8 +48,8 @@ export interface ShellActions {
 }
 
 export interface WindowShell {
-  /** `host-page`: the Tauri webview; `nsh-desktop`: a native NSH window; `browser`: a tab of a backend-served page. */
-  readonly id: "host-page" | "nsh-desktop" | "browser";
+  /** `host-page`: the Tauri webview; `nsh-desktop`: a native NSH window; `browser`: a tab of a backend-served page; `mobile`: the phone app. */
+  readonly id: "host-page" | "nsh-desktop" | "browser" | "mobile";
   /** Drag regions are declared on views (`desktop={{ windowDrag }}`) instead of started on press. */
   readonly nativeDragRegions: boolean;
   /** The app's own updater commands answer here. */

@@ -4690,9 +4690,14 @@ export function controllerPageState(location, storage) {
   const hashDevice = fragment.get("device");
   let handoff = null;
   if (page) {
-    handoff = readControllerHandoff(storage);
-    // A device UI page opened in a new tab has no sessionStorage handoff.
-    if (!handoff && hashDevice) handoff = { v: 1, deviceId: hashDevice, at: null };
+    const stored = readControllerHandoff(storage);
+    if (hashDevice) {
+      // Explicit `#device=` wins over a stale handoff for another device; preserve
+      // full v1 handoff metadata when both agree on the same device.
+      handoff = stored && stored.deviceId === hashDevice ? stored : { v: 1, deviceId: hashDevice, at: null };
+    } else {
+      handoff = stored;
+    }
   }
   const reason = fragment.get("ui-error");
   return {
@@ -4772,9 +4777,10 @@ async function prepareBundleRealm(page) {
     if (String(name).toLowerCase() !== "iframe") return createElement.call(this, name, options);
     document.createElement = createElement;
     parent.append = function appendKeepingRealm(...nodes) {
+      if (!nodes.includes(frame)) return append.apply(this, nodes);
       parent.append = append;
       const others = nodes.filter(node => node !== frame);
-      if (others.length) append.apply(this, others);
+      if (others.length) return append.apply(this, others);
     };
     return frame;
   };
@@ -4806,7 +4812,8 @@ function guardBundleRealm(page, realm) {
   };
   // Another same-origin frame (a widget's `srcdoc`, a realm built some other
   // way) is watched too: loading this bundle's files there without the
-  // worker fails the page.
+  // worker fails the page. Intercept `createElement` / `createElementNS` with
+  // an O(1) tag check instead of running a permanent whole-DOM MutationObserver.
   const checkFrame = node => {
     if (node === realm || !node || node.nodeName !== "IFRAME" || node.__obfWatched) return;
     node.__obfWatched = true;
@@ -4823,21 +4830,31 @@ function guardBundleRealm(page, realm) {
   watch(window);
   watch(realm.contentWindow);
   for (const node of document.querySelectorAll("iframe")) checkFrame(node);
-  new MutationObserver(records => {
-    for (const record of records) {
-      for (const node of record.addedNodes) {
-        checkFrame(node);
-        if (node && typeof node.querySelectorAll === "function") node.querySelectorAll("iframe").forEach(checkFrame);
-      }
-    }
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  const origCreateElement = document.createElement;
+  document.createElement = function watchCreatedElement(name, options) {
+    const el = origCreateElement.call(this, name, options);
+    if (el && el.nodeName === "IFRAME") checkFrame(el);
+    return el;
+  };
+  if (typeof document.createElementNS === "function") {
+    const origCreateElementNS = document.createElementNS;
+    document.createElementNS = function watchCreatedElementNS(ns, name, options) {
+      const el = origCreateElementNS.call(this, ns, name, options);
+      if (el && el.nodeName === "IFRAME") checkFrame(el);
+      return el;
+    };
+  }
 }
 
 /** Device UI pages only: refuses an uncontrolled page and readies the realm. */
 async function prepareBundlePage() {
   if (typeof document === "undefined" || typeof location === "undefined") return;
   const page = bundlePageOf(location);
-  if (!page || !document.body) return;
+  if (!page) return;
+  if (!document.body && document.readyState === "loading") {
+    await new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true }));
+  }
+  if (!document.body) return;
   const container = typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
   if (!container || !container.controller) {
     throw new Error("This page must be opened through OpenBitFun's interface loader; open it again from the launcher");
@@ -4850,6 +4867,12 @@ async function prepareBundlePage() {
     throw error;
   }
   guardBundleRealm(page, realm);
+  try {
+    // Clear the boot-loop guard once the bundle page started under its worker.
+    sessionStorage.removeItem("obf.ui.boot");
+  } catch {
+    // sessionStorage unavailable; harmless.
+  }
 }
 
 /** The launcher this page belongs to (`https://<domain>/app/`). */
@@ -4861,6 +4884,10 @@ function launcherUrl() {
 
 function uiLoaderWorker(registration) {
   return new Promise((resolve, reject) => {
+    if (registration.active && registration.active.state === "activated") {
+      resolve(registration.active);
+      return;
+    }
     const worker = registration.installing || registration.waiting || registration.active;
     if (!worker) {
       reject(new Error("the UI loader did not install"));
@@ -4870,23 +4897,37 @@ function uiLoaderWorker(registration) {
       resolve(worker);
       return;
     }
-    const timer = setTimeout(() => reject(new Error("the UI loader did not start in time")), UI_LOADER_TIMEOUT_MS);
-    worker.addEventListener("statechange", () => {
-      if (worker.state === "activated") {
-        clearTimeout(timer);
-        resolve(worker);
-      } else if (worker.state === "redundant") {
-        clearTimeout(timer);
-        reject(new Error("the UI loader was replaced while starting"));
+    const finish = (err, value) => {
+      clearTimeout(timer);
+      if (typeof worker.removeEventListener === "function") {
+        worker.removeEventListener("statechange", onStateChange);
       }
-    });
+      if (err) reject(err);
+      else resolve(value);
+    };
+    const onStateChange = () => {
+      if (worker.state === "activated") {
+        finish(null, worker);
+      } else if (worker.state === "redundant") {
+        if (registration.active && registration.active.state === "activated") {
+          finish(null, registration.active);
+        } else {
+          finish(new Error("the UI loader was replaced while starting"));
+        }
+      }
+    };
+    const timer = setTimeout(() => finish(new Error("the UI loader did not start in time")), UI_LOADER_TIMEOUT_MS);
+    worker.addEventListener("statechange", onStateChange);
   });
 }
 
 function askUiLoader(worker, message) {
   return new Promise((resolve, reject) => {
     const channel = new MessageChannel();
-    const timer = setTimeout(() => reject(new Error("the UI loader did not answer")), UI_LOADER_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      channel.port1.close();
+      reject(new Error("the UI loader did not answer"));
+    }, UI_LOADER_TIMEOUT_MS);
     channel.port1.onmessage = event => {
       clearTimeout(timer);
       channel.port1.close();
@@ -4974,11 +5015,24 @@ function createController(player) {
     if (socket.finished) return;
     socket.finished = true;
     if (socket.timer) clearTimeout(socket.timer);
+    socket.timer = null;
+    // Drop queued chunks immediately so large ArrayBuffers are never retained after close.
+    socket.chunks = [];
+    socket.chunkOffset = 0;
+    socket.bufferedBytes = 0;
     sockets.delete(socket.id);
-    try {
-      if (socket.ws && socket.ws.readyState <= 1) socket.ws.close(1000, "closed");
-    } catch {
-      // Already closing.
+    const ws = socket.ws;
+    socket.ws = null;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      try {
+        if (ws.readyState <= 1) ws.close(1000, "closed");
+      } catch {
+        // Already closing.
+      }
     }
     emit(socket.id, { type: "close", code, reason });
   }
@@ -5075,19 +5129,82 @@ function createController(player) {
     }
   }
 
-  /** Splits the byte stream into records and handles them in order. */
+  /** Reads the leading big-endian uint32 record length across queued chunks in O(1). */
+  function peekRecordLength(socket) {
+    const first = socket.chunks[0];
+    if (first && first.length - socket.chunkOffset >= 4) {
+      return new DataView(first.buffer, first.byteOffset + socket.chunkOffset, 4).getUint32(0);
+    }
+    const header = new Uint8Array(4);
+    let written = 0;
+    let idx = 0;
+    let offset = socket.chunkOffset;
+    while (written < 4 && idx < socket.chunks.length) {
+      const chunk = socket.chunks[idx];
+      const take = Math.min(4 - written, chunk.length - offset);
+      header.set(chunk.subarray(offset, offset + take), written);
+      written += take;
+      idx += 1;
+      offset = 0;
+    }
+    return new DataView(header.buffer).getUint32(0);
+  }
+
+  /** Consumes `count` bytes from the front of the chunk queue into one fresh Uint8Array in O(count). */
+  function takeBytes(socket, skip, length) {
+    let remainingSkip = skip;
+    while (remainingSkip > 0 && socket.chunks.length > 0) {
+      const head = socket.chunks[0];
+      const avail = head.length - socket.chunkOffset;
+      if (remainingSkip < avail) {
+        socket.chunkOffset += remainingSkip;
+        socket.bufferedBytes -= remainingSkip;
+        remainingSkip = 0;
+      } else {
+        socket.chunks.shift();
+        socket.chunkOffset = 0;
+        socket.bufferedBytes -= avail;
+        remainingSkip -= avail;
+      }
+    }
+    const out = new Uint8Array(length);
+    let written = 0;
+    while (written < length && socket.chunks.length > 0) {
+      const head = socket.chunks[0];
+      const avail = head.length - socket.chunkOffset;
+      const take = Math.min(length - written, avail);
+      out.set(head.subarray(socket.chunkOffset, socket.chunkOffset + take), written);
+      written += take;
+      socket.bufferedBytes -= take;
+      if (take === avail) {
+        socket.chunks.shift();
+        socket.chunkOffset = 0;
+      } else {
+        socket.chunkOffset += take;
+      }
+    }
+    if (socket.bufferedBytes === 0) {
+      socket.chunks = [];
+      socket.chunkOffset = 0;
+    }
+    return out;
+  }
+
+  /** Splits the byte stream into records in O(N) without retaining consumed ArrayBuffers. */
   function receiveBytes(socket, chunk) {
-    socket.buffer = socket.buffer.length ? concatBytes(socket.buffer, chunk) : chunk;
+    if (chunk.length > 0) {
+      socket.chunks.push(chunk);
+      socket.bufferedBytes += chunk.length;
+    }
     for (;;) {
-      if (socket.buffer.length < 4) return;
-      const length = new DataView(socket.buffer.buffer, socket.buffer.byteOffset, 4).getUint32(0);
+      if (socket.bufferedBytes < 4) return;
+      const length = peekRecordLength(socket);
       if (length > E2E_RECORD_MAX) {
         finish(socket, 4500, "channel_failed: an oversized record");
         return;
       }
-      if (socket.buffer.length < 4 + length) return;
-      const body = socket.buffer.slice(4, 4 + length);
-      socket.buffer = socket.buffer.subarray(4 + length);
+      if (socket.bufferedBytes < 4 + length) return;
+      const body = takeBytes(socket, 4, length);
       socket.inbound = socket.inbound
         .then(() => (socket.finished ? undefined : handleRecord(socket, body)))
         .catch(error =>
@@ -5123,7 +5240,9 @@ function createController(player) {
       ws: null,
       finished: false,
       ready: false,
-      buffer: new Uint8Array(0),
+      chunks: [],
+      chunkOffset: 0,
+      bufferedBytes: 0,
       inbound: Promise.resolve(),
       outbound: Promise.resolve(),
       sendCounter: 0,

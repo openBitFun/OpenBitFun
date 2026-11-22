@@ -107,6 +107,12 @@ test('page state: the handoff names the device; the fragment covers a new tab; l
   assert.deepEqual(handed, { handoff: { v: 1, deviceId: 'desk-1', at: 1 }, showDevices: false, uiError: null });
   const newTab = controllerPageState(page, storage());
   assert.equal(newTab.handoff.deviceId, 'desk-1');
+  // Explicit `#device=` wins over a stale sessionStorage handoff for another device.
+  const explicit = controllerPageState(
+    place(`https://super.openbitfun.com/b/${ID}/index.html#device=desk-2`),
+    storage({ [KEY]: '{"v":1,"deviceId":"desk-1","at":1}' }),
+  );
+  assert.deepEqual(explicit.handoff, { v: 1, deviceId: 'desk-2', at: null });
   assert.equal(controllerPageState(place(`https://super.openbitfun.com/b/${ID}/index.html`), storage()).handoff, null);
 
   // The launcher never connects from a handoff (it picks the device itself).
