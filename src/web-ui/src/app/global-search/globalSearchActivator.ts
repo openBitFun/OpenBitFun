@@ -43,11 +43,15 @@ export async function activateGlobalSearchTarget(
       useSceneStore.getState().openScene('assistant');
       return;
     case 'session': {
-      await context.setActiveWorkspace(target.workspaceId);
-      const available = await flowChatStore.ensurePersistedSessionMetadata(
+      // The search hit may only exist in the index, so load its metadata before activation.
+      // The workspace switch is a host round trip and the metadata read addresses the target
+      // workspace directly, so start both together instead of paying them one after the other.
+      const workspaceActivation = context.setActiveWorkspace(target.workspaceId);
+      const metadata = flowChatStore.ensurePersistedSessionMetadata(
         target.sessionId,
         target.workspaceId,
       );
+      const [available] = await Promise.all([metadata, workspaceActivation]);
       if (!available) {
         throw new Error(context.tCommon('nav.search.errors.sessionUnavailable'));
       }
