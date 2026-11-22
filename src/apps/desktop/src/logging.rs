@@ -541,6 +541,13 @@ const TARGET_LEVELS: &[(&str, log::LevelFilter)] = &[
     ("portable_pty", log::LevelFilter::Info),
     ("russh", log::LevelFilter::Info),
     ("grep_searcher", log::LevelFilter::Warn),
+    // OpenBitFun Link (the EasyTier fork): its debug level dumps whole route
+    // tables and sessions several times a second; keep info and up, and the
+    // route sync at warn (same policy as the phone's logger).
+    ("easytier_core", log::LevelFilter::Info),
+    ("easytier_core::peers::route", log::LevelFilter::Warn),
+    ("easytier_core::peers::peer_center", log::LevelFilter::Warn),
+    ("easytier", log::LevelFilter::Info),
 ];
 
 fn is_app_log_target(target: &str) -> bool {

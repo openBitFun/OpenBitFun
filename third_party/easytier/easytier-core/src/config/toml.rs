@@ -179,12 +179,23 @@ pub trait LoggingConfigLoader {
 
 use super::NetworkSecretDigest;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
     #[serde(skip)]
     pub network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+// OpenBitFun: the secret never reaches a log line.
+impl std::fmt::Debug for NetworkIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetworkIdentity")
+            .field("network_name", &self.network_name)
+            .field("network_secret", &self.network_secret.as_ref().map(|_| "<redacted>"))
+            .field("network_secret_digest", &self.network_secret_digest.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl From<super::NetworkIdentity> for NetworkIdentity {

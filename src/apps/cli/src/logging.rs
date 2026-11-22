@@ -355,6 +355,18 @@ fn target_override_rank(target: &str) -> Option<u8> {
         return Some(level_rank(tracing::Level::WARN));
     }
 
+    // OpenBitFun Link (the EasyTier fork): its debug level dumps whole route
+    // tables and sessions several times a second (same policy as the desktop
+    // and the phone).
+    if matches_target_rule(target, "easytier_core::peers::route")
+        || matches_target_rule(target, "easytier_core::peers::peer_center")
+    {
+        return Some(level_rank(tracing::Level::WARN));
+    }
+    if matches_target_rule(target, "easytier_core") || matches_target_rule(target, "easytier") {
+        return Some(level_rank(tracing::Level::INFO));
+    }
+
     None
 }
 

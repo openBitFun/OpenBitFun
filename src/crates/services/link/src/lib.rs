@@ -25,6 +25,8 @@ pub mod status;
 pub mod stream;
 
 #[cfg(test)]
+mod redaction_tests;
+#[cfg(test)]
 mod switch_tests;
 
 pub use config::{DeviceNodeConfig, RelayNodeConfig};

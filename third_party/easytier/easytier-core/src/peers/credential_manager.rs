@@ -35,7 +35,7 @@ pub struct CredentialCreateOptions {
     pub reusable: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CredentialUpsertOptions {
     pub credential_id: String,
     pub credential_secret: String,
@@ -102,7 +102,7 @@ impl CredentialGrant {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CredentialEntry {
     pubkey: String,
     #[serde(default)]
@@ -111,6 +111,19 @@ pub(crate) struct CredentialEntry {
     grant: CredentialGrant,
     expiry_unix: i64,
     created_at_unix: i64,
+}
+
+// OpenBitFun: the credential's private key never reaches a log line.
+impl std::fmt::Debug for CredentialEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialEntry")
+            .field("pubkey", &self.pubkey)
+            .field("secret", &"<redacted>")
+            .field("grant", &self.grant)
+            .field("expiry_unix", &self.expiry_unix)
+            .field("created_at_unix", &self.created_at_unix)
+            .finish()
+    }
 }
 
 impl CredentialEntry {
@@ -183,12 +196,37 @@ pub struct CredentialInfo {
     pub public_key_fingerprint: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GeneratedCredential {
     pub credential_id: String,
     pub secret: String,
     pub expiry_unix: i64,
     pub changed: bool,
+}
+
+// OpenBitFun: credential secrets never reach a log line.
+impl std::fmt::Debug for CredentialUpsertOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialUpsertOptions")
+            .field("credential_id", &self.credential_id)
+            .field("credential_secret", &"<redacted>")
+            .field("groups", &self.groups)
+            .field("allow_relay", &self.allow_relay)
+            .field("allowed_proxy_cidrs", &self.allowed_proxy_cidrs)
+            .field("expiry_unix", &self.expiry_unix)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for GeneratedCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedCredential")
+            .field("credential_id", &self.credential_id)
+            .field("secret", &"<redacted>")
+            .field("expiry_unix", &self.expiry_unix)
+            .field("changed", &self.changed)
+            .finish()
+    }
 }
 
 pub trait CredentialStorage: Send + Sync + 'static {

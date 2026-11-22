@@ -156,6 +156,14 @@ network namespaces).
     reflection forwards it unchanged. Why: a phone app or browser session may
     not be in the account directory desktops read names from.
 
+11. **Secrets never reach a log line** (`config/mod.rs`, `config/toml.rs`,
+    `peers/credential_manager.rs`). `NetworkIdentity` (both copies),
+    `CredentialEntry`, `CredentialUpsertOptions` and `GeneratedCredential`
+    implement `Debug` by hand and print `<redacted>` for the network secret,
+    its digest and credential secrets. Why: upstream derives `Debug`, and many
+    trace/debug sites format `?network_identity` or whole route sessions, so
+    the account network's secret landed in host logs.
+
 The data plane (`DataPlaneTcpStream`/`DataPlaneTcpListener`,
 `CoreInstance::data_plane_tcp_connect/bind`) is used unchanged: it is
 upstream's in-process virtual TCP over the node's smoltcp stack.

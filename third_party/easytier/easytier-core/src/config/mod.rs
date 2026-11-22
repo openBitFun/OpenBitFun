@@ -138,11 +138,23 @@ pub fn normalize_secure_mode_config(
     Ok(config)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
     pub network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+// OpenBitFun: hand-written so the network secret never reaches a log line
+// (many `?network_identity` and session dumps format this type).
+impl std::fmt::Debug for NetworkIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetworkIdentity")
+            .field("network_name", &self.network_name)
+            .field("network_secret", &self.network_secret.as_ref().map(|_| "<redacted>"))
+            .field("network_secret_digest", &self.network_secret_digest.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl NetworkIdentity {
