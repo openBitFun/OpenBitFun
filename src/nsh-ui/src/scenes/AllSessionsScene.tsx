@@ -8,7 +8,7 @@
 // the entry serves it), the host's own catalogue otherwise. Nothing here sorts
 // rows; the only local state is which rows are folded and the search text.
 
-import { Scroll, Text, View, signal, type JSX } from "nsh";
+import { effect, Scroll, Text, View, signal, type JSX, type ViewRef } from "nsh";
 import { listSessions, type SessionSummary } from "../api";
 import { fleetActive } from "../bridge";
 import { fleetDevices, fleetNavigator } from "../fleetStore";
@@ -16,7 +16,7 @@ import type { FleetDevice, FleetSession, FleetWorkspace } from "../fleetTypes";
 import { formatRelativeTime } from "../format";
 import { FLEET_ENTRY_COMMANDS } from "../generated/peerSurface";
 import { invokeCommand } from "../bridge";
-import { tr } from "../i18n";
+import { localizeHostError, tr } from "../i18n";
 import { localDeviceId } from "../devicePrefsStore";
 import { statusOfSession } from "../sessionStatusStore";
 import { loadAgentModes } from "../agentModeStore";
@@ -47,13 +47,22 @@ import {
   localSessionMarkState,
   rollupMarkState,
   sessionMarkState,
+  stateColor,
   type MarkState,
 } from "../ui/fleet";
 import { Icon } from "../ui/icons";
-import { MOTION_DURATION, paintTransition } from "../ui/motion";
-import { Button, EmptyStateCard, SearchInput, SegmentedTabs } from "../ui/primitives";
-import { pushToast } from "../ui/overlays";
-import { MoreMenu } from "../ui/studio";
+import { MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "../ui/motion";
+import {
+  Button,
+  EmptyStateCard,
+  IconButton,
+  InlineBanner,
+  SearchInput,
+  SegmentedTabs,
+  SkeletonBlock,
+  focusRingStyle,
+} from "../ui/primitives";
+import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import { sessionMenuItems, type SessionActionTarget } from "../ui/sessionActions";
 import { workspaceMenuItems, type WorkspaceActionTarget } from "../ui/workspaceActions";
 
@@ -84,8 +93,17 @@ const workspaceOpen = signal<Record<string, boolean>>({});
 const offlineGroupOpen = signal(false);
 /** The entry's flat Recent list, when it serves one. */
 const recentFromEntry = signal<ServedRecentSession[] | null>(null);
+const recentLoading = signal(false);
+const recentError = signal("");
 /** Other workspaces' catalogues on a host without the fleet layer. */
 const localWorkspaceRows = signal<Record<string, SessionSummary[]>>({});
+
+const NON_RUNTIME_HOST_KINDS = new Set(["cloud", "mobile", "phone", "browser", "web"]);
+
+/** Runtime devices (includes local desktop with `isClientDevice: true`; excludes cloud & mobile/browser clients). */
+function isRuntimeFleetDevice(device: FleetDevice): boolean {
+  return !NON_RUNTIME_HOST_KINDS.has(device.hostKind.toLowerCase());
+}
 
 function matches(text: string, needle: string): boolean {
   const query = needle.trim().toLowerCase();
@@ -129,12 +147,21 @@ function entryServesRecent(): boolean {
 }
 
 async function loadRecentFromEntry(): Promise<void> {
+  recentLoading.set(true);
+  recentError.set("");
   try {
     const answer = await invokeCommand<{ sessions?: ServedRecentSession[] }>("fleet_recent_sessions", {});
     recentFromEntry.set(Array.isArray(answer?.sessions) ? answer.sessions : []);
   } catch (error) {
-    console.warn(`fleet_recent_sessions failed: ${error instanceof Error ? error.message : String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`fleet_recent_sessions failed: ${message}`);
     recentFromEntry.set(null);
+    // An older entry without `fleet_recent_sessions` falls back quietly to the navigator.
+    if (!/unknown command|not found|unsupported|no fixture/i.test(message)) {
+      recentError.set(message);
+    }
+  } finally {
+    recentLoading.set(false);
   }
 }
 
@@ -226,18 +253,62 @@ function sessionTarget(row: { sessionId: string; title: string }, deviceId: stri
   return { sessionId: row.sessionId, deviceId, workspaceId, title: row.title, archived: false };
 }
 
-/**
- * A row's ⋯: drawn on hover or focus on desktop (kept mounted so an open menu
- * survives the pointer leaving the row) and always on a phone.
- */
-function RowMenu(props: { target: SessionActionTarget; visible: boolean }) {
+/** Touch-safe ⋯ button: 24 px on desktop, full 44×44 touch target on phone. */
+function CompactMoreMenu(props: {
+  items: ReadonlyArray<DropdownMenuItem>;
+  accessibilityLabel: string;
+  tooltip?: string;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const open = signal(false);
+  const anchor = signal<ViewRef | null>(null);
+  const setOpen = (next: boolean) => {
+    open.set(next);
+    props.onOpenChange?.(next);
+  };
   return (
-    <View style={{ opacity: props.visible || compactLayout() ? 1 : 0, flexShrink: 0 }}>
-      <MoreMenu
+    <View ref={el => anchor.set(el)} style={{ flexShrink: 0 }}>
+      <IconButton
+        icon="more"
+        size={compactLayout() ? "lg" : "xs"}
+        active={open()}
+        tooltip={props.tooltip}
+        accessibilityLabel={props.accessibilityLabel}
+        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+        onPress={() => setOpen(!open())}
+      />
+      <If when={open()}>
+        <DropdownMenu
+          open={true}
+          anchor={anchor()}
+          align="end"
+          minWidth={196}
+          items={props.items}
+          onClose={() => setOpen(false)}
+        />
+      </If>
+    </View>
+  );
+}
+
+/**
+ * A row's ⋯: drawn on hover or while open on desktop (kept mounted so tests and
+ * open menus survive the pointer leaving the row) and always 44×44 on phone.
+ */
+function RowMenu(props: { target: SessionActionTarget; visible: boolean; onOpenChange?: (open: boolean) => void }) {
+  return (
+    <View
+      style={{
+        opacity: props.visible || compactLayout() ? 1 : 0,
+        flexShrink: 0,
+        ...paintTransition(MOTION_DURATION.fast),
+      }}
+    >
+      <CompactMoreMenu
         items={sessionMenuItems(props.target)}
         accessibilityLabel={`session-actions-${props.target.sessionId}`}
         tooltip={tr("session.actions")}
-        size="xs"
+        onOpenChange={props.onOpenChange}
       />
     </View>
   );
@@ -246,36 +317,53 @@ function RowMenu(props: { target: SessionActionTarget; visible: boolean }) {
 function RecentSessionRow(props: { row: RecentRow }) {
   const phone = () => compactLayout();
   const hovered = signal(false);
+  const menuOpen = signal(false);
+  const showMenu = () => hovered() || menuOpen();
   return (
     <View
-      role="button"
-      accessibilityLabel={props.row.title}
       testID={`recent-row-${props.row.sessionId}`}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
-      onPress={() => openSessionRow(props.row.sessionId, props.row.deviceId, props.row.workspaceId)}
-      hitSlop={touchSlop(phone() ? 44 : 36)}
       style={{
         minHeight: phone() ? layout.touchTarget : 36,
-        paddingHorizontal: space.sm,
-        paddingVertical: phone() ? space.xs : 0,
+        paddingHorizontal: phone() ? 0 : space.sm,
         borderRadius: radii.md,
         flexDirection: "row",
         alignItems: "center",
-        gap: space.sm,
-        cursor: "pointer",
+        gap: phone() ? space.xs : space.sm,
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={rowHover()}
+      hoverStyle={phone() ? undefined : rowHover()}
     >
-      <StateMark state={props.row.mark} />
       <If
         when={phone()}
         else={
           <>
-            <Text style={{ ...textStyle("label"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
-              {props.row.title}
-            </Text>
+            <View
+              role="button"
+              accessibilityLabel={props.row.title}
+              onPress={() => openSessionRow(props.row.sessionId, props.row.deviceId, props.row.workspaceId)}
+              hitSlop={touchSlop(36)}
+              activeStyle={tactileActiveStyle(0.985)}
+              focusVisibleStyle={focusRingStyle()}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: 36,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: space.sm,
+                borderRadius: radii.sm,
+                cursor: "pointer",
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
+              }}
+            >
+              <StateMark state={props.row.mark} />
+              <Text style={{ ...textStyle("label"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
+                {props.row.title}
+              </Text>
+            </View>
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 1, minWidth: 0, maxWidth: "40%" }}>
               <DeviceBadge
                 name={props.row.deviceName}
@@ -290,21 +378,69 @@ function RecentSessionRow(props: { row: RecentRow }) {
                 )}
               </If>
             </View>
-            <Age ms={props.row.ageMs} />
-            <RowMenu target={sessionTarget(props.row, props.row.deviceId, props.row.workspaceId)} visible={hovered()} />
+            <View
+              style={{
+                position: "relative",
+                flexShrink: 0,
+                minWidth: 24,
+                minHeight: 24,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "flex-end",
+              }}
+            >
+              <View style={{ opacity: showMenu() ? 0 : 1, pointerEvents: showMenu() ? "none" : "auto" }}>
+                <Age ms={props.row.ageMs} />
+              </View>
+              <View style={{ position: "absolute", right: 0 }}>
+                <RowMenu
+                  target={sessionTarget(props.row, props.row.deviceId, props.row.workspaceId)}
+                  visible={showMenu()}
+                  onOpenChange={open => menuOpen.set(open)}
+                />
+              </View>
+            </View>
           </>
         }
       >
-        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-          <Text style={{ ...textStyle("label"), numberOfLines: 1, textOverflow: "ellipsis" }}>{props.row.title}</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
-            <DeviceBadge name={props.row.deviceName} kind={props.row.deviceKind} />
-            <If when={formatRelativeTime(props.row.ageMs)}>
-              {text => <Text style={{ ...textStyle("caption", { tabular: true }), numberOfLines: 1 }}>{`· ${text()}`}</Text>}
-            </If>
+        <View
+          role="button"
+          accessibilityLabel={props.row.title}
+          onPress={() => openSessionRow(props.row.sessionId, props.row.deviceId, props.row.workspaceId)}
+          hitSlop={touchSlop(layout.touchTarget)}
+          activeStyle={tactileActiveStyle(0.985)}
+          focusVisibleStyle={focusRingStyle()}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            minHeight: layout.touchTarget,
+            paddingLeft: space.sm,
+            paddingVertical: space.xs,
+            borderRadius: radii.md,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+        >
+          <StateMark state={props.row.mark} />
+          <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+            <Text style={{ ...textStyle("label"), numberOfLines: 1, textOverflow: "ellipsis" }}>{props.row.title}</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
+              <DeviceBadge name={props.row.deviceName} kind={props.row.deviceKind} />
+              <If when={formatRelativeTime(props.row.ageMs)}>
+                {text => <Text style={{ ...textStyle("caption", { tabular: true }), numberOfLines: 1 }}>{`· ${text()}`}</Text>}
+              </If>
+            </View>
           </View>
         </View>
-        <RowMenu target={sessionTarget(props.row, props.row.deviceId, props.row.workspaceId)} visible={true} />
+        <RowMenu
+          target={sessionTarget(props.row, props.row.deviceId, props.row.workspaceId)}
+          visible={true}
+          onOpenChange={open => menuOpen.set(open)}
+        />
         <Icon name="chevron-right" size={12} color={palette().textMuted} />
       </If>
     </View>
@@ -314,23 +450,59 @@ function RecentSessionRow(props: { row: RecentRow }) {
 function RecentList() {
   const rows = () => recentRows().filter(row => matches(`${row.title} ${row.deviceName} ${row.workspaceName}`, searchText()));
   return (
-    <If
-      when={rows().length > 0}
-      else={
+    <View style={{ gap: space.md }}>
+      <If when={recentError()}>
+        {err => (
+          <InlineBanner
+            tone="danger"
+            message={localizeHostError(err())}
+            actionLabel={tr("common.tryAgain")}
+            onAction={() => void loadRecentFromEntry()}
+          />
+        )}
+      </If>
+      <If when={recentLoading() && rows().length === 0}>
+        <View style={{ gap: space.sm }}>
+          <SkeletonBlock height={36} borderRadius={radii.md} />
+          <SkeletonBlock height={36} borderRadius={radii.md} />
+          <SkeletonBlock height={36} borderRadius={radii.md} />
+        </View>
+      </If>
+      <If when={!recentLoading() || rows().length > 0}>
         <If
-          when={searchText().trim()}
-          else={<EmptyStateCard icon="layers" title={tr("allSessions.emptyTitle")} subtitle={tr("allSessions.emptyBody")} />}
+          when={rows().length > 0}
+          else={
+            <If
+              when={searchText().trim()}
+              else={<EmptyStateCard icon="layers" title={tr("allSessions.emptyTitle")} subtitle={tr("allSessions.emptyBody")} />}
+            >
+              {query => (
+                <EmptyStateCard
+                  icon="search"
+                  title={tr("allSessions.noMatch", { query: query() })}
+                  action={
+                    <Button
+                      label={tr("common.clearSearch")}
+                      variant="secondary"
+                      size="md"
+                      accessibilityLabel="all-sessions-clear-search"
+                      style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+                      onPress={() => searchText.set("")}
+                    />
+                  }
+                />
+              )}
+            </If>
+          }
         >
-          {query => <EmptyStateCard icon="search" title={tr("allSessions.noMatch", { query: query() })} />}
+          <View accessibilityLabel="all-sessions-recent" style={{ gap: 0 }}>
+            <Each of={rows()} key={row => row.key}>
+              {row => <RecentSessionRow row={row()} />}
+            </Each>
+          </View>
         </If>
-      }
-    >
-      <View accessibilityLabel="all-sessions-recent" style={{ gap: 0 }}>
-        <Each of={rows()} key={row => row.key}>
-          {row => <RecentSessionRow row={row()} />}
-        </Each>
-      </View>
-    </If>
+      </If>
+    </View>
   );
 }
 
@@ -364,8 +536,9 @@ function deviceUiHint(device: FleetDevice): { expanded?: boolean; rollup?: strin
 function deviceTree(): DeviceTreeNode[] {
   if (fleetActive()) {
     return fleetDevices()
-      // Runtime devices only: the cloud node and frontends (phones, browsers) keep no sessions here.
-      .filter(device => device.hostKind !== "cloud" && (!device.isClientDevice || device.workspaces.length > 0))
+      // Runtime devices only: keeps this local desktop (`isClientDevice: true`) even with 0 workspaces,
+      // while excluding the cloud node and frontend-only phones/browsers.
+      .filter(isRuntimeFleetDevice)
       .map(device => {
         const hint = deviceUiHint(device);
         return {
@@ -447,7 +620,7 @@ function DeviceStateWords(props: { node: DeviceTreeNode }) {
         <Text
           style={{
             ...textStyle("caption", {
-              color: kind() === "update_required" ? palette().warning : palette().textMuted,
+              color: stateColor(kind() === "update_required" ? "needs_you" : "idle"),
               tabular: true,
             }),
             flexShrink: 0,
@@ -467,33 +640,61 @@ function DeviceStateWords(props: { node: DeviceTreeNode }) {
 
 function DeviceHeader(props: { node: DeviceTreeNode }) {
   const open = () => deviceExpanded(props.node);
+  const phone = () => compactLayout();
   return (
     <View
       testID={`device-header-${props.node.deviceId || "local"}`}
-      style={{ height: 40, flexDirection: "row", alignItems: "center", gap: space.sm, paddingHorizontal: space.xs }}
+      style={{
+        minHeight: phone() ? layout.touchTarget : 40,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: phone() ? space.xs : space.sm,
+        paddingHorizontal: phone() ? 0 : space.xs,
+      }}
     >
       <View
         role="button"
         accessibilityLabel={`device-fold-${props.node.deviceId || "local"}`}
         accessibilityState={{ expanded: open() }}
-        hitSlop={touchSlop(24, space.xs)}
+        hitSlop={touchSlop(phone() ? layout.touchTarget : 24, space.xs)}
         onPress={() => deviceFold.update(all => ({ ...all, [props.node.deviceId]: !open() }))}
-        style={{ width: 16, height: 16, alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+        activeStyle={tactileActiveStyle(0.95)}
+        focusVisibleStyle={focusRingStyle()}
+        style={{
+          width: phone() ? layout.touchTarget : 20,
+          height: phone() ? layout.touchTarget : 20,
+          borderRadius: radii.sm,
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
+        }}
+        hoverStyle={phone() ? undefined : rowHover()}
       >
         <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
       </View>
       <View
         role="button"
         accessibilityLabel={`device-open-${props.node.deviceId || "local"}`}
+        hitSlop={touchSlop(phone() ? layout.touchTarget : 36)}
         onPress={() => openDevicePage(props.node.deviceId)}
+        activeStyle={tactileActiveStyle(0.985)}
+        focusVisibleStyle={focusRingStyle()}
         style={{
           flexDirection: "row",
           alignItems: "center",
           gap: space.sm,
           flex: 1,
           minWidth: 0,
+          minHeight: phone() ? layout.touchTarget : 36,
+          paddingHorizontal: space.xs,
+          borderRadius: radii.md,
           cursor: "pointer",
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
+        hoverStyle={phone() ? undefined : rowHover()}
       >
         <Icon name={deviceGlyphIcon(props.node.kind)} size={16} color={palette().textSecondary} />
         <Text style={{ ...textStyle("body"), fontWeight: "600", flexShrink: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
@@ -524,33 +725,85 @@ function TreeSessionRow(props: {
   workspaceId: string;
   row: DeviceTreeNode["workspaces"][number]["sessions"][number];
 }) {
+  const phone = () => compactLayout();
   const hovered = signal(false);
+  const menuOpen = signal(false);
+  const showMenu = () => hovered() || menuOpen();
   return (
     <View
-      role="button"
-      accessibilityLabel={props.row.title}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
-      onPress={() => openSessionRow(props.row.sessionId, props.node.deviceId, props.workspaceId)}
       style={{
-        height: controlHeight.md,
-        paddingLeft: 52,
-        paddingRight: space.sm,
+        minHeight: phone() ? layout.touchTarget : controlHeight.md,
+        paddingLeft: phone() ? space.xxl : 52,
+        paddingRight: phone() ? 0 : space.sm,
         borderRadius: radii.md,
         flexDirection: "row",
         alignItems: "center",
         gap: space.sm,
-        cursor: "pointer",
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={rowHover()}
+      hoverStyle={phone() ? undefined : rowHover()}
     >
-      <StateMark state={props.row.mark} />
-      <Text style={{ ...textStyle("label"), fontWeight: "400", flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
-        {props.row.title}
-      </Text>
-      <Age ms={props.row.ageMs} />
-      <RowMenu target={sessionTarget(props.row, props.node.deviceId, props.workspaceId)} visible={hovered()} />
+      <View
+        role="button"
+        accessibilityLabel={props.row.title}
+        hitSlop={touchSlop(phone() ? layout.touchTarget : controlHeight.md)}
+        onPress={() => openSessionRow(props.row.sessionId, props.node.deviceId, props.workspaceId)}
+        activeStyle={tactileActiveStyle(0.985)}
+        focusVisibleStyle={focusRingStyle()}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: phone() ? layout.touchTarget : controlHeight.md,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.sm,
+          borderRadius: radii.sm,
+          cursor: "pointer",
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
+        }}
+      >
+        <StateMark state={props.row.mark} />
+        <Text style={{ ...textStyle("label"), fontWeight: "400", flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
+          {props.row.title}
+        </Text>
+      </View>
+      <If
+        when={phone()}
+        else={
+          <View
+            style={{
+              position: "relative",
+              flexShrink: 0,
+              minWidth: 24,
+              minHeight: 24,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "flex-end",
+            }}
+          >
+            <View style={{ opacity: showMenu() ? 0 : 1, pointerEvents: showMenu() ? "none" : "auto" }}>
+              <Age ms={props.row.ageMs} />
+            </View>
+            <View style={{ position: "absolute", right: 0 }}>
+              <RowMenu
+                target={sessionTarget(props.row, props.node.deviceId, props.workspaceId)}
+                visible={showMenu()}
+                onOpenChange={open => menuOpen.set(open)}
+              />
+            </View>
+          </View>
+        }
+      >
+        <Age ms={props.row.ageMs} />
+        <RowMenu
+          target={sessionTarget(props.row, props.node.deviceId, props.workspaceId)}
+          visible={true}
+          onOpenChange={open => menuOpen.set(open)}
+        />
+      </If>
     </View>
   );
 }
@@ -558,7 +811,10 @@ function TreeSessionRow(props: {
 function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNode["workspaces"][number] }) {
   const key = () => `${props.node.deviceId}/${props.workspace.workspaceId}`;
   const open = () => workspaceOpen()[key()] ?? false;
+  const phone = () => compactLayout();
   const hovered = signal(false);
+  const menuOpen = signal(false);
+  const showActions = () => hovered() || menuOpen();
   const preview = () => {
     const titles = props.workspace.sessions.slice(0, WORKSPACE_PREVIEW).map(row => row.title);
     const rest = props.workspace.total - titles.length;
@@ -577,43 +833,82 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
   return (
     <View>
       <View
-        role="button"
-        accessibilityLabel={`workspace-row-${props.workspace.workspaceId}`}
-        accessibilityState={{ expanded: open() }}
-        onPress={toggle}
         onMouseEnter={() => hovered.set(true)}
         onMouseLeave={() => hovered.set(false)}
         style={{
-          minHeight: 36,
-          paddingLeft: 28,
-          paddingRight: space.sm,
+          minHeight: phone() ? layout.touchTarget : 36,
+          paddingLeft: phone() ? space.lg : 28,
+          paddingRight: phone() ? 0 : space.sm,
           borderRadius: radii.md,
           flexDirection: "row",
           alignItems: "center",
           gap: space.sm,
-          cursor: "pointer",
           ...paintTransition(MOTION_DURATION.fast),
         }}
-        hoverStyle={rowHover()}
+        hoverStyle={phone() ? undefined : rowHover()}
       >
-        <Icon name="folder" size={14} color={palette().textMuted} />
-        <Text style={{ ...textStyle("label"), flexShrink: 0, maxWidth: "40%", numberOfLines: 1, textOverflow: "ellipsis" }}>
-          {props.workspace.name}
-        </Text>
-        <Text style={{ ...textStyle("caption"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
-          {preview()}
-        </Text>
-        <View style={{ opacity: hovered() || compactLayout() ? 1 : 0, flexShrink: 0 }}>
-          <MoreMenu
+        <View
+          role="button"
+          accessibilityLabel={`workspace-row-${props.workspace.workspaceId}`}
+          accessibilityState={{ expanded: open() }}
+          hitSlop={touchSlop(phone() ? layout.touchTarget : 36)}
+          onMouseEnter={() => hovered.set(true)}
+          onPress={toggle}
+          activeStyle={tactileActiveStyle(0.985)}
+          focusVisibleStyle={focusRingStyle()}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            minHeight: phone() ? layout.touchTarget : 36,
+            paddingVertical: phone() ? space.xs : 0,
+            borderRadius: radii.sm,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+        >
+          <Icon name="folder" size={14} color={palette().textMuted} />
+          <If
+            when={phone()}
+            else={
+              <>
+                <Text style={{ ...textStyle("label"), flexShrink: 0, maxWidth: "40%", numberOfLines: 1, textOverflow: "ellipsis" }}>
+                  {props.workspace.name}
+                </Text>
+                <Text style={{ ...textStyle("caption"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
+                  {preview()}
+                </Text>
+              </>
+            }
+          >
+            <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+              <Text style={{ ...textStyle("label"), numberOfLines: 1, textOverflow: "ellipsis" }}>
+                {props.workspace.name}
+              </Text>
+              <If when={preview()}>
+                {text => (
+                  <Text style={{ ...textStyle("caption"), numberOfLines: 1, textOverflow: "ellipsis" }}>
+                    {text()}
+                  </Text>
+                )}
+              </If>
+            </View>
+          </If>
+        </View>
+        <View style={{ opacity: showActions() || phone() ? 1 : 0, flexShrink: 0, ...paintTransition(MOTION_DURATION.fast) }}>
+          <CompactMoreMenu
             items={workspaceMenuItems(workspaceTarget(props.node, props.workspace), {
               onNewSession: () => void newSessionHere(props.workspace.workspaceId, props.node.deviceId),
             })}
             accessibilityLabel={`workspace-actions-${props.workspace.workspaceId}`}
             tooltip={tr("workspace.actions")}
-            size="xs"
+            onOpenChange={isOpen => menuOpen.set(isOpen)}
           />
         </View>
-        <If when={hovered() || compactLayout()}>
+        <If when={!phone() && showActions()}>
           <Button
             label={tr("allSessions.newHere")}
             variant="ghost"
@@ -625,9 +920,36 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
       </View>
       <If when={open()}>
         <View>
-          <Each of={props.workspace.sessions} key={row => row.sessionId}>
-            {row => <TreeSessionRow node={props.node} workspaceId={props.workspace.workspaceId} row={row()} />}
-          </Each>
+          <If
+            when={props.workspace.sessions.length > 0}
+            else={
+              <View
+                style={{
+                  minHeight: phone() ? layout.touchTarget : 36,
+                  paddingLeft: phone() ? space.xxl : 52,
+                  paddingRight: space.sm,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: space.sm,
+                }}
+              >
+                <Text style={{ ...textStyle("caption"), flex: 1, minWidth: 0 }}>
+                  {tr("allSessions.emptyWorkspace")}
+                </Text>
+                <Button
+                  label={tr("allSessions.newHere")}
+                  variant="ghost"
+                  size={phone() ? "md" : "xs"}
+                  style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+                  onPress={() => void newSessionHere(props.workspace.workspaceId, props.node.deviceId)}
+                />
+              </View>
+            }
+          >
+            <Each of={props.workspace.sessions} key={row => row.sessionId}>
+              {row => <TreeSessionRow node={props.node} workspaceId={props.workspace.workspaceId} row={row()} />}
+            </Each>
+          </If>
         </View>
       </If>
     </View>
@@ -642,6 +964,7 @@ const recentlyClosedOpen = signal(false);
  * workspace list is loaded here (the only backend, or the device context).
  */
 function RecentlyClosed(props: { node: DeviceTreeNode }) {
+  const phone = () => compactLayout();
   const rows = () => {
     if (fleetActive() && props.node.deviceId !== deviceContext()) return [];
     const open = new Set(props.node.workspaces.map(workspace => workspace.workspaceId));
@@ -654,8 +977,23 @@ function RecentlyClosed(props: { node: DeviceTreeNode }) {
           role="button"
           accessibilityLabel="all-sessions-recently-closed"
           accessibilityState={{ expanded: recentlyClosedOpen() }}
+          hitSlop={touchSlop(phone() ? layout.touchTarget : 36)}
           onPress={() => recentlyClosedOpen.update(open => !open)}
-          style={{ minHeight: 36, paddingLeft: 28, paddingRight: space.sm, flexDirection: "row", alignItems: "center", gap: space.sm, cursor: "pointer" }}
+          activeStyle={tactileActiveStyle(0.985)}
+          focusVisibleStyle={focusRingStyle()}
+          style={{
+            minHeight: phone() ? layout.touchTarget : 36,
+            paddingLeft: phone() ? space.lg : 28,
+            paddingRight: space.sm,
+            borderRadius: radii.md,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+          hoverStyle={phone() ? undefined : rowHover()}
         >
           <Icon name={recentlyClosedOpen() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
           <Text style={textStyle("caption")}>{tr("allSessions.recentlyClosed", { count: rows().length })}</Text>
@@ -666,7 +1004,14 @@ function RecentlyClosed(props: { node: DeviceTreeNode }) {
               {record => (
                 <View
                   testID={`recent-workspace-${record().id}`}
-                  style={{ minHeight: 36, paddingLeft: 52, paddingRight: space.sm, flexDirection: "row", alignItems: "center", gap: space.sm }}
+                  style={{
+                    minHeight: phone() ? layout.touchTarget : 36,
+                    paddingLeft: phone() ? space.xxl : 52,
+                    paddingRight: phone() ? 0 : space.sm,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.sm,
+                  }}
                 >
                   <Icon name="folder" size={14} color={palette().textMuted} />
                   <Text style={{ ...textStyle("label"), fontWeight: "400", flexShrink: 0, maxWidth: "40%", numberOfLines: 1, textOverflow: "ellipsis" }}>
@@ -678,11 +1023,12 @@ function RecentlyClosed(props: { node: DeviceTreeNode }) {
                   <Button
                     label={tr("allSessions.reopen")}
                     variant="ghost"
-                    size="xs"
+                    size={phone() ? "md" : "xs"}
+                    style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                     accessibilityLabel={`recent-workspace-reopen-${record().id}`}
                     onPress={() => void openRecentWorkspace(record())}
                   />
-                  <MoreMenu
+                  <CompactMoreMenu
                     items={[
                       {
                         id: `recent-workspace-remove-${record().id}`,
@@ -698,7 +1044,6 @@ function RecentlyClosed(props: { node: DeviceTreeNode }) {
                       },
                     ]}
                     accessibilityLabel={`recent-workspace-actions-${record().id}`}
-                    size="xs"
                   />
                 </View>
               )}
@@ -740,6 +1085,9 @@ function ByDeviceList() {
     const tail = nodes.slice(cut);
     return tail.length >= 2 ? { head: nodes.slice(0, cut), offline: tail } : { head: nodes, offline: [] };
   };
+  const phone = () => compactLayout();
+  const hasNotIndexed = () => fleetActive() && fleetDevices().some(device => device.state === "not_indexed");
+  const hasPerDeviceTruncation = () => fleetActive() && fleetDevices().some(device => device.sessionsTruncated);
   return (
     <View accessibilityLabel="all-sessions-by-device" style={{ gap: space.xs }}>
       <If when={all().length > DEVICE_FILTER_THRESHOLD}>
@@ -748,8 +1096,26 @@ function ByDeviceList() {
           onChange={value => deviceFilter.set(value)}
           placeholder={tr("allSessions.filterDevices")}
           accessibilityLabel="all-sessions-device-filter"
-          size="md"
+          size={phone() ? "lg" : "md"}
+          style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
         />
+      </If>
+      <If when={visible().length === 0 ? deviceFilter().trim() : ""}>
+        {query => (
+          <EmptyStateCard
+            icon="search"
+            title={tr("allSessions.noMatch", { query: query() })}
+            action={
+              <Button
+                label={tr("common.clearSearch")}
+                variant="secondary"
+                size="md"
+                style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+                onPress={() => deviceFilter.set("")}
+              />
+            }
+          />
+        )}
       </If>
       <Each of={split().head} key={node => node.deviceId || "local"}>
         {node => <DeviceSection node={node()} />}
@@ -760,8 +1126,22 @@ function ByDeviceList() {
             role="button"
             accessibilityLabel="all-sessions-offline-group"
             accessibilityState={{ expanded: offlineGroupOpen() }}
+            hitSlop={touchSlop(phone() ? layout.touchTarget : 40)}
             onPress={() => offlineGroupOpen.update(open => !open)}
-            style={{ height: 40, flexDirection: "row", alignItems: "center", gap: space.sm, paddingHorizontal: space.xs, cursor: "pointer" }}
+            activeStyle={tactileActiveStyle(0.985)}
+            focusVisibleStyle={focusRingStyle()}
+            style={{
+              minHeight: phone() ? layout.touchTarget : 40,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.sm,
+              paddingHorizontal: space.xs,
+              borderRadius: radii.md,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={phone() ? undefined : rowHover()}
           >
             <Icon name={offlineGroupOpen() ? "chevron-down" : "chevron-right"} size={12} color={palette().textMuted} />
             <Text style={{ ...textStyle("label", { color: palette().textSecondary }), fontWeight: "600" }}>
@@ -777,9 +1157,14 @@ function ByDeviceList() {
           </If>
         </View>
       </If>
-      <If when={fleetActive() && fleetDevices().some(device => device.sessionsTruncated)}>
+      <If when={hasNotIndexed()}>
         <Text style={{ ...textStyle("caption"), paddingHorizontal: space.xs, paddingTop: space.sm }}>
           {tr("allSessions.notIndexed")}
+        </Text>
+      </If>
+      <If when={!hasNotIndexed() && hasPerDeviceTruncation()}>
+        <Text style={{ ...textStyle("caption"), paddingHorizontal: space.xs, paddingTop: space.sm }}>
+          {tr("allSessions.truncatedPerDevice")}
         </Text>
       </If>
     </View>
@@ -811,17 +1196,20 @@ function Header() {
 
 /** The All sessions route. */
 export function AllSessionsScene(): JSX.Element {
-  if (fleetActive() && entryServesRecent()) void loadRecentFromEntry();
-  // The navigator revision changes with every index event; a served Recent list follows it.
-  let lastRevision = -1;
-  const followRevision = () => {
+  // The navigator revision changes with every index event; a served Recent list follows it reactively.
+  let lastRevision: number | null = null;
+  effect(() => {
+    const active = fleetActive();
     const revision = fleetNavigator()?.revision ?? -1;
-    if (revision !== lastRevision && fleetActive() && entryServesRecent()) {
+    if (!active || !entryServesRecent()) {
+      lastRevision = null;
+      return;
+    }
+    if (revision !== lastRevision) {
       lastRevision = revision;
       void loadRecentFromEntry();
     }
-    return null;
-  };
+  });
   return (
     <Scroll
       accessibilityLabel="all-sessions-scene"
@@ -836,7 +1224,6 @@ export function AllSessionsScene(): JSX.Element {
         paddingBottom: space.x5l,
       }}
     >
-      {followRevision()}
       <Header />
       <If when={allSessionsView() === "recent"}>
         <View style={{ paddingTop: space.lg }}>
@@ -845,7 +1232,8 @@ export function AllSessionsScene(): JSX.Element {
             onChange={value => searchText.set(value)}
             placeholder={tr("allSessions.search")}
             accessibilityLabel="all-sessions-search"
-            size="md"
+            size={compactLayout() ? "lg" : "md"}
+            style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
           />
         </View>
       </If>

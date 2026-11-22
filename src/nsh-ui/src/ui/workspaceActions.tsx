@@ -15,6 +15,7 @@ import { revealInExplorer, type WorkspaceRecord } from "../api";
 import { fleetActive, invokeCommand, invokeRawCommand, listenEvent, pickLocalDirectory, windowShellId } from "../bridge";
 import { controllerPort } from "../controller/controllerPort";
 import { fleetDeviceById, refreshFleetNavigator } from "../fleetStore";
+import { formatBytes } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import {
   closeWorkspaceRecord,
@@ -34,11 +35,21 @@ import {
   workspaces,
 } from "../state";
 import { openTerminal } from "../terminalStore";
-import { fontMono, palette, radii, space, textStyle } from "../theme";
+import {
+  compactLayout,
+  fontMono,
+  layout,
+  palette,
+  radii,
+  space,
+  textStyle,
+  touchSlop,
+} from "../theme";
 import { Icon, type IconName } from "./icons";
+import { pressTransition, tactileActiveStyle } from "./motion";
 import { sessionIsOnThisMachine } from "./sessionActions";
 import { ModalDialog, pushToast, type DropdownMenuItem } from "./overlays";
-import { Button, IconButton, TextField } from "./primitives";
+import { Button, focusRingStyle, IconButton, InlineBanner, SkeletonBlock, TextField } from "./primitives";
 
 /** A workspace anywhere on the account. `deviceId` is `""` on a backend without the fleet layer. */
 export interface WorkspaceActionTarget {
@@ -53,6 +64,8 @@ export interface WorkspaceActionTarget {
 
 const renameTarget = signal<WorkspaceActionTarget | null>(null);
 const renameDraft = signal("");
+const renameBusy = signal(false);
+const renameError = signal("");
 const assistantTarget = signal<(WorkspaceActionTarget & { action: "reset" | "delete" }) | null>(null);
 const assistantBusy = signal(false);
 
@@ -109,9 +122,11 @@ async function reveal(target: WorkspaceActionTarget): Promise<void> {
   }
 }
 
-async function rename(target: WorkspaceActionTarget, name: string): Promise<void> {
+async function rename(target: WorkspaceActionTarget, name: string): Promise<boolean> {
   const next = name.trim();
-  if (!next || next === target.name) return;
+  if (!next || next === target.name) return true;
+  renameBusy.set(true);
+  renameError.set("");
   try {
     if (loadedRecord(target)) {
       await renameWorkspace(target.workspaceId, next);
@@ -119,8 +134,14 @@ async function rename(target: WorkspaceActionTarget, name: string): Promise<void
       await invokeCommand<unknown>("update_workspace_info", { workspaceId: target.workspaceId, name: next }, routeOptions(target));
     }
     if (fleetActive()) void refreshFleetNavigator();
+    return true;
   } catch (error) {
-    pushToast(errorText(error), "error");
+    const message = errorText(error);
+    renameError.set(message);
+    pushToast(message, "error");
+    return false;
+  } finally {
+    renameBusy.set(false);
   }
 }
 
@@ -214,6 +235,7 @@ export function workspaceMenuItems(
       accessibilityLabel: `workspace-menu-rename-${key}`,
       onSelect: () => {
         renameDraft.set(target.name);
+        renameError.set("");
         renameTarget.set(target);
       },
     },
@@ -329,10 +351,19 @@ export function workspaceMenuItems(
 
 /** Rename and assistant reset/delete confirmations; mounted once by the shell. */
 export function WorkspaceActionDialogs(): JSX.Element {
-  const submitRename = () => {
+  const submitRename = async () => {
     const target = renameTarget();
-    renameTarget.set(null);
-    if (target) void rename(target, renameDraft());
+    if (!target || renameBusy()) return;
+    const next = renameDraft().trim();
+    if (!next) return;
+    if (next === target.name) {
+      renameTarget.set(null);
+      return;
+    }
+    const ok = await rename(target, next);
+    if (ok && renameTarget()?.workspaceId === target.workspaceId) {
+      renameTarget.set(null);
+    }
   };
   return (
     <>
@@ -341,29 +372,49 @@ export function WorkspaceActionDialogs(): JSX.Element {
         title={tr("shell.ws.renameTitle")}
         size="sm"
         accessibilityLabel="workspace-rename-modal"
-        onClose={() => renameTarget.set(null)}
+        onClose={() => {
+          if (!renameBusy()) renameTarget.set(null);
+        }}
         footer={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => renameTarget.set(null)} />
+            <Button
+              label={tr("common.cancel")}
+              variant="secondary"
+              size="md"
+              disabled={renameBusy()}
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+              onPress={() => renameTarget.set(null)}
+            />
             <Button
               label={tr("common.save")}
               variant="primary"
-              size="sm"
-              disabled={!renameDraft().trim()}
+              size="md"
+              loading={renameBusy()}
+              disabled={renameBusy() || !renameDraft().trim()}
               accessibilityLabel="workspace-rename-save"
-              onPress={submitRename}
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+              onPress={() => void submitRename()}
             />
           </View>
         }
       >
-        <TextField
-          autoFocus
-          label={tr("shell.ws.nameLabel")}
-          value={renameDraft()}
-          accessibilityLabel="workspace-rename-input"
-          onChange={value => renameDraft.set(value)}
-          onSubmit={() => submitRename()}
-        />
+        <View style={{ gap: space.sm }}>
+          <TextField
+            autoFocus
+            label={tr("shell.ws.nameLabel")}
+            value={renameDraft()}
+            disabled={renameBusy()}
+            accessibilityLabel="workspace-rename-input"
+            onChange={value => {
+              renameDraft.set(value);
+              if (renameError()) renameError.set("");
+            }}
+            onSubmit={() => void submitRename()}
+          />
+          <If when={renameError()}>
+            {err => <InlineBanner tone="danger" message={err()} />}
+          </If>
+        </View>
       </ModalDialog>
       <ModalDialog
         open={Boolean(assistantTarget())}
@@ -374,16 +425,27 @@ export function WorkspaceActionDialogs(): JSX.Element {
         }
         size="sm"
         accessibilityLabel="assistant-action-modal"
-        onClose={() => assistantTarget.set(null)}
+        onClose={() => {
+          if (!assistantBusy()) assistantTarget.set(null);
+        }}
         footer={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => assistantTarget.set(null)} />
+            <Button
+              label={tr("common.cancel")}
+              variant="secondary"
+              size="md"
+              disabled={assistantBusy()}
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+              onPress={() => assistantTarget.set(null)}
+            />
             <Button
               label={assistantTarget()?.action === "delete" ? tr("common.delete") : tr("shell.ws.resetConfirm")}
               variant="danger"
-              size="sm"
+              size="md"
               loading={assistantBusy()}
+              disabled={assistantBusy()}
               accessibilityLabel="assistant-action-confirm"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void runAssistantAction()}
             />
           </View>
@@ -539,27 +601,36 @@ function GlyphTile(props: { glyph: string }) {
     <View
       role="button"
       accessibilityLabel={`workspace-icon-glyph-${props.glyph}`}
+      accessibilityState={{ selected: selected() }}
+      hitSlop={touchSlop(space.x4l)}
       onPress={() => iconChoice.set(props.glyph)}
       style={{
-        width: space.x4l,
-        height: space.x4l,
+        width: compactLayout() ? layout.touchTarget : space.x4l,
+        height: compactLayout() ? layout.touchTarget : space.x4l,
         alignItems: "center",
         justifyContent: "center",
         borderRadius: radii.md,
+        borderCurve: "continuous",
         borderWidth: 1,
-        borderColor: selected() ? palette().accent : palette().borderSubtle,
-        backgroundColor: selected() ? palette().accentSoft : palette().canvas,
+        borderColor: selected() ? palette().borderStrong : palette().borderSubtle,
+        backgroundColor: selected() ? palette().panelHover : palette().canvas,
         cursor: "pointer",
+        ...pressTransition(),
       }}
-      hoverStyle={{ backgroundColor: selected() ? palette().accentSoft : palette().panelHover }}
+      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.95)}
+      focusVisibleStyle={focusRingStyle()}
     >
-      <Icon name={workspaceGlyphIcon(props.glyph)} size={20} color={selected() ? palette().accent : palette().textSecondary} />
+      <Icon name={workspaceGlyphIcon(props.glyph)} size={20} color={selected() ? palette().text : palette().textSecondary} />
     </View>
   );
 }
 
+const ICON_SKELETON_TILES = Array.from({ length: 12 }, (_, idx) => idx);
+
 function WorkspaceIconDialog(): JSX.Element {
   const unsupported = () => iconView() !== null && (iconView()?.supportedGlyphs.length ?? 0) === 0;
+  const loading = () => Boolean(iconTarget()) && iconView() === null && !iconNotice();
   const deviceName = () => {
     const target = iconTarget();
     return (target?.deviceId ? fleetDeviceById(target.deviceId)?.name : "") || "";
@@ -573,20 +644,40 @@ function WorkspaceIconDialog(): JSX.Element {
       onClose={() => iconTarget.set(null)}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => iconTarget.set(null)} />
+          <Button
+            label={tr("common.cancel")}
+            variant="secondary"
+            size="md"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+            onPress={() => iconTarget.set(null)}
+          />
           <Button
             label={tr("common.save")}
             variant="primary"
-            size="sm"
+            size="md"
             loading={iconBusy()}
             disabled={!iconView() || unsupported() || iconChoice() === iconView()?.glyph}
             accessibilityLabel="workspace-icon-save"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void saveWorkspaceIcon()}
           />
         </View>
       }
     >
       <View style={{ gap: space.md }}>
+        <If when={loading()}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+            <Each of={ICON_SKELETON_TILES} key={idx => String(idx)}>
+              {() => (
+                <SkeletonBlock
+                  width={compactLayout() ? layout.touchTarget : space.x4l}
+                  height={compactLayout() ? layout.touchTarget : space.x4l}
+                  borderRadius={radii.md}
+                />
+              )}
+            </Each>
+          </View>
+        </If>
         <If when={unsupported()}>
           <Text style={textStyle("body", { color: palette().textSecondary })}>
             {deviceName() ? tr("workspaceIcon.updateDevice", { device: deviceName() }) : tr("workspaceIcon.updateHere")}
@@ -603,7 +694,7 @@ function WorkspaceIconDialog(): JSX.Element {
           </Text>
         </If>
         <If when={iconNotice()}>
-          <Text style={textStyle("caption", { color: palette().danger })}>{iconNotice()}</Text>
+          {notice => <InlineBanner tone="danger" message={notice()} />}
         </If>
       </View>
     </ModalDialog>
@@ -744,11 +835,18 @@ async function cancelTransfer(): Promise<void> {
   );
 }
 
+function progressPercent(): number {
+  const progress = transferProgress();
+  if (!progress || progress.total <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round((progress.done / progress.total) * 100)));
+}
+
 function progressText(): string {
   const progress = transferProgress();
   if (!progress) return "";
   if (progress.total <= 0) return tr("transfer.starting");
-  return tr("transfer.progress", { percent: Math.min(100, Math.round((progress.done / progress.total) * 100)) });
+  const pct = tr("transfer.progress", { percent: progressPercent() });
+  return `${pct} · ${formatBytes(progress.done)} / ${formatBytes(progress.total)}`;
 }
 
 function TransferDialog(): JSX.Element {
@@ -770,17 +868,19 @@ function TransferDialog(): JSX.Element {
           <Button
             label={running() ? tr("transfer.stop") : tr("common.cancel")}
             variant="secondary"
-            size="sm"
+            size="md"
             accessibilityLabel="workspace-transfer-cancel"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void cancelTransfer()}
           />
           <Button
             label={upload() ? tr("transfer.upload") : tr("transfer.download")}
             variant="primary"
-            size="sm"
+            size="md"
             loading={running()}
-            disabled={!transferLocal().trim() || !transferRemote().trim()}
+            disabled={running() || !transferLocal().trim() || !transferRemote().trim()}
             accessibilityLabel="workspace-transfer-start"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void startTransfer()}
           />
         </View>
@@ -795,10 +895,12 @@ function TransferDialog(): JSX.Element {
           disabled={running()}
           accessibilityLabel="workspace-transfer-local"
           onChange={value => transferLocal.set(value)}
+          onSubmit={() => void startTransfer()}
           trailing={
             <IconButton
               icon="folder-open"
               size="sm"
+              disabled={running()}
               tooltip={tr("transfer.chooseFolder")}
               accessibilityLabel="workspace-transfer-choose"
               onPress={() => void chooseLocalFolder()}
@@ -812,12 +914,34 @@ function TransferDialog(): JSX.Element {
           disabled={running()}
           accessibilityLabel="workspace-transfer-remote"
           onChange={value => transferRemote.set(value)}
+          onSubmit={() => void startTransfer()}
         />
         <If when={progressText()}>
-          <Text style={{ ...textStyle("caption", { color: palette().textMuted, tabular: true }) }}>{progressText()}</Text>
+          <View style={{ gap: space.xs }}>
+            <If when={(transferProgress()?.total ?? 0) > 0}>
+              <View
+                style={{
+                  height: 4,
+                  borderRadius: radii.pill,
+                  backgroundColor: palette().surfaceTertiary,
+                  overflow: "hidden",
+                }}
+              >
+                <View
+                  style={{
+                    width: `${progressPercent()}%`,
+                    height: "100%",
+                    borderRadius: radii.pill,
+                    backgroundColor: palette().accent,
+                  }}
+                />
+              </View>
+            </If>
+            <Text style={{ ...textStyle("caption", { color: palette().textMuted, tabular: true }) }}>{progressText()}</Text>
+          </View>
         </If>
         <If when={transferNotice()}>
-          <Text style={textStyle("caption", { color: palette().danger })}>{transferNotice()}</Text>
+          {notice => <InlineBanner tone="danger" message={notice()} />}
         </If>
       </View>
     </ModalDialog>

@@ -60,13 +60,14 @@ import {
   type DispatchJob,
 } from "../dispatchStore";
 import { localizeHostError, tr, type MessageKey } from "../i18n";
-import { layout, palette, radii, space, textStyle } from "../theme";
-import { StateMark, stateWord, type MarkState } from "../ui/fleet";
+import { compactLayout, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
+import { StateMark, stateColor, stateWord, type MarkState } from "../ui/fleet";
 import { Icon } from "../ui/icons";
 import { createMarkdownCodeActions, createMarkdownStyles } from "../ui/markdown";
+import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { ModalDialog, SelectDropdown, type DropdownMenuItem } from "../ui/overlays";
-import { Button, ConfigRow, InlineBanner, InputBox, SegmentedTabs, ToggleSwitch } from "../ui/primitives";
-import { InsetGroup, InsetRow, MoreMenu } from "../ui/studio";
+import { Button, ConfigRow, InlineBanner, InputBox, SegmentedTabs, ToggleSwitch, focusRingStyle } from "../ui/primitives";
+import { InsetGroup, InsetRow, MoreMenu, StudioEmpty } from "../ui/studio";
 
 /** The jobs sheet. */
 const sheetOpen = signal(false);
@@ -143,18 +144,20 @@ function closeSheet(): void {
 
 function JobRow(props: { job: DispatchJob; first: boolean }) {
   const mark = () => jobMark(props.job.state);
+  const phone = () => compactLayout();
   return (
     <InsetRow
       first={props.first}
       leading={<StateMark state={mark()} size={12} />}
-      label={props.job.title || props.job.promptPreview || props.job.jobId}
+      label={props.job.title || props.job.promptPreview || tr("deviceJobs.title")}
       detail={[targetLabel(props.job), stateWord(mark())].filter(Boolean).join(" · ")}
       trailing={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
           <Button
             label={tr("deviceJobs.view")}
             variant="ghost"
-            size="sm"
+            size={phone() ? "md" : "sm"}
+            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
             accessibilityLabel={`dispatch-observe-${props.job.jobId}`}
             onPress={() => void openObservedJob(props.job)}
           />
@@ -162,7 +165,8 @@ function JobRow(props: { job: DispatchJob; first: boolean }) {
             <Button
               label={tr("deviceJobs.stop")}
               variant="ghost"
-              size="sm"
+              size={phone() ? "md" : "sm"}
+              style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
               accessibilityLabel={`dispatch-cancel-${props.job.jobId}`}
               onPress={() => void cancelDispatch(props.job.jobId)}
             />
@@ -182,7 +186,7 @@ function JobList() {
       </If>
       <If
         when={dispatchJobs().length > 0}
-        else={<Text style={textStyle("label", { color: palette().textMuted })}>{tr("deviceJobs.empty")}</Text>}
+        else={<StudioEmpty icon="layers" message={tr("deviceJobs.empty")} />}
       >
         <InsetGroup accessibilityLabel="dispatch-jobs">
           <Each of={dispatchJobs()} key={job => job.jobId}>
@@ -214,7 +218,7 @@ function ProbeLine() {
                 color:
                   probe().status === "ready" || probe().status === "checking"
                     ? palette().textMuted
-                    : palette().danger,
+                    : stateColor("failed"),
               }),
               flex: 1,
               minWidth: 0,
@@ -286,7 +290,7 @@ function JobForm() {
           leadingIcon="folder"
           monospace
           value={dispatchWorkspacePath()}
-          placeholder="/path/on/that/device"
+          placeholder={tr("ssh.pathPlaceholder")}
           accessibilityLabel="dispatch-workspace"
           onChange={value => dispatchWorkspacePath.set(value)}
         />
@@ -354,16 +358,18 @@ function JobForm() {
       </ConfigRow>
       <View style={{ gap: space.chip }}>
         <FieldLabel text={tr("devices.approvalPolicy")} />
-        <SegmentedTabs
-          size="sm"
-          value={dispatchApprovalPolicy()}
-          options={DISPATCH_APPROVAL_POLICIES.map(policy => ({
-            value: policy.value,
-            label: approvalPolicyLabel(policy.value, policy.label),
-            accessibilityLabel: `dispatch-approval-${policy.value}`,
-          }))}
-          onChange={value => dispatchApprovalPolicy.set(value)}
-        />
+        <Scroll horizontal scrollbar={false} style={{ width: "100%", minWidth: 0 }}>
+          <SegmentedTabs
+            size="sm"
+            value={dispatchApprovalPolicy()}
+            options={DISPATCH_APPROVAL_POLICIES.map(policy => ({
+              value: policy.value,
+              label: approvalPolicyLabel(policy.value, policy.label),
+              accessibilityLabel: `dispatch-approval-${policy.value}`,
+            }))}
+            onChange={value => dispatchApprovalPolicy.set(value)}
+          />
+        </Scroll>
         <If when={approvalPolicyHint(dispatchApprovalPolicy())}>
           {hint => <Text style={textStyle("caption")}>{hint()}</Text>}
         </If>
@@ -398,7 +404,7 @@ function ObservedEventRow(props: { row: DispatchRow }) {
         </View>
       </If>
       <If when={props.row.kind === "error"}>
-        <View style={{ borderLeftWidth: 2, borderColor: palette().danger, paddingLeft: space.md }}>
+        <View style={{ borderLeftWidth: 2, borderColor: stateColor("failed"), paddingLeft: space.md }}>
           <Text style={textStyle("label", { color: palette().text })}>{localizeHostError(props.row.text)}</Text>
         </View>
       </If>
@@ -455,14 +461,30 @@ function observerMenuItems(): DropdownMenuItem[] {
 }
 
 function JobLog() {
+  const phone = () => compactLayout();
   return (
     <View accessibilityLabel="dispatch-observer" style={{ gap: space.md, minWidth: 0 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: 28 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: phone() ? layout.touchTarget : 28 }}>
         <View
           role="button"
           accessibilityLabel="dispatch-observe-close"
+          hitSlop={touchSlop(phone() ? layout.touchTarget : 28)}
           onPress={() => closeObservedJob()}
-          style={{ flexDirection: "row", alignItems: "center", gap: space.xs, cursor: "pointer" }}
+          hoverStyle={phone() ? undefined : { backgroundColor: palette().panelHover }}
+          activeStyle={tactileActiveStyle(0.97)}
+          focusVisibleStyle={focusRingStyle()}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.xs,
+            minHeight: phone() ? layout.touchTarget : 28,
+            paddingHorizontal: space.xs,
+            marginLeft: -space.xs,
+            borderRadius: radii.sm,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
         >
           <Icon name="chevron-left" size={12} color={palette().textSecondary} />
           <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("deviceJobs.allJobs")}</Text>
@@ -475,7 +497,8 @@ function JobLog() {
           <Button
             label={tr("deviceJobs.syncResult")}
             variant="secondary"
-            size="sm"
+            size={phone() ? "md" : "sm"}
+            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
             accessibilityLabel="dispatch-observe-sync"
             onPress={() => void syncObservedResult()}
           />
@@ -504,28 +527,34 @@ function JobLog() {
             }}
           >
             <View style={{ gap: space.xs }}>
-              <Text style={textStyle("body", { color: palette().text })}>{request().title}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                <StateMark state="needs_you" size={16} />
+                <Text style={{ ...textStyle("body", { color: palette().text }), flex: 1, minWidth: 0 }}>{request().title}</Text>
+              </View>
               <Text style={textStyle("mono", { color: palette().textSecondary })}>{request().detail}</Text>
             </View>
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
               <Button
-                label={tr("sessions.allowOnce")}
+                label={tr("prompt.allowOnce")}
                 variant="primary"
-                size="sm"
+                size={phone() ? "md" : "sm"}
+                style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                 accessibilityLabel={`dispatch-permission-once-${request().requestId}`}
                 onPress={() => void answerObservedPermission(request().requestId, "once")}
               />
               <Button
-                label={tr("devices.always")}
+                label={tr("prompt.always")}
                 variant="secondary"
-                size="sm"
+                size={phone() ? "md" : "sm"}
+                style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                 accessibilityLabel={`dispatch-permission-always-${request().requestId}`}
                 onPress={() => void answerObservedPermission(request().requestId, "always")}
               />
               <Button
-                label={tr("sessions.reject")}
+                label={tr("prompt.deny")}
                 variant="ghost"
-                size="sm"
+                size={phone() ? "md" : "sm"}
+                style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                 accessibilityLabel={`dispatch-permission-reject-${request().requestId}`}
                 onPress={() => void answerObservedPermission(request().requestId, "reject")}
               />
@@ -543,7 +572,21 @@ function JobLog() {
           paddingVertical: space.md,
         }}
       >
-        <Scroll style={{ maxHeight: 320, minHeight: 0 }}>
+        <If
+          when={phone()}
+          else={
+            <Scroll style={{ maxHeight: 320, minHeight: 0 }}>
+              <View style={{ gap: space.md }}>
+                <If when={observedRows().length === 0}>
+                  <Text style={textStyle("caption")}>{tr("deviceJobs.noEvents")}</Text>
+                </If>
+                <Each of={observedRows()} key={row => row.id}>
+                  {row => <ObservedEventRow row={row()} />}
+                </Each>
+              </View>
+            </Scroll>
+          }
+        >
           <View style={{ gap: space.md }}>
             <If when={observedRows().length === 0}>
               <Text style={textStyle("caption")}>{tr("deviceJobs.noEvents")}</Text>
@@ -552,7 +595,7 @@ function JobLog() {
               {row => <ObservedEventRow row={row()} />}
             </Each>
           </View>
-        </Scroll>
+        </If>
       </View>
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
         <InputBox
@@ -562,13 +605,16 @@ function JobLog() {
           accessibilityLabel="dispatch-observe-message"
           style={{ flex: 1, minWidth: 0 }}
           onChange={value => observedDraft.set(value)}
-          onSubmit={() => void sendToObservedJob()}
+          onSubmit={() => {
+            if (!observedBusy() && observedDraft().trim()) void sendToObservedJob();
+          }}
         />
         <Button
           label={tr("common.send")}
           variant="primary"
           size="md"
-          disabled={observedBusy()}
+          disabled={observedBusy() || !observedDraft().trim()}
+          style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
           accessibilityLabel="dispatch-observe-send"
           onPress={() => void sendToObservedJob()}
         />

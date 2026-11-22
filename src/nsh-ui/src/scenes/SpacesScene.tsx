@@ -36,12 +36,23 @@ import {
   spaceOpening,
   spaceWindowBlockedReason,
 } from "../spacesStore";
-import { fontMono, palette, radii, space, textLineHeight, textSize } from "../theme";
+import {
+  compactLayout,
+  fontMono,
+  layout,
+  palette,
+  radii,
+  space,
+  textLineHeight,
+  textSize,
+  touchSlop,
+} from "../theme";
 import { deviceContext } from "../state";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
+import { StateMark, stateColor } from "../ui/fleet";
 import { Icon } from "../ui/icons";
 import { createEditorStyles, inferCodeLanguage } from "../ui/markdown";
-import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
+import { MOTION_DURATION, paintTransition, pressTransition, Spinner, tactileActiveStyle } from "../ui/motion";
 import { ModalDialog, type DropdownMenuItem } from "../ui/overlays";
 import {
   MiniAppMarketView,
@@ -61,13 +72,12 @@ import {
 import {
   Button,
   ConfigSection,
+  focusRingStyle,
   IconButton,
   InlineBanner,
   InlineConfirmBar,
   InputBox,
-  PillChip,
   SegmentedTabs,
-  StatusDot,
   type SegmentedTabOption,
 } from "../ui/primitives";
 import {
@@ -157,20 +167,20 @@ export { spaceIconName };
 /** A quiet inline list: "Permissions  Filesystem · Network". Each item is its own text. */
 function QuietList(props: { label: string; items: ReadonlyArray<string>; overflow?: string }) {
   return (
-    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", columnGap: 6, rowGap: 2, minWidth: 0 }}>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", columnGap: space.xs, rowGap: space.hair, minWidth: 0 }}>
       <Text
         style={{
           color: palette().textMuted,
           fontSize: textSize(12),
           lineHeight: textLineHeight(12, 1.45),
-          marginRight: 4,
+          marginRight: space.xs,
         }}
       >
         {props.label}
       </Text>
       <Each of={props.items} key="index">
         {(item, index) => (
-          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: space.xs }}>
             <If when={index() > 0}>
               <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.45) }}>
                 ·
@@ -320,111 +330,116 @@ function SpaceCard(props: { space: () => SpaceMeta }) {
     <View
       style={{
         ...galleryCardStyle(),
-        position: "relative",
         padding: 0,
         gap: 0,
         borderColor: isSelected() ? palette().borderFocus : palette().borderSubtle,
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={galleryCardHoverStyle()}
+      hoverStyle={compactLayout() ? undefined : galleryCardHoverStyle()}
     >
-      <View
-        role="button"
-        accessibilityLabel={`space-open-${props.space().id}`}
-        onPress={() => openInstalledSpace(props.space())}
-        style={{
-          minHeight: 132,
-          padding: 16,
-          paddingRight: 48,
-          gap: 6,
-          minWidth: 0,
-          cursor: "pointer",
-          borderRadius: radii.lg,
-        }}
-        focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <Icon name={spaceIconName(props.space().icon)} size={16} color={palette().textSecondary} />
-          <Text
-            style={{
-              flexShrink: 1,
-              minWidth: 0,
-              color: palette().text,
-              fontSize: textSize(15),
-              fontWeight: "600",
-              lineHeight: textLineHeight(15, 1.3),
-              numberOfLines: 1,
-              textOverflow: "ellipsis",
-            }}
-          >
-            {props.space().name}
-          </Text>
-          <If when={isRunning()}>
-            <View
-              accessibilityLabel={`space-running-${props.space().id}`}
-              tooltip={tr("spaces.workerRunning")}
-              style={{ flexShrink: 0, padding: 2 }}
-            >
-              <StatusDot kind="success" size={7} />
-            </View>
-          </If>
-        </View>
-        <Text
+      <View style={{ flexDirection: "row", alignItems: "flex-start", minWidth: 0 }}>
+        <View
+          role="button"
+          accessibilityLabel={`space-open-${props.space().id}`}
+          hitSlop={touchSlop(layout.touchTarget)}
+          onPress={() => openInstalledSpace(props.space())}
           style={{
+            flex: 1,
+            minHeight: 132,
+            padding: space.lg,
+            paddingRight: space.sm,
+            gap: space.xs,
             minWidth: 0,
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            fontVariant: ["tabular-nums"],
-            lineHeight: textLineHeight(12, 1.4),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
+            cursor: "pointer",
+            borderRadius: radii.lg,
+            ...pressTransition(),
           }}
+          activeStyle={tactileActiveStyle(0.99)}
+          focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
         >
-          {spaceMetaLine(props.space())}
-        </Text>
-        <Text
-          style={{
-            marginTop: 4,
-            minWidth: 0,
-            color: palette().textSecondary,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.5),
-            numberOfLines: 2,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.space().description || tr("common.noDescription")}
-        </Text>
-        <If when={permissionLine()}>
-          {line => (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
+            <Icon name={spaceIconName(props.space().icon)} size={16} color={palette().textSecondary} />
             <Text
               style={{
-                marginTop: 4,
+                flexShrink: 1,
                 minWidth: 0,
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
+                color: palette().text,
+                fontSize: textSize(14),
+                fontWeight: "600",
+                lineHeight: textLineHeight(14, 1.35),
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
               }}
             >
-              {line()}
+              {props.space().name}
             </Text>
-          )}
-        </If>
-      </View>
+            <If when={isRunning()}>
+              <View
+                accessibilityLabel={`space-running-${props.space().id}`}
+                tooltip={compactLayout() ? undefined : tr("spaces.workerRunning")}
+                style={{ flexShrink: 0, padding: space.hair }}
+              >
+                <StateMark state="working" size={12} />
+              </View>
+            </If>
+          </View>
+          <Text
+            style={{
+              minWidth: 0,
+              color: palette().textMuted,
+              fontSize: textSize(12),
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(12, 1.4),
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {spaceMetaLine(props.space())}
+          </Text>
+          <Text
+            style={{
+              marginTop: space.xs,
+              minWidth: 0,
+              color: palette().textSecondary,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.5),
+              numberOfLines: 2,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.space().description || tr("common.noDescription")}
+          </Text>
+          <If when={permissionLine()}>
+            {line => (
+              <Text
+                style={{
+                  marginTop: space.xs,
+                  minWidth: 0,
+                  color: palette().textMuted,
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.4),
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {line()}
+              </Text>
+            )}
+          </If>
+        </View>
 
-      <View style={{ position: "absolute", top: 12, right: 12 }}>
-        <MoreMenu
-          accessibilityLabel={`space-more-${props.space().id}`}
-          tooltip={tr("spaces.spaceActions")}
-          minWidth={210}
-          items={spaceMenuItems(props.space(), isRunning())}
-        />
+        <View style={{ paddingTop: space.md, paddingRight: space.md, flexShrink: 0 }}>
+          <MoreMenu
+            accessibilityLabel={`space-more-${props.space().id}`}
+            tooltip={tr("spaces.spaceActions")}
+            minWidth={210}
+            items={spaceMenuItems(props.space(), isRunning())}
+          />
+        </View>
       </View>
 
       <If when={confirmingDeleteSpaceId() === props.space().id}>
-        <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
+        <View style={{ paddingHorizontal: space.lg, paddingBottom: space.lg }}>
           <InlineConfirmBar
             danger
             message={tr("spaces.deleteConfirmCard", { name: props.space().name })}
@@ -454,7 +469,7 @@ function SpaceInspectorModal() {
       size="lg"
       onClose={() => closeSpaceInspector()}
       footer={
-        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
           <If when={Boolean(selectedSpaceId())}>
             <Button
               label={tr("spaces.deleteSpace")}
@@ -463,6 +478,7 @@ function SpaceInspectorModal() {
               leadingIcon="trash"
               disabled={spacesBusy()}
               accessibilityLabel="space-inspector-delete"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => {
                 const id = selectedSpaceId();
                 if (id) requestDeleteSpace(id);
@@ -470,9 +486,9 @@ function SpaceInspectorModal() {
             />
           </If>
 
-          <View style={{ flex: 1, minWidth: 8 }} />
+          <View style={{ flex: 1, minWidth: space.sm }} />
 
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm, flexShrink: 0 }}>
             <If when={Boolean(selectedSpaceId() && runningWorkerSet().has(selectedSpaceId()!))}>
               <Button
                 label={tr("spaces.stopWorkerTitle")}
@@ -481,6 +497,7 @@ function SpaceInspectorModal() {
                 leadingIcon="stop"
                 disabled={spacesBusy()}
                 accessibilityLabel="space-inspector-stop"
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => {
                   const id = selectedSpaceId();
                   if (id) void stopSpaceWorker(id);
@@ -492,6 +509,7 @@ function SpaceInspectorModal() {
               variant="secondary"
               size="md"
               accessibilityLabel="space-inspector-close"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => closeSpaceInspector()}
             />
             <If when={Boolean(selectedSpaceId()) && !spaceWindowBlockedReason()}>
@@ -502,6 +520,7 @@ function SpaceInspectorModal() {
                 leadingIcon="external-link"
                 disabled={spaceOpening() !== null}
                 accessibilityLabel="space-inspector-open"
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => {
                   const id = selectedSpaceId();
                   if (id) void openSpaceWindow(id);
@@ -512,17 +531,17 @@ function SpaceInspectorModal() {
         </View>
       }
     >
-      <View style={{ gap: 16 }}>
+      <View style={{ gap: space.lg }}>
         {/* Calm inline note instead of heavy notice rectangle */}
         <View
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 7,
-            paddingHorizontal: 2,
+            gap: space.sm,
+            paddingHorizontal: space.hair,
           }}
         >
-          <Icon name="info" size={13} color={palette().textMuted} />
+          <Icon name="info" size={14} color={palette().textMuted} />
           <Text
             style={{
               flex: 1,
@@ -585,7 +604,7 @@ function SpaceInspectorModal() {
                 {detail().description || tr("spaces.noManifestDesc")}
               </Text>
 
-              <View style={{ gap: 6 }}>
+              <View style={{ gap: space.xs }}>
                 <QuietList
                   label={tr("spaces.polish.permissions")}
                   items={spacePermissionBadges(detail()).map(localizePermission)}
@@ -628,7 +647,7 @@ function SpaceInspectorModal() {
                     count: formatCount(selectedSpaceVersions().length),
                   })}
                 >
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 14, rowGap: 4 }}>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: space.md, rowGap: space.xs }}>
                     <Each of={selectedSpaceVersions()} key={v => v.version}>
                       {ver => (
                         <Text
@@ -650,13 +669,15 @@ function SpaceInspectorModal() {
               </If>
 
               {/* Syntax-highlighted Read-Only Source Bundle Viewer */}
-              <View style={{ gap: 10 }}>
-                <SegmentedTabs
-                  size="sm"
-                  options={sourceTabs()}
-                  value={spaceSourceTab()}
-                  onChange={next => spaceSourceTab.set(next)}
-                />
+              <View style={{ gap: space.sm }}>
+                <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                  <SegmentedTabs
+                    size="sm"
+                    options={sourceTabs()}
+                    value={spaceSourceTab()}
+                    onChange={next => spaceSourceTab.set(next)}
+                  />
+                </Scroll>
 
                 <View
                   style={{
@@ -673,14 +694,14 @@ function SpaceInspectorModal() {
                       flexDirection: "row",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      gap: 8,
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
+                      gap: space.sm,
+                      paddingHorizontal: space.md,
+                      paddingVertical: space.sm,
                       borderBottomWidth: 1,
                       borderColor: palette().borderSubtle,
                     }}
                   >
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
                       <Icon name="file-code" size={12} color={palette().textMuted} />
                       <Text
                         style={{
@@ -702,9 +723,9 @@ function SpaceInspectorModal() {
                         flexShrink: 0,
                         color: palette().textMuted,
                         fontFamily: fontMono,
-                        fontSize: textSize(11),
+                        fontSize: textSize(12),
                         fontVariant: ["tabular-nums"],
-                        lineHeight: textLineHeight(11, 1.35),
+                        lineHeight: textLineHeight(12, 1.35),
                       }}
                     >
                       {formatPlural(lineCount(), "format.lineOne", "format.lineOther")}
@@ -738,7 +759,7 @@ function SpaceInspectorModal() {
 function CreateSpaceSection() {
   return (
     <StudioSection title={tr("spaces.createTitle")} accessibilityLabel="spaces-create-section">
-      <View style={{ gap: 10, minWidth: 0 }}>
+      <View style={{ gap: space.sm, minWidth: 0 }}>
         <InputBox
           value={spacePrompt()}
           multiline
@@ -747,11 +768,13 @@ function CreateSpaceSection() {
           accessibilityLabel="spaces-prompt-input"
           onChange={val => spacePrompt.set(val)}
         />
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, minWidth: 0 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm, minWidth: 0 }}>
           <Each of={spacePromptStarters()} key={s => s.id}>
             {starter => (
-              <PillChip
+              <Button
                 label={starter().label}
+                variant="outline"
+                size={compactLayout() ? "sm" : "xs"}
                 accessibilityLabel={`spaces-starter-${starter().id}`}
                 onPress={() => spacePrompt.set(starter().prompt)}
               />
@@ -767,14 +790,18 @@ function CreateSpaceSection() {
             disabled={Boolean(spaceCreationBlockedReason()) || spaceCreating()}
             tooltip={spaceCreationBlockedReason() || undefined}
             accessibilityLabel="spaces-create-agent"
-            style={studioCompact() ? { width: "100%" } : undefined}
+            style={
+              studioCompact()
+                ? { width: "100%", height: layout.touchTarget, minHeight: layout.touchTarget }
+                : undefined
+            }
             onPress={() => void createSpaceWithAgent()}
           />
         </View>
         <Text
           style={{
-            paddingHorizontal: 4,
-            color: spaceCreationBlockedReason() ? palette().warning : palette().textMuted,
+            paddingHorizontal: space.xs,
+            color: spaceCreationBlockedReason() ? stateColor("needs_you") : palette().textMuted,
             fontSize: textSize(12),
             lineHeight: textLineHeight(12, 1.45),
           }}
@@ -789,7 +816,9 @@ function CreateSpaceSection() {
 function installedSummary(): string {
   const installed = tr("spaces.installedCount", { count: formatCount(spaces().length) });
   const running = runningSpaceWorkers().length;
-  return running > 0 ? `${installed} · ${tr("spaces.activeWorkers", { count: running })}` : installed;
+  return running > 0
+    ? `${installed} · ${formatPlural(running, "spaces.activeWorkersOne", "spaces.activeWorkers")}`
+    : installed;
 }
 
 /** The Library's Spaces gallery: `minmax(280, 1fr)` columns (visual spec §4.8). */
@@ -807,12 +836,24 @@ export function SpacesScene(props: { embedded?: boolean }) {
         accessibilityLabel="spaces-refresh"
         tooltip={tr("spaces.refreshTooltip")}
         disabled={spacesBusy()}
+        style={
+          compactLayout()
+            ? {
+                width: layout.touchTarget,
+                height: layout.touchTarget,
+                minWidth: layout.touchTarget,
+                minHeight: layout.touchTarget,
+              }
+            : undefined
+        }
         onPress={() => refreshCurrentView()}
       />
     </View>
   );
   const spaceViewTabs = () => (
-    <SegmentedTabs size="sm" options={viewTabs()} value={spacesView()} onChange={next => spacesView.set(next)} />
+    <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+      <SegmentedTabs size="sm" options={viewTabs()} value={spacesView()} onChange={next => spacesView.set(next)} />
+    </Scroll>
   );
   effect(() => {
     // The device the Library looks at (fleet) or the driven peer (older backends).
@@ -865,15 +906,16 @@ export function SpacesScene(props: { embedded?: boolean }) {
             />
           }
         >
-          <LibraryToolbar wide accessibilityLabel="spaces-toolbar" leading={spaceViewTabs()} primary={refreshControls()} />
+          <LibraryToolbar accessibilityLabel="spaces-toolbar" leading={spaceViewTabs()} primary={refreshControls()} />
         </If>
-        <StudioBody style={props.embedded ? libraryBodyStyle(true) : undefined}>
+        <StudioBody style={props.embedded ? libraryBodyStyle() : undefined}>
           <If when={spacesError()}>
             {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
           </If>
           <If when={spacesNotice() && !spacesError()}>
             <InlineBanner
-              tone="success"
+              tone="neutral"
+              icon="check-circle"
               message={localizeHostError(spacesNotice() ?? "")}
               onDismiss={() => spacesNotice.set("")}
             />
@@ -896,7 +938,7 @@ export function SpacesScene(props: { embedded?: boolean }) {
             title={tr("spaces.polish.installedSection")}
             accessibilityLabel="spaces-installed-section"
             trailing={
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
                 <Text
                   style={{
                     color: palette().textSecondary,
@@ -910,9 +952,10 @@ export function SpacesScene(props: { embedded?: boolean }) {
                 <Button
                   label={tr("market.import.open")}
                   variant="ghost"
-                  size="sm"
+                  size={compactLayout() ? "md" : "sm"}
                   leadingIcon="upload"
                   accessibilityLabel="spaces-import-package"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                   onPress={() => openPackageImport()}
                 />
               </View>
@@ -921,7 +964,7 @@ export function SpacesScene(props: { embedded?: boolean }) {
             <If when={spaces().length === 0 && spacesBusy() && spacesInitialLoad()}>
               <GallerySkeleton count={4} height={132} />
             </If>
-            <If when={spaces().length === 0 && !(spacesBusy() && spacesInitialLoad())}>
+            <If when={spaces().length === 0 && !spacesError() && !(spacesBusy() && spacesInitialLoad())}>
               <StudioEmpty
                 icon="layout-grid"
                 message={tr("spaces.emptyTitle")}

@@ -8,7 +8,7 @@
 // `fleet_device_detail` when the entry serves it). On a host without the fleet
 // layer the page shows this device.
 
-import { Clipboard, Scroll, signal, Text, View, type JSX } from "nsh";
+import { cleanup, Clipboard, effect, Scroll, signal, Text, View, type JSX, type ViewRef } from "nsh";
 import { fleetActive, invokeCommand } from "../bridge";
 import { localDeviceId } from "../devicePrefsStore";
 import { fleetDeviceById } from "../fleetStore";
@@ -27,12 +27,13 @@ import {
   workspaces,
 } from "../state";
 import { openTerminal } from "../terminalStore";
-import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
-import { deviceException, deviceGlyphIcon } from "../ui/fleet";
+import { compactLayout, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
+import { deviceException, deviceGlyphIcon, stateColor } from "../ui/fleet";
 import { Icon } from "../ui/icons";
-import { ModalDialog, pushToast } from "../ui/overlays";
-import { Button, TextField } from "../ui/primitives";
-import { InsetGroup, InsetRow, MoreMenu } from "../ui/studio";
+import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
+import { DropdownMenu, ModalDialog, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import { Button, IconButton, TextField, focusRingStyle } from "../ui/primitives";
+import { InsetGroup, InsetRow } from "../ui/studio";
 import { controllerPort } from "../controller/controllerPort";
 import { DeviceJobsEntry } from "./DeviceJobsPanel";
 import { removeAccountDevice, saveDeviceAlias } from "../accountDevicesStore";
@@ -104,6 +105,8 @@ const detailFor = signal("");
 const renameOpen = signal(false);
 const renameDraft = signal("");
 const removeOpen = signal(false);
+const remoteUpdateBusy = signal(false);
+const copiedCommand = signal(false);
 
 const CAPABILITY_WORDS: Readonly<Record<string, MessageKey>> = {
   terminal: "device.cap.terminal",
@@ -253,15 +256,94 @@ function newWorkspace(view: DeviceView): void {
   void run();
 }
 
-function UpdateBlock(props: { view: DeviceView }) {
+function DeviceOverflowMenu(props: { items: ReadonlyArray<DropdownMenuItem>; accessibilityLabel: string }) {
+  const open = signal(false);
+  const anchor = signal<ViewRef | null>(null);
+  return (
+    <View ref={el => anchor.set(el)} style={{ flexShrink: 0 }}>
+      <IconButton
+        icon="more"
+        size={compactLayout() ? "lg" : "sm"}
+        active={open()}
+        accessibilityLabel={props.accessibilityLabel}
+        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+        onPress={() => open.update(value => !value)}
+      />
+      <If when={open()}>
+        <DropdownMenu
+          open={true}
+          anchor={anchor()}
+          align="end"
+          minWidth={196}
+          items={props.items}
+          onClose={() => open.set(false)}
+        />
+      </If>
+    </View>
+  );
+}
+
+async function triggerRemoteUpdate(view: DeviceView): Promise<void> {
+  if (remoteUpdateBusy()) return;
+  remoteUpdateBusy.set(true);
+  pushToast(tr("device.remoteUpdateStarting", { device: view.name }), "info");
+  try {
+    await invokeCommand("fleet_device_update", { deviceId: view.deviceId });
+    await loadDetail(view.deviceId);
+  } catch (error) {
+    console.warn(`fleet_device_update failed: ${error instanceof Error ? error.message : String(error)}`);
+    pushToast(tr("device.remoteUpdateFailed", { device: view.name }), "error");
+  } finally {
+    remoteUpdateBusy.set(false);
+  }
+}
+
+function UpdateBlock(props: { view: DeviceView; menuItems: ReadonlyArray<DropdownMenuItem> }) {
   const update = () => detail()?.update;
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (copyTimer) clearTimeout(copyTimer);
+  });
+  const copyCommand = (cmd: string) => {
+    void Clipboard.writeText(cmd).then(
+      () => {
+        copiedCommand.set(true);
+        pushToast(tr("device.commandCopied"), "success");
+        if (copyTimer) clearTimeout(copyTimer);
+        copyTimer = setTimeout(() => {
+          copyTimer = null;
+          copiedCommand.set(false);
+        }, 1800);
+      },
+      () => pushToast(tr("error.unsupported"), "error"),
+    );
+  };
   return (
     <View style={{ gap: space.sm }}>
-      <Text style={{ ...textStyle("label", { color: palette().warning }), fontWeight: "400" }}>
-        {update()?.version
-          ? tr("device.needsVersion", { version: update()!.version! })
-          : props.view.stateReason || tr("device.updateNeeded")}
-      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        <Text style={{ ...textStyle("label", { color: stateColor("needs_you") }), fontWeight: "400", flex: 1, minWidth: 0 }}>
+          {update()?.version
+            ? tr("device.needsVersion", { version: update()!.version! })
+            : props.view.stateReason || tr("device.updateNeeded")}
+        </Text>
+        <If when={compactLayout()}>
+          <DeviceOverflowMenu items={props.menuItems} accessibilityLabel="device-menu-phone" />
+        </If>
+      </View>
+      <If when={Boolean(update()?.canUpdateRemotely)}>
+        <View style={{ flexDirection: "row" }}>
+          <Button
+            label={tr("device.update")}
+            variant="primary"
+            size="md"
+            loading={remoteUpdateBusy()}
+            disabled={remoteUpdateBusy()}
+            accessibilityLabel="device-remote-update"
+            style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+            onPress={() => void triggerRemoteUpdate(props.view)}
+          />
+        </View>
+      </If>
       <If when={update()?.command ?? ""}>
         {command => (
           <View style={{ gap: space.xs }}>
@@ -277,12 +359,15 @@ function UpdateBlock(props: { view: DeviceView }) {
                 backgroundColor: palette().surfaceTertiary,
               }}
             >
-              <Text style={{ ...textStyle("mono"), flex: 1, minWidth: 0 }}>{command()}</Text>
+              <Text style={{ ...textStyle("mono"), flex: 1, minWidth: 0, userSelect: "text" }}>{command()}</Text>
               <Button
                 label={tr("common.copy")}
+                leadingIcon={copiedCommand() ? "check" : "copy"}
                 variant="ghost"
-                size="xs"
-                onPress={() => void Clipboard.writeText(command())}
+                size={compactLayout() ? "md" : "xs"}
+                accessibilityLabel="device-copy-update-command"
+                style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+                onPress={() => copyCommand(command())}
               />
             </View>
           </View>
@@ -329,15 +414,30 @@ function Header(props: { view: DeviceView }) {
           <View
             role="button"
             accessibilityLabel="device-back"
+            hitSlop={touchSlop(28)}
             onPress={() => openAllSessions("by-device")}
-            style={{ flexDirection: "row", alignItems: "center", gap: space.xs, cursor: "pointer" }}
+            hoverStyle={{ backgroundColor: palette().panelHover }}
+            activeStyle={tactileActiveStyle(0.97)}
+            focusVisibleStyle={focusRingStyle()}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.xs,
+              minHeight: 28,
+              paddingHorizontal: space.xs,
+              marginLeft: -space.xs,
+              borderRadius: radii.sm,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
           >
             <Icon name="chevron-left" size={12} color={palette().textSecondary} />
             <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("allSessions.title")}</Text>
           </View>
         </If>
         <View style={{ flex: 1 }} />
-        <MoreMenu items={menuItems()} accessibilityLabel="device-menu" size="sm" />
+        <DeviceOverflowMenu items={menuItems()} accessibilityLabel="device-menu" />
       </View>
       {/* A phone's top bar already names the device. */}
       <View style={{ display: compactLayout() ? "none" : "flex", flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
@@ -358,7 +458,7 @@ function Header(props: { view: DeviceView }) {
                 {stateLine(props.view) || subtitle(props.view)}
               </Text>
               <If when={compactLayout()}>
-                <MoreMenu items={menuItems()} accessibilityLabel="device-menu-phone" size="sm" />
+                <DeviceOverflowMenu items={menuItems()} accessibilityLabel="device-menu-phone" />
               </If>
             </View>
             <If when={!stateLine(props.view) && routeLine(props.view)}>
@@ -367,7 +467,7 @@ function Header(props: { view: DeviceView }) {
           </View>
         }
       >
-        <UpdateBlock view={props.view} />
+        <UpdateBlock view={props.view} menuItems={menuItems()} />
       </If>
     </View>
   );
@@ -428,47 +528,57 @@ function Sections(props: { view: DeviceView }) {
           onPress={() => openAllSessions("by-device")}
         />
       </InsetGroup>
-      <InsetGroup accessibilityLabel="device-capabilities">
-        <If when={capabilityWords(props.view)}>
-          {words => <InsetRow first label={tr("device.available")} value={words()} />}
-        </If>
-        <If when={sshCount() !== null}>
+      <View style={{ gap: space.lg }}>
+        <InsetGroup accessibilityLabel="device-capabilities">
+          <If when={capabilityWords(props.view)}>
+            {words => <InsetRow first label={tr("device.available")} value={words()} />}
+          </If>
+          <If when={sshCount() !== null}>
+            <InsetRow
+              first={!capabilityWords(props.view)}
+              label={tr("device.ssh")}
+              value={String(sshCount() ?? 0)}
+              chevron
+              accessibilityLabel="device-ssh"
+              onPress={() => {
+                const run = async () => {
+                  if (props.view.fleet) await selectDeviceContext(props.view.deviceId);
+                  await openSshConnectionModal();
+                };
+                void run();
+              }}
+            />
+          </If>
           <InsetRow
-            first={!capabilityWords(props.view)}
-            label={tr("device.ssh")}
-            value={String(sshCount() ?? 0)}
+            first={!capabilityWords(props.view) && sshCount() === null}
+            label={tr("device.settingsFor", { device: props.view.name })}
             chevron
-            accessibilityLabel="device-ssh"
-            onPress={() => void openSshConnectionModal()}
+            accessibilityLabel="device-settings"
+            disabled={deviceException(props.view.state) === "offline"}
+            onPress={() => openSettingsFor(props.view)}
           />
-        </If>
-        <InsetRow
-          first={!capabilityWords(props.view) && sshCount() === null}
-          label={tr("device.settingsFor", { device: props.view.name })}
-          chevron
-          accessibilityLabel="device-settings"
-          disabled={deviceException(props.view.state) === "offline"}
-          onPress={() => openSettingsFor(props.view)}
-        />
-      </InsetGroup>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm, marginTop: -space.lg }}>
-        <Button
-          label={tr("device.newTerminal")}
-          variant="secondary"
-          size="md"
-          accessibilityLabel="device-new-terminal"
-          disabled={deviceException(props.view.state) !== null}
-          onPress={() => newTerminal(props.view)}
-        />
-        <Button
-          label={tr("device.newWorkspace")}
-          variant="secondary"
-          size="md"
-          accessibilityLabel="device-new-workspace"
-          disabled={!props.view.canCreateWorkspace.allowed}
-          tooltip={props.view.canCreateWorkspace.reason}
-          onPress={() => newWorkspace(props.view)}
-        />
+        </InsetGroup>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+          <Button
+            label={tr("device.newTerminal")}
+            variant="secondary"
+            size="md"
+            accessibilityLabel="device-new-terminal"
+            disabled={deviceException(props.view.state) !== null}
+            style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+            onPress={() => newTerminal(props.view)}
+          />
+          <Button
+            label={tr("device.newWorkspace")}
+            variant="secondary"
+            size="md"
+            accessibilityLabel="device-new-workspace"
+            disabled={!props.view.canCreateWorkspace.allowed}
+            tooltip={props.view.canCreateWorkspace.reason}
+            style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
+            onPress={() => newWorkspace(props.view)}
+          />
+        </View>
       </View>
       {/* P-UI (wave 17): the direct path to Detached Dispatch, on this computer's own page only
           (the commands are controller local, so a browser or a phone never draws it). */}
@@ -480,6 +590,15 @@ function Sections(props: { view: DeviceView }) {
 }
 
 function DeviceDialogs(props: { view: DeviceView }) {
+  const canSaveRename = () => {
+    const trimmed = renameDraft().trim();
+    return trimmed.length > 0 && trimmed !== props.view.name;
+  };
+  const submitRename = () => {
+    if (!canSaveRename()) return;
+    renameOpen.set(false);
+    void saveDeviceAlias(props.view.deviceId, renameDraft().trim());
+  };
   return (
     <>
       <ModalDialog
@@ -494,16 +613,14 @@ function DeviceDialogs(props: { view: DeviceView }) {
             label={tr("common.save")}
             variant="primary"
             size="md"
+            disabled={!canSaveRename()}
             accessibilityLabel="device-rename-save"
-            onPress={() => {
-              renameOpen.set(false);
-              void saveDeviceAlias(props.view.deviceId, renameDraft());
-            }}
+            onPress={submitRename}
           />
           </>
         }
       >
-        <RenameField />
+        <RenameField onSubmit={submitRename} />
       </ModalDialog>
       <ModalDialog
         open={removeOpen()}
@@ -532,11 +649,12 @@ function DeviceDialogs(props: { view: DeviceView }) {
   );
 }
 
-function RenameField(): JSX.Element {
+function RenameField(props: { onSubmit: () => void }): JSX.Element {
   return (
     <TextField
       value={renameDraft()}
       onChange={value => renameDraft.set(value)}
+      onSubmit={props.onSubmit}
       accessibilityLabel="device-rename-field"
       autoFocus
     />
@@ -546,15 +664,20 @@ function RenameField(): JSX.Element {
 /** The device route. */
 export function DeviceScene() {
   let loadedFor: string | null = null;
-  const view = () => {
+  effect(() => {
     const current = currentView();
     const id = current?.deviceId ?? "";
-    if (current?.fleet && id !== loadedFor) {
+    if (!current?.fleet || !id) {
+      loadedFor = null;
+      detail.set(null);
+      return;
+    }
+    if (id !== loadedFor) {
       loadedFor = id;
       void loadDetail(id);
     }
-    return current;
-  };
+  });
+  const view = () => currentView();
   return (
     <Scroll
       accessibilityLabel="device-scene"

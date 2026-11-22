@@ -23,12 +23,13 @@ function fleetNavigator() {
           isHostCurrent: true,
           sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "NSH skeleton")],
         },
-      ]),
+      ], { hostKind: "desktop", isClientDevice: true }),
       fleetDeviceRow("dev-b", "linux-box", [
         { workspaceId: "workspace-2", name: "infra", rootPath: "/srv/infra", sessions: [] },
       ], { hostKind: "cli" }),
       fleetDeviceRow("dev-c", "win-pc", [], { state: "offline" }),
       fleetDeviceRow("dev-phone", "Pixel", [], { hostKind: "mobile", isClientDevice: true }),
+      fleetDeviceRow("dev-cloud", "OpenBitFun Cloud", [], { hostKind: "cloud" }),
     ],
     removedDeviceIds: [],
     totals: { running: 0, waiting: 0, unread: 0 },
@@ -106,8 +107,11 @@ test("the scope chip lists runtime devices, disables offline ones and moves the 
   await app.waitFor("On MacBook");
   await app.press("library-scope-chip");
   await app.waitFor("linux-box");
-  // A phone is a frontend, not a device with a library.
+  // Frontend phones and the cloud superagent node do not host a local library.
   expect(app.texts()).not.toContain("Pixel");
+  expect(app.texts()).not.toContain("OpenBitFun Cloud");
+  // Local desktop runtime (isClientDevice: true) stays listed so the user can return to it.
+  expect(app.shows("label:library-scope-dev-a")).toBe(true);
   // An offline device is listed but cannot be chosen.
   expect(app.shows("text:win-pc")).toBe(true);
   expect(app.shows("text:Offline")).toBe(true);
@@ -117,6 +121,19 @@ test("the scope chip lists runtime devices, disables offline ones and moves the 
   await app.press("library-tab-agents");
   await app.waitUntil(() =>
     host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_available_modes"),
+  );
+  // Switching back to the local desktop while on Agents reactively reloads for dev-a.
+  const devACallsBefore = host.fleetCalls.filter(
+    call => call.target === "dev-a" && call.command === "get_available_modes",
+  ).length;
+  await app.press("library-scope-chip");
+  await app.waitFor("label:library-scope-dev-a");
+  await app.press("library-scope-dev-a");
+  await app.waitFor("On MacBook");
+  await app.waitUntil(
+    () =>
+      host.fleetCalls.filter(call => call.target === "dev-a" && call.command === "get_available_modes")
+        .length > devACallsBefore,
   );
 });
 

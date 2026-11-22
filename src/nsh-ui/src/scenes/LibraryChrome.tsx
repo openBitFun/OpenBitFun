@@ -8,20 +8,20 @@ import { View, type JSX, type ViewStyle } from "nsh";
 import { layout, space } from "../theme";
 import { studioCompact } from "../ui/studio";
 
-/** Gallery pages (Spaces) may widen the column to this. */
-export const LIBRARY_GALLERY_WIDTH = 960;
+/** All Library tabs share the exact 720 px page column width so tab switches never jump horizontally. */
+export const LIBRARY_GALLERY_WIDTH = layout.pageWidth;
 
 /** Page gutter: 32, 16 on a phone-sized scene. */
 export function libraryGutter(): number {
   return studioCompact() ? layout.phoneGutter : layout.pageGutter;
 }
 
-/** The centred page column: 720 (960 for a gallery) plus its gutters. */
-export function libraryColumnStyle(wide = false): ViewStyle {
+/** The centred 720 px page column plus its gutters (kept uniform across all 5 Library tabs). */
+export function libraryColumnStyle(_wide = false): ViewStyle {
   const gutter = libraryGutter();
   return {
     width: "100%",
-    maxWidth: (wide ? LIBRARY_GALLERY_WIDTH : layout.pageWidth) + gutter * 2,
+    maxWidth: layout.pageWidth + gutter * 2,
     alignSelf: "center",
     paddingHorizontal: gutter,
   };

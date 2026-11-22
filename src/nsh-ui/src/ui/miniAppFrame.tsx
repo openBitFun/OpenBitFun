@@ -7,10 +7,20 @@
 // Space" requests show as one quiet line above the frame.
 
 import { Clipboard, signal, Text, View, WebView, type WebViewRef } from "nsh";
-import { tr } from "../i18n";
+import { localizeHostError, tr } from "../i18n";
 import { fleetActive } from "../bridge";
 import { fleetDeviceById } from "../fleetStore";
-import { layout, palette, radii, space, textStyle } from "../theme";
+import { openDevicePage } from "../state";
+import {
+  compactLayout,
+  concentricRadius,
+  layout,
+  palette,
+  radii,
+  space,
+  textStyle,
+  touchSlop,
+} from "../theme";
 import {
   applySpaceDraft,
   attachFrame,
@@ -36,11 +46,11 @@ import {
 } from "../spaceViewStore";
 import { openSpaceWindow, spaceOpening, spacePermissionBadges, spaces, stopSpaceWorker } from "../spacesStore";
 import { SPACE_FRAME_SHIM, type SpaceFrameSession } from "../spaceFrame";
-import { DeviceBadge, StateMark } from "./fleet";
+import { DeviceBadge, StateMark, deviceException } from "./fleet";
 import { Icon } from "./icons";
-import { Spinner } from "./motion";
+import { pressTransition, Spinner, tactileActiveStyle } from "./motion";
 import { ModalDialog, pushToast, type DropdownMenuItem } from "./overlays";
-import { Button, IconButton, InlineBanner } from "./primitives";
+import { Button, focusRingStyle, IconButton, InlineBanner } from "./primitives";
 import { MoreMenu, studioCompact } from "./studio";
 
 function deviceLabel(deviceId: string): string {
@@ -69,7 +79,13 @@ export function MiniAppFrame(props: { session: SpaceFrameSession }) {
             props.session.status.set("failed");
             props.session.error.set(event.message || "error");
           }}
-          style={{ flex: 1, minHeight: 0, alignSelf: "stretch", borderRadius: radii.md, overflow: "hidden" }}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            alignSelf: "stretch",
+            borderRadius: concentricRadius(radii.lg, 1),
+            overflow: "hidden",
+          }}
         />
       )}
     </If>
@@ -90,7 +106,7 @@ function FrameState(props: { session: SpaceFrameSession; name: string; device: s
       case "replaced":
         return tr("spaces.p4.replaced", { space: props.name });
       case "failed":
-        return tr("spaces.p4.failed", { error: props.session.error() });
+        return tr("spaces.p4.failed", { error: localizeHostError(props.session.error()) });
       default:
         return "";
     }
@@ -145,11 +161,32 @@ function AgentLine(props: { session: SpaceFrameSession; appId: string; onOpen: (
       <View
         role="button"
         accessibilityLabel="space-agent-line"
+        hitSlop={touchSlop(28)}
         onPress={() => props.onOpen()}
-        style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: 28, cursor: "pointer" }}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.sm,
+          minHeight: compactLayout() ? layout.touchTarget : 28,
+          paddingHorizontal: space.xs,
+          borderRadius: radii.sm,
+          cursor: "pointer",
+          ...pressTransition(),
+        }}
+        hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+        activeStyle={tactileActiveStyle(0.99)}
+        focusVisibleStyle={focusRingStyle()}
       >
         <StateMark state={pending() ? "working" : "done"} seen size={12} />
-        <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), flexShrink: 1, numberOfLines: 1 }}>
+        <Text
+          style={{
+            ...textStyle("caption", { color: palette().textSecondary }),
+            flexShrink: 1,
+            minWidth: 0,
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
+          }}
+        >
           {pending()
             ? tr("spaces.p4.agentWorking", { action: latest()?.action || latest()?.method || "open" })
             : tr("spaces.p4.agentDone")}
@@ -184,7 +221,17 @@ function AgentSheet(props: { open: boolean; session: SpaceFrameSession; appId: s
           {row => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: 32 }}>
               <StateMark state={row().outcome === "pending" ? "working" : row().outcome === "refused" ? "failed" : "done"} seen size={12} />
-              <Text style={{ ...textStyle("mono", { color: palette().text }), flex: 1, numberOfLines: 1 }}>{row().label}</Text>
+              <Text
+                style={{
+                  ...textStyle("mono", { color: palette().text }),
+                  flex: 1,
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {row().label}
+              </Text>
               <Text style={textStyle("caption", { color: palette().textMuted })}>
                 {row().outcome === "pending"
                   ? tr("state.working")
@@ -201,7 +248,11 @@ function AgentSheet(props: { open: boolean; session: SpaceFrameSession; appId: s
 }
 
 function SheetError() {
-  return <If when={spaceSheetError()}>{error => <InlineBanner tone="danger" message={error()} />}</If>;
+  return (
+    <If when={spaceSheetError()}>
+      {error => <InlineBanner tone="danger" message={localizeHostError(error())} />}
+    </If>
+  );
 }
 
 function VersionsSheet() {
@@ -216,7 +267,13 @@ function VersionsSheet() {
     >
       <View style={{ gap: space.xs }}>
         <SheetError />
-        <If when={spaceVersions().length === 0}>
+        <If when={spaceSheetBusy() && spaceVersions().length === 0}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: 36 }}>
+            <Spinner size={14} />
+            <Text style={textStyle("label", { color: palette().textMuted })}>{tr("common.loading")}</Text>
+          </View>
+        </If>
+        <If when={!spaceSheetBusy() && spaceVersions().length === 0 && !spaceSheetError()}>
           <Text style={textStyle("label", { color: palette().textMuted })}>{tr("spaces.p4.noVersions")}</Text>
         </If>
         <Each of={spaceVersions()} key={version => String(version)}>
@@ -325,12 +382,15 @@ function CustomizeSheet() {
           {draft => (
             <View style={{ gap: space.sm }}>
               <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("spaces.p4.draftFolder")}</Text>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
                 <Text
                   accessibilityLabel="space-draft-root"
                   style={{
                     ...textStyle("mono", { color: palette().text }),
                     flex: 1,
+                    minWidth: 0,
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis-middle",
                     backgroundColor: palette().surfaceTertiary,
                     borderRadius: radii.sm,
                     paddingHorizontal: space.chip,
@@ -410,14 +470,25 @@ function PermissionsSheet(props: { permissionLabel: (id: string) => string }) {
             else={<Text style={textStyle("caption", { color: palette().textMuted })}>{tr("spaces.p4.grantNeedsWorkspace")}</Text>}
           >
             {path => (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-                <Text style={{ ...textStyle("mono", { color: palette().textSecondary }), flex: 1, numberOfLines: 1 }}>{path()}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
+                <Text
+                  style={{
+                    ...textStyle("mono", { color: palette().textSecondary }),
+                    flex: 1,
+                    minWidth: 0,
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis-middle",
+                  }}
+                >
+                  {path()}
+                </Text>
                 <Button
                   label={tr("spaces.p4.grantWorkspace")}
                   variant="secondary"
-                  size="sm"
+                  size={compactLayout() ? "md" : "sm"}
                   disabled={spaceSheetBusy()}
                   accessibilityLabel="space-grant-workspace"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                   onPress={() => void grantSpaceWorkspace()}
                 />
               </View>
@@ -515,21 +586,47 @@ export function SpacePage(props: { permissionLabel: (id: string) => string }) {
           >
             <IconButton
               icon="arrow-left"
-              size="sm"
+              size={compactLayout() ? "md" : "sm"}
               tooltip={tr("spaces.p4.back")}
               accessibilityLabel="space-page-back"
+              style={
+                compactLayout()
+                  ? {
+                      width: layout.touchTarget,
+                      height: layout.touchTarget,
+                      minWidth: layout.touchTarget,
+                      minHeight: layout.touchTarget,
+                    }
+                  : undefined
+              }
               onPress={() => closeSpacePage()}
             />
-            <Text style={{ ...textStyle("sectionTitle", { color: palette().text }), flexShrink: 1, numberOfLines: 1 }}>
+            <Text
+              style={{
+                ...textStyle("sectionTitle", { color: palette().text }),
+                flexShrink: 1,
+                minWidth: 0,
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
               {current().name}
             </Text>
             <If when={deviceLabel(current().deviceId)}>
-              {name => (
-                <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 1, minWidth: 0 }}>
-                  <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("spaces.p4.on")}</Text>
-                  <DeviceBadge name={name()} />
-                </View>
-              )}
+              {name => {
+                const dev = () => fleetDeviceById(current().deviceId);
+                return (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 1, minWidth: 0 }}>
+                    <Text style={textStyle("caption", { color: palette().textMuted })}>{tr("spaces.p4.on")}</Text>
+                    <DeviceBadge
+                      name={name()}
+                      kind={dev()?.hostKind}
+                      exception={dev() ? deviceException(dev()!.state) : undefined}
+                      onPress={dev() ? () => openDevicePage(current().deviceId) : undefined}
+                    />
+                  </View>
+                );
+              }}
             </If>
             <View style={{ flex: 1 }} />
             <MoreMenu
@@ -593,33 +690,60 @@ export function ElsewhereList(props: {
   return (
     <View accessibilityLabel="spaces-elsewhere" style={{ gap: 0 }}>
       <Each of={props.apps} key={app => app.appId}>
-        {app => (
-          <View
-            role="button"
-            accessibilityLabel={`space-elsewhere-${app().appId}`}
-            onPress={() => props.onOpen(app().appId, app().devices[0]?.deviceId ?? "")}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: space.md,
-              minHeight: 48,
-              paddingHorizontal: space.sm,
-              borderRadius: radii.md,
-              cursor: "pointer",
-            }}
-            hoverStyle={{ backgroundColor: palette().chromeHover }}
-          >
-            <Icon name="layout-grid" size={16} color={palette().textSecondary} />
-            <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-              <Text style={{ ...textStyle("body", { color: palette().text }), fontWeight: "500", numberOfLines: 1 }}>{app().name}</Text>
-              <Text style={{ ...textStyle("caption", { color: palette().textMuted }), numberOfLines: 1 }}>
-                {app().description || tr("common.noDescription")}
-              </Text>
+        {app => {
+          const primaryDeviceId = () => app().devices[0]?.deviceId ?? "";
+          const dev = () => fleetDeviceById(primaryDeviceId());
+          return (
+            <View
+              role="button"
+              accessibilityLabel={`space-elsewhere-${app().appId}`}
+              hitSlop={touchSlop(48)}
+              onPress={() => props.onOpen(app().appId, primaryDeviceId())}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: space.md,
+                minHeight: 48,
+                paddingHorizontal: space.sm,
+                borderRadius: radii.md,
+                cursor: "pointer",
+                ...pressTransition(),
+              }}
+              hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+              activeStyle={tactileActiveStyle(0.99)}
+              focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
+            >
+              <Icon name="layout-grid" size={16} color={palette().textSecondary} />
+              <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+                <Text
+                  style={{
+                    ...textStyle("body", { color: palette().text }),
+                    fontWeight: "500",
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {app().name}
+                </Text>
+                <Text
+                  style={{
+                    ...textStyle("caption", { color: palette().textMuted }),
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {app().description || tr("common.noDescription")}
+                </Text>
+              </View>
+              <DeviceBadge
+                name={deviceLabel(primaryDeviceId()) || tr("spaces.p4.anotherDevice")}
+                kind={dev()?.hostKind}
+                exception={dev() ? deviceException(dev()!.state) : undefined}
+              />
+              <Icon name="chevron-right" size={12} color={palette().textMuted} />
             </View>
-            <DeviceBadge name={deviceLabel(app().devices[0]?.deviceId ?? "") || tr("spaces.p4.anotherDevice")} />
-            <Icon name="chevron-right" size={12} color={palette().textMuted} />
-          </View>
-        )}
+          );
+        }}
       </Each>
     </View>
   );

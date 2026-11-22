@@ -9,15 +9,16 @@ import { Scroll, signal, Text, View, type ViewRef } from "nsh";
 import { fleetActive } from "../bridge";
 import { fleetDeviceById, fleetDevices } from "../fleetStore";
 import type { FleetDevice } from "../fleetTypes";
+import { formatRelativeTime } from "../format";
 import { tr } from "../i18n";
 import type { MessageKey } from "../locales/en-US";
 import { deviceContext, LIBRARY_TABS, libraryTab, selectDeviceContext, type LibraryTab } from "../state";
-import { compactLayout, controlHeight, layout, palette, radii, space, textStyle } from "../theme";
-import { deviceGlyphIcon } from "../ui/fleet";
+import { compactLayout, controlHeight, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
+import { deviceException, deviceGlyphIcon } from "../ui/fleet";
 import { Icon } from "../ui/icons";
-import { MOTION_DURATION, paintTransition } from "../ui/motion";
+import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
-import { SegmentedTabs } from "../ui/primitives";
+import { InlineBanner, SegmentedTabs, focusRingStyle } from "../ui/primitives";
 import { studioCompact, trackStudioWidth } from "../ui/studio";
 import { AgentsScene } from "./AgentsScene";
 import { AssistantsScene, assistantDetailShown } from "./AssistantsScene";
@@ -42,9 +43,15 @@ const TAB_SUBTITLE: Record<LibraryTab, MessageKey> = {
   routines: "routines.subtitle",
 };
 
-/** Runtime devices the Library can look at (phones and browsers keep no library). */
+const NON_RUNTIME_HOST_KINDS = new Set(["cloud", "mobile", "phone", "browser", "web"]);
+
+/**
+ * Runtime devices the Library can look at: includes this local desktop
+ * (`isClientDevice: true`) and remote desktop/CLI/container runtimes, while
+ * excluding the cloud control-plane node and frontend-only phones/browsers.
+ */
 function scopeDevices(): FleetDevice[] {
-  return fleetDevices().filter(device => !device.isClientDevice);
+  return fleetDevices().filter(device => !NON_RUNTIME_HOST_KINDS.has(device.hostKind.toLowerCase()));
 }
 
 /** A device the chip lists but cannot switch to, and the word it shows instead. */
@@ -92,10 +99,12 @@ export function LibraryScopeChip() {
         role={menuEnabled() ? "button" : undefined}
         accessibilityLabel="library-scope-chip"
         accessibilityState={{ expanded: open() }}
+        hitSlop={menuEnabled() ? touchSlop(compactLayout() ? layout.touchTarget : controlHeight.sm) : undefined}
         onPress={menuEnabled() ? () => open.update(value => !value) : undefined}
         style={{
           boxSizing: "border-box",
-          height: controlHeight.sm,
+          height: compactLayout() ? layout.touchTarget : controlHeight.sm,
+          minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
           maxWidth: "100%",
           paddingHorizontal: space.sm,
           borderRadius: radii.md,
@@ -106,10 +115,12 @@ export function LibraryScopeChip() {
           alignItems: "center",
           gap: space.chip,
           cursor: menuEnabled() ? "pointer" : "default",
-          ...paintTransition(MOTION_DURATION.fast),
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
-        hoverStyle={menuEnabled() ? { backgroundColor: palette().panelHover } : undefined}
-        focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: 1 }}
+        hoverStyle={menuEnabled() && !compactLayout() ? { backgroundColor: palette().panelHover } : undefined}
+        activeStyle={menuEnabled() ? tactileActiveStyle(0.97) : undefined}
+        focusVisibleStyle={menuEnabled() ? focusRingStyle() : undefined}
       >
         <Icon name={deviceGlyphIcon(current()?.hostKind ?? "laptop")} size={14} color={palette().textSecondary} />
         <Text style={{ ...textStyle("label"), flexShrink: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
@@ -147,11 +158,19 @@ function LibraryTabs() {
   );
 }
 
+function scopeOfflineNotice(): string {
+  if (!fleetActive()) return "";
+  const current = fleetDeviceById(deviceContext());
+  if (!current || deviceException(current.state) !== "offline") return "";
+  if (current.state === "unreachable") return tr("device.unreachable");
+  return tr("device.offline", { ago: formatRelativeTime(current.asOfMs) });
+}
+
 function LibraryHeader() {
   return (
     <View
       style={{
-        ...libraryColumnStyle(libraryTab() === "spaces"),
+        ...libraryColumnStyle(),
         paddingTop: studioCompact() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
         gap: space.lg,
         flexShrink: 0,
@@ -181,10 +200,18 @@ function LibraryHeader() {
         </If>
         <Text
           accessibilityLabel="library-subtitle"
-          style={{ ...textStyle("label", { color: palette().textSecondary }), fontWeight: "400", numberOfLines: 1, textOverflow: "ellipsis" }}
+          style={{
+            ...textStyle("label", { color: palette().textSecondary }),
+            fontWeight: "400",
+            numberOfLines: compactLayout() ? 2 : 1,
+            textOverflow: "ellipsis",
+          }}
         >
           {tr(TAB_SUBTITLE[libraryTab()])}
         </Text>
+        <If when={scopeOfflineNotice()}>
+          {notice => <InlineBanner tone="warning" message={notice()} />}
+        </If>
       </View>
     </View>
   );

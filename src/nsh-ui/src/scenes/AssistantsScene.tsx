@@ -79,6 +79,7 @@ import { formatCount, formatPlural, formatRelativeTime } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import { deviceContext, sessionLastActivityMs } from "../state";
 import {
+  compactLayout,
   fontMono,
   layout,
   palette,
@@ -88,7 +89,9 @@ import {
   textSize,
   textStyle,
   textTracking,
+  touchSlop,
 } from "../theme";
+import { stateColor } from "../ui/fleet";
 import { Icon } from "../ui/icons";
 import {
   AssistantAvatar,
@@ -109,7 +112,14 @@ import {
   visualEditBlockMessage,
   VisualEditNotice,
 } from "../ui/markdownEditor";
-import { MOTION_DURATION, animateLayout, paintTransition } from "../ui/motion";
+import {
+  MOTION_DURATION,
+  animateLayout,
+  paintTransition,
+  popoverEnterMotion,
+  pressTransition,
+  tactileActiveStyle,
+} from "../ui/motion";
 import { DropdownMenu, ModalDialog, type DropdownMenuItem } from "../ui/overlays";
 import {
   Button,
@@ -118,8 +128,9 @@ import {
   InlineConfirmBar,
   InputBox,
   SegmentedTabs,
-  StatusDot,
+  SkeletonBlock,
   ToggleSwitch,
+  focusRingStyle,
 } from "../ui/primitives";
 
 // Persona documents (wave 22 P1): the shared visual Markdown editor, with the
@@ -238,24 +249,22 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
       }}
       style={{
         position: "relative",
-        minHeight: assistantsEmbedded() ? layout.touchTarget + space.md : STUDIO_TOUCH_MIN + 8,
+        minHeight: assistantsEmbedded() ? layout.touchTarget + space.md : STUDIO_TOUCH_MIN + space.sm,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 8,
+        gap: space.md,
+        paddingHorizontal: space.md,
+        paddingVertical: space.sm,
         borderRadius: listDetailFlow() ? 0 : radii.md,
         borderCurve: "continuous",
         backgroundColor: isSelected() && !listDetailFlow() ? palette().panelHover : "transparent",
         cursor: "pointer",
-        ...paintTransition(MOTION_DURATION.fast),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: palette().panelHover }}
-      focusVisibleStyle={{
-        outlineWidth: 2,
-        outlineColor: palette().borderFocus,
-        outlineOffset: -2,
-      }}
+      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
     >
       <If when={listDetailFlow() && !props.first}>
         <View
@@ -278,8 +287,8 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
         active={isSelected()}
         accessibilityLabel={`assistant-avatar-${props.item.id}`}
       />
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 6 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+        <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.sm }}>
           <Text
             style={{
               flexShrink: 1,
@@ -295,11 +304,15 @@ function CompanionGalleryRow(props: { item: AssistantWorkspaceView; first: boole
             {props.item.name}
           </Text>
           <If when={isPrimary()}>
-            <StatusDot
-              kind="accent"
-              size={6}
+            <Text
               accessibilityLabel={`assistant-primary-dot-${props.item.id}`}
-            />
+              style={{
+                ...textStyle("caption"),
+                flexShrink: 0,
+              }}
+            >
+              {tr("common.primary")}
+            </Text>
           </If>
         </View>
         <Text
@@ -332,23 +345,21 @@ function CreateAssistantRow() {
       }}
       style={{
         position: "relative",
-        minHeight: STUDIO_TOUCH_MIN + 8,
+        minHeight: STUDIO_TOUCH_MIN + space.sm,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 8,
+        gap: space.md,
+        paddingHorizontal: space.md,
+        paddingVertical: space.sm,
         borderRadius: studioCompact() ? 0 : radii.md,
         borderCurve: "continuous",
         cursor: "pointer",
-        ...paintTransition(MOTION_DURATION.fast),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: palette().panelHover }}
-      focusVisibleStyle={{
-        outlineWidth: 2,
-        outlineColor: palette().borderFocus,
-        outlineOffset: -2,
-      }}
+      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
     >
       <If when={studioCompact() && assistants().length > 0}>
         <View
@@ -440,6 +451,7 @@ function CompanionsRail() {
             tooltip={tr("assistants.refreshTooltip")}
             disabled={assistantsLoading()}
             accessibilityLabel="assistants-refresh"
+            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
             onPress={() => void loadAssistants()}
           />
           <IconButton
@@ -448,6 +460,7 @@ function CompanionsRail() {
             tooltip={tr("assistants.newAssistant")}
             disabled={assistantsBusy()}
             accessibilityLabel="assistants-new"
+            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
             onPress={openNewAssistantModal}
           />
         </View>
@@ -456,7 +469,7 @@ function CompanionsRail() {
           {notice => (
             <Text
               style={{
-                color: palette().success,
+                color: stateColor("done"),
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.4),
               }}
@@ -469,7 +482,7 @@ function CompanionsRail() {
           {err => (
             <Text
               style={{
-                color: palette().danger,
+                color: stateColor("failed"),
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.4),
               }}
@@ -483,11 +496,17 @@ function CompanionsRail() {
       <Scroll style={{ flex: 1, minHeight: 0 }}>
         <View
           style={{
-            paddingHorizontal: studioCompact() ? studioGutter() : 8,
-            paddingBottom: 16,
-            gap: studioCompact() ? 0 : 2,
+            paddingHorizontal: studioCompact() ? studioGutter() : space.sm,
+            paddingBottom: space.lg,
+            gap: studioCompact() ? 0 : space.hair,
           }}
         >
+          <If when={assistantsLoading() && assistants().length === 0}>
+            <View style={{ gap: space.sm, paddingVertical: space.xs }}>
+              <SkeletonBlock height={52} borderRadius={radii.md} />
+              <SkeletonBlock height={52} borderRadius={radii.md} />
+            </View>
+          </If>
           <If when={!assistantsLoading() && assistants().length === 0}>
             <StudioEmpty
               icon={assistantsError() ? "alert-circle" : "bot"}
@@ -546,6 +565,7 @@ function CompanionsRail() {
 
 /** The Library's Assistants tab: its toolbar (refresh, New assistant), then the rows. */
 function AssistantLibraryList() {
+  const phone = () => compactLayout();
   return (
     <Scroll style={{ flex: 1, minHeight: 0 }}>
       <LibraryToolbar
@@ -557,6 +577,7 @@ function AssistantLibraryList() {
             tooltip={tr("assistants.refreshTooltip")}
             disabled={assistantsLoading()}
             accessibilityLabel="assistants-refresh"
+            style={phone() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
             onPress={() => void loadAssistants()}
           />
         }
@@ -568,16 +589,23 @@ function AssistantLibraryList() {
             leadingIcon="plus"
             disabled={assistantsBusy()}
             accessibilityLabel="assistants-new"
+            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
             onPress={openNewAssistantModal}
           />
         }
       />
       <View style={libraryBodyStyle()}>
         <If when={assistantsNotice()}>
-          {notice => <Text style={textStyle("caption", { color: palette().success })}>{notice()}</Text>}
+          {notice => <Text style={textStyle("caption", { color: stateColor("done") })}>{notice()}</Text>}
         </If>
         <If when={assistantsError() && assistants().length > 0 ? assistantsError() : ""}>
-          {err => <Text style={textStyle("caption", { color: palette().danger })}>{localizeHostError(err())}</Text>}
+          {err => <Text style={textStyle("caption", { color: stateColor("failed") })}>{localizeHostError(err())}</Text>}
+        </If>
+        <If when={assistantsLoading() && assistants().length === 0}>
+          <View style={{ gap: space.sm }}>
+            <SkeletonBlock height={56} borderRadius={radii.lg} />
+            <SkeletonBlock height={56} borderRadius={radii.lg} />
+          </View>
         </If>
         <If when={!assistantsLoading() && assistants().length === 0}>
           <StudioEmpty
@@ -591,6 +619,7 @@ function AssistantLibraryList() {
                 variant="secondary"
                 size="md"
                 accessibilityLabel="assistants-empty-action"
+                style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                 onPress={() => {
                   if (assistantsError()) void loadAssistants();
                   else openNewAssistantModal();
@@ -627,16 +656,18 @@ function identityStatusText(): string {
 }
 
 function avatarOptionStyle(selected: boolean) {
+  const tile = compactLayout() ? layout.touchTarget : 36;
   return {
-    width: 36,
-    height: 36,
+    width: tile,
+    height: tile,
     alignItems: "center" as const,
     justifyContent: "center" as const,
     borderRadius: radii.md,
     borderCurve: "continuous" as const,
     backgroundColor: selected ? palette().accentSoft : "transparent",
     cursor: "pointer" as const,
-    ...paintTransition(MOTION_DURATION.fast),
+    userSelect: "none" as const,
+    ...pressTransition(MOTION_DURATION.fast),
   };
 }
 
@@ -661,6 +692,7 @@ function AvatarPickerLabel(props: { label: string }) {
  * IDENTITY.md at once (`chooseAvatarPreset` / `chooseAvatarEmoji`).
  */
 function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }) {
+  const popoverMotion = popoverEnterMotion("bottom", "start");
   return (
     <View style={{ flexShrink: 0 }}>
       <View
@@ -668,10 +700,18 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
         role="button"
         accessibilityLabel="assistant-avatar-change"
         accessibilityState={{ expanded: avatarPickerOpen() }}
-        tooltip={tr("assistants.avatar.title")}
+        hitSlop={touchSlop(props.size)}
+        tooltip={compactLayout() ? undefined : tr("assistants.avatar.title")}
         onPress={toggleAvatarPicker}
-        style={{ position: "relative", borderRadius: radii.pill, cursor: "pointer" }}
-        focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: 2 }}
+        style={{
+          position: "relative",
+          borderRadius: radii.pill,
+          cursor: "pointer",
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
+        }}
+        activeStyle={tactileActiveStyle(0.96)}
+        focusVisibleStyle={focusRingStyle()}
       >
         <AssistantAvatar
           avatar={props.assistant.identity.avatar}
@@ -682,10 +722,10 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
         <View
           style={{
             position: "absolute",
-            right: -2,
-            bottom: -2,
-            width: 18,
-            height: 18,
+            right: -space.hair,
+            bottom: -space.hair,
+            width: 16,
+            height: 16,
             borderRadius: radii.pill,
             alignItems: "center",
             justifyContent: "center",
@@ -703,28 +743,31 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
           anchor={avatarAnchor()}
           placement="bottom"
           align="start"
-          offset={8}
-          margin={8}
+          offset={space.sm}
+          margin={space.sm}
           onPressOutside={() => avatarPickerOpen.set(false)}
           onCancel={() => avatarPickerOpen.set(false)}
         >
           <View
             role="dialog"
             accessibilityLabel="assistant-avatar-picker"
-            style={{
-              width: 296,
-              maxWidth: "100%",
-              gap: 12,
-              padding: 14,
-              borderRadius: radii.lg,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().borderSubtle,
-              backgroundColor: palette().popoverBg,
-              boxShadow: palette().shadowOverlay,
-            }}
+            style={[
+              {
+                width: compactLayout() ? 280 : 296,
+                maxWidth: "100%",
+                gap: space.md,
+                padding: space.lg,
+                borderRadius: radii.lg,
+                borderCurve: "continuous",
+                borderWidth: 1,
+                borderColor: palette().borderSubtle,
+                backgroundColor: palette().popoverBg,
+                boxShadow: palette().shadowOverlay,
+              },
+              popoverMotion.style,
+            ]}
           >
-            <View style={{ gap: 2 }}>
+            <View style={{ gap: space.hair }}>
               <Text
                 style={{
                   color: palette().text,
@@ -745,18 +788,21 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                 {tr("assistants.avatar.hint")}
               </Text>
             </View>
-            <View style={{ gap: 6 }}>
+            <View style={{ gap: space.xs }}>
               <AvatarPickerLabel label={tr("assistants.avatar.official")} />
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 2 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.hair }}>
                 <Each of={[...ASSISTANT_AVATAR_PRESETS]} key={item => item}>
                   {preset => (
                     <View
                       role="button"
                       accessibilityLabel={`assistant-avatar-preset-${preset()}`}
                       accessibilityState={{ selected: props.assistant.identity.avatar === preset() }}
+                      hitSlop={touchSlop(36)}
                       onPress={() => void chooseAvatarPreset(preset())}
                       style={avatarOptionStyle(props.assistant.identity.avatar === preset())}
-                      hoverStyle={{ backgroundColor: palette().panelHover }}
+                      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+                      activeStyle={tactileActiveStyle(0.95)}
+                      focusVisibleStyle={focusRingStyle()}
                     >
                       <AssistantAvatar avatar={preset()} size={28} />
                     </View>
@@ -764,9 +810,9 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                 </Each>
               </View>
             </View>
-            <View style={{ gap: 6 }}>
+            <View style={{ gap: space.xs }}>
               <AvatarPickerLabel label={tr("assistants.avatar.emoji")} />
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 2 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.hair }}>
                 <Each of={[...ASSISTANT_EMOJI_PRESETS]} key={item => item}>
                   {(emoji, index) => (
                     <View
@@ -775,13 +821,16 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                       accessibilityState={{
                         selected: !props.assistant.identity.avatar && props.assistant.identity.emoji === emoji(),
                       }}
+                      hitSlop={touchSlop(36)}
                       onPress={() => void chooseAvatarEmoji(emoji())}
                       style={avatarOptionStyle(
                         !props.assistant.identity.avatar && props.assistant.identity.emoji === emoji(),
                       )}
-                      hoverStyle={{ backgroundColor: palette().panelHover }}
+                      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+                      activeStyle={tactileActiveStyle(0.95)}
+                      focusVisibleStyle={focusRingStyle()}
                     >
-                      <Text style={{ fontSize: textSize(18), lineHeight: textLineHeight(18, 1.2) }}>
+                      <Text style={{ fontSize: textSize(16), lineHeight: textLineHeight(16, 1.2) }}>
                         {emoji()}
                       </Text>
                     </View>
@@ -789,7 +838,7 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                 </Each>
               </View>
             </View>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
               <Input
                 value={avatarCustomInput()}
                 placeholder={tr("assistants.avatar.customPlaceholder")}
@@ -798,8 +847,8 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  height: 30,
-                  paddingHorizontal: 10,
+                  height: compactLayout() ? layout.touchTarget : 32,
+                  paddingHorizontal: space.sm,
                   borderRadius: radii.md,
                   borderWidth: 1,
                   borderColor: palette().borderSubtle,
@@ -807,7 +856,7 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
                   color: palette().text,
                   placeholderColor: palette().textMuted,
                   caretColor: palette().accent,
-                  fontSize: textSize(13),
+                  fontSize: compactLayout() ? Math.max(16, textSize(13)) : textSize(13),
                 }}
                 onChange={event => avatarCustomInput.set(event.value)}
                 onSubmit={() => void submitCustomAvatar()}
@@ -815,16 +864,17 @@ function AvatarPicker(props: { assistant: AssistantWorkspaceView; size: number }
               <Button
                 label={tr("assistants.avatar.useCustom")}
                 variant="secondary"
-                size="sm"
+                size={compactLayout() ? "md" : "sm"}
                 disabled={!avatarCustomInput().trim()}
                 accessibilityLabel="assistant-avatar-custom-apply"
+                style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                 onPress={() => void submitCustomAvatar()}
               />
             </View>
             <Text
               accessibilityLabel="assistant-identity-status"
               style={{
-                color: identitySaveStatus() === "error" ? palette().danger : palette().textMuted,
+                color: identitySaveStatus() === "error" ? stateColor("failed") : palette().textMuted,
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.4),
               }}
@@ -847,32 +897,35 @@ function AssistantNameEditor(props: { assistant: AssistantWorkspaceView }) {
         <View
           role="button"
           accessibilityLabel="assistant-name-edit"
-          tooltip={tr("assistants.renameTooltip")}
+          hitSlop={touchSlop(32)}
+          tooltip={compactLayout() ? undefined : tr("assistants.renameTooltip")}
           onPress={beginAssistantNameEdit}
           style={{
             flexShrink: 1,
             minWidth: 0,
             flexDirection: "row",
             alignItems: "center",
-            marginHorizontal: -6,
-            paddingHorizontal: 6,
+            marginHorizontal: -space.xs,
+            paddingHorizontal: space.xs,
             borderRadius: radii.sm,
             borderCurve: "continuous",
             cursor: "text",
-            ...paintTransition(MOTION_DURATION.fast),
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
           }}
-          hoverStyle={{ backgroundColor: palette().panelHover }}
-          focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: 0 }}
+          hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+          activeStyle={tactileActiveStyle(0.985)}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Text
             style={{
               flexShrink: 1,
               minWidth: 0,
               color: palette().text,
-              fontSize: textSize(studioCompact() ? 20 : 22),
+              fontSize: textSize(studioCompact() ? 17 : 22),
               fontWeight: "600",
-              letterSpacing: textTracking(22),
-              lineHeight: textLineHeight(22, 1.22),
+              letterSpacing: textTracking(studioCompact() ? 17 : 22),
+              lineHeight: textLineHeight(studioCompact() ? 17 : 22, 1.25),
               numberOfLines: 1,
               textOverflow: "ellipsis",
             }}
@@ -890,9 +943,9 @@ function AssistantNameEditor(props: { assistant: AssistantWorkspaceView }) {
         style={{
           flex: 1,
           minWidth: 0,
-          height: textLineHeight(22, 1.22),
-          marginHorizontal: -6,
-          paddingHorizontal: 6,
+          height: textLineHeight(22, 1.25),
+          marginHorizontal: -space.xs,
+          paddingHorizontal: space.xs,
           borderRadius: radii.sm,
           borderWidth: 1,
           borderColor: palette().fieldFocusBorder,
@@ -900,7 +953,7 @@ function AssistantNameEditor(props: { assistant: AssistantWorkspaceView }) {
           color: palette().text,
           placeholderColor: palette().textMuted,
           caretColor: palette().accent,
-          fontSize: textSize(studioCompact() ? 20 : 22),
+          fontSize: textSize(studioCompact() ? 17 : 22),
           fontWeight: "600",
         }}
         onChange={event => assistantNameDraft.set(event.value)}
@@ -921,21 +974,25 @@ function StudioTabs() {
     { value: "sessions", label: () => tr("assistants.page.sessionsTitle") },
   ];
   return (
-    <View role="tablist" style={{ flexDirection: "row", alignItems: "stretch", gap: 20 }}>
+    <View role="tablist" style={{ flexDirection: "row", alignItems: "stretch", gap: space.xl }}>
       <Each of={tabs} key={tab => tab.value}>
         {tab => (
           <View
             role="tab"
             accessibilityLabel={`assistant-tab-${tab().value}`}
             accessibilityState={{ selected: studioTab() === tab().value }}
+            hitSlop={touchSlop(compactLayout() ? layout.touchTarget : 36)}
             onPress={() => studioTab.set(tab().value)}
+            activeStyle={tactileActiveStyle(0.97)}
+            focusVisibleStyle={focusRingStyle()}
             style={{
               position: "relative",
-              height: 34,
+              height: compactLayout() ? layout.touchTarget : 36,
               justifyContent: "center",
               cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
             }}
-            focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: 2 }}
           >
             <Text
               style={{
@@ -955,7 +1012,7 @@ function StudioTabs() {
                 right: 0,
                 bottom: -1,
                 height: 2,
-                borderRadius: 1,
+                borderRadius: radii.pill,
                 backgroundColor: studioTab() === tab().value ? palette().accent : "transparent",
                 pointerEvents: "none",
                 ...paintTransition(MOTION_DURATION.fast),
@@ -1005,8 +1062,8 @@ function AssistantSessionsPane(props: { assistant: AssistantWorkspaceView }) {
           else={
             <Text
               style={{
-                paddingVertical: 12,
-                color: assistantSessionsState() === "error" ? palette().danger : palette().textSecondary,
+                paddingVertical: space.md,
+                color: assistantSessionsState() === "error" ? stateColor("failed") : palette().textSecondary,
                 fontSize: textSize(13),
                 lineHeight: textLineHeight(13, 1.45),
               }}
@@ -1042,17 +1099,15 @@ function AssistantSessionsPane(props: { assistant: AssistantWorkspaceView }) {
                     minHeight: STUDIO_TOUCH_MIN,
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: 10,
-                    paddingHorizontal: 16,
+                    gap: space.sm,
+                    paddingHorizontal: space.lg,
                     cursor: "pointer",
-                    ...paintTransition(MOTION_DURATION.fast),
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
                   }}
-                  hoverStyle={{ backgroundColor: palette().panelHover }}
-                  focusVisibleStyle={{
-                    outlineWidth: 2,
-                    outlineColor: palette().borderFocus,
-                    outlineOffset: -2,
-                  }}
+                  hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+                  activeStyle={tactileActiveStyle(0.985)}
+                  focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
                 >
                   <If when={index() > 0}>
                     <View
@@ -1100,6 +1155,22 @@ function AssistantSessionsPane(props: { assistant: AssistantWorkspaceView }) {
       </View>
     </Scroll>
   );
+}
+
+function personaNoticeTone(notice: string): "info" | "success" {
+  if (
+    notice === tr("assistants.store.fileMissing", { file: activePersonaFile() }) ||
+    notice === tr("assistants.persona.fileMissing")
+  ) {
+    return "info";
+  }
+  if (
+    notice === tr("assistants.store.savedFile", { file: activePersonaFile() }) ||
+    notice === tr("assistants.store.personaReset")
+  ) {
+    return "success";
+  }
+  return "info";
 }
 
 function PersonaStudioPane() {
@@ -1157,13 +1228,13 @@ function PersonaStudioPane() {
                     flexDirection: "row",
                     alignItems: "center",
                     flexWrap: studioCompact() ? "wrap" : "nowrap",
-                    gap: 14,
+                    gap: space.md,
                   }}
                 >
                   <AvatarPicker assistant={assistant()} size={40} />
 
-                  <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 8 }}>
+                  <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: space.sm }}>
                       <AssistantNameEditor assistant={assistant()} />
                       <If when={primaryAssistantId() === assistant().id && !editingAssistantName()}>
                         <Text
@@ -1204,7 +1275,7 @@ function PersonaStudioPane() {
                       {err => (
                         <Text
                           style={{
-                            color: palette().danger,
+                            color: stateColor("failed"),
                             fontSize: textSize(12),
                             lineHeight: textLineHeight(12, 1.4),
                           }}
@@ -1215,7 +1286,7 @@ function PersonaStudioPane() {
                     </If>
                   </View>
 
-                  <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", flexShrink: 0, gap: space.sm }}>
                     <If
                       when={isAssistantWorkspaceOpen(assistant().id)}
                       else={
@@ -1227,6 +1298,7 @@ function PersonaStudioPane() {
                           loading={assistantWorkspaceBusy() === assistant().id}
                           disabled={Boolean(assistantWorkspaceBusy())}
                           accessibilityLabel={`assistant-open-${assistant().id}`}
+                          style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                           onPress={() => void openAssistantWorkspace(assistant())}
                         />
                       }
@@ -1239,6 +1311,7 @@ function PersonaStudioPane() {
                         loading={assistantWorkspaceBusy() === assistant().id}
                         disabled={Boolean(assistantWorkspaceBusy())}
                         accessibilityLabel={`assistant-close-${assistant().id}`}
+                        style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                         onPress={() => void closeAssistantWorkspace(assistant())}
                       />
                     </If>
@@ -1248,6 +1321,7 @@ function PersonaStudioPane() {
                       size="sm"
                       leadingIcon="chat"
                       accessibilityLabel={`assistant-chat-${assistant().id}`}
+                      style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                       onPress={() => chatWithAssistant(assistant())}
                     />
                     <View ref={el => studioMenuAnchor.set(el)} style={{ flexShrink: 0 }}>
@@ -1257,6 +1331,7 @@ function PersonaStudioPane() {
                         tooltip={tr("assistants.actions")}
                         active={studioMenuOpen()}
                         accessibilityLabel={`assistant-actions-${assistant().id}`}
+                        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
                         onPress={() => studioMenuOpen.update(open => !open)}
                       />
                     </View>
@@ -1274,11 +1349,11 @@ function PersonaStudioPane() {
 
                 {/* With the list out of view, its notice and error show under the open assistant. */}
                 <If when={listDetailFlow() ? assistantsNotice() : ""}>
-                  {notice => <Text style={textStyle("caption", { color: palette().success })}>{notice()}</Text>}
+                  {notice => <Text style={textStyle("caption", { color: stateColor("done") })}>{notice()}</Text>}
                 </If>
                 <If when={listDetailFlow() ? assistantsError() : ""}>
                   {err => (
-                    <Text style={textStyle("caption", { color: palette().danger })}>{localizeHostError(err())}</Text>
+                    <Text style={textStyle("caption", { color: stateColor("failed") })}>{localizeHostError(err())}</Text>
                   )}
                 </If>
                 <If
@@ -1318,8 +1393,7 @@ function PersonaStudioPane() {
                     <View
                       style={{
                         paddingHorizontal: studioGutter(),
-                        paddingTop: 12,
-                        paddingBottom: 10,
+                        paddingVertical: space.md,
                         borderBottomWidth: 1,
                         borderColor: palette().borderSubtle,
                         backgroundColor: palette().canvas,
@@ -1331,7 +1405,7 @@ function PersonaStudioPane() {
                           width: "100%",
                           maxWidth: STUDIO_CONTENT_MAX,
                           alignSelf: "center",
-                          gap: 8,
+                          gap: space.sm,
                         }}
                       >
                         <View
@@ -1340,22 +1414,24 @@ function PersonaStudioPane() {
                             alignItems: "center",
                             justifyContent: "space-between",
                             flexWrap: "wrap",
-                            gap: 10,
+                            gap: space.sm,
                           }}
                         >
-                          <SegmentedTabs
-                            size="sm"
-                            options={PERSONA_TAB_OPTIONS}
-                            value={activePersonaFile()}
-                            onChange={selectPersonaFile}
-                          />
+                          <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                            <SegmentedTabs
+                              size="sm"
+                              options={PERSONA_TAB_OPTIONS}
+                              value={activePersonaFile()}
+                              onChange={selectPersonaFile}
+                            />
+                          </Scroll>
                           <View
                             style={{
                               flexDirection: "row",
                               alignItems: "center",
                               flexWrap: "wrap",
                               flexShrink: 0,
-                              gap: 8,
+                              gap: space.sm,
                             }}
                           >
                             <ToggleSwitch
@@ -1370,6 +1446,7 @@ function PersonaStudioPane() {
                                 variant="ghost"
                                 size="sm"
                                 accessibilityLabel="persona-source-toggle"
+                                style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                                 onPress={() => {
                                   // A source draft the visual editor cannot keep stays in the source editor.
                                   const block = personaSourceMode() ? visualEditBlock(personaDraft()) : null;
@@ -1387,6 +1464,7 @@ function PersonaStudioPane() {
                               size="sm"
                               disabled={personaSaving()}
                               accessibilityLabel="persona-reset-files"
+                              style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                               onPress={() => {
                                 animateLayout();
                                 confirmingPersonaReset.set(true);
@@ -1399,19 +1477,20 @@ function PersonaStudioPane() {
                               loading={personaSaving()}
                               disabled={personaSaving()}
                               accessibilityLabel="persona-save"
+                              style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                               onPress={() => void savePersonaFile()}
                             />
                           </View>
                         </View>
-                        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, minWidth: 0 }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
                           <Text
                             style={{
                               flex: 1,
                               minWidth: 0,
                               color: palette().textMuted,
                               fontFamily: fontMono,
-                              fontSize: textSize(11),
-                              lineHeight: textLineHeight(11, 1.35),
+                              fontSize: textSize(12),
+                              lineHeight: textLineHeight(12, 1.35),
                               numberOfLines: 1,
                               textOverflow: "ellipsis-middle",
                             }}
@@ -1421,7 +1500,7 @@ function PersonaStudioPane() {
                           <Text
                             style={{
                               flexShrink: 0,
-                              color: personaDirty() ? palette().warning : palette().textMuted,
+                              color: personaDirty() ? stateColor("needs_you") : palette().textMuted,
                               fontSize: textSize(12),
                               lineHeight: textLineHeight(12, 1.3),
                               fontVariant: ["tabular-nums"],
@@ -1446,7 +1525,7 @@ function PersonaStudioPane() {
                       <View
                         style={{
                           paddingHorizontal: studioGutter(),
-                          paddingVertical: 10,
+                          paddingVertical: space.sm,
                           borderBottomWidth: 1,
                           borderColor: palette().borderSubtle,
                           backgroundColor: palette().canvas,
@@ -1472,12 +1551,12 @@ function PersonaStudioPane() {
 
                     <If when={personaNotice()}>
                       {notice => (
-                        <View style={{ paddingHorizontal: studioGutter(), paddingTop: 10, alignItems: "center" }}>
+                        <View style={{ paddingHorizontal: studioGutter(), paddingTop: space.sm, alignItems: "center" }}>
                           <View style={{ width: "100%", maxWidth: STUDIO_CONTENT_MAX, alignSelf: "center" }}>
                             <InlineBanner
-                              tone={notice().toLowerCase().includes("does not exist") ? "info" : "success"}
+                              tone={personaNoticeTone(notice())}
                               message={notice()}
-                              style={{ paddingHorizontal: 10, paddingVertical: 6 }}
+                              style={{ paddingHorizontal: space.md, paddingVertical: space.sm }}
                             />
                           </View>
                         </View>
@@ -1485,19 +1564,19 @@ function PersonaStudioPane() {
                     </If>
                     <If when={personaError()}>
                       {err => (
-                        <View style={{ paddingHorizontal: studioGutter(), paddingTop: 10, alignItems: "center" }}>
+                        <View style={{ paddingHorizontal: studioGutter(), paddingTop: space.sm, alignItems: "center" }}>
                           <View style={{ width: "100%", maxWidth: STUDIO_CONTENT_MAX, alignSelf: "center" }}>
                             <InlineBanner
                               tone="danger"
                               message={localizeHostError(err())}
-                              style={{ paddingHorizontal: 10, paddingVertical: 6 }}
+                              style={{ paddingHorizontal: space.md, paddingVertical: space.sm }}
                             />
                           </View>
                         </View>
                       )}
                     </If>
 
-                    {/* De-boxed Editor & Editorial Preview Canvas (locked to exact 740px rail) */}
+                    {/* De-boxed Editor & Editorial Preview Canvas */}
                     <View style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas }}>
                       <If
                         when={personaPreview()}
@@ -1507,7 +1586,7 @@ function PersonaStudioPane() {
                               flex: 1,
                               minHeight: 0,
                               paddingHorizontal: studioGutter(),
-                              paddingVertical: 18,
+                              paddingVertical: space.lg,
                               alignItems: "center",
                             }}
                           >
@@ -1542,7 +1621,7 @@ function PersonaStudioPane() {
                                         placeholderColor: palette().textMuted,
                                         caretColor: palette().accent,
                                         fontFamily: fontMono,
-                                        fontSize: textSize(13),
+                                        fontSize: compactLayout() ? Math.max(16, textSize(13)) : textSize(13),
                                         lineHeight: textLineHeight(13, 1.62),
                                       }}
                                       onChange={event => setPersonaDraftText(event.value)}
@@ -1567,7 +1646,7 @@ function PersonaStudioPane() {
                       >
                         <Scroll
                           style={{ flex: 1, minHeight: 0 }}
-                          contentStyle={{ paddingHorizontal: studioGutter(), paddingVertical: 22, alignItems: "center" }}
+                          contentStyle={{ paddingHorizontal: studioGutter(), paddingVertical: space.xl, alignItems: "center" }}
                         >
                           <View
                             style={{
@@ -1578,7 +1657,7 @@ function PersonaStudioPane() {
                             <If
                               when={personaDraft().trim()}
                               else={
-                                <View style={{ alignItems: "center", paddingVertical: 36, gap: 8 }}>
+                                <View style={{ alignItems: "center", paddingVertical: space.xxl, gap: space.sm }}>
                                   <Icon name="file-text" size={28} color={palette().textMuted} />
                                   <Text
                                     style={{
@@ -1609,8 +1688,8 @@ function PersonaStudioPane() {
             <View
               style={{
                 paddingHorizontal: studioGutter(),
-                paddingTop: 6,
-                paddingBottom: 16,
+                paddingTop: space.sm,
+                paddingBottom: space.lg,
                 alignItems: "center",
               }}
             >
@@ -1619,18 +1698,18 @@ function PersonaStudioPane() {
                   width: "100%",
                   maxWidth: STUDIO_CONTENT_MAX,
                   alignSelf: "center",
-                  minHeight: STUDIO_TOUCH_MIN + 4,
+                  minHeight: STUDIO_TOUCH_MIN + space.xs,
                   borderRadius: radii.lg,
                   borderCurve: "continuous",
                   borderWidth: 1,
                   borderColor: palette().borderSubtle,
                   backgroundColor: palette().panelRaised,
-                  paddingLeft: 16,
-                  paddingRight: 8,
-                  paddingVertical: 6,
+                  paddingLeft: space.lg,
+                  paddingRight: space.sm,
+                  paddingVertical: space.xs,
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 10,
+                  gap: space.sm,
                   ...paintTransition(MOTION_DURATION.fast),
                 }}
                 focusWithinStyle={{ borderColor: palette().fieldFocusBorder }}
@@ -1646,7 +1725,7 @@ function PersonaStudioPane() {
                     color: palette().text,
                     placeholderColor: palette().textMuted,
                     caretColor: palette().accent,
-                    fontSize: textSize(14),
+                    fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(14),
                     lineHeight: textLineHeight(14, 1.45),
                   }}
                   onChange={event => assistantQuickPrompt.set(event.value)}
@@ -1660,6 +1739,7 @@ function PersonaStudioPane() {
                   loading={assistantQuickSending()}
                   disabled={assistantQuickSending() || !assistantQuickPrompt().trim()}
                   accessibilityLabel="assistant-quick-send"
+                  style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
                   onPress={() => void sendQuickPromptToAssistant()}
                 />
               </View>
@@ -1681,7 +1761,7 @@ function NewAssistantModal() {
       accessibilityLabel="new-assistant-modal"
       onClose={closeNewAssistantModal}
       footer={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <Button
             label={tr("common.cancel")}
             variant="secondary"
@@ -1695,8 +1775,11 @@ function NewAssistantModal() {
             size="md"
             leadingIcon="plus"
             loading={assistantsBusy()}
+            disabled={assistantsBusy()}
             accessibilityLabel="assistants-create-confirm"
-            onPress={() => void createAssistant()}
+            onPress={() => {
+              if (!assistantsBusy()) void createAssistant();
+            }}
           />
         </View>
       }
@@ -1708,7 +1791,9 @@ function NewAssistantModal() {
         placeholder={tr("assistants.displayNamePlaceholder")}
         accessibilityLabel="new-assistant-name-input"
         onChange={val => newAssistantNameInput.set(val)}
-        onSubmit={() => void createAssistant()}
+        onSubmit={() => {
+          if (!assistantsBusy()) void createAssistant();
+        }}
       />
     </ModalDialog>
   );

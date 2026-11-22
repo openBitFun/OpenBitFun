@@ -62,21 +62,31 @@ import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
 import { loadModels, modelSettingsLoaded, storedModels } from "../modelSettingsStore";
 import { ensurePools, pools } from "../poolStore";
-import { activeWorkspace, activeWorkspaceId } from "../state";
-import { palette, space, textLineHeight, textSize, textTracking } from "../theme";
+import { activeWorkspace, activeWorkspaceId, deviceContext } from "../state";
+import {
+  compactLayout,
+  fontMono,
+  layout,
+  palette,
+  radii,
+  space,
+  textLineHeight,
+  textSize,
+  textTracking,
+} from "../theme";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
-import { BotCharacter, type BotVariant } from "../ui/icons";
-import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
+import { Icon } from "../ui/icons";
+import { MOTION_DURATION, paintTransition, pressTransition, Spinner, tactileActiveStyle } from "../ui/motion";
 import {
   GalleryGrid,
   GallerySkeleton,
+  InsetGroup,
   MoreMenu,
   StudioBody,
   StudioEmpty,
   StudioHeader,
   StudioSection,
   StudioToolbar,
-  galleryCardHoverStyle,
   galleryCardStyle,
   studioCompact,
   trackStudioWidth,
@@ -96,10 +106,10 @@ import {
   IconButton,
   InlineBanner,
   InputBox,
-  PillChip,
   SearchInput,
   SegmentedTabs,
   ToggleSwitch,
+  focusRingStyle,
 } from "../ui/primitives";
 
 function sourceOptions(): ReadonlyArray<SelectDropdownOption<AgentSourceFilter>> {
@@ -110,27 +120,6 @@ function sourceOptions(): ReadonlyArray<SelectDropdownOption<AgentSourceFilter>>
     { value: "project", label: tr("common.project"), accessibilityLabel: "agent-scope-project" },
     { value: "external", label: tr("common.external"), accessibilityLabel: "agent-scope-external" },
   ];
-}
-
-type HarnessKey = "minimal" | "standard" | "ultimate" | "creative";
-
-function detectHarnessKey(item: AgentCatalogItem): HarnessKey | null {
-  if (item.kind !== "mode" || item.source !== "builtin") return null;
-  const key = `${item.id} ${item.name}`.toLowerCase();
-  if (key.includes("minimal")) return "minimal";
-  if (key.includes("standard")) return "standard";
-  if (key.includes("ultimate")) return "ultimate";
-  if (key.includes("creative")) return "creative";
-  return null;
-}
-
-function harnessBotVariant(item: AgentCatalogItem): BotVariant | undefined {
-  const key = detectHarnessKey(item);
-  if (key === "minimal") return "violet";
-  if (key === "standard") return "mint";
-  if (key === "ultimate") return "amber";
-  if (key === "creative") return "grok";
-  return undefined;
 }
 
 function sourceLabel(source: AgentSource): string {
@@ -156,15 +145,7 @@ function editActionLabel(item: AgentCatalogItem): string {
 }
 
 function distinctSubtitle(item: AgentCatalogItem): string {
-  const idClean = item.id.trim();
-  const nameClean = item.name.trim();
-  if (idClean && idClean.toLowerCase() !== nameClean.toLowerCase()) {
-    return idClean;
-  }
-  if (item.externalProviderLabel) {
-    return item.externalProviderLabel;
-  }
-  return "";
+  return item.externalProviderLabel || "";
 }
 
 function builderTitle(): string {
@@ -293,9 +274,10 @@ function botMenuItems(item: AgentCatalogItem): DropdownMenuItem[] {
   return items;
 }
 
-/** A flat gallery card: avatar, name, one quiet status mark, description, actions. */
+/** A flat gallery card: monochrome icon, name, quiet metadata, description, actions. */
 function BotCard(props: { item: AgentCatalogItem }) {
   const isDisabledSubagent = () => props.item.kind === "subagent" && !props.item.effectiveEnabled;
+  const phone = () => compactLayout();
 
   return (
     <View
@@ -303,18 +285,20 @@ function BotCard(props: { item: AgentCatalogItem }) {
         ...galleryCardStyle(),
         height: "100%",
         justifyContent: "space-between",
-        gap: 12,
-        ...paintTransition(MOTION_DURATION.fast),
+        gap: space.md,
       }}
-      hoverStyle={galleryCardHoverStyle()}
     >
-      <View style={{ gap: 10, minWidth: 0 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 12, minWidth: 0 }}>
+      <View style={{ gap: space.sm, minWidth: 0 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minWidth: 0 }}>
           <View style={{ flexShrink: 0, opacity: isDisabledSubagent() ? 0.55 : 1 }}>
-            <BotCharacter variant={harnessBotVariant(props.item)} seed={props.item.name} size={32} />
+            <Icon
+              name={props.item.kind === "subagent" ? "sparkles" : "bot"}
+              size={16}
+              color={palette().textSecondary}
+            />
           </View>
 
-          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
             <Text
               style={{
                 minWidth: 0,
@@ -385,7 +369,7 @@ function BotCard(props: { item: AgentCatalogItem }) {
         </Text>
       </View>
 
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: phone() ? "wrap" : "nowrap", gap: space.sm, minWidth: 0 }}>
         <If when={props.item.kind === "mode"}>
           <Button
             label={tr("agents.startThread")}
@@ -393,6 +377,7 @@ function BotCard(props: { item: AgentCatalogItem }) {
             size="sm"
             leadingIcon="chat"
             accessibilityLabel={`agent-start-thread-${props.item.id}`}
+            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
             onPress={() => startThreadWithMode(props.item.id)}
           />
         </If>
@@ -401,6 +386,7 @@ function BotCard(props: { item: AgentCatalogItem }) {
           variant="ghost"
           size="sm"
           accessibilityLabel={`agent-configure-${props.item.id}`}
+          style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
           onPress={() => {
             resetToolFilterState();
             void openAgentInspector(props.item);
@@ -436,6 +422,7 @@ function FilterMenu<T extends string>(props: {
         active={open() || props.value !== props.defaultValue}
         tooltip={props.tooltip}
         accessibilityLabel={props.accessibilityLabel}
+        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
         onPress={() => open.update(value => !value)}
       />
       <If when={open()}>
@@ -459,6 +446,7 @@ function FilterMenu<T extends string>(props: {
 }
 
 function ToolMultiSelect() {
+  const phone = () => compactLayout();
   return (
     <ConfigSection
       title={tr("agents.toolPermissionsTitle", {
@@ -471,12 +459,12 @@ function ToolMultiSelect() {
           : tr("agents.toolPermissionsSubtitle")
       }
       extra={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.xs, flexShrink: 0 }}>
           <If when={selectableToolNames().length > 6}>
-            <PillChip
-              label={tr("common.selected")}
-              badge={builderDraft().tools.length}
-              active={toolShowSelectedOnly()}
+            <Button
+              label={`${tr("common.selected")} (${formatCount(builderDraft().tools.length)})`}
+              variant={toolShowSelectedOnly() ? "secondary" : "ghost"}
+              size="xs"
               accessibilityLabel="builder-tools-selected-only"
               onPress={() => toolShowSelectedOnly.update(v => !v)}
             />
@@ -503,7 +491,7 @@ function ToolMultiSelect() {
         </View>
       }
     >
-      <View style={{ gap: 10 }}>
+      <View style={{ gap: space.sm }}>
         <If when={toolCatalogError() ?? ""}>
           {message => <InlineBanner tone="warning" message={localizeHostError(message())} />}
         </If>
@@ -511,10 +499,11 @@ function ToolMultiSelect() {
         <If when={selectableToolNames().length > 6}>
           <SearchInput
             value={toolSearchQuery()}
-            size="md"
+            size={phone() ? "lg" : "md"}
             placeholder={tr("agents.filterTools")}
             countLabel={`${formatCount(filteredSelectableTools().length)}/${formatCount(selectableToolNames().length)}`}
             accessibilityLabel="builder-tools-search"
+            style={phone() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
             onChange={val => toolSearchQuery.set(val)}
           />
         </If>
@@ -532,7 +521,7 @@ function ToolMultiSelect() {
         </If>
 
         <If when={selectableToolNames().length > 0 && filteredSelectableTools().length === 0}>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingVertical: 4 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space.sm, paddingVertical: space.xs }}>
             <Text
               style={{
                 flex: 1,
@@ -557,21 +546,85 @@ function ToolMultiSelect() {
 
         <If when={filteredSelectableTools().length > 0}>
           <Scroll
-            style={{ maxHeight: 204, minHeight: 0 }}
-            contentStyle={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingVertical: 2 }}
+            style={{ maxHeight: 224, minHeight: 0 }}
             scrollbar={true}
           >
-            <Each of={filteredSelectableTools()} key={tool => tool}>
-              {tool => (
-                <PillChip
-                  label={tool()}
-                  active={builderDraft().tools.includes(tool())}
-                  maxWidth={240}
-                  accessibilityLabel={`builder-tool-${tool()}`}
-                  onPress={() => toggleBuilderTool(tool())}
-                />
-              )}
-            </Each>
+            <InsetGroup>
+              <Each of={filteredSelectableTools()} key={tool => tool}>
+                {(tool, index) => {
+                  const checked = () => builderDraft().tools.includes(tool());
+                  return (
+                    <View
+                      role="button"
+                      accessibilityLabel={`builder-tool-${tool()}`}
+                      accessibilityState={{ selected: checked() }}
+                      onPress={() => toggleBuilderTool(tool())}
+                      hoverStyle={phone() ? undefined : { backgroundColor: palette().panelHover }}
+                      activeStyle={tactileActiveStyle(0.985)}
+                      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
+                      style={{
+                        position: "relative",
+                        minHeight: phone() ? layout.touchTarget : 36,
+                        paddingHorizontal: space.md,
+                        paddingVertical: space.xs,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: space.sm,
+                        backgroundColor: checked() ? palette().accentSoft : "transparent",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        ...pressTransition(MOTION_DURATION.fast),
+                      }}
+                    >
+                      <If when={index() > 0}>
+                        <View
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: space.md,
+                            right: 0,
+                            height: 1,
+                            backgroundColor: palette().borderSubtle,
+                            pointerEvents: "none",
+                          }}
+                        />
+                      </If>
+                      <View
+                        style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: radii.xs,
+                          borderWidth: 1,
+                          borderColor: checked() ? palette().accent : palette().borderStrong,
+                          backgroundColor: checked() ? palette().accentSoft : "transparent",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <If when={checked()}>
+                          <Icon name="check" size={10} color={palette().accent} />
+                        </If>
+                      </View>
+                      <Text
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontFamily: fontMono,
+                          color: checked() ? palette().text : palette().textSecondary,
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.4),
+                          numberOfLines: 1,
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {tool()}
+                      </Text>
+                    </View>
+                  );
+                }}
+              </Each>
+            </InsetGroup>
           </Scroll>
         </If>
       </View>
@@ -689,9 +742,9 @@ function AgentBuilderModal() {
         </View>
       }
     >
-      <View style={{ gap: 18 }}>
+      <View style={{ gap: space.lg }}>
         <If when={builderLoading()}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Spinner size={14} />
             <Text
               style={{
@@ -710,7 +763,7 @@ function AgentBuilderModal() {
         </If>
 
         <If when={builderDraft().mode === "create" || builderDraft().mode === "edit-custom"}>
-          <View style={{ gap: 18 }}>
+          <View style={{ gap: space.lg }}>
             <If when={builderDraft().mode === "create"}>
               <ConfigSection title={tr("agents.identityScope")} flush controlWidth={240}>
                 <ConfigRow
@@ -1095,13 +1148,21 @@ function ModeSkillsSection() {
       >
         <If when={modeSkillsError() ?? ""}>
           {err => (
-            <View style={{ padding: 12 }}>
+            <View style={{ padding: space.md }}>
               <InlineBanner tone="danger" message={localizeHostError(err())} />
             </View>
           )}
         </If>
+        <If when={modeSkillsLoading() && modeSkills().length === 0}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, padding: space.md }}>
+            <Spinner size={14} />
+            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+              {tr("common.loading")}
+            </Text>
+          </View>
+        </If>
         <If when={!modeSkillsLoading() && modeSkills().length === 0 && !modeSkillsError()}>
-          <View style={{ padding: 14 }}>
+          <View style={{ padding: space.md }}>
             <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
               {tr("agents.modeSkillsEmpty")}
             </Text>
@@ -1248,11 +1309,12 @@ export function AgentsScene(props: { embedded?: boolean }) {
   ensurePools();
   // The catalogue does not need a workspace (the host answers user-level
   // entries without one, as the desktop asks). It reloads on every scene entry,
-  // when the workspace changes, and when the window regains focus.
+  // when the selected device or workspace changes, and when the window regains focus.
   let enteredScene = false;
   effect(() => {
+    const device = deviceContext();
     const workspace = activeWorkspace();
-    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `${device || "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     if (!enteredScene || untracked(() => agentsLoadedKey()) !== key) {
       enteredScene = true;
       void loadAgentsCatalog(key);
@@ -1264,8 +1326,9 @@ export function AgentsScene(props: { embedded?: boolean }) {
     const regained = state === "active" && lastLifecycle !== "active";
     lastLifecycle = state;
     if (!regained) return;
+    const device = untracked(() => deviceContext());
     const workspace = untracked(() => activeWorkspace());
-    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `${device || "local"}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     void loadAgentsCatalog(key);
   });
 
@@ -1289,7 +1352,7 @@ export function AgentsScene(props: { embedded?: boolean }) {
   const filterControls = () => (
     <>
       <SearchInput
-        size="md"
+        size={compactLayout() ? "lg" : "md"}
         value={agentSearchQuery()}
         placeholder={tr("agents.searchPlaceholder")}
         countLabel={
@@ -1298,7 +1361,12 @@ export function AgentsScene(props: { embedded?: boolean }) {
             : undefined
         }
         accessibilityLabel="agents-search-input"
-        style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
+        style={{
+          flex: 1,
+          minWidth: 160,
+          maxWidth: studioCompact() ? undefined : 260,
+          ...(compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : {}),
+        }}
         onChange={val => agentSearchQuery.set(val)}
       />
       <FilterMenu
@@ -1315,6 +1383,7 @@ export function AgentsScene(props: { embedded?: boolean }) {
           variant="ghost"
           size="sm"
           accessibilityLabel="agents-filters-clear"
+          style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
           onPress={resetCatalogFilters}
         />
       </If>
@@ -1327,6 +1396,7 @@ export function AgentsScene(props: { embedded?: boolean }) {
       accessibilityLabel="agents-reload"
       tooltip={tr("agents.reload")}
       disabled={agentsLoading()}
+      style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
       onPress={() => void reloadAgentsCatalog()}
     />
   );
@@ -1339,6 +1409,7 @@ export function AgentsScene(props: { embedded?: boolean }) {
       accessibilityLabel="agents-create-bot"
       disabled={isRemoteAgentWorkspace()}
       tooltip={isRemoteAgentWorkspace() ? tr("agents.unavailableRemote") : undefined}
+      style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
       onPress={openCreate}
     />
   );

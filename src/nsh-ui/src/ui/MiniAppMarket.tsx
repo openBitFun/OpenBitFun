@@ -74,12 +74,23 @@ import {
   type MarketSubmission,
 } from "../miniAppMarketStore";
 import { spaceWindowBlockedReason } from "../spacesStore";
-import { fontMono, palette, radii, textLineHeight, textSize } from "../theme";
+import {
+  compactLayout,
+  fontMono,
+  layout,
+  palette,
+  radii,
+  space,
+  textLineHeight,
+  textSize,
+  touchSlop,
+} from "../theme";
 import { openAccountAuthModal } from "./AccountAuthModal";
+import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
-import { MOTION_DURATION, paintTransition, Spinner } from "./motion";
+import { pressTransition, Spinner, tactileActiveStyle } from "./motion";
 import { ModalDialog, pushToast, SelectDropdown, type SelectDropdownOption } from "./overlays";
-import { Button, IconButton, InlineBanner, InlineConfirmBar, InputBox, SearchInput } from "./primitives";
+import { Button, focusRingStyle, IconButton, InlineBanner, InlineConfirmBar, InputBox, SearchInput } from "./primitives";
 import {
   GalleryGrid,
   GallerySkeleton,
@@ -220,10 +231,10 @@ function SectionHeader(props: { text: string }) {
   );
 }
 
-/** "★ 4.6 · 1,234 downloads · 31 favorites", one quiet line. */
+/** "4.6 · 1,234 downloads · 31 favorites", paired with a vector star glyph. */
 function listingStats(item: MarketListing): string {
   return [
-    `★ ${item.ratingAverage.toFixed(1)}`,
+    item.ratingAverage.toFixed(1),
     tr("market.downloads", { count: formatCount(item.downloadCount) }),
     tr("market.favorites", { count: formatCount(item.favoriteCount) }),
   ].join(" · ");
@@ -257,24 +268,25 @@ function MarketCard(props: { item: () => MarketListing }) {
       style={{
         ...galleryCardStyle(),
         minHeight: 148,
-        gap: 6,
+        gap: space.xs,
         cursor: "pointer",
         borderColor: marketDetailSlug() === props.item().slug ? palette().borderFocus : palette().borderSubtle,
-        ...paintTransition(MOTION_DURATION.fast),
+        ...pressTransition(),
       }}
-      hoverStyle={galleryCardHoverStyle()}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
+      hoverStyle={compactLayout() ? undefined : galleryCardHoverStyle()}
+      activeStyle={tactileActiveStyle(0.99)}
+      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
         <Icon name={spaceIconName(props.item().icon)} size={16} color={palette().textSecondary} />
         <Text
           style={{
             flex: 1,
             minWidth: 0,
             color: palette().text,
-            fontSize: textSize(15),
+            fontSize: textSize(14),
             fontWeight: "600",
-            lineHeight: textLineHeight(15, 1.3),
+            lineHeight: textLineHeight(14, 1.35),
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
@@ -286,7 +298,7 @@ function MarketCard(props: { item: () => MarketListing }) {
             accessibilityLabel={`market-installed-${props.item().slug}`}
             style={{
               flexShrink: 0,
-              color: palette().success,
+              color: palette().textMuted,
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 1.3),
             }}
@@ -312,7 +324,7 @@ function MarketCard(props: { item: () => MarketListing }) {
       </Text>
       <Text
         style={{
-          marginTop: 2,
+          marginTop: space.hair,
           minWidth: 0,
           color: palette().textSecondary,
           fontSize: textSize(13),
@@ -324,19 +336,23 @@ function MarketCard(props: { item: () => MarketListing }) {
         {props.item().description || tr("common.noDescription")}
       </Text>
       <View style={{ flex: 1 }} />
-      <Text
-        style={{
-          minWidth: 0,
-          color: palette().textMuted,
-          fontSize: textSize(12),
-          fontVariant: ["tabular-nums"],
-          lineHeight: textLineHeight(12, 1.4),
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {listingStats(props.item())}
-      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
+        <MarketGlyph shape="star" size={12} filled={() => true} color={() => palette().textMuted} />
+        <Text
+          style={{
+            flex: 1,
+            minWidth: 0,
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            fontVariant: ["tabular-nums"],
+            lineHeight: textLineHeight(12, 1.4),
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {listingStats(props.item())}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -347,32 +363,48 @@ function MarketToolbar() {
       style={{
         flexDirection: studioCompact() ? "column" : "row",
         alignItems: studioCompact() ? "stretch" : "center",
-        gap: 8,
+        gap: space.sm,
         minWidth: 0,
       }}
     >
       <SearchInput
+        size={compactLayout() ? "lg" : "md"}
         value={marketQuery()}
         placeholder={tr("market.searchPlaceholder")}
         accessibilityLabel="market-search"
         onChange={value => setMarketQuery(value)}
-        style={{ flex: 1, minWidth: 0 }}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          ...(compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : {}),
+        }}
       />
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: space.sm,
+          flexShrink: 0,
+          minWidth: 0,
+        }}
+      >
         <SelectDropdown
           options={categoryOptions()}
           value={marketCategory()}
           size="md"
-          minWidth={150}
+          minWidth={compactLayout() ? 120 : 150}
           accessibilityLabel="market-category"
+          style={compactLayout() ? { flex: 1, minWidth: 120 } : undefined}
           onChange={value => setMarketCategory(value)}
         />
         <SelectDropdown
           options={sortOptions()}
           value={marketSort()}
           size="md"
-          minWidth={140}
+          minWidth={compactLayout() ? 120 : 140}
           accessibilityLabel="market-sort"
+          style={compactLayout() ? { flex: 1, minWidth: 120 } : undefined}
           onChange={value => setMarketSort(value)}
         />
       </View>
@@ -381,24 +413,35 @@ function MarketToolbar() {
 }
 
 export function MiniAppMarketView() {
+  const hasMarketFilters = () => Boolean(marketQuery().trim()) || marketCategory() !== "all";
   return (
-    <View style={{ gap: 20, minWidth: 0 }}>
+    <View style={{ gap: space.xl, minWidth: 0 }}>
       <MarketToolbar />
 
       <StudioSection
         title={tr("market.catalogTitle")}
         accessibilityLabel="market-catalog"
         trailing={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <If when={marketLoading() && !marketInitialLoad()}>
               <Spinner size={14} />
             </If>
             <IconButton
               icon="refresh"
-              size="sm"
+              size={compactLayout() ? "md" : "sm"}
               accessibilityLabel="market-refresh"
               tooltip={tr("market.refresh")}
               disabled={marketLoading()}
+              style={
+                compactLayout()
+                  ? {
+                      width: layout.touchTarget,
+                      height: layout.touchTarget,
+                      minWidth: layout.touchTarget,
+                      minHeight: layout.touchTarget,
+                    }
+                  : undefined
+              }
               onPress={() => void loadMarket()}
             />
           </View>
@@ -420,9 +463,10 @@ export function MiniAppMarketView() {
                   <Button
                     label={tr("market.retry")}
                     variant="outline"
-                    size="sm"
+                    size={compactLayout() ? "md" : "sm"}
                     leadingIcon="refresh"
                     accessibilityLabel="market-retry"
+                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                     onPress={() => void loadMarket()}
                   />
                 </If>
@@ -435,7 +479,22 @@ export function MiniAppMarketView() {
             accessibilityLabel="market-empty"
             icon="package"
             message={tr("market.emptyTitle")}
-            detail={marketQuery().trim() || marketCategory() !== "all" ? tr("market.emptyFiltered") : tr("market.emptyDetail")}
+            detail={hasMarketFilters() ? tr("market.emptyFiltered") : tr("market.emptyDetail")}
+            action={
+              <If when={hasMarketFilters()}>
+                <Button
+                  label={tr("common.resetFilter")}
+                  variant="secondary"
+                  size="md"
+                  accessibilityLabel="market-empty-reset"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                  onPress={() => {
+                    setMarketQuery("");
+                    setMarketCategory("all");
+                  }}
+                />
+              </If>
+            }
           />
         </If>
         <If when={marketItems().length > 0 && !marketError()}>
@@ -471,31 +530,34 @@ export function MiniAppMarketView() {
 function RatingRow() {
   const stars = [1, 2, 3, 4, 5];
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 2, minWidth: 0 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.hair, minWidth: 0 }}>
       <Each of={stars}>
         {value => (
           <View
             role="button"
             accessibilityLabel={`market-rate-${value()}`}
-            tooltip={tr("market.rateTooltip", { value: value() })}
+            tooltip={compactLayout() ? undefined : tr("market.rateTooltip", { value: value() })}
+            hitSlop={touchSlop(28)}
             disabled={marketActionBusy()}
             onPress={() => void rateMarketListing(value())}
             style={{
-              width: 28,
-              height: 28,
+              width: compactLayout() ? layout.touchTarget : 28,
+              height: compactLayout() ? layout.touchTarget : 28,
               borderRadius: radii.sm,
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
-              ...paintTransition(MOTION_DURATION.fast),
+              ...pressTransition(),
             }}
-            hoverStyle={{ backgroundColor: palette().panelHover }}
+            hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+            activeStyle={tactileActiveStyle(0.92)}
+            focusVisibleStyle={focusRingStyle()}
           >
             <MarketGlyph
               shape="star"
               size={16}
               filled={() => (marketDetail()?.myRating ?? 0) >= value()}
-              color={() => ((marketDetail()?.myRating ?? 0) >= value() ? palette().warning : palette().textMuted)}
+              color={() => ((marketDetail()?.myRating ?? 0) >= value() ? stateColor("needs_you") : palette().textMuted)}
             />
           </View>
         )}
@@ -503,7 +565,7 @@ function RatingRow() {
       <Text
         accessibilityLabel="market-rating-summary"
         style={{
-          marginLeft: 8,
+          marginLeft: space.sm,
           color: palette().textSecondary,
           fontSize: textSize(13),
           fontVariant: ["tabular-nums"],
@@ -601,33 +663,36 @@ function MarketListingFooter() {
   const installed = () => marketInstalled();
   const showInstall = () => Boolean(marketDetail()) && (!installed() || marketCanUpdate());
   return (
-    <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+    <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
       <If when={Boolean(marketDetail())}>
         <View
           role="button"
           accessibilityLabel="market-favorite"
           accessibilityState={{ selected: marketDetail()?.isFavorited === true, disabled: marketActionBusy() }}
-          tooltip={marketDetail()?.isFavorited ? tr("market.unfavorite") : tr("market.favorite")}
+          tooltip={compactLayout() ? undefined : marketDetail()?.isFavorited ? tr("market.unfavorite") : tr("market.favorite")}
+          hitSlop={touchSlop(32)}
           disabled={marketActionBusy()}
           onPress={() => void toggleMarketFavorite()}
           style={{
-            height: 32,
-            paddingHorizontal: 12,
+            height: compactLayout() ? layout.touchTarget : 32,
+            paddingHorizontal: space.md,
             borderRadius: radii.pill,
             flexDirection: "row",
             alignItems: "center",
-            gap: 6,
+            gap: space.xs,
             cursor: "pointer",
             borderWidth: 1,
             borderColor: palette().borderSubtle,
-            ...paintTransition(MOTION_DURATION.fast),
+            ...pressTransition(),
           }}
-          hoverStyle={{ backgroundColor: palette().panelHover }}
+          hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+          activeStyle={tactileActiveStyle(0.96)}
+          focusVisibleStyle={focusRingStyle()}
         >
           <MarketGlyph
             shape="heart"
             filled={() => marketDetail()?.isFavorited === true}
-            color={() => (marketDetail()?.isFavorited ? palette().danger : palette().textSecondary)}
+            color={() => (marketDetail()?.isFavorited ? stateColor("failed") : palette().textSecondary)}
           />
           <Text
             style={{
@@ -641,17 +706,18 @@ function MarketListingFooter() {
           </Text>
         </View>
       </If>
-      <View style={{ flex: 1, minWidth: 8 }} />
+      <View style={{ flex: 1, minWidth: space.sm }} />
       <Button
         label={tr("common.close")}
         variant="secondary"
         size="md"
         accessibilityLabel="market-close"
+        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
         onPress={() => closeMarketListing()}
       />
       <If when={Boolean(installed()) && !marketCanUpdate()}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Icon name="check" size={14} color={palette().success} />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+          <Icon name="check" size={14} color={palette().textMuted} />
           <Text
             accessibilityLabel="market-detail-installed"
             style={{ color: palette().textSecondary, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.3) }}
@@ -669,6 +735,7 @@ function MarketListingFooter() {
           disabled={Boolean(blocked()) || Boolean(spaceWindowBlockedReason())}
           tooltip={blocked() || spaceWindowBlockedReason() || undefined}
           accessibilityLabel="market-open"
+          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
           onPress={() => openInstalledMarketApp()}
         />
       </If>
@@ -682,6 +749,7 @@ function MarketListingFooter() {
           disabled={Boolean(blocked()) || marketInstalling() || Boolean(marketInstallPrompt())}
           tooltip={blocked() || undefined}
           accessibilityLabel="market-install"
+          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
           onPress={() => void installMarketListing()}
         />
       </If>
@@ -848,7 +916,7 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
             {reason => (
               <Text
                 style={{
-                  color: palette().danger,
+                  color: stateColor("failed"),
                   fontSize: textSize(12),
                   lineHeight: textLineHeight(12, 1.45),
                 }}
@@ -859,11 +927,11 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
           </If>
         }
         trailing={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Text
               accessibilityLabel={`submission-status-${props.item().submissionId}`}
               style={{
-                color: props.item().status === "rejected" ? palette().danger : palette().textSecondary,
+                color: props.item().status === "rejected" ? stateColor("failed") : palette().textSecondary,
                 fontSize: textSize(13),
                 lineHeight: textLineHeight(13, 1.3),
               }}
@@ -874,10 +942,11 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
               <Button
                 label={tr("market.submissions.withdraw")}
                 variant="ghost"
-                size="sm"
+                size={compactLayout() ? "md" : "sm"}
                 loading={withdrawingSubmissionId() === props.item().submissionId}
                 disabled={Boolean(withdrawingSubmissionId())}
                 accessibilityLabel={`submission-withdraw-${props.item().submissionId}`}
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => confirmingWithdrawId.set(props.item().submissionId)}
               />
             </If>
@@ -885,7 +954,7 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
         }
       />
       <If when={confirmingWithdrawId() === props.item().submissionId}>
-        <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+        <View style={{ paddingHorizontal: space.lg, paddingBottom: space.md }}>
           <InlineConfirmBar
             danger
             message={tr("market.submissions.withdrawConfirm", { name: props.item().name })}
@@ -902,29 +971,39 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
 
 export function MiniAppSubmissionsView() {
   return (
-    <View style={{ gap: 20, minWidth: 0 }}>
+    <View style={{ gap: space.xl, minWidth: 0 }}>
       <StudioSection
         title={tr("market.submissions.title")}
         accessibilityLabel="market-submissions"
         footnote={tr("market.submissions.publishNote")}
         trailing={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <If when={submissionsLoading() && submissionsLoaded()}>
               <Spinner size={14} />
             </If>
             <IconButton
               icon="refresh"
-              size="sm"
+              size={compactLayout() ? "md" : "sm"}
               accessibilityLabel="submissions-refresh"
               tooltip={tr("market.refresh")}
               disabled={submissionsLoading()}
+              style={
+                compactLayout()
+                  ? {
+                      width: layout.touchTarget,
+                      height: layout.touchTarget,
+                      minWidth: layout.touchTarget,
+                      minHeight: layout.touchTarget,
+                    }
+                  : undefined
+              }
               onPress={() => void loadSubmissions()}
             />
           </View>
         }
       >
         <If when={submissionsLoading() && !submissionsLoaded()}>
-          <View style={{ padding: 32, alignItems: "center" }}>
+          <View style={{ padding: space.x3l, alignItems: "center" }}>
             <Spinner size={18} />
           </View>
         </If>
@@ -941,6 +1020,7 @@ export function MiniAppSubmissionsView() {
                 size="md"
                 leadingIcon="log-in"
                 accessibilityLabel="submissions-sign-in-button"
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() =>
                   openAccountAuthModal({ autoStart: true, onSuccess: () => void loadSubmissions() })
                 }
@@ -956,6 +1036,17 @@ export function MiniAppSubmissionsView() {
               tone="danger"
               message={tr("market.submissions.loadFailed")}
               detail={localizeHostError(error())}
+              action={
+                <Button
+                  label={tr("common.tryAgain")}
+                  variant="secondary"
+                  size="md"
+                  leadingIcon="refresh"
+                  accessibilityLabel="submissions-retry"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                  onPress={() => void loadSubmissions()}
+                />
+              }
             />
           )}
         </If>
@@ -1031,27 +1122,30 @@ export function PackageImportModal() {
         </View>
       }
     >
-      <View style={{ gap: 16 }}>
+      <View style={{ gap: space.lg }}>
         <InputBox
           value={packageImportPath()}
           placeholder={tr("market.import.pathPlaceholder")}
           accessibilityLabel="package-import-path"
           hint={tr("market.import.pathHint")}
           onChange={value => setPackageImportPath(value)}
+          onSubmit={() => {
+            if (packageImportPath().trim() && !packageImportBusy()) void inspectPackage();
+          }}
         />
         <If when={packageImportError()}>
           {error => <InlineBanner tone="danger" message={localizeHostError(error())} />}
         </If>
         <If when={packageInspection()}>
           {inspection => (
-            <View accessibilityLabel="package-inspection" style={{ gap: 12 }}>
-              <View style={{ gap: 4 }}>
+            <View accessibilityLabel="package-inspection" style={{ gap: space.md }}>
+              <View style={{ gap: space.xs }}>
                 <Text
                   style={{
                     color: palette().text,
-                    fontSize: textSize(15),
+                    fontSize: textSize(14),
                     fontWeight: "600",
-                    lineHeight: textLineHeight(15, 1.35),
+                    lineHeight: textLineHeight(14, 1.35),
                   }}
                 >
                   {inspection().name}

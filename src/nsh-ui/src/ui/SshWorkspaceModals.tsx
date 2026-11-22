@@ -18,9 +18,11 @@ import {
   View,
   type Point,
 } from "nsh";
-import { formatPlural } from "../format";
+import { formatBytes, formatPlural } from "../format";
 // wave24-replica: account SSH profiles that still need a secret here.
 import { loadAccountRecords, sshSecretNote } from "../accountRecordsStore";
+import { fleetActive } from "../bridge";
+import { fleetDeviceById } from "../fleetStore";
 import { localizeHostError, tr } from "../i18n";
 import {
   addLocalFolderToNewWorkspace,
@@ -175,18 +177,23 @@ import {
   remoteLinkStateOf,
   retryRemoteWorkspace,
 } from "../sshRemoteStore";
-import { activeWorkspace } from "../state";
+import { activeWorkspace, deviceContext } from "../state";
 import {
+  compactLayout,
   controlHeight,
   fontMono,
+  layout,
   palette,
   radii,
+  space,
   textLineHeight,
   textSize,
   textStyle,
   textTracking,
+  touchSlop,
 } from "../theme";
-import { BotCharacter, Icon, type IconName } from "./icons";
+import { StateMark, stateColor } from "./fleet";
+import { Icon, type IconName } from "./icons";
 import {
   MOTION_DURATION,
   Spinner,
@@ -208,25 +215,21 @@ import {
   ConfigRow,
   ConfigSection,
   DeviceGlyph,
+  focusRingStyle,
   IconButton,
   InlineBanner,
   InlineConfirmBar,
   InputBox,
-  PillChip,
   SearchInput,
   SegmentedTabs,
-  StatusPill,
   ToggleSwitch,
   TooltipBubble,
 } from "./primitives";
+import { MoreMenu } from "./studio";
 
 function formatFileSize(bytes?: number): string {
   if (bytes === undefined || bytes === null) return "—";
-  if (bytes === 0) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  return formatBytes(bytes);
 }
 
 function ModalAlertBanner(props: {
@@ -254,8 +257,8 @@ function FieldSection(props: {
   right?: unknown;
 }) {
   return (
-    <View style={{ minWidth: 0, gap: 5 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+    <View style={{ minWidth: 0, gap: space.xs }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
         <Text
           style={{
             flex: 1,
@@ -278,8 +281,8 @@ function FieldSection(props: {
           <Text
             style={{
               color: palette().textMuted,
-              fontSize: textSize(11.5),
-              lineHeight: textLineHeight(11.5, 1.42),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.42),
             }}
           >
             {h()}
@@ -295,6 +298,10 @@ function FieldSection(props: {
 // ============================================================================
 
 function newWorkspaceSubtitle(): string {
+  if (fleetActive()) {
+    const name = fleetDeviceById(deviceContext())?.name;
+    if (name) return tr("ssh.deviceWorkspaceSubtitle", { device: name });
+  }
   return tr("devices.thisMachine");
 }
 
@@ -380,15 +387,16 @@ function NewWorkspaceModal() {
       closeOnEscape={!newWorkspaceBusy()}
       onClose={closeNewWorkspaceModal}
       footer={
-        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
           <If when={newWorkspaceShowAssistantChoice() && newWorkspaceStep() === "project"}>
             <Button
               label={tr("common.back")}
               variant="ghost"
-              size="sm"
+              size="md"
               leadingIcon="arrow-left"
               disabled={newWorkspaceBusy()}
               accessibilityLabel="new-workspace-back"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => {
                 newWorkspaceError.set("");
                 newWorkspaceStep.set("choice");
@@ -399,19 +407,21 @@ function NewWorkspaceModal() {
           <Button
             label={tr("common.cancel")}
             variant="secondary"
-            size="sm"
+            size="md"
             disabled={newWorkspaceBusy()}
             accessibilityLabel="new-workspace-cancel"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={closeNewWorkspaceModal}
           />
           <If when={newWorkspaceStep() === "project"}>
             <Button
               label={newWorkspaceBusy() ? tr("ssh.creating") : tr("ssh.createWorkspace")}
               variant="primary"
-              size="sm"
+              size="md"
               loading={newWorkspaceBusy()}
               disabled={!canConfirm()}
               accessibilityLabel="new-workspace-confirm"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void confirmNewWorkspace()}
             />
           </If>
@@ -424,7 +434,7 @@ function NewWorkspaceModal() {
       />
 
       <If when={newWorkspaceStep() === "choice"}>
-        <View style={{ flexDirection: "row", gap: 12 }}>
+        <View style={{ flexDirection: compactLayout() ? "column" : "row", gap: space.md }}>
           <View
             role="button"
             disabled={newWorkspaceBusy()}
@@ -433,6 +443,7 @@ function NewWorkspaceModal() {
               disabled: newWorkspaceBusy(),
               busy: newWorkspaceBusy(),
             }}
+            hitSlop={touchSlop(layout.touchTarget)}
             onPress={() => {
               if (newWorkspaceBusy()) return;
               void createAssistantFromNewWorkspace();
@@ -440,27 +451,26 @@ function NewWorkspaceModal() {
             style={{
               flex: 1,
               minWidth: 0,
-              padding: 16,
-              gap: 10,
+              padding: space.lg,
+              gap: space.sm,
               borderRadius: radii.lg,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().border,
               backgroundColor: palette().panelRaised,
-              boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
               cursor: newWorkspaceBusy() ? "not-allowed" : "pointer",
               ...pressTransition(MOTION_DURATION.fast),
             }}
-            hoverStyle={{
-              backgroundColor: palette().panelHover,
-              borderColor: palette().borderStrong,
-            }}
+            hoverStyle={
+              compactLayout()
+                ? undefined
+                : {
+                    backgroundColor: palette().panelHover,
+                    borderColor: palette().borderStrong,
+                  }
+            }
             activeStyle={tactileActiveStyle(0.985)}
-            focusVisibleStyle={{
-              outlineWidth: 2,
-              outlineColor: palette().borderFocus,
-              outlineOffset: 2,
-            }}
+            focusVisibleStyle={focusRingStyle()}
             disabledStyle={{ opacity: 0.52 }}
           >
             <View
@@ -468,18 +478,18 @@ function NewWorkspaceModal() {
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                gap: 8,
+                gap: space.sm,
               }}
             >
-              <BotCharacter variant="muse" size={36} ringColor={palette().panelRaised} />
+              <Icon name="sparkles" size={20} color={palette().textSecondary} />
               <Icon name="arrow-right" size={14} color={palette().textMuted} />
             </View>
             <Text
               style={{
                 color: palette().text,
-                fontSize: textSize(13.5),
-                lineHeight: textLineHeight(13.5, 1.3),
-                letterSpacing: textTracking(13.5),
+                fontSize: textSize(14),
+                lineHeight: textLineHeight(14, 1.35),
+                letterSpacing: textTracking(14),
                 fontWeight: "600",
               }}
             >
@@ -503,6 +513,7 @@ function NewWorkspaceModal() {
             accessibilityState={{
               disabled: newWorkspaceBusy(),
             }}
+            hitSlop={touchSlop(layout.touchTarget)}
             onPress={() => {
               if (newWorkspaceBusy()) return;
               newWorkspaceError.set("");
@@ -511,27 +522,26 @@ function NewWorkspaceModal() {
             style={{
               flex: 1,
               minWidth: 0,
-              padding: 16,
-              gap: 10,
+              padding: space.lg,
+              gap: space.sm,
               borderRadius: radii.lg,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().border,
               backgroundColor: palette().panelRaised,
-              boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
               cursor: newWorkspaceBusy() ? "not-allowed" : "pointer",
               ...pressTransition(MOTION_DURATION.fast),
             }}
-            hoverStyle={{
-              backgroundColor: palette().panelHover,
-              borderColor: palette().borderStrong,
-            }}
+            hoverStyle={
+              compactLayout()
+                ? undefined
+                : {
+                    backgroundColor: palette().panelHover,
+                    borderColor: palette().borderStrong,
+                  }
+            }
             activeStyle={tactileActiveStyle(0.985)}
-            focusVisibleStyle={{
-              outlineWidth: 2,
-              outlineColor: palette().borderFocus,
-              outlineOffset: 2,
-            }}
+            focusVisibleStyle={focusRingStyle()}
             disabledStyle={{ opacity: 0.52 }}
           >
             <View
@@ -539,33 +549,18 @@ function NewWorkspaceModal() {
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                gap: 8,
+                gap: space.sm,
               }}
             >
-              <View
-                style={{
-                  width: 36,
-                  height: 36,
-                  flexShrink: 0,
-                  borderRadius: radii.md,
-                  borderCurve: "continuous",
-                  borderWidth: 1,
-                  borderColor: palette().accentBorder,
-                  backgroundColor: palette().accentSoft,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Icon name="folder-plus" size={18} color={palette().accent} />
-              </View>
+              <Icon name="folder-plus" size={20} color={palette().textSecondary} />
               <Icon name="arrow-right" size={14} color={palette().textMuted} />
             </View>
             <Text
               style={{
                 color: palette().text,
-                fontSize: textSize(13.5),
-                lineHeight: textLineHeight(13.5, 1.3),
-                letterSpacing: textTracking(13.5),
+                fontSize: textSize(14),
+                lineHeight: textLineHeight(14, 1.35),
+                letterSpacing: textTracking(14),
                 fontWeight: "600",
               }}
             >
@@ -585,7 +580,7 @@ function NewWorkspaceModal() {
       </If>
 
       <If when={newWorkspaceStep() === "project"}>
-        <View style={{ gap: 14 }}>
+        <View style={{ gap: space.md }}>
           <InputBox
             label={tr("ssh.workspaceName")}
             leadingIcon="folder"
@@ -604,46 +599,50 @@ function NewWorkspaceModal() {
 
           <ConfigSection
             flush
-            controlWidth={300}
+            controlWidth={compactLayout() ? undefined : 300}
             title={tr("ssh.workspaceSource")}
             subtitle={tr("ssh.workspaceSourceSubtitle")}
           >
             <ConfigRow label={tr("ssh.hostLocation")}>
-              <SegmentedTabs
-                size="sm"
-                options={locationOptions()}
-                value={workspaceSourceCoordinates(newWorkspaceSource()).location}
-                onChange={loc => {
-                  const env = workspaceSourceCoordinates(newWorkspaceSource()).environment;
-                  const nextEnv: WorkspaceEnvironment =
-                    loc === "other" && env === "wsl" ? "system" : env;
-                  setNewWorkspaceSource(workspaceSourceFor(loc, nextEnv));
-                }}
-              />
+              <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                <SegmentedTabs
+                  size="sm"
+                  options={locationOptions()}
+                  value={workspaceSourceCoordinates(newWorkspaceSource()).location}
+                  onChange={loc => {
+                    const env = workspaceSourceCoordinates(newWorkspaceSource()).environment;
+                    const nextEnv: WorkspaceEnvironment =
+                      loc === "other" && env === "wsl" ? "system" : env;
+                    setNewWorkspaceSource(workspaceSourceFor(loc, nextEnv));
+                  }}
+                />
+              </Scroll>
             </ConfigRow>
             <ConfigRow label={tr("ssh.environment")} divider={false}>
-              <SegmentedTabs
-                size="sm"
-                options={environmentOptions()}
-                value={workspaceSourceCoordinates(newWorkspaceSource()).environment}
-                onChange={env => {
-                  const loc = workspaceSourceCoordinates(newWorkspaceSource()).location;
-                  setNewWorkspaceSource(workspaceSourceFor(loc, env));
-                }}
-              />
+              <Scroll horizontal scrollbar={false} style={{ maxWidth: "100%", minWidth: 0 }}>
+                <SegmentedTabs
+                  size="sm"
+                  options={environmentOptions()}
+                  value={workspaceSourceCoordinates(newWorkspaceSource()).environment}
+                  onChange={env => {
+                    const loc = workspaceSourceCoordinates(newWorkspaceSource()).location;
+                    setNewWorkspaceSource(workspaceSourceFor(loc, env));
+                  }}
+                />
+              </Scroll>
             </ConfigRow>
           </ConfigSection>
 
           {/* Local Host Directory Selector */}
           <If when={newWorkspaceSource() === "host"}>
-            <View style={{ gap: 10 }}>
+            <View style={{ gap: space.sm }}>
               <FieldSection label={tr("ssh.localFolderPath")}>
-                <View style={{ flexDirection: "row", gap: 8, alignItems: "center", minWidth: 0 }}>
-                  <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm, alignItems: "center", minWidth: 0 }}>
+                  <View style={{ flex: 1, minWidth: 160 }}>
                     <InputBox
                       monospace
                       value={newWorkspaceLocalPathInput()}
-                      placeholder="/path/to/workspace"
+                      placeholder={tr("ssh.pathPlaceholder")}
                       accessibilityLabel="new-workspace-local-path"
                       onChange={v => newWorkspaceLocalPathInput.set(v)}
                       onSubmit={() => addLocalFolderToNewWorkspace()}
@@ -655,31 +654,36 @@ function NewWorkspaceModal() {
                     size="md"
                     accessibilityLabel="new-workspace-add-local"
                     disabled={!newWorkspaceLocalPathInput().trim()}
+                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                     onPress={() => addLocalFolderToNewWorkspace()}
                   />
                 </View>
               </FieldSection>
 
               <If when={newWorkspaceRecentLocal().length > 0}>
-                <View style={{ gap: 6 }}>
+                <View style={{ gap: space.xs }}>
                   <Text
                     style={{
                       color: palette().textMuted,
-                      fontSize: textSize(11.5),
-                      lineHeight: textLineHeight(11.5, 1.35),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.35),
                       fontWeight: "500",
                     }}
                   >
                     {tr("ssh.recentLocalWorkspaces")}
                   </Text>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
                     <Each of={newWorkspaceRecentLocal()} key={ws => ws.id}>
                       {ws => (
-                        <PillChip
+                        <Button
                           label={ws().name || projectFolderName(ws().rootPath)}
-                          maxWidth={220}
+                          size={compactLayout() ? "sm" : "xs"}
+                          variant={
+                            newWorkspaceFolders().some(f => f.path === ws().rootPath)
+                              ? "secondary"
+                              : "outline"
+                          }
                           accessibilityLabel={`new-ws-recent-${ws().id}`}
-                          active={newWorkspaceFolders().some(f => f.path === ws().rootPath)}
                           onPress={() => addLocalFolderToNewWorkspace(ws().rootPath)}
                         />
                       )}
@@ -888,7 +892,7 @@ function NewWorkspaceModal() {
                         icon="close"
                         size="xs"
                         tooltip={tr("common.remove")}
-                        accessibilityLabel={`Remove folder ${folder().path}`}
+                        accessibilityLabel={`new-workspace-remove-folder-${projectFolderKey(folder())}`}
                         onPress={() => {
                           newWorkspaceFolders.update(cur =>
                             cur.filter(
@@ -934,7 +938,11 @@ function stageLatencyMs(stage: ConnectionTestStage): number | null {
 
 function SshConnectionModal() {
   const confirmingDeleteId = signal<string | null>(null);
-  void loadAccountRecords();
+  effect(() => {
+    if (sshConnectionModalOpen()) {
+      void loadAccountRecords();
+    }
+  });
 
   const targetTabs = () => [
     { value: "ssh" as WorkspaceConnectionTarget, label: tr("ssh.ssh") },
@@ -1025,15 +1033,16 @@ function SshConnectionModal() {
       closeOnEscape={!sshConnecting()}
       onClose={closeSshConnectionModal}
       footer={
-        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
           <If when={showNewForm()}>
             <Button
               label={sshTesting() ? tr("common.testing") : tr("ssh.testConnection")}
               variant="secondary"
-              size="sm"
+              size="md"
               loading={sshTesting()}
               disabled={sshConnecting()}
               accessibilityLabel="ssh-test-btn"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void testSshConnection()}
             />
           </If>
@@ -1041,18 +1050,20 @@ function SshConnectionModal() {
           <Button
             label={tr("common.cancel")}
             variant="ghost"
-            size="sm"
+            size="md"
             disabled={sshConnecting()}
             accessibilityLabel="ssh-modal-cancel"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={closeSshConnectionModal}
           />
           <If when={showNewForm()}>
             <Button
               label={tr("common.save")}
               variant="secondary"
-              size="sm"
+              size="md"
               disabled={sshConnecting() || sshTesting()}
               accessibilityLabel="ssh-save-btn"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void saveSshConnectionForm()}
             />
           </If>
@@ -1062,10 +1073,11 @@ function SshConnectionModal() {
               <Button
                 label={sshConfirmLabel() || tr("common.connect")}
                 variant="primary"
-                size="sm"
+                size="md"
                 loading={sshConnecting()}
                 disabled={!selectedSaved() || sshConnecting()}
                 accessibilityLabel="ssh-quick-connect-btn"
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => {
                   const sel = selectedSaved();
                   if (sel) {
@@ -1083,10 +1095,11 @@ function SshConnectionModal() {
                 (sshConnecting() ? tr("ssh.connectingEllipsis") : tr("common.connect"))
               }
               variant="primary"
-              size="sm"
+              size="md"
               loading={sshConnecting()}
               disabled={sshTesting()}
               accessibilityLabel="ssh-connect-btn"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void submitSshConnectionForm()}
             />
           </If>
@@ -1194,168 +1207,240 @@ function SshConnectionModal() {
             >
               <View>
                 <Each of={filteredSavedConnections()} key={conn => conn.id}>
-                  {(conn, idx) => (
-                    <View
-                      role="button"
-                      accessibilityLabel={`ssh-saved-${conn().id}`}
-                      accessibilityState={{ selected: sshSelectedConnectionId() === conn().id }}
-                      onPress={() => {
-                        sshSelectedConnectionId.set(conn().id);
-                        if (conn().authType.type === "Password") {
-                          void checkHasStoredPassword(conn().id);
+                  {(conn, idx) => {
+                    const isSelected = () => sshSelectedConnectionId() === conn().id;
+                    const status = () => connectionStatuses()[conn().id];
+                    const rowMenuItems = (): DropdownMenuItem[] => [
+                      ...(status() === "connected"
+                        ? [
+                            {
+                              id: "browse",
+                              label: tr("common.browse"),
+                              icon: "folder" as IconName,
+                              accessibilityLabel: `ssh-browse-${conn().id}`,
+                              onSelect: () =>
+                                void openRemoteFileBrowser(conn().id, undefined, {
+                                  connectionName: conn().name,
+                                  sshHost: conn().host,
+                                }),
+                            },
+                            {
+                              id: "ports",
+                              label: tr("ssh.ports"),
+                              icon: "network" as IconName,
+                              accessibilityLabel: `ssh-pf-${conn().id}`,
+                              onSelect: () => void openPortForwardModal(conn().id, conn().name),
+                            },
+                          ]
+                        : []),
+                      {
+                        id: "edit",
+                        label: tr("ssh.editProfile"),
+                        icon: "edit" as IconName,
+                        accessibilityLabel: `ssh-edit-${conn().id}`,
+                        onSelect: () => {
+                          populateFormFromSavedConnection(conn());
+                          sshConnectionView.set("new");
+                        },
+                      },
+                      {
+                        id: "delete",
+                        label: tr("ssh.deleteProfile"),
+                        icon: "trash" as IconName,
+                        danger: true,
+                        separator: true,
+                        accessibilityLabel: `ssh-delete-${conn().id}`,
+                        onSelect: () => confirmingDeleteId.set(conn().id),
+                      },
+                    ];
+                    return (
+                      <View
+                        style={{
+                          paddingRight: space.md,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: space.sm,
+                          backgroundColor: isSelected() ? palette().accentSoft : "transparent",
+                          borderBottomWidth:
+                            idx() < filteredSavedConnections().length - 1 ? 1 : 0,
+                          borderColor: palette().borderSubtle,
+                          ...paintTransition(MOTION_DURATION.fast),
+                        }}
+                        hoverStyle={
+                          compactLayout()
+                            ? undefined
+                            : {
+                                backgroundColor: isSelected()
+                                  ? palette().accentSoft
+                                  : palette().panelHover,
+                              }
                         }
-                      }}
-                      style={{
-                        paddingHorizontal: 14,
-                        paddingVertical: 11,
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 11,
-                        backgroundColor:
-                          sshSelectedConnectionId() === conn().id
-                            ? palette().accentSoft
-                            : "transparent",
-                        borderBottomWidth:
-                          idx() < filteredSavedConnections().length - 1 ? 1 : 0,
-                        borderColor: palette().borderSubtle,
-                        cursor: "pointer",
-                        ...paintTransition(MOTION_DURATION.fast),
-                      }}
-                      hoverStyle={{
-                        backgroundColor:
-                          sshSelectedConnectionId() === conn().id
-                            ? palette().accentSoft
-                            : palette().panelHover,
-                      }}
-                      activeStyle={{ opacity: 0.92 }}
-                      focusVisibleStyle={{
-                        outlineWidth: 2,
-                        outlineColor: palette().borderFocus,
-                        outlineOffset: -2,
-                      }}
-                    >
-                      <DeviceGlyph
-                        kind={
-                          conn().wsl
-                            ? "desktop"
-                            : conn().container
-                              ? "container"
-                              : "server"
-                        }
-                        size={32}
-                        status={connectionStatuses()[conn().id] ?? undefined}
-                        active={sshSelectedConnectionId() === conn().id}
-                        ringColor={palette().panelRaised}
-                      />
-                      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
-                          <Text
-                            style={{
-                              flexShrink: 1,
-                              minWidth: 0,
-                              color: palette().text,
-                              fontSize: textSize(13),
-                              lineHeight: textLineHeight(13, 1.35),
-                              fontWeight: "600",
-                              numberOfLines: 1,
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {conn().name}
-                          </Text>
-                          <If when={connectionStatuses()[conn().id] === "connected"}>
-                            <StatusPill label={tr("common.connected")} kind="success" size="xs" />
-                          </If>
-                          <If when={connectionStatuses()[conn().id] === "connecting"}>
-                            <StatusPill
-                              label={tr("common.connecting")}
-                              kind="warning"
+                      >
+                        <View
+                          role="button"
+                          accessibilityLabel={`ssh-saved-${conn().id}`}
+                          accessibilityState={{ selected: isSelected() }}
+                          hitSlop={touchSlop(layout.touchTarget)}
+                          onPress={() => {
+                            sshSelectedConnectionId.set(conn().id);
+                            if (conn().authType.type === "Password") {
+                              void checkHasStoredPassword(conn().id);
+                            }
+                          }}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            minHeight: compactLayout() ? layout.touchTarget : 44,
+                            paddingLeft: space.md,
+                            paddingVertical: space.sm,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: space.md,
+                            cursor: "pointer",
+                            ...pressTransition(),
+                          }}
+                          activeStyle={tactileActiveStyle(0.99)}
+                          focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
+                        >
+                          <DeviceGlyph
+                            kind={
+                              conn().wsl
+                                ? "desktop"
+                                : conn().container
+                                  ? "container"
+                                  : "server"
+                            }
+                            size={20}
+                          />
+                          <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+                            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
+                              <Text
+                                style={{
+                                  flexShrink: 1,
+                                  minWidth: 0,
+                                  color: palette().text,
+                                  fontSize: textSize(13),
+                                  lineHeight: textLineHeight(13, 1.35),
+                                  fontWeight: "600",
+                                  numberOfLines: 1,
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {conn().name}
+                              </Text>
+                              <If when={status() === "connected"}>
+                                <Text
+                                  style={{
+                                    flexShrink: 0,
+                                    color: palette().textMuted,
+                                    fontSize: textSize(12),
+                                    lineHeight: textLineHeight(12, 1.35),
+                                  }}
+                                >
+                                  {tr("common.connected")}
+                                </Text>
+                              </If>
+                              <If when={status() === "connecting"}>
+                                <StateMark state="working" withWord size={12} />
+                              </If>
+                              <If when={status() === "error"}>
+                                <StateMark state="failed" withWord size={12} />
+                              </If>
+                            </View>
+                            <Text
+                              style={{
+                                color: palette().textMuted,
+                                fontSize: textSize(12),
+                                lineHeight: textLineHeight(12, 1.38),
+                                fontFamily: fontMono,
+                                numberOfLines: 1,
+                                textOverflow: "ellipsis-middle",
+                              }}
+                            >
+                              {formatSavedConnectionSubtitle(conn())}
+                            </Text>
+                            <If when={sshSecretNote(conn().id)}>
+                              {note => (
+                                <Text
+                                  style={textStyle("caption", { color: palette().textMuted })}
+                                  accessibilityLabel={`ssh-needs-secret-${conn().id}`}
+                                >
+                                  {note()}
+                                </Text>
+                              )}
+                            </If>
+                          </View>
+                        </View>
+
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+                          <If when={!compactLayout() && status() === "connected"}>
+                            <Button
+                              label={tr("common.browse")}
                               size="xs"
-                              pulse
+                              variant="ghost"
+                              accessibilityLabel={`ssh-browse-${conn().id}`}
+                              onPress={() =>
+                                void openRemoteFileBrowser(conn().id, undefined, {
+                                  connectionName: conn().name,
+                                  sshHost: conn().host,
+                                })
+                              }
+                            />
+                            <Button
+                              label={tr("ssh.ports")}
+                              size="xs"
+                              variant="ghost"
+                              accessibilityLabel={`ssh-pf-${conn().id}`}
+                              onPress={() => void openPortForwardModal(conn().id, conn().name)}
                             />
                           </If>
-                          <If when={connectionStatuses()[conn().id] === "error"}>
-                            <StatusPill label={tr("common.error")} kind="danger" size="xs" />
-                          </If>
-                        </View>
-                        <Text
-                          style={{
-                            color: palette().textMuted,
-                            fontSize: textSize(11.5),
-                            lineHeight: textLineHeight(11.5, 1.38),
-                            fontFamily: fontMono,
-                            numberOfLines: 1,
-                            textOverflow: "ellipsis-middle",
-                          }}
-                        >
-                          {formatSavedConnectionSubtitle(conn())}
-                        </Text>
-                        <If when={sshSecretNote(conn().id)}>
-                          {note => (
-                            <Text
-                              style={textStyle("meta")}
-                              accessibilityLabel={`ssh-needs-secret-${conn().id}`}
-                            >
-                              {note()}
-                            </Text>
-                          )}
-                        </If>
-                      </View>
-
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
-                        <If when={connectionStatuses()[conn().id] === "connected"}>
                           <Button
-                            label={tr("common.browse")}
-                            size="xs"
-                            variant="ghost"
-                            accessibilityLabel={`ssh-browse-${conn().id}`}
+                            label={tr("common.connect")}
+                            size={compactLayout() ? "sm" : "xs"}
+                            variant="secondary"
+                            accessibilityLabel={`ssh-connect-${conn().id}`}
+                            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                             onPress={() =>
-                              void openRemoteFileBrowser(conn().id, undefined, {
-                                connectionName: conn().name,
-                                sshHost: conn().host,
+                              void quickConnectSavedConnection(conn(), {
+                                browseAfterConnect: sshBrowseAfterConnect(),
                               })
                             }
                           />
-                          <Button
-                            label={tr("ssh.ports")}
-                            size="xs"
-                            variant="ghost"
-                            accessibilityLabel={`ssh-pf-${conn().id}`}
-                            onPress={() => void openPortForwardModal(conn().id, conn().name)}
-                          />
-                        </If>
-                        <Button
-                          label={tr("common.connect")}
-                          size="xs"
-                          variant="secondary"
-                          accessibilityLabel={`ssh-connect-${conn().id}`}
-                          onPress={() =>
-                            void quickConnectSavedConnection(conn(), {
-                              browseAfterConnect: sshBrowseAfterConnect(),
-                            })
-                          }
-                        />
-                        <IconButton
-                          icon="edit"
-                          size="xs"
-                          tooltip={tr("ssh.editProfile")}
-                          accessibilityLabel={`ssh-edit-${conn().id}`}
-                          onPress={() => {
-                            populateFormFromSavedConnection(conn());
-                            sshConnectionView.set("new");
-                          }}
-                        />
-                        <IconButton
-                          icon="trash"
-                          size="xs"
-                          tone="danger"
-                          tooltip={tr("ssh.deleteProfile")}
-                          accessibilityLabel={`ssh-delete-${conn().id}`}
-                          onPress={() => confirmingDeleteId.set(conn().id)}
-                        />
+                          <If
+                            when={compactLayout()}
+                            else={
+                              <>
+                                <IconButton
+                                  icon="edit"
+                                  size="xs"
+                                  tooltip={tr("ssh.editProfile")}
+                                  accessibilityLabel={`ssh-edit-${conn().id}`}
+                                  onPress={() => {
+                                    populateFormFromSavedConnection(conn());
+                                    sshConnectionView.set("new");
+                                  }}
+                                />
+                                <IconButton
+                                  icon="trash"
+                                  size="xs"
+                                  tone="danger"
+                                  tooltip={tr("ssh.deleteProfile")}
+                                  accessibilityLabel={`ssh-delete-${conn().id}`}
+                                  onPress={() => confirmingDeleteId.set(conn().id)}
+                                />
+                              </>
+                            }
+                          >
+                            <MoreMenu
+                              accessibilityLabel={`ssh-saved-more-${conn().id}`}
+                              tooltip={tr("ssh.editProfile")}
+                              items={rowMenuItems()}
+                            />
+                          </If>
+                        </View>
                       </View>
-                    </View>
-                  )}
+                    );
+                  }}
                 </Each>
               </View>
             </If>
@@ -1391,17 +1476,19 @@ function SshConnectionModal() {
               }
             >
               <Scroll style={{ maxHeight: 136, minHeight: 0 }} scrollbar={true}>
-                <View style={{ padding: 12, flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                <View style={{ padding: space.md, flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
                   <Each of={filteredSshConfigHosts()} key={entry => entry.host}>
                     {entry => (
-                      <PillChip
-                        label={entry().host}
-                        maxWidth={260}
-                        badge={
+                      <Button
+                        label={
                           entry().user
-                            ? `${entry().user}@${entry().hostname || entry().host}`
-                            : entry().hostname || undefined
+                            ? `${entry().host} · ${entry().user}@${entry().hostname || entry().host}`
+                            : entry().hostname && entry().hostname !== entry().host
+                              ? `${entry().host} · ${entry().hostname}`
+                              : entry().host
                         }
+                        size={compactLayout() ? "sm" : "xs"}
+                        variant="outline"
                         accessibilityLabel={`ssh-config-host-${entry().host}`}
                         onPress={() => fillFormFromSshConfig(entry())}
                       />
@@ -1411,8 +1498,8 @@ function SshConnectionModal() {
                     <Text
                       style={{
                         color: palette().textMuted,
-                        fontSize: textSize(11.5),
-                        lineHeight: textLineHeight(11.5, 1.4),
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.4),
                       }}
                     >
                       {tr("ssh.noMatchingHosts")}
@@ -1498,8 +1585,8 @@ function SshConnectionModal() {
 
           {/* Host, Port, Username, Auth */}
           <If when={!isLocalProcess() && sshTargetType() !== "remoteDocker"}>
-            <View style={{ gap: 12 }}>
-              <View style={{ flexDirection: "row", gap: 10, minWidth: 0 }}>
+            <View style={{ gap: space.md }}>
+              <View style={{ flexDirection: compactLayout() ? "column" : "row", gap: space.sm, minWidth: 0 }}>
                 <View style={{ flex: 3, minWidth: 0 }}>
                   <InputBox
                     monospace
@@ -1544,8 +1631,8 @@ function SshConnectionModal() {
                 <Text
                   style={{
                     color: palette().textMuted,
-                    fontSize: textSize(11.5),
-                    lineHeight: textLineHeight(11.5, 1.42),
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.42),
                   }}
                 >
                   {tr("ssh.authNoneHint")}
@@ -1571,7 +1658,7 @@ function SshConnectionModal() {
                       tooltip={
                         sshShowPassword() ? tr("ssh.hidePassword") : tr("ssh.showPassword")
                       }
-                      accessibilityLabel="Toggle password visibility"
+                      accessibilityLabel="ssh-form-toggle-password"
                       onPress={() => sshShowPassword.update(v => !v)}
                     />
                   }
@@ -1580,7 +1667,7 @@ function SshConnectionModal() {
               </If>
 
               <If when={sshForm().authType === "privateKey"}>
-                <View style={{ gap: 10 }}>
+                <View style={{ gap: space.sm }}>
                   <InputBox
                     monospace
                     label={tr("ssh.privateKeyPath")}
@@ -1605,7 +1692,7 @@ function SshConnectionModal() {
                             ? tr("ssh.hidePassphrase")
                             : tr("ssh.showPassphrase")
                         }
-                        accessibilityLabel="Toggle passphrase visibility"
+                        accessibilityLabel="ssh-form-toggle-passphrase"
                         onPress={() => sshShowPassphrase.update(v => !v)}
                       />
                     }
@@ -1615,7 +1702,7 @@ function SshConnectionModal() {
               </If>
 
               <If when={sshForm().authType === "keyboardInteractive"}>
-                <View style={{ flexDirection: "row", gap: 10, minWidth: 0 }}>
+                <View style={{ flexDirection: compactLayout() ? "column" : "row", gap: space.sm, minWidth: 0 }}>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <InputBox
                       masked
@@ -1701,14 +1788,13 @@ function SshConnectionModal() {
             <If when={sshShowAdvanced()}>
               <View
                 style={{
-                  padding: 14,
-                  gap: 12,
+                  padding: space.md,
+                  gap: space.md,
                   borderRadius: radii.lg,
                   borderCurve: "continuous",
                   borderWidth: 1,
                   borderColor: palette().border,
                   backgroundColor: palette().panelRaised,
-                  boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
                 }}
               >
                 <InputBox
@@ -1730,7 +1816,7 @@ function SshConnectionModal() {
                 </If>
 
                 <If when={usesDocker()}>
-                  <View style={{ gap: 10 }}>
+                  <View style={{ gap: space.sm }}>
                     <FieldSection label={tr("ssh.containerAccessMode")}>
                       <SelectDropdown
                         accessibilityLabel="ssh-form-container-access"
@@ -1742,8 +1828,10 @@ function SshConnectionModal() {
                     <View
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                        gap: 8,
+                        gridTemplateColumns: compactLayout()
+                          ? "minmax(0, 1fr)"
+                          : "repeat(3, minmax(0, 1fr))",
+                        gap: space.sm,
                       }}
                     >
                       <InputBox
@@ -1774,7 +1862,7 @@ function SshConnectionModal() {
                 </If>
 
                 <If when={!isLocalProcess() && sshTargetType() !== "remoteDocker"}>
-                  <View style={{ gap: 10 }}>
+                  <View style={{ gap: space.sm }}>
                     <If when={sshForm().authType === "privateKey"}>
                       <InputBox
                         monospace
@@ -1790,8 +1878,10 @@ function SshConnectionModal() {
                       <View
                         style={{
                           display: "grid",
-                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                          gap: 10,
+                          gridTemplateColumns: compactLayout()
+                            ? "minmax(0, 1fr)"
+                            : "repeat(2, minmax(0, 1fr))",
+                          gap: space.sm,
                         }}
                       >
                         <InputBox
@@ -1833,8 +1923,10 @@ function SshConnectionModal() {
                     <View
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                        gap: 10,
+                        gridTemplateColumns: compactLayout()
+                          ? "minmax(0, 1fr)"
+                          : "repeat(2, minmax(0, 1fr))",
+                        gap: space.sm,
                       }}
                     >
                       <InputBox
@@ -1876,16 +1968,15 @@ function SshConnectionModal() {
           <If when={sshTesting()}>
             <View
               style={{
-                padding: 12,
+                padding: space.md,
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 10,
+                gap: space.sm,
                 borderRadius: radii.lg,
                 borderCurve: "continuous",
                 borderWidth: 1,
-                borderColor: palette().accentBorder,
+                borderColor: palette().border,
                 backgroundColor: palette().panelRaised,
-                boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
               }}
             >
               <Spinner size={14} color={palette().accent} />
@@ -1908,23 +1999,29 @@ function SshConnectionModal() {
             {report => (
               <View
                 style={{
-                  padding: 14,
-                  gap: 10,
+                  padding: space.md,
+                  gap: space.sm,
                   borderRadius: radii.lg,
                   borderCurve: "continuous",
                   borderWidth: 1,
-                  borderColor: report().success
-                    ? palette().successBorder
-                    : palette().dangerBorder,
+                  borderColor: report().success ? palette().border : stateColor("failed"),
                   backgroundColor: palette().panelRaised,
-                  boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
                 }}
               >
-                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-                  <StatusPill
-                    label={report().success ? tr("ssh.testPassed") : tr("ssh.testFailed")}
-                    kind={report().success ? "success" : "danger"}
-                  />
+                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                    <StateMark state={report().success ? "done" : "failed"} size={12} />
+                    <Text
+                      style={{
+                        color: report().success ? palette().text : stateColor("failed"),
+                        fontSize: textSize(13),
+                        fontWeight: "600",
+                        lineHeight: textLineHeight(13, 1.35),
+                      }}
+                    >
+                      {report().success ? tr("ssh.testPassed") : tr("ssh.testFailed")}
+                    </Text>
+                  </View>
                   <If when={typeof report().latencyMs === "number"}>
                     <Badge label={tr("format.durationMs", { count: report().latencyMs ?? 0 })} />
                   </If>
@@ -1942,9 +2039,9 @@ function SshConnectionModal() {
                   {err => (
                     <Text
                       style={{
-                        color: palette().danger,
-                        fontSize: textSize(11.5),
-                        lineHeight: textLineHeight(11.5, 1.45),
+                        color: stateColor("failed"),
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.45),
                       }}
                     >
                       {localizeHostError(err())}
@@ -1957,7 +2054,7 @@ function SshConnectionModal() {
                     {(stage, idx) => {
                       const total = () => (report().stages ?? report().steps ?? []).length;
                       return (
-                        <View style={{ flexDirection: "row", alignItems: "stretch", gap: 10 }}>
+                        <View style={{ flexDirection: "row", alignItems: "stretch", gap: space.sm }}>
                           <View style={{ width: 18, alignItems: "center", flexShrink: 0 }}>
                             <View
                               style={{
@@ -1965,13 +2062,11 @@ function SshConnectionModal() {
                                 height: 18,
                                 marginTop: 1,
                                 borderRadius: radii.pill,
-                                backgroundColor: stage().success
-                                  ? palette().successSoft
-                                  : palette().dangerSoft,
+                                backgroundColor: palette().surfaceSubtle,
                                 borderWidth: 1,
                                 borderColor: stage().success
-                                  ? palette().successBorder
-                                  : palette().dangerBorder,
+                                  ? palette().border
+                                  : stateColor("failed"),
                                 alignItems: "center",
                                 justifyContent: "center",
                               }}
@@ -1980,7 +2075,7 @@ function SshConnectionModal() {
                                 name={stage().success ? "check" : "close"}
                                 size={10}
                                 color={
-                                  stage().success ? palette().success : palette().danger
+                                  stage().success ? palette().textSecondary : stateColor("failed")
                                 }
                               />
                             </View>
@@ -1989,9 +2084,9 @@ function SshConnectionModal() {
                                 style={{
                                   width: 1,
                                   flex: 1,
-                                  minHeight: 10,
+                                  minHeight: space.sm,
                                   backgroundColor: palette().border,
-                                  marginVertical: 2,
+                                  marginVertical: space.hair,
                                 }}
                               />
                             </If>
@@ -2000,15 +2095,15 @@ function SshConnectionModal() {
                             style={{
                               flex: 1,
                               minWidth: 0,
-                              paddingBottom: idx() < total() - 1 ? 8 : 0,
-                              gap: 2,
+                              paddingBottom: idx() < total() - 1 ? space.sm : 0,
+                              gap: space.hair,
                             }}
                           >
                             <View
                               style={{
                                 flexDirection: "row",
                                 alignItems: "center",
-                                gap: 8,
+                                gap: space.sm,
                                 minWidth: 0,
                               }}
                             >
@@ -2033,8 +2128,8 @@ function SshConnectionModal() {
                                   style={{
                                     color: palette().textMuted,
                                     fontFamily: fontMono,
-                                    fontSize: textSize(10.5),
-                                    lineHeight: textLineHeight(10.5, 1.35),
+                                    fontSize: textSize(12),
+                                    lineHeight: textLineHeight(12, 1.35),
                                     fontVariant: ["tabular-nums"],
                                     flexShrink: 0,
                                   }}
@@ -2049,9 +2144,9 @@ function SshConnectionModal() {
                               {stErr => (
                                 <Text
                                   style={{
-                                    color: palette().danger,
-                                    fontSize: textSize(11),
-                                    lineHeight: textLineHeight(11, 1.4),
+                                    color: stateColor("failed"),
+                                    fontSize: textSize(12),
+                                    lineHeight: textLineHeight(12, 1.4),
                                   }}
                                 >
                                   {localizeHostError(stErr())}
@@ -2097,21 +2192,23 @@ function SshAuthPromptModal() {
       closeOnEscape={!sshConnecting()}
       onClose={closeAuthPrompt}
       footer={
-        <View style={{ flexDirection: "row", gap: 8 }}>
+        <View style={{ flexDirection: "row", gap: space.sm }}>
           <Button
             label={tr("common.cancel")}
             variant="secondary"
-            size="sm"
+            size="md"
             disabled={sshConnecting()}
             accessibilityLabel="ssh-auth-cancel"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={closeAuthPrompt}
           />
           <Button
             label={sshConnecting() ? tr("ssh.connectingEllipsis") : tr("common.connect")}
             variant="primary"
-            size="sm"
+            size="md"
             loading={sshConnecting()}
             accessibilityLabel="ssh-auth-submit"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void submitAuthPrompt()}
           />
         </View>
@@ -2124,9 +2221,9 @@ function SshAuthPromptModal() {
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 8,
-            paddingHorizontal: 10,
-            paddingVertical: 8,
+            gap: space.sm,
+            paddingHorizontal: space.sm,
+            paddingVertical: space.sm,
             borderRadius: radii.sm,
             borderCurve: "continuous",
             borderWidth: 1,
@@ -2134,7 +2231,7 @@ function SshAuthPromptModal() {
             backgroundColor: palette().panelRaised,
           }}
         >
-          <Icon name="shield" size={13.5} color={palette().textMuted} />
+          <Icon name="shield" size={14} color={palette().textMuted} />
           <Text
             style={{
               flex: 1,
@@ -2367,17 +2464,17 @@ function RemoteFileBrowserModal() {
       closeOnEscape={!browserBusy()}
       onClose={closeRemoteFileBrowser}
       footer={
-        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
           <View
-            tooltip={<TooltipBubble text={footerPathLabel()} />}
-            style={{ flex: 1, minWidth: 0 }}
+            tooltip={compactLayout() ? undefined : <TooltipBubble text={footerPathLabel()} />}
+            style={{ flex: 1, minWidth: 140 }}
           >
             <Text
               style={{
                 color: palette().textElevatedMuted,
                 fontFamily: fontMono,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.38),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.38),
                 numberOfLines: 1,
                 textOverflow: "ellipsis-middle",
               }}
@@ -2385,22 +2482,24 @@ function RemoteFileBrowserModal() {
               {footerPathLabel()}
             </Text>
           </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
             <Button
               label={tr("common.cancel")}
               variant="secondary"
-              size="sm"
+              size="md"
               disabled={browserBusy()}
               accessibilityLabel="remote-browser-cancel"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={closeRemoteFileBrowser}
             />
             <Button
               label={browserBusy() ? tr("ssh.openingEllipsis") : tr("ssh.openWorkspace")}
               variant="primary"
-              size="sm"
+              size="md"
               loading={browserBusy()}
               disabled={browserLoading()}
               accessibilityLabel="remote-browser-open"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void confirmBrowserSelection()}
             />
           </View>
@@ -2425,23 +2524,43 @@ function RemoteFileBrowserModal() {
         )}
       </If>
 
-      {/* Toolbar (controlHeight.sm baseline), Breadcrumbs & Path Input */}
-      <View style={{ gap: 8 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+      {/* Toolbar (wrapping on phone so path input never crushes), Breadcrumbs & Path Input */}
+      <View style={{ gap: space.sm }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.xs, minWidth: 0 }}>
           <IconButton
             icon="home"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             tooltip={tr("ssh.homeDirectory")}
             accessibilityLabel="remote-browser-home"
             disabled={browserLoading()}
+            style={
+              compactLayout()
+                ? {
+                    width: layout.touchTarget,
+                    height: layout.touchTarget,
+                    minWidth: layout.touchTarget,
+                    minHeight: layout.touchTarget,
+                  }
+                : undefined
+            }
             onPress={() => void loadRemoteDirectory(browserHomePath())}
           />
           <IconButton
             icon="arrow-left"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             tooltip={tr("ssh.parentDirectory")}
             accessibilityLabel="remote-browser-up"
             disabled={browserLoading() || getRemoteParentPath(browserCurrentPath()) === null}
+            style={
+              compactLayout()
+                ? {
+                    width: layout.touchTarget,
+                    height: layout.touchTarget,
+                    minWidth: layout.touchTarget,
+                    minHeight: layout.touchTarget,
+                  }
+                : undefined
+            }
             onPress={() => {
               const parent = getRemoteParentPath(browserCurrentPath());
               if (parent !== null) void loadRemoteDirectory(parent);
@@ -2449,18 +2568,28 @@ function RemoteFileBrowserModal() {
           />
           <IconButton
             icon="refresh"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             tooltip={tr("ssh.refreshDirectory")}
             accessibilityLabel="remote-browser-refresh"
             disabled={browserLoading()}
+            style={
+              compactLayout()
+                ? {
+                    width: layout.touchTarget,
+                    height: layout.touchTarget,
+                    minWidth: layout.touchTarget,
+                    minHeight: layout.touchTarget,
+                  }
+                : undefined
+            }
             onPress={() => void loadRemoteDirectory(browserCurrentPath())}
           />
-          <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ flex: 1, minWidth: 160 }}>
             <InputBox
-              size="sm"
+              size={compactLayout() ? "md" : "sm"}
               monospace
               value={browserPathInput()}
-              placeholder="/srv/project"
+              placeholder={tr("ssh.pathPlaceholder")}
               accessibilityLabel="remote-browser-path-input"
               onChange={v => browserPathInput.set(v)}
               onSubmit={() => void loadRemoteDirectory(browserPathInput())}
@@ -2469,24 +2598,45 @@ function RemoteFileBrowserModal() {
           <Button
             label={tr("common.go")}
             variant="secondary"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             disabled={browserLoading()}
             accessibilityLabel="remote-browser-path-go"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void loadRemoteDirectory(browserPathInput())}
           />
           <IconButton
             icon="folder-plus"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             active={browserNewDirOpen()}
             tooltip={tr("ssh.newRemoteFolder")}
             accessibilityLabel="remote-browser-new-folder-toggle"
+            style={
+              compactLayout()
+                ? {
+                    width: layout.touchTarget,
+                    height: layout.touchTarget,
+                    minWidth: layout.touchTarget,
+                    minHeight: layout.touchTarget,
+                  }
+                : undefined
+            }
             onPress={() => browserNewDirOpen.update(v => !v)}
           />
           <IconButton
             icon="network"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             tooltip={tr("nav.portForwarding")}
             accessibilityLabel="remote-browser-port-forward"
+            style={
+              compactLayout()
+                ? {
+                    width: layout.touchTarget,
+                    height: layout.touchTarget,
+                    minWidth: layout.touchTarget,
+                    minHeight: layout.touchTarget,
+                  }
+                : undefined
+            }
             onPress={() => {
               const cid = browserConnectionId();
               if (cid) void openPortForwardModal(cid, browserConnectionName());
@@ -2500,58 +2650,55 @@ function RemoteFileBrowserModal() {
             style={{
               flexDirection: "row",
               alignItems: "center",
-              gap: 2,
-              paddingVertical: 1,
+              gap: space.hair,
+              paddingVertical: space.hair,
             }}
           >
             <Each of={breadcrumbs()} key={crumb => crumb.path}>
               {(crumb, idx) => {
                 const isLast = () => idx() === breadcrumbs().length - 1;
                 return (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
                     <If when={idx() > 0}>
-                      <Icon name="chevron-right" size={11} color={palette().textMuted} />
+                      <Icon name="chevron-right" size={12} color={palette().textMuted} />
                     </If>
                     <View
                       role="button"
                       disabled={browserLoading() || isLast()}
                       accessibilityLabel={`remote-breadcrumb-${idx()}`}
+                      hitSlop={touchSlop(controlHeight.xs)}
                       onPress={() => {
                         if (!browserLoading() && !isLast()) {
                           void loadRemoteDirectory(crumb().path);
                         }
                       }}
                       style={{
-                        height: controlHeight.xs,
+                        height: compactLayout() ? layout.touchTarget : controlHeight.xs,
                         maxWidth: 160,
-                        paddingHorizontal: 7,
+                        paddingHorizontal: space.sm,
                         borderRadius: radii.xs,
                         borderCurve: "continuous",
                         justifyContent: "center",
                         backgroundColor: isLast() ? palette().surfaceSubtle : "transparent",
                         cursor: isLast() || browserLoading() ? "default" : "pointer",
-                        ...paintTransition(MOTION_DURATION.fast),
+                        ...pressTransition(MOTION_DURATION.fast),
                       }}
                       hoverStyle={
-                        isLast() || browserLoading()
+                        compactLayout() || isLast() || browserLoading()
                           ? undefined
                           : { backgroundColor: palette().panelHover }
                       }
                       activeStyle={
-                        isLast() || browserLoading() ? undefined : { opacity: 0.85 }
+                        isLast() || browserLoading() ? undefined : tactileActiveStyle(0.96)
                       }
-                      focusVisibleStyle={{
-                        outlineWidth: 2,
-                        outlineColor: palette().borderFocus,
-                        outlineOffset: -1,
-                      }}
+                      focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
                     >
                       <Text
                         style={{
                           color: isLast() ? palette().text : palette().textMuted,
                           fontFamily: fontMono,
-                          fontSize: textSize(11.5),
-                          lineHeight: textLineHeight(11.5, 1.3),
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.3),
                           fontWeight: isLast() ? "600" : "500",
                           numberOfLines: 1,
                           textOverflow: "ellipsis-middle",
@@ -2568,10 +2715,11 @@ function RemoteFileBrowserModal() {
         </Scroll>
 
         <SearchInput
-          size="sm"
+          size={compactLayout() ? "lg" : "sm"}
           value={browserFilter()}
           placeholder={tr("ssh.filterDirectory")}
           accessibilityLabel="remote-browser-filter"
+          style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
           onChange={v => browserFilter.set(v)}
         />
       </View>
@@ -2582,17 +2730,17 @@ function RemoteFileBrowserModal() {
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 8,
-            padding: 10,
+            flexWrap: "wrap",
+            gap: space.sm,
+            padding: space.sm,
             borderRadius: radii.md,
             borderCurve: "continuous",
             borderWidth: 1,
             borderColor: palette().border,
             backgroundColor: palette().panelRaised,
-            boxShadow: palette().innerHighlight,
           }}
         >
-          <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ flex: 1, minWidth: 160 }}>
             <InputBox
               autoFocus
               size="sm"
@@ -2610,12 +2758,14 @@ function RemoteFileBrowserModal() {
             size="sm"
             disabled={!browserNewDirName().trim() || browserBusy()}
             accessibilityLabel="remote-browser-new-dir-create"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void createRemoteDirectory(browserNewDirName())}
           />
           <Button
             label={tr("common.cancel")}
             variant="ghost"
             size="sm"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => {
               browserNewDirOpen.set(false);
               browserNewDirName.set("");
@@ -2629,21 +2779,20 @@ function RemoteFileBrowserModal() {
         {entry => (
           <View
             style={{
-              gap: 6,
-              padding: 10,
+              gap: space.xs,
+              padding: space.sm,
               borderRadius: radii.md,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().border,
               backgroundColor: palette().panelRaised,
-              boxShadow: palette().innerHighlight,
             }}
           >
             <Text
               style={{
                 color: palette().textSecondary,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.35),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
                 fontWeight: "600",
                 numberOfLines: 1,
                 textOverflow: "ellipsis-middle",
@@ -2651,8 +2800,8 @@ function RemoteFileBrowserModal() {
             >
               {tr("ssh.renameEntry", { name: entry().name })}
             </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
-              <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm, minWidth: 0 }}>
+              <View style={{ flex: 1, minWidth: 160 }}>
                 <InputBox
                   autoFocus
                   size="sm"
@@ -2668,12 +2817,14 @@ function RemoteFileBrowserModal() {
                 variant="primary"
                 size="sm"
                 accessibilityLabel="remote-browser-rename-save"
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => void submitRemoteRename()}
               />
               <Button
                 label={tr("common.cancel")}
                 variant="ghost"
                 size="sm"
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => browserRenamingEntry.set(null)}
               />
             </View>
@@ -2695,7 +2846,7 @@ function RemoteFileBrowserModal() {
         )}
       </If>
 
-      {/* Remote File List — matched 280px height across loading & loaded states prevents jump */}
+      {/* Remote File List */}
       <View
         style={{
           borderRadius: radii.lg,
@@ -2703,42 +2854,41 @@ function RemoteFileBrowserModal() {
           borderWidth: 1,
           borderColor: palette().border,
           backgroundColor: palette().panelRaised,
-          boxShadow: `${palette().shadowCard}, ${palette().innerHighlight}`,
           overflow: "hidden",
         }}
       >
         <If
           when={browserLoading()}
           else={
-            <Scroll style={{ height: 280, minHeight: 0 }} scrollbar={true}>
+            <Scroll
+              style={compactLayout() ? { maxHeight: 280, minHeight: 160 } : { height: 280, minHeight: 0 }}
+              scrollbar={true}
+            >
               <View>
                 <If when={getRemoteParentPath(browserCurrentPath()) !== null}>
                   <View
                     role="button"
                     accessibilityLabel="remote-entry-parent"
+                    hitSlop={touchSlop(34)}
                     onPress={() => {
                       const parent = getRemoteParentPath(browserCurrentPath());
                       if (parent !== null) void loadRemoteDirectory(parent);
                     }}
                     style={{
-                      minHeight: 34,
+                      minHeight: compactLayout() ? layout.touchTarget : 34,
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: 10,
-                      paddingHorizontal: 12,
-                      paddingVertical: 7,
+                      gap: space.sm,
+                      paddingHorizontal: space.md,
+                      paddingVertical: space.xs,
                       borderBottomWidth: 1,
                       borderColor: palette().borderSubtle,
                       cursor: "pointer",
-                      ...paintTransition(MOTION_DURATION.fast),
+                      ...pressTransition(MOTION_DURATION.fast),
                     }}
-                    hoverStyle={{ backgroundColor: palette().panelHover }}
-                    activeStyle={{ opacity: 0.9 }}
-                    focusVisibleStyle={{
-                      outlineWidth: 2,
-                      outlineColor: palette().borderFocus,
-                      outlineOffset: -2,
-                    }}
+                    hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+                    activeStyle={tactileActiveStyle(0.99)}
+                    focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
                   >
                     <Icon name="folder-open" size={14} color={palette().textMuted} />
                     <Text
@@ -2755,107 +2905,120 @@ function RemoteFileBrowserModal() {
                 </If>
 
                 <Each of={filteredBrowserEntries()} key={entry => entry.path}>
-                  {entry => (
-                    <View
-                      role="button"
-                      accessibilityLabel={`remote-entry-${entry().name}`}
-                      accessibilityState={{
-                        selected: browserSelectedPath() === entry().path,
-                      }}
-                      onPress={() => {
-                        if (entry().isDir || (browserSelectDirectoriesOnly() && entry().isSymlink)) {
-                          void loadRemoteDirectory(entry().path);
-                        } else if (!browserSelectDirectoriesOnly()) {
-                          browserSelectedPath.set(entry().path);
+                  {entry => {
+                    const isSelected = () => browserSelectedPath() === entry().path;
+                    return (
+                      <View
+                        style={{
+                          minHeight: compactLayout() ? layout.touchTarget : 34,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: space.sm,
+                          paddingRight: space.sm,
+                          borderBottomWidth: 1,
+                          borderColor: palette().borderSubtle,
+                          backgroundColor: isSelected() ? palette().accentSoft : "transparent",
+                          ...paintTransition(MOTION_DURATION.fast),
+                        }}
+                        hoverStyle={
+                          compactLayout()
+                            ? undefined
+                            : {
+                                backgroundColor: isSelected()
+                                  ? palette().accentSoft
+                                  : palette().panelHover,
+                              }
                         }
-                      }}
-                      onContextMenu={e => {
-                        ctxMenuEntry.set(entry());
-                        ctxMenuPos.set(e.pagePosition);
-                        ctxMenuOpen.set(true);
-                      }}
-                      style={{
-                        minHeight: 34,
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 10,
-                        paddingHorizontal: 12,
-                        paddingVertical: 6,
-                        borderBottomWidth: 1,
-                        borderColor: palette().borderSubtle,
-                        backgroundColor:
-                          browserSelectedPath() === entry().path
-                            ? palette().accentSoft
-                            : "transparent",
-                        cursor: "pointer",
-                        ...paintTransition(MOTION_DURATION.fast),
-                      }}
-                      hoverStyle={{
-                        backgroundColor:
-                          browserSelectedPath() === entry().path
-                            ? palette().accentSoft
-                            : palette().panelHover,
-                      }}
-                      activeStyle={{ opacity: 0.9 }}
-                      focusVisibleStyle={{
-                        outlineWidth: 2,
-                        outlineColor: palette().borderFocus,
-                        outlineOffset: -2,
-                      }}
-                    >
-                      <Icon
-                        name={entryIconName(entry())}
-                        size={14}
-                        color={entry().isDir ? palette().accent : palette().textMuted}
-                      />
-                      <Text
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          color: palette().text,
-                          fontSize: textSize(12.5),
-                          lineHeight: textLineHeight(12.5, 1.35),
-                          fontWeight: entry().isDir ? "500" : "400",
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis-middle",
-                        }}
                       >
-                        {entry().name}
-                      </Text>
-                      <Text
-                        style={{
-                          minWidth: 60,
-                          textAlign: "right",
-                          flexShrink: 0,
-                          color: palette().textMuted,
-                          fontFamily: fontMono,
-                          fontSize: textSize(11),
-                          lineHeight: textLineHeight(11, 1.35),
-                          fontVariant: ["tabular-nums"],
-                        }}
-                      >
-                        {entry().isDir ? "—" : formatFileSize(entry().size)}
-                      </Text>
-                      <IconButton
-                        icon="edit"
-                        size="xs"
-                        tooltip={tr("ssh.renameEntry", { name: entry().name })}
-                        accessibilityLabel={`Rename ${entry().name}`}
-                        onPress={() => {
-                          browserRenamingEntry.set(entry());
-                          browserRenameValue.set(entry().name);
-                        }}
-                      />
-                      <IconButton
-                        icon="trash"
-                        size="xs"
-                        tone="danger"
-                        tooltip={tr("common.delete")}
-                        accessibilityLabel={`Delete ${entry().name}`}
-                        onPress={() => browserConfirmDeleteEntry.set(entry())}
-                      />
-                    </View>
-                  )}
+                        <View
+                          role="button"
+                          accessibilityLabel={`remote-entry-${entry().name}`}
+                          accessibilityState={{ selected: isSelected() }}
+                          hitSlop={touchSlop(34)}
+                          onPress={() => {
+                            if (entry().isDir || (browserSelectDirectoriesOnly() && entry().isSymlink)) {
+                              void loadRemoteDirectory(entry().path);
+                            } else if (!browserSelectDirectoriesOnly()) {
+                              browserSelectedPath.set(entry().path);
+                            }
+                          }}
+                          onContextMenu={e => {
+                            ctxMenuEntry.set(entry());
+                            ctxMenuPos.set(e.pagePosition);
+                            ctxMenuOpen.set(true);
+                          }}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            minHeight: compactLayout() ? layout.touchTarget : 34,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: space.sm,
+                            paddingLeft: space.md,
+                            paddingVertical: space.xs,
+                            cursor: "pointer",
+                            ...pressTransition(MOTION_DURATION.fast),
+                          }}
+                          activeStyle={tactileActiveStyle(0.99)}
+                          focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
+                        >
+                          <Icon
+                            name={entryIconName(entry())}
+                            size={14}
+                            color={entry().isDir ? palette().accent : palette().textMuted}
+                          />
+                          <Text
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              color: palette().text,
+                              fontSize: textSize(13),
+                              lineHeight: textLineHeight(13, 1.35),
+                              fontWeight: entry().isDir ? "500" : "400",
+                              numberOfLines: 1,
+                              textOverflow: "ellipsis-middle",
+                            }}
+                          >
+                            {entry().name}
+                          </Text>
+                          <Text
+                            style={{
+                              minWidth: 60,
+                              textAlign: "right",
+                              flexShrink: 0,
+                              color: palette().textMuted,
+                              fontFamily: fontMono,
+                              fontSize: textSize(12),
+                              lineHeight: textLineHeight(12, 1.35),
+                              fontVariant: ["tabular-nums"],
+                            }}
+                          >
+                            {entry().isDir ? "—" : formatFileSize(entry().size)}
+                          </Text>
+                        </View>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+                          <IconButton
+                            icon="edit"
+                            size={compactLayout() ? "sm" : "xs"}
+                            tooltip={tr("ssh.renameEntry", { name: entry().name })}
+                            accessibilityLabel={`Rename ${entry().name}`}
+                            onPress={() => {
+                              browserRenamingEntry.set(entry());
+                              browserRenameValue.set(entry().name);
+                            }}
+                          />
+                          <IconButton
+                            icon="trash"
+                            size={compactLayout() ? "sm" : "xs"}
+                            tone="danger"
+                            tooltip={tr("common.delete")}
+                            accessibilityLabel={`Delete ${entry().name}`}
+                            onPress={() => browserConfirmDeleteEntry.set(entry())}
+                          />
+                        </View>
+                      </View>
+                    );
+                  }}
                 </Each>
 
                 <If when={!browserLoading() && filteredBrowserEntries().length === 0}>
@@ -2942,8 +3105,9 @@ function PortForwardModal() {
         <Button
           label={tr("common.close")}
           variant="secondary"
-          size="sm"
+          size="md"
           accessibilityLabel="pf-close"
+          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
           onPress={closePortForwardModal}
         />
       }
@@ -3012,36 +3176,34 @@ function PortForwardModal() {
 
           <If when={listeningPorts().length > 0}>
             <Scroll style={{ maxHeight: 132, minHeight: 0 }} scrollbar={true}>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
                 <Each of={listeningPorts()} key={p => `${p.port}-${p.bindAddress}`}>
-                  {port => (
-                    <PillChip
-                      label={
-                        port().process
-                          ? `${port().port} · ${port().process}`
-                          : String(port().port)
-                      }
-                      maxWidth={220}
-                      badge={
-                        forwardedRemotePortSet().has(port().port)
-                          ? tr("ssh.forwarded")
-                          : portForwardBusyPort() === port().port
-                            ? "…"
-                            : "+"
-                      }
-                      tone={forwardedRemotePortSet().has(port().port) ? "success" : "neutral"}
-                      active={forwardedRemotePortSet().has(port().port)}
-                      accessibilityLabel={`pf-detected-${port().port}`}
-                      onPress={() => {
-                        if (
-                          !forwardedRemotePortSet().has(port().port) &&
-                          portForwardBusyPort() === null
-                        ) {
-                          void forwardDetectedPort(port());
+                  {port => {
+                    const isForwarded = () => forwardedRemotePortSet().has(port().port);
+                    const isBusy = () => portForwardBusyPort() === port().port;
+                    const baseLabel = () =>
+                      port().process ? `${port().port} · ${port().process}` : String(port().port);
+                    return (
+                      <Button
+                        label={
+                          isForwarded()
+                            ? `${baseLabel()} · ${tr("ssh.forwarded")}`
+                            : baseLabel()
                         }
-                      }}
-                    />
-                  )}
+                        size={compactLayout() ? "sm" : "xs"}
+                        variant={isForwarded() ? "secondary" : "outline"}
+                        leadingIcon={isForwarded() ? "check" : "plus"}
+                        loading={isBusy()}
+                        disabled={isForwarded() || (portForwardBusyPort() !== null && !isBusy())}
+                        accessibilityLabel={`pf-detected-${port().port}`}
+                        onPress={() => {
+                          if (!isForwarded() && portForwardBusyPort() === null) {
+                            void forwardDetectedPort(port());
+                          }
+                        }}
+                      />
+                    );
+                  }}
                 </Each>
               </View>
             </Scroll>
@@ -3104,7 +3266,7 @@ function PortForwardModal() {
                     icon="external-link"
                     size="xs"
                     tooltip={tr("ssh.openInBrowser")}
-                    accessibilityLabel={`Open forwarded port ${fwd().localPort}`}
+                    accessibilityLabel={`pf-open-${fwd().localPort}`}
                     onPress={() => {
                       void openUrl(`http://${formatForwardLocalAddress(fwd())}`).catch(() =>
                         undefined,
@@ -3115,7 +3277,7 @@ function PortForwardModal() {
                     icon="copy"
                     size="xs"
                     tooltip={tr("ssh.copyLocalAddress")}
-                    accessibilityLabel={`Copy forwarded address ${fwd().localPort}`}
+                    accessibilityLabel={`pf-copy-${fwd().localPort}`}
                     onPress={() => {
                       const addr = formatForwardLocalAddress(fwd());
                       void Clipboard.writeText(addr)
@@ -3142,12 +3304,12 @@ function PortForwardModal() {
 
       {/* Manual Port Forward Form */}
       <ConfigSection title={tr("ssh.addCustomForward")}>
-        <View style={{ gap: 10 }}>
+        <View style={{ gap: space.sm }}>
           <View
             style={{
               display: "grid",
-              gridTemplateColumns: "1.4fr 1fr 1fr",
-              gap: 10,
+              gridTemplateColumns: compactLayout() ? "minmax(0, 1fr)" : "1.4fr 1fr 1fr",
+              gap: space.sm,
             }}
           >
             <InputBox
@@ -3210,10 +3372,11 @@ function PortForwardModal() {
                   : tr("ssh.forwardPort")
               }
               variant="primary"
-              size="sm"
+              size="md"
               loading={portForwardSubmitting()}
               disabled={!portForwardRemotePort().trim() || portForwardSubmitting()}
               accessibilityLabel="pf-submit"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void submitPortForwardForm()}
             />
           </View>
@@ -3255,6 +3418,8 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
       current === "host-outdated"
     );
   };
+  const isWarning = () => state() === "reconnecting" || state() === "host-outdated";
+  const accentColor = () => (isWarning() ? stateColor("needs_you") : stateColor("failed"));
   const host = () => {
     const ws = activeWorkspace();
     return ws?.sshHost || ws?.connectionId || ws?.name || "";
@@ -3272,27 +3437,23 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
           flexDirection: "row",
           alignItems: "center",
           flexWrap: "wrap",
-          gap: 8,
-          paddingHorizontal: props.compact ? 8 : 12,
-          paddingVertical: 6,
+          gap: space.sm,
+          paddingHorizontal: props.compact ? space.sm : space.md,
+          paddingVertical: space.sm,
+          borderLeftWidth: 2,
+          borderLeftColor: accentColor(),
           borderBottomWidth: 1,
-          borderColor:
-            state() === "reconnecting" || state() === "host-outdated"
-              ? palette().warningBorder
-              : palette().dangerBorder,
-          backgroundColor:
-            state() === "reconnecting" || state() === "host-outdated"
-              ? palette().warningSoft
-              : palette().dangerSoft,
+          borderBottomColor: palette().borderSubtle,
+          backgroundColor: palette().canvasSubtle,
         }}
       >
         <If
           when={state() === "reconnecting"}
-          else={<Icon name="server" size={14} color={palette().danger} />}
+          else={<Icon name="server" size={14} color={accentColor()} />}
         >
-          <Spinner size={12} />
+          <Spinner size={12} color={stateColor("working")} />
         </If>
-        <View style={{ flex: 1, minWidth: 160, gap: 1 }}>
+        <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
           <Text
             style={{
               color: palette().text,
@@ -3318,8 +3479,8 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
             <Text
               style={{
                 color: palette().textSecondary,
-                fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.4),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.4),
               }}
             >
               {state() === "host-outdated"
@@ -3335,8 +3496,9 @@ export function RemoteWorkspaceStatusBanner(props: { compact?: boolean } = {}) {
             label={state() === "auth-required" ? tr("ssh.link.signIn") : tr("ssh.link.reconnect")}
             accessibilityLabel="remote-link-reconnect"
             variant="secondary"
-            size="xs"
+            size={compactLayout() ? "sm" : "xs"}
             leadingIcon={state() === "auth-required" ? "key" : "refresh"}
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void retryRemoteWorkspace()}
           />
         </If>

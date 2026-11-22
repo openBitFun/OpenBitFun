@@ -54,9 +54,21 @@ import {
   type SkillRecord,
   type SkillScopeFilter,
 } from "../skillsCatalogStore";
-import { activeWorkspace, activeWorkspaceId } from "../state";
-import { fontMono, palette, radii, space, textLineHeight, textSize, textTracking } from "../theme";
+import { activeWorkspace, activeWorkspaceId, deviceContext } from "../state";
+import {
+  compactLayout,
+  fontMono,
+  layout,
+  palette,
+  radii,
+  space,
+  textLineHeight,
+  textSize,
+  textTracking,
+  touchSlop,
+} from "../theme";
 import { LibraryToolbar, libraryBodyStyle } from "./LibraryChrome";
+import { stateColor } from "../ui/fleet";
 import { Icon, type IconName } from "../ui/icons";
 import { MarkdownPreview } from "../ui/markdownEditor";
 import {
@@ -73,12 +85,13 @@ import {
   studioCompact,
   trackStudioWidth,
 } from "../ui/studio";
-import { MOTION_DURATION, paintTransition, Spinner } from "../ui/motion";
+import { MOTION_DURATION, paintTransition, pressTransition, Spinner, tactileActiveStyle } from "../ui/motion";
 import { DropdownMenu, ModalDialog, type SelectDropdownOption } from "../ui/overlays";
 import {
   Button,
   ConfigRow,
   ConfigSection,
+  focusRingStyle,
   IconButton,
   InlineBanner,
   InputBox,
@@ -106,7 +119,7 @@ function resetInstalledFilters(): void {
 }
 
 function skillScopeTag(skill: SkillRecord): string {
-  if (skill.isBuiltin) return tr("common.builtin");
+  if (skill.isBuiltin) return tr("skills.scopeBuiltin");
   return skill.level === "project" ? tr("common.project") : tr("common.user");
 }
 
@@ -127,7 +140,9 @@ function distinctSkillSourceLabel(skill: SkillRecord): string {
   if (rawNorm === scopeNorm) return "";
   if (
     skill.isBuiltin &&
-    (rawNorm === "builtin" || rawNorm === "内置" || rawNorm === "內建")
+    (rawNorm === "builtin"
+      || rawNorm === normalizeTagToken(tr("skills.scopeBuiltin"))
+      || rawNorm === normalizeTagToken(tr("common.builtin")))
   ) {
     return "";
   }
@@ -136,7 +151,7 @@ function distinctSkillSourceLabel(skill: SkillRecord): string {
 
 function inspectSubtitle(skill: SkillRecord | null): string | undefined {
   if (!skill) return undefined;
-  const parts = [skillScopeTag(skill), distinctSkillSourceLabel(skill), skill.key].filter(Boolean);
+  const parts = [skillScopeTag(skill), distinctSkillSourceLabel(skill)].filter(Boolean);
   return parts.join(" · ");
 }
 
@@ -222,7 +237,7 @@ function FolderInstallModal() {
         </View>
       }
     >
-      <View style={{ gap: 16 }}>
+      <View style={{ gap: space.lg }}>
         <If when={folderInstallUnsupportedReason() ?? ""}>
           {reason => <InlineBanner tone="warning" message={reason()} />}
         </If>
@@ -231,8 +246,8 @@ function FolderInstallModal() {
           title={tr("skills.folderSource")}
           subtitle={tr("skills.folderSourceHint")}
         >
-          <View style={{ gap: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <View style={{ gap: space.sm }}>
+            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
               <InputBox
                 size="md"
                 value={folderPathInput()}
@@ -241,7 +256,7 @@ function FolderInstallModal() {
                 monospace
                 readonly={Boolean(folderInstallUnsupportedReason())}
                 accessibilityLabel="skill-folder-path-input"
-                style={{ flex: 1, minWidth: 180 }}
+                style={{ flex: 1, minWidth: 160 }}
                 onChange={val => setFolderPathValue(val)}
                 onSubmit={() => void validateFolderSkillPath()}
               />
@@ -256,23 +271,24 @@ function FolderInstallModal() {
                   || !folderPathInput().trim()
                 }
                 accessibilityLabel="skill-folder-validate"
+                style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                 onPress={() => void validateFolderSkillPath()}
               />
             </View>
 
             <If when={folderValidation()}>
               {validation => (
-                <View style={{ gap: 4, paddingHorizontal: 2 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <View style={{ gap: space.xs, paddingHorizontal: space.hair }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
                     <Icon
                       name={validation().valid ? "check-circle" : "warning"}
                       size={14}
-                      color={validation().valid ? palette().success : palette().danger}
+                      color={validation().valid ? palette().textSecondary : stateColor("failed")}
                     />
                     <Text
                       style={{
                         flexShrink: 0,
-                        color: validation().valid ? palette().success : palette().danger,
+                        color: validation().valid ? palette().textSecondary : stateColor("failed"),
                         fontSize: textSize(13),
                         fontWeight: "500",
                         lineHeight: textLineHeight(13, 1.4),
@@ -318,7 +334,7 @@ function FolderInstallModal() {
                       <Text
                         style={{
                           minWidth: 0,
-                          color: palette().danger,
+                          color: stateColor("failed"),
                           fontSize: textSize(12),
                           lineHeight: textLineHeight(12, 1.45),
                         }}
@@ -337,7 +353,11 @@ function FolderInstallModal() {
           </View>
         </ConfigSection>
 
-        <ConfigSection title={tr("skills.installScope")} flush controlWidth={200}>
+        <ConfigSection
+          title={tr("skills.installScope")}
+          flush
+          controlWidth={compactLayout() ? undefined : 200}
+        >
           <ConfigRow
             label={tr("skills.targetScope")}
             description={
@@ -395,43 +415,47 @@ function InstalledSkillRow(props: { skill: SkillRecord; first: boolean }) {
     <View
       style={{
         position: "relative",
-        minHeight: STUDIO_TOUCH_MIN,
+        minHeight: compactLayout() ? layout.touchTarget : STUDIO_TOUCH_MIN,
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        paddingRight: 12,
+        gap: space.sm,
+        paddingRight: space.md,
         minWidth: 0,
         backgroundColor: isInspected() ? palette().panelHover : "transparent",
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: palette().panelHover }}
+      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
     >
       <If when={!props.first}>
-        <RowSeparator inset={44} />
+        <RowSeparator inset={layout.touchTarget} />
       </If>
       <View
         role="button"
         accessibilityLabel={`skill-inspect-${props.skill.key}`}
+        hitSlop={touchSlop(STUDIO_TOUCH_MIN)}
         onPress={() => void inspectSkill(props.skill)}
         style={{
           flex: 1,
           minWidth: 0,
+          minHeight: compactLayout() ? layout.touchTarget : STUDIO_TOUCH_MIN,
           flexDirection: "row",
           alignItems: "center",
-          gap: 12,
-          paddingLeft: 16,
-          paddingVertical: 10,
+          gap: space.md,
+          paddingLeft: space.lg,
+          paddingVertical: space.sm,
           cursor: "pointer",
+          ...pressTransition(),
         }}
-        focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
+        activeStyle={tactileActiveStyle(0.99)}
+        focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
       >
         <Icon
           name={semanticSkillIcon(`${props.skill.name} ${props.skill.description ?? ""}`, "bulb")}
           size={16}
           color={palette().textMuted}
         />
-        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: space.sm, minWidth: 0 }}>
             <Text
               style={{
                 flexShrink: 1,
@@ -479,7 +503,7 @@ function InstalledSkillRow(props: { skill: SkillRecord; first: boolean }) {
             <Text
               style={{
                 minWidth: 0,
-                color: palette().warning,
+                color: stateColor("needs_you"),
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.4),
                 numberOfLines: 2,
@@ -552,11 +576,15 @@ function SkillInspectModal() {
     >
       <If when={inspectedSkill()}>
         {skill => (
-          <View style={{ gap: 18 }}>
-            <ConfigSection title={tr("skills.skillMetadata")} flush controlWidth={200}>
+          <View style={{ gap: space.lg }}>
+            <ConfigSection
+              title={tr("skills.skillMetadata")}
+              flush
+              controlWidth={compactLayout() ? undefined : 200}
+            >
               <ConfigRow
                 label={tr("skills.statusSource")}
-                description={distinctSkillSourceLabel(skill()) || skill().key}
+                description={distinctSkillSourceLabel(skill()) || undefined}
               >
                 <Text
                   style={{
@@ -569,7 +597,7 @@ function SkillInspectModal() {
                   {`${skillScopeTag(skill())} · ${isSkillDisabled(skill().key) ? tr("common.disabled") : tr("common.enabled")}`}
                 </Text>
               </ConfigRow>
-              <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 5 }}>
+              <View style={{ paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.xs }}>
                 <Text
                   style={{
                     minWidth: 0,
@@ -614,18 +642,18 @@ function SkillInspectModal() {
             </ConfigSection>
 
             {/* Clean SKILL.md reading canvas constrained to ~65ch editorial measure */}
-            <View style={{ gap: 8 }}>
+            <View style={{ gap: space.sm }}>
               <View
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  gap: 8,
-                  paddingHorizontal: 2,
+                  gap: space.sm,
+                  paddingHorizontal: space.hair,
                 }}
               >
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Icon name="file-text" size={13} color={palette().textMuted} />
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                  <Icon name="file-text" size={14} color={palette().textMuted} />
                   <Text
                     style={{
                       color: palette().text,
@@ -644,8 +672,8 @@ function SkillInspectModal() {
                       style={{
                         color: palette().textMuted,
                         fontFamily: fontMono,
-                        fontSize: textSize(11),
-                        lineHeight: textLineHeight(11, 1.35),
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.35),
                       }}
                     >
                       {entry()}
@@ -659,8 +687,8 @@ function SkillInspectModal() {
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: 8,
-                    padding: 18,
+                    gap: space.sm,
+                    padding: space.lg,
                     borderRadius: radii.md,
                     borderCurve: "continuous",
                     borderWidth: 1,
@@ -797,109 +825,122 @@ function MarketSkillRow(props: { item: SkillMarketRecord; first: boolean }) {
     <View
       style={{
         position: "relative",
-        minHeight: STUDIO_TOUCH_MIN,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 12,
-        paddingLeft: 16,
-        paddingRight: 12,
-        paddingVertical: 10,
+        minHeight: compactLayout() ? layout.touchTarget : STUDIO_TOUCH_MIN,
+        flexDirection: compactLayout() ? "column" : "row",
+        alignItems: compactLayout() ? "stretch" : "center",
+        gap: space.md,
+        paddingLeft: space.lg,
+        paddingRight: space.md,
+        paddingVertical: space.sm,
         minWidth: 0,
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: palette().panelHover }}
+      hoverStyle={compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
     >
       <If when={!props.first}>
-        <RowSeparator inset={44} />
+        <RowSeparator inset={compactLayout() ? space.lg : layout.touchTarget} />
       </If>
-      <Icon
-        name={semanticSkillIcon(`${props.item.name} ${props.item.description ?? ""}`, "package")}
-        size={16}
-        color={palette().textMuted}
-      />
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.md }}>
+        <Icon
+          name={semanticSkillIcon(`${props.item.name} ${props.item.description ?? ""}`, "package")}
+          size={16}
+          color={palette().textMuted}
+        />
+        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
+            <Text
+              style={{
+                flexShrink: 1,
+                minWidth: 0,
+                color: palette().text,
+                fontSize: textSize(14),
+                lineHeight: textLineHeight(14, 1.35),
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
+            >
+              {props.item.name}
+            </Text>
+            <If when={installed()}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+                <Icon name="check-circle" size={12} color={palette().textMuted} />
+                <Text
+                  style={{
+                    color: palette().textMuted,
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.35),
+                  }}
+                >
+                  {tr("skills.installed")}
+                </Text>
+              </View>
+            </If>
+          </View>
           <Text
             style={{
-              flexShrink: 1,
               minWidth: 0,
-              color: palette().text,
-              fontSize: textSize(14),
-              lineHeight: textLineHeight(14, 1.35),
+              color: palette().textSecondary,
+              fontSize: textSize(13),
+              lineHeight: textLineHeight(13, 1.45),
+              numberOfLines: 2,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {props.item.description || tr("common.noDescription")}
+          </Text>
+          <Text
+            style={{
+              minWidth: 0,
+              color: palette().textMuted,
+              fontSize: textSize(12),
+              fontVariant: ["tabular-nums"],
+              lineHeight: textLineHeight(12, 1.4),
               numberOfLines: 1,
               textOverflow: "ellipsis",
             }}
           >
-            {props.item.name}
+            {marketMetadataLine(props.item)}
           </Text>
-          <If when={installed()}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
-              <Icon name="check-circle" size={12} color={palette().success} />
-              <Text
-                style={{
-                  color: palette().textSecondary,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.35),
-                }}
-              >
-                {tr("skills.installed")}
-              </Text>
-            </View>
-          </If>
         </View>
-        <Text
-          style={{
-            minWidth: 0,
-            color: palette().textSecondary,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.45),
-            numberOfLines: 2,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {props.item.description || tr("common.noDescription")}
-        </Text>
-        <Text
-          style={{
-            minWidth: 0,
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            fontVariant: ["tabular-nums"],
-            lineHeight: textLineHeight(12, 1.4),
-            numberOfLines: 1,
-            textOverflow: "ellipsis",
-          }}
-        >
-          {marketMetadataLine(props.item)}
-        </Text>
       </View>
-      <Button
-        label={busy() ? tr("common.installing") : tr("skills.installUser")}
-        variant="secondary"
-        size="sm"
-        leadingIcon="download"
-        loading={busy()}
-        disabled={busy()}
-        accessibilityLabel={`market-install-user-${props.item.id}`}
-        onPress={() => void installMarketSkill(props.item, "user")}
-      />
-      <MoreMenu
-        accessibilityLabel={`market-actions-${props.item.id}`}
-        tooltip={tr("skills.packageActions")}
-        minWidth={200}
-        disabled={busy()}
-        items={[
-          {
-            id: "install-project",
-            label: tr("skills.installProject"),
-            hint: projectReason() ?? undefined,
-            icon: "folder",
-            disabled: Boolean(projectReason()),
-            accessibilityLabel: `market-install-project-${props.item.id}`,
-            onSelect: () => void installMarketSkill(props.item, "project"),
-          },
-        ]}
-      />
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: compactLayout() ? "flex-end" : "flex-start",
+          gap: space.sm,
+          flexShrink: 0,
+        }}
+      >
+        <Button
+          label={busy() ? tr("common.installing") : tr("skills.installUser")}
+          variant="secondary"
+          size={compactLayout() ? "md" : "sm"}
+          leadingIcon="download"
+          loading={busy()}
+          disabled={busy()}
+          accessibilityLabel={`market-install-user-${props.item.id}`}
+          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+          onPress={() => void installMarketSkill(props.item, "user")}
+        />
+        <MoreMenu
+          accessibilityLabel={`market-actions-${props.item.id}`}
+          tooltip={tr("skills.packageActions")}
+          minWidth={200}
+          disabled={busy()}
+          items={[
+            {
+              id: "install-project",
+              label: tr("skills.installProject"),
+              hint: projectReason() ?? undefined,
+              icon: "folder",
+              disabled: Boolean(projectReason()),
+              accessibilityLabel: `market-install-project-${props.item.id}`,
+              onSelect: () => void installMarketSkill(props.item, "project"),
+            },
+          ]}
+        />
+      </View>
     </View>
   );
 }
@@ -923,6 +964,16 @@ function FilterMenu<T extends string>(props: {
         active={open() || props.value !== props.defaultValue}
         tooltip={props.tooltip}
         accessibilityLabel={props.accessibilityLabel}
+        style={
+          compactLayout()
+            ? {
+                width: layout.touchTarget,
+                height: layout.touchTarget,
+                minWidth: layout.touchTarget,
+                minHeight: layout.touchTarget,
+              }
+            : undefined
+        }
         onPress={() => open.update(value => !value)}
       />
       <If when={open()}>
@@ -987,11 +1038,12 @@ function SectionCount(props: { count: number }) {
 export function SkillsScene(props: { embedded?: boolean }) {
   // The catalogue does not need a workspace (the host answers user-level
   // entries without one, as the desktop asks). It reloads on every scene entry,
-  // when the workspace changes, and when the window regains focus.
+  // when the selected device or workspace changes, and when the window regains focus.
   let enteredScene = false;
   effect(() => {
+    const dev = deviceContext() || "local";
     const workspace = activeWorkspace();
-    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `${dev}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     if (!enteredScene || untracked(() => skillsLoadedKey()) !== key) {
       enteredScene = true;
       void loadSkillsCatalog(false, key);
@@ -1003,18 +1055,21 @@ export function SkillsScene(props: { embedded?: boolean }) {
     const regained = state === "active" && lastLifecycle !== "active";
     lastLifecycle = state;
     if (!regained) return;
+    const dev = untracked(() => deviceContext()) || "local";
     const workspace = untracked(() => activeWorkspace());
-    const key = `local:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
+    const key = `${dev}:${workspace?.id ?? "none"}:${workspace?.rootPath ?? ""}`;
     void loadSkillsCatalog(false, key);
   });
 
+  let lastMarketDevice = "";
   effect(() => {
     const tab = skillsTab();
+    const dev = deviceContext() || "local";
     if (tab !== "marketplace") return;
-    const query = marketSearchQuery().trim();
-    if (marketLoadedKey() === null) {
-      void loadSkillMarketCatalog(query);
-    } else if (!marketLoading() && marketLoadedKey()?.split(":").slice(1).join(":") !== "local") {
+    const query = untracked(() => marketSearchQuery()).trim();
+    const loaded = untracked(() => marketLoadedKey());
+    if (loaded === null || (!untracked(() => marketLoading()) && lastMarketDevice !== dev)) {
+      lastMarketDevice = dev;
       void loadSkillMarketCatalog(query);
     }
   });
@@ -1043,26 +1098,33 @@ export function SkillsScene(props: { embedded?: boolean }) {
       else={
         <>
           <SearchInput
-            size="md"
+            size={compactLayout() ? "lg" : "md"}
             value={marketSearchQuery()}
             placeholder={tr("skills.searchMarketplace")}
             accessibilityLabel="market-search-input"
-            style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
+            style={{
+              flex: 1,
+              minWidth: compactLayout() ? 140 : 160,
+              maxWidth: studioCompact() ? undefined : 260,
+              ...(compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : {}),
+            }}
             onChange={val => marketSearchQuery.set(val)}
             onSubmit={() => void loadSkillMarketCatalog()}
           />
           <Button
             label={tr("common.search")}
             variant="secondary"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             accessibilityLabel="market-search-submit"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => void loadSkillMarketCatalog()}
           />
           <If when={marketSearchQuery().trim()}>
             <Button
               label={tr("common.reset")}
               variant="ghost"
-              size="sm"
+              size={compactLayout() ? "md" : "sm"}
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => {
                 marketSearchQuery.set("");
                 void loadSkillMarketCatalog("");
@@ -1074,7 +1136,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
     >
       <>
         <SearchInput
-          size="md"
+          size={compactLayout() ? "lg" : "md"}
           value={skillSearchQuery()}
           placeholder={tr("skills.searchInstalled")}
           countLabel={
@@ -1083,7 +1145,12 @@ export function SkillsScene(props: { embedded?: boolean }) {
               : undefined
           }
           accessibilityLabel="skills-search-input"
-          style={{ flex: 1, minWidth: 160, maxWidth: studioCompact() ? undefined : 260 }}
+          style={{
+            flex: 1,
+            minWidth: compactLayout() ? 140 : 160,
+            maxWidth: studioCompact() ? undefined : 260,
+            ...(compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : {}),
+          }}
           onChange={val => skillSearchQuery.set(val)}
         />
         <FilterMenu
@@ -1098,8 +1165,9 @@ export function SkillsScene(props: { embedded?: boolean }) {
           <Button
             label={tr("common.clear")}
             variant="ghost"
-            size="sm"
+            size={compactLayout() ? "md" : "sm"}
             accessibilityLabel="skills-filters-clear"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={resetInstalledFilters}
           />
         </If>
@@ -1113,6 +1181,16 @@ export function SkillsScene(props: { embedded?: boolean }) {
       accessibilityLabel="skills-refresh"
       tooltip={tr("skills.refreshTooltip")}
       disabled={skillsLoading()}
+      style={
+        compactLayout()
+          ? {
+              width: layout.touchTarget,
+              height: layout.touchTarget,
+              minWidth: layout.touchTarget,
+              minHeight: layout.touchTarget,
+            }
+          : undefined
+      }
       onPress={() => void loadSkillsCatalog(true)}
     />
   );
@@ -1124,6 +1202,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
       size="md"
       tooltip={folderInstallUnsupportedReason() ?? undefined}
       accessibilityLabel="skills-install-folder-toggle"
+      style={compactLayout() ? { height: layout.touchTarget, minHeight: layout.touchTarget } : undefined}
       onPress={() => installDrawerOpen.update(open => !open)}
     />
   );
@@ -1201,7 +1280,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
                 <GallerySkeleton count={3} height={64} minColumn={560} />
               </If>
 
-              <If when={!skillsLoading() && filteredInstalledSkills().length === 0}>
+              <If when={!skillsLoading() && !skillsError() && filteredInstalledSkills().length === 0}>
                 <StudioEmpty
                   icon="bulb"
                   message={hasActiveInstalledFilter() ? tr("skills.emptyFilteredTitle") : tr("skills.emptyTitle")}
@@ -1211,6 +1290,7 @@ export function SkillsScene(props: { embedded?: boolean }) {
                       label={hasActiveInstalledFilter() ? tr("common.resetFilter") : tr("skills.emptyAction")}
                       variant="secondary"
                       size="md"
+                      style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                       onPress={() => {
                         if (hasActiveInstalledFilter()) resetInstalledFilters();
                         else chooseTab("marketplace");
@@ -1246,22 +1326,22 @@ export function SkillsScene(props: { embedded?: boolean }) {
                         <View
                           style={{
                             position: "relative",
-                            minHeight: STUDIO_TOUCH_MIN,
+                            minHeight: compactLayout() ? layout.touchTarget : STUDIO_TOUCH_MIN,
                             flexDirection: "row",
                             alignItems: "flex-start",
-                            gap: 12,
-                            paddingHorizontal: 16,
-                            paddingVertical: 11,
+                            gap: space.md,
+                            paddingHorizontal: space.lg,
+                            paddingVertical: space.md,
                             minWidth: 0,
                           }}
                         >
                           <If when={idx() > 0}>
                             <RowSeparator inset={44} />
                           </If>
-                          <View style={{ paddingTop: 2, flexShrink: 0 }}>
-                            <Icon name="warning" size={16} color={palette().warning} />
+                          <View style={{ paddingTop: space.hair, flexShrink: 0 }}>
+                            <Icon name="warning" size={16} color={stateColor("needs_you")} />
                           </View>
-                          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                          <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                             <Text
                               style={{
                                 minWidth: 0,
@@ -1296,17 +1376,17 @@ export function SkillsScene(props: { embedded?: boolean }) {
           </If>
 
           <If when={skillsTab() === "marketplace"}>
-            <View style={{ gap: 16 }}>
+            <View style={{ gap: space.lg }}>
               <If when={marketError() ?? ""}>
                 {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
               </If>
 
               <If when={marketSourceErrors().length > 0}>
-                <View role="alert" style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 4 }}>
-                  <View style={{ paddingTop: 1, flexShrink: 0 }}>
-                    <Icon name="warning" size={16} color={palette().warning} />
+                <View role="alert" style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm, paddingHorizontal: space.xs }}>
+                  <View style={{ paddingTop: space.hair, flexShrink: 0 }}>
+                    <Icon name="warning" size={16} color={stateColor("needs_you")} />
                   </View>
-                  <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                  <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
                     <Text
                       style={{
                         color: palette().text,
@@ -1339,17 +1419,37 @@ export function SkillsScene(props: { embedded?: boolean }) {
                 <GallerySkeleton count={3} height={72} minColumn={560} />
               </If>
 
-              <If when={!marketLoading() && marketSkills().length === 0}>
+              <If when={!marketLoading() && marketSkills().length === 0 && !marketError()}>
                 <StudioEmpty
                   icon="package"
-                  message={tr("skills.marketEmptyTitle")}
-                  detail={tr("skills.marketEmptySubtitle")}
+                  message={
+                    marketSearchQuery().trim()
+                      ? tr("skills.emptyFilteredTitle")
+                      : tr("skills.marketEmptyTitle")
+                  }
+                  detail={
+                    marketSearchQuery().trim()
+                      ? tr("skills.emptyFilteredSubtitle")
+                      : tr("skills.marketEmptySubtitle")
+                  }
                   action={
                     <Button
-                      label={tr("skills.reloadMarketplace")}
+                      label={
+                        marketSearchQuery().trim()
+                          ? tr("common.clearSearch")
+                          : tr("skills.reloadMarketplace")
+                      }
                       variant="secondary"
-                      size="sm"
-                      onPress={() => void loadSkillMarketCatalog()}
+                      size="md"
+                      style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                      onPress={() => {
+                        if (marketSearchQuery().trim()) {
+                          marketSearchQuery.set("");
+                          void loadSkillMarketCatalog("");
+                        } else {
+                          void loadSkillMarketCatalog();
+                        }
+                      }}
                     />
                   }
                 />

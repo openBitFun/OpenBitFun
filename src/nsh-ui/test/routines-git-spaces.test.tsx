@@ -1003,7 +1003,7 @@ test("spaces: lists miniapps, inspects details/versions/source in ModalDialog, s
   await openLibraryTab(app, "spaces");
   await app.waitFor("Release Tracker");
   expect(app.texts()).toContain("Focus Pad");
-  expect(app.texts().some(t => t.includes("1 active runners"))).toBe(true);
+  expect(app.texts().some(t => t.includes("1 active runner") && !t.includes("1 active runners"))).toBe(true);
   // A desktop shell over its own backend opens Spaces in their own window: no "unsupported" note.
   expect(app.shows("label:spaces-run-unsupported")).toBe(false);
   expect(app.shows("label:space-running-space-board")).toBe(true);
@@ -1275,14 +1275,16 @@ test("studio polish: Routines, Spaces and Devices lay out at phone width with th
   const backend = createWorkbenchBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  // Routines: at desktop width the calendar sits beside the list; at 390 pt it stacks under it.
+  // Routines: embedded inside Library, the calendar stays in the unified 720px column at desktop and phone widths.
   await openLibraryTab(app, "routines");
   await app.waitFor("Daily PR Triage");
-  expect(app.shows("label:routines-calendar-panel")).toBe(true);
-  await app.setViewport(390, 844);
-  await app.waitUntil(() => !app.shows("label:routines-calendar-panel"));
+  expect(app.shows("label:routines-calendar-panel")).toBe(false);
   expect(app.texts()).toContain("Calendar");
   expect(app.shows("label:routines-cal-today")).toBe(true);
+  await app.setViewport(390, 844);
+  await app.waitFor("label:routines-cal-today");
+  expect(app.shows("label:routines-calendar-panel")).toBe(false);
+  expect(app.texts()).toContain("Calendar");
   expect(app.shows("label:routine-toggle-cron-1")).toBe(true);
   expect(app.enabled("label:routines-new")).toBe(true);
   await app.press("label:routines-new");
