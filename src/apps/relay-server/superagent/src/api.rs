@@ -553,87 +553,148 @@ impl Service {
         }
     }
 
-    /// The time-to-live sweep over every stored account (on a timer and at
-    /// load): an account unused for [`ACCOUNT_TTL_MS`] with no live job,
-    /// running turn or pending history is shredded (its directory row is
-    /// removed first; `ensure` recreates both on next use); every other
-    /// account gets its time-to-live pass. Returns the shredded accounts.
+    /// The time-to-live sweep over resident and stored accounts (on a timer
+    /// and at load): an account unused for [`ACCOUNT_TTL_MS`] with no live
+    /// job, running turn or pending history is shredded (its directory row is
+    /// removed first; `ensure` recreates both on next use); resident accounts
+    /// under TTL get their time-to-live pass, while idle non-resident accounts
+    /// whose on-disk record mtimes are within [`ACCOUNT_TTL_MS`] are skipped
+    /// without decrypting or loading them into the slot cache. Returns the
+    /// shredded accounts.
     pub async fn sweep_accounts(&self) -> Vec<String> {
         let now = self.engine.now();
         let store = Arc::clone(self.engine.slots.store());
         let mut shredded = Vec::new();
-        for dir in store.account_dirs() {
-            let Ok(account) = store.account_by_dir(&dir) else {
+        let resident_accounts = self.engine.slots.resident_accounts();
+        let mut resident_dirs = std::collections::HashSet::with_capacity(resident_accounts.len());
+        for account_id in resident_accounts {
+            resident_dirs.insert(store.dir_name(&account_id));
+            let Some(slot) = self.engine.slots.resident(&account_id) else {
                 continue;
             };
-            // Internal records (the watch list, the target index) have no
-            // metadata.
-            let Ok(Some(meta)) = account.read_json::<AccountMeta>(crate::slots::META_RECORD) else {
-                continue;
-            };
-            if meta.account_id.is_empty() {
-                continue;
-            }
-            let last_used = if meta.last_used_ms > 0 {
-                meta.last_used_ms
-            } else {
-                meta.updated_ms.max(meta.created_ms)
-            };
-            let slot = match self.engine.slots.load(&meta.account_id, now, None).await {
-                Ok(slot) => slot,
-                Err(error) => {
-                    log::warn!("Superagent sweep could not load an account: {}", error);
-                    continue;
-                }
-            };
-            if now.saturating_sub(last_used) < ACCOUNT_TTL_MS {
-                crate::archive::pump(&self.engine, &slot, true).await;
-                self.engine.sweep_slot(&slot, true).await;
-                continue;
-            }
-            let busy = {
+            let (meta, busy) = {
                 let state = slot.state.lock().await;
-                state.ledger.has_live_jobs()
+                let busy = state.ledger.has_live_jobs()
                     || !state.outbox.chunks.is_empty()
                     || state
                         .conversations
                         .values()
                         .any(|conversation| conversation.active_turn().is_some())
-                    || slot.attached() > 0
+                    || slot.attached() > 0;
+                (state.meta.clone(), busy)
             };
+            if meta.account_id.is_empty() {
+                continue;
+            }
+            let last_used = account_last_used_ms(&meta);
+            if now.saturating_sub(last_used) < ACCOUNT_TTL_MS {
+                crate::archive::pump(&self.engine, &slot, true).await;
+                self.engine.sweep_slot(&slot, true).await;
+                continue;
+            }
             if busy {
                 continue;
             }
-            match self
-                .directory
-                .unregister(
-                    &meta.account_id,
-                    &meta.device_id,
-                    meta.directory_token.as_deref(),
-                )
-                .await
-            {
-                Ok(()) | Err(DirectoryError::NotFound) => {}
-                Err(error) => {
-                    log::info!(
-                        "Superagent sweep kept an account: directory unavailable ({})",
-                        error
-                    );
+            drop(slot);
+            if self.shred_expired_account(&store, &meta).await {
+                shredded.push(meta.account_id);
+            }
+        }
+
+        // Non-resident directories on disk: check on-disk record mtimes before
+        // opening/decrypting anything so hourly sweeps never thrash the
+        // resident slot cache or decrypt active/recent idle accounts.
+        let store_scan = Arc::clone(&store);
+        let expired_candidates: Vec<AccountMeta> = tokio::task::spawn_blocking(move || {
+            let mut candidates = Vec::new();
+            for dir in store_scan.account_dirs() {
+                if resident_dirs.contains(&dir) {
                     continue;
                 }
-            }
-            drop(slot);
-            self.engine.slots.forget(&meta.account_id);
-            self.engine.forget_account(&meta.account_id);
-            match store.shred(&meta.account_id) {
-                Ok(_) => {
-                    log::info!("Superagent account unused for 180 days shredded");
-                    shredded.push(meta.account_id.clone());
+                let dir_path = store_scan.root().join("accounts").join(&dir);
+                let meta_path = dir_path.join(format!("{}.rec", crate::slots::META_RECORD));
+                if !meta_path.is_file() {
+                    continue;
                 }
-                Err(error) => log::warn!("Superagent account not shredded: {}", error),
+                if let Some(meta_mtime) = file_mtime_ms(&meta_path) {
+                    if now.saturating_sub(meta_mtime) < ACCOUNT_TTL_MS {
+                        continue;
+                    }
+                }
+                if let Some(latest_mtime) = dir_latest_rec_mtime_ms(&dir_path) {
+                    if now.saturating_sub(latest_mtime) < ACCOUNT_TTL_MS {
+                        continue;
+                    }
+                }
+                let Ok(account) = store_scan.account_by_dir(&dir) else {
+                    continue;
+                };
+                // Internal records (the watch list, the target index) have no
+                // metadata.
+                let Ok(Some(meta)) = account.read_json::<AccountMeta>(crate::slots::META_RECORD)
+                else {
+                    continue;
+                };
+                if meta.account_id.is_empty() {
+                    continue;
+                }
+                let last_used = account_last_used_ms(&meta);
+                if now.saturating_sub(last_used) < ACCOUNT_TTL_MS {
+                    continue;
+                }
+                if stored_account_is_busy(&account) {
+                    continue;
+                }
+                candidates.push(meta);
+            }
+            candidates
+        })
+        .await
+        .unwrap_or_default();
+
+        for meta in expired_candidates {
+            // Skip if a frontend loaded this account while we scanned disk.
+            if self.engine.slots.resident(&meta.account_id).is_some() {
+                continue;
+            }
+            if self.shred_expired_account(&store, &meta).await {
+                shredded.push(meta.account_id);
             }
         }
         shredded
+    }
+
+    async fn shred_expired_account(&self, store: &crate::store::Store, meta: &AccountMeta) -> bool {
+        match self
+            .directory
+            .unregister(
+                &meta.account_id,
+                &meta.device_id,
+                meta.directory_token.as_deref(),
+            )
+            .await
+        {
+            Ok(()) | Err(DirectoryError::NotFound) => {}
+            Err(error) => {
+                log::info!(
+                    "Superagent sweep kept an account: directory unavailable ({})",
+                    error
+                );
+                return false;
+            }
+        }
+        self.engine.slots.forget(&meta.account_id);
+        self.engine.forget_account(&meta.account_id);
+        match store.shred(&meta.account_id) {
+            Ok(_) => {
+                log::info!("Superagent account unused for 180 days shredded");
+                true
+            }
+            Err(error) => {
+                log::warn!("Superagent account not shredded: {}", error);
+                false
+            }
+        }
     }
 
     async fn status(&self, slot: &Arc<Slot>, locale: Option<&str>) -> Result<Value, String> {
@@ -1141,6 +1202,65 @@ impl Service {
     }
 }
 
+fn account_last_used_ms(meta: &AccountMeta) -> u64 {
+    if meta.last_used_ms > 0 {
+        meta.last_used_ms
+    } else {
+        meta.updated_ms.max(meta.created_ms)
+    }
+}
+
+fn file_mtime_ms(path: &std::path::Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let elapsed = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn dir_latest_rec_mtime_ms(dir_path: &std::path::Path) -> Option<u64> {
+    let mut latest: Option<u64> = None;
+    for entry in std::fs::read_dir(dir_path).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rec") {
+            continue;
+        }
+        if let Some(ms) = file_mtime_ms(&path) {
+            latest = Some(latest.map_or(ms, |cur| cur.max(ms)));
+        }
+    }
+    latest
+}
+
+/// Checks whether a non-resident stored account has live jobs, pending archive
+/// chunks, or an unfinished turn without inserting it into the slot cache.
+fn stored_account_is_busy(account: &crate::store::AccountStore) -> bool {
+    let ledger_busy = match account.read_json::<crate::ledger::Ledger>(crate::slots::LEDGER_RECORD)
+    {
+        Ok(Some(ledger)) => ledger.has_live_jobs(),
+        Ok(None) => false,
+        // Unreadable record: keep the account rather than shredding blindly.
+        Err(_) => return true,
+    };
+    if ledger_busy {
+        return true;
+    }
+    let outbox_busy =
+        match account.read_json::<crate::archive::Outbox>(crate::archive::OUTBOX_RECORD) {
+            Ok(Some(outbox)) => !outbox.chunks.is_empty(),
+            Ok(None) => false,
+            Err(_) => return true,
+        };
+    if outbox_busy {
+        return true;
+    }
+    match account.read_json::<Vec<ConversationSummary>>(crate::slots::CONVERSATIONS_RECORD) {
+        Ok(Some(summaries)) => summaries
+            .iter()
+            .any(|summary| summary.status == "running" || summary.status == "parked"),
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
 /// `fleet_replay`: events of this slot load after `afterSeq`. Another
 /// instance (the slot reloaded) or a cursor older than the ring answers
 /// `historyGone`.
@@ -1156,10 +1276,9 @@ fn replay(slot: &Slot, request: &openbitfun_product_domains::fleet::FleetReplayR
     }
     let max = (request.max.max(1) as usize).min(4096);
     let batch = slot.events.events_after(request.after_seq, max);
-    let gap = batch
-        .events
-        .first()
-        .is_some_and(|first| first.seq > request.after_seq + 1);
+    let gap = batch.events.first().is_some_and(|first| {
+        first.event == openbitfun_obp::EVENTS_DROPPED_EVENT || first.seq > request.after_seq + 1
+    }) || batch.last_seq < request.after_seq;
     if gap {
         return serde_json::to_value(gone(&slot.instance_id)).unwrap_or(Value::Null);
     }
@@ -1294,5 +1413,193 @@ mod tests {
                 assert_eq!(resolve_locale(alias.as_str()), id, "{alias}");
             }
         }
+    }
+
+    struct TestClock(std::sync::atomic::AtomicU64);
+
+    impl crate::engine::Clock for TestClock {
+        fn now_ms(&self) -> u64 {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    struct EmptyRpc;
+
+    impl crate::device::DeviceRpc for EmptyRpc {
+        fn devices<'a>(
+            &'a self,
+            _account_id: &'a str,
+        ) -> crate::device::BoxFuture<'a, Result<Vec<DeviceSnapshot>, crate::device::RpcError>>
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            _command: &'a str,
+            _args: Value,
+        ) -> crate::device::BoxFuture<'a, Result<Value, crate::device::RpcError>> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+    }
+
+    struct EmptyDirectory;
+
+    impl Directory for EmptyDirectory {
+        fn register<'a>(
+            &'a self,
+            _account_id: &'a str,
+            device_id: &'a str,
+            _name: &'a str,
+            _public_key: &'a str,
+        ) -> crate::device::BoxFuture<'a, Result<String, DirectoryError>> {
+            let token = format!("tok-{device_id}");
+            Box::pin(async move { Ok(token) })
+        }
+
+        fn unregister<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            _token: Option<&'a str>,
+        ) -> crate::device::BoxFuture<'a, Result<(), DirectoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn devices<'a>(
+            &'a self,
+            _token: &'a str,
+        ) -> crate::device::BoxFuture<
+            'a,
+            Result<Vec<crate::directory::DirectoryDevice>, DirectoryError>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn device_key<'a>(
+            &'a self,
+            _token: &'a str,
+            _device_id: &'a str,
+        ) -> crate::device::BoxFuture<'a, Result<(String, Option<String>), DirectoryError>>
+        {
+            Box::pin(async { Err(DirectoryError::NotFound) })
+        }
+    }
+
+    #[tokio::test]
+    async fn sweep_accounts_skips_recent_non_resident_and_shreds_expired_without_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::store::Store::open(dir.path(), [17u8; 32]).unwrap());
+        let slots = Arc::new(crate::slots::Slots::new(
+            store,
+            crate::slots::SlotLimits {
+                idle_unload_ms: 1000,
+                ..crate::slots::SlotLimits::default()
+            },
+        ));
+        let start = openbitfun_obp::now_ms();
+        let clock = Arc::new(TestClock(std::sync::atomic::AtomicU64::new(start)));
+        let rpc: Arc<dyn crate::device::DeviceRpc> = Arc::new(EmptyRpc);
+        let engine = Engine::new(
+            Arc::clone(&slots),
+            Arc::clone(&rpc),
+            Arc::new(crate::model::RelayModel::new(rpc)),
+            Arc::clone(&clock) as Arc<dyn crate::engine::Clock>,
+            crate::engine::EngineConfig::default(),
+        );
+        let service = Service::new(engine, Arc::new(EmptyDirectory));
+        let slot = service.ensure("acct-idle").await.unwrap();
+        drop(slot);
+        // Unload so the account is on disk only (not resident).
+        clock
+            .0
+            .fetch_add(60 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            slots.unload_idle(clock.0.load(std::sync::atomic::Ordering::SeqCst)),
+            1
+        );
+        assert_eq!(slots.resident_count(), 0);
+        // Hourly sweep while within 180d TTL must NOT load the non-resident account.
+        assert!(service.sweep_accounts().await.is_empty());
+        assert_eq!(
+            slots.resident_count(),
+            0,
+            "sweep_accounts must not load non-resident idle accounts"
+        );
+        // Advance past 180d TTL: non-resident idle account is shredded without loading into cache.
+        clock
+            .0
+            .fetch_add(ACCOUNT_TTL_MS, std::sync::atomic::Ordering::SeqCst);
+        let shredded = service.sweep_accounts().await;
+        assert_eq!(shredded, vec!["acct-idle".to_string()]);
+        assert_eq!(slots.resident_count(), 0);
+        assert!(!slots.store().exists("acct-idle"));
+    }
+
+    #[tokio::test]
+    async fn replay_marks_history_gone_on_exact_drop_boundary_and_future_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::store::Store::open(dir.path(), [19u8; 32]).unwrap());
+        let slots = crate::slots::Slots::new(
+            store,
+            crate::slots::SlotLimits {
+                event_ring: 4,
+                ..crate::slots::SlotLimits::default()
+            },
+        );
+        let slot = slots
+            .load(
+                "acct-replay",
+                1000,
+                Some(AccountMeta {
+                    version: 1,
+                    account_id: "acct-replay".into(),
+                    device_id: "cloud-r".into(),
+                    enabled: true,
+                    ..AccountMeta::default()
+                }),
+            )
+            .await
+            .unwrap();
+        // Publish 10 events into a ring of size 4 -> ring holds seqs 7, 8, 9, 10 (oldest = 7).
+        for n in 1..=10 {
+            slot.events.publish("test://evt", json!({ "n": n }));
+        }
+        // after_seq = oldest - 2 (= 5): synthetic EVENTS_DROPPED_EVENT has seq 6 == after_seq + 1.
+        let at_boundary = replay(
+            &slot,
+            &openbitfun_product_domains::fleet::FleetReplayRequest {
+                instance_id: slot.instance_id.clone(),
+                after_seq: 5,
+                max: 100,
+            },
+        );
+        assert_eq!(at_boundary["historyGone"], true, "{at_boundary}");
+        assert!(at_boundary["events"].as_array().unwrap().is_empty());
+
+        // after_seq > last_seq (= 99): cursor is from the future/invalid -> historyGone.
+        let future = replay(
+            &slot,
+            &openbitfun_product_domains::fleet::FleetReplayRequest {
+                instance_id: slot.instance_id.clone(),
+                after_seq: 99,
+                max: 100,
+            },
+        );
+        assert_eq!(future["historyGone"], true, "{future}");
+
+        // after_seq = oldest - 1 (= 6): contiguous -> returns 7..=10.
+        let contiguous = replay(
+            &slot,
+            &openbitfun_product_domains::fleet::FleetReplayRequest {
+                instance_id: slot.instance_id.clone(),
+                after_seq: 6,
+                max: 100,
+            },
+        );
+        assert_eq!(contiguous["historyGone"], false, "{contiguous}");
+        assert_eq!(contiguous["events"].as_array().unwrap().len(), 4);
     }
 }

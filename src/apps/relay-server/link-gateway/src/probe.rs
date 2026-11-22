@@ -15,13 +15,14 @@
 //! is cached too, so a slow device costs one probe per TTL, not one per
 //! device-list poll.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures::future::{FutureExt, Shared};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::upstream::DeviceStreams;
+use crate::upstream::{BoxFuture, DeviceStreams};
 
 /// How long one device's probe answer is reused.
 pub(crate) const INFO_PROBE_TTL: Duration = Duration::from_secs(30);
@@ -59,10 +60,51 @@ pub(crate) fn facts_of(body: &serde_json::Value, device_id: &str) -> ProbeFacts 
     }
 }
 
-/// The per-device probe cache.
+type ProbeFlight = Shared<BoxFuture<'static, ProbeFacts>>;
+
+struct InflightGuard {
+    inflight: Arc<Mutex<HashMap<(String, String), ProbeFlight>>>,
+    key: (String, String),
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.inflight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
+fn insert_cached(
+    entries: &Mutex<HashMap<(String, String), (Instant, ProbeFacts)>>,
+    ttl: Duration,
+    key: (String, String),
+    facts: ProbeFacts,
+) {
+    let mut entries = entries.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    if !entries.contains_key(&key) && entries.len() >= MAX_ENTRIES {
+        entries.retain(|_, (at, _)| now.saturating_duration_since(*at) < ttl);
+        if entries.len() >= MAX_ENTRIES {
+            if let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(k, _)| k.clone())
+            {
+                entries.remove(&oldest);
+            }
+        }
+    }
+    entries.insert(key, (now, facts));
+}
+
+/// The per-device probe cache, with single-flight deduplication per
+/// `(account_id, device_id)`.
 pub(crate) struct InfoProbes {
     ttl: Duration,
-    entries: Mutex<HashMap<(String, String), (Instant, ProbeFacts)>>,
+    entries: Arc<Mutex<HashMap<(String, String), (Instant, ProbeFacts)>>>,
+    inflight: Arc<Mutex<HashMap<(String, String), ProbeFlight>>>,
 }
 
 impl Default for InfoProbes {
@@ -76,7 +118,8 @@ impl InfoProbes {
     pub(crate) fn new(ttl: Duration) -> Self {
         Self {
             ttl: ttl.min(INFO_PROBE_TTL),
-            entries: Mutex::new(HashMap::new()),
+            entries: Arc::new(Mutex::new(HashMap::new())),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -90,37 +133,69 @@ impl InfoProbes {
 
     /// The facts of every device in `device_ids`, probing the ones whose
     /// cached answer is missing or older than the TTL (all at once).
+    /// Concurrent callers for the same `(account_id, device_id)` share one
+    /// in-flight probe.
     pub(crate) async fn facts(
         &self,
-        streams: &dyn DeviceStreams,
+        streams: &Arc<dyn DeviceStreams>,
         account_id: &str,
         device_ids: &[String],
     ) -> HashMap<String, ProbeFacts> {
+        let mut seen = HashSet::with_capacity(device_ids.len());
         let mut known = HashMap::new();
-        let mut missing = Vec::new();
+        let mut pending: Vec<(String, ProbeFlight)> = Vec::new();
         for device_id in device_ids {
-            let key = (account_id.to_string(), device_id.clone());
-            match self.cached(&key) {
-                Some(facts) => {
-                    known.insert(device_id.clone(), facts);
-                }
-                None => missing.push(device_id.clone()),
+            if !seen.insert(device_id.as_str()) {
+                continue;
             }
-        }
-        let probed = futures::future::join_all(missing.iter().map(|device_id| async move {
-            let facts = tokio::time::timeout(PROBE_TIMEOUT, probe(streams, account_id, device_id))
+            let key = (account_id.to_string(), device_id.clone());
+            if let Some(facts) = self.cached(&key) {
+                known.insert(device_id.clone(), facts);
+                continue;
+            }
+            let mut inflight = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(flight) = inflight.get(&key) {
+                pending.push((device_id.clone(), flight.clone()));
+                continue;
+            }
+            // Re-check the cache under the inflight lock in case a flight
+            // finished between the fast check above and acquiring `inflight`.
+            if let Some(facts) = self.cached(&key) {
+                known.insert(device_id.clone(), facts);
+                continue;
+            }
+            let entries = Arc::clone(&self.entries);
+            let inflight_map = Arc::clone(&self.inflight);
+            let streams = Arc::clone(streams);
+            let ttl = self.ttl;
+            let task_key = key.clone();
+            let task = tokio::spawn(async move {
+                let _guard = InflightGuard {
+                    inflight: inflight_map,
+                    key: task_key.clone(),
+                };
+                let facts = tokio::time::timeout(
+                    PROBE_TIMEOUT,
+                    probe(streams.as_ref(), &task_key.0, &task_key.1),
+                )
                 .await
                 .unwrap_or_default();
-            (device_id.clone(), facts)
-        }))
-        .await;
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if entries.len() > MAX_ENTRIES {
-            entries.clear();
+                insert_cached(&entries, ttl, task_key, facts);
+                facts
+            });
+            let flight: BoxFuture<'static, ProbeFacts> =
+                Box::pin(async move { task.await.unwrap_or_default() });
+            let flight = flight.shared();
+            inflight.insert(key, flight.clone());
+            pending.push((device_id.clone(), flight));
         }
-        let now = Instant::now();
+        let probed = futures::future::join_all(
+            pending
+                .into_iter()
+                .map(|(device_id, flight)| async move { (device_id, flight.await) }),
+        )
+        .await;
         for (device_id, facts) in probed {
-            entries.insert((account_id.to_string(), device_id.clone()), (now, facts));
             known.insert(device_id, facts);
         }
         known
@@ -170,6 +245,7 @@ mod tests {
     struct InfoDevices {
         answers: Mutex<HashMap<String, serde_json::Value>>,
         opens: AtomicUsize,
+        delay_ms: AtomicUsize,
     }
 
     impl DeviceStreams for InfoDevices {
@@ -181,6 +257,7 @@ mod tests {
             Box::pin(async move {
                 self.opens.fetch_add(1, Ordering::SeqCst);
                 let answer = self.answers.lock().unwrap().get(device_id).cloned();
+                let delay = Duration::from_millis(self.delay_ms.load(Ordering::SeqCst) as u64);
                 let (near, mut far) = tokio::io::duplex(64 * 1024);
                 tokio::spawn(async move {
                     let mut head = Vec::new();
@@ -192,6 +269,9 @@ mod tests {
                         }
                     }
                     assert!(head.starts_with(b"GET /obp/mesh/info HTTP/1.1\r\n"));
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
                     if let Some(answer) = answer {
                         let body = answer.to_string();
                         let reply = format!(
@@ -238,24 +318,25 @@ mod tests {
     #[tokio::test]
     async fn probes_are_cached_per_device_for_the_ttl_and_old_devices_stay_unknown() {
         let devices = Arc::new(InfoDevices::default());
+        let streams: Arc<dyn DeviceStreams> = Arc::clone(&devices) as Arc<dyn DeviceStreams>;
         devices.answers.lock().unwrap().insert(
             "desk".into(),
             serde_json::json!({ "deviceId": "desk", "capabilities": ["fleet_v1"], "fleetLoad": 2 }),
         );
         let probes = InfoProbes::new(Duration::from_millis(200));
         let ids = vec!["desk".to_string(), "old-cli".to_string()];
-        let facts = probes.facts(devices.as_ref(), "acct", &ids).await;
+        let facts = probes.facts(&streams, "acct", &ids).await;
         assert_eq!(facts["desk"].fleet_protocol, Some(1));
         assert_eq!(facts["desk"].fleet_load, Some(2));
         assert_eq!(facts["old-cli"], ProbeFacts::default());
         assert_eq!(devices.opens.load(Ordering::SeqCst), 2);
 
         // Within the TTL: no new streams, the same answers (failures too).
-        let again = probes.facts(devices.as_ref(), "acct", &ids).await;
+        let again = probes.facts(&streams, "acct", &ids).await;
         assert_eq!(again, facts);
         assert_eq!(devices.opens.load(Ordering::SeqCst), 2);
         // Another account's device of the same id is its own entry.
-        probes.facts(devices.as_ref(), "acct-2", &ids[..1]).await;
+        probes.facts(&streams, "acct-2", &ids[..1]).await;
         assert_eq!(devices.opens.load(Ordering::SeqCst), 3);
 
         // After the TTL: probed again, and a changed load is seen.
@@ -264,9 +345,96 @@ mod tests {
             serde_json::json!({ "deviceId": "desk", "capabilities": ["fleet_v1"], "fleetLoad": 5 }),
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
-        let later = probes.facts(devices.as_ref(), "acct", &ids).await;
+        let later = probes.facts(&streams, "acct", &ids).await;
         assert_eq!(later["desk"].fleet_load, Some(5));
         assert_eq!(devices.opens.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn concurrent_probes_for_the_same_account_and_device_share_one_stream() {
+        let devices = Arc::new(InfoDevices::default());
+        devices.delay_ms.store(120, Ordering::SeqCst);
+        devices.answers.lock().unwrap().insert(
+            "desk".into(),
+            serde_json::json!({ "deviceId": "desk", "capabilities": ["fleet_v1"], "fleetLoad": 4 }),
+        );
+        let streams: Arc<dyn DeviceStreams> = Arc::clone(&devices) as Arc<dyn DeviceStreams>;
+        let probes = Arc::new(InfoProbes::new(Duration::from_secs(10)));
+
+        // Eight concurrent callers for (acct-1, desk) plus duplicate ids in one call
+        // must open only a single Link stream; (acct-2, desk) runs independently.
+        let mut tasks = Vec::new();
+        for i in 0..8 {
+            let probes = Arc::clone(&probes);
+            let streams = Arc::clone(&streams);
+            let ids = if i == 0 {
+                vec!["desk".to_string(), "desk".to_string()]
+            } else {
+                vec!["desk".to_string()]
+            };
+            tasks.push(tokio::spawn(async move {
+                probes.facts(&streams, "acct-1", &ids).await
+            }));
+        }
+        let other_acct = {
+            let probes = Arc::clone(&probes);
+            let streams = Arc::clone(&streams);
+            let ids = vec!["desk".to_string()];
+            tokio::spawn(async move { probes.facts(&streams, "acct-2", &ids).await })
+        };
+
+        let expected = ProbeFacts {
+            fleet_protocol: Some(1),
+            fleet_load: Some(4),
+        };
+        for task in tasks {
+            let result = task.await.unwrap();
+            assert_eq!(result.get("desk"), Some(&expected));
+        }
+        assert_eq!(other_acct.await.unwrap().get("desk"), Some(&expected));
+        // Exactly 1 stream for (acct-1, desk) + 1 stream for (acct-2, desk).
+        assert_eq!(devices.opens.load(Ordering::SeqCst), 2);
+        assert!(probes.inflight.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_leader_does_not_abort_followers_or_leak_inflight() {
+        let devices = Arc::new(InfoDevices::default());
+        devices.delay_ms.store(120, Ordering::SeqCst);
+        devices.answers.lock().unwrap().insert(
+            "desk".into(),
+            serde_json::json!({ "deviceId": "desk", "capabilities": ["fleet_v1"], "fleetLoad": 1 }),
+        );
+        let streams: Arc<dyn DeviceStreams> = Arc::clone(&devices) as Arc<dyn DeviceStreams>;
+        let probes = Arc::new(InfoProbes::new(Duration::from_secs(10)));
+        let ids = vec!["desk".to_string()];
+
+        let leader = {
+            let probes = Arc::clone(&probes);
+            let streams = Arc::clone(&streams);
+            let ids = ids.clone();
+            tokio::spawn(async move { probes.facts(&streams, "acct", &ids).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let follower = {
+            let probes = Arc::clone(&probes);
+            let streams = Arc::clone(&streams);
+            let ids = ids.clone();
+            tokio::spawn(async move { probes.facts(&streams, "acct", &ids).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        leader.abort();
+
+        let result = follower.await.unwrap();
+        assert_eq!(
+            result.get("desk"),
+            Some(&ProbeFacts {
+                fleet_protocol: Some(1),
+                fleet_load: Some(1),
+            })
+        );
+        assert_eq!(devices.opens.load(Ordering::SeqCst), 1);
+        assert!(probes.inflight.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -66,10 +66,12 @@ pub(crate) struct GatewayOptions {
     pub(crate) secure_cookies: bool,
     /// Open pipes at the same time, all accounts.
     pub(crate) max_pipes: usize,
-    /// A pipe without bytes either way for this long is closed.
+    /// A pipe without bytes or ping/pong liveness for this long is closed.
     pub(crate) idle_timeout: Duration,
     /// WebSocket ping interval (keeps the provider's front end open).
     pub(crate) ping_interval: Duration,
+    /// Longest a WebSocket or device stream write may block before the pipe closes.
+    pub(crate) write_timeout: Duration,
     /// Code requests per client address per minute.
     pub(crate) code_requests_per_minute: u32,
     /// Verify attempts per client address per minute.
@@ -84,6 +86,7 @@ impl Default for GatewayOptions {
             max_pipes: 1024,
             idle_timeout: Duration::from_secs(150),
             ping_interval: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(30),
             code_requests_per_minute: 6,
             verify_requests_per_minute: 20,
         }
@@ -91,7 +94,11 @@ impl Default for GatewayOptions {
 }
 
 const PENDING_LIMIT: usize = 10_000;
+const MAX_VERIFY_ATTEMPTS: u8 = 5;
+const RATE_WINDOW_MAX_KEYS: usize = 100_000;
+const RATE_WINDOW_DURATION: Duration = Duration::from_secs(60);
 const DIRECTORY_CACHE: Duration = Duration::from_secs(20);
+const DIRECTORY_CACHE_LIMIT: usize = 10_000;
 const PIPE_CHUNK: usize = 64 * 1024;
 /// Largest browser frame (the browser splits records into smaller frames).
 const MAX_BROWSER_FRAME: usize = 1024 * 1024;
@@ -105,29 +112,98 @@ mod close {
     pub(crate) const UNAVAILABLE: u16 = 4503;
 }
 
-struct RateWindow {
+struct RateBucket {
     started: Instant,
-    counts: HashMap<String, u32>,
+    count: u32,
+}
+
+/// Per-key fixed-window rate counter with bounded key capacity.
+///
+/// When at capacity, expired windows are pruned first; if the table is still
+/// full of active windows, new keys are refused rather than wiping existing
+/// active counters.
+pub(crate) struct RateWindow {
+    window: Duration,
+    max_keys: usize,
+    earliest_start: Instant,
+    counts: HashMap<String, RateBucket>,
 }
 
 impl RateWindow {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
+        Self::with_limits(RATE_WINDOW_MAX_KEYS, RATE_WINDOW_DURATION)
+    }
+
+    pub(crate) fn with_limits(max_keys: usize, window: Duration) -> Self {
         Self {
-            started: Instant::now(),
+            window,
+            max_keys: max_keys.max(1),
+            earliest_start: Instant::now(),
             counts: HashMap::new(),
         }
     }
 
-    fn allow(&mut self, key: &str, limit: u32) -> bool {
-        if self.started.elapsed() >= Duration::from_secs(60) || self.counts.len() > 100_000 {
-            *self = Self::new();
-        }
-        let count = self.counts.entry(key.to_string()).or_insert(0);
-        if *count >= limit {
+    pub(crate) fn allow(&mut self, key: &str, limit: u32) -> bool {
+        self.allow_at(key, limit, Instant::now())
+    }
+
+    pub(crate) fn allow_at(&mut self, key: &str, limit: u32, now: Instant) -> bool {
+        if limit == 0 {
             return false;
         }
-        *count += 1;
+        if let Some(bucket) = self.counts.get_mut(key) {
+            if now.saturating_duration_since(bucket.started) >= self.window {
+                bucket.started = now;
+                bucket.count = 1;
+                return true;
+            }
+            if bucket.count >= limit {
+                return false;
+            }
+            bucket.count += 1;
+            return true;
+        }
+        if self.counts.len() >= self.max_keys {
+            if now.saturating_duration_since(self.earliest_start) < self.window {
+                return false;
+            }
+            self.prune_expired(now);
+            if self.counts.len() >= self.max_keys {
+                return false;
+            }
+        } else if self.counts.len() >= 1024
+            && now.saturating_duration_since(self.earliest_start) >= self.window
+        {
+            self.prune_expired(now);
+        }
+        if self.counts.is_empty() || now < self.earliest_start {
+            self.earliest_start = now;
+        }
+        self.counts.insert(
+            key.to_string(),
+            RateBucket {
+                started: now,
+                count: 1,
+            },
+        );
         true
+    }
+
+    fn prune_expired(&mut self, now: Instant) {
+        let window = self.window;
+        self.counts
+            .retain(|_, bucket| now.saturating_duration_since(bucket.started) < window);
+        self.earliest_start = self
+            .counts
+            .values()
+            .map(|bucket| bucket.started)
+            .min()
+            .unwrap_or(now);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.counts.len()
     }
 }
 
@@ -135,6 +211,7 @@ struct PendingEntry {
     sign_in: PendingSignIn,
     /// Unix seconds.
     expires_at: i64,
+    attempts: u8,
 }
 
 /// The gateway's shared state.
@@ -227,18 +304,42 @@ fn no_store(mut response: Response) -> Response {
     response
 }
 
+fn parse_ip(value: &str) -> Option<std::net::IpAddr> {
+    value.trim().parse::<std::net::IpAddr>().ok()
+}
+
 fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
-    // nginx sets `X-Forwarded-For` to the client address it resolved from the
-    // provider's front end; the gateway listens on loopback only.
-    headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .and_then(|value| value.parse::<std::net::IpAddr>().ok())
-        .map(|ip| ip.to_string())
-        .or_else(|| peer.map(|peer| peer.ip().to_string()))
-        .unwrap_or_else(|| "unknown".to_string())
+    let Some(peer) = peer else {
+        return "unknown".to_string();
+    };
+    // Only trust proxy headers when nginx reaches us over loopback.
+    if peer.ip().is_loopback() {
+        if let Some(ip) = headers
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_ip)
+        {
+            return ip.to_string();
+        }
+        // Rightmost non-empty entry of the last X-Forwarded-For header
+        // (appended by nginx); never the client-controlled leftmost entry.
+        if let Some(ip) = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .next_back()
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| {
+                value
+                    .rsplit(',')
+                    .map(str::trim)
+                    .find(|part| !part.is_empty())
+            })
+            .and_then(parse_ip)
+        {
+            return ip.to_string();
+        }
+    }
+    peer.ip().to_string()
 }
 
 /// Readable OS label from a User-Agent (the directory's device name).
@@ -326,11 +427,33 @@ impl Gateway {
         self.sealer.open(session::cookie_value(header)?, now_secs())
     }
 
-    fn take_pending(&self, id: &str) -> Option<PendingSignIn> {
+    fn begin_verify(&self, id: &str) -> Option<PendingSignIn> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let now = now_secs();
         pending.retain(|_, entry| entry.expires_at > now);
-        pending.get(id).map(|entry| entry.sign_in.clone())
+        let entry = pending.get_mut(id)?;
+        if entry.attempts >= MAX_VERIFY_ATTEMPTS {
+            pending.remove(id);
+            return None;
+        }
+        entry.attempts += 1;
+        Some(entry.sign_in.clone())
+    }
+
+    fn finish_verify_failure(&self, id: &str, error_code: &str) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if error_code == "unavailable" {
+            if let Some(entry) = pending.get_mut(id) {
+                entry.attempts = entry.attempts.saturating_sub(1);
+            }
+            return;
+        }
+        if pending
+            .get(id)
+            .is_some_and(|entry| entry.attempts >= MAX_VERIFY_ATTEMPTS)
+        {
+            pending.remove(id);
+        }
     }
 
     /// The account's host devices, through the browser's own credential
@@ -349,8 +472,17 @@ impl Gateway {
         }
         let devices = self.accounts.devices(&session.directory_token).await?;
         let mut cache = self.directory.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.len() > 10_000 {
-            cache.clear();
+        if !cache.contains_key(&session.directory_token) && cache.len() >= DIRECTORY_CACHE_LIMIT {
+            cache.retain(|_, (at, _)| at.elapsed() < DIRECTORY_CACHE);
+            if cache.len() >= DIRECTORY_CACHE_LIMIT {
+                if let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, (at, _))| *at)
+                    .map(|(k, _)| k.clone())
+                {
+                    cache.remove(&oldest);
+                }
+            }
         }
         cache.insert(
             session.directory_token.clone(),
@@ -495,6 +627,7 @@ async fn code_route(
             PendingEntry {
                 sign_in,
                 expires_at,
+                attempts: 0,
             },
         );
     }
@@ -577,7 +710,7 @@ async fn verify_route(
             None,
         );
     }
-    let Some(sign_in) = gateway.take_pending(&request.challenge_id) else {
+    let Some(sign_in) = gateway.begin_verify(&request.challenge_id) else {
         return api_error(
             StatusCode::BAD_REQUEST,
             "invalid_code",
@@ -587,7 +720,10 @@ async fn verify_route(
     };
     let access_token = match gateway.accounts.verify_code(&sign_in, &code).await {
         Ok(token) => token,
-        Err(error) => return upstream_error(error),
+        Err(error) => {
+            gateway.finish_verify_failure(&request.challenge_id, error.code);
+            return upstream_error(error);
+        }
     };
     gateway
         .pending
@@ -663,14 +799,14 @@ async fn sign_out_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap)
     ))
 }
 
-fn signed_out() -> Response {
+fn signed_out(secure_cookies: bool) -> Response {
     let response = api_error(
         StatusCode::UNAUTHORIZED,
         "signed_out",
         "Sign in with your OpenBitFun account.",
         None,
     );
-    with_cookies(response, session::clear_cookies(true))
+    with_cookies(response, session::clear_cookies(secure_cookies))
 }
 
 /// The device list the page draws: every reachability decision is here.
@@ -837,7 +973,7 @@ fn cloud_node_view(devices: &[DirectoryDevice]) -> serde_json::Value {
 
 async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) -> Response {
     let Some(session) = gateway.session(&headers) else {
-        return signed_out();
+        return signed_out(gateway.options.secure_cookies);
     };
     let (directory, network) = tokio::join!(
         gateway.directory_devices(&session),
@@ -869,7 +1005,7 @@ async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) 
             let targets = probe_targets(&devices, network.as_ref());
             let facts = gateway
                 .probes
-                .facts(gateway.streams.as_ref(), &session.account_id, &targets)
+                .facts(&gateway.streams, &session.account_id, &targets)
                 .await;
             let entry_candidates = entry_candidates(&devices, network.as_ref(), &facts);
             no_store(
@@ -881,7 +1017,7 @@ async fn devices_route(State(gateway): State<Arc<Gateway>>, headers: HeaderMap) 
                 .into_response(),
             )
         }
-        Err(error) if error.code == "signed_out" => signed_out(),
+        Err(error) if error.code == "signed_out" => signed_out(gateway.options.secure_cookies),
         Err(error) => upstream_error(error),
     }
 }
@@ -892,7 +1028,7 @@ async fn device_key_route(
     headers: HeaderMap,
 ) -> Response {
     let Some(session) = gateway.session(&headers) else {
-        return signed_out();
+        return signed_out(gateway.options.secure_cookies);
     };
     if !valid_device_id(&device_id) {
         return api_error(
@@ -911,7 +1047,7 @@ async fn device_key_route(
             Json(serde_json::json!({ "deviceId": device_id, "publicKey": public_key }))
                 .into_response(),
         ),
-        Err(error) if error.code == "signed_out" => signed_out(),
+        Err(error) if error.code == "signed_out" => signed_out(gateway.options.secure_cookies),
         Err(error) => upstream_error(error),
     }
 }
@@ -1124,7 +1260,9 @@ async fn cas_route(
                 None,
             );
         }
-        Err(error) if error.code == "signed_out" => return signed_out(),
+        Err(error) if error.code == "signed_out" => {
+            return signed_out(gateway.options.secure_cookies);
+        }
         Err(error) => return upstream_error(error),
     }
     match pool
@@ -1138,12 +1276,14 @@ async fn cas_route(
 
 async fn close_with(mut socket: WebSocket, code: u16, reason: &str) {
     let reason: String = reason.chars().take(110).collect();
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        socket.send(Message::Close(Some(CloseFrame {
             code,
             reason: reason.into(),
-        })))
-        .await;
+        }))),
+    )
+    .await;
 }
 
 /// Releases a pipe slot on drop.
@@ -1277,6 +1417,10 @@ async fn pipe(
     let mut buffer = vec![0u8; PIPE_CHUNK];
     let mut ping = tokio::time::interval(options.ping_interval);
     ping.tick().await;
+    let write_timeout = options
+        .write_timeout
+        .min(options.idle_timeout)
+        .max(Duration::from_millis(1));
     let mut last_traffic = Instant::now();
     let reason = loop {
         tokio::select! {
@@ -1286,13 +1430,17 @@ async fn pipe(
                     Message::Binary(bytes) => {
                         last_traffic = Instant::now();
                         up += bytes.len() as u64;
-                        if writer.write_all(&bytes).await.is_err() {
-                            break "device_write_failed";
+                        match tokio::time::timeout(write_timeout, writer.write_all(&bytes)).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => break "device_write_failed",
+                            Err(_) => break "device_write_timeout",
                         }
                     }
                     Message::Close(_) => break "browser_closed",
                     Message::Text(_) => break "text_frame",
-                    Message::Ping(_) | Message::Pong(_) => {}
+                    Message::Ping(_) | Message::Pong(_) => {
+                        last_traffic = Instant::now();
+                    }
                 }
             }
             read = reader.read(&mut buffer) => {
@@ -1301,8 +1449,15 @@ async fn pipe(
                     Ok(count) => {
                         last_traffic = Instant::now();
                         down += count as u64;
-                        if ws_tx.send(Message::Binary(buffer[..count].to_vec().into())).await.is_err() {
-                            break "browser_write_failed";
+                        match tokio::time::timeout(
+                            write_timeout,
+                            ws_tx.send(Message::Binary(buffer[..count].to_vec().into())),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => break "browser_write_failed",
+                            Err(_) => break "browser_write_timeout",
                         }
                     }
                 }
@@ -1311,19 +1466,29 @@ async fn pipe(
                 if last_traffic.elapsed() > options.idle_timeout {
                     break "idle";
                 }
-                if ws_tx.send(Message::Ping(Vec::new().into())).await.is_err() {
-                    break "browser_write_failed";
+                match tokio::time::timeout(
+                    write_timeout,
+                    ws_tx.send(Message::Ping(Vec::new().into())),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => break "browser_write_failed",
+                    Err(_) => break "browser_write_timeout",
                 }
             }
         }
     };
-    let _ = writer.shutdown().await;
-    let _ = ws_tx
-        .send(Message::Close(Some(CloseFrame {
+    let close_timeout = write_timeout.min(Duration::from_secs(5));
+    let _ = tokio::time::timeout(close_timeout, writer.shutdown()).await;
+    let _ = tokio::time::timeout(
+        close_timeout,
+        ws_tx.send(Message::Close(Some(CloseFrame {
             code: 1000,
             reason: reason.into(),
-        })))
-        .await;
+        }))),
+    )
+    .await;
     (up, down, reason)
 }
 

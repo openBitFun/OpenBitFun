@@ -78,6 +78,8 @@ const OFFLINE_PUMP_INTERVAL_MS: u64 = 5 * 60 * 1000;
 const PENDING_NOTICE_MS: u64 = 2 * 60 * 1000;
 /// Chunks a resume reads at most.
 const MAX_RESUME_CHUNKS: usize = 16;
+/// Holders tracked per pending chunk at most (pinning + cached markers).
+const MAX_CHUNK_HOLDERS: usize = 64;
 
 /// The archive state of one conversation (in its `conv-*` record).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -224,7 +226,12 @@ fn json_len<T: Serialize>(value: &T) -> u64 {
 /// Reads the outbox; an unreadable one is set aside (kept, never deleted).
 pub fn load_outbox(store: &AccountStore) -> Outbox {
     match store.read_json::<Outbox>(OUTBOX_RECORD) {
-        Ok(Some(outbox)) => outbox,
+        Ok(Some(mut outbox)) => {
+            for chunk in &mut outbox.chunks {
+                dedupe_holders(&mut chunk.holders);
+            }
+            outbox
+        }
         Ok(None) => Outbox::default(),
         Err(error) => {
             log::error!("Superagent outbox unreadable, set aside: {}", error);
@@ -612,14 +619,129 @@ struct Batch {
     request: Value,
 }
 
+fn holder_matches(holder: &str, device_id: &str) -> bool {
+    holder == device_id || holder.strip_prefix('~') == Some(device_id)
+}
+
+fn dedupe_holders(holders: &mut Vec<String>) {
+    let mut pinned: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<String> = Vec::with_capacity(holders.len().min(MAX_CHUNK_HOLDERS));
+    for holder in holders.iter() {
+        let holder = holder.trim();
+        if holder.is_empty() || holder.starts_with('~') {
+            continue;
+        }
+        if pinned.insert(holder.to_string()) && out.len() < MAX_CHUNK_HOLDERS {
+            out.push(holder.to_string());
+        }
+    }
+    let mut cached: BTreeSet<String> = BTreeSet::new();
+    for holder in holders.iter() {
+        let Some(id) = holder.trim().strip_prefix('~') else {
+            continue;
+        };
+        if id.is_empty() || pinned.contains(id) {
+            continue;
+        }
+        if cached.insert(id.to_string()) && out.len() < MAX_CHUNK_HOLDERS {
+            out.push(format!("~{id}"));
+        }
+    }
+    *holders = out;
+}
+
+/// Records reported pinning holders and, when `device_id` did not pin, marks it
+/// cached (`~{device_id}`) so it is not pushed again. Deduplicates, upgrades
+/// cached markers on pin, and caps `chunk.holders` at [`MAX_CHUNK_HOLDERS`].
+fn record_chunk_holders(chunk: &mut OutChunk, device_id: &str, reported: &[String]) -> bool {
+    let before = chunk.holders.clone();
+    dedupe_holders(&mut chunk.holders);
+    for holder in reported {
+        let holder = holder.trim();
+        if holder.is_empty() || holder.starts_with('~') {
+            continue;
+        }
+        chunk
+            .holders
+            .retain(|existing| existing.strip_prefix('~') != Some(holder));
+        if chunk.holders.iter().any(|existing| existing == holder) {
+            continue;
+        }
+        if chunk.holders.len() >= MAX_CHUNK_HOLDERS {
+            if let Some(pos) = chunk.holders.iter().position(|h| h.starts_with('~')) {
+                chunk.holders.remove(pos);
+            } else {
+                continue;
+            }
+        }
+        chunk.holders.push(holder.to_string());
+    }
+    if !device_id.is_empty()
+        && !chunk
+            .holders
+            .iter()
+            .any(|holder| holder_matches(holder, device_id))
+        && chunk.holders.len() < MAX_CHUNK_HOLDERS
+    {
+        // Pushed but not pinned there: do not push it again to it.
+        chunk.holders.push(format!("~{device_id}"));
+    }
+    chunk.holders != before
+}
+
+fn record_delivered(row: &Value, pushed_hlc: &Hlc) -> bool {
+    if row.get("stored").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    if row.get("alreadyStored").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let marker = row
+        .get("status")
+        .or_else(|| row.get("reason"))
+        .or_else(|| row.get("error"))
+        .and_then(Value::as_str);
+    if matches!(marker, Some("already_stored" | "older_hlc")) {
+        return true;
+    }
+    if row.get("error").is_none() {
+        if let Some(stamp) = row.get("stamp").and_then(Value::as_str) {
+            let pushed_stamp = format!(
+                "{:016x}-{:08x}-{}",
+                pushed_hlc.wall_ms, pushed_hlc.counter, pushed_hlc.device_id
+            );
+            if stamp >= pushed_stamp.as_str() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn blob_stored(row: &Value) -> bool {
+    if row.get("stored").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    if row.get("alreadyStored").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let marker = row
+        .get("status")
+        .or_else(|| row.get("reason"))
+        .or_else(|| row.get("error"))
+        .and_then(Value::as_str);
+    matches!(marker, Some("already_stored"))
+}
+
 fn batch_for(outbox: &Outbox, device_id: &str) -> Option<Batch> {
     let mut bytes = 0u64;
     let mut chunks: Vec<&OutChunk> = Vec::new();
-    for chunk in outbox
-        .chunks
-        .iter()
-        .filter(|chunk| !chunk.holders.iter().any(|holder| holder == device_id))
-    {
+    for chunk in outbox.chunks.iter().filter(|chunk| {
+        !chunk
+            .holders
+            .iter()
+            .any(|holder| holder_matches(holder, device_id))
+    }) {
         if !chunks.is_empty() && bytes + chunk.bytes > PUSH_BATCH_BYTES {
             break;
         }
@@ -713,18 +835,15 @@ pub async fn pump(engine: &Engine, slot: &Arc<Slot>, force: bool) -> PumpReport 
             {
                 Ok(answer) => answer,
                 Err(error) => {
-                    log::info!(
-                        "Superagent history push failed: device={}, error={}",
-                        device_id,
-                        error
-                    );
+                    log::info!("Superagent history push failed: error={}", error);
                     break;
                 }
             };
-            let progress = apply_answer(slot, device_id, &batch.records, &answer, required).await;
-            report.chunks_held += progress.0;
-            report.records_stored += progress.1;
-            if progress == (0, 0) {
+            let (held, stored_records, holders_changed) =
+                apply_answer(slot, device_id, &batch.records, &answer, required).await;
+            report.chunks_held += held;
+            report.records_stored += stored_records;
+            if held == 0 && stored_records == 0 && !holders_changed {
                 break;
             }
         }
@@ -734,31 +853,32 @@ pub async fn pump(engine: &Engine, slot: &Arc<Slot>, force: bool) -> PumpReport 
 }
 
 /// Applies one push answer; returns (chunks dropped as held, records
-/// stored).
+/// stored, whether any pending chunk's holders changed).
 async fn apply_answer(
     slot: &Arc<Slot>,
     device_id: &str,
     records: &[(String, Hlc)],
     answer: &Value,
     required: usize,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     let mut state = slot.state.lock().await;
     let mut stored_records = 0;
+    let mut holders_changed = false;
     for row in answer
         .get("records")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        if row.get("stored").and_then(Value::as_bool) != Some(true) {
-            continue;
-        }
         let Some(id) = row.get("id").and_then(Value::as_str) else {
             continue;
         };
         let Some((_, hlc)) = records.iter().find(|(pushed, _)| pushed == id) else {
             continue;
         };
+        if !record_delivered(row, hlc) {
+            continue;
+        }
         if let Some(record) = state.outbox.records.get_mut(id) {
             if &record.hlc == hlc && !record.delivered {
                 record.delivered = true;
@@ -772,11 +892,9 @@ async fn apply_answer(
         .into_iter()
         .flatten()
     {
-        if row.get("stored").and_then(Value::as_bool) != Some(true) {
+        if !blob_stored(row) {
             if let Some(error) = row.get("error").and_then(Value::as_str) {
-                log::info!(
-                    "Superagent history chunk not stored: device={device_id}, error={error}"
-                );
+                log::info!("Superagent history chunk not stored: error={error}");
             }
             continue;
         }
@@ -795,14 +913,8 @@ async fn apply_answer(
         if let Some(chunk) = state.outbox.chunks.iter_mut().find(|c| c.hash == hash) {
             // Only pinning holders count: a device that kept the chunk in its
             // cache only (no policy) does not report itself.
-            for holder in reported {
-                if !chunk.holders.contains(&holder) {
-                    chunk.holders.push(holder);
-                }
-            }
-            if !chunk.holders.iter().any(|holder| holder == device_id) {
-                // Pushed but not pinned there: do not push it again to it.
-                chunk.holders.push(format!("~{device_id}"));
+            if record_chunk_holders(chunk, device_id, &reported) {
+                holders_changed = true;
             }
         }
     }
@@ -826,18 +938,20 @@ async fn apply_answer(
         .outbox
         .records
         .retain(|id, record| !record.delivered || pending.contains(id));
-    if held > 0 || stored_records > 0 {
+    if held > 0 || stored_records > 0 || holders_changed {
         if let Err(error) = save_outbox(&slot.store, &state.outbox) {
             log::warn!("Superagent outbox not saved: {}", error);
         }
-        log::info!(
-            "Superagent history stored on devices: chunks={}, records={}, pending_chunks={}",
-            held,
-            stored_records,
-            state.outbox.chunks.len()
-        );
+        if held > 0 || stored_records > 0 {
+            log::info!(
+                "Superagent history stored on devices: chunks={}, records={}, pending_chunks={}",
+                held,
+                stored_records,
+                state.outbox.chunks.len()
+            );
+        }
     }
-    (held, stored_records)
+    (held, stored_records, holders_changed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1063,7 +1177,7 @@ async fn fetch_chunk(
     slot: &Slot,
     devices: &[String],
     hash: &str,
-) -> Option<ArchiveChunk> {
+) -> Option<(ArchiveChunk, u64)> {
     let local = slot.state.lock().await.outbox.chunk_data(hash);
     let bytes = match local {
         Some(bytes) => bytes,
@@ -1095,7 +1209,10 @@ async fn fetch_chunk(
             found?
         }
     };
-    serde_json::from_slice(&bytes).ok()
+    let len = bytes.len() as u64;
+    serde_json::from_slice(&bytes)
+        .ok()
+        .map(|chunk| (chunk, len))
 }
 
 /// Brings a conversation that left the working set back from the devices:
@@ -1136,7 +1253,8 @@ pub async fn resume(engine: &Engine, slot: &Arc<Slot>, id: &str) -> Result<bool,
     let Some(newest_hash) = hashes.last() else {
         return Ok(false);
     };
-    let Some(newest) = fetch_chunk(engine, slot, &devices, newest_hash).await else {
+    let Some((newest, newest_bytes)) = fetch_chunk(engine, slot, &devices, newest_hash).await
+    else {
         return Err(format!(
             "{HISTORY_UNAVAILABLE_OFFLINE}: no online device holds this conversation's history now"
         ));
@@ -1150,7 +1268,7 @@ pub async fn resume(engine: &Engine, slot: &Arc<Slot>, id: &str) -> Result<bool,
             hash: newest_hash.clone(),
             from_seq: newest.from_seq,
             to_seq: newest.to_seq,
-            bytes: 0,
+            bytes: newest_bytes,
         });
     }
     record.message_count = record.message_count.max(newest.to_seq);
@@ -1165,7 +1283,7 @@ pub async fn resume(engine: &Engine, slot: &Arc<Slot>, id: &str) -> Result<bool,
         if reference.to_seq != window_start {
             break;
         }
-        let Some(chunk) = fetch_chunk(engine, slot, &devices, &reference.hash).await else {
+        let Some((chunk, _)) = fetch_chunk(engine, slot, &devices, &reference.hash).await else {
             break;
         };
         let mut older = parse_messages(&chunk.messages);
@@ -1379,5 +1497,226 @@ pub fn history_state(unsaved: u64, pending: bool) -> &'static str {
         (_, true) => "pending",
         (true, false) => "partial",
         (false, false) => "stored",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::slots::{AccountMeta, SlotLimits, Slots};
+    use crate::store::Store;
+
+    fn sample_chunk(hash: &str) -> OutChunk {
+        OutChunk {
+            conversation_id: "c1".into(),
+            hash: hash.into(),
+            from_seq: 0,
+            to_seq: 2,
+            bytes: 128,
+            created_ms: 1000,
+            data: BASE64.encode(b"{}"),
+            holders: Vec::new(),
+        }
+    }
+
+    fn sample_hlc(wall_ms: u64, counter: u32, device: &str) -> Hlc {
+        Hlc {
+            wall_ms,
+            counter,
+            device_id: device.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_tilde_marker_skips_repush_and_does_not_grow_holders() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path(), [9u8; 32]).unwrap());
+        let slots = Slots::new(store, SlotLimits::default());
+        let slot = slots
+            .load(
+                "acct-1",
+                1000,
+                Some(AccountMeta {
+                    version: 1,
+                    account_id: "acct-1".into(),
+                    device_id: "cloud-1".into(),
+                    enabled: true,
+                    ..AccountMeta::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let hlc = sample_hlc(1000, 0, "cloud-1");
+        {
+            let mut state = slot.state.lock().await;
+            state.outbox.chunks.push(sample_chunk("h1"));
+            state.outbox.records.insert(
+                "c1".into(),
+                OutRecord {
+                    value: Some(ArchiveRecord::default()),
+                    hlc: hlc.clone(),
+                    delivered: false,
+                    created_ms: 1000,
+                },
+            );
+        }
+        // First batch for dev-a includes chunk h1.
+        let batch = {
+            let state = slot.state.lock().await;
+            batch_for(&state.outbox, "dev-a").expect("first batch")
+        };
+        assert_eq!(
+            batch.request["request"]["blobs"].as_array().unwrap().len(),
+            1
+        );
+        // Device caches blob without pinning (reports empty holders).
+        let answer = json!({
+            "records": [{ "id": "c1", "stored": true }],
+            "blobs": [{ "hash": "h1", "stored": true, "holders": [] }],
+        });
+        let (held, records_stored, holders_changed) =
+            apply_answer(&slot, "dev-a", &batch.records, &answer, 1).await;
+        assert_eq!(held, 0);
+        assert_eq!(records_stored, 1);
+        assert!(holders_changed);
+        {
+            let state = slot.state.lock().await;
+            assert_eq!(state.outbox.chunks[0].holders, vec!["~dev-a".to_string()]);
+            // Subsequent batch_for dev-a must skip chunk h1 (and delivered record).
+            assert!(batch_for(&state.outbox, "dev-a").is_none());
+            // Another device still receives it.
+            assert!(batch_for(&state.outbox, "dev-b").is_some());
+        }
+        // Even if apply_answer is invoked again for dev-a, holders stays deduped.
+        let (_, _, changed_again) = apply_answer(&slot, "dev-a", &batch.records, &answer, 1).await;
+        assert!(!changed_again);
+        assert_eq!(
+            slot.state.lock().await.outbox.chunks[0].holders,
+            vec!["~dev-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn holders_are_deduped_upgraded_on_pin_and_capped() {
+        let mut chunk = sample_chunk("h1");
+        // Simulate legacy unbounded duplicates.
+        chunk.holders = vec!["~dev-a".into(); 200];
+        let changed = record_chunk_holders(&mut chunk, "dev-a", &[]);
+        assert!(changed);
+        assert_eq!(chunk.holders, vec!["~dev-a".to_string()]);
+        // Later dev-a pins it -> upgrades ~dev-a to dev-a without keeping both.
+        assert!(record_chunk_holders(&mut chunk, "dev-a", &["dev-a".into()]));
+        assert_eq!(chunk.holders, vec!["dev-a".to_string()]);
+        // Flood of distinct reported holders is capped at MAX_CHUNK_HOLDERS.
+        let many: Vec<String> = (0..MAX_CHUNK_HOLDERS * 2)
+            .map(|i| format!("dev-{i}"))
+            .collect();
+        record_chunk_holders(&mut chunk, "dev-extra", &many);
+        assert_eq!(chunk.holders.len(), MAX_CHUNK_HOLDERS);
+    }
+
+    #[test]
+    fn legacy_outbox_with_duplicate_holders_is_deduped_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), [5u8; 32]).unwrap();
+        let account = store.account("acct-legacy", true).unwrap();
+        let mut outbox = Outbox::default();
+        let mut chunk = sample_chunk("h1");
+        chunk.holders = vec![
+            "~dev-a".into(),
+            "~dev-a".into(),
+            "dev-a".into(),
+            "~dev-b".into(),
+            "~dev-b".into(),
+        ];
+        outbox.chunks.push(chunk);
+        save_outbox(&account, &outbox).unwrap();
+        let loaded = load_outbox(&account);
+        assert_eq!(
+            loaded.chunks[0].holders,
+            vec!["dev-a".to_string(), "~dev-b".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn retried_push_reported_already_stored_marks_record_delivered() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path(), [11u8; 32]).unwrap());
+        let slots = Slots::new(store, SlotLimits::default());
+        let slot = slots
+            .load(
+                "acct-2",
+                2000,
+                Some(AccountMeta {
+                    version: 1,
+                    account_id: "acct-2".into(),
+                    device_id: "cloud-2".into(),
+                    enabled: true,
+                    ..AccountMeta::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let cases = [
+            (
+                "c-already-bool",
+                json!({ "id": "c-already-bool", "stored": false, "alreadyStored": true }),
+            ),
+            (
+                "c-already-status",
+                json!({ "id": "c-already-status", "stored": false, "status": "already_stored" }),
+            ),
+            (
+                "c-older-hlc",
+                json!({ "id": "c-older-hlc", "stored": false, "reason": "older_hlc" }),
+            ),
+            (
+                "c-newer-stamp",
+                json!({
+                    "id": "c-newer-stamp",
+                    "stored": false,
+                    "stamp": format!("{:016x}-{:08x}-other", 3000u64, 0u32),
+                }),
+            ),
+        ];
+        let hlc = sample_hlc(2000, 1, "cloud-2");
+        let mut pushed = Vec::new();
+        {
+            let mut state = slot.state.lock().await;
+            for (id, _) in &cases {
+                state.outbox.records.insert(
+                    (*id).into(),
+                    OutRecord {
+                        value: Some(ArchiveRecord::default()),
+                        hlc: hlc.clone(),
+                        delivered: false,
+                        created_ms: 2000,
+                    },
+                );
+                pushed.push(((*id).to_string(), hlc.clone()));
+            }
+            // Genuine error must NOT be marked delivered.
+            state.outbox.records.insert(
+                "c-err".into(),
+                OutRecord {
+                    value: Some(ArchiveRecord::default()),
+                    hlc: hlc.clone(),
+                    delivered: false,
+                    created_ms: 2000,
+                },
+            );
+            pushed.push(("c-err".to_string(), hlc.clone()));
+        }
+        let mut rows: Vec<Value> = cases.iter().map(|(_, row)| row.clone()).collect();
+        rows.push(json!({ "id": "c-err", "stored": false, "error": "replica_full" }));
+        let answer = json!({ "records": rows, "blobs": [] });
+        let (_, stored, _) = apply_answer(&slot, "dev-a", &pushed, &answer, 1).await;
+        assert_eq!(stored, cases.len());
+        let state = slot.state.lock().await;
+        for (id, _) in &cases {
+            assert!(!state.outbox.records.contains_key(*id), "{id} should drain");
+        }
+        assert!(state.outbox.records.contains_key("c-err"));
+        assert!(!state.outbox.records["c-err"].delivered);
     }
 }

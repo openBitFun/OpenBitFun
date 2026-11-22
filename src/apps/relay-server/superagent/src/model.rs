@@ -155,13 +155,21 @@ struct PollAnswer {
     result: Option<RelayResultWire>,
 }
 
+fn is_holder_lost_refusal(code_or_message: &str) -> bool {
+    code_or_message.starts_with("fleet_model_unknown_request")
+        || code_or_message.starts_with("fleet_model_busy")
+        || code_or_message.starts_with("fleet_model_unavailable")
+}
+
 impl RelayResultWire {
     fn into_reply(self) -> Result<ModelReply, ModelError> {
         if let Some(error) = self.error {
-            return Err(ModelError::Failed(format!(
-                "{}: {}",
-                error.code, error.message
-            )));
+            let formatted = format!("{}: {}", error.code, error.message);
+            return Err(if is_holder_lost_refusal(&error.code) {
+                ModelError::HolderLost(formatted)
+            } else {
+                ModelError::Failed(formatted)
+            });
         }
         Ok(ModelReply {
             text: self.text,
@@ -185,8 +193,9 @@ impl RelayResultWire {
 
 fn lost(error: RpcError) -> ModelError {
     match error {
-        // The holder forgot the request (it restarted): another holder runs it.
-        RpcError::Refused(message) if message.starts_with("fleet_model_unknown_request") => {
+        // The holder forgot the request (it restarted), is busy, or its model
+        // relay is unavailable: another holder runs the round.
+        RpcError::Refused(message) if is_holder_lost_refusal(&message) => {
             ModelError::HolderLost(message)
         }
         RpcError::Refused(message) => ModelError::Failed(message),
@@ -282,5 +291,124 @@ impl ModelHolder for RelayModel {
                 )
                 .await;
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::DeviceSnapshot;
+
+    #[test]
+    fn busy_and_unavailable_refusals_trigger_failover() {
+        assert!(matches!(
+            lost(RpcError::Refused(
+                "fleet_model_busy: already running 4 rounds".into()
+            )),
+            ModelError::HolderLost(_)
+        ));
+        assert!(matches!(
+            lost(RpcError::Refused(
+                "fleet_model_unavailable: provider not ready".into()
+            )),
+            ModelError::HolderLost(_)
+        ));
+        assert!(matches!(
+            lost(RpcError::Refused(
+                "fleet_model_unknown_request: gone".into()
+            )),
+            ModelError::HolderLost(_)
+        ));
+        assert!(matches!(
+            lost(RpcError::Refused(
+                "fleet_model_invalid_request: bad prompt".into()
+            )),
+            ModelError::Failed(_)
+        ));
+        assert!(matches!(
+            lost(RpcError::Refused(
+                "fleet_model_provider_error: quota exceeded".into()
+            )),
+            ModelError::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn relay_result_unavailable_and_busy_map_to_holder_lost() {
+        let unavailable = RelayResultWire {
+            error: Some(RelayErrorWire {
+                code: "fleet_model_unavailable".into(),
+                message: "no provider".into(),
+            }),
+            ..RelayResultWire::default()
+        };
+        assert!(matches!(
+            unavailable.into_reply(),
+            Err(ModelError::HolderLost(_))
+        ));
+
+        let busy = RelayResultWire {
+            error: Some(RelayErrorWire {
+                code: "fleet_model_busy".into(),
+                message: "saturated".into(),
+            }),
+            ..RelayResultWire::default()
+        };
+        assert!(matches!(busy.into_reply(), Err(ModelError::HolderLost(_))));
+
+        let provider_err = RelayResultWire {
+            error: Some(RelayErrorWire {
+                code: "fleet_model_provider_error".into(),
+                message: "rate limited".into(),
+            }),
+            ..RelayResultWire::default()
+        };
+        assert!(matches!(
+            provider_err.into_reply(),
+            Err(ModelError::Failed(_))
+        ));
+    }
+
+    struct StubRpc(Result<Value, RpcError>);
+
+    impl DeviceRpc for StubRpc {
+        fn devices<'a>(
+            &'a self,
+            _account_id: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<DeviceSnapshot>, RpcError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            _command: &'a str,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<Value, RpcError>> {
+            let outcome = self.0.clone();
+            Box::pin(async move { outcome })
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_model_run_maps_busy_start_to_holder_lost() {
+        let model = RelayModel::new(Arc::new(StubRpc(Err(RpcError::Refused(
+            "fleet_model_busy: busy".into(),
+        )))));
+        let request = ModelRequest {
+            request_id: "r1".into(),
+            model: None,
+            system: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            max_output_tokens: 128,
+        };
+        let sink: DeltaSink = Arc::new(|_| {});
+        let err = model
+            .run("acct", "dev-1", &request, sink)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ModelError::HolderLost(_)), "{err:?}");
     }
 }

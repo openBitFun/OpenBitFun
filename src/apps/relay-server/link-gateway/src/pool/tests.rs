@@ -714,3 +714,218 @@ async fn a_busy_device_is_retried_and_one_without_a_bundle_says_so() {
     assert_eq!(f.get(&other).await.unwrap_err(), PullError::NoBundle);
     assert_eq!(f.device.opens.load(Ordering::SeqCst), opens + 1);
 }
+
+#[tokio::test]
+async fn pool_rate_limit_does_not_wipe_active_accounts_at_capacity() {
+    let f = fixture(PoolOptions {
+        pulls_per_account_per_minute: 2,
+        ..PoolOptions::default()
+    });
+    *f.pool.rates.lock().unwrap() = RateWindow::with_limits(2, Duration::from_secs(60));
+    let a1 = f.device.add(b"a1", false);
+    let a2 = f.device.add(b"a2", false);
+    let a3 = f.device.add(b"a3", false);
+    let b1 = f.device.add(b"b1", false);
+    let c1 = f.device.add(b"c1", false);
+
+    // Exhaust acct-a (2 pulls) and occupy the 2nd key slot with acct-b.
+    f.pool
+        .fetch(&a1, "acct-a", "desk-a", &f.streams)
+        .await
+        .unwrap();
+    f.pool
+        .fetch(&a2, "acct-a", "desk-a", &f.streams)
+        .await
+        .unwrap();
+    f.pool
+        .fetch(&b1, "acct-b", "desk-b", &f.streams)
+        .await
+        .unwrap();
+
+    // A 3rd distinct account is refused while the window table is full of active keys,
+    // and acct-a's exhausted counter is NOT wiped.
+    assert!(matches!(
+        f.pool.fetch(&c1, "acct-c", "desk-c", &f.streams).await,
+        Err(PullError::Busy(_))
+    ));
+    assert!(matches!(
+        f.pool.fetch(&a3, "acct-a", "desk-a", &f.streams).await,
+        Err(PullError::Busy(_))
+    ));
+}
+
+#[tokio::test]
+async fn eviction_skips_victim_recommitted_while_waiting_for_shard_lock() {
+    let f = fixture(PoolOptions {
+        max_total_bytes: 2000,
+        ..PoolOptions::default()
+    });
+    let a = f.device.add(&[b'a'; 1000], false);
+    let b = f.device.add(&[b'b'; 1000], false);
+    let c = f.device.add(&[b'c'; 1000], false);
+
+    f.now.store(START + 10, Ordering::SeqCst);
+    f.get(&a).await.unwrap();
+    f.now.store(START + 20, Ordering::SeqCst);
+    f.get(&b).await.unwrap();
+
+    // Hold `a`'s shard lock so `evict_to_cap` (which selects oldest `a`) must
+    // wait on `a`'s shard lock before removing/deleting `a`.
+    let a_guard = f.pool.hash_lock(&a).lock().await;
+    f.now.store(START + 30, Ordering::SeqCst);
+    let temp = f.pool.temp_path();
+    tokio::fs::write(&temp, [b'c'; 1000]).await.unwrap();
+    // Commit `c` only if `c` is on a different shard from `a`; insert `c`
+    // directly if it happened to collide with `a`'s shard.
+    let evict_task = {
+        let pool = Arc::clone(&f.pool);
+        let c_hash = c.clone();
+        if &c[..2] != &a[..2] {
+            tokio::spawn(async move {
+                pool.commit(&c_hash, &temp, 1000, false).await.unwrap();
+            })
+        } else {
+            tokio::fs::create_dir_all(f.root.join(&c[..2]))
+                .await
+                .unwrap();
+            let entry = Entry {
+                size: 1000,
+                br: false,
+                stored_at: START + 30,
+                last_used: START + 30,
+                persisted_last_used: START + 30,
+                generation: 0,
+            };
+            f.pool.write_meta(&c, &meta_of(&entry)).await.unwrap();
+            tokio::fs::rename(&temp, f.pool.path_of(&c)).await.unwrap();
+            f.pool.index.lock().unwrap().insert(c.clone(), entry);
+            tokio::spawn(async move {
+                pool.evict_to_cap(&c_hash).await;
+            })
+        }
+    };
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    // Simulate a concurrent re-commit of `a` while `evict_to_cap` waited for
+    // `a`'s shard lock: `a` gets a newer generation and `last_used`.
+    {
+        let mut index = f.pool.index.lock().unwrap();
+        index.insert(
+            a.clone(),
+            Entry {
+                size: 1000,
+                br: false,
+                stored_at: START + 40,
+                last_used: START + 40,
+                persisted_last_used: START + 40,
+                generation: 0,
+            },
+        );
+    }
+    drop(a_guard);
+    evict_task.await.unwrap();
+
+    // `a` must still be indexed AND present on disk; `b` (now oldest) was evicted instead.
+    assert!(f.pool.contains(&a));
+    assert!(f.pool.contains(&c));
+    assert!(!f.pool.contains(&b));
+    assert!(f.pool.path_of(&a).is_file());
+    assert!(f.pool.meta_path_of(&a).is_file());
+    assert!(!f.pool.path_of(&b).exists());
+    assert!(!f.pool.meta_path_of(&b).exists());
+    assert_eq!(f.pool.usage(), (2, 2000));
+}
+
+#[tokio::test]
+async fn eviction_vs_recommit_and_touch_race_keeps_index_and_disk_consistent() {
+    let f = fixture(PoolOptions {
+        max_total_bytes: 300,
+        touch_interval: Duration::from_secs(0),
+        pulls_per_account_per_minute: 10_000,
+        concurrent_pulls_per_account: 16,
+        concurrent_pulls: 32,
+        ..PoolOptions::default()
+    });
+    let hashes: Vec<String> = (0u8..10)
+        .map(|i| f.device.add(&vec![i; 100], false))
+        .collect();
+
+    let mut tasks = Vec::new();
+    for worker in 0..8usize {
+        let pool = Arc::clone(&f.pool);
+        let streams = Arc::clone(&f.streams);
+        let now = Arc::clone(&f.now);
+        let hashes = hashes.clone();
+        tasks.push(tokio::spawn(async move {
+            for step in 0..25usize {
+                now.fetch_add(1, Ordering::SeqCst);
+                let hash = &hashes[(worker * 7 + step) % hashes.len()];
+                if let Ok(mut stored) = pool.fetch(hash, "acct-a", "desk-a", &streams).await {
+                    let mut buf = Vec::new();
+                    let _ = stored.file.read_to_end(&mut buf).await;
+                    assert_eq!(buf.len(), 100);
+                }
+                if step % 5 == 0 {
+                    let _ = pool.lookup(hash).await;
+                }
+            }
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    // Verify full index <-> disk consistency and zero orphaned files.
+    let (indexed_hashes, indexed_total) = {
+        let index = f.pool.index.lock().unwrap();
+        assert_eq!(index.by_age.len(), index.entries.len());
+        let sum: u64 = index.entries.values().map(|e| e.size).sum();
+        assert_eq!(sum, index.total);
+        assert!(index.total <= 300, "total {} exceeded cap", index.total);
+        (
+            index
+                .entries
+                .keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>(),
+            index.total,
+        )
+    };
+    for hash in &indexed_hashes {
+        let data = std::fs::read(f.pool.path_of(hash)).expect("indexed data file exists");
+        assert_eq!(sha(&data), *hash);
+        assert!(
+            f.pool.meta_path_of(hash).is_file(),
+            "indexed meta file exists"
+        );
+    }
+    // Walk shard directories and ensure no orphaned file or sidecar remains.
+    let mut disk_data_files = 0usize;
+    for shard in std::fs::read_dir(&f.root).unwrap().flatten() {
+        let name = shard.file_name().to_string_lossy().to_string();
+        if name == "tmp" || !shard.path().is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(shard.path()).unwrap().flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if let Some(hash) = fname.strip_suffix(".meta") {
+                assert!(
+                    indexed_hashes.contains(hash),
+                    "orphaned sidecar on disk: {hash}"
+                );
+            } else {
+                assert!(
+                    indexed_hashes.contains(&fname),
+                    "orphaned data file on disk: {fname}"
+                );
+                disk_data_files += 1;
+            }
+        }
+    }
+    assert_eq!(disk_data_files, indexed_hashes.len());
+    let reopened = f.reopen(PoolOptions {
+        max_total_bytes: 300,
+        ..PoolOptions::default()
+    });
+    assert_eq!(reopened.usage(), (indexed_hashes.len(), indexed_total));
+}

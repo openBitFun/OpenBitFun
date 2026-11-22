@@ -595,7 +595,9 @@ async fn limits_busy_networks_unreachable_devices_and_idle_pipes_close_explicitl
     let mut second = harness.pipe("desk-a", Some(&cookie), ORIGIN).await.unwrap();
     assert_eq!(close_code(&mut second).await.0, 4429);
 
-    // The first pipe goes silent: the gateway pings, then closes it as idle.
+    // The first pipe stops answering pings (simulating a half-open socket):
+    // do not poll `first` until after `idle_timeout` so tungstenite sends no Pong.
+    tokio::time::sleep(Duration::from_millis(550)).await;
     let (code, reason) = close_code(&mut first).await;
     assert_eq!((code, reason.as_str()), (1000, "idle"));
 
@@ -1064,4 +1066,428 @@ async fn devices_route_ranks_with_probes_and_lists_the_cloud_node_last() {
     let (code, reason) = close_code(&mut socket).await;
     assert_eq!(code, 4403, "{reason}");
     assert_eq!(harness.streams.opens.load(Ordering::SeqCst), opens);
+}
+
+#[test]
+fn client_ip_trusts_proxy_headers_only_from_loopback_and_uses_rightmost_xff() {
+    let loopback_v4: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+    let loopback_v6: SocketAddr = "[::1]:40000".parse().unwrap();
+    let external: SocketAddr = "198.51.100.42:40000".parse().unwrap();
+
+    // Loopback + X-Real-IP wins over X-Forwarded-For.
+    let mut headers = HeaderMap::new();
+    headers.insert("x-real-ip", "203.0.113.10".parse().unwrap());
+    headers.insert("x-forwarded-for", "1.1.1.1, 198.51.100.2".parse().unwrap());
+    assert_eq!(client_ip(&headers, Some(loopback_v4)), "203.0.113.10");
+
+    // Loopback + spoofed leftmost XFF: rightmost entry is used, never leftmost.
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "1.2.3.4, 203.0.113.5".parse().unwrap());
+    assert_eq!(client_ip(&headers, Some(loopback_v4)), "203.0.113.5");
+
+    // Loopback IPv6 + multiple XFF header lines: rightmost of the last header.
+    let mut headers = HeaderMap::new();
+    headers.append("x-forwarded-for", "1.2.3.4".parse().unwrap());
+    headers.append("x-forwarded-for", "5.6.7.8, 203.0.113.9".parse().unwrap());
+    assert_eq!(client_ip(&headers, Some(loopback_v6)), "203.0.113.9");
+
+    // Invalid rightmost XFF falls back to peer, never walks left to spoofed IP.
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "1.2.3.4, not-an-ip".parse().unwrap());
+    assert_eq!(client_ip(&headers, Some(loopback_v4)), "127.0.0.1");
+
+    // Non-loopback peer ignores both X-Real-IP and X-Forwarded-For.
+    let mut headers = HeaderMap::new();
+    headers.insert("x-real-ip", "1.1.1.1".parse().unwrap());
+    headers.insert("x-forwarded-for", "2.2.2.2".parse().unwrap());
+    assert_eq!(client_ip(&headers, Some(external)), "198.51.100.42");
+
+    // Missing peer ignores headers and returns "unknown".
+    assert_eq!(client_ip(&headers, None), "unknown");
+}
+
+#[tokio::test]
+async fn spoofed_leftmost_xff_cannot_bypass_code_rate_limit() {
+    let harness = harness(GatewayOptions {
+        code_requests_per_minute: 2,
+        ..GatewayOptions::default()
+    })
+    .await;
+    let mut statuses = Vec::new();
+    for spoofed in ["10.0.0.1", "10.0.0.2", "10.0.0.3"] {
+        let xff = format!("{spoofed}, 203.0.113.7");
+        let status = harness
+            .http
+            .post(harness.url("/obp/api/v1/auth/code"))
+            .header("origin", ORIGIN)
+            .header("x-forwarded-for", xff)
+            .json(&serde_json::json!({ "email": "a@example.com" }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16();
+        statuses.push(status);
+    }
+    assert_eq!(statuses, vec![200, 200, 429]);
+}
+
+#[tokio::test]
+async fn verify_drops_challenge_after_five_failed_attempts() {
+    let harness = harness(GatewayOptions {
+        verify_requests_per_minute: 50,
+        ..GatewayOptions::default()
+    })
+    .await;
+    let pubkey = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
+
+    // Four bad attempts still allow a valid 5th attempt.
+    let code: serde_json::Value = harness
+        .http
+        .post(harness.url("/obp/api/v1/auth/code"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({ "email": "ok5@example.com" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let challenge_ok = code["challengeId"].as_str().unwrap().to_string();
+    for _ in 0..4 {
+        let resp = harness
+            .http
+            .post(harness.url("/obp/api/v1/auth/verify"))
+            .header("origin", ORIGIN)
+            .json(&serde_json::json!({
+                "challengeId": challenge_ok,
+                "code": "00000000",
+                "device": { "deviceId": "web-ok5", "publicKey": pubkey },
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+    let fifth_ok = harness
+        .http
+        .post(harness.url("/obp/api/v1/auth/verify"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({
+            "challengeId": challenge_ok,
+            "code": "12345678",
+            "device": { "deviceId": "web-ok5", "publicKey": pubkey },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fifth_ok.status(), 200);
+
+    // Five bad attempts drop the challenge so even the right code fails on the 6th.
+    let code: serde_json::Value = harness
+        .http
+        .post(harness.url("/obp/api/v1/auth/code"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({ "email": "drop@example.com" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let challenge_drop = code["challengeId"].as_str().unwrap().to_string();
+    for _ in 0..5 {
+        let resp = harness
+            .http
+            .post(harness.url("/obp/api/v1/auth/verify"))
+            .header("origin", ORIGIN)
+            .json(&serde_json::json!({
+                "challengeId": challenge_drop,
+                "code": "00000000",
+                "device": { "deviceId": "web-drop", "publicKey": pubkey },
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+    let sixth_right = harness
+        .http
+        .post(harness.url("/obp/api/v1/auth/verify"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({
+            "challengeId": challenge_drop,
+            "code": "12345678",
+            "device": { "deviceId": "web-drop", "publicKey": pubkey },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sixth_right.status(), 400);
+    let body: serde_json::Value = sixth_right.json().await.unwrap();
+    assert_eq!(body["error"], "invalid_code");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("expired"),
+        "{body}"
+    );
+}
+
+#[test]
+fn rate_window_prunes_expired_and_refuses_new_keys_without_wiping_active_counters() {
+    let t0 = Instant::now();
+    let mut window = RateWindow::with_limits(3, Duration::from_secs(60));
+
+    // Fill 3 active keys; k1 hits its limit of 2.
+    assert!(window.allow_at("k1", 2, t0));
+    assert!(window.allow_at("k1", 2, t0));
+    assert!(!window.allow_at("k1", 2, t0));
+    assert!(window.allow_at("k2", 2, t0 + Duration::from_secs(30)));
+    assert!(window.allow_at("k3", 2, t0 + Duration::from_secs(30)));
+    assert_eq!(window.len(), 3);
+
+    // At capacity with all active windows: new key is refused, existing blocked
+    // key stays blocked (no global wipe), existing key under limit still works.
+    let t1 = t0 + Duration::from_secs(40);
+    assert!(!window.allow_at("k4", 2, t1));
+    assert!(!window.allow_at("k1", 2, t1));
+    assert!(window.allow_at("k2", 2, t1));
+    assert!(!window.allow_at("k2", 2, t1));
+    assert_eq!(window.len(), 3);
+
+    // Once k1 expires (t0 + 61s), pruning frees k1's slot while keeping k2's
+    // active rate-limited counter intact.
+    let t2 = t0 + Duration::from_secs(61);
+    assert!(window.allow_at("k4", 2, t2));
+    assert!(!window.allow_at("k2", 2, t2));
+    assert_eq!(window.len(), 3);
+
+    // Once k2 and k3 also expire (t0 + 91s), pruning clears them too.
+    let t3 = t0 + Duration::from_secs(91);
+    assert!(window.allow_at("k5", 2, t3));
+    assert_eq!(window.len(), 2);
+}
+
+#[tokio::test]
+async fn pipe_pong_keeps_quiet_healthy_browser_alive() {
+    let harness = harness(GatewayOptions {
+        ping_interval: Duration::from_millis(60),
+        idle_timeout: Duration::from_millis(220),
+        ..GatewayOptions::default()
+    })
+    .await;
+    let cookie = harness.sign_in("a@example.com", "web-a").await;
+    let mut socket = harness.pipe("desk-a", Some(&cookie), ORIGIN).await.unwrap();
+
+    // Pump the socket for well over `idle_timeout`: tungstenite answers each
+    // gateway Ping with Pong, updating pipe liveness so the pipe stays open.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(450);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(50), socket.next()).await {
+            Ok(Some(Ok(WsMessage::Ping(_)))) => {}
+            Ok(Some(Ok(WsMessage::Close(frame)))) => {
+                panic!("healthy pipe closed while answering pings: {frame:?}")
+            }
+            Ok(None) => panic!("healthy pipe closed unexpectedly"),
+            Ok(Some(Err(err))) => panic!("unexpected ws error: {err}"),
+            _ => {}
+        }
+    }
+
+    // Confirm data still flows after the quiet period.
+    socket
+        .send(WsMessage::Binary(b"still-alive".to_vec().into()))
+        .await
+        .unwrap();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        {
+            WsMessage::Binary(bytes) => {
+                assert_eq!(bytes.as_ref(), b"still-alive");
+                break;
+            }
+            WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn pipe_closes_when_device_write_stalls_past_write_timeout() {
+    struct StalledDevice;
+    impl DeviceStreams for StalledDevice {
+        fn open<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+        ) -> BoxFuture<'a, Result<Box<dyn crate::upstream::DeviceIo>, StreamError>> {
+            Box::pin(async {
+                // Tiny duplex whose far end is held open and never read, so
+                // `writer.write_all` blocks until `write_timeout` fires.
+                let (near, far) = tokio::io::duplex(16);
+                tokio::spawn(async move {
+                    let _keep_open = far;
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                });
+                Ok(Box::new(near) as Box<dyn crate::upstream::DeviceIo>)
+            })
+        }
+
+        fn online<'a>(
+            &'a self,
+            _account_id: &'a str,
+        ) -> BoxFuture<'a, Result<HashMap<String, OnlineMember>, StreamError>> {
+            Box::pin(async { Ok(HashMap::new()) })
+        }
+    }
+
+    openbitfun_services_core::tls_provider::ensure_ring_crypto_provider();
+    let gateway = Gateway::new(
+        Arc::new(FakeAccounts),
+        Arc::new(StalledDevice),
+        SessionSealer::from_issuer_key(&[3; 32]),
+        GatewayOptions {
+            origins: vec![ORIGIN.to_string()],
+            secure_cookies: false,
+            ping_interval: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(30),
+            write_timeout: Duration::from_millis(120),
+            ..GatewayOptions::default()
+        },
+        None,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = gateway.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let http = reqwest::Client::new();
+    let code: serde_json::Value = http
+        .post(format!("http://{addr}/obp/api/v1/auth/code"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({ "email": "a@example.com" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let verify = http
+        .post(format!("http://{addr}/obp/api/v1/auth/verify"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({
+            "challengeId": code["challengeId"],
+            "code": "12345678",
+            "device": { "deviceId": "web-a", "publicKey": base64::engine::general_purpose::STANDARD.encode([9u8; 32]) },
+        }))
+        .send()
+        .await
+        .unwrap();
+    let cookie = verify
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let mut req = format!("ws://{addr}/obp/desk-a")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut().insert("origin", ORIGIN.parse().unwrap());
+    req.headers_mut().insert("cookie", cookie.parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    socket
+        .send(WsMessage::Binary(vec![b'z'; 1024].into()))
+        .await
+        .unwrap();
+    let (code, reason) = close_code(&mut socket).await;
+    assert_eq!((code, reason.as_str()), (1000, "device_write_timeout"));
+    for _ in 0..50 {
+        if gateway.open_pipes() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(gateway.open_pipes(), 0);
+}
+
+#[tokio::test]
+async fn signed_out_honors_secure_cookies_option() {
+    // Insecure cookies (local HTTP dev): clear cookies must omit `Secure`.
+    let insecure = harness(GatewayOptions::default()).await;
+    let resp = insecure
+        .http
+        .get(insecure.url("/obp/api/v1/devices"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+    let cookies: Vec<String> = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(cookies.len(), 2);
+    assert!(
+        cookies.iter().all(|c| !c.contains("; Secure")),
+        "{cookies:?}"
+    );
+
+    // Secure cookies (production HTTPS): clear cookies must include `Secure`.
+    let gateway = Gateway::new(
+        Arc::new(FakeAccounts),
+        Arc::new(FakeStreams::default()),
+        SessionSealer::from_issuer_key(&[3; 32]),
+        GatewayOptions {
+            origins: vec![ORIGIN.to_string()],
+            secure_cookies: true,
+            ..GatewayOptions::default()
+        },
+        None,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = gateway.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/obp/api/v1/devices"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+    let cookies: Vec<String> = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(cookies.len(), 2);
+    assert!(
+        cookies.iter().all(|c| c.contains("; Secure")),
+        "{cookies:?}"
+    );
 }

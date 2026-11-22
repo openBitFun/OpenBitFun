@@ -18,10 +18,13 @@ mod app;
 mod pool;
 mod probe;
 mod session;
+#[path = "../../shared_issuer.rs"]
+mod shared_issuer;
 mod upstream;
 
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -111,71 +114,6 @@ struct Args {
     ui_pool_pulls_per_minute: u32,
 }
 
-/// Gateway membership minted from the issuer key (this host holds it).
-struct IssuerKeyNetworks {
-    key: [u8; 32],
-    relay: String,
-}
-
-impl openbitfun_link::gateway::GatewayNetworks for IssuerKeyNetworks {
-    fn member(
-        &self,
-        account_id: &str,
-        member_id: &str,
-    ) -> Result<openbitfun_link::MeshCredentials, String> {
-        use openbitfun_relay_service::link_token::JoinTokenSigner;
-        use openbitfun_relay_service::mesh_issuer::derive_account_network;
-        let network = derive_account_network(&self.key, account_id);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_secs() as i64)
-            .unwrap_or_default();
-        let (token, claims) = JoinTokenSigner::from_issuer_key(&self.key).mint(
-            &network.network_name,
-            account_id,
-            member_id,
-            now,
-        );
-        Ok(openbitfun_link::MeshCredentials {
-            version: 1,
-            network_name: network.network_name,
-            network_secret: network.network_secret,
-            peers: vec![self.relay.clone()],
-            easytier_version: None,
-            issued_at: Some(now),
-            join_token: Some(token),
-            join_token_expires_at: Some(claims.exp),
-        })
-    }
-}
-
-fn read_issuer_key(path: &str) -> anyhow::Result<[u8; 32]> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(path)
-            .with_context(|| format!("cannot read the issuer key file {path}"))?
-            .permissions()
-            .mode();
-        anyhow::ensure!(
-            mode & 0o077 == 0,
-            "the issuer key file {path} must not be readable by group or others (chmod 600)"
-        );
-    }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read the issuer key file {path}"))?;
-    let text = text.trim();
-    anyhow::ensure!(
-        text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "the issuer key file must hold exactly 64 hex characters"
-    );
-    let mut key = [0u8; 32];
-    for (index, chunk) in text.as_bytes().chunks(2).enumerate() {
-        key[index] = u8::from_str_radix(std::str::from_utf8(chunk)?, 16)?;
-    }
-    Ok(key)
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -192,12 +130,12 @@ async fn main() -> anyhow::Result<()> {
             args.listen
         );
     }
-    let key = read_issuer_key(&args.issuer_key_file)?;
+    let key = shared_issuer::read_issuer_key(Path::new(&args.issuer_key_file))?;
     let link = openbitfun_link::gateway::LinkGateway::new(
-        Arc::new(IssuerKeyNetworks {
+        Arc::new(shared_issuer::IssuerKeyNetworks::new(
             key,
-            relay: args.relay_node.clone(),
-        }),
+            args.relay_node.clone(),
+        )),
         &args.member,
         openbitfun_link::gateway::GatewayLimits {
             max_accounts: args.max_accounts,
@@ -265,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
             .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(async {
-        shutdown_signal().await;
+        shared_issuer::shutdown_signal().await;
     })
     .await?;
     log::info!("Link gateway stopping");
@@ -273,22 +211,4 @@ async fn main() -> anyhow::Result<()> {
         .await
         .ok();
     Ok(())
-}
-
-#[cfg(unix)]
-async fn shutdown_signal() {
-    let Ok(mut sigterm) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-    else {
-        let _ = tokio::signal::ctrl_c().await;
-        return;
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = sigterm.recv() => {}
-    }
-}
-
-#[cfg(not(unix))]
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
 }

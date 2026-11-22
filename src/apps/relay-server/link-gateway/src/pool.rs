@@ -25,7 +25,7 @@
 //!   at most once per `touch_interval`. A daily cleanup deletes files not
 //!   used for `max_age`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,6 +36,7 @@ use sha2::Digest;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 
+use crate::app::RateWindow;
 use crate::upstream::{BoxFuture, DeviceStreams, StreamError};
 
 /// Unix seconds now (mockable in tests).
@@ -174,6 +175,9 @@ struct Entry {
     last_used: i64,
     /// The last use the sidecar holds.
     persisted_last_used: i64,
+    /// Monotonic commit generation so stale `lookup`/`evict` ops never
+    /// forget or evict a freshly re-committed version of the same hash.
+    generation: u64,
 }
 
 /// Who started a pull (a follower whose own device differs may retry).
@@ -185,10 +189,7 @@ struct FlightKey {
 
 type Flight = Shared<BoxFuture<'static, Result<(), PullError>>>;
 
-struct RateWindow {
-    started: Instant,
-    counts: HashMap<String, u32>,
-}
+const HASH_LOCK_SHARDS: usize = 256;
 
 /// Counts and bytes the cleanup removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -203,6 +204,11 @@ pub(crate) struct UiPool {
     options: PoolOptions,
     clock: Clock,
     index: Mutex<Index>,
+    /// Per-shard async locks serializing disk mutations (`commit`, sidecar
+    /// `touch`, cap eviction, and `cleanup`) for hashes in the same shard.
+    /// Never hold more than one shard lock at a time, and always lock a shard
+    /// before `index`.
+    hash_locks: Box<[tokio::sync::Mutex<()>]>,
     flights: Mutex<HashMap<String, (FlightKey, Flight)>>,
     rates: Mutex<RateWindow>,
     account_slots: Mutex<HashMap<String, Arc<Semaphore>>>,
@@ -213,7 +219,62 @@ pub(crate) struct UiPool {
 #[derive(Default)]
 struct Index {
     entries: HashMap<String, Entry>,
+    /// `(last_used, hash)` kept in sync with `entries` for O(log N) eviction.
+    by_age: BTreeSet<(i64, String)>,
     total: u64,
+    next_generation: u64,
+}
+
+impl Index {
+    fn insert(&mut self, hash: String, mut entry: Entry) -> u64 {
+        self.next_generation = self.next_generation.wrapping_add(1);
+        let generation = self.next_generation;
+        entry.generation = generation;
+        if let Some(old) = self.entries.insert(hash.clone(), entry.clone()) {
+            self.total = self.total.saturating_sub(old.size);
+            self.by_age.remove(&(old.last_used, hash.clone()));
+        }
+        self.total += entry.size;
+        self.by_age.insert((entry.last_used, hash));
+        generation
+    }
+
+    fn remove(&mut self, hash: &str) -> Option<Entry> {
+        let entry = self.entries.remove(hash)?;
+        self.total = self.total.saturating_sub(entry.size);
+        self.by_age.remove(&(entry.last_used, hash.to_string()));
+        Some(entry)
+    }
+
+    fn update_last_used(&mut self, hash: &str, now: i64) -> Option<(i64, i64)> {
+        let entry = self.entries.get_mut(hash)?;
+        let old_last_used = entry.last_used;
+        let new_last_used = old_last_used.max(now);
+        if new_last_used != old_last_used {
+            self.by_age.remove(&(old_last_used, hash.to_string()));
+            entry.last_used = new_last_used;
+            self.by_age.insert((new_last_used, hash.to_string()));
+        }
+        Some((entry.last_used, entry.persisted_last_used))
+    }
+
+    fn oldest_except(&self, exclude: &str) -> Option<(String, u64)> {
+        self.by_age
+            .iter()
+            .find(|(_, hash)| hash != exclude)
+            .and_then(|(_, hash)| {
+                let entry = self.entries.get(hash)?;
+                Some((hash.clone(), entry.generation))
+            })
+    }
+
+    fn stale_hashes(&self, cutoff: i64) -> Vec<String> {
+        self.by_age
+            .iter()
+            .take_while(|(last_used, _)| *last_used <= cutoff)
+            .map(|(_, hash)| hash.clone())
+            .collect()
+    }
 }
 
 /// A file's hash as the pool accepts it: 64 lowercase hex characters.
@@ -284,8 +345,7 @@ impl UiPool {
                     let _ = std::fs::remove_file(path.with_file_name(format!("{file_name}.meta")));
                     continue;
                 };
-                index.total += size;
-                index.entries.insert(
+                index.insert(
                     file_name,
                     Entry {
                         size,
@@ -293,6 +353,7 @@ impl UiPool {
                         stored_at: meta.stored_at,
                         last_used: meta.last_used_at,
                         persisted_last_used: meta.last_used_at,
+                        generation: 0,
                     },
                 );
             }
@@ -304,20 +365,30 @@ impl UiPool {
             dropped,
             options.max_total_bytes
         );
+        let hash_locks = (0..HASH_LOCK_SHARDS)
+            .map(|_| tokio::sync::Mutex::new(()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Ok(Arc::new(Self {
             root: root.to_path_buf(),
             slots: Arc::new(Semaphore::new(options.concurrent_pulls.max(1))),
             options,
             clock,
             index: Mutex::new(index),
+            hash_locks,
             flights: Mutex::new(HashMap::new()),
-            rates: Mutex::new(RateWindow {
-                started: Instant::now(),
-                counts: HashMap::new(),
-            }),
+            rates: Mutex::new(RateWindow::new()),
             account_slots: Mutex::new(HashMap::new()),
             temp_ids: std::sync::atomic::AtomicU64::new(1),
         }))
+    }
+
+    fn hash_lock(&self, hash: &str) -> &tokio::sync::Mutex<()> {
+        let shard = hash
+            .get(..2)
+            .and_then(|prefix| u8::from_str_radix(prefix, 16).ok())
+            .unwrap_or(0) as usize;
+        &self.hash_locks[shard]
     }
 
     fn path_of(&self, hash: &str) -> PathBuf {
@@ -359,18 +430,32 @@ impl UiPool {
     /// disk is older than `touch_interval`.
     async fn touch(&self, hash: &str) {
         let now = (self.clock)();
-        let rewrite = {
+        let touch_interval = self.options.touch_interval.as_secs() as i64;
+        let needs_write = {
             let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(entry) = index.entries.get_mut(hash) else {
+            let Some((_, persisted)) = index.update_last_used(hash, now) else {
                 return;
             };
-            entry.last_used = entry.last_used.max(now);
-            if now.saturating_sub(entry.persisted_last_used)
-                < self.options.touch_interval.as_secs() as i64
-            {
+            now.saturating_sub(persisted) >= touch_interval
+        };
+        if !needs_write {
+            return;
+        }
+        let _guard = self.hash_lock(hash).lock().await;
+        let rewrite = {
+            let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+            let now = (self.clock)();
+            let Some((last_used, persisted)) = index.update_last_used(hash, now) else {
+                return;
+            };
+            if now.saturating_sub(persisted) < touch_interval {
                 return;
             }
-            entry.persisted_last_used = entry.last_used;
+            let entry = index
+                .entries
+                .get_mut(hash)
+                .expect("entry present after update_last_used");
+            entry.persisted_last_used = last_used;
             meta_of(entry)
         };
         if let Err(error) = self.write_meta(hash, &rewrite).await {
@@ -390,10 +475,10 @@ impl UiPool {
 
     /// The stored file for `hash`, opened, and its use recorded.
     pub(crate) async fn lookup(&self, hash: &str) -> Option<Stored> {
-        let (size, br) = {
+        let (size, br, generation) = {
             let index = self.index.lock().unwrap_or_else(|e| e.into_inner());
             let entry = index.entries.get(hash)?;
-            (entry.size, entry.br)
+            (entry.size, entry.br, entry.generation)
         };
         match tokio::fs::File::open(self.path_of(hash)).await {
             Ok(file) => {
@@ -403,7 +488,7 @@ impl UiPool {
             Err(error) => {
                 // Deleted under us (eviction or by hand): a miss.
                 if error.kind() == std::io::ErrorKind::NotFound {
-                    self.forget(hash);
+                    self.forget_if_generation(hash, generation);
                 } else {
                     log::warn!("UI pool cannot open a stored file: {}", error);
                 }
@@ -412,25 +497,22 @@ impl UiPool {
         }
     }
 
-    fn forget(&self, hash: &str) {
+    fn forget_if_generation(&self, hash: &str, generation: u64) {
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = index.entries.remove(hash) {
-            index.total = index.total.saturating_sub(entry.size);
+        if index
+            .entries
+            .get(hash)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            index.remove(hash);
         }
     }
 
     fn allow_pull(&self, account_id: &str) -> bool {
-        let mut rates = self.rates.lock().unwrap_or_else(|e| e.into_inner());
-        if rates.started.elapsed() >= Duration::from_secs(60) || rates.counts.len() > 100_000 {
-            rates.started = Instant::now();
-            rates.counts.clear();
-        }
-        let count = rates.counts.entry(account_id.to_string()).or_insert(0);
-        if *count >= self.options.pulls_per_account_per_minute {
-            return false;
-        }
-        *count += 1;
-        true
+        self.rates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .allow(account_id, self.options.pulls_per_account_per_minute)
     }
 
     fn account_slot(&self, account_id: &str) -> Arc<Semaphore> {
@@ -776,7 +858,7 @@ impl UiPool {
             if hex(&hasher.finalize()) != hash {
                 return Err(PullError::Mismatch);
             }
-            file.sync_all().await.map_err(io_unavailable)?;
+            file.flush().await.map_err(io_unavailable)?;
             Ok(())
         }
         .await;
@@ -796,62 +878,79 @@ impl UiPool {
     /// Moves a verified temp file into place (sidecar first, so a stored
     /// file always has one), then evicts the oldest-unused files over the cap.
     async fn commit(&self, hash: &str, temp: &Path, size: u64, br: bool) -> Result<(), PullError> {
-        let now = (self.clock)();
-        let entry = Entry {
-            size,
-            br,
-            stored_at: now,
-            last_used: now,
-            persisted_last_used: now,
-        };
-        tokio::fs::create_dir_all(self.root.join(&hash[..2]))
-            .await
-            .map_err(io_unavailable)?;
-        self.write_meta(hash, &meta_of(&entry))
-            .await
-            .map_err(io_unavailable)?;
-        tokio::fs::rename(temp, self.path_of(hash))
-            .await
-            .map_err(io_unavailable)?;
-        let evicted = {
+        let over_cap = {
+            let _guard = self.hash_lock(hash).lock().await;
+            let now = (self.clock)();
+            let entry = Entry {
+                size,
+                br,
+                stored_at: now,
+                last_used: now,
+                persisted_last_used: now,
+                generation: 0,
+            };
+            tokio::fs::create_dir_all(self.root.join(&hash[..2]))
+                .await
+                .map_err(io_unavailable)?;
+            self.write_meta(hash, &meta_of(&entry))
+                .await
+                .map_err(io_unavailable)?;
+            tokio::fs::rename(temp, self.path_of(hash))
+                .await
+                .map_err(io_unavailable)?;
             let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(old) = index.entries.insert(hash.to_string(), entry) {
-                index.total = index.total.saturating_sub(old.size);
-            }
-            index.total += size;
-            let mut evicted = Vec::new();
-            if index.total > self.options.max_total_bytes {
-                let mut by_age: Vec<(i64, String)> = index
-                    .entries
-                    .iter()
-                    .filter(|(other, _)| other.as_str() != hash)
-                    .map(|(other, entry)| (entry.last_used, other.clone()))
-                    .collect();
-                by_age.sort();
-                for (_, other) in by_age {
-                    if index.total <= self.options.max_total_bytes {
-                        break;
-                    }
-                    if let Some(entry) = index.entries.remove(&other) {
-                        index.total = index.total.saturating_sub(entry.size);
-                        evicted.push((other, entry.size));
-                    }
-                }
-            }
-            evicted
+            index.insert(hash.to_string(), entry);
+            index.total > self.options.max_total_bytes
         };
-        if !evicted.is_empty() {
-            let bytes: u64 = evicted.iter().map(|(_, size)| size).sum();
-            for (other, _) in &evicted {
-                self.delete_files(other).await;
-            }
-            log::info!(
-                "UI pool evicted files over the cap: files={}, bytes={}",
-                evicted.len(),
-                bytes
-            );
+        if over_cap {
+            self.evict_to_cap(hash).await;
         }
         Ok(())
+    }
+
+    async fn evict_to_cap(&self, exclude: &str) {
+        let mut evicted_files = 0usize;
+        let mut evicted_bytes = 0u64;
+        loop {
+            let candidate = {
+                let index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+                if index.total <= self.options.max_total_bytes {
+                    break;
+                }
+                index.oldest_except(exclude)
+            };
+            let Some((victim, expected_gen)) = candidate else {
+                break;
+            };
+            let _guard = self.hash_lock(&victim).lock().await;
+            let removed = {
+                let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+                if index.total <= self.options.max_total_bytes {
+                    break;
+                }
+                let still_same = index
+                    .entries
+                    .get(&victim)
+                    .is_some_and(|entry| entry.generation == expected_gen);
+                if still_same {
+                    index.remove(&victim)
+                } else {
+                    None
+                }
+            };
+            if let Some(entry) = removed {
+                self.delete_files(&victim).await;
+                evicted_files += 1;
+                evicted_bytes += entry.size;
+            }
+        }
+        if evicted_files > 0 {
+            log::info!(
+                "UI pool evicted files over the cap: files={}, bytes={}",
+                evicted_files,
+                evicted_bytes
+            );
+        }
     }
 
     async fn delete_files(&self, hash: &str) {
@@ -862,28 +961,30 @@ impl UiPool {
     /// Deletes every file not used for `max_age`; returns what it removed.
     pub(crate) async fn cleanup(&self) -> Cleanup {
         let cutoff = (self.clock)() - self.options.max_age.as_secs() as i64;
-        let removed: Vec<(String, u64)> = {
-            let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
-            let stale: Vec<String> = index
-                .entries
-                .iter()
-                .filter(|(_, entry)| entry.last_used <= cutoff)
-                .map(|(hash, _)| hash.clone())
-                .collect();
-            stale
-                .into_iter()
-                .filter_map(|hash| {
-                    let entry = index.entries.remove(&hash)?;
-                    index.total = index.total.saturating_sub(entry.size);
-                    Some((hash, entry.size))
-                })
-                .collect()
+        let candidates = {
+            let index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+            index.stale_hashes(cutoff)
         };
         let mut result = Cleanup::default();
-        for (hash, size) in removed {
-            self.delete_files(&hash).await;
-            result.files += 1;
-            result.bytes += size;
+        for hash in candidates {
+            let _guard = self.hash_lock(&hash).lock().await;
+            let removed = {
+                let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+                let still_stale = index
+                    .entries
+                    .get(&hash)
+                    .is_some_and(|entry| entry.last_used <= cutoff);
+                if still_stale {
+                    index.remove(&hash)
+                } else {
+                    None
+                }
+            };
+            if let Some(entry) = removed {
+                self.delete_files(&hash).await;
+                result.files += 1;
+                result.bytes += entry.size;
+            }
         }
         let (files, bytes) = self.usage();
         log::info!(

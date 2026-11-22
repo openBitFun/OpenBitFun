@@ -30,7 +30,7 @@ use openbitfun_product_domains::superagent::{
     SUPERAGENT_TURN_DELTA_EVENT,
 };
 use serde_json::{json, Value};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{watch, Semaphore};
 
 use crate::conversation::{
     truncate_text, Conversation, Message, Role, Step, Turn, Wait, MAX_MESSAGE_TEXT_BYTES,
@@ -95,6 +95,8 @@ pub const NO_HOLDER_CARD: &str = "no_holder";
 /// Accounts that need the watcher (live jobs or unfinished turns).
 const WATCH_ACCOUNT: &str = "openbitfun-superagent:watch";
 const WATCH_RECORD: &str = "watch";
+/// Maximum accounts ticked concurrently in one watcher pass.
+const TICK_CONCURRENCY: usize = 16;
 
 pub struct Engine {
     pub slots: Arc<Slots>,
@@ -105,8 +107,129 @@ pub struct Engine {
     global_rounds: Arc<Semaphore>,
     watch: std::sync::Mutex<BTreeSet<String>>,
     submitting: std::sync::Mutex<BTreeSet<(String, String)>>,
-    cancels: std::sync::Mutex<HashMap<(String, String), Arc<Notify>>>,
+    cancels: std::sync::Mutex<HashMap<(String, String, String), watch::Sender<bool>>>,
     this: Weak<Engine>,
+}
+
+struct SubmittingGuard<'a> {
+    set: &'a std::sync::Mutex<BTreeSet<(String, String)>>,
+    key: (String, String),
+}
+
+impl Drop for SubmittingGuard<'_> {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.key);
+    }
+}
+
+struct CancelGuard<'a> {
+    map: &'a std::sync::Mutex<HashMap<(String, String, String), watch::Sender<bool>>>,
+    key: (String, String, String),
+}
+
+impl Drop for CancelGuard<'_> {
+    fn drop(&mut self) {
+        self.map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.key);
+    }
+}
+
+async fn wait_cancelled(rx: &mut watch::Receiver<bool>) {
+    if *rx.borrow() {
+        return;
+    }
+    while rx.changed().await.is_ok() {
+        if *rx.borrow() {
+            return;
+        }
+    }
+}
+
+fn candidate_label(candidates: &[ModelHolderCandidate], device_id: &str) -> String {
+    candidates
+        .iter()
+        .find(|candidate| candidate.device_id == device_id)
+        .map(|candidate| {
+            if candidate.name.trim().is_empty() {
+                candidate.device_id.clone()
+            } else {
+                candidate.name.clone()
+            }
+        })
+        .unwrap_or_else(|| device_id.to_string())
+}
+
+/// Builds the `no_holder` notice, accounting for holders that were tried and
+/// lost during this round so we never falsely claim "no device signed in" or
+/// "the device no longer offers it".
+fn no_holder_notice_with_lost(
+    candidates: &[ModelHolderCandidate],
+    pick: Option<&contract::SuperagentModelPick>,
+    lost_holders: &[String],
+) -> contract::NoHolderNotice {
+    let mut notice = no_holder_notice(candidates, pick);
+    if lost_holders.is_empty() {
+        return notice;
+    }
+    if let Some(pick) = pick {
+        if lost_holders.iter().any(|id| id == &pick.device_id) {
+            let candidate = candidates
+                .iter()
+                .find(|candidate| candidate.device_id == pick.device_id);
+            let device = candidate_label(candidates, &pick.device_id);
+            let model = candidate
+                .and_then(|candidate| {
+                    candidate
+                        .models
+                        .iter()
+                        .find(|model| model.model_id == pick.model_id)
+                })
+                .map(|model| model.display_name.clone())
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| pick.model_id.clone());
+            notice.reason = contract::model_reason::PINNED_HOLDER_OFFLINE.to_string();
+            notice.text = format!(
+                "{model} could not finish on {device} right now (the device was busy or disconnected). Try again, or pick Auto or another model."
+            );
+        }
+        return notice;
+    }
+    let mut seen = BTreeSet::new();
+    let lost_names: Vec<String> = lost_holders
+        .iter()
+        .filter(|id| seen.insert(id.as_str()))
+        .map(|id| candidate_label(candidates, id))
+        .collect();
+    let mut parts = Vec::new();
+    if !lost_names.is_empty() {
+        parts.push(format!("busy or disconnected: {}", lost_names.join(", ")));
+    }
+    if !notice.offline.is_empty() {
+        parts.push(format!("offline: {}", notice.offline.join(", ")));
+    }
+    if !notice.no_model.is_empty() {
+        parts.push(format!(
+            "no model configured: {}",
+            notice.no_model.join(", ")
+        ));
+    }
+    if !notice.requires_update.is_empty() {
+        parts.push(format!(
+            "needs an update: {}",
+            notice.requires_update.join(", ")
+        ));
+    }
+    notice.reason = contract::reason::NO_HOLDER.to_string();
+    notice.text = format!(
+        "No device could finish the model round right now ({}). Try again shortly, or check that another device is online with a model available.",
+        parts.join("; ")
+    );
+    notice
 }
 
 fn new_id(prefix: &str) -> String {
@@ -519,6 +642,7 @@ impl Engine {
         else {
             return Ok(json!({ "cancelled": false }));
         };
+        let turn_id = turn.id.clone();
         turn.step = Step::Cancelled;
         turn.updated_ms = now;
         conversation.updated_ms = now;
@@ -527,13 +651,17 @@ impl Engine {
             .map_err(|e| e.to_string())?;
         self.update_watch(slot, &state);
         drop(state);
-        if let Some(notify) = self
+        if let Some(cancel) = self
             .cancels
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&(slot.account_id.clone(), conversation_id.to_string()))
+            .get(&(
+                slot.account_id.clone(),
+                conversation_id.to_string(),
+                turn_id,
+            ))
         {
-            notify.notify_waiters();
+            let _ = cancel.send(true);
         }
         self.publish_turn(slot, &snapshot, None);
         Ok(json!({ "cancelled": true }))
@@ -740,6 +868,23 @@ impl Engine {
             .await?;
             return Ok(false);
         }
+        // Register the cancellation token before any await so a cancel arriving
+        // during candidate lookup, semaphore waits, or before select! always
+        // cancels the round.
+        let cancel_key = (
+            slot.account_id.clone(),
+            conversation_id.to_string(),
+            turn.id.clone(),
+        );
+        let (cancel_tx, mut cancel_rx) = watch::channel(false);
+        self.cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(cancel_key.clone(), cancel_tx);
+        let _cancel_guard = CancelGuard {
+            map: &self.cancels,
+            key: cancel_key,
+        };
         let (messages, pick, last_holder) = {
             let mut state = slot.state.lock().await;
             let Some(conversation) = slot
@@ -748,13 +893,24 @@ impl Engine {
             else {
                 return Ok(false);
             };
+            if !conversation
+                .turn
+                .as_ref()
+                .is_some_and(|t| t.id == turn.id && t.step == Step::ModelRound)
+            {
+                return Ok(false);
+            }
             (
                 Self::model_messages(conversation),
                 conversation.model_pick(),
                 conversation.last_holder.clone(),
             )
         };
-        let candidates = self.holder_candidates(&slot.account_id).await;
+        let candidates = tokio::select! {
+            biased;
+            _ = wait_cancelled(&mut cancel_rx) => return Ok(false),
+            candidates = self.holder_candidates(&slot.account_id) => candidates,
+        };
         let choice = match pick.as_ref() {
             // That device and that model, never another one; a pinned
             // holder lost this round is not retried elsewhere.
@@ -769,7 +925,8 @@ impl Engine {
             HolderChoice::NoHolder { .. } => {
                 // No model round waits on a device: the turn ends now with
                 // what failed and what to do.
-                let notice = no_holder_notice(&candidates, pick.as_ref());
+                let notice =
+                    no_holder_notice_with_lost(&candidates, pick.as_ref(), &turn.lost_holders);
                 let card = self.card_message(
                     NO_HOLDER_CARD,
                     &notice.text,
@@ -803,20 +960,30 @@ impl Engine {
             tools: Self::tool_definitions(),
             max_output_tokens: self.config.max_output_tokens,
         };
-        let _global = Arc::clone(&self.global_rounds)
-            .acquire_owned()
-            .await
-            .map_err(|e| e.to_string())?;
-        let _account = Arc::clone(&slot.model_permits)
-            .acquire_owned()
-            .await
-            .map_err(|e| e.to_string())?;
-        let key = (slot.account_id.clone(), conversation_id.to_string());
-        let cancel = Arc::new(Notify::new());
-        self.cancels
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(key.clone(), Arc::clone(&cancel));
+        let _global = tokio::select! {
+            biased;
+            _ = wait_cancelled(&mut cancel_rx) => return Ok(false),
+            permit = Arc::clone(&self.global_rounds).acquire_owned() => permit.map_err(|e| e.to_string())?,
+        };
+        let _account = tokio::select! {
+            biased;
+            _ = wait_cancelled(&mut cancel_rx) => return Ok(false),
+            permit = Arc::clone(&slot.model_permits).acquire_owned() => permit.map_err(|e| e.to_string())?,
+        };
+        if *cancel_rx.borrow() {
+            return Ok(false);
+        }
+        {
+            let mut state = slot.state.lock().await;
+            let still_running = slot
+                .conversation(&mut state, conversation_id)
+                .map_err(|e| e.to_string())?
+                .and_then(|c| c.turn.as_ref())
+                .is_some_and(|t| t.id == turn.id && t.step == Step::ModelRound);
+            if !still_running {
+                return Ok(false);
+            }
+        }
         let sink: DeltaSink = {
             let events = Arc::clone(&slot.events);
             let conversation_id = conversation_id.to_string();
@@ -829,13 +996,11 @@ impl Engine {
             })
         };
         let outcome = tokio::select! {
+            biased;
+            _ = wait_cancelled(&mut cancel_rx) => None,
             outcome = self.model.run(&slot.account_id, &holder, &request, sink) => Some(outcome),
-            _ = cancel.notified() => None,
         };
-        self.cancels
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&key);
+        drop(_cancel_guard);
         let Some(outcome) = outcome else {
             self.model
                 .cancel(&slot.account_id, &holder, &request.request_id)
@@ -1279,6 +1444,10 @@ impl Engine {
         {
             return;
         }
+        let _submitting_guard = SubmittingGuard {
+            set: &self.submitting,
+            key,
+        };
         let advertises = |capability: &str| {
             facts_by_id(devices, &job.device_id)
                 .is_some_and(|device| has(&device.facts.dispatch_capabilities, capability))
@@ -1289,7 +1458,8 @@ impl Engine {
             // (Inbox) or the agent (`fleet_job_answer`) answers it.
             user_questions: advertises(contract::USER_QUESTION_MAILBOX_CAPABILITY),
         };
-        let outcome = self.submit_once(slot, &job, fields).await;
+        let summary_only = advertises(contract::STATUS_SUMMARY_ONLY_CAPABILITY);
+        let outcome = self.submit_once(slot, &job, fields, summary_only).await;
         let now = self.now();
         let mut state = slot.state.lock().await;
         if let Some(record) = state.ledger.jobs.get_mut(job_id) {
@@ -1333,10 +1503,6 @@ impl Engine {
             drop(state);
             self.publish_card(slot, &record, Some(devices));
         }
-        self.submitting
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&key);
     }
 
     async fn submit_once(
@@ -1344,6 +1510,7 @@ impl Engine {
         slot: &Arc<Slot>,
         job: &JobRecord,
         fields: wire::SubmitFields,
+        summary_only: bool,
     ) -> SubmitOutcome {
         let account = &slot.account_id;
         // A submit that was sent before with an unknown outcome: the target
@@ -1355,16 +1522,16 @@ impl Engine {
                     account,
                     &job.device_id,
                     "dispatch_target_status",
-                    wire::status_args(&job.job_id, 0, true),
+                    wire::status_args(&job.job_id, 0, summary_only),
                 )
                 .await
             {
                 let parsed = wire::parse_status(&status);
                 return SubmitOutcome::Accepted {
                     state: parsed.state,
-                    workspace: None,
-                    branch: None,
-                    base_commit: None,
+                    workspace: job.workspace_path.clone(),
+                    branch: job.branch.clone(),
+                    base_commit: job.base_commit.clone(),
                 };
             }
         }
@@ -1439,6 +1606,23 @@ impl Engine {
         let Some(provisioned) = provisioned else {
             return SubmitOutcome::Pending("the source is still being prepared".into());
         };
+        // Persist provisioned workspace/branch/base_commit before submitting so
+        // reconciliation after an unknown submit outcome keeps them.
+        {
+            let mut state = slot.state.lock().await;
+            if let Some(record) = state.ledger.jobs.get_mut(&job.job_id) {
+                record.workspace_path = Some(provisioned.workspace_path.clone());
+                if provisioned.branch.is_some() {
+                    record.branch = provisioned.branch.clone();
+                }
+                if provisioned.base_commit.is_some() {
+                    record.base_commit = provisioned.base_commit.clone();
+                }
+                if let Err(error) = slot.save_ledger(&mut state) {
+                    return SubmitOutcome::Pending(error.to_string());
+                }
+            }
+        }
         let args = wire::submit_args(job, &provisioned.workspace_path, fields);
         match self
             .rpc
@@ -2284,26 +2468,30 @@ impl Engine {
 
     /// A watcher pass over every watched or resident account.
     pub async fn tick_all(&self) {
+        use futures::stream::{self, StreamExt};
+
         let mut accounts: BTreeSet<String> = self.watched_accounts().into_iter().collect();
         accounts.extend(self.slots.resident_accounts());
-        for account in accounts {
-            // A resident slot is ticked without touching it, so the watcher
-            // never keeps an idle slot loaded.
-            let loaded = match self.slots.resident(&account) {
-                Some(slot) => Ok(slot),
-                None => self.slots.load(&account, self.now(), None).await,
-            };
-            match loaded {
-                Ok(slot) => {
-                    if !slot.state.lock().await.meta.enabled {
-                        continue;
+        stream::iter(accounts)
+            .for_each_concurrent(TICK_CONCURRENCY, |account| async move {
+                // A resident slot is ticked without touching it, so the watcher
+                // never keeps an idle slot loaded.
+                let loaded = match self.slots.resident(&account) {
+                    Some(slot) => Ok(slot),
+                    None => self.slots.load(&account, self.now(), None).await,
+                };
+                match loaded {
+                    Ok(slot) => {
+                        if !slot.state.lock().await.meta.enabled {
+                            return;
+                        }
+                        self.tick(&slot).await;
                     }
-                    self.tick(&slot).await;
+                    Err(crate::slots::SlotError::NotProvisioned) => self.forget_account(&account),
+                    Err(error) => log::warn!("Superagent watcher could not load a slot: {}", error),
                 }
-                Err(crate::slots::SlotError::NotProvisioned) => self.forget_account(&account),
-                Err(error) => log::warn!("Superagent watcher could not load a slot: {}", error),
-            }
-        }
+            })
+            .await;
         let unloaded = self.slots.unload_idle(self.now());
         if unloaded > 0 {
             log::info!(
@@ -2451,5 +2639,544 @@ pub fn tool_description(tool: SuperagentTool) -> &'static str {
         SuperagentTool::FleetJobCancel => "Cancel a job.",
         SuperagentTool::FleetJobAnswer => "Answer a job's waiting prompt yourself so the job keeps going: a permission with `decision` (allow once, always, or reject with feedback), or a worker question (tool AskUserQuestion) with `answers`, one per question: `questionId` is the question's index from its summary, `answer` the chosen option label (labels joined by `;` for a multi-select question). Leave it for the user when the decision is theirs.",
         SuperagentTool::FleetPublishBranch => "Push a finished job's result branch from its device to its workspace's remote (never forced, only dispatch branches); the answer says what was pushed. A job imported from another device's job has no remote there: publish the source job instead.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    use crate::device::BoxFuture;
+    use crate::slots::{AccountMeta, SlotLimits};
+    use crate::store::Store;
+    use openbitfun_product_domains::fleet::{FleetHostKind, FleetModel};
+
+    struct FixedClock(AtomicU64);
+
+    impl Clock for FixedClock {
+        fn now_ms(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    fn online_candidate(id: &str, name: &str) -> ModelHolderCandidate {
+        ModelHolderCandidate {
+            device_id: id.into(),
+            host_kind: FleetHostKind::Desktop,
+            online: true,
+            model_configured: true,
+            host_capabilities: vec![
+                contract::CLOUD_AGENT_SCOPE_CAPABILITY.into(),
+                contract::FLEET_MODEL_CAPABILITY.into(),
+            ],
+            latency_ms: Some(10),
+            name: name.into(),
+            models: vec![FleetModel {
+                model_id: "big".into(),
+                display_name: "Big Model".into(),
+                primary: true,
+                ..FleetModel::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn no_holder_notice_with_lost_holders_is_accurate_for_auto_and_pinned() {
+        let candidates = vec![online_candidate("dev-1", "Studio Mac")];
+        // Auto mode: holder was online, tried, and lost this round.
+        let auto_notice = no_holder_notice_with_lost(&candidates, None, &["dev-1".into()]);
+        assert_eq!(auto_notice.reason, contract::reason::NO_HOLDER);
+        assert!(
+            auto_notice.text.contains("Studio Mac"),
+            "{}",
+            auto_notice.text
+        );
+        assert!(
+            auto_notice.text.contains("busy or disconnected"),
+            "{}",
+            auto_notice.text
+        );
+        assert!(
+            !auto_notice.text.contains("no desktop or CLI"),
+            "{}",
+            auto_notice.text
+        );
+
+        // Pinned mode: picked device was online, tried, and lost this round.
+        let pick = contract::SuperagentModelPick {
+            device_id: "dev-1".into(),
+            model_id: "big".into(),
+        };
+        let pinned_notice = no_holder_notice_with_lost(&candidates, Some(&pick), &["dev-1".into()]);
+        assert_eq!(
+            pinned_notice.reason,
+            contract::model_reason::PINNED_HOLDER_OFFLINE
+        );
+        assert!(
+            pinned_notice.text.contains("Big Model"),
+            "{}",
+            pinned_notice.text
+        );
+        assert!(
+            pinned_notice.text.contains("Studio Mac"),
+            "{}",
+            pinned_notice.text
+        );
+        assert!(
+            !pinned_notice.text.contains("no longer offers"),
+            "{}",
+            pinned_notice.text
+        );
+    }
+
+    struct BlockingDevicesRpc {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl DeviceRpc for BlockingDevicesRpc {
+        fn devices<'a>(
+            &'a self,
+            _account_id: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<DeviceSnapshot>, RpcError>> {
+            let entered = Arc::clone(&self.entered);
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                entered.notify_one();
+                release.notified().await;
+                Ok(vec![DeviceSnapshot {
+                    facts: RuntimeFacts {
+                        device_id: "dev-1".into(),
+                        name: "Desk".into(),
+                        host_kind: FleetHostKind::Desktop,
+                        online: true,
+                        model_configured: true,
+                        host_capabilities: vec![
+                            contract::CLOUD_AGENT_SCOPE_CAPABILITY.into(),
+                            contract::FLEET_MODEL_CAPABILITY.into(),
+                        ],
+                        ..RuntimeFacts::default()
+                    },
+                    models: vec!["m1".into()],
+                    ..DeviceSnapshot::default()
+                }])
+            })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            _command: &'a str,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<Value, RpcError>> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+    }
+
+    struct CountingModel(Arc<AtomicUsize>);
+
+    impl ModelHolder for CountingModel {
+        fn run<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _holder: &'a str,
+            _request: &'a ModelRequest,
+            _deltas: DeltaSink,
+        ) -> BoxFuture<'a, Result<ModelReply, ModelError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(ModelReply {
+                    text: "unexpected".into(),
+                    ..ModelReply::default()
+                })
+            })
+        }
+
+        fn cancel<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _holder: &'a str,
+            _request_id: &'a str,
+        ) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_arriving_during_holder_lookup_prevents_model_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path(), [1u8; 32]).unwrap());
+        let slots = Arc::new(Slots::new(store, SlotLimits::default()));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::new(
+            Arc::clone(&slots),
+            Arc::new(BlockingDevicesRpc {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }),
+            Arc::new(CountingModel(Arc::clone(&model_calls))),
+            Arc::new(FixedClock(AtomicU64::new(1000))),
+            EngineConfig::default(),
+        );
+        let slot = slots
+            .load(
+                "acct-cancel",
+                1000,
+                Some(AccountMeta {
+                    version: 1,
+                    account_id: "acct-cancel".into(),
+                    device_id: "cloud-1".into(),
+                    enabled: true,
+                    ..AccountMeta::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let sent = engine.send(&slot, None, "hello", "c1").await.unwrap();
+        let conv_id = sent["conversationId"].as_str().unwrap().to_string();
+        // Wait until model_round is blocked inside holder_candidates() (before any model call).
+        entered.notified().await;
+        let cancelled = engine.cancel_turn(&slot, &conv_id).await.unwrap();
+        assert_eq!(cancelled["cancelled"], true);
+        release.notify_waiters();
+        // Wait for driver to finish and release.
+        for _ in 0..50 {
+            if slot.drivers() == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(slot.drivers(), 0);
+        assert_eq!(model_calls.load(Ordering::SeqCst), 0);
+        let state = slot.state.lock().await;
+        assert_eq!(
+            state.conversations[&conv_id].turn.as_ref().unwrap().step,
+            Step::Cancelled
+        );
+    }
+
+    struct ReconcileRpc {
+        status_args_seen: std::sync::Mutex<Vec<Value>>,
+        fail_submit: std::sync::atomic::AtomicBool,
+    }
+
+    impl DeviceRpc for ReconcileRpc {
+        fn devices<'a>(
+            &'a self,
+            _account_id: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<DeviceSnapshot>, RpcError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            command: &'a str,
+            args: Value,
+        ) -> BoxFuture<'a, Result<Value, RpcError>> {
+            match command {
+                "dispatch_target_workspace_provision_source" => Box::pin(async {
+                    Ok(json!({
+                        "provisioned": true,
+                        "workspacePath": "/work/wt-1",
+                        "branch": "openbitfun/dispatch/job-1",
+                        "baseCommit": "deadbeef",
+                    }))
+                }),
+                "dispatch_target_submit" => {
+                    if self.fail_submit.swap(false, Ordering::SeqCst) {
+                        Box::pin(async { Err(RpcError::Transport("connection reset".into())) })
+                    } else {
+                        Box::pin(async { Ok(json!({ "state": "running" })) })
+                    }
+                }
+                "dispatch_target_status" => {
+                    self.status_args_seen.lock().unwrap().push(args);
+                    Box::pin(async { Ok(json!({ "state": "running", "cursor": 1 })) })
+                }
+                _ => Box::pin(async { Err(RpcError::Refused("unexpected".into())) }),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retried_submit_reconciliation_preserves_branch_and_negotiates_summary_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path(), [2u8; 32]).unwrap());
+        let slots = Arc::new(Slots::new(store, SlotLimits::default()));
+        let rpc = Arc::new(ReconcileRpc {
+            status_args_seen: std::sync::Mutex::new(Vec::new()),
+            fail_submit: std::sync::atomic::AtomicBool::new(true),
+        });
+        let engine = Engine::new(
+            Arc::clone(&slots),
+            Arc::clone(&rpc) as Arc<dyn DeviceRpc>,
+            Arc::new(CountingModel(Arc::new(AtomicUsize::new(0)))),
+            Arc::new(FixedClock(AtomicU64::new(5000))),
+            EngineConfig::default(),
+        );
+        let slot = slots
+            .load(
+                "acct-rec",
+                5000,
+                Some(AccountMeta {
+                    version: 1,
+                    account_id: "acct-rec".into(),
+                    device_id: "cloud-1".into(),
+                    enabled: true,
+                    ..AccountMeta::default()
+                }),
+            )
+            .await
+            .unwrap();
+        {
+            let mut state = slot.state.lock().await;
+            state.ledger.jobs.insert(
+                "job-1".into(),
+                JobRecord {
+                    job_id: "job-1".into(),
+                    device_id: "dev-1".into(),
+                    session_id: "sess-1".into(),
+                    conversation_id: "c1".into(),
+                    turn_id: "t1".into(),
+                    title: "test".into(),
+                    source: json!({ "kind": "workspace", "workspaceId": "ws-1" }),
+                    instructions: "run tests".into(),
+                    approval: "remote".into(),
+                    phase: LedgerJobPhase::Pending,
+                    state: SuperagentJobState::Queued,
+                    created_ms: 5000,
+                    updated_ms: 5000,
+                    ..JobRecord::default()
+                },
+            );
+            slot.save_ledger(&mut state).unwrap();
+        }
+        // Device without `status_summary_only_v1`.
+        let devices = vec![DeviceSnapshot {
+            facts: RuntimeFacts {
+                device_id: "dev-1".into(),
+                online: true,
+                dispatch_capabilities: vec![
+                    contract::DETACHED_WORKER_CAPABILITY.into(),
+                    contract::WORKSPACE_TARGET_SOURCE_CAPABILITY.into(),
+                ],
+                ..RuntimeFacts::default()
+            },
+            ..DeviceSnapshot::default()
+        }];
+        // First try: provision succeeds, submit hits transport error (unknown outcome).
+        engine.try_submit(&slot, "job-1", &devices).await;
+        {
+            let state = slot.state.lock().await;
+            let job = &state.ledger.jobs["job-1"];
+            assert_eq!(job.phase, LedgerJobPhase::Pending);
+            assert_eq!(job.submit_attempts, 1);
+            assert_eq!(job.branch.as_deref(), Some("openbitfun/dispatch/job-1"));
+            assert_eq!(job.base_commit.as_deref(), Some("deadbeef"));
+            assert_eq!(job.workspace_path.as_deref(), Some("/work/wt-1"));
+        }
+        // Retry: reconciles via status (must NOT set summaryOnly: true).
+        engine.try_submit(&slot, "job-1", &devices).await;
+        {
+            let seen = rpc.status_args_seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert!(
+                seen[0].get("summaryOnly").and_then(Value::as_bool) != Some(true),
+                "older target must not receive summaryOnly: true, got {}",
+                seen[0]
+            );
+        }
+        let state = slot.state.lock().await;
+        let job = &state.ledger.jobs["job-1"];
+        assert_eq!(job.phase, LedgerJobPhase::Submitted);
+        assert_eq!(job.state, SuperagentJobState::Working);
+        assert_eq!(job.branch.as_deref(), Some("openbitfun/dispatch/job-1"));
+        assert_eq!(job.base_commit.as_deref(), Some("deadbeef"));
+        assert_eq!(job.workspace_path.as_deref(), Some("/work/wt-1"));
+    }
+
+    struct HangProvisionRpc {
+        entered: Arc<Notify>,
+    }
+
+    impl DeviceRpc for HangProvisionRpc {
+        fn devices<'a>(
+            &'a self,
+            _account_id: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<DeviceSnapshot>, RpcError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            _command: &'a str,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<Value, RpcError>> {
+            let entered = Arc::clone(&self.entered);
+            Box::pin(async move {
+                entered.notify_one();
+                std::future::pending::<Result<Value, RpcError>>().await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn submitting_guard_clears_entry_when_future_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path(), [3u8; 32]).unwrap());
+        let slots = Arc::new(Slots::new(store, SlotLimits::default()));
+        let entered = Arc::new(Notify::new());
+        let engine = Engine::new(
+            Arc::clone(&slots),
+            Arc::new(HangProvisionRpc {
+                entered: Arc::clone(&entered),
+            }),
+            Arc::new(CountingModel(Arc::new(AtomicUsize::new(0)))),
+            Arc::new(FixedClock(AtomicU64::new(6000))),
+            EngineConfig::default(),
+        );
+        let slot = slots
+            .load(
+                "acct-drop",
+                6000,
+                Some(AccountMeta {
+                    version: 1,
+                    account_id: "acct-drop".into(),
+                    device_id: "cloud-1".into(),
+                    enabled: true,
+                    ..AccountMeta::default()
+                }),
+            )
+            .await
+            .unwrap();
+        {
+            let mut state = slot.state.lock().await;
+            state.ledger.jobs.insert(
+                "job-drop".into(),
+                JobRecord {
+                    job_id: "job-drop".into(),
+                    device_id: "dev-1".into(),
+                    source: json!({ "kind": "workspace", "workspaceId": "ws-1" }),
+                    phase: LedgerJobPhase::Pending,
+                    state: SuperagentJobState::Queued,
+                    ..JobRecord::default()
+                },
+            );
+        }
+        let devices = vec![DeviceSnapshot {
+            facts: RuntimeFacts {
+                device_id: "dev-1".into(),
+                online: true,
+                ..RuntimeFacts::default()
+            },
+            ..DeviceSnapshot::default()
+        }];
+        let engine_task = Arc::clone(&engine);
+        let slot_task = Arc::clone(&slot);
+        let handle = tokio::spawn(async move {
+            engine_task
+                .try_submit(&slot_task, "job-drop", &devices)
+                .await;
+        });
+        entered.notified().await;
+        assert!(!engine.submitting.lock().unwrap().is_empty());
+        handle.abort();
+        let _ = handle.await;
+        assert!(engine.submitting.lock().unwrap().is_empty());
+    }
+
+    struct ConcurrentTickRpc {
+        first_entered: Arc<Notify>,
+        second_seen: Arc<Notify>,
+    }
+
+    impl DeviceRpc for ConcurrentTickRpc {
+        fn devices<'a>(
+            &'a self,
+            account_id: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<DeviceSnapshot>, RpcError>> {
+            let account = account_id.to_string();
+            let first_entered = Arc::clone(&self.first_entered);
+            let second_seen = Arc::clone(&self.second_seen);
+            Box::pin(async move {
+                if account == "acct-a" {
+                    first_entered.notify_one();
+                    // Would deadlock if tick_all ran accounts sequentially.
+                    second_seen.notified().await;
+                } else if account == "acct-b" {
+                    second_seen.notify_one();
+                }
+                Ok(Vec::new())
+            })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _account_id: &'a str,
+            _device_id: &'a str,
+            _command: &'a str,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<Value, RpcError>> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+    }
+
+    #[tokio::test]
+    async fn tick_all_runs_accounts_concurrently() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path(), [4u8; 32]).unwrap());
+        let slots = Arc::new(Slots::new(store, SlotLimits::default()));
+        let engine = Engine::new(
+            Arc::clone(&slots),
+            Arc::new(ConcurrentTickRpc {
+                first_entered: Arc::new(Notify::new()),
+                second_seen: Arc::new(Notify::new()),
+            }),
+            Arc::new(CountingModel(Arc::new(AtomicUsize::new(0)))),
+            Arc::new(FixedClock(AtomicU64::new(7000))),
+            EngineConfig::default(),
+        );
+        for acct in ["acct-a", "acct-b"] {
+            let slot = slots
+                .load(
+                    acct,
+                    7000,
+                    Some(AccountMeta {
+                        version: 1,
+                        account_id: acct.into(),
+                        device_id: format!("cloud-{acct}"),
+                        enabled: true,
+                        ..AccountMeta::default()
+                    }),
+                )
+                .await
+                .unwrap();
+            // Seed a live job so tick() calls devices() for both accounts.
+            let mut state = slot.state.lock().await;
+            state.ledger.jobs.insert(
+                format!("j-{acct}"),
+                JobRecord {
+                    job_id: format!("j-{acct}"),
+                    device_id: "dev-1".into(),
+                    phase: LedgerJobPhase::Submitted,
+                    state: SuperagentJobState::Working,
+                    ..JobRecord::default()
+                },
+            );
+            slot.save_ledger(&mut state).unwrap();
+            engine.update_watch(&slot, &state);
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), engine.tick_all())
+            .await
+            .expect("tick_all must run accounts concurrently without head-of-line blocking");
     }
 }

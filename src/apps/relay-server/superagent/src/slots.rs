@@ -471,8 +471,9 @@ impl Slot {
                 if total <= self.limits.max_slot_bytes {
                     break;
                 }
-                state.conversations.remove(&id);
-                total = estimate(state);
+                if let Some(removed) = state.conversations.remove(&id) {
+                    total = total.saturating_sub(json_len(&removed));
+                }
             }
         }
         if total > self.limits.max_slot_bytes {
@@ -515,12 +516,30 @@ fn read_or_quarantine<T: for<'de> Deserialize<'de>>(
     }
 }
 
-fn json_len<T: Serialize>(value: &T) -> usize {
-    serde_json::to_vec(value).map(|v| v.len()).unwrap_or(0)
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
-/// Estimated resident bytes of a slot (serialized size, a good proxy for
-/// the heap the parsed values hold).
+fn json_len<T: Serialize>(value: &T) -> usize {
+    let mut counter = ByteCounter(0);
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        counter.0
+    } else {
+        0
+    }
+}
+
+/// Estimated resident bytes of a slot's active working state (serialized size;
+/// the outbox enforces its own separate 4 MiB budget in `archive::enforce_outbox`).
 pub fn estimate(state: &SlotState) -> usize {
     json_len(&state.meta)
         + json_len(&state.ledger)
@@ -533,6 +552,8 @@ pub fn estimate(state: &SlotState) -> usize {
 pub enum SlotError {
     /// The account has no cloud agent data yet (or it was deleted).
     NotProvisioned,
+    /// Resident slot capacity is saturated with active drivers; retry later.
+    Busy,
     Store(StoreError),
 }
 
@@ -541,6 +562,9 @@ impl std::fmt::Display for SlotError {
         match self {
             Self::NotProvisioned => {
                 f.write_str("superagent_not_provisioned: this account has no cloud agent yet")
+            }
+            Self::Busy => {
+                f.write_str("superagent_busy: too many active accounts are loaded; retry later")
             }
             Self::Store(error) => write!(f, "superagent_store_unavailable: {error}"),
         }
@@ -553,6 +577,8 @@ impl From<StoreError> for SlotError {
     }
 }
 
+type UnloadHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Every resident slot of the process.
 pub struct Slots {
     store: Arc<Store>,
@@ -560,6 +586,7 @@ pub struct Slots {
     clock: Arc<std::sync::OnceLock<Arc<dyn crate::engine::Clock>>>,
     resident: std::sync::Mutex<HashMap<String, Arc<Slot>>>,
     loading: Mutex<()>,
+    on_unload: std::sync::Mutex<Option<UnloadHook>>,
 }
 
 impl Slots {
@@ -570,6 +597,29 @@ impl Slots {
             clock: Arc::new(std::sync::OnceLock::new()),
             resident: std::sync::Mutex::new(HashMap::new()),
             loading: Mutex::new(()),
+            on_unload: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Registers a callback invoked whenever an account leaves memory (idle
+    /// unload, capacity eviction, or `forget`).
+    pub fn set_on_unload(&self, hook: UnloadHook) {
+        *self.on_unload.lock().unwrap_or_else(|p| p.into_inner()) = Some(hook);
+    }
+
+    fn notify_unloaded(&self, accounts: &[String]) {
+        if accounts.is_empty() {
+            return;
+        }
+        let hook = self
+            .on_unload
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            for account in accounts {
+                hook(account);
+            }
         }
     }
 
@@ -686,7 +736,9 @@ impl Slots {
             }
             slot.enforce_bounds(&mut state);
         }
-        self.evict_for_room(now);
+        if !self.evict_for_room(now) {
+            return Err(SlotError::Busy);
+        }
         self.resident
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -704,32 +756,72 @@ impl Slots {
         slot.attached() == 0 && slot.drivers() == 0 && Arc::strong_count(slot) <= 1
     }
 
-    fn evict_for_room(&self, _now: u64) {
-        let mut resident = self.resident.lock().unwrap_or_else(|p| p.into_inner());
-        while resident.len() >= self.limits.max_resident {
-            let victim = resident
-                .iter()
-                .filter(|(_, slot)| Self::unloadable(slot))
-                .min_by_key(|(_, slot)| slot.last_used_ms())
-                .map(|(id, _)| id.clone());
-            match victim {
-                Some(id) => {
-                    resident.remove(&id);
-                }
-                None => break,
-            }
+    /// Evicts least-recently-used slots until `resident.len() < max_resident`.
+    /// Prefers fully idle unattached slots; when all resident slots are
+    /// attached, closes and evicts the least-recently-used slot with no active
+    /// turn drivers so attached connections cannot bypass `max_resident`.
+    /// Returns `false` only when every slot has active drivers.
+    fn evict_for_room(&self, _now: u64) -> bool {
+        if self.limits.max_resident == 0 {
+            return false;
         }
+        let mut evicted_ids = Vec::new();
+        let mut to_close = Vec::new();
+        let has_room = {
+            let mut resident = self.resident.lock().unwrap_or_else(|p| p.into_inner());
+            while resident.len() >= self.limits.max_resident {
+                let victim = resident
+                    .iter()
+                    .filter(|(_, slot)| Self::unloadable(slot))
+                    .min_by_key(|(_, slot)| slot.last_used_ms())
+                    .map(|(id, _)| (id.clone(), false))
+                    .or_else(|| {
+                        resident
+                            .iter()
+                            .filter(|(_, slot)| slot.drivers() == 0)
+                            .min_by_key(|(_, slot)| slot.last_used_ms())
+                            .map(|(id, _)| (id.clone(), true))
+                    });
+                match victim {
+                    Some((id, close_events)) => {
+                        if let Some(slot) = resident.remove(&id) {
+                            if close_events {
+                                to_close.push(slot);
+                            }
+                            evicted_ids.push(id);
+                        }
+                    }
+                    None => break,
+                }
+            }
+            resident.len() < self.limits.max_resident
+        };
+        for slot in to_close {
+            slot.events.close();
+        }
+        self.notify_unloaded(&evicted_ids);
+        has_room
     }
 
     /// Unloads slots idle for longer than the limit; returns how many.
     pub fn unload_idle(&self, now: u64) -> usize {
-        let mut resident = self.resident.lock().unwrap_or_else(|p| p.into_inner());
-        let before = resident.len();
-        resident.retain(|_, slot| {
-            !(Self::unloadable(slot)
-                && now.saturating_sub(slot.last_used_ms()) >= self.limits.idle_unload_ms)
-        });
-        before - resident.len()
+        let evicted_ids: Vec<String> = {
+            let mut resident = self.resident.lock().unwrap_or_else(|p| p.into_inner());
+            let victims: Vec<String> = resident
+                .iter()
+                .filter(|(_, slot)| {
+                    Self::unloadable(slot)
+                        && now.saturating_sub(slot.last_used_ms()) >= self.limits.idle_unload_ms
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &victims {
+                resident.remove(id);
+            }
+            victims
+        };
+        self.notify_unloaded(&evicted_ids);
+        evicted_ids.len()
     }
 
     /// Drops a slot from memory (after its data was shredded).
@@ -742,6 +834,7 @@ impl Slots {
         {
             slot.events.close();
         }
+        self.notify_unloaded(&[account_id.to_string()]);
     }
 }
 
@@ -895,6 +988,85 @@ mod tests {
         assert_eq!(
             slot.store.read(DEVICES_RECORD).unwrap().as_deref(),
             Some(&b"{not json"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn attached_slots_cannot_bypass_max_resident_and_fire_unload_hook() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(temp.path(), [7u8; 32]).unwrap());
+        let slots = Slots::new(
+            store,
+            SlotLimits {
+                max_resident: 2,
+                idle_unload_ms: 100,
+                ..SlotLimits::default()
+            },
+        );
+        let unloaded = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let unloaded_clone = Arc::clone(&unloaded);
+        slots.set_on_unload(Arc::new(move |account| {
+            unloaded_clone.lock().unwrap().push(account.to_string());
+        }));
+
+        let make_meta = |account: &str, device: &str| AccountMeta {
+            version: 1,
+            account_id: account.into(),
+            device_id: device.into(),
+            enabled: true,
+            ..AccountMeta::default()
+        };
+
+        // Load 2 accounts and attach frontends to both.
+        let s1 = slots
+            .load("acc-1", 10, Some(make_meta("acc-1", "cloud-1")))
+            .await
+            .unwrap();
+        let _g1 = s1.attach();
+        let mut sub1 = s1.events.subscribe(None);
+
+        let s2 = slots
+            .load("acc-2", 20, Some(make_meta("acc-2", "cloud-2")))
+            .await
+            .unwrap();
+        let _g2 = s2.attach();
+
+        // Loading a 3rd account must evict the LRU attached slot (acc-1) and
+        // close its event hub, never exceeding max_resident = 2.
+        let s3 = slots
+            .load("acc-3", 30, Some(make_meta("acc-3", "cloud-3")))
+            .await
+            .unwrap();
+        assert_eq!(slots.resident_count(), 2);
+        assert!(slots.resident("acc-1").is_none());
+        assert!(slots.resident("acc-2").is_some());
+        assert!(slots.resident("acc-3").is_some());
+        let batch = sub1.next_batch(10).await;
+        assert!(
+            batch.closed,
+            "evicted attached slot must close its event hub"
+        );
+        assert_eq!(*unloaded.lock().unwrap(), vec!["acc-1".to_string()]);
+
+        // When every resident slot has an active driver, loading a new slot
+        // refuses with Busy instead of growing past max_resident.
+        assert!(s2.claim_driver("conv-2"));
+        assert!(s3.claim_driver("conv-3"));
+        let err = slots
+            .load("acc-4", 40, Some(make_meta("acc-4", "cloud-4")))
+            .await
+            .err()
+            .expect("busy");
+        assert!(matches!(err, SlotError::Busy));
+        assert_eq!(slots.resident_count(), 2);
+
+        // forget() fires the unload hook even for non-resident accounts.
+        s2.release_driver("conv-2");
+        s3.release_driver("conv-3");
+        slots.forget("acc-99");
+        assert_eq!(
+            *unloaded.lock().unwrap(),
+            vec!["acc-1".to_string(), "acc-99".to_string()]
         );
     }
 }

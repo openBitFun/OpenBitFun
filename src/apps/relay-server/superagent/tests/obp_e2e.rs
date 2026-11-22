@@ -15,7 +15,7 @@ use openbitfun_superagent::device::{BoxFuture, DeviceRpc, DeviceSnapshot, RpcErr
 use openbitfun_superagent::directory::{Directory, DirectoryDevice, DirectoryError, Identity};
 use openbitfun_superagent::engine::{Engine, EngineConfig, SystemClock};
 use openbitfun_superagent::model::RelayModel;
-use openbitfun_superagent::obp_server::{serve_stream, Frontends};
+use openbitfun_superagent::obp_server::{serve_stream, Frontends, FrontendsLimits};
 use openbitfun_superagent::slots::{SlotLimits, Slots};
 use openbitfun_superagent::store::Store;
 use serde_json::{json, Value};
@@ -138,13 +138,26 @@ impl Client {
         }
     }
 
+    async fn next_message(&mut self) -> Option<axum::extract::ws::Message> {
+        let record = read_record(&mut self.stream, 1 << 20).await.ok()?;
+        decode_message(self.s2c.open(&record).ok()?).ok()
+    }
+
+    async fn send_message(&mut self, msg: axum::extract::ws::Message) {
+        let record = self.c2s.seal(&encode_message(&msg)).unwrap();
+        write_record(&mut self.stream, &record).await.unwrap();
+    }
+
     async fn rpc(&mut self, method: &str, params: Value) -> Value {
         let id = self.send(method, params).await;
         self.answer(id).await
     }
 }
 
-async fn setup(frontends_on: bool) -> (tempfile::TempDir, Arc<Frontends>, [u8; 32], String) {
+async fn setup_with_limits(
+    frontends_on: bool,
+    limits: FrontendsLimits,
+) -> (tempfile::TempDir, Arc<Frontends>, [u8; 32], String) {
     let dir = tempfile::tempdir().unwrap();
     let laptop_secret = [5u8; 32];
     let store = Arc::new(Store::open(dir.path(), [1u8; 32]).unwrap());
@@ -161,7 +174,8 @@ async fn setup(frontends_on: bool) -> (tempfile::TempDir, Arc<Frontends>, [u8; 3
         laptop_public: crypto::public_key_base64(&laptop_secret),
     });
     let service = Service::new(engine, directory);
-    let frontends = Frontends::new(service, Arc::new(AnyIdentity), frontends_on);
+    let frontends =
+        Frontends::new_with_limits(service, Arc::new(AnyIdentity), frontends_on, limits);
     let slot = frontends.ensure(ACCOUNT).await.unwrap();
     let state = slot.state.lock().await;
     let node_public = crypto::parse_public_key(&crypto::public_key_base64(
@@ -172,6 +186,10 @@ async fn setup(frontends_on: bool) -> (tempfile::TempDir, Arc<Frontends>, [u8; 3
     let target = state.meta.device_id.clone();
     drop(state);
     (dir, frontends, pair, target)
+}
+
+async fn setup(frontends_on: bool) -> (tempfile::TempDir, Arc<Frontends>, [u8; 32], String) {
+    setup_with_limits(frontends_on, FrontendsLimits::default()).await
 }
 
 async fn open(
@@ -343,4 +361,202 @@ async fn tower_call(
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+#[tokio::test]
+async fn e2e_enforces_connection_caps_and_hello_timeout() {
+    use std::time::Duration;
+    let (_dir, frontends, pair, target) = setup_with_limits(
+        true,
+        FrontendsLimits {
+            max_connections: 2,
+            max_connections_per_account: 1,
+            hello_timeout: Duration::from_millis(80),
+            ..FrontendsLimits::default()
+        },
+    )
+    .await;
+
+    // 1st connection succeeds; 2nd for the same account is refused by per-account cap.
+    let mut c1 = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .unwrap();
+    let _ = c1.rpc("hello", json!({ "protocol": 1 })).await;
+
+    let refused = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .err()
+        .expect("per-account cap must reject 2nd connection");
+    assert_eq!(refused["error"], "too_many_connections");
+
+    drop(c1);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    // Connection that never sends OBP `hello` is closed after hello_timeout.
+    let mut silent = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .unwrap();
+    let closed = tokio::time::timeout(Duration::from_millis(500), silent.next_message())
+        .await
+        .expect("must close after hello_timeout");
+    assert!(
+        closed.is_none() || matches!(closed, Some(axum::extract::ws::Message::Close(_))),
+        "expected EOF or Close, got {closed:?}"
+    );
+}
+
+#[tokio::test]
+async fn e2e_ping_does_not_touch_slot_and_idle_client_closes() {
+    use std::time::Duration;
+    let (_dir, frontends, pair, target) = setup_with_limits(
+        true,
+        FrontendsLimits {
+            ping_interval: Duration::from_millis(40),
+            idle_timeout: Duration::from_millis(130),
+            ..FrontendsLimits::default()
+        },
+    )
+    .await;
+
+    let mut client = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .unwrap();
+    let _ = client.rpc("hello", json!({ "protocol": 1 })).await;
+    let slot = frontends.service.engine.slots.resident(ACCOUNT).unwrap();
+    let after_hello = slot.last_used_ms();
+
+    // Receive a server Ping and reply Pong: connection stays alive, and
+    // slot.last_used_ms() MUST NOT advance on ping.tick() or Pong.
+    let msg = tokio::time::timeout(Duration::from_millis(300), client.next_message())
+        .await
+        .expect("expected Ping")
+        .expect("stream open");
+    assert!(
+        matches!(msg, axum::extract::ws::Message::Ping(_)),
+        "{msg:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    client
+        .send_message(axum::extract::ws::Message::Pong(Vec::new().into()))
+        .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        slot.last_used_ms(),
+        after_hello,
+        "ping.tick() and Pong must not touch() the slot"
+    );
+
+    // Now go silent (stop replying Pong): server must close after idle_timeout.
+    let closed = tokio::time::timeout(Duration::from_millis(600), async {
+        loop {
+            match client.next_message().await {
+                None | Some(axum::extract::ws::Message::Close(_)) => break true,
+                Some(_) => {}
+            }
+        }
+    })
+    .await
+    .expect("idle client must be closed");
+    assert!(closed);
+}
+
+#[tokio::test]
+async fn e2e_hello_emits_events_dropped_on_restart_and_unknown_cursor() {
+    let (_dir, frontends, pair, target) = setup(true).await;
+    let slot = frontends.service.engine.slots.resident(ACCOUNT).unwrap();
+    slot.events
+        .publish("superagent://card-changed", json!({ "n": 1 }));
+    slot.events
+        .publish("superagent://card-changed", json!({ "n": 2 }));
+
+    // Case 1: instanceId mismatch (backend restarted) -> backend://events-dropped.
+    let mut c1 = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .unwrap();
+    let hello1 = c1
+        .rpc(
+            "hello",
+            json!({ "protocol": 1, "instanceId": "old-instance", "lastSeq": 1 }),
+        )
+        .await;
+    assert_eq!(hello1["result"]["lastSeq"], 2);
+    let ev1 = match c1.next_message().await.unwrap() {
+        axum::extract::ws::Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+        other => panic!("expected event text, got {other:?}"),
+    };
+    assert_eq!(ev1["method"], "event");
+    assert_eq!(ev1["params"]["event"], openbitfun_obp::EVENTS_DROPPED_EVENT);
+    assert_eq!(ev1["params"]["payload"]["reason"], "backend_restarted");
+    assert_eq!(ev1["params"]["payload"]["afterSeq"], 1);
+    assert_eq!(ev1["params"]["payload"]["resumeSeq"], 3);
+
+    // Case 2: same instanceId but lastSeq > newest -> unknown_cursor.
+    let mut c2 = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .unwrap();
+    let _ = c2
+        .rpc(
+            "hello",
+            json!({ "protocol": 1, "instanceId": slot.instance_id, "lastSeq": 99 }),
+        )
+        .await;
+    let ev2 = match c2.next_message().await.unwrap() {
+        axum::extract::ws::Message::Text(t) => serde_json::from_str::<Value>(&t).unwrap(),
+        other => panic!("expected event text, got {other:?}"),
+    };
+    assert_eq!(ev2["params"]["event"], openbitfun_obp::EVENTS_DROPPED_EVENT);
+    assert_eq!(ev2["params"]["payload"]["reason"], "unknown_cursor");
+}
+
+#[tokio::test]
+async fn e2e_credit_backpressure_pauses_and_closes_slow_client() {
+    use std::time::Duration;
+    let (_dir, frontends, pair, target) = setup_with_limits(
+        true,
+        FrontendsLimits {
+            min_credit_bytes: 128,
+            default_credit_bytes: 128,
+            max_credit_bytes: 1024,
+            slow_client_timeout: Duration::from_millis(120),
+            ..FrontendsLimits::default()
+        },
+    )
+    .await;
+
+    let mut client = open(&frontends, pair, "laptop", &target, false)
+        .await
+        .unwrap();
+    let hello = client
+        .rpc(
+            "hello",
+            json!({ "protocol": 1, "ack": true, "creditBytes": 128 }),
+        )
+        .await;
+    assert_eq!(hello["result"]["creditBytes"], 128);
+
+    // Publish an event larger than the 128-byte credit window and never ack it.
+    let slot = frontends.service.engine.slots.resident(ACCOUNT).unwrap();
+    let big = "x".repeat(200);
+    slot.events
+        .publish("superagent://turn-delta", json!({ "delta": big }));
+    slot.events
+        .publish("superagent://turn-delta", json!({ "delta": "second" }));
+
+    // Client receives the first event, then must receive a slow_client Close
+    // after slow_client_timeout because it never sent `ack`.
+    let got_close = tokio::time::timeout(Duration::from_millis(600), async {
+        loop {
+            match client.next_message().await {
+                Some(axum::extract::ws::Message::Close(Some(frame))) => {
+                    assert_eq!(frame.code, 4008);
+                    break true;
+                }
+                None => break true,
+                Some(_) => {}
+            }
+        }
+    })
+    .await
+    .expect("slow client must be closed when credit stays exhausted");
+    assert!(got_close);
 }

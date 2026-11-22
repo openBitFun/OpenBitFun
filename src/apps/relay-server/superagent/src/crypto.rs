@@ -106,35 +106,11 @@ pub fn derive_pair_key(secret: &[u8; 32], peer_public: &[u8; 32]) -> Result<[u8;
 /// Reads a 32-byte key stored as 64 hex characters in a file that only its
 /// owner may read.
 pub fn read_key_file(path: &std::path::Path) -> anyhow::Result<[u8; 32]> {
-    use anyhow::Context;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(path)
-            .with_context(|| format!("cannot read the key file {}", path.display()))?
-            .permissions()
-            .mode();
-        anyhow::ensure!(
-            mode & 0o077 == 0,
-            "the key file {} must not be readable by group or others (chmod 600)",
-            path.display()
-        );
-    }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read the key file {}", path.display()))?;
-    parse_hex_key(text.trim())
+    openbitfun_link::gateway::read_hex_key_file(path).map_err(anyhow::Error::msg)
 }
 
 pub fn parse_hex_key(text: &str) -> anyhow::Result<[u8; 32]> {
-    anyhow::ensure!(
-        text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "the key file must hold exactly 64 hex characters"
-    );
-    let mut key = [0u8; 32];
-    for (index, chunk) in text.as_bytes().chunks(2).enumerate() {
-        key[index] = u8::from_str_radix(std::str::from_utf8(chunk)?, 16)?;
-    }
-    Ok(key)
+    openbitfun_link::gateway::parse_hex_key(text).map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]
