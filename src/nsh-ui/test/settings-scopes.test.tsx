@@ -17,15 +17,20 @@ function fleetNavigator() {
     full: true,
     devices: [
       fleetDeviceRow("cloud-1", "OpenBitFun", [], { hostKind: "cloud" }),
-      fleetDeviceRow("dev-a", "MacBook", [
-        {
-          workspaceId: "workspace-1",
-          name: "OpenBitFun",
-          rootPath: "/repo",
-          isHostCurrent: true,
-          sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "NSH skeleton")],
-        },
-      ]),
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "workspace-1",
+            name: "OpenBitFun",
+            rootPath: "/repo",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "NSH skeleton")],
+          },
+        ],
+        { isClientDevice: true },
+      ),
       fleetDeviceRow(
         "dev-b",
         "linux-box",
@@ -102,6 +107,8 @@ test("the device scope chip lists runtime devices, disables an offline one and m
   const { app, host } = await openSettings();
   await app.waitFor("settings-scope-chip");
   await app.press("settings-scope-chip");
+  // Local runtime desktop (isClientDevice: true) and peer runtimes are both selectable.
+  await app.waitFor("settings-scope-device-dev-a");
   await app.waitFor("settings-scope-device-dev-b");
   // The cloud agent is not a device scope; an offline device is listed with its word.
   expect(app.shows("settings-scope-device-cloud-1")).toBe(false);
@@ -112,6 +119,11 @@ test("the device scope chip lists runtime devices, disables an offline one and m
   await app.press("nav-settings-page-mcp");
   // The device pages now read linux-box.
   await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_mcp_servers"));
+
+  // Switching back to the local desktop reloads device-scoped stores for dev-a.
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-a");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-a" && call.command === "get_mcp_servers"));
 });
 
 test("Account › OpenBitFun turns the agent off and deletes its data through the cloud node", async () => {
@@ -183,14 +195,35 @@ test("Account › Devices and chat apps lists the account's devices and one phon
   await app.waitFor("account-phone-sheet");
 });
 
-test("the phone lists the scopes first and pushes one page with a back control", async () => {
+test("the phone lists the scopes first, hides desktop-only Pet, and pushes one page with a pages switcher", async () => {
   const { app } = await openSettings({}, PHONE);
   await app.waitFor("settings-compact-page-general");
   expect(app.shows("settings-scope-list")).toBe(false);
   expect(app.shows("settings-compact-page-openbitfun")).toBe(true);
+  expect(app.shows("settings-compact-page-pet")).toBe(false);
   await app.press("settings-compact-page-permissions");
-  await app.waitFor("settings-compact-back");
+  await app.waitFor("settings-compact-pages");
+  expect(app.shows("settings-compact-back")).toBe(false);
   await app.waitFor("Let Super Agent answer for me");
-  await app.press("settings-compact-back");
+  await app.press("settings-compact-pages");
   await app.waitFor("settings-compact-page-general");
+});
+
+test("switching device scope guards unsaved drafts, masks secrets, and Default models omits Not set", async () => {
+  const { app, host } = await openSettings();
+  await app.press("nav-settings-page-models");
+  await app.waitFor("Default models");
+  // Unset default model slots show the Choose a model placeholder, never raw "Not set".
+  expect(app.texts()).not.toContain("Not set");
+
+  await app.type("proxy-password", "super-secret-value");
+  await app.press("settings-scope-chip");
+  await app.press("settings-scope-device-dev-b");
+  await app.waitFor("settings-unsaved-dialog");
+  expect(app.texts()).toContain("Proxy password: Hidden");
+  expect(app.texts().join("\n")).not.toContain("super-secret-value");
+
+  await app.press("settings-unsaved-discard");
+  await app.waitUntil(() => !app.shows("settings-unsaved-dialog"));
+  await app.waitUntil(() => host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_config"));
 });

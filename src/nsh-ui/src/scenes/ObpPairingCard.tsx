@@ -1,13 +1,12 @@
 // Devices scene: "Browser and paired devices" — this backend's own listener.
 //
-// The same UI, served by this backend, runs in a browser on this computer
-// (loopback, owner session through a per-launch link). Phones pair over the
-// device mesh in "Use on phone"; every paired device is listed and revoked
-// here. The card only exists for the backend's owner: a paired phone gets a
-// note instead (the commands are controller-local and the backend refuses them).
+// Retained for standalone/legacy compatibility (not mounted on 2.0 Account ›
+// Devices, which uses email-code sign-in). Errors are sanitized through
+// `localizeHostError` and destructive revocations require explicit confirmation.
 
+import { signal, Text, View } from "nsh";
 import { formatRelativeTime } from "../format";
-import { tr } from "../i18n";
+import { localizeHostError, tr } from "../i18n";
 import {
   loadObpStatus,
   obpBusy,
@@ -17,15 +16,17 @@ import {
   revokeObpClient,
   type ObpPairedClient,
 } from "../obpStore";
+import { palette, space, textStyle } from "../theme";
 import { InsetGroup, InsetRow, StudioSection } from "../ui/studio";
-import { Button, InlineBanner, StatusPill } from "../ui/primitives";
+import { ModalDialog } from "../ui/overlays";
+import { Button, InlineBanner } from "../ui/primitives";
 
 function errorText(code: string): string {
   if (code === "obp_update_host") return tr("devices.obp.updateHost");
   if (code === "obp_owner_only") return tr("devices.obp.ownerOnly");
   if (code === "obp_no_loopback") return tr("devices.obp.noLoopback");
   if (code.startsWith("obp_unavailable")) return tr("devices.obp.unavailable");
-  return code;
+  return localizeHostError(code);
 }
 
 function clientDetail(client: ObpPairedClient): string {
@@ -35,6 +36,7 @@ function clientDetail(client: ObpPairedClient): string {
 }
 
 export function ObpPairingCard() {
+  const pendingRevoke = signal<ObpPairedClient | null>(null);
   void loadObpStatus();
   return (
     <StudioSection
@@ -42,72 +44,101 @@ export function ObpPairingCard() {
       footnote={tr("devices.obp.footnote")}
       accessibilityLabel="obp-pairing-card"
     >
-      <If when={obpError()}>
-        {code => (
-          <InlineBanner
-            tone={code() === "obp_owner_only" ? "info" : "warning"}
-            message={errorText(code())}
-            accessibilityLabel="obp-error"
-            style={{ marginBottom: 8 }}
-          />
-        )}
-      </If>
-      <If when={obpStatus()?.available === false}>
-        <InlineBanner tone="info" message={tr("devices.obp.unavailable")} accessibilityLabel="obp-unavailable" />
-      </If>
-      <If when={obpStatus()?.available === true ? obpStatus() : null}>
-        {status => (
-          <InsetGroup accessibilityLabel="obp-listener">
-            <InsetRow
-              first
-              icon="monitor"
-              label={tr("devices.obp.browserHere")}
-              detail={
-                status().webUi
-                  ? (status().loopbackUrl ?? tr("devices.obp.noLoopback"))
-                  : tr("devices.obp.noWebUi")
-              }
-              trailing={
-                <Button
-                  label={tr("devices.obp.openBrowser")}
-                  variant="secondary"
-                  size="sm"
-                  leadingIcon="external-link"
-                  disabled={!status().ownerUrl || !status().webUi || obpBusy()}
-                  accessibilityLabel="obp-open-browser"
-                  onPress={() => void openOwnerBrowser()}
-                />
-              }
+      <View style={{ gap: space.sm, minWidth: 0 }}>
+        <If when={obpError()}>
+          {code => (
+            <InlineBanner
+              tone={code() === "obp_owner_only" ? "info" : "warning"}
+              message={errorText(code())}
+              accessibilityLabel="obp-error"
             />
-            <Each of={status().pairedClients} key={client => client.id}>
-              {client => (
-                <InsetRow
-                  indent
-                  label={client().name || tr("devices.obp.unnamedClient")}
-                  detail={clientDetail(client())}
-                  leading={
-                    <StatusPill
-                      size="xs"
-                      kind={client().connected ? "success" : "neutral"}
-                      label={client().connected ? tr("devices.obp.online") : tr("devices.obp.offline")}
-                    />
-                  }
-                  trailing={
-                    <Button
-                      label={tr("devices.obp.revoke")}
-                      variant="danger"
-                      size="sm"
-                      disabled={obpBusy()}
-                      accessibilityLabel={`obp-revoke-${client().id}`}
-                      onPress={() => void revokeObpClient(client().id)}
-                    />
-                  }
-                />
-              )}
-            </Each>
+          )}
+        </If>
+        <If when={!obpError() && obpStatus() === null}>
+          <InsetGroup accessibilityLabel="obp-loading">
+            <InsetRow first label={tr("common.loading")} />
           </InsetGroup>
-        )}
-      </If>
+        </If>
+        <If when={!obpError() && obpStatus()?.available === false}>
+          <InlineBanner tone="info" message={tr("devices.obp.unavailable")} accessibilityLabel="obp-unavailable" />
+        </If>
+        <If when={obpStatus()?.available === true ? obpStatus() : null}>
+          {status => (
+            <InsetGroup accessibilityLabel="obp-listener">
+              <InsetRow
+                first
+                icon="monitor"
+                label={tr("devices.obp.browserHere")}
+                detail={status().webUi ? undefined : tr("devices.obp.noWebUi")}
+                trailing={
+                  <Button
+                    label={tr("devices.obp.openBrowser")}
+                    variant="secondary"
+                    size="sm"
+                    leadingIcon="external-link"
+                    disabled={!status().ownerUrl || !status().webUi || obpBusy()}
+                    accessibilityLabel="obp-open-browser"
+                    onPress={() => void openOwnerBrowser()}
+                  />
+                }
+              />
+              <Each of={status().pairedClients} key={client => client.id}>
+                {client => (
+                  <InsetRow
+                    indent
+                    label={client().name || tr("devices.obp.unnamedClient")}
+                    detail={clientDetail(client())}
+                    trailing={
+                      <Button
+                        label={tr("devices.obp.revoke")}
+                        variant="danger"
+                        size="sm"
+                        disabled={obpBusy()}
+                        accessibilityLabel={`obp-revoke-${client().id}`}
+                        onPress={() => pendingRevoke.set(client())}
+                      />
+                    }
+                  />
+                )}
+              </Each>
+            </InsetGroup>
+          )}
+        </If>
+      </View>
+      <ModalDialog
+        open={pendingRevoke() !== null}
+        title={tr("devices.obp.revoke")}
+        size="sm"
+        accessibilityLabel="obp-revoke-confirm-dialog"
+        onClose={() => pendingRevoke.set(null)}
+        footer={
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
+            <Button
+              label={tr("common.cancel")}
+              variant="ghost"
+              size="md"
+              accessibilityLabel="obp-revoke-cancel"
+              onPress={() => pendingRevoke.set(null)}
+            />
+            <Button
+              label={tr("devices.obp.revoke")}
+              variant="danger"
+              size="md"
+              disabled={obpBusy()}
+              accessibilityLabel="obp-revoke-confirm"
+              onPress={() => {
+                const target = pendingRevoke();
+                pendingRevoke.set(null);
+                if (target) void revokeObpClient(target.id);
+              }}
+            />
+          </View>
+        }
+      >
+        <Text style={textStyle("body", { color: palette().textSecondary })}>
+          {pendingRevoke()?.name || tr("devices.obp.unnamedClient")}
+        </Text>
+      </ModalDialog>
     </StudioSection>
   );
 }

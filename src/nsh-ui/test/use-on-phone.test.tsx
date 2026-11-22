@@ -48,7 +48,9 @@ test("phones and browsers signed in now are listed as signed-in clients, never a
   await app.waitFor("label:phone-controllers");
   await app.waitFor("label:phone-controller-phone-1");
   await app.waitFor("Alice's iPhone");
-  await app.waitFor("text:Signed in to this account · Relayed via OpenBitFun server");
+  await app.waitFor("text:Signed in to this account");
+  // Internal transport/relay labels never leak into the signed-in controller list.
+  expect(app.shows("text:Relayed via OpenBitFun server")).toBe(false);
   // A controller without a directory name is still a signed-in client.
   await app.waitFor("label:phone-controller-obf-gateway-lwb");
   await app.waitFor("Phone or browser");

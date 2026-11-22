@@ -617,10 +617,41 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.press("connector-bot-verbose");
   expect(backend.verboseWrites).toEqual([true]);
 
-  // The 1.x mobile web relay was retired in 2.0: no row, and only bot methods start.
+  // The 1.x mobile web relay and 1.x pairing card are retired in 2.0: only bot methods start.
   expect(app.shows("channel-toggle-relay")).toBe(false);
+  expect(app.shows("obp-pairing-card")).toBe(false);
   expect(backend.startedConnections.every(item => item.method.startsWith("bot_"))).toBe(true);
   expect(backend.stoppedConnections).toEqual([]);
+});
+
+test("chat app modal errors stay scoped to the modal that caused them", async () => {
+  const backend = createWorkbenchBackend({}, true);
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const { action } = data as { action?: string };
+    if (action === "remote_connect_configure_bot") {
+      return { ok: false, error: "feishu credentials rejected", transport: "dev" };
+    }
+    return baseInvoke(data);
+  };
+  const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
+  await app.press("Settings");
+  await app.press("Devices and chat apps");
+  await app.waitFor("label:channels-section");
+
+  await app.press("channel-toggle-feishu");
+  await app.type("connector-feishu-app-id", "cli_bad");
+  await app.type("connector-feishu-app-secret", "sec_bad");
+  await app.press("connector-feishu-connect");
+  await app.waitFor("remote-disclaimer-agree");
+  await app.press("remote-disclaimer-agree");
+  await app.waitFor("text:feishu credentials rejected");
+  await app.press("Done");
+
+  // Opening WeChat starts with a clean modal — no stale Feishu error bleeds across.
+  await app.press("channel-toggle-weixin");
+  await app.waitFor("connector-weixin-qr-start");
+  expect(app.shows("text:feishu credentials rejected")).toBe(false);
 });
 
 
@@ -670,30 +701,31 @@ test("a narrow settings scene lists the pages first, pushes one full width and g
 
   await app.press("Settings");
   await app.waitFor("Interface language");
-  // Wide: the page itself, no in-scene page list and no back control.
+  // Wide: the page itself, no in-scene page list and no pages switcher.
   expect(app.shows("settings-compact-page-models")).toBe(false);
-  expect(app.shows("settings-compact-back")).toBe(false);
+  expect(app.shows("settings-compact-pages")).toBe(false);
 
   await app.setViewport(560, 900);
   await app.waitFor("settings-compact-page-models");
   // The open page's description is not drawn while the list is shown.
   expect(app.texts()).not.toContain("Language, account, startup, updates and notifications.");
 
-  // A page row pushes that page with a back control.
+  // A page row pushes that page with a pages switcher (no stacked duplicate back chevron).
   await app.press("settings-compact-page-models");
   await app.waitFor("add-model");
-  await app.waitFor("settings-compact-back");
+  await app.waitFor("settings-compact-pages");
+  expect(app.shows("settings-compact-back")).toBe(false);
   expect(app.shows("settings-compact-page-models")).toBe(false);
 
-  // Back returns to the list; the page is no longer drawn.
-  await app.press("settings-compact-back");
+  // Switcher returns to the list; the page is no longer drawn.
+  await app.press("settings-compact-pages");
   await app.waitFor("settings-compact-page-general");
   expect(app.shows("add-model")).toBe(false);
 
   // Widening again shows the selected page beside the navigation.
   await app.setViewport(1440, 900);
   await app.waitFor("add-model");
-  expect(app.shows("settings-compact-back")).toBe(false);
+  expect(app.shows("settings-compact-pages")).toBe(false);
 });
 
 test("typed text that is not saved holds a page change until it is saved or discarded", async () => {

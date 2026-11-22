@@ -75,6 +75,8 @@ export class McpAdvancedEntry extends Error {
 }
 
 export const mcpAvailable = signal<boolean | null>(null);
+export const mcpLoading = signal(false);
+export const mcpDocumentLoaded = signal(false);
 export const mcpServerRows = signal<McpServerRow[]>([]);
 export const mcpBusy = signal<string | null>(null);
 export const mcpNotice = signal("");
@@ -527,11 +529,29 @@ export function ensureMcp(): void {
   void loadMcpDocument();
 }
 
+/** Resets MCP state and re-reads servers and config document for the newly selected device scope. */
+export function reloadMcpForDevice(): void {
+  probeStarted = true;
+  mcpAvailable.set(null);
+  mcpLoading.set(true);
+  mcpDocumentLoaded.set(false);
+  mcpServerRows.set([]);
+  mcpDocument.set(null);
+  mcpNotice.set("");
+  mcpDraft.set(null);
+  mcpJsonOpen.set(false);
+  mcpImportOpen.set(false);
+  closeMcpAuth();
+  void refreshMcpServers();
+  void loadMcpDocument();
+}
+
 /**
  * Asks the host for its server list. A host that does not answer has no MCP
  * surface at all, and the section stays hidden rather than showing an error.
  */
 export async function refreshMcpServers(): Promise<void> {
+  mcpLoading.set(true);
   try {
     const rows = await invokeCommand<McpServerRow[]>("get_mcp_servers");
     mcpServerRows.set(Array.isArray(rows) ? rows : []);
@@ -542,6 +562,8 @@ export async function refreshMcpServers(): Promise<void> {
       return;
     }
     mcpNotice.set(error instanceof Error ? error.message : String(error));
+  } finally {
+    mcpLoading.set(false);
   }
 }
 
@@ -573,7 +595,11 @@ export async function loadMcpDocument(): Promise<void> {
     }
   } catch (error) {
     mcpDocument.set(null);
-    mcpNotice.set(error instanceof Error ? error.message : String(error));
+    if (mcpAvailable() !== false) {
+      mcpNotice.set(error instanceof Error ? error.message : String(error));
+    }
+  } finally {
+    mcpDocumentLoaded.set(true);
   }
 }
 

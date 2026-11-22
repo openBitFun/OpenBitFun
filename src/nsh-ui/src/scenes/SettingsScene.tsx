@@ -38,7 +38,7 @@ import {
   type UsageActivityCell,
   type UsageActivityView,
 } from "../usageActivity";
-import { deviceGlyphIcon } from "../ui/fleet";
+import { StateMark, deviceGlyphIcon, stateColor } from "../ui/fleet";
 import { AccountDevicesPage } from "./AccountDevicesPage";
 import { Bar, Cell, Grid, Plot, PlotAxis } from "nsh/base/plot";
 import {
@@ -203,6 +203,7 @@ import {
   mcpAvailable,
   mcpBusy,
   mcpDocument,
+  mcpDocumentLoaded,
   mcpDraft,
   mcpImportCandidates,
   mcpImportNotice,
@@ -212,6 +213,7 @@ import {
   mcpJsonOpen,
   mcpJsonState,
   mcpJsonText,
+  mcpLoading,
   mcpNotice,
   mcpOAuthBusy,
   mcpOAuthNotice,
@@ -226,6 +228,7 @@ import {
   openMcpJson,
   previewMcpImport,
   refreshMcpServers,
+  reloadMcpForDevice,
   restartMcpServer,
   saveMcpDraft,
   saveMcpJson,
@@ -331,6 +334,8 @@ import {
   decisionModel,
   discardRuleDraft,
   ensurePermissions,
+  loadDecisionModel,
+  loadPermissions,
   movePermissionRule,
   patchPermissionRule,
   pendingFullAccess,
@@ -356,6 +361,7 @@ import {
   deletePool,
   ensurePools,
   loadPoolStatus,
+  loadPools,
   movePoolMember,
   openPoolDraft,
   poolDraft,
@@ -372,6 +378,7 @@ import {
   closeQuickActionDraft,
   deleteQuickAction,
   ensureQuickActions,
+  loadQuickActions,
   moveQuickAction,
   openQuickActionDraft,
   quickActionDraft,
@@ -385,6 +392,7 @@ import {
   MID_TURN_POLICIES,
   chooseMidTurnSendPolicy,
   ensureSendPolicy,
+  loadSendPolicy,
   midTurnSendPolicy,
   sendPolicyNotice,
   type MidTurnSendPolicy,
@@ -437,6 +445,7 @@ import {
   TASK_MODEL_ROWS,
   chooseTaskModel,
   ensureTaskModels,
+  loadTaskModels,
   taskModels,
   taskModelsAbsent,
   taskModelsNotice,
@@ -447,6 +456,7 @@ import {
   APPEARANCE_PRESETS,
   appearanceId,
   appearanceMode,
+  compactLayout,
   concentricRadius,
   controlHeight,
   fontMono,
@@ -461,6 +471,7 @@ import {
   textSize,
   textStyle,
   textTracking,
+  touchSlop,
   type AppearanceId,
 } from "../theme";
 import { applyAppearance, chooseAppearancePreset, type AppearanceMode } from "../themeStore";
@@ -472,6 +483,8 @@ import {
   accountSyncCaptionShown,
   accountSyncLoad,
   accountSyncNote,
+  accountSyncWriteError,
+  clearAccountSyncWriteError,
   loadAccountSync,
   setAccountSyncEnabled,
 } from "../accountSyncStore";
@@ -536,13 +549,10 @@ import {
   InlineConfirmBar,
   InlineFieldSaveGroup,
   InputBox,
-  PillChip,
   SearchInput,
   SegmentedTabs,
-  StatusDot,
-  StatusPill,
   ToggleSwitch,
-  type StatusPillKind,
+  focusRingStyle,
 } from "../ui/primitives";
 import {
   activeWorkspace,
@@ -586,6 +596,7 @@ import {
   credentialIdFor,
   ensureWebSearch,
   httpProvider,
+  loadWebSearch,
   providerOf,
   saveSearchCredential,
   selectedProvider,
@@ -879,9 +890,15 @@ export function settingsScopeOf(id: SettingsPageId): SettingsScope {
   return SETTINGS_PAGE_GROUPS.find(group => group.pages.some(page => page.id === resolved))?.id ?? "preferences";
 }
 
-/** The pages a scope lists on this window (the pet page only in the native desktop). */
+function settingsPageVisible(page: SettingsPageEntry): boolean {
+  if (page.nativeOnly && windowShellId() !== "nsh-desktop") return false;
+  if (page.id === "pet" && compactLayout() && !companionAvailableHere()) return false;
+  return true;
+}
+
+/** The pages a scope lists on this window (hiding desktop-only pet on compact phones). */
 export function visibleSettingsPages(group: SettingsPageGroup): readonly SettingsPageEntry[] {
-  return group.pages.filter(page => !page.nativeOnly || windowShellId() === "nsh-desktop");
+  return group.pages.filter(settingsPageVisible);
 }
 
 export function settingsPageEntry(id: SettingsPageId): SettingsPageEntry {
@@ -918,7 +935,7 @@ export function settingsSearchResults(): SettingsSearchHit[] {
     texts.some(text => (text ?? "").toLowerCase().includes(needle));
   const hits: SettingsSearchHit[] = [];
   for (const page of ALL_SETTINGS_PAGES) {
-    if (page.nativeOnly && windowShellId() !== "nsh-desktop") continue;
+    if (!settingsPageVisible(page)) continue;
     const pageLabel = tr(page.labelKey);
     if (matches(pageLabel, tr(page.descriptionKey), ...page.keywords)) {
       hits.push({ key: `page:${page.id}`, pageId: page.id, label: pageLabel, context: tr(page.descriptionKey) });
@@ -971,8 +988,36 @@ export function revealSettingsSection(id: string): void {
   }
 }
 
-/** The page the unsaved-changes prompt is holding back, with the section to reveal. */
-const pendingNavigation = signal<{ pageId: SettingsPageId; anchor?: string } | null>(null);
+/** The page or device switch the unsaved-changes prompt is holding back. */
+type PendingSettingsNavigation =
+  | { kind: "page"; pageId: SettingsPageId; anchor?: string }
+  | { kind: "device"; deviceId: string };
+
+const pendingNavigation = signal<PendingSettingsNavigation | null>(null);
+
+/** Tracks which device each device-scoped section last loaded for, and whether scope switched. */
+const loadedDeviceForSection = new Map<string, string>();
+let deviceScopeSwitchedInSettings = false;
+
+function useDeviceScopedLoad(sectionKey: string, ensureInitial: () => void, reloadForDevice: () => void): void {
+  effect(() => {
+    const ctx = deviceContext();
+    untracked(() => {
+      const prev = loadedDeviceForSection.get(sectionKey);
+      if (prev === undefined) {
+        loadedDeviceForSection.set(sectionKey, ctx);
+        if (deviceScopeSwitchedInSettings) {
+          reloadForDevice();
+        } else {
+          ensureInitial();
+        }
+      } else if (prev !== ctx) {
+        loadedDeviceForSection.set(sectionKey, ctx);
+        reloadForDevice();
+      }
+    });
+  });
+}
 
 /**
  * Opens a settings page. Text typed into a field and not saved yet would be lost
@@ -988,7 +1033,7 @@ export function requestSettingsPage(requested: SettingsPageId, requestedAnchor?:
     return;
   }
   if (dirtyFields().length > 0) {
-    pendingNavigation.set({ pageId, anchor });
+    pendingNavigation.set({ kind: "page", pageId, anchor });
     return;
   }
   goToSettingsPage(pageId, anchor);
@@ -999,6 +1044,32 @@ function goToSettingsPage(pageId: SettingsPageId, anchor?: string): void {
   compactPageOpen.set(true);
   selectedSettingsPage.set(pageId);
   if (anchor) revealSettingsSection(anchor);
+}
+
+/** Switches the active device scope, guarding any unsaved text drafts first. */
+function requestDeviceScope(deviceId: string): void {
+  if (!deviceId || deviceId === deviceContext()) return;
+  if (dirtyFields().length > 0) {
+    pendingNavigation.set({ kind: "device", deviceId });
+    return;
+  }
+  applyDeviceScope(deviceId);
+}
+
+function applyDeviceScope(deviceId: string): void {
+  pendingNavigation.set(null);
+  drafts.set({});
+  approvalDrafts.set({});
+  deviceScopeSwitchedInSettings = true;
+  void selectDeviceContext(deviceId);
+}
+
+function applyPendingNavigation(pending: PendingSettingsNavigation): void {
+  if (pending.kind === "device") {
+    applyDeviceScope(pending.deviceId);
+  } else {
+    goToSettingsPage(pending.pageId, pending.anchor);
+  }
 }
 
 /** Opens what a search row names and clears the query. */
@@ -1271,25 +1342,23 @@ function stepNumber(spec: FieldSpec, direction: 1 | -1): void {
 function signedInAccountDisplay(): string {
   const login = githubUser()?.login;
   if (login) return `@${login}`;
-  return accountStatus()?.userId || tr("home.signedIn");
+  return tr("home.signedIn");
 }
 
 // --- Settings layout (calm inset grouped lists) -----------------------------
 // Page: 680 column, 32 gutter (16 compact), 28 top, 26/600 large title.
 // Sections: a 13/600 secondary header, 8 below, then one inset grouped list
 // (radius 12, panelRaised, hairline borderSubtle, no shadow) whose rows are at
-// least 44 tall with 0x16 padding and separators inset 16 from the left.
+// least 48 tall with 0x16 padding and separators inset 16 from the left.
 
 const SETTINGS_CONTENT_MAX = layout.settingsWidth;
-/** Below this the scene shows the page list, then pushes a page (the phone layout). */
-const SETTINGS_COMPACT_WIDTH = layout.phoneMaxWidth + 1;
-const SETTINGS_ROW_MIN = layout.touchTarget;
+const SETTINGS_ROW_MIN = 48;
 const SETTINGS_ROW_INSET = space.lg;
 /** The left list (visual spec §4.9): 240 wide, rows 30. */
 const SETTINGS_LIST_WIDTH = layout.navMediumWidth;
 const SETTINGS_LIST_ROW = controlHeight.sm + space.hair;
 
-/** The scene's own laid-out width (the nav panel and aux pane take part of the window). */
+/** The scene's own laid-out width (used to tune list width and gutters at narrow desktop sizes). */
 const settingsSceneWidth = signal(0);
 /** Compact layout: the page list is shown until a page is pushed over it. */
 const compactPageOpen = signal(false);
@@ -1299,15 +1368,22 @@ function trackSettingsWidth(event: { bounds: { size: { width: number } } }): voi
   if (width > 0 && width !== untracked(() => settingsSceneWidth())) settingsSceneWidth.set(width);
 }
 
-/** True when the settings scene is narrower than the phone breakpoint (720). */
+/** True when the window uses the compact phone list->push layout (<720px). */
 export function settingsCompact(): boolean {
+  return compactLayout() || horizontalSizeClass() === "compact";
+}
+
+function settingsListWidth(): number {
   const width = settingsSceneWidth();
-  if (width > 0) return width < SETTINGS_COMPACT_WIDTH;
-  return horizontalSizeClass() === "compact";
+  if (width > 0 && width < 800) return 216;
+  return SETTINGS_LIST_WIDTH;
 }
 
 function settingsGutter(): number {
-  return settingsCompact() ? layout.phoneGutter : layout.pageGutter;
+  if (settingsCompact()) return layout.phoneGutter;
+  const width = settingsSceneWidth();
+  if (width > 0 && width < 800) return space.xl;
+  return layout.pageGutter;
 }
 
 /** A hairline separator inset 16 from the left, drawn over the top or bottom edge of a row. */
@@ -1337,27 +1413,17 @@ function RowText(props: { label: string; description?: string; tabular?: boolean
         flexShrink: 1,
         flexBasis: props.grow ? 180 : undefined,
         minWidth: 0,
-        gap: 2,
+        gap: space.hair,
       }}
     >
-      <Text
-        style={{
-          color: palette().text,
-          fontSize: textSize(14),
-          fontWeight: "400",
-          lineHeight: textLineHeight(14, 1.4),
-        }}
-      >
+      <Text style={textStyle("body")}>
         {props.label}
       </Text>
       <If when={props.description ?? ""}>
         {description => (
           <Text
             style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              fontVariant: props.tabular ? ["tabular-nums"] : undefined,
-              lineHeight: textLineHeight(12, 1.45),
+              ...textStyle("caption", { tabular: props.tabular }),
               maxWidth: 460,
             }}
           >
@@ -1389,10 +1455,10 @@ function SettingsRow(props: {
         flexDirection: props.stacked ? "column" : "row",
         flexWrap: props.stacked ? undefined : "wrap",
         alignItems: props.stacked ? "stretch" : "center",
-        columnGap: 16,
-        rowGap: 8,
+        columnGap: space.lg,
+        rowGap: space.sm,
         paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: 10,
+        paddingVertical: space.md,
         minHeight: SETTINGS_ROW_MIN,
         ...paintTransition(MOTION_DURATION.fast),
       }}
@@ -1408,11 +1474,11 @@ function SettingsRow(props: {
             flexWrap: "wrap",
             alignItems: "center",
             justifyContent: props.stacked ? "flex-start" : "flex-end",
-            flexShrink: 0,
+            flexShrink: 1,
             minWidth: 0,
-            maxWidth: props.stacked || settingsCompact() ? undefined : "60%",
+            maxWidth: props.stacked || settingsCompact() ? "100%" : "60%",
             marginLeft: props.stacked ? undefined : "auto",
-            gap: 8,
+            gap: space.sm,
           }}
         >
           {props.children}
@@ -1438,27 +1504,24 @@ function SectionHeader(props: { title: string; extra?: JSX.Element }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        minHeight: 24,
-        marginBottom: 8,
-        paddingHorizontal: 4,
+        gap: space.sm,
+        minHeight: space.xl,
+        marginBottom: space.sm,
+        paddingHorizontal: space.xs,
       }}
     >
       <Text
         role="header"
         style={{
+          ...textStyle("sectionTitle", { color: palette().textSecondary }),
           flex: 1,
           minWidth: 0,
-          color: palette().textSecondary,
-          fontSize: textSize(13),
-          fontWeight: "600",
-          lineHeight: textLineHeight(13, 1.35),
         }}
       >
         {props.title}
       </Text>
       <If when={Boolean(props.extra)}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>{props.extra}</View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>{props.extra}</View>
       </If>
     </View>
   );
@@ -1469,11 +1532,9 @@ function SectionFootnote(props: { text: string }) {
   return (
     <Text
       style={{
-        marginTop: 8,
-        paddingHorizontal: 4,
-        color: palette().textMuted,
-        fontSize: textSize(12),
-        lineHeight: textLineHeight(12, 1.45),
+        ...textStyle("caption"),
+        marginTop: space.sm,
+        paddingHorizontal: space.xs,
         maxWidth: 600,
       }}
     >
@@ -1487,15 +1548,14 @@ function HeaderNotice(props: { text: string }) {
   return (
     <Text
       style={{
+        ...textStyle("caption"),
         maxWidth: 320,
         color:
           noticeTone(props.text) === "danger"
-            ? palette().danger
+            ? stateColor("failed")
             : noticeTone(props.text) === "warning"
-              ? palette().warning
+              ? stateColor("needs_you")
               : palette().textSecondary,
-        fontSize: textSize(12),
-        lineHeight: textLineHeight(12, 1.4),
         numberOfLines: 2,
         textOverflow: "ellipsis",
       }}
@@ -1510,10 +1570,8 @@ function RowValue(props: { text: string }) {
   return (
     <Text
       style={{
-        color: palette().textSecondary,
-        fontSize: textSize(13),
-        fontVariant: ["tabular-nums"],
-        lineHeight: textLineHeight(13, 1.4),
+        ...textStyle("label", { color: palette().textSecondary, tabular: true }),
+        fontWeight: "400",
         numberOfLines: 1,
         textOverflow: "ellipsis",
       }}
@@ -1642,12 +1700,12 @@ function SettingsConfigRow(props: {
         marginHorizontal: -SettingsInsetContext(),
         minHeight: SETTINGS_ROW_MIN,
         paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: 10,
+        paddingVertical: space.md,
         flexDirection: "row",
         flexWrap: "wrap",
         alignItems: "center",
-        columnGap: 16,
-        rowGap: 8,
+        columnGap: space.lg,
+        rowGap: space.sm,
       }}
     >
       <If when={Boolean(props.topDivider)}>
@@ -1658,6 +1716,7 @@ function SettingsConfigRow(props: {
         <View
           style={{
             flexDirection: "row",
+            flexWrap: "wrap",
             alignItems: "center",
             justifyContent: stretch() ? "flex-start" : "flex-end",
             flexShrink: 1,
@@ -1665,7 +1724,7 @@ function SettingsConfigRow(props: {
             marginLeft: "auto",
             width: settingsCompact() ? undefined : props.controlWidth,
             maxWidth: "100%",
-            gap: 8,
+            gap: space.sm,
           }}
         >
           {props.children}
@@ -1690,34 +1749,34 @@ function RowSaveButton(props: { spec: FieldSpec; onPress: () => void }) {
       testID={`${spec.id}-save`}
       accessibilityLabel={tr("settings.field.saveField", { label: fieldLabel(spec) })}
       disabled={fieldSaving(spec)}
+      hitSlop={touchSlop(controlHeight.sm)}
       onPress={props.onPress}
       style={{
-        height: controlHeight.sm,
-        paddingHorizontal: 12,
+        minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+        paddingHorizontal: space.md,
         flexShrink: 0,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        gap: 5,
-        borderRadius: radii.pill,
+        gap: space.xs,
+        borderRadius: radii.md,
         borderCurve: "continuous",
         backgroundColor: palette().actionPrimaryBg,
         cursor: "pointer",
+        userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().actionPrimaryHover }}
       activeStyle={tactileActiveStyle()}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().accent, outlineOffset: 2 }}
+      focusVisibleStyle={focusRingStyle()}
     >
       <If when={fieldSaving(spec)}>
         <Spinner size={11} color={palette().actionPrimaryFg} />
       </If>
       <Text
         style={{
-          color: palette().actionPrimaryFg,
-          fontSize: textSize(12),
+          ...textStyle("caption", { color: palette().actionPrimaryFg }),
           fontWeight: "600",
-          lineHeight: textLineHeight(12, 1.2),
         }}
       >
         {tr("settings.field.saveShort")}
@@ -1747,7 +1806,7 @@ function ChoiceControl(props: { spec: FieldSpec }) {
       accessibilityLabel: `${spec.id}-${option.value}`,
     }));
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, maxWidth: "100%" }}>
       <If when={fieldSaving(spec)}>
         <Spinner size={12} color={palette().accent} />
       </If>
@@ -1761,8 +1820,8 @@ function ChoiceControl(props: { spec: FieldSpec }) {
           options={options()}
           accessibilityLabel={spec.id}
           disabled={fieldSaving(spec)}
-          minWidth={200}
-          maxWidth={280}
+          minWidth={settingsCompact() ? 160 : 200}
+          maxWidth={settingsCompact() ? undefined : 280}
           align="end"
           onChange={value => void writeField(spec, value)}
         />
@@ -1808,7 +1867,7 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
     return rows;
   };
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, maxWidth: "100%" }}>
       <If when={fieldSaving(spec)}>
         <Spinner size={12} color={palette().accent} />
       </If>
@@ -1819,8 +1878,8 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
         searchable={options().length > 8}
         accessibilityLabel={spec.id}
         disabled={fieldSaving(spec)}
-        minWidth={220}
-        maxWidth={300}
+        minWidth={settingsCompact() ? 160 : 220}
+        maxWidth={settingsCompact() ? undefined : 300}
         align="end"
         onChange={value => void writeField(spec, value || null)}
       />
@@ -1844,15 +1903,15 @@ function NumberControl(props: { spec: FieldSpec }) {
   };
   const max = () => maxForField(spec);
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
       <View
         style={{
-          height: controlHeight.sm,
+          minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
           flexDirection: "row",
           alignItems: "center",
-          padding: 2,
-          gap: 2,
-          borderRadius: radii.sm,
+          padding: space.hair,
+          gap: space.hair,
+          borderRadius: radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: fieldDirty(spec) ? palette().accent : palette().borderSubtle,
@@ -1860,6 +1919,7 @@ function NumberControl(props: { spec: FieldSpec }) {
           flexShrink: 0,
           ...paintTransition(MOTION_DURATION.fast),
         }}
+        focusWithinStyle={{ borderColor: palette().fieldFocusBorder }}
       >
         <ActionButton
           label="−"
@@ -1867,7 +1927,11 @@ function NumberControl(props: { spec: FieldSpec }) {
           size="xs"
           accessibilityLabel={`${spec.id}-decrease`}
           disabled={unavailable() || fieldSaving(spec) || (value() !== null && value()! <= (spec.min ?? Number.NEGATIVE_INFINITY))}
-          style={{ width: 24, paddingHorizontal: 0 }}
+          style={{
+            width: compactLayout() ? 36 : controlHeight.sm,
+            minHeight: compactLayout() ? 36 : controlHeight.xs,
+            paddingHorizontal: 0,
+          }}
           onPress={() => stepNumber(spec, -1)}
         />
         <Input
@@ -1879,13 +1943,14 @@ function NumberControl(props: { spec: FieldSpec }) {
           onChange={event => setDraft(spec, event.value)}
           onSubmit={() => void commitDraft(spec)}
           style={{
-            width: 64,
-            height: controlHeight.sm - 6,
-            paddingHorizontal: 4,
+            width: 104,
+            minHeight: compactLayout() ? 36 : controlHeight.md - 6,
+            paddingHorizontal: space.sm,
             textAlign: "center",
             color: palette().text,
             placeholderColor: palette().textMuted,
-            fontSize: textSize(12),
+            caretColor: palette().accent,
+            fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
             fontWeight: "600",
             fontVariant: ["tabular-nums"],
             backgroundColor: "transparent",
@@ -1898,12 +1963,16 @@ function NumberControl(props: { spec: FieldSpec }) {
           size="xs"
           accessibilityLabel={`${spec.id}-increase`}
           disabled={unavailable() || fieldSaving(spec) || (value() !== null && max() !== undefined && value()! >= max()!)}
-          style={{ width: 24, paddingHorizontal: 0 }}
+          style={{
+            width: compactLayout() ? 36 : controlHeight.sm,
+            minHeight: compactLayout() ? 36 : controlHeight.xs,
+            paddingHorizontal: 0,
+          }}
           onPress={() => stepNumber(spec, 1)}
         />
       </View>
       <If when={fieldUnit(spec) ?? ""}>
-        {unit => <Text style={textStyle("meta")}>{unit()}</Text>}
+        {unit => <Text style={textStyle("caption", { tabular: true })}>{unit()}</Text>}
       </If>
       <If when={spec.clearable === true && value() !== null && !fieldDirty(spec)}>
         <IconButton
@@ -1926,7 +1995,16 @@ function TextControl(props: { spec: FieldSpec }) {
   const spec = props.spec;
   const unavailable = () => fieldMissing(spec) && spec.defaultValue === undefined;
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, width: 300, maxWidth: "100%" }}>
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: space.sm,
+        width: settingsCompact() ? "100%" : 300,
+        flexShrink: 1,
+        maxWidth: "100%",
+      }}
+    >
       <InputBox
         size="sm"
         value={draftOf(spec)}
@@ -2019,17 +2097,40 @@ function FieldSection(props: { sectionId: string; children?: JSX.Element; leadin
   );
 }
 
+function matchesNoticeTemplate(text: string, templateKey: MessageKey, placeholder: string): boolean {
+  const sentinel = "\u0000";
+  const rendered = tr(templateKey, { [placeholder]: sentinel });
+  const idx = rendered.indexOf(sentinel);
+  if (idx < 0) return text === rendered;
+  const prefix = rendered.slice(0, idx);
+  const suffix = rendered.slice(idx + sentinel.length);
+  return text.length >= prefix.length + suffix.length && text.startsWith(prefix) && text.endsWith(suffix);
+}
+
 function settingsNoticeTone(notice: string): "danger" | "warning" | "success" {
+  if (
+    notice === tr("settings.memory.resetDone") ||
+    matchesNoticeTemplate(notice, "settings.notice.savedField", "label") ||
+    matchesNoticeTemplate(notice, "settings.notice.languageSaved", "label")
+  ) {
+    return "success";
+  }
+  if (
+    notice === tr("settings.notice.memoryWindowRefusal") ||
+    notice === tr("settings.notice.hostUpdateRequired") ||
+    notice === tr("settings.permissions.timeoutValidation") ||
+    matchesNoticeTemplate(notice, "settings.notice.needsNumber", "label")
+  ) {
+    return "danger";
+  }
+  if (notice === tr("settings.notice.languageNotPersisted")) {
+    return "warning";
+  }
   const lower = notice.toLowerCase();
   if (
     lower.includes("needs a number") ||
-    lower.includes("必须输入") ||
-    lower.includes("必須輸入") ||
     lower.includes("cannot") ||
-    lower.includes("不能") ||
     lower.includes("failed") ||
-    lower.includes("失败") ||
-    lower.includes("失敗") ||
     lower.includes("error") ||
     lower.includes("invalid") ||
     lower.includes("refused") ||
@@ -2038,10 +2139,76 @@ function settingsNoticeTone(notice: string): "danger" | "warning" | "success" {
   ) {
     return "danger";
   }
-  if (lower.includes("warning") || lower.includes("unavailable") || lower.includes("default")) {
+  if (lower.includes("warning") || lower.includes("unavailable")) {
     return "warning";
   }
   return "success";
+}
+
+/** Calm bordered toggle button used for inline option selectors in Settings editors. */
+function SelectableChip(props: {
+  label: string;
+  active: boolean;
+  tone?: "accent" | "warning" | "danger";
+  accessibilityLabel?: string;
+  onPress: () => void;
+}) {
+  const activeBg = (): string => {
+    if (!props.active) return "transparent";
+    if (props.tone === "danger") return palette().dangerSoft;
+    if (props.tone === "warning") return palette().warningSoft;
+    return palette().accentSoft;
+  };
+  const activeBorder = (): string => {
+    if (!props.active) return palette().borderSubtle;
+    if (props.tone === "danger") return palette().dangerBorder;
+    if (props.tone === "warning") return palette().warningBorder;
+    return palette().accentBorder;
+  };
+  const activeColor = (): string => {
+    if (!props.active) return palette().textSecondary;
+    if (props.tone === "danger") return stateColor("failed");
+    if (props.tone === "warning") return stateColor("needs_you");
+    return palette().text;
+  };
+  return (
+    <View
+      role="button"
+      accessibilityLabel={props.accessibilityLabel ?? props.label}
+      accessibilityState={{ selected: props.active }}
+      hitSlop={touchSlop(controlHeight.sm)}
+      onPress={props.onPress}
+      style={{
+        minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+        paddingHorizontal: space.md,
+        paddingVertical: space.xs,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: activeBorder(),
+        backgroundColor: activeBg(),
+        cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
+      hoverStyle={{ backgroundColor: props.active ? activeBg() : palette().surfaceSubtle }}
+      activeStyle={tactileActiveStyle(0.98)}
+      focusVisibleStyle={focusRingStyle()}
+    >
+      <Text
+        style={{
+          ...textStyle("caption"),
+          color: activeColor(),
+          fontWeight: props.active ? "600" : "500",
+        }}
+      >
+        {props.label}
+      </Text>
+    </View>
+  );
 }
 
 function poolMemberTone(status: string): "success" | "warning" | "danger" | "neutral" {
@@ -2108,18 +2275,19 @@ function ChoiceRow(props: {
       style={{
         position: "relative",
         minHeight: SETTINGS_ROW_MIN,
-        paddingLeft: SETTINGS_ROW_INSET,
-        paddingRight: 14,
-        paddingVertical: 9,
+        paddingHorizontal: SETTINGS_ROW_INSET,
+        paddingVertical: space.md,
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
+        gap: space.md,
         cursor: props.disabled ? undefined : "pointer",
+        userSelect: "none",
         opacity: props.disabled ? 0.5 : 1,
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={props.disabled ? undefined : { backgroundColor: palette().panelHover }}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
+      activeStyle={props.disabled ? undefined : tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <If when={!props.first}>
         <RowSeparator edge="top" inset={props.icon ? 44 : SETTINGS_ROW_INSET} />
@@ -2129,29 +2297,21 @@ function ChoiceRow(props: {
           <Icon
             name={icon() as IconName}
             size={16}
-            color={props.selected && props.warning ? palette().warning : palette().textMuted}
+            color={props.selected && props.warning ? stateColor("needs_you") : palette().textMuted}
           />
         )}
       </If>
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
         <Text
-          style={{
-            color: props.selected && props.warning ? palette().warning : palette().text,
-            fontSize: textSize(14),
-            lineHeight: textLineHeight(14, 1.38),
-          }}
+          style={textStyle("body", {
+            color: props.selected && props.warning ? stateColor("needs_you") : palette().text,
+          })}
         >
           {props.label}
         </Text>
         <If when={props.detail ?? ""}>
           {detail => (
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.42),
-              }}
-            >
+            <Text style={textStyle("caption")}>
               {detail()}
             </Text>
           )}
@@ -2159,7 +2319,7 @@ function ChoiceRow(props: {
       </View>
       <View style={{ width: 16, alignItems: "center", flexShrink: 0 }}>
         <If when={props.selected}>
-          <Icon name="check" size={14} color={props.warning ? palette().warning : palette().accent} />
+          <Icon name="check" size={14} color={props.warning ? stateColor("needs_you") : palette().accent} />
         </If>
       </View>
     </View>
@@ -2167,14 +2327,17 @@ function ChoiceRow(props: {
 }
 
 function PermissionsSection() {
-  ensurePermissions();
+  useDeviceScopedLoad("permissions", ensurePermissions, () => {
+    void loadPermissions();
+    void loadDecisionModel();
+  });
   const rulesModalOpen = usePresenceFlag(() => ruleDraft() !== null);
   const modeLabel = (mode: PermissionMode): string => tr(PERMISSION_MODE_META[mode].labelKey);
   const modeHint = (mode: PermissionMode): string => tr(PERMISSION_MODE_META[mode].hintKey);
 
   return (
     <If when={permissionsSupported() !== false}>
-      <View style={{ gap: 36 }}>
+      <View style={{ gap: layout.sectionGap }}>
         <SettingsSection
           title={tr("settings.permissions.title")}
           flush={true}
@@ -2195,7 +2358,6 @@ function PermissionsSection() {
                 detail={modeHint(entry().value)}
                 icon={PERMISSION_MODE_META[entry().value].icon}
                 selected={permissionMode() === entry().value}
-                warning={entry().value === "full_access"}
                 first={index() === 0}
                 accessibilityLabel={`permission-mode-${entry().value}`}
                 onPress={() => void choosePermissionMode(entry().value)}
@@ -2209,22 +2371,20 @@ function PermissionsSection() {
                 flexDirection: "row",
                 flexWrap: "wrap",
                 alignItems: "center",
-                gap: 12,
+                gap: space.md,
                 paddingHorizontal: SETTINGS_ROW_INSET,
-                paddingVertical: 10,
+                paddingVertical: space.md,
                 minHeight: SETTINGS_ROW_MIN,
               }}
             >
               <RowSeparator edge="top" />
-              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, flex: 1, minWidth: 200 }}>
-                <View style={{ flexShrink: 0, marginTop: 1 }}>
-                  <Icon name="warning" size={14} color={palette().warning} />
+              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm, flex: 1, minWidth: 200 }}>
+                <View style={{ flexShrink: 0, marginTop: space.hair }}>
+                  <Icon name="info" size={14} color={palette().textSecondary} />
                 </View>
                 <Text
                   style={{
-                    color: palette().warning,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.44),
+                    ...textStyle("caption", { color: palette().textSecondary }),
                     flex: 1,
                     minWidth: 0,
                   }}
@@ -2232,7 +2392,7 @@ function PermissionsSection() {
                   {tr("settings.permissions.fullAccessWarning")}
                 </Text>
               </View>
-              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8, marginLeft: "auto" }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 0, gap: space.sm, marginLeft: "auto" }}>
                 <Button
                   label={tr("common.cancel")}
                   variant="ghost"
@@ -2242,7 +2402,7 @@ function PermissionsSection() {
                 />
                 <Button
                   label={tr("settings.permissions.allowEverything")}
-                  variant="danger"
+                  variant="primary"
                   size="sm"
                   accessibilityLabel="confirm-full-access"
                   onPress={() => void choosePermissionMode("full_access")}
@@ -2254,7 +2414,7 @@ function PermissionsSection() {
 
         <SettingsSection title={tr("settings.polish.globalRules")} flush={true}>
           <SettingsConfigRow
-            label={tr("settings.polish.globalRules")}
+            label={tr("settings.permissions.globalRulesTitle")}
             description={formatPlural(
               permissionRuleCount(),
               "settings.permissions.rulesInForceOne",
@@ -2298,20 +2458,18 @@ function PermissionsSection() {
           accessibilityLabel="permission-rules-modal"
           onClose={() => discardRuleDraft()}
           footer={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
               <Button
                 label={tr("settings.permissions.addRule")}
                 variant="secondary"
-                size="sm"
+                size="md"
                 leadingIcon="plus"
                 accessibilityLabel="add-permission-rule"
                 onPress={() => addPermissionRule()}
               />
               <Text
                 style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.38),
+                  ...textStyle("caption"),
                   flex: 1,
                   minWidth: 0,
                 }}
@@ -2321,14 +2479,14 @@ function PermissionsSection() {
               <Button
                 label={tr("common.discardChanges")}
                 variant="ghost"
-                size="sm"
+                size="md"
                 accessibilityLabel="discard-permission-rules"
                 onPress={() => discardRuleDraft()}
               />
               <Button
                 label={tr("settings.permissions.saveRules")}
                 variant="primary"
-                size="sm"
+                size="md"
                 accessibilityLabel="save-permission-rules"
                 onPress={() => void saveRuleDraft()}
               />
@@ -2336,26 +2494,19 @@ function PermissionsSection() {
           }
         >
           <If when={ruleDraft() !== null}>
-            <View style={{ gap: 12 }}>
+            <View style={{ gap: space.md }}>
               <View
                 style={{
-                  paddingHorizontal: 11,
-                  paddingVertical: 8,
-                  borderRadius: radii.sm,
+                  paddingHorizontal: space.md,
+                  paddingVertical: space.sm,
+                  borderRadius: radii.md,
                   borderCurve: "continuous",
                   borderWidth: 1,
                   borderColor: palette().borderSubtle,
                   backgroundColor: palette().surfaceTertiary,
                 }}
               >
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontFamily: fontMono,
-                    fontSize: textSize(11),
-                    lineHeight: textLineHeight(11, 1.48),
-                  }}
-                >
+                <Text style={textStyle("mono", { color: palette().textMuted })}>
                   {tr("settings.permissions.validActions", {
                     actions: PERMISSION_ACTIONS.join(" · "),
                   })}
@@ -2370,18 +2521,18 @@ function PermissionsSection() {
                 {(rule, index) => (
                   <View
                     style={{
-                      gap: 10,
-                      paddingTop: index() === 0 ? 4 : 12,
-                      paddingBottom: 2,
+                      gap: space.md,
+                      paddingTop: index() === 0 ? space.xs : space.md,
+                      paddingBottom: space.hair,
                       borderTopWidth: index() === 0 ? 0 : 1,
                       borderColor: palette().borderSubtle,
                     }}
                   >
-                    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.xs }}>
                       <Badge label={`#${index() + 1}`} tone="neutral" />
                       <Each of={PERMISSION_EFFECTS} key={effect => effect.value}>
                         {effect => (
-                          <PillChip
+                          <SelectableChip
                             label={tr(PERMISSION_EFFECT_KEYS[effect().value])}
                             active={rule().effect === effect().value}
                             tone={
@@ -2570,7 +2721,6 @@ function ApprovalSection() {
                 size="sm"
                 disabled={pick("decision-name").trim().length === 0 && pick("decision-endpoint").trim().length === 0}
                 accessibilityLabel="save-approval-decision"
-                style={{ minWidth: 64 }}
                 onPress={() =>
                   void saveDecisionModel(
                     pick("decision-name") || (decisionModel()?.modelName ?? ""),
@@ -2593,7 +2743,7 @@ function ApprovalSection() {
                     : tr("settings.permissions.decisionKeyPlaceholder")
                 }
                 accessibilityLabel="approval-decision-secret"
-                style={{ width: 200 }}
+                style={{ flex: 1, minWidth: 140, maxWidth: settingsCompact() ? "100%" : 220 }}
                 onChange={val => approvalDrafts.update(current => ({ ...current, "decision-secret": val }))}
               />
               <Button
@@ -2602,7 +2752,6 @@ function ApprovalSection() {
                 size="sm"
                 disabled={pick("decision-secret").trim().length === 0}
                 accessibilityLabel="save-approval-decision-key"
-                style={{ minWidth: 64 }}
                 onPress={() => void saveDecisionCredential(pick("decision-secret"))}
               />
               <If when={decisionCredential() === true}>
@@ -2624,7 +2773,7 @@ function ApprovalSection() {
             value={pick("timeout")}
             placeholder={String(approvalSettings()?.timeoutSeconds ?? 30)}
             accessibilityLabel="approval-timeout"
-            style={{ width: 72 }}
+            style={{ width: 108, minWidth: 104 }}
             onChange={val => approvalDrafts.update(current => ({ ...current, timeout: val }))}
           />
           <Text style={textStyle("caption")}>{tr("settings.permissions.seconds")}</Text>
@@ -2633,7 +2782,6 @@ function ApprovalSection() {
             variant="secondary"
             size="sm"
             accessibilityLabel="save-approval-timeout"
-            style={{ minWidth: 64 }}
             onPress={() => {
               const typed = pick("timeout").trim();
               const seconds = typed ? Number.parseInt(typed, 10) : (approvalSettings()?.timeoutSeconds ?? 30);
@@ -2674,7 +2822,7 @@ function ApprovalSection() {
 }
 
 function SendPolicySection() {
-  ensureSendPolicy();
+  useDeviceScopedLoad("send-policy", ensureSendPolicy, () => void loadSendPolicy());
   const currentHint = (): string => {
     const entry = MID_TURN_KEYS[midTurnSendPolicy()];
     return entry ? tr(entry.hintKey) : tr("settings.sendPolicy.steerNowHint");
@@ -2726,7 +2874,7 @@ function DraftRow(props: {
       description={props.hint}
       topDivider={true}
       divider={false}
-      controlWidth={300}
+      controlWidth={settingsCompact() ? undefined : 300}
       controlAlign="stretch"
     >
       <InlineFieldSaveGroup
@@ -2735,7 +2883,6 @@ function DraftRow(props: {
         onSave={() => props.onSave(value())}
         placeholder={props.placeholder ?? tr("settings.field.newValuePlaceholder")}
         saveLabel={tr("settings.field.saveShort")}
-        buttonWidth={68}
         size="sm"
         monospace={props.monospace}
         dirty={value().trim().length > 0}
@@ -2747,7 +2894,7 @@ function DraftRow(props: {
 }
 
 function WebSearchSection() {
-  ensureWebSearch();
+  useDeviceScopedLoad("web-search", ensureWebSearch, () => void loadWebSearch());
   const providerId = (): string => selectedProvider();
   const providerEntry = () => providerOf(providerId());
   const providerMeta = (id: string) =>
@@ -2879,32 +3026,20 @@ function WebSearchSection() {
               flexDirection: "row",
               flexWrap: "wrap",
               alignItems: "center",
-              columnGap: 16,
-              rowGap: 8,
+              columnGap: space.lg,
+              rowGap: space.sm,
               paddingHorizontal: SETTINGS_ROW_INSET,
-              paddingVertical: 10,
+              paddingVertical: space.md,
             }}
           >
             <RowSeparator edge="top" />
-            <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 180, minWidth: 0, gap: 2 }}>
-              <Text
-                style={{
-                  color: palette().text,
-                  fontSize: textSize(14),
-                  lineHeight: textLineHeight(14, 1.4),
-                }}
-              >
+            <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 180, minWidth: 0, gap: space.hair }}>
+              <Text style={textStyle("body")}>
                 {tr("settings.models.apiKey")}
               </Text>
               <If when={credentialLine()}>
                 {line => (
-                  <Text
-                    style={{
-                      color: palette().textSecondary,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.45),
-                    }}
-                  >
+                  <Text style={textStyle("caption", { color: palette().textSecondary })}>
                     {line()}
                   </Text>
                 )}
@@ -2917,10 +3052,10 @@ function WebSearchSection() {
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 6,
+                gap: space.sm,
                 flexShrink: 1,
                 marginLeft: "auto",
-                width: 300,
+                width: settingsCompact() ? "100%" : 300,
                 maxWidth: "100%",
               }}
             >
@@ -2940,7 +3075,6 @@ function WebSearchSection() {
                 variant={(drafts()["search-secret"] ?? "").trim().length > 0 ? "primary" : "secondary"}
                 size="sm"
                 accessibilityLabel="search-save-key"
-                style={{ minWidth: 68 }}
                 onPress={() => void saveSearchCredential(drafts()["search-secret"] ?? "")}
               />
               <IconButton
@@ -2960,7 +3094,7 @@ function WebSearchSection() {
 }
 
 function QuickActionsSection() {
-  ensureQuickActions();
+  useDeviceScopedLoad("quick-actions", ensureQuickActions, () => void loadQuickActions());
   const draft = () => quickActionDraft();
   const quickActionModalOpen = usePresenceFlag(() => Boolean(quickActionDraft()));
   return (
@@ -2969,7 +3103,7 @@ function QuickActionsSection() {
       title={tr("settings.quickActions.title")}
       subtitle={tr("settings.quickActions.subtitle")}
       extra={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <If when={quickActionsNotice()}>
             {notice => <HeaderNotice text={notice()} />}
           </If>
@@ -2991,9 +3125,9 @@ function QuickActionsSection() {
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 14,
-                paddingHorizontal: 16,
-                paddingVertical: 13,
+                gap: space.md,
+                paddingHorizontal: SETTINGS_ROW_INSET,
+                paddingVertical: space.md,
                 position: "relative",
                 opacity: action().enabled ? 1 : 0.65,
                 ...paintTransition(MOTION_DURATION.fast),
@@ -3003,14 +3137,11 @@ function QuickActionsSection() {
               <If when={index() !== 0}>
                 <RowSeparator edge="top" />
               </If>
-              <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+              <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                 <Text
                   style={{
-                    color: palette().text,
-                    fontSize: textSize(14),
+                    ...textStyle("body"),
                     fontWeight: "500",
-                    letterSpacing: textTracking(14),
-                    lineHeight: textLineHeight(14, 1.35),
                     numberOfLines: 1,
                     textOverflow: "ellipsis",
                   }}
@@ -3019,9 +3150,7 @@ function QuickActionsSection() {
                 </Text>
                 <Text
                   style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.44),
+                    ...textStyle("caption"),
                     numberOfLines: 2,
                     textOverflow: "ellipsis",
                   }}
@@ -3029,7 +3158,7 @@ function QuickActionsSection() {
                   {action().prompt}
                 </Text>
               </View>
-              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm }}>
                 <ToggleSwitch
                   value={action().enabled}
                   label={action().enabled ? tr("settings.quickActions.shown") : tr("settings.quickActions.hidden")}
@@ -3104,18 +3233,18 @@ function QuickActionsSection() {
           accessibilityLabel="quick-action-modal"
           onClose={() => closeQuickActionDraft()}
           footer={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
               <Button
                 label={tr("common.cancel")}
                 variant="ghost"
-                size="sm"
+                size="md"
                 accessibilityLabel="quick-action-cancel"
                 onPress={() => closeQuickActionDraft()}
               />
               <Button
                 label={tr("common.save")}
                 variant="primary"
-                size="sm"
+                size="md"
                 accessibilityLabel="quick-action-save"
                 onPress={() => void saveQuickActionDraft()}
               />
@@ -3123,7 +3252,7 @@ function QuickActionsSection() {
           }
         >
           <If when={Boolean(draft())}>
-            <View style={{ gap: 14 }}>
+            <View style={{ gap: space.md }}>
               <InputBox
                 label={tr("common.label")}
                 value={draft()?.label ?? ""}
@@ -3150,11 +3279,13 @@ function QuickActionsSection() {
 }
 
 function McpSection() {
-  ensureMcp();
+  useDeviceScopedLoad("mcp", ensureMcp, () => reloadMcpForDevice());
   void loadAccountRecords();
   const draft = () => mcpDraft();
   const mcpModalOpen = usePresenceFlag(() => Boolean(mcpDraft()));
   const mcpDocumentUsable = (): boolean => mcpDocument() !== null;
+  const mcpIsInitialLoading = (): boolean =>
+    mcpAvailable() === null || (mcpLoading() && mcpServerRows().length === 0 && !mcpDocumentLoaded());
   const stopped = (status: string): boolean => {
     const name = status.trim().toLowerCase();
     return name === "stopped" || name === "uninitialized" || name === "failed";
@@ -3167,7 +3298,7 @@ function McpSection() {
       title={tr("settings.mcp.title")}
       subtitle={tr("settings.mcp.subtitle")}
       extra={
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
           <If when={mcpDocumentUsable()}>
             <Button
               label={tr("settings.mcp.addServer")}
@@ -3214,7 +3345,7 @@ function McpSection() {
               style={{
                 position: "relative",
                 paddingHorizontal: SETTINGS_ROW_INSET,
-                paddingVertical: 10,
+                paddingVertical: space.md,
               }}
             >
               <RowSeparator edge="bottom" />
@@ -3223,14 +3354,30 @@ function McpSection() {
           )}
         </If>
 
+        <If when={mcpIsInitialLoading()}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: space.sm,
+              paddingHorizontal: SETTINGS_ROW_INSET,
+              paddingVertical: space.lg,
+              minHeight: SETTINGS_ROW_MIN,
+            }}
+          >
+            <Spinner size={14} color={palette().textMuted} />
+            <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
+          </View>
+        </If>
+
         <If when={mcpAvailable() === false}>
-          <View style={{ paddingHorizontal: 16, paddingVertical: 16 }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.lg }}>
             <Text style={textStyle("caption")}>{tr("settings.mcp.unavailable")}</Text>
           </View>
         </If>
 
-        <If when={mcpAvailable() !== false && !mcpDocumentUsable()}>
-          <View style={{ paddingHorizontal: 16, paddingVertical: 16 }}>
+        <If when={mcpAvailable() === true && mcpDocumentLoaded() && !mcpDocumentUsable()}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.lg }}>
             <Text style={textStyle("caption")}>{tr("settings.mcp.configReadError")}</Text>
           </View>
         </If>
@@ -3242,9 +3389,9 @@ function McpSection() {
                 flexDirection: "row",
                 flexWrap: "wrap",
                 alignItems: "center",
-                gap: 12,
-                paddingHorizontal: 16,
-                paddingVertical: 10,
+                gap: space.md,
+                paddingHorizontal: SETTINGS_ROW_INSET,
+                paddingVertical: space.md,
                 minHeight: SETTINGS_ROW_MIN,
                 position: "relative",
                 opacity: row().enabled ? 1 : 0.72,
@@ -3255,26 +3402,14 @@ function McpSection() {
               <If when={index() !== 0}>
                 <RowSeparator edge="top" />
               </If>
-              <StatusDot
-                kind={
-                  row().enabled &&
-                  (row().status.trim().toLowerCase() === "healthy" ||
-                    row().status.trim().toLowerCase() === "connected")
-                    ? "success"
-                    : row().status.trim().toLowerCase() === "failed"
-                      ? "danger"
-                      : "muted"
-                }
-                size={7}
-              />
-              <View style={{ flex: 1, minWidth: 180, gap: 2 }}>
+              <If when={row().enabled && row().status.trim().toLowerCase() === "failed"}>
+                <StateMark state="failed" size={12} />
+              </If>
+              <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
                 <Text
                   style={{
-                    color: palette().text,
-                    fontSize: textSize(14),
+                    ...textStyle("body"),
                     fontWeight: "500",
-                    letterSpacing: textTracking(14),
-                    lineHeight: textLineHeight(14, 1.35),
                     numberOfLines: 1,
                     textOverflow: "ellipsis",
                   }}
@@ -3283,10 +3418,7 @@ function McpSection() {
                 </Text>
                 <Text
                   style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    fontFamily: fontMono,
-                    lineHeight: textLineHeight(12, 1.4),
+                    ...textStyle("mono", { color: palette().textMuted }),
                     numberOfLines: 1,
                     textOverflow: "ellipsis-middle",
                   }}
@@ -3296,26 +3428,24 @@ function McpSection() {
                   }`}
                 </Text>
                 <If when={!row().enabled && row().statusMessage ? row().statusMessage : ""}>
-                  {hint => <Text style={textStyle("meta")}>{hint()}</Text>}
+                  {hint => <Text style={textStyle("caption")}>{hint()}</Text>}
                 </If>
                 <If when={mcpSecretsNote(row().id)}>
                   {note => (
-                    <Text style={textStyle("meta")} accessibilityLabel={`mcp-needs-secret-${row().id}`}>
+                    <Text style={textStyle("caption")} accessibilityLabel={`mcp-needs-secret-${row().id}`}>
                       {note()}
                     </Text>
                   )}
                 </If>
               </View>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 0, gap: 6 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 1, minWidth: 0, gap: space.sm }}>
                 <Text
-                  style={{
+                  style={textStyle("caption", {
                     color:
                       row().enabled && row().status.trim().toLowerCase() === "failed"
-                        ? palette().danger
+                        ? stateColor("failed")
                         : palette().textSecondary,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.4),
-                  }}
+                  })}
                 >
                   {row().enabled ? row().status : tr("common.disabled")}
                 </Text>
@@ -3464,14 +3594,14 @@ function McpSection() {
             </View>
           )}
         </Each>
-        <If when={mcpServerRows().length === 0 && mcpAvailable() === true}>
+        <If when={mcpServerRows().length === 0 && mcpAvailable() === true && !mcpLoading()}>
           <View
             style={{
               flexDirection: "row",
               alignItems: "center",
-              gap: 12,
-              paddingHorizontal: 16,
-              paddingVertical: 12,
+              gap: space.md,
+              paddingHorizontal: SETTINGS_ROW_INSET,
+              paddingVertical: space.md,
               minHeight: SETTINGS_ROW_MIN,
             }}
           >
@@ -3481,8 +3611,8 @@ function McpSection() {
         </If>
         <If when={mcpBusy()}>
           {busy => (
-            <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
-              <Text style={textStyle("meta")}>
+            <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
+              <Text style={textStyle("caption")}>
                 {tr("settings.mcp.working", { task: busy() })}
               </Text>
             </View>
@@ -3499,28 +3629,28 @@ function McpSection() {
         accessibilityLabel="mcp-json-modal"
         onClose={() => closeMcpJson()}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
-            <Text style={[textStyle("meta"), { flex: 1, minWidth: 0 }]}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
+            <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
               {mcpJsonState()}
             </Text>
             <Button
               label={tr("common.discard")}
               variant="ghost"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-json-cancel"
               onPress={() => closeMcpJson()}
             />
             <Button
               label={tr("settings.mcp.saveJson")}
               variant="primary"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-json-save"
               onPress={() => void saveMcpJson()}
             />
           </View>
         }
       >
-        <View style={{ gap: 10 }}>
+        <View style={{ gap: space.md }}>
           <If when={mcpJsonNotice()}>
             {notice => <InlineBanner tone="danger" message={localizeHostError(notice())} />}
           </If>
@@ -3547,14 +3677,14 @@ function McpSection() {
           <Button
             label={tr("common.close")}
             variant="ghost"
-            size="sm"
+            size="md"
             accessibilityLabel="mcp-auth-close"
             onPress={() => closeMcpAuth()}
           />
         }
       >
-        <View style={{ gap: 14 }}>
-          <View style={{ gap: 8 }}>
+        <View style={{ gap: space.md }}>
+          <View style={{ gap: space.sm }}>
             <Text style={textStyle("label", { color: palette().textSecondary })}>
               {tr("settings.mcp.browserOAuth")}
             </Text>
@@ -3570,18 +3700,18 @@ function McpSection() {
             </If>
             <If when={mcpOAuthUrlUnopened() ? (mcpOAuthSession()?.authorizationUrl ?? "") : ""}>
               {url => (
-                <View style={{ gap: 6 }}>
-                  <Text style={textStyle("caption", { color: palette().warning })}>
+                <View style={{ gap: space.sm }}>
+                  <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
                     {tr("settings.mcp.oauthOpenFailed")}
                   </Text>
                   <View
                     style={{
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: 10,
-                      paddingHorizontal: 11,
-                      paddingVertical: 9,
-                      borderRadius: radii.sm,
+                      gap: space.md,
+                      paddingHorizontal: space.md,
+                      paddingVertical: space.sm,
+                      borderRadius: radii.md,
                       borderCurve: "continuous",
                       borderWidth: 1,
                       borderColor: palette().borderSubtle,
@@ -3590,10 +3720,7 @@ function McpSection() {
                   >
                     <Text
                       style={{
-                        color: palette().text,
-                        fontSize: textSize(12),
-                        fontFamily: fontMono,
-                        lineHeight: textLineHeight(12, 1.42),
+                        ...textStyle("mono", { color: palette().text }),
                         flex: 1,
                         minWidth: 0,
                         numberOfLines: 2,
@@ -3614,7 +3741,7 @@ function McpSection() {
                 </View>
               )}
             </If>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
               <Button
                 label={
                   mcpOAuthSession()?.status === "authorized"
@@ -3638,8 +3765,8 @@ function McpSection() {
           </View>
           <View
             style={{
-              gap: 10,
-              paddingTop: 14,
+              gap: space.md,
+              paddingTop: space.md,
               borderTopWidth: 1,
               borderColor: palette().borderSubtle,
             }}
@@ -3657,7 +3784,7 @@ function McpSection() {
               accessibilityLabel="mcp-auth-value"
               onChange={val => setMcpAuthValue(val)}
             />
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
               <Button
                 label={tr("settings.mcp.saveValue")}
                 variant="secondary"
@@ -3690,28 +3817,28 @@ function McpSection() {
         accessibilityLabel="mcp-import-modal"
         onClose={() => closeMcpImport()}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.preview")}
               variant="secondary"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-import-preview"
               onPress={() => previewMcpImport()}
             />
-            <Text style={[textStyle("meta"), { flex: 1, minWidth: 0 }]}>
+            <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
               {localizeHostError(mcpImportNotice())}
             </Text>
             <Button
               label={tr("common.close")}
               variant="ghost"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-import-close"
               onPress={() => closeMcpImport()}
             />
             <Button
               label={tr("settings.mcp.importSelected")}
               variant="primary"
-              size="sm"
+              size="md"
               disabled={mcpImportCandidates() === null}
               accessibilityLabel="mcp-import-save"
               onPress={() => void importMcpServers()}
@@ -3719,7 +3846,7 @@ function McpSection() {
           </View>
         }
       >
-        <View style={{ gap: 12 }}>
+        <View style={{ gap: space.md }}>
           <InputBox
             multiline
             monospace
@@ -3731,8 +3858,8 @@ function McpSection() {
           />
           <Each of={mcpImportCandidates() ?? []} key={candidate => candidate.sourceId}>
             {candidate => (
-              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-                <PillChip
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+                <SelectableChip
                   label={
                     candidate().unsupported
                       ? tr("settings.mcp.unsupported")
@@ -3750,9 +3877,7 @@ function McpSection() {
                 />
                 <Text
                   style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    fontFamily: fontMono,
+                    ...textStyle("mono", { color: palette().textMuted }),
                     minWidth: 96,
                     maxWidth: 160,
                     flexShrink: 1,
@@ -3777,9 +3902,7 @@ function McpSection() {
                   {reason => (
                     <Text
                       style={{
-                        color: palette().warning,
-                        fontSize: textSize(11),
-                        lineHeight: textLineHeight(11, 1.4),
+                        ...textStyle("caption", { color: stateColor("needs_you") }),
                         flex: 1,
                         minWidth: 140,
                       }}
@@ -3802,25 +3925,25 @@ function McpSection() {
         accessibilityLabel="mcp-resources-modal"
         onClose={() => closeMcpResources()}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("common.refresh")}
               variant="secondary"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-resources-refresh"
               onPress={() => void loadMcpResources()}
             />
             <Button
               label={tr("common.close")}
               variant="ghost"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-resources-close"
               onPress={() => closeMcpResources()}
             />
           </View>
         }
       >
-        <View style={{ gap: 10 }}>
+        <View style={{ gap: space.md }}>
           <SearchInput
             value={mcpResourceQuery()}
             onChange={value => setMcpResourceQuery(value)}
@@ -3850,8 +3973,8 @@ function McpSection() {
           </If>
           <Each of={mcpResourceVisibleRows()} key={row => row.uri}>
             {row => (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <PillChip
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                <SelectableChip
                   label={row().title ?? row().name}
                   active={mcpResourceSelected()?.uri === row().uri}
                   accessibilityLabel={`mcp-resource-${row().slot}`}
@@ -3859,9 +3982,7 @@ function McpSection() {
                 />
                 <Text
                   style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(11),
-                    fontFamily: fontMono,
+                    ...textStyle("mono", { color: palette().textMuted }),
                     flex: 1,
                     minWidth: 0,
                     numberOfLines: 1,
@@ -3877,9 +3998,9 @@ function McpSection() {
             {selected => (
               <View
                 style={{
-                  gap: 6,
-                  padding: 12,
-                  borderRadius: radii.sm,
+                  gap: space.sm,
+                  padding: space.md,
+                  borderRadius: radii.md,
                   borderCurve: "continuous",
                   borderWidth: 1,
                   borderColor: palette().borderSubtle,
@@ -3888,28 +4009,19 @@ function McpSection() {
               >
                 <Text
                   style={{
-                    color: palette().text,
-                    fontSize: textSize(12),
+                    ...textStyle("caption", { color: palette().text }),
                     fontWeight: "600",
-                    lineHeight: textLineHeight(12, 1.38),
                   }}
                 >
                   {`${selected().name}${selected().mimeType ? ` · ${selected().mimeType}` : ""}`}
                 </Text>
                 <If when={mcpResourceContentBusy()}>
-                  <Text style={textStyle("meta")}>{tr("common.reading")}</Text>
+                  <Text style={textStyle("caption")}>{tr("common.reading")}</Text>
                 </If>
                 <If when={!mcpResourceContentBusy() && mcpResourceContent() ? mcpResourceContent() : ""}>
                   {content => (
-                    <Scroll style={{ maxHeight: 240, minHeight: 0 }}>
-                      <Text
-                        style={{
-                          color: palette().textSecondary,
-                          fontSize: textSize(12),
-                          fontFamily: fontMono,
-                          lineHeight: textLineHeight(12, 1.5),
-                        }}
-                      >
+                    <Scroll style={{ maxHeight: 240, minHeight: 0, flexShrink: 1 }}>
+                      <Text style={textStyle("mono", { color: palette().textSecondary })}>
                         {content()}
                       </Text>
                     </Scroll>
@@ -3934,9 +4046,9 @@ function McpSection() {
         accessibilityLabel="mcp-draft-modal"
         onClose={() => closeMcpDraft()}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
             <If when={!draft()?.originalId}>
-              <Text style={[textStyle("meta"), { flex: 1, minWidth: 0 }]}>
+              <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
                 {tr("settings.mcp.storedDisabledHint")}
               </Text>
             </If>
@@ -3946,14 +4058,14 @@ function McpSection() {
             <Button
               label={tr("common.cancel")}
               variant="ghost"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-draft-cancel"
               onPress={() => closeMcpDraft()}
             />
             <Button
               label={tr("common.save")}
               variant="primary"
-              size="sm"
+              size="md"
               accessibilityLabel="mcp-draft-save"
               onPress={() => void saveMcpDraft()}
             />
@@ -4067,14 +4179,14 @@ function McpSection() {
               <Text style={textStyle("label", { color: palette().textSecondary })}>
                 {tr("settings.mcp.startupTimeout")}
               </Text>
-              <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-                <PillChip
+              <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
+                <SelectableChip
                   label={draft()?.enabled ? tr("common.enabled") : tr("common.disabled")}
                   active={Boolean(draft()?.enabled)}
                   accessibilityLabel="mcp-draft-enabled"
                   onPress={() => updateMcpDraft({ enabled: !(draft()?.enabled ?? false) })}
                 />
-                <PillChip
+                <SelectableChip
                   label={
                     draft()?.autoStart
                       ? tr("settings.mcp.startsWithApp")
@@ -4102,8 +4214,17 @@ function McpSection() {
 }
 
 function AcpSection() {
-  ensureAcp();
-  void probeAcpClients();
+  useDeviceScopedLoad(
+    "acp",
+    () => {
+      ensureAcp();
+      void probeAcpClients();
+    },
+    () => {
+      void loadAcpClients();
+      void probeAcpClients(true);
+    },
+  );
   return (
     <If when={acpSupported() !== false}>
       <SettingsSection
@@ -4111,7 +4232,7 @@ function AcpSection() {
         title={tr("settings.acp.title")}
         subtitle={tr("settings.acp.subtitle")}
         extra={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <If when={acpProbing()}>
               <Spinner size={13} color={palette().accent} />
             </If>
@@ -4142,7 +4263,7 @@ function AcpSection() {
                 style={{
                   position: "relative",
                   paddingHorizontal: SETTINGS_ROW_INSET,
-                  paddingVertical: 10,
+                  paddingVertical: space.md,
                 }}
               >
                 <RowSeparator edge="bottom" />
@@ -4156,9 +4277,9 @@ function AcpSection() {
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 12,
-                paddingHorizontal: 16,
-                paddingVertical: 12,
+                gap: space.md,
+                paddingHorizontal: SETTINGS_ROW_INSET,
+                paddingVertical: space.md,
                 minHeight: SETTINGS_ROW_MIN,
               }}
             >
@@ -4175,9 +4296,9 @@ function AcpSection() {
                   flexDirection: "row",
                   flexWrap: "wrap",
                   alignItems: "center",
-                  gap: 12,
-                  paddingHorizontal: 16,
-                  paddingVertical: 10,
+                  gap: space.md,
+                  paddingHorizontal: SETTINGS_ROW_INSET,
+                  paddingVertical: space.md,
                   minHeight: SETTINGS_ROW_MIN,
                   position: "relative",
                   ...paintTransition(MOTION_DURATION.fast),
@@ -4187,25 +4308,14 @@ function AcpSection() {
                 <If when={index() !== 0}>
                   <RowSeparator edge="top" />
                 </If>
-                <StatusDot
-                  kind={
-                    client().status === "running"
-                      ? "success"
-                      : client().status === "starting"
-                        ? "accent"
-                        : "muted"
-                  }
-                  size={7}
-                  pulse={client().status === "starting"}
-                />
-                <View style={{ flex: 1, minWidth: 180, gap: 3 }}>
+                <If when={client().status === "running" || client().status === "starting"}>
+                  <StateMark state="working" size={12} />
+                </If>
+                <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
                   <Text
                     style={{
-                      color: palette().text,
-                      fontSize: textSize(14),
+                      ...textStyle("body"),
                       fontWeight: "500",
-                      letterSpacing: textTracking(14),
-                      lineHeight: textLineHeight(14, 1.35),
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
                     }}
@@ -4214,10 +4324,7 @@ function AcpSection() {
                   </Text>
                   <Text
                     style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(12),
-                      fontFamily: fontMono,
-                      lineHeight: textLineHeight(12, 1.4),
+                      ...textStyle("mono", { color: palette().textMuted }),
                       numberOfLines: 1,
                       textOverflow: "ellipsis-middle",
                     }}
@@ -4225,25 +4332,13 @@ function AcpSection() {
                     {`${[client().command, ...client().args].filter(Boolean).join(" ") || tr("settings.acp.noCommand")} · ${acpRowStatus(client())}`}
                   </Text>
                   <If when={acpProbes()[client().id] && !acpProbes()[client().id].runnable}>
-                    <Text
-                      style={{
-                        color: palette().warning,
-                        fontSize: textSize(11),
-                        lineHeight: textLineHeight(11, 1.42),
-                      }}
-                    >
+                    <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
                       {acpProbes()[client().id].notes.join(" · ")}
                     </Text>
                   </If>
                 </View>
-                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 6 }}>
-                  <Text
-                    style={{
-                      color: palette().textSecondary,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.4),
-                    }}
-                  >
+                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 1, minWidth: 0, gap: space.sm }}>
+                  <Text style={textStyle("caption", { color: palette().textSecondary })}>
                     {client().enabled ? tr("common.enabled").toLowerCase() : tr("common.disabled").toLowerCase()}
                   </Text>
                   <SelectDropdown
@@ -4256,7 +4351,7 @@ function AcpSection() {
                     }))}
                     accessibilityLabel={`acp-permission-${client().id}`}
                     disabled={acpBusy() === client().id}
-                    minWidth={180}
+                    minWidth={settingsCompact() ? 140 : 180}
                     align="end"
                     onChange={mode => void setAcpPermissionMode(client().id, mode)}
                   />
@@ -4296,8 +4391,8 @@ function AcpSection() {
           accessibilityLabel="acp-json-modal"
           onClose={() => closeAcpJson()}
           footer={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
-              <Text style={[textStyle("meta"), { flex: 1, minWidth: 0 }]}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
+              <Text style={[textStyle("caption"), { flex: 1, minWidth: 0 }]}>
                 {acpJsonDirty()
                   ? tr("settings.acp.unsavedChanges")
                   : acpJsonText()
@@ -4307,14 +4402,14 @@ function AcpSection() {
               <Button
                 label={tr("common.discard")}
                 variant="ghost"
-                size="sm"
+                size="md"
                 accessibilityLabel="acp-json-discard"
                 onPress={() => closeAcpJson()}
               />
               <Button
                 label={tr("settings.mcp.saveJson")}
                 variant="primary"
-                size="sm"
+                size="md"
                 accessibilityLabel="acp-json-save"
                 onPress={() => void saveAcpJson()}
               />
@@ -4353,24 +4448,14 @@ function heatmapPlotWidth(weekCount: number): number {
   return Math.max(120, Math.round((Math.max(1, weekCount) - HEATMAP_PADDING_INNER) * pitch));
 }
 
-function withHexAlpha(color: string, alpha: number): string {
-  const match = /^#([0-9a-fA-F]{6})$/.exec(color.trim());
-  if (!match) return color;
-  const hex = match[1];
-  const r = Number.parseInt(hex.slice(0, 2), 16);
-  const g = Number.parseInt(hex.slice(2, 4), 16);
-  const b = Number.parseInt(hex.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
 /** Shared 5-step heatmap color ramp used 1:1 by `<Plot><Cell />` and legend swatches. */
 function usageHeatmapStepColors(): string[] {
   const p = palette();
   return [
     p.heatmapZero,
-    withHexAlpha(p.accent, 0.28),
-    withHexAlpha(p.accent, 0.52),
-    withHexAlpha(p.accent, 0.76),
+    p.accentSoft,
+    p.accentBorder,
+    p.accentHover,
     p.accent,
   ];
 }
@@ -4448,7 +4533,7 @@ function activityTotal(): string {
 }
 
 function UsageSection() {
-  void loadUsage();
+  useDeviceScopedLoad("usage", () => void loadUsage(), () => void loadUsage(true));
   const hourly = (): boolean => usageGranularity() === "hour";
   const hitRate = (): string => {
     const totals = usageTotals();
@@ -4474,26 +4559,28 @@ function UsageSection() {
   };
 
   return (
-    <View style={{ gap: 36 }}>
+    <View style={{ gap: layout.sectionGap }}>
       <SettingsSection
         title={tr("settings.usage.title")}
         flush={true}
         subtitle={tr("settings.usage.subtitle")}
         extra={
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, maxWidth: "100%" }}>
             <If when={usageNotice()}>
               {notice => <HeaderNotice text={notice()} />}
             </If>
-            <SegmentedTabs
-              size="sm"
-              value={usageRange()}
-              options={USAGE_RANGES.map(range => ({
-                value: range.value,
-                label: USAGE_RANGE_KEYS[range.value] ? tr(USAGE_RANGE_KEYS[range.value]) : range.label,
-                accessibilityLabel: `usage-range-${range.value}`,
-              }))}
-              onChange={value => void chooseUsageRange(value)}
-            />
+            <Scroll horizontal style={{ maxWidth: "100%", flexShrink: 1 }}>
+              <SegmentedTabs
+                size="sm"
+                value={usageRange()}
+                options={USAGE_RANGES.map(range => ({
+                  value: range.value,
+                  label: USAGE_RANGE_KEYS[range.value] ? tr(USAGE_RANGE_KEYS[range.value]) : range.label,
+                  accessibilityLabel: `usage-range-${range.value}`,
+                }))}
+                onChange={value => void chooseUsageRange(value)}
+              />
+            </Scroll>
             <IconButton
               icon="refresh"
               size="sm"
@@ -4505,12 +4592,12 @@ function UsageSection() {
         }
       >
         <If when={usageUnsupported()}>
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: 12, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
             <Text style={textStyle("caption")}>{tr("settings.usage.unsupported")}</Text>
           </View>
         </If>
         <If when={!usageUnsupported() && !usageTotals() && !usageNotice()}>
-          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: 12, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
             <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
           </View>
         </If>
@@ -4520,36 +4607,22 @@ function UsageSection() {
               style={{
                 minHeight: SETTINGS_ROW_MIN,
                 paddingHorizontal: SETTINGS_ROW_INSET,
-                paddingVertical: 12,
+                paddingVertical: space.md,
                 flexDirection: "row",
                 flexWrap: "wrap",
                 alignItems: "center",
-                columnGap: 16,
-                rowGap: 6,
+                columnGap: space.lg,
+                rowGap: space.sm,
               }}
             >
-              <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 220, minWidth: 0, gap: 2 }}>
-                <Text
-                  style={{
-                    color: palette().text,
-                    fontSize: textSize(14),
-                    fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(14, 1.4),
-                  }}
-                >
+              <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 220, minWidth: 0, gap: space.hair }}>
+                <Text style={textStyle("body", { tabular: true })}>
                   {tr("settings.usage.summaryRequestsTokens", {
                     requests: formatCount(totals().requests),
                     tokens: formatTokens(totals().tokens),
                   })}
                 </Text>
-                <Text
-                  style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    fontVariant: ["tabular-nums"],
-                    lineHeight: textLineHeight(12, 1.45),
-                  }}
-                >
+                <Text style={textStyle("caption", { tabular: true })}>
                   {tr("settings.usage.tokenBreakdown", {
                     input: formatTokens(totals().inputTokens),
                     output: formatTokens(totals().outputTokens),
@@ -4558,29 +4631,20 @@ function UsageSection() {
                   })}
                 </Text>
               </View>
-              <View style={{ alignItems: "flex-end", gap: 2, marginLeft: "auto", flexShrink: 0 }}>
+              <View style={{ alignItems: "flex-end", gap: space.hair, marginLeft: "auto", flexShrink: 0 }}>
                 <If when={hitRate()}>
                   {rate => (
-                    <Text
-                      style={{
-                        color: palette().textSecondary,
-                        fontSize: textSize(13),
-                        fontVariant: ["tabular-nums"],
-                        lineHeight: textLineHeight(13, 1.4),
-                      }}
-                    >
+                    <Text style={{ ...textStyle("label", { color: palette().textSecondary, tabular: true }), fontWeight: "400" }}>
                       {tr("settings.usage.cacheHitRate", { rate: rate() })}
                     </Text>
                   )}
                 </If>
                 <If when={totals().failedRequests > 0 || totals().unknownRequests > 0}>
                   <Text
-                    style={{
-                      color: palette().warning,
-                      fontSize: textSize(12),
-                      fontVariant: ["tabular-nums"],
-                      lineHeight: textLineHeight(12, 1.4),
-                    }}
+                    style={textStyle("caption", {
+                      color: totals().failedRequests > 0 ? stateColor("needs_you") : palette().textMuted,
+                      tabular: true,
+                    })}
                   >
                     {tr("settings.usage.failedUnknown", {
                       failed: totals().failedRequests,
@@ -4602,10 +4666,10 @@ function UsageSection() {
             alignItems: "center",
             justifyContent: "space-between",
             flexWrap: "wrap",
-            gap: 8,
-            minHeight: 24,
-            marginBottom: 8,
-            paddingHorizontal: 4,
+            gap: space.sm,
+            minHeight: space.xl,
+            marginBottom: space.sm,
+            paddingHorizontal: space.xs,
           }}
         >
           <Text role="header" style={textStyle("label", { tabular: true, color: palette().textSecondary })}>
@@ -4616,10 +4680,11 @@ function UsageSection() {
           <If when={Boolean(usageActivity())}>
             <Text
               style={{
-                color: hoveredActivityDay() ? palette().text : palette().textMuted,
-                fontSize: textSize(12),
+                ...textStyle("caption", {
+                  color: hoveredActivityDay() ? palette().text : palette().textMuted,
+                  tabular: true,
+                }),
                 fontWeight: hoveredActivityDay() ? "600" : "400",
-                fontVariant: ["tabular-nums"],
               }}
             >
               {hoveredActivityDay()
@@ -4631,14 +4696,14 @@ function UsageSection() {
             </Text>
           </If>
         </View>
-        <View style={[insetGroupStyle(16), { gap: 12 }]}>
+        <View style={[insetGroupStyle(space.lg), { gap: space.md }]}>
           <If when={usageActivity()}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-              <View style={{ width: 24, height: HEATMAP_HEIGHT, flexShrink: 0, justifyContent: "space-between" }}>
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
+              <View style={{ width: 28, height: HEATMAP_HEIGHT, flexShrink: 0, justifyContent: "space-between" }}>
                 <Each of={localizedDayAxis()} key="index">
                   {label => (
                     <View style={{ flex: 1, justifyContent: "center" }}>
-                      <Text style={{ color: palette().textMuted, fontSize: textSize(10) }}>
+                      <Text style={textStyle("micro")}>
                         {label()}
                       </Text>
                     </View>
@@ -4676,11 +4741,11 @@ function UsageSection() {
                     x="weekKey"
                     y="dow"
                     color="levelKey"
-                    cornerRadii={2.5}
+                    cornerRadii={radii.xs}
                     hoverCellStyle={{
                       borderWidth: 1.5,
                       borderColor: palette().text,
-                      borderRadius: 2.5,
+                      borderRadius: radii.xs,
                     }}
                   />
                 </Plot>
@@ -4693,10 +4758,10 @@ function UsageSection() {
               alignItems: "center",
               justifyContent: "space-between",
               flexWrap: "wrap",
-              gap: 8,
+              gap: space.sm,
             }}
           >
-            <Text style={textStyle("meta")}>
+            <Text style={textStyle("caption")}>
               {activityTotal()
                 ? isLightAppearance()
                   ? tr("settings.usage.heatmapCaptionLightWithTotal", { total: activityTotal() })
@@ -4705,7 +4770,7 @@ function UsageSection() {
                   ? tr("settings.usage.heatmapCaptionLight")
                   : tr("settings.usage.heatmapCaptionDark")}
             </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 4 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
               <Text style={textStyle("micro")}>{tr("common.less")}</Text>
               <Each of={[0, 1, 2, 3, 4]} key={lvl => String(lvl)}>
                 {lvl => (
@@ -4713,7 +4778,7 @@ function UsageSection() {
                     style={{
                       width: 10,
                       height: 10,
-                      borderRadius: 2.5,
+                      borderRadius: radii.xs,
                       backgroundColor: usageHeatmapStepColors()[lvl()],
                     }}
                   />
@@ -4724,7 +4789,7 @@ function UsageSection() {
           </View>
           <If when={usageActivityNotice()}>
             {notice => (
-              <Text style={textStyle("caption", { color: palette().warning })}>
+              <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
                 {localizeHostError(notice())}
               </Text>
             )}
@@ -4740,10 +4805,10 @@ function UsageSection() {
               alignItems: "center",
               justifyContent: "space-between",
               flexWrap: "wrap",
-              gap: 8,
-              minHeight: 24,
-              marginBottom: 8,
-              paddingHorizontal: 4,
+              gap: space.sm,
+              minHeight: space.xl,
+              marginBottom: space.sm,
+              paddingHorizontal: space.xs,
             }}
           >
             <Text role="header" style={textStyle("label", { tabular: true, color: palette().textSecondary })}>
@@ -4754,25 +4819,25 @@ function UsageSection() {
             <If
               when={hoveredTrendRow()}
               else={
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
                     <View
                       style={{
                         width: 8,
                         height: 8,
-                        borderRadius: 2,
+                        borderRadius: radii.xs,
                         backgroundColor: palette().accent,
                       }}
                     />
                     <Text style={textStyle("micro")}>{tr("settings.usage.output")}</Text>
                   </View>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
                     <View
                       style={{
                         width: 8,
                         height: 8,
-                        borderRadius: 2,
-                        backgroundColor: withHexAlpha(palette().accent, 0.36),
+                        borderRadius: radii.xs,
+                        backgroundColor: palette().accentBorder,
                       }}
                     />
                     <Text style={textStyle("micro")}>{tr("settings.usage.input")}</Text>
@@ -4783,10 +4848,8 @@ function UsageSection() {
               {row => (
                 <Text
                   style={{
-                    color: palette().text,
-                    fontSize: textSize(12),
+                    ...textStyle("caption", { color: palette().text, tabular: true }),
                     fontWeight: "600",
-                    fontVariant: ["tabular-nums"],
                   }}
                 >
                   {tr("settings.usage.trendHover", {
@@ -4799,8 +4862,8 @@ function UsageSection() {
               )}
             </If>
           </View>
-          <View style={insetGroupStyle(12)}>
-            <View style={{ paddingLeft: 46, paddingRight: 6, paddingTop: 6, paddingBottom: 22 }}>
+          <View style={insetGroupStyle(space.md)}>
+            <View style={{ paddingLeft: 48, paddingRight: space.sm, paddingTop: space.sm, paddingBottom: space.xl }}>
               <Plot<UsageTrendPlotRow>
                 data={trendBars()}
                 xScale={{
@@ -4834,10 +4897,8 @@ function UsageSection() {
                   ticks={4}
                   format={value => (value <= 0 ? "0" : formatTokens(value))}
                   labelStyle={{
-                    color: palette().textMuted,
-                    fontSize: textSize(10),
-                    fontVariant: ["tabular-nums"],
-                    paddingRight: 8,
+                    ...textStyle("micro", { tabular: true }),
+                    paddingRight: space.sm,
                   }}
                 />
                 <PlotAxis
@@ -4848,23 +4909,21 @@ function UsageSection() {
                     return row ? row.shortLabel : "";
                   }}
                   labelStyle={{
-                    color: palette().textMuted,
-                    fontSize: textSize(10),
-                    fontVariant: ["tabular-nums"],
-                    paddingTop: 6,
+                    ...textStyle("micro", { tabular: true }),
+                    paddingTop: space.sm,
                   }}
                 />
                 <Bar
                   stack="tokens"
                   value="inputTokens"
-                  cornerRadii={{ bottomLeft: 2, bottomRight: 2 }}
+                  cornerRadii={{ bottomLeft: radii.xs, bottomRight: radii.xs }}
                   inactiveOpacity={0.42}
-                  style={{ fill: withHexAlpha(palette().accent, 0.36) }}
+                  style={{ fill: palette().accentBorder }}
                 />
                 <Bar
                   stack="tokens"
                   value="outputTokens"
-                  cornerRadii={{ topLeft: 3, topRight: 3 }}
+                  cornerRadii={{ topLeft: radii.xs, topRight: radii.xs }}
                   inactiveOpacity={0.42}
                   style={{ fill: palette().accent }}
                 />
@@ -5037,7 +5096,7 @@ function UsageSection() {
                   >
                     {`${endpoint().name}${endpoint().providerName ? ` · ${endpoint().providerName}` : ""}`}
                   </Text>
-                  <Text style={textStyle("meta")}>
+                  <Text style={textStyle("caption", { tabular: true })}>
                     {tr("settings.usage.rowMetrics", {
                       requests: formatCount(endpoint().requests),
                       tokens: formatTokens(endpoint().tokens),
@@ -5061,9 +5120,9 @@ function UsageSection() {
                     flexDirection: "row",
                     flexWrap: "wrap",
                     alignItems: "center",
-                    gap: 10,
+                    gap: space.md,
                     paddingHorizontal: SETTINGS_ROW_INSET,
-                    paddingVertical: 10,
+                    paddingVertical: space.md,
                     minHeight: SETTINGS_ROW_MIN,
                     position: "relative",
                   }}
@@ -5073,10 +5132,7 @@ function UsageSection() {
                   </If>
                   <Text
                     style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(11),
-                      fontFamily: fontMono,
-                      fontVariant: ["tabular-nums"],
+                      ...textStyle("mono", { color: palette().textMuted, tabular: true }),
                       minWidth: 112,
                       flexShrink: 0,
                     }}
@@ -5085,9 +5141,7 @@ function UsageSection() {
                   </Text>
                   <Text
                     style={{
-                      color: palette().text,
-                      fontSize: textSize(12),
-                      fontVariant: ["tabular-nums"],
+                      ...textStyle("caption", { color: palette().text, tabular: true }),
                       flex: 1,
                       minWidth: 160,
                     }}
@@ -5109,7 +5163,7 @@ function UsageSection() {
 }
 
 function TaskModelsSection() {
-  ensureTaskModels();
+  useDeviceScopedLoad("task-models", ensureTaskModels, () => void loadTaskModels());
   const valueOf = (task: string): string => {
     const choice: TaskModelChoice = taskModels()[task] ?? { kind: "inherit", modelId: "" };
     return choice.kind === "inherit" ? "inherit" : choice.modelId;
@@ -5154,7 +5208,7 @@ function TaskModelsSection() {
         onDismissNotice={() => taskModelsNotice.set("")}
       >
         <If when={taskModelsSupported() === null}>
-          <View style={{ padding: 16 }}>
+          <View style={{ padding: space.lg }}>
             <Text style={textStyle("caption")}>{tr("settings.taskModels.reading")}</Text>
           </View>
         </If>
@@ -5172,8 +5226,8 @@ function TaskModelsSection() {
                   options={optionsFor(row().id)}
                   searchable={optionsFor(row().id).length > 8}
                   accessibilityLabel={`task-model-${row().id}`}
-                  minWidth={220}
-                  maxWidth={300}
+                  minWidth={settingsCompact() ? 160 : 220}
+                  maxWidth={settingsCompact() ? undefined : 300}
                   align="end"
                   onChange={value =>
                     void chooseTaskModel(
@@ -5191,32 +5245,32 @@ function TaskModelsSection() {
   );
 }
 
-function ModelRow(props: { model: ReturnType<typeof storedModels>[number]; index: number }) {
-  const model = props.model;
+function ModelRow(props: { model: () => ReturnType<typeof storedModels>[number]; index: () => number }) {
   const compactMeta = (): string => {
-    const parts: string[] = [model.model_name];
-    if (model.context_window) {
+    const m = props.model();
+    const parts: string[] = [m.model_name];
+    if (m.context_window) {
       parts.push(
-        tr("settings.models.ctxCompact", { value: formatTokens(model.context_window) }),
+        tr("settings.models.ctxCompact", { value: formatTokens(m.context_window) }),
       );
     }
-    if (model.max_tokens) {
+    if (m.max_tokens) {
       parts.push(
-        tr("settings.models.outCompact", { value: formatTokens(model.max_tokens) }),
+        tr("settings.models.outCompact", { value: formatTokens(m.max_tokens) }),
       );
     }
     return parts.filter(Boolean).join(" · ");
   };
-  const outcome = () => modelTestOutcomes()[model.id] ?? { status: "idle" as const };
+  const outcome = () => modelTestOutcomes()[props.model().id] ?? { status: "idle" as const };
   const testing = (): boolean => outcome().status === "testing";
-  const disabled = () => model.enabled === false;
-  const menuKey = `model-${model.id}`;
+  const disabled = () => props.model().enabled === false;
+  const menuKey = () => `model-${props.model().id}`;
   return (
     <View
       style={{
-        gap: 6,
-        paddingHorizontal: 16,
-        paddingVertical: 10,
+        gap: space.sm,
+        paddingHorizontal: SETTINGS_ROW_INSET,
+        paddingVertical: space.md,
         minHeight: SETTINGS_ROW_MIN,
         justifyContent: "center",
         position: "relative",
@@ -5225,58 +5279,53 @@ function ModelRow(props: { model: ReturnType<typeof storedModels>[number]; index
       }}
       hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
     >
-      <If when={props.index !== 0}>
+      <If when={props.index() !== 0}>
         <RowSeparator edge="top" />
       </If>
       <View
         style={{
           flexDirection: "row",
+          flexWrap: "wrap",
           alignItems: "center",
-          gap: 12,
+          gap: space.md,
         }}
       >
-        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, minWidth: 0 }}>
+        <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
+          <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm, minWidth: 0 }}>
             <Text
               style={{
+                ...textStyle("body"),
                 flexShrink: 1,
                 minWidth: 0,
-                color: palette().text,
-                fontSize: textSize(14),
-                lineHeight: textLineHeight(14, 1.34),
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
               }}
             >
-              {model.name}
+              {props.model().name}
             </Text>
-            <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.34) }}>
-              {model.provider}
+            <Text style={textStyle("caption")}>
+              {props.model().provider}
             </Text>
             <If when={outcome().status === "testing"}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
                 <Spinner size={11} color={palette().accent} />
                 <Text style={textStyle("micro")}>{tr("common.testing")}</Text>
               </View>
             </If>
             <If when={outcome().status === "success"}>
-              <Text style={{ color: palette().success, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.34) }}>
+              <Text style={textStyle("caption", { color: palette().textSecondary })}>
                 {outcome().message || tr("common.connected")}
               </Text>
             </If>
             <If when={outcome().status === "error"}>
-              <Text style={{ color: palette().danger, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.34) }}>
+              <Text style={textStyle("caption", { color: stateColor("failed") })}>
                 {tr("common.failed")}
               </Text>
             </If>
           </View>
           <Text
             style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              fontFamily: fontMono,
-              fontVariant: ["tabular-nums"],
-              lineHeight: textLineHeight(12, 1.4),
+              ...textStyle("mono", { color: palette().textMuted, tabular: true }),
               numberOfLines: 1,
               textOverflow: "ellipsis",
             }}
@@ -5285,66 +5334,60 @@ function ModelRow(props: { model: ReturnType<typeof storedModels>[number]; index
           </Text>
           <If when={outcome().status === "error" && outcome().errorDetails ? outcome().errorDetails! : ""}>
             {detail => (
-              <Text
-                style={{
-                  color: palette().danger,
-                  fontSize: textSize(11),
-                  lineHeight: textLineHeight(11, 1.42),
-                }}
-              >
+              <Text style={textStyle("caption", { color: stateColor("failed") })}>
                 {localizeHostError(detail())}
               </Text>
             )}
           </If>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 10 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm, marginLeft: "auto" }}>
           <Button
             label={testing() ? tr("common.testing") : tr("common.test")}
             variant="secondary"
             size="sm"
             disabled={testing()}
-            accessibilityLabel={`model-test-${model.id}`}
-            onPress={() => void testSavedModelConnection(model)}
+            accessibilityLabel={`model-test-${props.model().id}`}
+            onPress={() => void testSavedModelConnection(props.model())}
           />
           <ToggleSwitch
             checked={!disabled()}
-            accessibilityLabel={`model-enabled-${model.id}`}
-            onChange={next => void setModelEnabled(model.id, next)}
+            accessibilityLabel={`model-enabled-${props.model().id}`}
+            onChange={next => void setModelEnabled(props.model().id, next)}
           />
-          <View ref={el => setRowAnchor(menuKey, el)} style={{ flexShrink: 0 }}>
+          <View ref={el => setRowAnchor(menuKey(), el)} style={{ flexShrink: 0 }}>
             <IconButton
               icon="more"
               size="sm"
               tooltip={tr("settings.models.options")}
-              accessibilityLabel={`model-actions-${model.id}`}
-              onPress={() => rowMenuId.set(rowMenuId() === menuKey ? null : menuKey)}
+              accessibilityLabel={`model-actions-${props.model().id}`}
+              onPress={() => rowMenuId.set(rowMenuId() === menuKey() ? null : menuKey())}
             />
           </View>
         </View>
         <DropdownMenu
-          open={rowMenuId() === menuKey}
-          anchor={rowMenuAnchors()[menuKey] ?? null}
+          open={rowMenuId() === menuKey()}
+          anchor={rowMenuAnchors()[menuKey()] ?? null}
           onClose={() => rowMenuId.set(null)}
           items={[
             {
               id: "edit",
               label: tr("common.edit"),
               icon: "edit",
-              accessibilityLabel: `model-edit-${model.id}`,
+              accessibilityLabel: `model-edit-${props.model().id}`,
               onSelect: () => {
                 rowMenuId.set(null);
                 resetRemoteDiscovery();
-                openModelEditor(model.id);
+                openModelEditor(props.model().id);
               },
             },
             {
               id: "limits",
               label: tr("settings.models.editLimits"),
               icon: "sliders",
-              accessibilityLabel: `model-limits-${model.id}`,
+              accessibilityLabel: `model-limits-${props.model().id}`,
               onSelect: () => {
                 rowMenuId.set(null);
-                openModelLimits(model.id);
+                openModelLimits(props.model().id);
               },
             },
             {
@@ -5352,29 +5395,29 @@ function ModelRow(props: { model: ReturnType<typeof storedModels>[number]; index
               label: tr("settings.models.removeModel"),
               icon: "trash",
               danger: true,
-              accessibilityLabel: `remove-model-${model.id}`,
+              accessibilityLabel: `remove-model-${props.model().id}`,
               onSelect: () => {
                 rowMenuId.set(null);
-                requestModelDelete(model.id);
+                requestModelDelete(props.model().id);
               },
             },
           ]}
         />
       </View>
-      <If when={modelDeletePending() === model.id}>
-        <View testID={`model-delete-confirm-${model.id}`}>
+      <If when={modelDeletePending() === props.model().id}>
+        <View testID={`model-delete-confirm-${props.model().id}`}>
         <InlineConfirmBar
           message={
-            defaultModelReferences(model.id) > 0
+            defaultModelReferences(props.model().id) > 0
               ? tr("settings.models.deleteConfirmReferenced", {
-                  name: model.name,
-                  count: defaultModelReferences(model.id),
+                  name: props.model().name,
+                  count: defaultModelReferences(props.model().id),
                 })
-              : tr("settings.models.deleteConfirm", { name: model.name })
+              : tr("settings.models.deleteConfirm", { name: props.model().name })
           }
           confirmLabel={tr("common.delete")}
           danger={true}
-          onConfirm={() => void deleteModel(model.id)}
+          onConfirm={() => void deleteModel(props.model().id)}
           onCancel={() => requestModelDelete(null)}
         />
         </View>
@@ -5407,14 +5450,14 @@ function ModelFormField(props: {
 }
 
 function LogFilesSection() {
-  ensureRuntimeLogging();
+  useDeviceScopedLoad("logging", ensureRuntimeLogging, () => void loadRuntimeLogging());
   return (
     <SettingsSection
       title={tr("settings.logs.title")}
       flush={true}
       subtitle={tr("settings.logs.subtitle")}
       extra={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <If when={loggingNotice()}>
             {notice => <HeaderNotice text={notice()} />}
           </If>
@@ -5439,20 +5482,17 @@ function LogFilesSection() {
               />
               <View
                 style={{
-                  gap: 4,
+                  gap: space.xs,
                   minHeight: SETTINGS_ROW_MIN,
                   justifyContent: "center",
                   paddingHorizontal: SETTINGS_ROW_INSET,
-                  paddingVertical: 10,
+                  paddingVertical: space.md,
                 }}
               >
                 <Text
                   style={{
+                    ...textStyle("mono", { color: palette().textSecondary }),
                     minWidth: 0,
-                    color: palette().textSecondary,
-                    fontSize: textSize(12),
-                    fontFamily: fontMono,
-                    lineHeight: textLineHeight(12, 1.45),
                     numberOfLines: 2,
                     textOverflow: "ellipsis-middle",
                   }}
@@ -5463,11 +5503,8 @@ function LogFilesSection() {
                   {path => (
                     <Text
                       style={{
+                        ...textStyle("mono", { color: palette().textMuted }),
                         minWidth: 0,
-                        color: palette().textMuted,
-                        fontSize: textSize(11),
-                        fontFamily: fontMono,
-                        lineHeight: textLineHeight(11, 1.45),
                         numberOfLines: 2,
                         textOverflow: "ellipsis-middle",
                       }}
@@ -5609,8 +5646,8 @@ function quotaUnknownText(quota: SubscriptionQuotaSummary | null): string {
 }
 
 function quotaBarColor(percent: number): string {
-  if (percent < 15) return palette().danger;
-  if (percent < 40) return palette().warning;
+  if (percent < 15) return stateColor("failed");
+  if (percent < 40) return stateColor("needs_you");
   return palette().accent;
 }
 
@@ -5633,11 +5670,11 @@ function SubscriptionLoginPanel() {
   return (
     <View
       style={{
-        gap: 8,
-        paddingLeft: 17,
+        gap: space.sm,
+        paddingLeft: space.lg,
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
         <If when={login()?.status === "pending" || login()?.status === "starting"}>
           <Spinner size={12} color={palette().accent} />
         </If>
@@ -5670,7 +5707,7 @@ function SubscriptionLoginPanel() {
       </If>
       <If when={login()?.urlUnopened && login()?.authorizationUrl ? login()!.authorizationUrl! : ""}>
         {url => (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Text
               style={[textStyle("mono"), { flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis-middle" }]}
             >
@@ -5691,7 +5728,7 @@ function SubscriptionLoginPanel() {
 }
 
 function SubscriptionsSection() {
-  void loadSubscriptions();
+  useDeviceScopedLoad("subscriptions", () => void loadSubscriptions(), () => void loadSubscriptions(true));
   return (
     <If when={true}>
       <SettingsSection
@@ -5699,7 +5736,7 @@ function SubscriptionsSection() {
         title={tr("settings.subscriptions.title")}
         subtitle={tr("settings.subscriptions.subtitle")}
         extra={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <If when={subscriptionsLoading()}>
               <Spinner size={13} color={palette().accent} />
             </If>
@@ -5715,7 +5752,7 @@ function SubscriptionsSection() {
       >
         <View>
           <If when={!subscriptionsLoading() && subscriptionAccounts().length === 0}>
-            <View style={{ paddingHorizontal: 16, paddingVertical: 12, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
+            <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingVertical: space.md, minHeight: SETTINGS_ROW_MIN, justifyContent: "center" }}>
               <Text style={textStyle("caption")}>{tr("settings.subscriptions.none")}</Text>
             </View>
           </If>
@@ -5725,9 +5762,9 @@ function SubscriptionsSection() {
               return (
                 <View
                   style={{
-                    gap: 10,
-                    paddingHorizontal: 16,
-                    paddingVertical: 11,
+                    gap: space.md,
+                    paddingHorizontal: SETTINGS_ROW_INSET,
+                    paddingVertical: space.md,
                     minHeight: SETTINGS_ROW_MIN,
                     position: "relative",
                     ...paintTransition(MOTION_DURATION.fast),
@@ -5737,23 +5774,14 @@ function SubscriptionsSection() {
                   <If when={index() !== 0}>
                     <RowSeparator edge="top" />
                   </If>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                    <StatusDot
-                      kind={
-                        item().reauthentication_required
-                          ? "warning"
-                          : item().connected
-                            ? "success"
-                            : "muted"
-                      }
-                      size={7}
-                    />
-                    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.md }}>
+                    <If when={Boolean(item().reauthentication_required)}>
+                      <StateMark state="needs_you" size={12} />
+                    </If>
+                    <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
                       <Text
                         style={{
-                          color: palette().text,
-                          fontSize: textSize(14),
-                          lineHeight: textLineHeight(14, 1.34),
+                          ...textStyle("body"),
                           numberOfLines: 1,
                           textOverflow: "ellipsis",
                         }}
@@ -5763,9 +5791,7 @@ function SubscriptionsSection() {
                       <If when={item().account || quota()?.plan || !item().connected}>
                         <Text
                           style={{
-                            color: palette().textMuted,
-                            fontSize: textSize(12),
-                            lineHeight: textLineHeight(12, 1.4),
+                            ...textStyle("caption"),
                             numberOfLines: 1,
                             textOverflow: "ellipsis",
                           }}
@@ -5777,14 +5803,7 @@ function SubscriptionsSection() {
                       </If>
                     </View>
                     <If when={Boolean(item().reauthentication_required)}>
-                      <Text
-                        style={{
-                          flexShrink: 0,
-                          color: palette().warning,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.4),
-                        }}
-                      >
+                      <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
                         {tr("settings.subscriptions.reauthNeeded")}
                       </Text>
                     </If>
@@ -5815,17 +5834,14 @@ function SubscriptionsSection() {
                   </If>
 
                   <If when={quotaMeters(quota()).length > 0}>
-                    <View style={{ gap: 10, paddingTop: 2, paddingLeft: 17 }}>
+                    <View style={{ gap: space.md, paddingTop: space.hair, paddingLeft: space.lg }}>
                       <Each of={quotaMeters(quota())} key={meter => meter.id}>
                         {meter => (
-                          <View style={{ gap: 6 }}>
+                          <View style={{ gap: space.sm }}>
                             <Text
                               style={{
-                                color: palette().textSecondary,
-                                fontSize: textSize(12),
+                                ...textStyle("caption", { color: palette().textSecondary, tabular: true }),
                                 fontWeight: "500",
-                                fontVariant: ["tabular-nums"],
-                                lineHeight: textLineHeight(12, 1.38),
                                 numberOfLines: 1,
                                 textOverflow: "ellipsis",
                               }}
@@ -5899,7 +5915,7 @@ function ModelSection() {
       title={tr("settings.models.title")}
       subtitle={tr("settings.models.subtitle")}
       extra={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <If when={modelSettingsNotice()}>
             {notice => <HeaderNotice text={notice()} />}
           </If>
@@ -5919,7 +5935,7 @@ function ModelSection() {
     >
       <View>
         <If when={!modelSettingsLoaded()}>
-          <View style={{ padding: 16 }}>
+          <View style={{ padding: space.lg }}>
             <Text style={textStyle("caption")}>{tr("settings.models.reading")}</Text>
           </View>
         </If>
@@ -5928,9 +5944,9 @@ function ModelSection() {
             style={{
               flexDirection: "row",
               alignItems: "center",
-              gap: 12,
-              paddingHorizontal: 16,
-              paddingVertical: 18,
+              gap: space.md,
+              paddingHorizontal: SETTINGS_ROW_INSET,
+              paddingVertical: space.lg,
             }}
           >
             <Icon name="cpu" size={16} color={palette().textMuted} />
@@ -5938,7 +5954,7 @@ function ModelSection() {
           </View>
         </If>
         <Each of={storedModels()} key={model => model.id}>
-          {(model, index) => <ModelRow model={model()} index={index()} />}
+          {(model, index) => <ModelRow model={model} index={index} />}
         </Each>
 
         {/* Add Model Modal */}
@@ -5962,17 +5978,18 @@ function ModelSection() {
             <View
               style={{
                 flexDirection: "row",
+                flexWrap: "wrap",
                 alignItems: "center",
                 justifyContent: "space-between",
-                gap: 8,
+                gap: space.sm,
                 flex: 1,
               }}
             >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flex: 1, minWidth: 140 }}>
                 <Button
                   label={testStatus().status === "testing" ? tr("common.testing") : tr("common.test")}
                   variant="secondary"
-                  size="sm"
+                  size="md"
                   disabled={testStatus().status === "testing"}
                   accessibilityLabel="model-draft-test"
                   onPress={() => void testDraftConnection(modelDraft())}
@@ -5981,17 +5998,21 @@ function ModelSection() {
                   <Spinner size={14} color={palette().accent} />
                 </If>
                 <If when={testStatus().status === "success"}>
-                  <Badge label={testStatus().message || tr("common.connected")} tone="success" />
+                  <Text style={textStyle("caption", { color: palette().textSecondary })}>
+                    {testStatus().message || tr("common.connected")}
+                  </Text>
                 </If>
                 <If when={testStatus().status === "error"}>
-                  <Badge label={tr("common.failed")} tone="danger" />
+                  <Text style={textStyle("caption", { color: stateColor("failed") })}>
+                    {tr("common.failed")}
+                  </Text>
                 </If>
               </View>
-              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 0, gap: space.sm }}>
                 <Button
                   label={tr("common.cancel")}
                   variant="ghost"
-                  size="sm"
+                  size="md"
                   accessibilityLabel="model-editor-cancel"
                   onPress={() => {
                     resetRemoteDiscovery();
@@ -6001,7 +6022,7 @@ function ModelSection() {
                 <Button
                   label={modelDraft().editingId ? tr("common.save") : tr("settings.models.addModel")}
                   variant="primary"
-                  size="sm"
+                  size="md"
                   accessibilityLabel="save-model"
                   onPress={() => void saveModelDraft()}
                 />
@@ -6009,15 +6030,15 @@ function ModelSection() {
             </View>
           }
         >
-          <View style={{ gap: 12 }}>
+          <View style={{ gap: space.md }}>
             <If when={testStatus().status === "error" && testStatus().errorDetails ? testStatus().errorDetails! : ""}>
               {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
             </If>
             <If when={!modelDraft().editingId && modelCatalogLoaded() && modelCatalog().length > 0}>
               <View
                 style={{
-                  gap: 10,
-                  padding: 14,
+                  gap: space.md,
+                  padding: space.lg,
                   borderRadius: radii.md,
                   borderCurve: "continuous",
                   backgroundColor: palette().surfaceTertiary,
@@ -6033,10 +6054,10 @@ function ModelSection() {
                   accessibilityLabel="model-filter"
                   onChange={value => setCatalogQuery(value)}
                 />
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
                   <Each of={catalogProviders()} key={provider => provider.id}>
                     {provider => (
-                      <PillChip
+                      <SelectableChip
                         label={provider().name}
                         active={modelCatalogProvider() === provider().id}
                         accessibilityLabel={`model-catalog-provider-${provider().id}`}
@@ -6049,10 +6070,10 @@ function ModelSection() {
                   </Each>
                 </View>
                 <If when={selectedCatalogProvider() !== null}>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
                     <Each of={selectedCatalogProvider()?.models ?? []} key={model => model.id}>
                       {model => (
-                        <PillChip
+                        <SelectableChip
                           label={model().label}
                           active={modelDraft().modelName === model().id}
                           accessibilityLabel={`model-catalog-model-${model().id}`}
@@ -6158,7 +6179,7 @@ function ModelSection() {
                   onChange={value => updateDraft({ modelName: value })}
                 />
               </View>
-              <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 6 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", flexShrink: 0, gap: space.sm }}>
                 <Button
                   label={
                     remoteDiscoveryLoading()
@@ -6181,19 +6202,19 @@ function ModelSection() {
               </View>
             </View>
             <If when={remoteDiscoveryLoading()}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
                 <Spinner size={12} color={palette().accent} />
                 <Text style={textStyle("caption")}>{tr("settings.models.queryingRemote")}</Text>
               </View>
             </If>
             <If when={!remoteDiscoveryLoading() && remoteDiscoveredModels().length > 0}>
-              <Text style={textStyle("caption", { color: palette().success, tabular: true })}>
+              <Text style={textStyle("caption", { color: palette().textSecondary, tabular: true })}>
                 {tr("settings.models.detectedSummary", { count: remoteDiscoveredModels().length })}
               </Text>
             </If>
             <If when={remoteDiscoveryError()}>
               {err => (
-                <Text style={textStyle("caption", { color: palette().warning })}>
+                <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
                   {localizeHostError(err())}
                 </Text>
               )}
@@ -6296,20 +6317,21 @@ function ModelSection() {
             <View
               style={{
                 flexDirection: "row",
+                flexWrap: "wrap",
                 alignItems: "center",
                 justifyContent: "space-between",
-                gap: 8,
+                gap: space.sm,
                 flex: 1,
               }}
             >
-              <Text style={textStyle("meta")}>
+              <Text style={textStyle("caption")}>
                 {tr("settings.models.selectedCount", { count: selectedDiscoveredIds().length })}
               </Text>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
                 <Button
                   label={tr("common.cancel")}
                   variant="ghost"
-                  size="sm"
+                  size="md"
                   accessibilityLabel="model-discovery-cancel"
                   onPress={() => closeDiscoveryPicker()}
                 />
@@ -6320,7 +6342,7 @@ function ModelSection() {
                       : tr("settings.models.useSelectedModel")
                   }
                   variant="primary"
-                  size="sm"
+                  size="md"
                   disabled={selectedDiscoveredIds().length === 0}
                   accessibilityLabel="model-discovery-confirm"
                   onPress={() =>
@@ -6333,8 +6355,8 @@ function ModelSection() {
             </View>
           }
         >
-          <View style={{ gap: 10 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ gap: space.md }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <SearchInput
                   size="md"
@@ -6359,7 +6381,7 @@ function ModelSection() {
             </View>
             <If when={remoteDiscoveryError()}>
               {err => (
-                <Text style={textStyle("caption", { color: palette().warning })}>
+                <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
                   {localizeHostError(err())}
                 </Text>
               )}
@@ -6367,8 +6389,8 @@ function ModelSection() {
             <If when={discoveredMatches().length === 0}>
               <Text style={textStyle("caption")}>{tr("settings.models.noMatches")}</Text>
             </If>
-            <Scroll style={{ maxHeight: 260, minHeight: 0 }}>
-              <View style={{ gap: 6 }}>
+            <Scroll style={{ maxHeight: 260, minHeight: 0, flexShrink: 1 }}>
+              <View style={{ gap: space.sm }}>
                 <Each of={discoveredMatches()} key={item => item.id}>
                   {item => {
                     const selected = () => isDiscoveredSelected(item().id);
@@ -6381,10 +6403,11 @@ function ModelSection() {
                         style={{
                           flexDirection: "row",
                           alignItems: "center",
-                          gap: 10,
-                          paddingHorizontal: 11,
-                          paddingVertical: 9,
-                          borderRadius: radii.sm,
+                          gap: space.md,
+                          paddingHorizontal: space.md,
+                          paddingVertical: space.sm,
+                          minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
+                          borderRadius: radii.md,
                           borderCurve: "continuous",
                           borderWidth: 1,
                           borderColor: selected() ? palette().accentBorder : palette().borderSubtle,
@@ -6392,23 +6415,23 @@ function ModelSection() {
                             ? palette().accentSoft
                             : palette().surfaceTertiary,
                           cursor: "pointer",
+                          userSelect: "none",
                           ...pressTransition(MOTION_DURATION.fast),
                         }}
                         hoverStyle={{ backgroundColor: palette().panelHover }}
                         activeStyle={tactileActiveStyle(0.99)}
+                        focusVisibleStyle={focusRingStyle()}
                       >
                         <Icon
                           name={selected() ? "check" : "plus"}
                           size={13}
                           color={selected() ? palette().accent : palette().textMuted}
                         />
-                        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                           <Text
                             style={{
-                              color: palette().text,
-                              fontSize: textSize(13),
+                              ...textStyle("label"),
                               fontWeight: "600",
-                              lineHeight: textLineHeight(13, 1.35),
                               numberOfLines: 1,
                               textOverflow: "ellipsis",
                             }}
@@ -6419,9 +6442,7 @@ function ModelSection() {
                             {desc => (
                               <Text
                                 style={{
-                                  color: palette().textMuted,
-                                  fontSize: textSize(11),
-                                  fontVariant: ["tabular-nums"],
+                                  ...textStyle("caption", { tabular: true }),
                                   numberOfLines: 1,
                                   textOverflow: "ellipsis",
                                 }}
@@ -6460,18 +6481,18 @@ function ModelSection() {
           onClose={() => closeModelLimits()}
           footer={
             <If when={modelLimitsDraft() !== null}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
                 <Button
                   label={tr("common.cancel")}
                   variant="ghost"
-                  size="sm"
+                  size="md"
                   accessibilityLabel={`model-limits-cancel-${modelLimitsDraft()?.id ?? ""}`}
                   onPress={() => closeModelLimits()}
                 />
                 <Button
                   label={tr("common.save")}
                   variant="primary"
-                  size="sm"
+                  size="md"
                   accessibilityLabel={`model-limits-save-${modelLimitsDraft()?.id ?? ""}`}
                   onPress={() => void saveModelLimits()}
                 />
@@ -6480,18 +6501,18 @@ function ModelSection() {
           }
         >
           <If when={modelLimitsDraft() !== null}>
-            <View style={{ gap: 12 }}>
+            <View style={{ gap: space.md }}>
               <If when={limitsTargetModel()?.request_url || limitsTargetModel()?.base_url || ""}>
                 {endpoint => (
-                  <View style={{ gap: 4 }}>
+                  <View style={{ gap: space.xs }}>
                     <Text style={textStyle("label", { color: palette().textSecondary })}>
                       {tr("settings.models.endpointLabel")}
                     </Text>
                     <View
                       style={{
-                        paddingHorizontal: 10,
-                        paddingVertical: 8,
-                        borderRadius: radii.sm,
+                        paddingHorizontal: space.md,
+                        paddingVertical: space.sm,
+                        borderRadius: radii.md,
                         borderCurve: "continuous",
                         borderWidth: 1,
                         borderColor: palette().borderSubtle,
@@ -6500,10 +6521,7 @@ function ModelSection() {
                     >
                       <Text
                         style={{
-                          color: palette().textSecondary,
-                          fontFamily: fontMono,
-                          fontSize: textSize(11),
-                          lineHeight: textLineHeight(11, 1.44),
+                          ...textStyle("mono", { color: palette().textSecondary }),
                           numberOfLines: 2,
                           textOverflow: "ellipsis-middle",
                         }}
@@ -6541,20 +6559,20 @@ function ModelSection() {
 
 function AppearanceSwatchGallery() {
   const outerR = radii.md;
-  const pad = 6;
+  const pad = space.sm;
   const previewR = concentricRadius(outerR, pad);
-  const canvasR = concentricRadius(previewR, 2);
+  const canvasR = concentricRadius(previewR, space.hair);
   return (
     <View
       style={{
-        padding: 16,
+        padding: space.lg,
       }}
     >
       <View
         style={{
           display: "grid",
           gridTemplateColumns: settingsCompact() ? "repeat(2, minmax(0, 1fr))" : "repeat(3, minmax(0, 1fr))",
-          gap: 12,
+          gap: space.md,
         }}
       >
         <Each of={APPEARANCE_PRESETS} key={preset => preset.id}>
@@ -6568,14 +6586,15 @@ function AppearanceSwatchGallery() {
                 accessibilityState={{ selected: active() }}
                 onPress={() => chooseAppearancePreset(preset().id)}
                 style={{
-                  gap: 7,
+                  gap: space.sm,
                   padding: pad,
                   borderRadius: outerR,
                   borderCurve: "continuous",
-                  borderWidth: active() ? 2 : 1,
+                  borderWidth: 2,
                   borderColor: active() ? palette().accent : palette().borderSubtle,
                   backgroundColor: active() ? palette().accentSoft : "transparent",
                   cursor: "pointer",
+                  userSelect: "none",
                   ...pressTransition(MOTION_DURATION.fast),
                 }}
                 hoverStyle={{
@@ -6583,11 +6602,7 @@ function AppearanceSwatchGallery() {
                   backgroundColor: active() ? palette().accentSoft : palette().panelHover,
                 }}
                 activeStyle={tactileActiveStyle(0.98)}
-                focusVisibleStyle={{
-                  outlineWidth: 2,
-                  outlineColor: palette().borderFocus,
-                  outlineOffset: 2,
-                }}
+                focusVisibleStyle={focusRingStyle()}
               >
                 {/* Sleek Micro-Window Preview */}
                 <View
@@ -6601,20 +6616,20 @@ function AppearanceSwatchGallery() {
                     backgroundColor: sw().chromeBg,
                     flexDirection: "row",
                     overflow: "hidden",
-                    padding: 2.5,
-                    gap: 2.5,
+                    padding: space.hair,
+                    gap: space.hair,
                   }}
                 >
                   {/* Sidebar Rail */}
                   <View
                     style={{
                       width: "27%",
-                      paddingHorizontal: 4,
-                      paddingVertical: 5,
+                      paddingHorizontal: space.xs,
+                      paddingVertical: space.xs,
                       justifyContent: "space-between",
                     }}
                   >
-                    <View style={{ gap: 3.5 }}>
+                    <View style={{ gap: space.xs }}>
                       <View
                         style={{
                           height: 3,
@@ -6625,7 +6640,7 @@ function AppearanceSwatchGallery() {
                       />
                       <View
                         style={{
-                          height: 2.5,
+                          height: 2,
                           width: "66%",
                           borderRadius: radii.pill,
                           backgroundColor: sw().chromeTextMuted,
@@ -6634,7 +6649,7 @@ function AppearanceSwatchGallery() {
                       />
                       <View
                         style={{
-                          height: 2.5,
+                          height: 2,
                           width: "54%",
                           borderRadius: radii.pill,
                           backgroundColor: sw().chromeTextMuted,
@@ -6660,11 +6675,11 @@ function AppearanceSwatchGallery() {
                       borderRadius: canvasR,
                       borderCurve: "continuous",
                       backgroundColor: sw().canvas,
-                      padding: 6,
+                      padding: space.sm,
                       justifyContent: "space-between",
                     }}
                   >
-                    <View style={{ gap: 3.5 }}>
+                    <View style={{ gap: space.xs }}>
                       <View
                         style={{
                           height: 4,
@@ -6689,14 +6704,14 @@ function AppearanceSwatchGallery() {
                         flexDirection: "row",
                         alignItems: "center",
                         justifyContent: "space-between",
-                        gap: 4,
+                        gap: space.xs,
                       }}
                     >
                       <View
                         style={{
                           height: 11,
                           flex: 1,
-                          borderRadius: 3.5,
+                          borderRadius: radii.xs,
                           backgroundColor: sw().panelRaised,
                           borderWidth: 1,
                           borderColor: sw().border,
@@ -6718,10 +6733,10 @@ function AppearanceSwatchGallery() {
                     <View
                       style={{
                         position: "absolute",
-                        top: 5,
-                        right: 5,
-                        width: 17,
-                        height: 17,
+                        top: space.xs,
+                        right: space.xs,
+                        width: 18,
+                        height: 18,
                         borderRadius: radii.pill,
                         backgroundColor: palette().actionSolid,
                         alignItems: "center",
@@ -6733,22 +6748,20 @@ function AppearanceSwatchGallery() {
                   </If>
                 </View>
 
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 3, paddingBottom: 1 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.xs }}>
                   <Text
                     style={{
+                      ...textStyle("caption", { color: palette().text }),
                       flex: 1,
                       minWidth: 0,
-                      color: palette().text,
-                      fontSize: textSize(12),
                       fontWeight: active() ? "600" : "500",
-                      lineHeight: textLineHeight(12, 1.32),
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
                     }}
                   >
                     {tr(APPEARANCE_PRESET_KEYS[preset().id])}
                   </Text>
-                  <Text style={{ flexShrink: 0, color: palette().textMuted, fontSize: textSize(10) }}>
+                  <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), flexShrink: 0 }}>
                     {preset().isLight
                       ? tr("settings.appearance.schemeLight")
                       : tr("settings.appearance.schemeDark")}
@@ -6817,17 +6830,17 @@ function NumericStepper(props: {
       style={{
         boxSizing: "border-box",
         width: 128,
-        height: controlHeight.sm,
+        minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: 2,
-        borderRadius: radii.sm,
+        padding: space.hair,
+        borderRadius: radii.md,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: palette().borderSubtle,
         backgroundColor: palette().segmentedTrackBg,
-        gap: 2,
+        gap: space.hair,
         flexShrink: 0,
       }}
     >
@@ -6837,17 +6850,19 @@ function NumericStepper(props: {
         size="xs"
         accessibilityLabel={props.decreaseAccessibilityLabel}
         disabled={props.decreaseDisabled}
-        style={{ width: 26, paddingHorizontal: 0 }}
+        style={{
+          width: compactLayout() ? 36 : 26,
+          minHeight: compactLayout() ? 36 : controlHeight.xs,
+          paddingHorizontal: 0,
+        }}
         onPress={props.onDecrease}
       />
       <Text
         style={{
+          ...textStyle("caption", { color: palette().text, tabular: true }),
           flex: 1,
           minWidth: 0,
-          color: palette().text,
-          fontSize: textSize(12),
           fontWeight: "600",
-          fontVariant: ["tabular-nums"],
           textAlign: "center",
           numberOfLines: 1,
         }}
@@ -6860,7 +6875,11 @@ function NumericStepper(props: {
         size="xs"
         accessibilityLabel={props.increaseAccessibilityLabel}
         disabled={props.increaseDisabled}
-        style={{ width: 26, paddingHorizontal: 0 }}
+        style={{
+          width: compactLayout() ? 36 : 26,
+          minHeight: compactLayout() ? 36 : controlHeight.xs,
+          paddingHorizontal: 0,
+        }}
         onPress={props.onIncrease}
       />
     </View>
@@ -6873,24 +6892,18 @@ function ContentWidthRow() {
     <View
       style={{
         position: "relative",
-        gap: 6,
+        gap: space.sm,
         minHeight: SETTINGS_ROW_MIN,
         justifyContent: "center",
         paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: 10,
+        paddingVertical: space.md,
       }}
     >
       <RowSeparator edge="top" />
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-        <View style={{ flex: 1, minWidth: 180, gap: 2 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text
-              style={{
-                color: palette().text,
-                fontSize: textSize(14),
-                lineHeight: textLineHeight(14, 1.4),
-              }}
-            >
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: space.md }}>
+        <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+            <Text style={textStyle("body")}>
               {tr("settings.appearance.contentWidth")}
             </Text>
             <Text style={textStyle("micro")}>
@@ -6901,7 +6914,7 @@ function ContentWidthRow() {
             {tr("settings.appearance.contentWidthDesc", { px: contentWidth() })}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm }}>
           <If when={isCustomWidth()}>
             <Button
               label={tr("common.reset")}
@@ -6923,7 +6936,7 @@ function ContentWidthRow() {
       </View>
       <If when={contentWidthNotice().length > 0 ? contentWidthNotice() : ""}>
         {notice => (
-          <Text style={textStyle("meta", { color: palette().warning })}>
+          <Text style={textStyle("caption", { color: stateColor("needs_you") })}>
             {localizeHostError(notice())}
           </Text>
         )}
@@ -6937,11 +6950,11 @@ function FontSizeRows() {
     <View
       style={{
         position: "relative",
-        gap: 10,
+        gap: space.md,
         minHeight: SETTINGS_ROW_MIN,
         justifyContent: "center",
         paddingHorizontal: SETTINGS_ROW_INSET,
-        paddingVertical: 10,
+        paddingVertical: space.md,
       }}
     >
       <RowSeparator edge="top" />
@@ -6951,24 +6964,18 @@ function FontSizeRows() {
           alignItems: "center",
           justifyContent: "space-between",
           flexWrap: "wrap",
-          gap: 10,
+          gap: space.md,
         }}
       >
-        <View style={{ flex: 1, minWidth: 180, gap: 2 }}>
-          <Text
-            style={{
-              color: palette().text,
-              fontSize: textSize(14),
-              lineHeight: textLineHeight(14, 1.4),
-            }}
-          >
+        <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
+          <Text style={textStyle("body")}>
             {tr("settings.appearance.textSize")}
           </Text>
           <Text style={textStyle("caption", { tabular: true })}>
             {tr("settings.appearance.fontBaseline", { px: fontPx() })}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm }}>
           <If when={fontLevel() !== "default"}>
             <Button
               label={tr("common.reset")}
@@ -7010,7 +7017,7 @@ function FontSizeRows() {
       </Scroll>
       <If when={fontNotice()}>
         {notice => (
-          <Text style={textStyle("meta", { color: palette().danger })}>
+          <Text style={textStyle("caption", { color: stateColor("failed") })}>
             {localizeHostError(notice())}
           </Text>
         )}
@@ -7020,7 +7027,7 @@ function FontSizeRows() {
 }
 
 function PoolsSection() {
-  ensurePools();
+  useDeviceScopedLoad("pools", ensurePools, () => void loadPools());
   const poolModalOpen = usePresenceFlag(() => poolDraft() !== null);
   return (
     <If when={poolsSupported() !== false}>
@@ -7029,7 +7036,7 @@ function PoolsSection() {
         title={tr("settings.pools.title")}
         subtitle={tr("settings.pools.subtitle")}
         extra={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <If when={poolsNotice()}>
               {notice => <HeaderNotice text={notice()} />}
             </If>
@@ -7046,7 +7053,7 @@ function PoolsSection() {
       >
         <View>
           <If when={poolsSupported() === null}>
-            <View style={{ padding: 16 }}>
+            <View style={{ padding: space.lg }}>
               <Text style={textStyle("caption")}>{tr("settings.pools.reading")}</Text>
             </View>
           </If>
@@ -7054,22 +7061,17 @@ function PoolsSection() {
             <View
               style={{
                 flexDirection: "row",
+                flexWrap: "wrap",
                 alignItems: "center",
-                gap: 12,
-                paddingHorizontal: 16,
-                paddingVertical: 10,
+                gap: space.md,
+                paddingHorizontal: SETTINGS_ROW_INSET,
+                paddingVertical: space.md,
                 minHeight: SETTINGS_ROW_MIN,
               }}
             >
               <Icon name="layers" size={16} color={palette().textMuted} />
-              <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                <Text
-                  style={{
-                    color: palette().text,
-                    fontSize: textSize(14),
-                    lineHeight: textLineHeight(14, 1.4),
-                  }}
-                >
+              <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
+                <Text style={textStyle("body")}>
                   {tr("settings.pools.emptyLegacy")}
                 </Text>
                 <Text style={textStyle("caption")}>
@@ -7087,7 +7089,7 @@ function PoolsSection() {
             </View>
           </If>
           <Each of={pools()} key={pool => pool.id}>
-            {(pool, index) => <PoolRow pool={pool()} first={index() === 0} />}
+            {(pool, index) => <PoolRow pool={pool} first={() => index() === 0} />}
           </Each>
           <ModalDialog
             open={poolModalOpen()}
@@ -7102,11 +7104,11 @@ function PoolsSection() {
             onClose={() => closePoolDraft()}
             footer={
               <If when={poolDraft() !== null}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
                   <Button
                     label={tr("common.cancel")}
                     variant="ghost"
-                    size="sm"
+                    size="md"
                     onPress={() => closePoolDraft()}
                   />
                   <Button
@@ -7116,7 +7118,7 @@ function PoolsSection() {
                         : tr("settings.pools.createPool")
                     }
                     variant="primary"
-                    size="sm"
+                    size="md"
                     accessibilityLabel="save-pool"
                     onPress={() => void savePoolDraft()}
                   />
@@ -7134,23 +7136,23 @@ function PoolsSection() {
   );
 }
 
-function PoolRow(props: { pool: ModelPool; first?: boolean }) {
-  const pool = props.pool;
+function PoolRow(props: { pool: () => ModelPool; first?: () => boolean }) {
   const labelOf = (modelId: string): string =>
     storedModels().find(model => model.id === modelId)?.name || modelId;
-  const statusesOf = () => poolStatuses()[pool.id] ?? [];
+  const statusesOf = () => poolStatuses()[props.pool().id] ?? [];
   const strategyLabel = () => {
-    const mapped = POOL_STRATEGY_KEYS[pool.strategy];
+    const strategy = props.pool().strategy;
+    const mapped = POOL_STRATEGY_KEYS[strategy];
     if (mapped) return tr(mapped.labelKey);
-    return POOL_STRATEGIES.find(entry => entry.value === pool.strategy)?.label ?? pool.strategy;
+    return POOL_STRATEGIES.find(entry => entry.value === strategy)?.label ?? strategy;
   };
-  const menuKey = `pool-${pool.id}`;
+  const menuKey = () => `pool-${props.pool().id}`;
   return (
     <View
       style={{
-        gap: 6,
-        paddingHorizontal: 16,
-        paddingVertical: 10,
+        gap: space.sm,
+        paddingHorizontal: SETTINGS_ROW_INSET,
+        paddingVertical: space.md,
         minHeight: SETTINGS_ROW_MIN,
         justifyContent: "center",
         position: "relative",
@@ -7158,60 +7160,58 @@ function PoolRow(props: { pool: ModelPool; first?: boolean }) {
       }}
       hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
     >
-      <If when={!props.first}>
+      <If when={!props.first?.()}>
         <RowSeparator edge="top" />
       </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.md }}>
         <Text
           style={{
-            color: palette().text,
-            fontSize: textSize(14),
-            lineHeight: textLineHeight(14, 1.35),
+            ...textStyle("body"),
             flex: 1,
-            minWidth: 0,
+            minWidth: 140,
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
         >
-          {pool.name}
+          {props.pool().name}
         </Text>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 8 }}>
-          <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm, marginLeft: "auto" }}>
+          <Text style={textStyle("caption", { color: palette().textSecondary })}>
             {tr("settings.pools.membersSummary", {
               strategy: strategyLabel(),
-              count: pool.memberModelIds.length,
+              count: props.pool().memberModelIds.length,
             })}
           </Text>
           <Button
             label={tr("common.check")}
             variant="secondary"
             size="sm"
-            accessibilityLabel={`check-pool-${pool.id}`}
-            onPress={() => void loadPoolStatus(pool.id)}
+            accessibilityLabel={`check-pool-${props.pool().id}`}
+            onPress={() => void loadPoolStatus(props.pool().id)}
           />
-          <View ref={el => setRowAnchor(menuKey, el)} style={{ flexShrink: 0 }}>
+          <View ref={el => setRowAnchor(menuKey(), el)} style={{ flexShrink: 0 }}>
             <IconButton
               icon="more"
               size="sm"
               tooltip={tr("settings.pools.options")}
-              accessibilityLabel={`pool-actions-${pool.id}`}
-              onPress={() => rowMenuId.set(rowMenuId() === menuKey ? null : menuKey)}
+              accessibilityLabel={`pool-actions-${props.pool().id}`}
+              onPress={() => rowMenuId.set(rowMenuId() === menuKey() ? null : menuKey())}
             />
           </View>
         </View>
         <DropdownMenu
-          open={rowMenuId() === menuKey}
-          anchor={rowMenuAnchors()[menuKey] ?? null}
+          open={rowMenuId() === menuKey()}
+          anchor={rowMenuAnchors()[menuKey()] ?? null}
           onClose={() => rowMenuId.set(null)}
           items={[
             {
               id: "edit",
               label: tr("settings.pools.editPool"),
               icon: "edit",
-              accessibilityLabel: `edit-pool-${pool.id}`,
+              accessibilityLabel: `edit-pool-${props.pool().id}`,
               onSelect: () => {
                 rowMenuId.set(null);
-                openPoolDraft(pool);
+                openPoolDraft(props.pool());
               },
             },
             {
@@ -7219,37 +7219,52 @@ function PoolRow(props: { pool: ModelPool; first?: boolean }) {
               label: tr("settings.pools.deletePool"),
               icon: "trash",
               danger: true,
-              accessibilityLabel: `delete-pool-${pool.id}`,
+              accessibilityLabel: `delete-pool-${props.pool().id}`,
               onSelect: () => {
                 rowMenuId.set(null);
-                void deletePool(pool.id);
+                void deletePool(props.pool().id);
               },
             },
           ]}
         />
       </View>
       <Text style={textStyle("caption")}>
-        {pool.memberModelIds.length === 0
+        {props.pool().memberModelIds.length === 0
           ? tr("settings.pools.noMemberYet")
-          : pool.memberModelIds.map(labelOf).join(" → ")}
+          : props.pool().memberModelIds.map(labelOf).join(" → ")}
       </Text>
       <If when={statusesOf().length > 0}>
-        <View style={{ gap: 4, paddingTop: 2 }}>
+        <View style={{ gap: space.xs, paddingTop: space.hair }}>
           <Each of={statusesOf()} key={entry => entry.modelId}>
-            {entry => (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <StatusDot
-                  kind={(() => {
-                    const tone = poolMemberTone(entry().status);
-                    return tone === "neutral" ? "muted" : tone;
-                  })()}
-                  size={6}
-                />
-                <Text style={{ flex: 1, minWidth: 0, color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
-                  {`${entry().modelId}: ${entry().status}${entry().reason ? ` (${entry().reason})` : ""}`}
-                </Text>
-              </View>
-            )}
+            {entry => {
+              const tone = () => poolMemberTone(entry().status);
+              return (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                  <If when={tone() === "danger"}>
+                    <StateMark state="failed" size={12} />
+                  </If>
+                  <If when={tone() === "warning"}>
+                    <StateMark state="needs_you" size={12} />
+                  </If>
+                  <Text
+                    style={{
+                      ...textStyle("caption", {
+                        color:
+                          tone() === "danger"
+                            ? stateColor("failed")
+                            : tone() === "warning"
+                              ? stateColor("needs_you")
+                              : palette().textSecondary,
+                      }),
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {`${entry().modelId}: ${entry().status}${entry().reason ? ` (${entry().reason})` : ""}`}
+                  </Text>
+                </View>
+              );
+            }}
           </Each>
         </View>
       </If>
@@ -7271,7 +7286,7 @@ function PoolEditor() {
     return POOL_STRATEGIES.find(entry => entry.value === strategyOf())?.hint ?? "";
   };
   return (
-    <View style={{ gap: 14 }}>
+    <View style={{ gap: space.md }}>
       <ModelFormField
         label={tr("settings.pools.poolName")}
         value={poolDraft()?.name ?? ""}
@@ -7279,7 +7294,7 @@ function PoolEditor() {
         accessibilityLabel="model-pool-name"
         onChange={value => updatePoolDraft({ name: value })}
       />
-      <View style={{ gap: 6 }}>
+      <View style={{ gap: space.sm }}>
         <Text style={textStyle("label", { color: palette().textSecondary })}>
           {tr("settings.pools.routingStrategy")}
         </Text>
@@ -7297,7 +7312,7 @@ function PoolEditor() {
         />
         <Text style={textStyle("caption")}>{strategyHint()}</Text>
       </View>
-      <View style={{ gap: 6 }}>
+      <View style={{ gap: space.sm }}>
         <Text style={textStyle("label", { color: palette().textSecondary, tabular: true })}>
           {membersOf().length === 0
             ? tr("settings.pools.membersInOrderEmpty")
@@ -7306,7 +7321,7 @@ function PoolEditor() {
         <If when={membersOf().length > 0}>
           <View
             style={{
-              borderRadius: radii.sm,
+              borderRadius: radii.md,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().borderSubtle,
@@ -7320,9 +7335,9 @@ function PoolEditor() {
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: 8,
-                    paddingHorizontal: 10,
-                    paddingVertical: 8,
+                    gap: space.sm,
+                    paddingHorizontal: space.md,
+                    paddingVertical: space.sm,
                     position: "relative",
                   }}
                 >
@@ -7332,9 +7347,7 @@ function PoolEditor() {
                   <Badge label={`#${index() + 1}`} tone="neutral" />
                   <Text
                     style={{
-                      color: palette().text,
-                      fontSize: textSize(12),
-                      fontFamily: fontMono,
+                      ...textStyle("mono", { color: palette().text }),
                       flex: 1,
                       minWidth: 0,
                       numberOfLines: 1,
@@ -7343,7 +7356,7 @@ function PoolEditor() {
                   >
                     {memberName(modelId())}
                   </Text>
-                  <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 4 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.xs }}>
                     <IconButton
                       icon="arrow-up"
                       size="xs"
@@ -7375,14 +7388,14 @@ function PoolEditor() {
           </View>
         </If>
       </View>
-      <View style={{ gap: 6 }}>
+      <View style={{ gap: space.sm }}>
         <Text style={textStyle("label", { color: palette().textSecondary })}>
           {tr("settings.pools.availableModels")}
         </Text>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
           <Each of={storedModels()} key={model => model.id}>
             {model => (
-              <PillChip
+              <SelectableChip
                 label={`${hasMember(model().id) ? "✓ " : "+ "}${model().name || model().id}`}
                 active={hasMember(model().id)}
                 accessibilityLabel={`pool-toggle-${model().id}`}
@@ -7425,18 +7438,16 @@ function AccountRow() {
           ? tr("devices.accountSignedInAs", { account: signedInAccountDisplay() })
           : tr("settings.account.subtitle")
       }
+      first={true}
     >
       <If when={isAccountSignedIn()}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <StatusPill label={signedInAccountDisplay()} kind="success" size="sm" />
-          <Button
-            label={tr("settings.account.manage")}
-            variant="secondary"
-            size="sm"
-            accessibilityLabel="settings-account-manage"
-            onPress={() => openAccountAuthModal()}
-          />
-        </View>
+        <Button
+          label={tr("settings.account.manage")}
+          variant="secondary"
+          size="sm"
+          accessibilityLabel="settings-account-manage"
+          onPress={() => openAccountAuthModal()}
+        />
       </If>
       <If when={!isAccountSignedIn()}>
         <Button
@@ -7457,7 +7468,7 @@ function AccountRow() {
  * host picks (auto-detect), as the desktop's terminal page offers it.
  */
 function DefaultShellRow() {
-  void loadTerminalShells();
+  useDeviceScopedLoad("terminal-shells", () => void loadTerminalShells(), () => void loadTerminalShells());
   const stored = (): string => {
     const value = settingsValues()["terminal.default_shell"];
     return typeof value === "string" ? value : "";
@@ -7519,8 +7530,8 @@ function DefaultShellRow() {
         options={options()}
         accessibilityLabel="terminal-default-shell"
         disabled={saving() || terminalShells().length === 0}
-        minWidth={220}
-        maxWidth={300}
+        minWidth={settingsCompact() ? 160 : 220}
+        maxWidth={settingsCompact() ? undefined : 300}
         align="end"
         onChange={value => void choose(value)}
       />
@@ -7532,7 +7543,7 @@ const DEFAULT_MODEL_SLOT_KEYS: Record<DefaultModelSlot, { labelKey: MessageKey; 
   primary: {
     labelKey: "settings.defaultModels.primary",
     descriptionKey: "settings.defaultModels.primaryDesc",
-    emptyKey: "settings.defaultModels.notSet",
+    emptyKey: "common.none",
     capability: "text_chat",
   },
   fast: {
@@ -7544,19 +7555,19 @@ const DEFAULT_MODEL_SLOT_KEYS: Record<DefaultModelSlot, { labelKey: MessageKey; 
   economy: {
     labelKey: "settings.defaultModels.economy",
     descriptionKey: "settings.defaultModels.economyDesc",
-    emptyKey: "settings.defaultModels.notSet",
+    emptyKey: "common.none",
     capability: "text_chat",
   },
   image_understanding: {
     labelKey: "settings.defaultModels.imageUnderstanding",
     descriptionKey: "settings.defaultModels.imageUnderstandingDesc",
-    emptyKey: "settings.defaultModels.notSet",
+    emptyKey: "common.none",
     capability: "image_understanding",
   },
   speech_recognition: {
     labelKey: "settings.defaultModels.speechRecognition",
     descriptionKey: "settings.defaultModels.speechRecognitionDesc",
-    emptyKey: "settings.defaultModels.notSet",
+    emptyKey: "common.none",
     capability: "speech_recognition",
   },
 };
@@ -7567,7 +7578,7 @@ const DEFAULT_MODEL_SLOT_KEYS: Record<DefaultModelSlot, { labelKey: MessageKey; 
  * `DefaultModelConfig` does; the primary slot cannot be cleared.
  */
 function DefaultModelsSection() {
-  void loadDefaultModels();
+  useDeviceScopedLoad("default-models", () => void loadDefaultModels(), () => void loadDefaultModels());
   const optionsFor = (slot: DefaultModelSlot) => {
     const meta = DEFAULT_MODEL_SLOT_KEYS[slot];
     const models = storedModels().filter(model => isSelectableForCapability(model, meta.capability));
@@ -7613,14 +7624,14 @@ function DefaultModelsSection() {
             </If>
             <SelectDropdown
               size="sm"
-              value={defaultModels()[slot()] ?? ""}
+              value={defaultModels()[slot()] || (slot() === "fast" ? "" : null)}
               options={optionsFor(slot())}
               placeholder={tr("settings.defaultModels.choose")}
               searchable={optionsFor(slot()).length > 8}
               accessibilityLabel={`default-model-${slot()}`}
               disabled={defaultModelSaving() !== null || (slot() === "primary" && optionsFor(slot()).length === 0)}
-              minWidth={220}
-              maxWidth={300}
+              minWidth={settingsCompact() ? 160 : 220}
+              maxWidth={settingsCompact() ? undefined : 300}
               align="end"
               onChange={value => void chooseDefaultModel(slot(), value || null)}
             />
@@ -7636,7 +7647,7 @@ function DefaultModelsSection() {
  * the desktop's General page does. A host that does not answer says so.
  */
 function LaunchAtLoginRow() {
-  void loadGeneralControl();
+  useDeviceScopedLoad("general-control", () => void loadGeneralControl(), () => void loadGeneralControl(true));
   const value = () => generalControlValue("launch-at-login");
   return (
     <SettingsRow
@@ -7685,60 +7696,64 @@ async function pickCompanionPack(): Promise<void> {
  * would do nothing there.
  */
 function DesktopCompanionRow() {
-  if (!companionAvailableHere()) {
-    return (
-      <SettingsRow label={tr("settings.field.desktopCompanion")} description={tr("pet.desktopOnlyBody")} first={true}>
-        <Text
-          accessibilityLabel="desktop-companion-desktop-only"
-          style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}
-        >
-          {tr("pet.desktopOnly")}
-        </Text>
-      </SettingsRow>
-    );
-  }
-  void loadCompanionSettings();
-  void loadCompanionPets();
+  effect(() => {
+    if (!companionAvailableHere()) return;
+    untracked(() => {
+      void loadCompanionSettings();
+      void loadCompanionPets();
+    });
+  });
   return (
-    <View>
-      <If when={companionNotice()}>
-        {notice => <InlineBanner tone="danger" message={notice()} onDismiss={() => companionNotice.set("")} />}
-      </If>
-      <SettingsRow label={tr("pet.enabled")} description={tr("pet.enabledBody")} first={true}>
-        <If when={companionEnabled() !== null}>
-          <ToggleSwitch
-            value={companionEnabled() === true}
-            accessibilityLabel="pet-enabled"
-            disabled={companionBusy() !== null}
-            onChange={next => void setCompanionEnabled(next)}
-          />
+    <If
+      when={companionAvailableHere()}
+      else={
+        <SettingsRow label={tr("settings.field.desktopCompanion")} description={tr("pet.desktopOnlyBody")} first={true}>
+          <Text accessibilityLabel="desktop-companion-desktop-only" style={textStyle("caption")}>
+            {tr("pet.desktopOnly")}
+          </Text>
+        </SettingsRow>
+      }
+    >
+      <View>
+        <If when={companionNotice()}>
+          {notice => <InlineBanner tone="danger" message={notice()} onDismiss={() => companionNotice.set("")} />}
         </If>
-      </SettingsRow>
-      <SettingsRow label={tr("pet.character")} description={tr("pet.characterBody")} stacked={true}>
-        <PetCharacterGrid />
-        <View style={{ flexDirection: "row" }}>
-          <Button
-            label={tr("pet.import")}
-            variant="secondary"
-            size="sm"
-            leadingIcon="upload"
-            loading={companionBusy() === "import"}
-            accessibilityLabel="pet-import"
-            onPress={() => void pickCompanionPack()}
-          />
-        </View>
-      </SettingsRow>
-      <SettingsRow label={tr("cards.settingsEnabled")} description={tr("cards.settingsEnabledBody")}>
-        <If when={desktopCardsEnabled() !== null}>
-          <ToggleSwitch
-            value={desktopCardsEnabled() === true}
-            accessibilityLabel="desktop-cards-enabled"
-            disabled={companionBusy() !== null}
-            onChange={next => void setDesktopCardsEnabled(next)}
-          />
-        </If>
-      </SettingsRow>
-    </View>
+        <SettingsRow label={tr("pet.enabled")} description={tr("pet.enabledBody")} first={true}>
+          <If when={companionEnabled() !== null}>
+            <ToggleSwitch
+              value={companionEnabled() === true}
+              accessibilityLabel="pet-enabled"
+              disabled={companionBusy() !== null}
+              onChange={next => void setCompanionEnabled(next)}
+            />
+          </If>
+        </SettingsRow>
+        <SettingsRow label={tr("pet.character")} description={tr("pet.characterBody")} stacked={true}>
+          <PetCharacterGrid />
+          <View style={{ flexDirection: "row" }}>
+            <Button
+              label={tr("pet.import")}
+              variant="secondary"
+              size="sm"
+              leadingIcon="upload"
+              loading={companionBusy() === "import"}
+              accessibilityLabel="pet-import"
+              onPress={() => void pickCompanionPack()}
+            />
+          </View>
+        </SettingsRow>
+        <SettingsRow label={tr("cards.settingsEnabled")} description={tr("cards.settingsEnabledBody")}>
+          <If when={desktopCardsEnabled() !== null}>
+            <ToggleSwitch
+              value={desktopCardsEnabled() === true}
+              accessibilityLabel="desktop-cards-enabled"
+              disabled={companionBusy() !== null}
+              onChange={next => void setDesktopCardsEnabled(next)}
+            />
+          </If>
+        </SettingsRow>
+      </View>
+    </If>
   );
 }
 
@@ -7772,7 +7787,7 @@ function MemoryActionsRow() {
         />
       </SettingsRow>
       <If when={memoryResetPending()}>
-        <View testID="memory-reset-confirm" style={{ paddingHorizontal: 16, paddingBottom: 14 }}>
+        <View testID="memory-reset-confirm" style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
           <InlineConfirmBar
             message={tr("settings.memory.resetConfirm")}
             confirmLabel={tr("settings.memory.reset")}
@@ -7803,7 +7818,7 @@ const SPEECH_STATE_KEYS: Record<string, MessageKey> = {
  * another device is driven.
  */
 function SpeechModelsRow() {
-  void loadSpeechModels();
+  useDeviceScopedLoad("speech-models", () => void loadSpeechModels(), () => void loadSpeechModels(true));
   const models = () => {
     const list = speechModels();
     return Array.isArray(list) ? list : [];
@@ -7829,16 +7844,16 @@ function SpeechModelsRow() {
       />
       <If when={speechNotice()}>
         {notice => (
-          <View style={{ paddingHorizontal: 20, paddingBottom: 10 }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
             <InlineBanner tone="danger" message={localizeHostError(notice())} onDismiss={() => speechNotice.set("")} />
           </View>
         )}
       </If>
       <Each of={models()} key={model => model.modelId}>
         {model => (
-          <View style={{ paddingHorizontal: 20, paddingBottom: 14, gap: 6 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-              <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md, gap: space.sm }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.md }}>
+              <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                 <Text style={textStyle("label")}>{model().displayName || model().modelId}</Text>
                 <Text style={textStyle("caption")}>{stateText(model())}</Text>
               </View>
@@ -7937,6 +7952,7 @@ interface SuperagentStatusView {
 const obfStatus = signal<SuperagentStatusView | null>(null);
 const obfState = signal<"loading" | "ready" | "unsupported" | "failed">("loading");
 const obfNote = signal("");
+const obfWriteError = signal("");
 const obfBusy = signal(false);
 const obfDeleteOpen = signal(false);
 
@@ -7960,14 +7976,20 @@ async function superagentCall(command: string, request: Record<string, unknown>)
   return invokeCommand<unknown>(command, request, { target: cloudTarget() });
 }
 
-function failSuperagent(error: unknown, command: string): void {
+function failSuperagent(error: unknown, command: string, writeOnly = false): void {
   if (isCommandUnavailable(error, command)) {
     obfState.set("unsupported");
     obfNote.set("");
-  } else {
-    obfState.set("failed");
-    obfNote.set(error instanceof Error ? error.message : String(error ?? ""));
+    obfWriteError.set("");
+    return;
   }
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (writeOnly && obfState() === "ready" && obfStatus() !== null) {
+    obfWriteError.set(message);
+    return;
+  }
+  obfState.set("failed");
+  obfNote.set(message);
 }
 
 async function loadSuperagentStatus(): Promise<void> {
@@ -7976,6 +7998,7 @@ async function loadSuperagentStatus(): Promise<void> {
     obfStatus.set(readSuperagentStatus(await superagentCall("superagent_status", {})));
     obfState.set("ready");
     obfNote.set("");
+    obfWriteError.set("");
   } catch (error) {
     failSuperagent(error, "superagent_status");
   }
@@ -7984,6 +8007,7 @@ async function loadSuperagentStatus(): Promise<void> {
 async function setSuperagentEnabled(next: boolean): Promise<void> {
   const command = next ? "superagent_enable" : "superagent_disable";
   obfBusy.set(true);
+  obfWriteError.set("");
   try {
     const answer = (await superagentCall(command, {})) as Record<string, unknown> | null;
     const current = obfStatus();
@@ -7992,7 +8016,7 @@ async function setSuperagentEnabled(next: boolean): Promise<void> {
     if (current) obfStatus.set({ ...current, enabled });
     await loadSuperagentStatus();
   } catch (error) {
-    failSuperagent(error, command);
+    failSuperagent(error, command, true);
   } finally {
     obfBusy.set(false);
   }
@@ -8000,13 +8024,14 @@ async function setSuperagentEnabled(next: boolean): Promise<void> {
 
 async function deleteSuperagentData(): Promise<void> {
   obfBusy.set(true);
+  obfWriteError.set("");
   try {
     await superagentCall("superagent_delete_data", { cancelJobs: true });
     obfDeleteOpen.set(false);
     await loadSuperagentStatus();
   } catch (error) {
     obfDeleteOpen.set(false);
-    failSuperagent(error, "superagent_delete_data");
+    failSuperagent(error, "superagent_delete_data", true);
   } finally {
     obfBusy.set(false);
   }
@@ -8047,8 +8072,22 @@ function accountSyncDetail(): string {
 
 function AccountSyncSection() {
   void loadAccountSync();
+  const writeErrorText = (): string => {
+    const raw = accountSyncWriteError();
+    if (!raw) return "";
+    return raw === "save_failed" ? tr("settings.sync.saveFailed") : localizeHostError(raw);
+  };
   return (
-    <View accessibilityLabel="settings-account-sync">
+    <View style={{ gap: space.sm }} accessibilityLabel="settings-account-sync">
+      <If when={accountSyncLoad() === "idle" || accountSyncLoad() === "loading"}>
+        <View
+          accessibilityLabel="account-sync-loading"
+          style={{ flexDirection: "row", alignItems: "center", gap: space.sm, paddingHorizontal: space.xs }}
+        >
+          <Spinner size={12} color={palette().textMuted} />
+          <Text style={textStyle("caption")}>{tr("settings.sync.loading")}</Text>
+        </View>
+      </If>
       <If when={accountSyncLoad() === "unsupported"}>
         <UnsupportedNote title={tr("settings.sync.title")} message={tr("settings.sync.hostUnsupported")} />
       </If>
@@ -8062,6 +8101,16 @@ function AccountSyncSection() {
         />
       </If>
       <If when={accountSyncLoad() === "ready" && accountSync() !== null}>
+        <If when={writeErrorText()}>
+          {message => (
+            <InlineBanner
+              tone="danger"
+              accessibilityLabel="account-sync-write-failed"
+              message={message()}
+              onDismiss={() => clearAccountSyncWriteError()}
+            />
+          )}
+        </If>
         <SettingsGroup id="account-sync" title={tr("settings.sync.title")} hideTitle={true}>
           <SettingsRow label={tr("settings.sync.title")} description={tr("settings.sync.body")} first={true}>
             <ToggleSwitch
@@ -8103,6 +8152,16 @@ function OpenBitFunSection() {
       </If>
       <If when={obfState() === "ready" && obfStatus() !== null}>
         <View style={{ gap: layout.sectionGap }}>
+          <If when={obfWriteError()}>
+            {err => (
+              <InlineBanner
+                tone="danger"
+                accessibilityLabel="obf-write-failed"
+                message={localizeHostError(err())}
+                onDismiss={() => obfWriteError.set("")}
+              />
+            )}
+          </If>
           <SettingsGroup id="openbitfun" title={tr("obf.toggle")} hideTitle={true}>
             <SettingsRow label={tr("obf.toggle")} description={tr("obf.toggleBody")} first={true}>
               <ToggleSwitch
@@ -8149,18 +8208,18 @@ function OpenBitFunSection() {
         accessibilityLabel="obf-delete-dialog"
         onClose={() => obfDeleteOpen.set(false)}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.cancel")}
               variant="secondary"
-              size="sm"
+              size="md"
               accessibilityLabel="obf-delete-cancel"
               onPress={() => obfDeleteOpen.set(false)}
             />
             <Button
               label={tr("common.delete")}
               variant="danger"
-              size="sm"
+              size="md"
               loading={obfBusy()}
               accessibilityLabel="obf-delete-confirm"
               onPress={() => void deleteSuperagentData()}
@@ -8177,7 +8236,7 @@ function OpenBitFunSection() {
 /** Cell and gap of the activity heatmap (visual spec §4.9: 10 px cells, 2 px gap). */
 const ACTIVITY_CELL = space.sm + space.hair;
 const ACTIVITY_GAP = space.hair;
-const ACTIVITY_CELL_RADIUS = radii.xs / 2;
+const ACTIVITY_CELL_RADIUS = radii.xs;
 /** Accent opacity per level; a day without tokens is `heatmapZero`. */
 const ACTIVITY_STEPS = [0.12, 0.3, 0.5, 0.75, 1] as const;
 
@@ -8214,6 +8273,7 @@ function activityWeeks(): UsageActivityCell[][] {
 function ActivityCellView(props: { cell: UsageActivityCell }) {
   const empty = () => !props.cell.inRange;
   const zero = () => props.cell.inRange && props.cell.tokens <= 0;
+  const stepIndex = () => Math.max(0, Math.min(ACTIVITY_STEPS.length - 1, props.cell.level));
   return (
     <View
       style={{
@@ -8221,7 +8281,7 @@ function ActivityCellView(props: { cell: UsageActivityCell }) {
         height: ACTIVITY_CELL,
         borderRadius: ACTIVITY_CELL_RADIUS,
         backgroundColor: empty() ? "transparent" : zero() ? palette().heatmapZero : palette().accent,
-        opacity: empty() || zero() ? 1 : ACTIVITY_STEPS[props.cell.level],
+        opacity: empty() || zero() ? 1 : ACTIVITY_STEPS[stepIndex()],
       }}
     />
   );
@@ -8252,7 +8312,7 @@ function InsightsStatusLine() {
       </If>
       <If when={insightsError()}>
         {error => (
-          <Text accessibilityLabel="activity-insights-error" style={textStyle("caption", { color: palette().danger })}>
+          <Text accessibilityLabel="activity-insights-error" style={textStyle("caption", { color: stateColor("failed") })}>
             {localizeHostError(error())}
           </Text>
         )}
@@ -8281,10 +8341,13 @@ function InsightsReportRow(props: { index: number; path: string; title: string; 
         alignItems: "center",
         gap: space.md,
         cursor: "pointer",
+        userSelect: "none",
         backgroundColor: selectedInsightsPath() === props.path ? palette().panelHover : undefined,
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <RowSeparator edge="top" />
       <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
@@ -8416,11 +8479,11 @@ function InsightsReader() {
           accessibilityLabel="insights-reader-modal"
           onClose={closeInsightsModal}
           footer={
-            <>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
               <Button
                 label={tr("settings.insights.regenerate")}
                 variant="secondary"
-                size="sm"
+                size="md"
                 disabled={insightsGenerating()}
                 accessibilityLabel="insights-regenerate"
                 onPress={() => void generateInsightsReport()}
@@ -8429,15 +8492,15 @@ function InsightsReader() {
                 <Button
                   label={tr("settings.insights.showHtml")}
                   variant="secondary"
-                  size="sm"
+                  size="md"
                   disabled={!insightsOnThisDevice()}
                   tooltip={insightsOnThisDevice() ? undefined : tr("settings.insights.htmlElsewhere")}
                   accessibilityLabel="insights-show-html"
                   onPress={() => void revealInsightsHtml(report().htmlPath)}
                 />
               </If>
-              <Button label={tr("common.close")} variant="primary" size="sm" onPress={closeInsightsModal} />
-            </>
+              <Button label={tr("common.close")} variant="primary" size="md" onPress={closeInsightsModal} />
+            </View>
           }
         >
           <View style={{ width: "100%", maxWidth: layout.conversationWidth, alignSelf: "center" }}>
@@ -8555,12 +8618,12 @@ function ArchivedSessionsSection() {
         accessibilityLabel="settings-archived-delete-all-modal"
         onClose={() => archivedDeleteAllOpen.set(false)}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => archivedDeleteAllOpen.set(false)} />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+            <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => archivedDeleteAllOpen.set(false)} />
             <Button
               label={tr("common.delete")}
               variant="danger"
-              size="sm"
+              size="md"
               loading={archivedDeletingAll()}
               accessibilityLabel="settings-archived-delete-all-confirm"
               onPress={() => void deleteAllArchived()}
@@ -8639,10 +8702,10 @@ function externalScopeLabel(scope: string): string {
   }
 }
 
-function externalHealthKind(health: string, lifecycle: string): StatusPillKind {
-  if (lifecycle === "removed" || lifecycle === "unavailable" || health === "unavailable") return "danger";
-  if (health === "degraded" || health === "partial" || lifecycle === "degraded") return "warning";
-  return "success";
+function externalHealthColor(health: string, lifecycle: string): string {
+  if (lifecycle === "removed" || lifecycle === "unavailable" || health === "unavailable") return stateColor("failed");
+  if (health === "degraded" || health === "partial" || lifecycle === "degraded") return stateColor("needs_you");
+  return palette().textMuted;
 }
 
 function externalHealthLabel(health: string, lifecycle: string): string {
@@ -8683,49 +8746,52 @@ function ExternalDiscoveryRow() {
 }
 
 /** One source another application exposes, with its scope and health. */
-function ExternalSourceRowView(props: { row: ExternalSourceRow; first: boolean }) {
+function ExternalSourceRowView(props: { row: () => ExternalSourceRow; first: () => boolean }) {
   return (
     <View
-      accessibilityLabel={`external-source-${props.row.stableKey}`}
+      accessibilityLabel={`external-source-${props.row().stableKey}`}
       style={{
+        position: "relative",
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
-        paddingHorizontal: 20,
-        paddingVertical: 12,
-        borderTopWidth: props.first ? 0 : 1,
-        borderColor: palette().borderSubtle,
+        gap: space.md,
+        minHeight: SETTINGS_ROW_MIN,
+        paddingHorizontal: SETTINGS_ROW_INSET,
+        paddingVertical: space.md,
       }}
     >
-      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+      <If when={!props.first()}>
+        <RowSeparator edge="top" />
+      </If>
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
         <Text
           style={{
-            color: palette().text,
-            fontSize: textSize(13),
-            fontWeight: "600",
-            lineHeight: textLineHeight(13, 1.38),
+            ...textStyle("body"),
+            fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
         >
-          {props.row.displayName || props.row.ecosystemId}
+          {props.row().displayName || props.row().ecosystemId}
         </Text>
         <Text
           style={{
-            color: palette().textMuted,
-            fontSize: textSize(11.5),
-            lineHeight: textLineHeight(11.5, 1.4),
+            ...textStyle("caption"),
             numberOfLines: 1,
             textOverflow: "ellipsis-middle",
           }}
         >
-          {[externalScopeLabel(props.row.scope), props.row.location].filter(Boolean).join(" · ")}
+          {[externalScopeLabel(props.row().scope), props.row().location].filter(Boolean).join(" · ")}
         </Text>
       </View>
-      <StatusPill
-        label={externalHealthLabel(props.row.health, props.row.lifecycle)}
-        kind={externalHealthKind(props.row.health, props.row.lifecycle)}
-      />
+      <Text
+        style={{
+          ...textStyle("caption", { color: externalHealthColor(props.row().health, props.row().lifecycle) }),
+          flexShrink: 0,
+        }}
+      >
+        {externalHealthLabel(props.row().health, props.row().lifecycle)}
+      </Text>
     </View>
   );
 }
@@ -8759,7 +8825,7 @@ function ExternalSourcesGroup() {
       title={tr("settings.externalImports.sourcesTitle")}
       description={summary()}
       extra={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <If when={externalLoadState() === "loading"}>
             <Spinner size={13} color={palette().accent} />
           </If>
@@ -8778,7 +8844,7 @@ function ExternalSourcesGroup() {
       <ExternalDiscoveryRow />
       <If when={externalDiscoveryError()}>
         {err => (
-          <View style={{ paddingHorizontal: 20, paddingBottom: 12 }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingBottom: space.md }}>
             <InlineBanner
               tone="danger"
               accessibilityLabel="external-discovery-error"
@@ -8796,9 +8862,10 @@ function ExternalSourcesGroup() {
           />
         }
       >
-        <View style={{ borderTopWidth: 1, borderColor: palette().borderSubtle }}>
+        <View style={{ position: "relative" }}>
+          <RowSeparator edge="top" />
           <Each of={snapshot()?.sources ?? []} key={row => row.stableKey}>
-            {(row, index) => <ExternalSourceRowView row={row()} first={index() === 0} />}
+            {(row, index) => <ExternalSourceRowView row={row} first={() => index() === 0} />}
           </Each>
         </View>
       </If>
@@ -8807,55 +8874,55 @@ function ExternalSourcesGroup() {
 }
 
 /** One MCP server another application declares, with what importing it would do. */
-function McpImportRow(props: { item: McpImportItem; first: boolean }) {
-  const selectable = () => mcpItemSelectable(props.item);
-  const kind = (): StatusPillKind => {
-    if (props.item.disposition === "already_imported") return "neutral";
-    if (selectable()) return "success";
-    return "warning";
+function McpImportRow(props: { item: () => McpImportItem; first: () => boolean }) {
+  const selectable = () => mcpItemSelectable(props.item());
+  const stateTextColor = (): string => {
+    if (props.item().disposition === "already_imported") return palette().textMuted;
+    if (selectable()) return palette().textSecondary;
+    return stateColor("needs_you");
   };
   return (
     <View
-      accessibilityLabel={`external-mcp-${props.item.candidateId}`}
+      accessibilityLabel={`external-mcp-${props.item().candidateId}`}
       style={{
+        position: "relative",
         flexDirection: "row",
+        flexWrap: "wrap",
         alignItems: "center",
-        gap: 12,
-        paddingHorizontal: 20,
-        paddingVertical: 12,
-        borderTopWidth: props.first ? 0 : 1,
-        borderColor: palette().borderSubtle,
+        gap: space.md,
+        minHeight: SETTINGS_ROW_MIN,
+        paddingHorizontal: SETTINGS_ROW_INSET,
+        paddingVertical: space.md,
       }}
     >
-      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+      <If when={!props.first()}>
+        <RowSeparator edge="top" />
+      </If>
+      <View style={{ flex: 1, minWidth: 160, gap: space.hair }}>
         <Text
           style={{
-            color: palette().text,
-            fontSize: textSize(13),
-            fontWeight: "600",
-            lineHeight: textLineHeight(13, 1.38),
+            ...textStyle("body"),
+            fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
         >
-          {props.item.displayName}
+          {props.item().displayName}
         </Text>
         <Text
           style={{
-            color: palette().textMuted,
-            fontSize: textSize(11.5),
-            lineHeight: textLineHeight(11.5, 1.4),
+            ...textStyle("caption"),
             numberOfLines: 2,
           }}
         >
           {[
-            props.item.transport === "streamable_http"
+            props.item().transport === "streamable_http"
               ? tr("settings.externalImports.transportHttp")
               : tr("settings.externalImports.transportStdio"),
-            props.item.disposition === "automatic_rename" && props.item.proposedNativeId
-              ? tr("settings.externalImports.renameTo", { name: props.item.proposedNativeId })
+            props.item().disposition === "automatic_rename" && props.item().proposedNativeId
+              ? tr("settings.externalImports.renameTo", { name: props.item().proposedNativeId })
               : "",
-            props.item.reasonCode === "external_mcp.import_setup_required"
+            props.item().reasonCode === "external_mcp.import_setup_required"
               ? tr("settings.externalImports.setupRequired")
               : "",
           ]
@@ -8863,16 +8930,18 @@ function McpImportRow(props: { item: McpImportItem; first: boolean }) {
             .join(" · ")}
         </Text>
       </View>
-      <StatusPill label={tr(mcpItemStateKey(props.item) as MessageKey)} kind={kind()} />
+      <Text style={{ ...textStyle("caption", { color: stateTextColor() }), flexShrink: 0 }}>
+        {tr(mcpItemStateKey(props.item()) as MessageKey)}
+      </Text>
       <If when={selectable()}>
         <Button
           label={tr("settings.externalImports.import")}
           variant="secondary"
           size="sm"
-          loading={mcpImportBusy() === props.item.candidateId}
+          loading={mcpImportBusy() === props.item().candidateId}
           disabled={Boolean(mcpImportBusy())}
-          accessibilityLabel={`external-mcp-import-${props.item.candidateId}`}
-          onPress={() => void applyMcpImport(props.item.candidateId)}
+          accessibilityLabel={`external-mcp-import-${props.item().candidateId}`}
+          onPress={() => void applyMcpImport(props.item().candidateId)}
         />
       </If>
     </View>
@@ -8923,7 +8992,7 @@ function ExternalMcpImportGroup() {
     >
       <If when={notice()}>
         {message => (
-          <View style={{ paddingHorizontal: 20, paddingTop: 12 }}>
+          <View style={{ paddingHorizontal: SETTINGS_ROW_INSET, paddingTop: space.md }}>
             <InlineBanner
               tone={externalMcpNotice()?.tone ?? "info"}
               accessibilityLabel="external-mcp-notice"
@@ -8938,7 +9007,7 @@ function ExternalMcpImportGroup() {
         else={<SettingsRow label={tr("settings.externalImports.mcpTitle")} description={stateText()} first={true} />}
       >
         <Each of={plan()?.items ?? []} key={item => item.candidateId}>
-          {(item, index) => <McpImportRow item={item()} first={index() === 0} />}
+          {(item, index) => <McpImportRow item={item} first={() => index() === 0} />}
         </Each>
       </If>
     </SettingsGroup>
@@ -8986,22 +9055,23 @@ function RemovedExternalSessionsGroup() {
             <View
               accessibilityLabel={`external-removed-${row().sessionId}`}
               style={{
+                position: "relative",
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 12,
-                paddingHorizontal: 20,
-                paddingVertical: 12,
-                borderTopWidth: index() === 0 ? 0 : 1,
-                borderColor: palette().borderSubtle,
+                gap: space.md,
+                minHeight: SETTINGS_ROW_MIN,
+                paddingHorizontal: SETTINGS_ROW_INSET,
+                paddingVertical: space.md,
               }}
             >
-              <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+              <If when={index() !== 0}>
+                <RowSeparator edge="top" />
+              </If>
+              <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
                 <Text
                   style={{
-                    color: palette().text,
-                    fontSize: textSize(13),
-                    fontWeight: "600",
-                    lineHeight: textLineHeight(13, 1.38),
+                    ...textStyle("body"),
+                    fontWeight: "500",
                     numberOfLines: 1,
                     textOverflow: "ellipsis",
                   }}
@@ -9010,10 +9080,12 @@ function RemovedExternalSessionsGroup() {
                 </Text>
                 <Text
                   style={{
-                    color:
-                      removedRestoreFailed() === removedSessionKey(row()) ? palette().danger : palette().textMuted,
-                    fontSize: textSize(11.5),
-                    lineHeight: textLineHeight(11.5, 1.4),
+                    ...textStyle("caption", {
+                      color:
+                        removedRestoreFailed() === removedSessionKey(row())
+                          ? stateColor("failed")
+                          : palette().textMuted,
+                    }),
                     numberOfLines: 2,
                   }}
                 >
@@ -9050,6 +9122,7 @@ function RemovedExternalSessionsGroup() {
  */
 function ExternalImportSection() {
   effect(() => {
+    void deviceContext();
     void activeWorkspace()?.id;
     untracked(() => syncExternalImportScope());
   });
@@ -9063,7 +9136,7 @@ function ExternalImportSection() {
     />
   );
   return (
-    <View style={{ gap: 36 }}>
+    <View style={{ gap: layout.sectionGap }}>
       <If when={externalBlock() === "remoteWorkspace"}>
         <UnsupportedNote
           title={tr("settings.externalImports.title")}
@@ -9254,7 +9327,7 @@ function SettingsPageBody(props: { pageId: SettingsPageId }) {
   );
 }
 
-/** Save / Discard / Keep editing, when a page change would drop typed text. */
+/** Save / Discard / Keep editing, when a page or device change would drop typed text. */
 function UnsavedChangesDialog() {
   const saving = signal(false);
   const saveAll = async (): Promise<void> => {
@@ -9266,7 +9339,7 @@ function UnsavedChangesDialog() {
       for (const spec of dirtyFields()) {
         if (!(await commitDraft(spec))) ok = false;
       }
-      if (ok) goToSettingsPage(target.pageId, target.anchor);
+      if (ok) applyPendingNavigation(target);
       else pendingNavigation.set(null);
     } finally {
       saving.set(false);
@@ -9281,29 +9354,29 @@ function UnsavedChangesDialog() {
       accessibilityLabel="settings-unsaved-dialog"
       onClose={() => pendingNavigation.set(null)}
       footer={
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flex: 1 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
           <Button
             label={tr("settings.unsaved.keepEditing")}
             variant="ghost"
-            size="sm"
+            size="md"
             accessibilityLabel="settings-unsaved-keep"
             onPress={() => pendingNavigation.set(null)}
           />
           <Button
             label={tr("settings.unsaved.discard")}
             variant="secondary"
-            size="sm"
+            size="md"
             accessibilityLabel="settings-unsaved-discard"
             onPress={() => {
               const target = pendingNavigation();
               drafts.set({});
-              if (target) goToSettingsPage(target.pageId, target.anchor);
+              if (target) applyPendingNavigation(target);
             }}
           />
           <Button
             label={tr("common.save")}
             variant="primary"
-            size="sm"
+            size="md"
             loading={saving()}
             accessibilityLabel="settings-unsaved-save"
             onPress={() => void saveAll()}
@@ -9311,11 +9384,11 @@ function UnsavedChangesDialog() {
         </View>
       }
     >
-      <View style={{ gap: 6 }}>
+      <View style={{ gap: space.sm }}>
         <Each of={dirtyFields()} key={spec => spec.id}>
           {spec => (
             <Text style={textStyle("caption")}>
-              {`${fieldLabel(spec())}: ${draftOf(spec())}`}
+              {`${fieldLabel(spec())}: ${spec().masked ? tr("settings.account.maskedValue") : draftOf(spec())}`}
             </Text>
           )}
         </Each>
@@ -9332,6 +9405,17 @@ export function SettingsScene() {
   void loadAccountSync();
   void loadSettingsValues();
   void loadModels();
+  let lastSettingsDevice: string | null = null;
+  effect(() => {
+    const ctx = deviceContext();
+    if (lastSettingsDevice !== null && ctx !== lastSettingsDevice) {
+      untracked(() => {
+        void loadSettingsValues();
+        void loadModels();
+      });
+    }
+    lastSettingsDevice = ctx;
+  });
   let noticeAutoClearTimer: ReturnType<typeof setTimeout> | null = null;
   const clearNoticeTimer = () => {
     if (noticeAutoClearTimer !== null) {
@@ -9367,8 +9451,13 @@ export function SettingsScene() {
     }
     lastSettingsLocale = activeLocale;
   });
-  // Leaving Settings returns the compact layout to its page list.
-  cleanup(() => compactPageOpen.set(false));
+  // Leaving Settings resets compact state, search filter, and per-device load markers.
+  cleanup(() => {
+    compactPageOpen.set(false);
+    settingsSearchQuery.set("");
+    loadedDeviceForSection.clear();
+    deviceScopeSwitchedInSettings = false;
+  });
   const page = () => settingsPageEntry(selectedSettingsPage());
   const showList = (): boolean => settingsCompact() && !compactPageOpen();
   return (
@@ -9380,7 +9469,7 @@ export function SettingsScene() {
         <View
           accessibilityLabel="settings-scope-list"
           style={{
-            width: SETTINGS_LIST_WIDTH,
+            width: settingsListWidth(),
             flexShrink: 0,
             minHeight: 0,
             backgroundColor: palette().canvasSubtle,
@@ -9412,27 +9501,6 @@ export function SettingsScene() {
           <If when={!showList()}>
             <View style={{ gap: layout.titleToSection }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-                <If when={settingsCompact()}>
-                  <View
-                    role="button"
-                    accessibilityLabel="settings-compact-back"
-                    onPress={() => compactPageOpen.set(false)}
-                    style={{
-                      minWidth: layout.touchTarget,
-                      minHeight: layout.touchTarget,
-                      marginLeft: -space.md,
-                      borderRadius: radii.pill,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                      ...paintTransition(MOTION_DURATION.fast),
-                    }}
-                    hoverStyle={{ backgroundColor: palette().panelHover }}
-                    focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
-                  >
-                    <Icon name="chevron-left" size={20} color={palette().accent} />
-                  </View>
-                </If>
                 <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
                   <Text role="header" testID="settings-page-title" style={textStyle("pageTitle")}>
                     {tr(page().labelKey)}
@@ -9443,6 +9511,17 @@ export function SettingsScene() {
                     </Text>
                   </If>
                 </View>
+                <If when={settingsCompact()}>
+                  <Button
+                    label={tr("common.all")}
+                    variant="secondary"
+                    size="md"
+                    leadingIcon="list"
+                    accessibilityLabel="settings-compact-pages"
+                    style={{ minHeight: layout.touchTarget, flexShrink: 0 }}
+                    onPress={() => compactPageOpen.set(false)}
+                  />
+                </If>
               </View>
               <If when={settingsNotice()}>
                 {notice => (
@@ -9500,11 +9579,12 @@ function CompactListRow(props: {
         alignItems: "center",
         gap: space.md,
         cursor: "pointer",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
-      activeStyle={{ backgroundColor: palette().panelHover }}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -2 }}
+      activeStyle={{ ...tactileActiveStyle(0.985), backgroundColor: palette().panelHover }}
+      focusVisibleStyle={focusRingStyle()}
     >
       <If when={!props.first}>
         <RowSeparator edge="top" inset={SETTINGS_ROW_INSET} />
@@ -9533,14 +9613,11 @@ function settingsHitLabel(hit: SettingsSearchHit, prefix: string): string {
 
 /**
  * The compact (phone) entry: search, then the three scopes as grouped lists; a
- * row pushes its page full width with a back control.
+ * row pushes its page full width with a pages switcher.
  */
 function CompactSettingsList() {
   return (
     <View style={{ gap: layout.titleToSection }}>
-      <Text role="header" style={textStyle("pageTitle")}>
-        {tr("settings.title")}
-      </Text>
       <SearchInput
         value={settingsSearchQuery()}
         onChange={value => settingsSearchQuery.set(value)}
@@ -9549,6 +9626,8 @@ function CompactSettingsList() {
           if (first) openSettingsSearchHit(first);
         }}
         placeholder={tr("settings.search.placeholder")}
+        size="lg"
+        style={{ height: layout.touchTarget, minHeight: layout.touchTarget }}
         accessibilityLabel="settings-compact-search"
       />
       <If when={settingsSearchQuery().trim() !== ""}>
@@ -9604,7 +9683,7 @@ function CompactSettingsList() {
   );
 }
 
-/** One row of the left list: 30 high, 13/500, no icon; the open page is `chromeActive`. */
+/** One row of the left list: 30 high, 13/500, no icon; uses canvas-plane neutral selection fill. */
 function SettingsNavRow(props: {
   label: string;
   active: boolean;
@@ -9624,19 +9703,21 @@ function SettingsNavRow(props: {
         paddingVertical: props.secondary ? space.xs : 0,
         borderRadius: radii.md,
         borderCurve: "continuous",
-        backgroundColor: props.active ? palette().chromeActive : "transparent",
+        backgroundColor: props.active ? palette().buttonSecondaryHover : "transparent",
         justifyContent: "center",
         gap: space.hair,
         cursor: "pointer",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{ backgroundColor: props.active ? palette().chromeActive : palette().panelHover }}
-      activeStyle={{ backgroundColor: palette().chromeActive }}
-      focusVisibleStyle={{ outlineWidth: 2, outlineColor: palette().borderFocus, outlineOffset: -1 }}
+      hoverStyle={{ backgroundColor: props.active ? palette().buttonSecondaryHover : palette().surfaceSubtle }}
+      activeStyle={{ ...tactileActiveStyle(0.985), backgroundColor: palette().buttonSecondaryPressed }}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Text
         style={{
           ...textStyle("label", { color: props.active ? palette().text : palette().textSecondary }),
+          fontWeight: props.active ? "600" : "500",
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
@@ -9687,10 +9768,10 @@ function SettingsNavGroupLabel(props: { label: string; extra?: JSX.Element }) {
   );
 }
 
-/** The devices the Device scope may name: runtime devices, offline ones listed but disabled. */
+/** The devices the Device scope may name: runtime devices (including this device), offline ones listed but disabled. */
 function scopeDeviceOptions(): SelectDropdownOption<string>[] {
   return fleetDevices()
-    .filter(device => device.hostKind !== "cloud" && !device.isClientDevice)
+    .filter(device => device.hostKind !== "cloud" && device.hostKind !== "phone" && device.hostKind !== "browser")
     .map(device => {
       const offline = device.state === "offline" || device.state === "unreachable";
       return {
@@ -9728,11 +9809,11 @@ function DeviceScopeChip() {
       <SelectDropdown<string>
         size="sm"
         variant="ghost"
-        maxWidth={SETTINGS_LIST_WIDTH - space.x4l * 2}
+        maxWidth={SETTINGS_LIST_WIDTH - space.x4l}
         value={deviceContext() || null}
         options={scopeDeviceOptions()}
         accessibilityLabel="settings-scope-chip"
-        onChange={deviceId => void selectDeviceContext(deviceId)}
+        onChange={deviceId => requestDeviceScope(deviceId)}
       />
     </If>
   );
@@ -9858,32 +9939,41 @@ async function storeShortcut(definition: ShortcutDefinition, keystroke: string):
 
 function ShortcutRecorder(props: { definition: ShortcutDefinition }) {
   return (
-    <View
-      ref={node => node?.focus()}
-      focusable={true}
-      captureKeys="all"
-      accessibilityLabel={`shortcut-recorder-${props.definition.id}`}
-      onKeyDown={event => {
-        if (event.key === "Escape") {
-          shortcutRecording.set(null);
-          return;
-        }
-        const keystroke = keystrokeFromKeyEvent(event);
-        if (keystroke) void storeShortcut(props.definition, keystroke);
-      }}
-      onBlur={() => {
-        if (shortcutRecording() === props.definition.id) shortcutRecording.set(null);
-      }}
-      style={{
-        paddingHorizontal: space.sm,
-        minHeight: space.xxl + space.xs,
-        justifyContent: "center",
-        borderRadius: radii.md,
-        borderWidth: 1,
-        borderColor: palette().accent,
-      }}
-    >
-      <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("shortcuts.recording")}</Text>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+      <View
+        ref={node => node?.focus()}
+        focusable={true}
+        captureKeys="all"
+        accessibilityLabel={`shortcut-recorder-${props.definition.id}`}
+        onKeyDown={event => {
+          if (event.key === "Escape") {
+            shortcutRecording.set(null);
+            return;
+          }
+          const keystroke = keystrokeFromKeyEvent(event);
+          if (keystroke) void storeShortcut(props.definition, keystroke);
+        }}
+        onBlur={() => {
+          if (shortcutRecording() === props.definition.id) shortcutRecording.set(null);
+        }}
+        style={{
+          paddingHorizontal: space.sm,
+          minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+          justifyContent: "center",
+          borderRadius: radii.md,
+          borderWidth: 1,
+          borderColor: palette().accent,
+        }}
+      >
+        <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("shortcuts.recording")}</Text>
+      </View>
+      <IconButton
+        icon="close"
+        size="sm"
+        tooltip={tr("common.cancel")}
+        accessibilityLabel={`shortcut-cancel-${props.definition.id}`}
+        onPress={() => shortcutRecording.set(null)}
+      />
     </View>
   );
 }
@@ -9974,42 +10064,42 @@ const COMPUTER_PERMISSION_STATES: Record<string, MessageKey> = {
   unavailable: "computerUse.state.unavailable",
 };
 
-function ComputerPermissionRowView(props: { row: ComputerPermissionRow; first: boolean }) {
+function ComputerPermissionRowView(props: { row: () => ComputerPermissionRow; first: () => boolean }) {
   const label = () => {
-    const key = COMPUTER_PERMISSION_LABELS[props.row.kind];
-    return key ? tr(key) : props.row.kind;
+    const key = COMPUTER_PERMISSION_LABELS[props.row().kind];
+    return key ? tr(key) : props.row().kind;
   };
   const stateWord = () => {
-    const key = COMPUTER_PERMISSION_STATES[props.row.state];
-    return key ? tr(key) : props.row.state;
+    const key = COMPUTER_PERMISSION_STATES[props.row().state];
+    return key ? tr(key) : props.row().state;
   };
-  const needsAction = () => props.row.state === "required" || props.row.state === "session_required";
+  const needsAction = () => props.row().state === "required" || props.row().state === "session_required";
   return (
-    <SettingsRow label={label()} description={props.row.detail} first={props.first}>
+    <SettingsRow label={label()} description={props.row().detail} first={props.first()}>
       <View
-        style={{ flexDirection: "row", alignItems: "center", gap: space.sm, marginLeft: "auto" }}
-        accessibilityLabel={`computer-use-${props.row.kind}`}
+        style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, marginLeft: "auto" }}
+        accessibilityLabel={`computer-use-${props.row().kind}`}
       >
-        <Text style={textStyle("caption", { color: needsAction() ? palette().warning : palette().textMuted })}>
+        <Text style={textStyle("caption", { color: needsAction() ? stateColor("needs_you") : palette().textMuted })}>
           {stateWord()}
         </Text>
-        <If when={needsAction() && props.row.requestable}>
+        <If when={needsAction() && props.row().requestable}>
           <Button
             label={tr("computerUse.request")}
             variant="secondary"
             size="sm"
-            loading={computerUseBusy() === props.row.kind}
-            accessibilityLabel={`computer-use-request-${props.row.kind}`}
-            onPress={() => void requestComputerPermission(props.row.kind)}
+            loading={computerUseBusy() === props.row().kind}
+            accessibilityLabel={`computer-use-request-${props.row().kind}`}
+            onPress={() => void requestComputerPermission(props.row().kind)}
           />
         </If>
-        <If when={needsAction() && Boolean(props.row.settingsUrl)}>
+        <If when={needsAction() && Boolean(props.row().settingsUrl)}>
           <Button
             label={tr("computerUse.openSettings")}
             variant="ghost"
             size="sm"
-            accessibilityLabel={`computer-use-open-${props.row.kind}`}
-            onPress={() => void openComputerUseSettings(props.row.kind)}
+            accessibilityLabel={`computer-use-open-${props.row().kind}`}
+            onPress={() => void openComputerUseSettings(props.row().kind)}
           />
         </If>
       </View>
@@ -10048,7 +10138,7 @@ function ComputerUseSection() {
             <SettingsRow label={tr("computerUse.loading")} first={true} />
           </If>
           <Each of={computerUseStatus()?.permissions ?? []} key={row => row.kind}>
-            {(row, index) => <ComputerPermissionRowView row={row()} first={index() === 0} />}
+            {(row, index) => <ComputerPermissionRowView row={row} first={() => index() === 0} />}
           </Each>
         </SettingsGroup>
       </If>
@@ -10098,21 +10188,21 @@ function ConfigImportDialog() {
       accessibilityLabel="config-import-dialog"
       onClose={() => closeConfigImport()}
       footer={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm, flex: 1 }}>
           <Button
             label={tr("configTransfer.chooseFile")}
             variant="ghost"
-            size="sm"
+            size="md"
             leadingIcon="file"
             accessibilityLabel="config-import-choose"
             onPress={() => void pickConfigFile().catch(() => undefined)}
           />
           <View style={{ flex: 1 }} />
-          <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => closeConfigImport()} />
+          <Button label={tr("common.cancel")} variant="secondary" size="md" onPress={() => closeConfigImport()} />
           <Button
             label={tr("configTransfer.import")}
             variant="primary"
-            size="sm"
+            size="md"
             loading={configTransferBusy() === "import"}
             disabled={!configImportText().trim()}
             accessibilityLabel="config-import-confirm"
@@ -10135,7 +10225,7 @@ function ConfigImportDialog() {
           onChange={value => configImportText.set(value)}
         />
         <If when={configImportError()}>
-          <Text accessibilityLabel="config-import-error" style={textStyle("caption", { color: palette().danger })}>
+          <Text accessibilityLabel="config-import-error" style={textStyle("caption", { color: stateColor("failed") })}>
             {configImportErrorText()}
           </Text>
         </If>

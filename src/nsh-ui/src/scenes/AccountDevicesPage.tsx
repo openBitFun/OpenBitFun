@@ -2,8 +2,9 @@
 //
 // The account's devices as quiet rows (a device opens its page), one "Open on
 // your phone" row whose address and QR open in a sheet, and the chat apps
-// (Telegram, Feishu, WeChat) this device's bot connector serves. Everything is the backend's answer: the fleet navigator
-// for devices, the connector store for chat apps.
+// (Telegram, Feishu, WeChat) this device's connector serves. Everything is the
+// backend's answer: the fleet navigator for devices, the connector store for
+// chat apps.
 
 import { signal, Text, View } from "nsh";
 import {
@@ -39,24 +40,39 @@ import {
 import { fleetDevices } from "../fleetStore";
 import { localizeHostError, tr, type MessageKey } from "../i18n";
 import * as navigation from "../state";
-import { fontMono, layout, palette, radii, space, textStyle } from "../theme";
-import { DeviceGlyph } from "../ui/fleet";
+import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textStyle, touchSlop } from "../theme";
+import { DeviceGlyph, deviceException, stateColor } from "../ui/fleet";
 import { UseOnPhonePanel } from "./UseOnPhonePanel";
-import { ObpPairingCard } from "./ObpPairingCard";
 import { Icon, type IconName } from "../ui/icons";
+import { MOTION_DURATION, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { InsetGroup, InsetRow, MoreMenu, QrCodeView, StudioEmpty, StudioSection } from "../ui/studio";
 import { ModalDialog, type DropdownMenuItem } from "../ui/overlays";
-import { Button, InlineBanner, InputBox, StatusDot, StatusPill, ToggleSwitch } from "../ui/primitives";
+import { Button, InlineBanner, InputBox, ToggleSwitch, focusRingStyle } from "../ui/primitives";
 
 type ChannelId = "telegram" | "feishu" | "weixin";
 
 const activeChannelModal = signal<ChannelId | null>(null);
+const connectorBannerOwner = signal<ChannelId | "page">("page");
 const phoneSheetOpen = signal(false);
 
-function isBotActive(keyword: string): boolean {
-  const bot = (connectorStatus()?.botConnected ?? "").toLowerCase();
-  if (!bot) return false;
-  return bot.includes(keyword);
+function openChannelModal(channel: ChannelId): void {
+  connectorNotice.set("");
+  connectorError.set("");
+  connectorBannerOwner.set(channel);
+  activeChannelModal.set(channel);
+}
+
+function closeChannelModal(): void {
+  activeChannelModal.set(null);
+  connectorBannerOwner.set("page");
+  connectorNotice.set("");
+  connectorError.set("");
+}
+
+function isChannelActive(keyword: string): boolean {
+  const connected = (connectorStatus()?.botConnected ?? "").toLowerCase();
+  if (!connected) return false;
+  return connected.includes(keyword);
 }
 
 /** A wrapping secondary line under an inset row's label. */
@@ -76,7 +92,6 @@ function ChannelRow(props: {
   icon: IconName;
   label: string;
   description: string;
-  active: boolean;
   accessibilityLabel: string;
   onPress: () => void;
 }) {
@@ -86,7 +101,6 @@ function ChannelRow(props: {
       label={props.label}
       detail={props.description}
       chevron
-      trailing={props.active ? <StatusDot kind="success" size={7} /> : undefined}
       accessibilityLabel={props.accessibilityLabel}
       onPress={props.onPress}
     />
@@ -101,7 +115,10 @@ function channelMenuItems(): DropdownMenuItem[] {
       icon: "refresh",
       disabled: connectorsLoading(),
       accessibilityLabel: "connectors-refresh",
-      onSelect: () => void loadConnectors(),
+      onSelect: () => {
+        connectorBannerOwner.set("page");
+        void loadConnectors();
+      },
     },
     {
       id: "disclaimer",
@@ -118,18 +135,16 @@ function ChannelsSection() {
 
   return (
     <StudioSection
-      title={tr("devices.polish.channelsSection")}
+      title={tr("devices.chatAppsTitle")}
       accessibilityLabel="channels-section"
       footnote={connectorsSupported() === true ? tr("devices.channelsSubtitle") : undefined}
       trailing={
-        <>
-          <MoreMenu
-            accessibilityLabel="channels-menu"
-            tooltip={tr("common.actions")}
-            minWidth={200}
-            items={channelMenuItems()}
-          />
-        </>
+        <MoreMenu
+          accessibilityLabel="channels-menu"
+          tooltip={tr("common.actions")}
+          minWidth={200}
+          items={channelMenuItems()}
+        />
       }
     >
       <View style={{ gap: space.md, minWidth: 0 }}>
@@ -141,11 +156,11 @@ function ChannelsSection() {
           />
         </If>
         <If when={connectorsSupported() === true}>
-          <If when={connectorNotice()}>
-            {notice => <InlineBanner tone="success" message={localizeHostError(notice())} />}
+          <If when={activeChannelModal() === null && connectorBannerOwner() === "page" && connectorNotice() ? connectorNotice() : ""}>
+            {notice => <InlineBanner tone="success" message={localizeHostError(notice())} onDismiss={() => connectorNotice.set("")} />}
           </If>
-          <If when={connectorError()}>
-            {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
+          <If when={activeChannelModal() === null && connectorBannerOwner() === "page" && connectorError() ? connectorError() : ""}>
+            {err => <InlineBanner tone="danger" message={localizeHostError(err())} onDismiss={() => connectorError.set("")} />}
           </If>
           <InsetGroup accessibilityLabel="channels-list">
             <InsetRow
@@ -161,31 +176,33 @@ function ChannelsSection() {
                     value={connectorStatus()?.remoteControlAllowed === true}
                     disabled={remoteControlSaving()}
                     accessibilityLabel="remote-control-allowed"
-                    onChange={next => void setRemoteControlAllowed(next)}
+                    onChange={next => {
+                      connectorBannerOwner.set("page");
+                      void setRemoteControlAllowed(next);
+                    }}
                   />
                 ) : undefined
               }
             />
             <InsetRow
-              leading={
-                <View style={{ width: 16, alignItems: "center" }}>
-                  <StatusDot kind={connectorStatus()?.botConnected ? "success" : "muted"} size={7} />
-                </View>
-              }
+              icon="message-circle"
               label={
                 connectorStatus()?.botConnected
-                  ? tr("devices.activeBot", { bot: connectorStatus()!.botConnected! })
+                  ? tr("devices.chatAppActive", { name: connectorStatus()!.botConnected! })
                   : tr("devices.noBotConnected")
               }
               trailing={
                 connectorStatus()?.botConnected ? (
                   <Button
-                    label={tr("devices.stopBot")}
+                    label={tr("devices.chatAppDisconnect")}
                     variant="ghost"
                     size="sm"
                     accessibilityLabel="connector-bot-stop"
                     disabled={connectorBusy()}
-                    onPress={() => void stopBotConnector()}
+                    onPress={() => {
+                      connectorBannerOwner.set("page");
+                      void stopBotConnector();
+                    }}
                   />
                 ) : undefined
               }
@@ -197,7 +214,10 @@ function ChannelsSection() {
                   value={botVerboseMode()}
                   accessibilityLabel="connector-bot-verbose"
                   disabled={connectorBusy()}
-                  onChange={next => void setBotVerboseConnectorMode(next)}
+                  onChange={next => {
+                    connectorBannerOwner.set("page");
+                    void setBotVerboseConnectorMode(next);
+                  }}
                 />
               }
             />
@@ -205,37 +225,34 @@ function ChannelsSection() {
               icon="message-circle"
               label={tr("devices.telegram")}
               description={
-                isBotActive("telegram")
+                isChannelActive("telegram")
                   ? tr("devices.channelConnected", { bot: connectorStatus()?.botConnected ?? "" })
                   : tr("devices.telegramDesc")
               }
-              active={isBotActive("telegram")}
               accessibilityLabel="channel-toggle-telegram"
-              onPress={() => activeChannelModal.set("telegram")}
+              onPress={() => openChannelModal("telegram")}
             />
             <ChannelRow
               icon="globe"
               label={tr("devices.feishu")}
               description={
-                isBotActive("feishu") || isBotActive("lark")
+                isChannelActive("feishu") || isChannelActive("lark")
                   ? tr("devices.channelConnected", { bot: connectorStatus()?.botConnected ?? "" })
                   : tr("devices.feishuDesc")
               }
-              active={isBotActive("feishu") || isBotActive("lark")}
               accessibilityLabel="channel-toggle-feishu"
-              onPress={() => activeChannelModal.set("feishu")}
+              onPress={() => openChannelModal("feishu")}
             />
             <ChannelRow
               icon="smartphone"
               label={tr("devices.wechat")}
               description={
-                isBotActive("weixin") || isBotActive("wechat")
+                isChannelActive("weixin") || isChannelActive("wechat")
                   ? tr("devices.channelConnected", { bot: connectorStatus()?.botConnected ?? "" })
                   : tr("devices.wechatDesc")
               }
-              active={isBotActive("weixin") || isBotActive("wechat")}
               accessibilityLabel="channel-toggle-weixin"
-              onPress={() => activeChannelModal.set("weixin")}
+              onPress={() => openChannelModal("weixin")}
             />
           </InsetGroup>
         </If>
@@ -248,22 +265,25 @@ function ChannelsSection() {
         subtitle={tr("devices.telegramSubtitle")}
         size="sm"
         accessibilityLabel="connector-modal-telegram"
-        onClose={() => activeChannelModal.set(null)}
+        onClose={closeChannelModal}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.done")}
               variant="ghost"
-              size="sm"
-              onPress={() => activeChannelModal.set(null)}
+              size="md"
+              onPress={closeChannelModal}
             />
             <Button
               label={tr("devices.saveConnectTelegram")}
               variant="primary"
-              size="sm"
+              size="md"
               accessibilityLabel="connector-telegram-connect"
               disabled={connectorBusy()}
-              onPress={() => void saveAndConnectTelegram()}
+              onPress={() => {
+                connectorBannerOwner.set("telegram");
+                void saveAndConnectTelegram();
+              }}
             />
           </View>
         }
@@ -279,10 +299,10 @@ function ChannelsSection() {
             accessibilityLabel="connector-telegram-token"
             onChange={val => telegramToken.set(val)}
           />
-          <If when={connectorNotice()}>
+          <If when={connectorBannerOwner() === "telegram" && connectorNotice() ? connectorNotice() : ""}>
             {msg => <InlineBanner tone="success" message={localizeHostError(msg())} />}
           </If>
-          <If when={connectorError()}>
+          <If when={connectorBannerOwner() === "telegram" && connectorError() ? connectorError() : ""}>
             {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
           </If>
         </View>
@@ -295,22 +315,25 @@ function ChannelsSection() {
         subtitle={tr("devices.feishuSubtitle")}
         size="md"
         accessibilityLabel="connector-modal-feishu"
-        onClose={() => activeChannelModal.set(null)}
+        onClose={closeChannelModal}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
             <Button
               label={tr("common.done")}
               variant="ghost"
-              size="sm"
-              onPress={() => activeChannelModal.set(null)}
+              size="md"
+              onPress={closeChannelModal}
             />
             <Button
               label={tr("devices.saveConnectFeishu")}
               variant="primary"
-              size="sm"
+              size="md"
               accessibilityLabel="connector-feishu-connect"
               disabled={connectorBusy()}
-              onPress={() => void saveAndConnectFeishu()}
+              onPress={() => {
+                connectorBannerOwner.set("feishu");
+                void saveAndConnectFeishu();
+              }}
             />
           </View>
         }
@@ -334,42 +357,47 @@ function ChannelsSection() {
             accessibilityLabel="connector-feishu-app-secret"
             onChange={val => feishuAppSecret.set(val)}
           />
-          <If when={connectorNotice()}>
+          <If when={connectorBannerOwner() === "feishu" && connectorNotice() ? connectorNotice() : ""}>
             {msg => <InlineBanner tone="success" message={localizeHostError(msg())} />}
           </If>
-          <If when={connectorError()}>
+          <If when={connectorBannerOwner() === "feishu" && connectorError() ? connectorError() : ""}>
             {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
           </If>
         </View>
       </ModalDialog>
 
-      {/* WeChat Modal */}
+      {/* WeChat Modal — strictly one primary CTA per step */}
       <ModalDialog
         open={activeChannelModal() === "weixin"}
         title={tr("devices.wechatBot")}
         subtitle={tr("devices.wechatSubtitle")}
         size="md"
         accessibilityLabel="connector-modal-weixin"
-        onClose={() => activeChannelModal.set(null)}
+        onClose={closeChannelModal}
         footer={
-          <Button
-            label={tr("common.done")}
-            variant="ghost"
-            size="sm"
-            onPress={() => activeChannelModal.set(null)}
-          />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
+            <Button
+              label={tr("common.done")}
+              variant="ghost"
+              size="md"
+              onPress={closeChannelModal}
+            />
+          </View>
         }
       >
         <View style={{ gap: space.md }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("devices.startWechatQr")}
-              variant="primary"
-              size="sm"
+              variant={weixinQr() ? "secondary" : "primary"}
+              size="md"
               leadingIcon="smartphone"
               accessibilityLabel="connector-weixin-qr-start"
               disabled={connectorBusy()}
-              onPress={() => void startWeixinQr()}
+              onPress={() => {
+                connectorBannerOwner.set("weixin");
+                void startWeixinQr();
+              }}
             />
           </View>
           <If when={weixinQr()}>
@@ -408,25 +436,31 @@ function ChannelsSection() {
                 <If when={qr().status === "need_verify_code"}>
                   <View style={{ gap: space.sm }}>
                     <Text style={textStyle("caption")}>{tr("devices.weixinVerifyHint")}</Text>
-                    <View style={{ flexDirection: "row", alignItems: "flex-end", gap: space.sm }}>
-                      <View style={{ flex: 1, minWidth: 0 }}>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: space.sm }}>
+                      <View style={{ flex: 1, minWidth: 140 }}>
                         <InputBox
                           value={weixinVerifyCode()}
                           placeholder={tr("devices.weixinVerifyPlaceholder")}
                           accessibilityLabel="connector-weixin-verify-code"
                           onChange={value => weixinVerifyCode.set(value)}
                           onSubmit={() => {
-                            if (weixinVerifyCode().trim()) void pollWeixinQr();
+                            if (weixinVerifyCode().trim()) {
+                              connectorBannerOwner.set("weixin");
+                              void pollWeixinQr();
+                            }
                           }}
                         />
                       </View>
                       <Button
                         label={tr("devices.weixinVerifySubmit")}
                         variant="primary"
-                        size="sm"
+                        size="md"
                         accessibilityLabel="connector-weixin-verify-submit"
                         disabled={connectorBusy() || !weixinVerifyCode().trim()}
-                        onPress={() => void pollWeixinQr()}
+                        onPress={() => {
+                          connectorBannerOwner.set("weixin");
+                          void pollWeixinQr();
+                        }}
                       />
                     </View>
                   </View>
@@ -441,7 +475,7 @@ function ChannelsSection() {
                         borderCurve: "continuous",
                         borderWidth: 1,
                         borderColor: palette().borderSubtle,
-                        backgroundColor: palette().canvas,
+                        backgroundColor: palette().surfaceTertiary,
                       }}
                     >
                       <Text
@@ -451,6 +485,7 @@ function ChannelsSection() {
                           ...textStyle("caption", { color: palette().textSecondary }),
                           numberOfLines: 2,
                           textOverflow: "ellipsis-middle",
+                          userSelect: "text",
                         }}
                       >
                         {url()}
@@ -473,25 +508,27 @@ function ChannelsSection() {
                   </If>
                   <Button
                     label={tr("devices.checkWechatQr")}
-                    variant="primary"
+                    variant={qr().status === "need_verify_code" ? "secondary" : "primary"}
                     size="sm"
                     accessibilityLabel="connector-weixin-qr-poll"
                     disabled={connectorBusy()}
-                    onPress={() => void pollWeixinQr()}
+                    onPress={() => {
+                      connectorBannerOwner.set("weixin");
+                      void pollWeixinQr();
+                    }}
                   />
                 </View>
               </View>
             )}
           </If>
-          <If when={connectorNotice()}>
+          <If when={connectorBannerOwner() === "weixin" && connectorNotice() ? connectorNotice() : ""}>
             {msg => <InlineBanner tone="success" message={localizeHostError(msg())} />}
           </If>
-          <If when={connectorError()}>
+          <If when={connectorBannerOwner() === "weixin" && connectorError() ? connectorError() : ""}>
             {err => <InlineBanner tone="danger" message={localizeHostError(err())} />}
           </If>
         </View>
       </ModalDialog>
-
     </StudioSection>
   );
 }
@@ -560,11 +597,11 @@ function RemoteDisclaimerModal() {
       accessibilityLabel="remote-disclaimer-modal"
       onClose={() => declineRemoteDisclaimer()}
       footer={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
           <Button
             label={remoteDisclaimerAgreed() ? tr("common.close") : tr("devices.remote.disclaimerDecline")}
             variant="ghost"
-            size="sm"
+            size="md"
             accessibilityLabel="remote-disclaimer-decline"
             onPress={() => declineRemoteDisclaimer()}
           />
@@ -572,7 +609,7 @@ function RemoteDisclaimerModal() {
             <Button
               label={tr("devices.remote.disclaimerAgree")}
               variant="primary"
-              size="sm"
+              size="md"
               accessibilityLabel="remote-disclaimer-agree"
               onPress={() => void agreeRemoteDisclaimer()}
             />
@@ -581,16 +618,15 @@ function RemoteDisclaimerModal() {
       }
     >
       <View style={{ gap: space.lg }}>
-        <View style={{ flexDirection: "row" }}>
-          <StatusPill
-            label={
-              remoteDisclaimerAgreed()
-                ? tr("devices.remote.disclaimerStatusAgreed")
-                : tr("devices.remote.disclaimerStatusPending")
-            }
-            kind={remoteDisclaimerAgreed() ? "success" : "warning"}
-          />
-        </View>
+        <Text
+          style={textStyle("caption", {
+            color: remoteDisclaimerAgreed() ? palette().textMuted : stateColor("needs_you"),
+          })}
+        >
+          {remoteDisclaimerAgreed()
+            ? tr("devices.remote.disclaimerStatusAgreed")
+            : tr("devices.remote.disclaimerStatusPending")}
+        </Text>
         <Text
           style={{
             ...textStyle("label", { color: palette().textSecondary }),
@@ -604,11 +640,29 @@ function RemoteDisclaimerModal() {
         <View
           role="button"
           accessibilityLabel="remote-disclaimer-details"
+          accessibilityState={{ expanded: detailsOpen() }}
+          hitSlop={touchSlop(controlHeight.sm)}
           onPress={() => detailsOpen.update(open => !open)}
-          style={{ flexDirection: "row", alignItems: "center", gap: space.chip, cursor: "pointer" }}
+          hoverStyle={{ backgroundColor: palette().panelHover }}
+          activeStyle={tactileActiveStyle(0.98)}
+          focusVisibleStyle={focusRingStyle()}
+          style={{
+            alignSelf: "flex-start",
+            minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+            paddingHorizontal: space.sm,
+            marginLeft: -space.sm,
+            borderRadius: radii.md,
+            borderCurve: "continuous",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.xs,
+            cursor: "pointer",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
         >
           <Icon name={detailsOpen() ? "chevron-down" : "chevron-right"} size={14} color={palette().textMuted} />
-          <Text style={textStyle("label", { color: palette().accent })}>
+          <Text style={textStyle("label", { color: palette().textSecondary })}>
             {tr("devices.remote.disclaimerFullDetails")}
           </Text>
         </View>
@@ -620,68 +674,74 @@ function RemoteDisclaimerModal() {
   );
 }
 
-/** The exception words a device row carries; a healthy device shows none. */
-function deviceException(state: string): { text: string; warning: boolean } | null {
-  if (state === "offline" || state === "unreachable") return { text: tr("state.offline"), warning: false };
-  if (state === "update_required") return { text: tr("state.updateNeeded"), warning: true };
-  return null;
-}
-
 function AccountDevicesSection() {
   return (
     <StudioSection title={tr("settings.devicesPage.devices")} accessibilityLabel="account-devices-section">
-      <If
-        when={fleetDevices().length > 0}
-        else={<Text style={textStyle("caption", { color: palette().textMuted })}>{tr("settings.devicesPage.none")}</Text>}
-      >
-        <InsetGroup accessibilityLabel="account-devices-list">
-          <Each of={fleetDevices()} key={device => device.deviceId}>
-            {(device, index) => (
-              <InsetRow
-                first={index() === 0}
-                leading={<DeviceGlyph kind={device().hostKind} size={16} />}
-                label={device().name}
-                trailing={
-                  deviceException(device().state) ? (
-                    <Text
-                      style={textStyle("caption", {
-                        color: deviceException(device().state)!.warning ? palette().warning : palette().textMuted,
-                      })}
-                    >
-                      {deviceException(device().state)!.text}
-                    </Text>
-                  ) : undefined
-                }
-                chevron
-                accessibilityLabel={`account-device-${device().deviceId}`}
-                onPress={() => navigation.openDevicePage(device().deviceId)}
-              />
-            )}
-          </Each>
+      <View style={{ gap: space.md, minWidth: 0 }}>
+        <If
+          when={fleetDevices().length > 0}
+          else={<Text style={textStyle("caption", { color: palette().textMuted })}>{tr("settings.devicesPage.none")}</Text>}
+        >
+          <InsetGroup accessibilityLabel="account-devices-list">
+            <Each of={fleetDevices()} key={device => device.deviceId}>
+              {(device, index) => {
+                const exception = () => deviceException(device().state);
+                return (
+                  <InsetRow
+                    first={index() === 0}
+                    leading={<DeviceGlyph kind={device().hostKind} size={16} />}
+                    label={device().name}
+                    trailing={
+                      exception() ? (
+                        <Text
+                          style={textStyle("caption", {
+                            color: exception() === "update_required" ? stateColor("needs_you") : stateColor("idle"),
+                          })}
+                        >
+                          {exception() === "update_required" ? tr("state.updateNeeded") : tr("state.offline")}
+                        </Text>
+                      ) : undefined
+                    }
+                    chevron
+                    accessibilityLabel={`account-device-${device().deviceId}`}
+                    onPress={() => navigation.openDevicePage(device().deviceId)}
+                  />
+                );
+              }}
+            </Each>
+          </InsetGroup>
+        </If>
+        <InsetGroup accessibilityLabel="account-phone-group">
+          <InsetRow
+            first
+            icon="smartphone"
+            label={tr("settings.devicesPage.phone")}
+            chevron
+            accessibilityLabel="account-open-on-phone"
+            onPress={() => phoneSheetOpen.set(true)}
+          />
         </InsetGroup>
-      </If>
-      <View style={{ height: space.sm }} />
-      <InsetGroup accessibilityLabel="account-phone-group">
-        <InsetRow
-          first
-          icon="smartphone"
-          label={tr("settings.devicesPage.phone")}
-          chevron
-          accessibilityLabel="account-open-on-phone"
-          onPress={() => phoneSheetOpen.set(true)}
-        />
-      </InsetGroup>
+      </View>
       <ModalDialog
         open={phoneSheetOpen()}
         title={tr("settings.devicesPage.phone")}
         size="md"
         accessibilityLabel="account-phone-sheet"
         onClose={() => phoneSheetOpen.set(false)}
+        footer={
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, flex: 1 }}>
+            <Button
+              label={tr("common.close")}
+              variant="ghost"
+              size="md"
+              accessibilityLabel="account-phone-sheet-close"
+              onPress={() => phoneSheetOpen.set(false)}
+            />
+          </View>
+        }
       >
-        <UseOnPhonePanel />
+        <UseOnPhonePanel embedded={true} />
       </ModalDialog>
-      {/* Browsers that drive this computer (signed-in clients), each revocable here. */}
-      <ObpPairingCard />
     </StudioSection>
   );
 }

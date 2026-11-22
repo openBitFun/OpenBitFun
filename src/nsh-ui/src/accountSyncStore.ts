@@ -51,6 +51,11 @@ export const accountSync = signal<AccountSyncStatus | null>(null);
 export const accountSyncLoad = signal<AccountSyncLoad>("idle");
 export const accountSyncBusy = signal(false);
 export const accountSyncNote = signal("");
+export const accountSyncWriteError = signal("");
+
+export function clearAccountSyncWriteError(): void {
+  accountSyncWriteError.set("");
+}
 
 function isUnknownCommand(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
@@ -91,6 +96,7 @@ function subscribe(): void {
 export async function loadAccountSync(): Promise<void> {
   subscribe();
   if (accountSyncLoad() === "idle") accountSyncLoad.set("loading");
+  accountSyncWriteError.set("");
   try {
     const status = await invokeCommand<AccountSyncStatus>("account_settings_sync_status", {});
     accountSync.set(status ?? null);
@@ -107,12 +113,15 @@ export async function loadAccountSync(): Promise<void> {
 export async function setAccountSyncEnabled(enabled: boolean): Promise<void> {
   if (accountSyncBusy()) return;
   accountSyncBusy.set(true);
+  accountSyncWriteError.set("");
   try {
     const status = await invokeCommand<AccountSyncStatus>("account_settings_sync_set", { enabled });
     accountSync.set(status ?? null);
     accountSyncNote.set("");
   } catch (error) {
-    accountSyncNote.set(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    accountSyncNote.set(message);
+    accountSyncWriteError.set(message.trim() || "save_failed");
   } finally {
     accountSyncBusy.set(false);
   }

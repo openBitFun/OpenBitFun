@@ -95,3 +95,20 @@ test("the appearance is kept on the host, and an applied account change repaints
   });
   await app.waitFor("Showing the dark scheme");
 });
+
+test("Account › Profile surfaces an inline error when saving the sync switch fails", async () => {
+  const { app, backend } = await openSettings();
+  const baseInvoke = backend.handlers["openbitfun.invoke"];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const { action } = data as { action?: string };
+    if (action === "account_settings_sync_set") {
+      return { ok: false, error: "sync store read-only" };
+    }
+    return baseInvoke(data);
+  };
+  await app.press("nav-settings-page-profile");
+  await app.waitFor("account-sync-toggle");
+  await app.press("account-sync-toggle");
+  await app.waitFor("account-sync-write-failed");
+  expect(app.shows("text:sync store read-only")).toBe(true);
+});
