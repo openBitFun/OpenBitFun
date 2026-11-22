@@ -77,6 +77,22 @@ async fn run_dispatch_verb_canonical(
         "submit" => {
             serde_json::to_value(submit(parse(input)?).await?).context("encode submit response")
         }
+        "continue" => serde_json::to_value(continue_job(parse(input)?).await?)
+            .context("encode follow-up turn response"),
+        "query" => query(parse(input)?).await.context("encode query response"),
+        _ => {
+            let verb_owned = verb.to_string();
+            tokio::task::spawn_blocking(move || run_sync_dispatch_verb(&verb_owned, input))
+                .await
+                .with_context(|| format!("dispatch verb '{verb}' blocking task failed"))?
+        }
+    }
+}
+
+/// Runs synchronous dispatch verbs (Git/flock/ps/fsync loops) on Tokio's
+/// blocking pool so async worker threads are never stalled.
+fn run_sync_dispatch_verb(verb: &str, input: serde_json::Value) -> Result<serde_json::Value> {
+    match verb {
         "status" => status(parse(input)?).context("encode status response"),
         "cancel" => serde_json::to_value(cancel(parse(input)?)?).context("encode cancel response"),
         "list" => {
@@ -94,9 +110,6 @@ async fn run_dispatch_verb_canonical(
             }
         }
         "append" => serde_json::to_value(append(parse(input)?)?).context("encode appended message"),
-        "continue" => serde_json::to_value(continue_job(parse(input)?).await?)
-            .context("encode follow-up turn response"),
-        "query" => query(parse(input)?).await.context("encode query response"),
         "workspace-provision" => serde_json::to_value(workspace::provision(parse::<
             DispatchWorkspaceProvisionRequest,
         >(input)?)?)
@@ -267,16 +280,21 @@ pub(crate) fn run_workspace_sync(job_id: String) -> Result<()> {
 
 async fn probe(request: DispatchProbeRequest) -> Result<DispatchProbeResponse> {
     // Resolve the workspace before the (slower) model inspection so a bad
-    // id fails fast.
-    let workspace = match (&request.workspace_path, &request.workspace_id) {
+    // id fails fast. Offload git/filesystem probes off the async runtime.
+    let workspace = match (request.workspace_path, request.workspace_id) {
         (Some(_), Some(_)) => bail!("dispatch probe takes workspacePath or workspaceId, not both"),
-        (Some(path), None) => Some(inspect_workspace(path)?),
-        (None, Some(workspace_id)) => {
+        (Some(path), None) => tokio::task::spawn_blocking(move || inspect_workspace(&path))
+            .await
+            .context("dispatch probe workspace inspection task failed")??
+            .into(),
+        (None, Some(workspace_id)) => tokio::task::spawn_blocking(move || {
             let catalog = source::default_workspace_catalog()?;
-            let resolved = source::resolve_catalog_workspace(&catalog, workspace_id)?;
+            let resolved = source::resolve_catalog_workspace(&catalog, &workspace_id)?;
             let probe = inspect_workspace(&resolved.root.to_string_lossy())?;
-            Some(source::probe_repository_facts(probe, &resolved))
-        }
+            Ok::<_, anyhow::Error>(Some(source::probe_repository_facts(probe, &resolved)))
+        })
+        .await
+        .context("dispatch probe catalog workspace task failed")??,
         (None, None) => None,
     };
     let readiness = inspect_model_readiness().await?;
@@ -397,17 +415,33 @@ async fn submit(mut request: DispatchSubmitRequest) -> Result<DispatchSubmitResp
     // fingerprint would incorrectly turn that safe retry into a conflict.
     intent.setup_audit.clear();
     let store = DispatchStore::open_default()?;
-    if let Some((record, state)) = store.load_existing_job_for_intent(&intent)? {
-        ensure_worker_spawned(&store, &record.request.job_id, state.state)?;
-        return Ok(DispatchSubmitResponse {
-            accepted: true,
-            job_id: record.request.job_id,
-            session_id: record.request.session_id,
-            state: state.state,
-        });
+    let existing = {
+        let store = store.clone();
+        let intent = intent.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<DispatchSubmitResponse>> {
+            if let Some((record, state)) = store.load_existing_job_for_intent(&intent)? {
+                ensure_worker_spawned(&store, &record.request.job_id, state.state)?;
+                return Ok(Some(DispatchSubmitResponse {
+                    accepted: true,
+                    job_id: record.request.job_id,
+                    session_id: record.request.session_id,
+                    state: state.state,
+                }));
+            }
+            Ok(None)
+        })
+        .await
+        .context("dispatch submit intent check task failed")??
+    };
+    if let Some(response) = existing {
+        return Ok(response);
     }
 
-    let canonical_workspace = canonical_workspace(&request.workspace_path)?;
+    let workspace_path = request.workspace_path.clone();
+    let canonical_workspace =
+        tokio::task::spawn_blocking(move || canonical_workspace(&workspace_path))
+            .await
+            .context("dispatch submit workspace canonicalization task failed")??;
     request.workspace_path = canonical_workspace.to_string_lossy().to_string();
     let selected_model = select_ready_model(request.model.as_deref()).await?;
     validate_reasoning_preset(&selected_model, request.reasoning_preset.as_deref()).await?;
@@ -422,13 +456,19 @@ async fn submit(mut request: DispatchSubmitRequest) -> Result<DispatchSubmitResp
         .unwrap_or_else(|| truncate_chars(request.prompt.trim(), 120));
     request.title = Some(title.clone());
 
-    let outcome = store.create_job_with_intent(intent, request.clone(), title)?;
-    let state = match outcome {
-        CreateJobOutcome::Created(state) | CreateJobOutcome::Existing(state) => {
-            ensure_worker_spawned(&store, &request.job_id, state.state)?;
-            state
-        }
-    };
+    let request_for_store = request.clone();
+    let state = tokio::task::spawn_blocking(move || -> Result<DispatchStateRecord> {
+        let outcome = store.create_job_with_intent(intent, request_for_store.clone(), title)?;
+        let state = match outcome {
+            CreateJobOutcome::Created(state) | CreateJobOutcome::Existing(state) => {
+                ensure_worker_spawned(&store, &request_for_store.job_id, state.state)?;
+                state
+            }
+        };
+        Ok(state)
+    })
+    .await
+    .context("dispatch submit persistence task failed")??;
     Ok(DispatchSubmitResponse {
         accepted: true,
         job_id: request.job_id,
@@ -485,10 +525,26 @@ async fn continue_job(request: DispatchContinueRequest) -> Result<DispatchContin
         return Err(runner::unsupported_error());
     }
     let store = DispatchStore::open_default()?;
-    let job = store.load_job(&request.job_id)?;
-    // A worker may still be settling the previous turn's terminal state.
-    reconcile_worker_liveness(&store, &request.job_id)?;
-    let state = if let Some(state) = store.load_existing_follow_up_for_intent(&request)? {
+    let (job, existing_state) = {
+        let store = store.clone();
+        let request_for_check = request.clone();
+        tokio::task::spawn_blocking(move || {
+            let job = store.load_job(&request_for_check.job_id)?;
+            // A worker may still be settling the previous turn's terminal state.
+            reconcile_worker_liveness(&store, &request_for_check.job_id)?;
+            let existing = store.load_existing_follow_up_for_intent(&request_for_check)?;
+            Ok::<_, anyhow::Error>((job, existing))
+        })
+        .await
+        .context("dispatch continue pre-check task failed")??
+    };
+    let state = if let Some(state) = existing_state {
+        let store = store.clone();
+        let job_id = request.job_id.clone();
+        let state_value = state.state;
+        tokio::task::spawn_blocking(move || ensure_worker_spawned(&store, &job_id, state_value))
+            .await
+            .context("dispatch continue spawn task failed")??;
         state
     } else {
         // Validate before acceptance, just as submit does. The worker still
@@ -503,9 +559,15 @@ async fn continue_job(request: DispatchContinueRequest) -> Result<DispatchContin
                 .or(job.request.reasoning_preset.as_deref()),
         )
         .await?;
-        store.queue_follow_up_turn(&request)?
+        let request_for_queue = request.clone();
+        tokio::task::spawn_blocking(move || -> Result<DispatchStateRecord> {
+            let state = store.queue_follow_up_turn(&request_for_queue)?;
+            ensure_worker_spawned(&store, &request_for_queue.job_id, state.state)?;
+            Ok(state)
+        })
+        .await
+        .context("dispatch continue queue task failed")??
     };
-    ensure_worker_spawned(&store, &request.job_id, state.state)?;
     Ok(DispatchContinueResponse {
         accepted: true,
         job_id: request.job_id,
@@ -529,18 +591,26 @@ async fn query_in_store(
     store: &DispatchStore,
     request: DispatchQueryRequest,
 ) -> Result<serde_json::Value> {
-    let job = store.load_job(&request.job_id)?;
+    let store_for_job = store.clone();
+    let job_id = request.job_id.clone();
+    let job = tokio::task::spawn_blocking(move || store_for_job.load_job(&job_id))
+        .await
+        .context("dispatch query job load task failed")??;
     match request.kind {
         DispatchQueryKind::ResultSummary => {
             if request.file_path.is_some() || request.file_chunk.is_some() {
                 bail!("resultSummary does not accept a filePath");
             }
-            let state = store.load_state(&request.job_id)?;
-            Ok(serde_json::to_value(summary::result_summary(
-                store,
-                &request.job_id,
-                &state,
-            )?)?)
+            let store = store.clone();
+            let job_id = request.job_id;
+            tokio::task::spawn_blocking(move || {
+                let state = store.load_state(&job_id)?;
+                Ok::<_, anyhow::Error>(serde_json::to_value(summary::result_summary(
+                    &store, &job_id, &state,
+                )?)?)
+            })
+            .await
+            .context("dispatch query result summary task failed")?
         }
         DispatchQueryKind::ReadFileChunk => {
             let reference = request
@@ -578,9 +648,14 @@ async fn query_in_store(
                 .file_path
                 .as_deref()
                 .filter(|path| !path.trim().is_empty())
-                .context("Dispatch file query requires a filePath")?;
-            let (path, content) =
-                query_file::read_workspace_file(Path::new(&job.request.workspace_path), file_path)?;
+                .context("Dispatch file query requires a filePath")?
+                .to_string();
+            let workspace_path = job.request.workspace_path.clone();
+            let (path, content) = tokio::task::spawn_blocking(move || {
+                query_file::read_workspace_file(Path::new(&workspace_path), &file_path)
+            })
+            .await
+            .context("dispatch query file read task failed")??;
             Ok(serde_json::json!({
                 "kind": "readFile",
                 "jobId": request.job_id,
@@ -1706,7 +1781,7 @@ mod tests {
             }
         }
 
-        let mut command = std::process::Command::new("/bin/sh");
+        let mut command = openbitfun_services_core::process_manager::create_command("/bin/sh");
         command
             .args(["-c", "trap '' HUP; sleep 30 &"])
             .stdin(std::process::Stdio::null())

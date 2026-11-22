@@ -554,11 +554,7 @@ impl Controller {
         let status = match self.link() {
             Some(link) => {
                 let observed = wait_until_joined(&link).await;
-                let expected: Vec<&str> = devices
-                    .iter()
-                    .filter(|device| device.device_id != device_id && !is_controller_kind(device))
-                    .map(|device| device.device_id.as_str())
-                    .collect();
+                let expected = expected_route_devices(&device_id, &devices);
                 // The join this call waited for, else the tracked one (the
                 // tracker may not have seen a join that just happened).
                 let joined_at = observed.or(*lock(&self.joined_at));
@@ -590,14 +586,11 @@ impl Controller {
         if !openbitfun_link::handshake::valid_device_id(&device_id) {
             return Err("invalid device id".to_string());
         }
-        let link = Arc::new(DeviceLink {
+        let link = Arc::new(DeviceLink::new(
             device_id,
-            controller: Arc::downgrade(self),
-            current: tokio::sync::Mutex::new(None),
-            resume: Mutex::new(obp::Resume::default()),
-            fleet: Mutex::new(options.fleet),
-            closed: std::sync::atomic::AtomicBool::new(false),
-        });
+            LinkDialer::Controller(Arc::downgrade(self)),
+            options.fleet,
+        ));
         let started = std::time::Instant::now();
         let connection = link.current().await?;
         drop(connection);
@@ -873,9 +866,7 @@ fn entry_rows(
 ) -> Vec<FleetEntryCandidate> {
     devices
         .iter()
-        .filter(|device| device.device_id != own_device_id)
-        .filter(|device| !is_controller_kind(device))
-        .filter(|device| device.device_kind.as_deref() != Some(CLOUD_AGENT_KIND))
+        .filter(|device| is_link_runtime_device(own_device_id, device))
         .filter_map(|device| {
             let peer = status.peer(&device.device_id)?;
             if peer.role.is_controller() {
@@ -1059,9 +1050,32 @@ fn is_controller_kind(device: &account::DirectoryDevice) -> bool {
         .is_some_and(|kind| CONTROLLER_KINDS.contains(&kind))
 }
 
+fn is_cloud_agent_kind(device: &account::DirectoryDevice) -> bool {
+    device.device_kind.as_deref() == Some(CLOUD_AGENT_KIND)
+}
+
+/// Whether `device` is another account device that joins the Link network as a
+/// runtime host (excludes this phone, controllers, and the cloud agent).
+fn is_link_runtime_device(own_device_id: &str, device: &account::DirectoryDevice) -> bool {
+    device.device_id != own_device_id && !is_controller_kind(device) && !is_cloud_agent_kind(device)
+}
+
+/// Directory devices that may appear in Link's route table.
+fn expected_route_devices<'a>(
+    own_device_id: &str,
+    devices: &'a [account::DirectoryDevice],
+) -> Vec<&'a str> {
+    devices
+        .iter()
+        .filter(|device| is_link_runtime_device(own_device_id, device))
+        .map(|device| device.device_id.as_str())
+        .collect()
+}
+
 /// The account's devices a controller may drive (`ControllerDevice` of the
 /// UI's controller port): directory rows joined with their Link route. This
-/// phone and other controllers (phones, browser sessions) are left out.
+/// phone, other controllers (phones, browser sessions), and the cloud agent
+/// (not a Link member) are left out.
 fn device_rows(
     own_device_id: &str,
     devices: &[account::DirectoryDevice],
@@ -1073,8 +1087,7 @@ fn device_rows(
         .collect();
     devices
         .iter()
-        .filter(|device| device.device_id != own_device_id)
-        .filter(|device| !is_controller_kind(device))
+        .filter(|device| is_link_runtime_device(own_device_id, device))
         .filter_map(|device| {
             let peer = status.peer(&device.device_id);
             if peer.is_some_and(|peer| peer.role.is_controller()) {
@@ -1126,49 +1139,139 @@ fn device_rows(
         .collect()
 }
 
+const EVENTS_DROPPED_EVENT: &str = "backend://events-dropped";
+
+enum LinkDialer {
+    Controller(Weak<Controller>),
+    #[cfg(test)]
+    Custom(
+        Arc<
+            dyn Fn(obp::Resume) -> BoxFuture<'static, Result<obp::Connection, String>>
+                + Send
+                + Sync,
+        >,
+    ),
+}
+
 /// One device connection: dials on demand and resumes the event stream
 /// after a drop (same backend: from the last event the UI took; a restarted
 /// backend sends `backend://events-dropped` and the UI re-reads).
 pub(crate) struct DeviceLink {
     device_id: String,
-    controller: Weak<Controller>,
-    current: tokio::sync::Mutex<Option<Arc<obp::Connection>>>,
+    dialer: LinkDialer,
+    /// Serializes concurrent dials so `close()` and `current` swaps never block on a dial.
+    dial_lock: tokio::sync::Mutex<()>,
+    /// The active OBP connection; never locked across `.await`.
+    current: Mutex<Option<Arc<obp::Connection>>>,
     resume: Mutex<obp::Resume>,
+    /// Set when a plain stream switches to a new backend `instance_id` so the
+    /// next `next_events(after)` ignores the stale `after` from the previous
+    /// instance.
+    plain_instance_reset: std::sync::atomic::AtomicBool,
     /// The fleet hello and the vector cursor it resumes from, advanced as
     /// origin-tagged events are delivered; `None` for a plain connection.
     fleet: Mutex<Option<FleetHello>>,
     closed: std::sync::atomic::AtomicBool,
+    close_notify: tokio::sync::Notify,
 }
 
 impl DeviceLink {
+    fn new(device_id: String, dialer: LinkDialer, fleet: Option<FleetHello>) -> Self {
+        Self {
+            device_id,
+            dialer,
+            dial_lock: tokio::sync::Mutex::new(()),
+            current: Mutex::new(None),
+            resume: Mutex::new(obp::Resume::default()),
+            plain_instance_reset: std::sync::atomic::AtomicBool::new(false),
+            fleet: Mutex::new(fleet),
+            closed: std::sync::atomic::AtomicBool::new(false),
+            close_notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    async fn dial(&self, resume: obp::Resume) -> Result<obp::Connection, String> {
+        match &self.dialer {
+            LinkDialer::Controller(controller) => {
+                let controller = controller
+                    .upgrade()
+                    .ok_or_else(|| "the controller stopped".to_string())?;
+                controller.dial(&self.device_id, resume).await
+            }
+            #[cfg(test)]
+            LinkDialer::Custom(dial) => dial(resume).await,
+        }
+    }
+
     /// The live connection, dialing (with resume) when there is none.
     async fn current(&self) -> Result<Arc<obp::Connection>, String> {
         if self.closed.load(Ordering::Acquire) {
             return Err("the device connection was closed".to_string());
         }
-        let mut current = self.current.lock().await;
-        if let Some(connection) = current.as_ref() {
-            if connection.closed().is_none() {
-                return Ok(Arc::clone(connection));
-            }
+        if let Some(connection) = lock(&self.current)
+            .as_ref()
+            .filter(|connection| connection.closed().is_none())
+            .cloned()
+        {
+            return Ok(connection);
         }
-        let controller = self
-            .controller
-            .upgrade()
-            .ok_or_else(|| "the controller stopped".to_string())?;
+        let closed_signal = self.close_notify.notified();
+        tokio::pin!(closed_signal);
+        closed_signal.as_mut().enable();
+        if self.closed.load(Ordering::Acquire) {
+            return Err("the device connection was closed".to_string());
+        }
+        let _dialing = tokio::select! {
+            biased;
+            _ = &mut closed_signal => {
+                return Err("the device connection was closed".to_string());
+            }
+            guard = self.dial_lock.lock() => guard,
+        };
+        if self.closed.load(Ordering::Acquire) {
+            return Err("the device connection was closed".to_string());
+        }
+        if let Some(connection) = lock(&self.current)
+            .as_ref()
+            .filter(|connection| connection.closed().is_none())
+            .cloned()
+        {
+            return Ok(connection);
+        }
         let mut resume = lock(&self.resume).clone();
         resume.fleet = lock(&self.fleet)
             .as_ref()
             .and_then(|fleet| serde_json::to_value(fleet).ok());
-        let connection = Arc::new(controller.dial(&self.device_id, resume).await?);
-        {
-            let mut resume = lock(&self.resume);
-            resume.instance_id = connection.instance_id();
-            if resume.last_seq.is_none() {
-                resume.last_seq = connection.hello()["lastSeq"].as_u64();
+        let dialed = tokio::select! {
+            biased;
+            _ = &mut closed_signal => {
+                return Err("the device connection was closed".to_string());
             }
+            result = self.dial(resume) => result?,
+        };
+        let connection = Arc::new(dialed);
+        {
+            let mut current = lock(&self.current);
+            if self.closed.load(Ordering::Acquire) {
+                drop(current);
+                connection.close();
+                return Err("the device connection was closed".to_string());
+            }
+            {
+                let mut resume = lock(&self.resume);
+                let new_instance = connection.instance_id();
+                let instance_changed =
+                    resume.instance_id.is_some() && resume.instance_id != new_instance;
+                resume.instance_id = new_instance;
+                if instance_changed {
+                    resume.last_seq = None;
+                    self.plain_instance_reset.store(true, Ordering::Release);
+                } else if resume.last_seq.is_none() {
+                    resume.last_seq = connection.hello()["lastSeq"].as_u64();
+                }
+            }
+            *current = Some(Arc::clone(&connection));
         }
-        *current = Some(Arc::clone(&connection));
         Ok(connection)
     }
 
@@ -1203,35 +1306,50 @@ impl DeviceLink {
     /// JSON array the UI's wire reads; `Err` when the connection dropped
     /// (the UI calls again, which redials and resumes).
     pub(crate) async fn next_events(&self, after: Option<u64>) -> Result<String, String> {
-        if let Some(after) = after {
+        let mut after = after;
+        if self.plain_instance_reset.swap(false, Ordering::AcqRel) {
+            // A prior dial (e.g. from `invoke`) already switched to a new
+            // backend instance; the caller's `after` belongs to the old one.
+            after = None;
+        } else if let Some(seq) = after {
             let mut resume = lock(&self.resume);
-            if resume.last_seq.is_none_or(|seq| after > seq) {
-                resume.last_seq = Some(after);
+            if resume.last_seq.is_none_or(|last| seq > last) {
+                resume.last_seq = Some(seq);
             }
         }
         loop {
             let connection = self.current().await?;
+            if self.plain_instance_reset.swap(false, Ordering::AcqRel) {
+                after = None;
+            }
             let batch = match connection.next_events().await {
                 Ok(batch) => batch,
                 Err(reason) => {
-                    *self.current.lock().await = None;
+                    let mut current = lock(&self.current);
+                    if current
+                        .as_ref()
+                        .is_some_and(|live| Arc::ptr_eq(live, &connection))
+                    {
+                        *current = None;
+                    }
                     return Err(format!("mesh_reconnecting: {reason}"));
                 }
             };
-            let floor = after.or_else(|| lock(&self.resume).last_seq);
-            let fresh = {
+            let mut plain_floor = after.or_else(|| lock(&self.resume).last_seq);
+            let (fresh, plain_reset) = {
                 let mut fleet = lock(&self.fleet);
                 let cursor = fleet.as_mut().map(|fleet| &mut fleet.cursor);
-                fresh_events(&batch, floor, cursor)
+                fresh_events(&batch, &mut plain_floor, cursor)
             };
-            if let Some(last) = batch
-                .iter()
-                .rev()
-                .find(|event| origin_of(&event.json).is_none())
-            {
+            if batch.iter().any(|event| origin_of(&event.json).is_none()) {
                 let mut resume = lock(&self.resume);
-                if resume.last_seq.is_none_or(|seq| last.seq > seq) {
-                    resume.last_seq = Some(last.seq);
+                if plain_reset {
+                    resume.last_seq = plain_floor;
+                    after = plain_floor;
+                } else if let Some(seq) = plain_floor {
+                    if resume.last_seq.is_none_or(|last| seq > last) {
+                        resume.last_seq = Some(seq);
+                    }
                 }
             }
             if !fresh.is_empty() {
@@ -1242,10 +1360,10 @@ impl DeviceLink {
 
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        if let Ok(current) = self.current.try_lock() {
-            if let Some(connection) = current.as_ref() {
-                connection.close();
-            }
+        let existing = lock(&self.current).take();
+        self.close_notify.notify_waiters();
+        if let Some(connection) = existing {
+            connection.close();
         }
     }
 }
@@ -1282,17 +1400,21 @@ fn origin_of(event: &Value) -> Option<(&str, &str)> {
 
 /// The events of `batch` the UI has not seen: a fleet frame by its origin's
 /// cursor (which it advances; `backend://events-dropped` restarts the origin
-/// at the notice's seq), a plain one by `floor`.
+/// at the notice's seq), a plain one by `plain_floor` (which also restarts at
+/// a plain `backend://events-dropped` notice's seq). Returns `(fresh,
+/// plain_reset)` where `plain_reset` is true if a plain `events-dropped`
+/// notice reset `plain_floor`.
 fn fresh_events(
     batch: &[obp::Event],
-    floor: Option<u64>,
+    plain_floor: &mut Option<u64>,
     mut cursor: Option<&mut FleetCursor>,
-) -> Vec<Value> {
+) -> (Vec<Value>, bool) {
     let mut fresh = Vec::new();
+    let mut plain_reset = false;
     for event in batch {
         match (origin_of(&event.json), cursor.as_deref_mut()) {
             (Some((origin, instance)), Some(cursor)) => {
-                if event.json["event"] == "backend://events-dropped" {
+                if event.json["event"] == EVENTS_DROPPED_EVENT {
                     cursor.0.insert(
                         origin.to_string(),
                         openbitfun_product_domains::fleet::FleetOriginCursor {
@@ -1310,14 +1432,19 @@ fn fresh_events(
             // hello: the UI's wire dedups it per origin.
             (Some(_), None) => {}
             (None, _) => {
-                if floor.is_some_and(|floor| event.seq <= floor) {
+                if event.json["event"] == EVENTS_DROPPED_EVENT {
+                    *plain_floor = Some(event.seq);
+                    plain_reset = true;
+                } else if plain_floor.is_some_and(|floor| event.seq <= floor) {
                     continue;
+                } else {
+                    *plain_floor = Some(event.seq);
                 }
             }
         }
         fresh.push(event.json.clone());
     }
-    fresh
+    (fresh, plain_reset)
 }
 
 #[cfg(test)]
@@ -1341,11 +1468,17 @@ mod tests {
             {"device_id": "mac", "device_name": "Mac", "device_alias": "Work Mac", "device_kind": "desktop", "online": true},
             {"device_id": "pc", "device_name": "PC", "device_kind": "desktop", "online": true, "last_seen_at": 1700000000},
             {"device_id": "tablet", "device_name": "Tablet", "device_kind": "mobile"},
+            {"device_id": "cloud-1", "device_name": "OpenBitFun Cloud", "device_kind": "cloud_agent", "online": true},
             {"device_id": "browser", "device_name": "Browser", "device_kind": "desktop", "online": true},
             {"device_id": "old", "device_name": "Old host", "online": true},
             {"device_id": "off", "device_name": "Laptop", "device_kind": "desktop", "online": false},
         ]))
         .unwrap();
+        assert_eq!(
+            expected_route_devices("phone", &devices),
+            ["mac", "pc", "browser", "old", "off"],
+            "this phone, controller kinds, and cloud_agent are not waited on in Link route sync"
+        );
         let mut status = MeshStatus::new(MeshState::Running, None);
         status.peers = vec![
             peer("mac", NodeRole::Device, MeshRoute::RelayedPeer, Some("pc")),
@@ -1531,7 +1664,9 @@ mod tests {
             event(1, Some(("mac", "i2")), "agentic://text-chunk"),
             event(1, Some(("pc", "p1")), "agentic://text-chunk"),
         ];
-        let fresh = fresh_events(&batch, Some(100), Some(&mut cursor));
+        let mut plain_floor = Some(100);
+        let (fresh, plain_reset) = fresh_events(&batch, &mut plain_floor, Some(&mut cursor));
+        assert!(!plain_reset);
         let seen: Vec<(String, u64)> = fresh
             .iter()
             .map(|event| {
@@ -1553,7 +1688,9 @@ mod tests {
             event(41, Some(("pc", "p1")), "agentic://text-chunk"),
             event(3, Some(("pc", "p1")), "agentic://text-chunk"),
         ];
-        let fresh = fresh_events(&dropped, None, Some(&mut cursor));
+        let mut no_floor = None;
+        let (fresh, plain_reset) = fresh_events(&dropped, &mut no_floor, Some(&mut cursor));
+        assert!(!plain_reset);
         assert_eq!(
             fresh.len(),
             2,
@@ -1566,11 +1703,359 @@ mod tests {
             event(4, None, "b"),
             event(9, Some(("mac", "i1")), "c"),
         ];
-        let fresh = fresh_events(&plain, Some(3), None);
+        let mut plain_floor = Some(3);
+        let (fresh, plain_reset) = fresh_events(&plain, &mut plain_floor, None);
+        assert!(!plain_reset);
+        assert_eq!(plain_floor, Some(4));
         assert_eq!(
             fresh.len(),
             2,
             "a plain connection floors plain frames and passes tagged ones"
+        );
+
+        // Plain stream restart: backend://events-dropped with seq <= floor must
+        // pass through and reset the floor for following events.
+        let plain_restarted = vec![
+            event(2, None, "backend://events-dropped"),
+            event(3, None, "agentic://text-chunk"),
+            event(2, None, "agentic://stale-dup"),
+        ];
+        let mut plain_floor = Some(100);
+        let (fresh, plain_reset) = fresh_events(&plain_restarted, &mut plain_floor, None);
+        assert!(plain_reset);
+        assert_eq!(plain_floor, Some(3));
+        assert_eq!(
+            fresh
+                .iter()
+                .map(|event| (
+                    event["event"].as_str().unwrap(),
+                    event["seq"].as_u64().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            [("backend://events-dropped", 2), ("agentic://text-chunk", 3)]
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_stream_restart_delivers_events_dropped_and_resets_resume_seq() {
+        use crate::obp::tests::{dial_with, scripted_device, ScriptedSession};
+
+        let key = [11u8; 32];
+        let mut device = scripted_device(
+            key,
+            "phone-1",
+            "desk-1",
+            vec![
+                ScriptedSession {
+                    instance_id: "inst-1".into(),
+                    last_seq: 50,
+                    events: vec![
+                        json!({"seq": 51, "event": "agentic://text-chunk", "payload": {"n": 51}}),
+                        json!({"seq": 52, "event": "agentic://text-chunk", "payload": {"n": 52}}),
+                    ],
+                    close_after_events: true,
+                },
+                ScriptedSession {
+                    instance_id: "inst-2".into(),
+                    last_seq: 2,
+                    events: vec![
+                        json!({"seq": 2, "event": "backend://events-dropped", "payload": {"reason": "backend_restarted"}}),
+                        json!({"seq": 3, "event": "agentic://text-chunk", "payload": {"n": 3}}),
+                    ],
+                    close_after_events: true,
+                },
+                ScriptedSession {
+                    instance_id: "inst-3".into(),
+                    last_seq: 1,
+                    events: vec![
+                        json!({"seq": 1, "event": "backend://events-dropped", "payload": {"reason": "backend_restarted"}}),
+                        json!({"seq": 2, "event": "agentic://text-chunk", "payload": {"n": 2}}),
+                    ],
+                    close_after_events: false,
+                },
+            ],
+        )
+        .await;
+        let addr = device.addr;
+        let link = Arc::new(DeviceLink::new(
+            "desk-1".into(),
+            LinkDialer::Custom(Arc::new(move |resume| {
+                Box::pin(async move { dial_with(addr, key, resume).await })
+            })),
+            None,
+        ));
+
+        // Initial instance delivers 51 and 52, then closes.
+        let mut seen = Vec::new();
+        while seen.len() < 2 {
+            let batch: Vec<Value> =
+                serde_json::from_str(&link.next_events(None).await.unwrap()).unwrap();
+            seen.extend(batch);
+        }
+        assert_eq!(
+            seen.iter()
+                .map(|e| e["seq"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [51, 52]
+        );
+        let first_hello = device.hellos.recv().await.unwrap();
+        assert!(first_hello.get("lastSeq").is_none());
+
+        // Case 1: `next_events(Some(52))` reconnects across `inst-1` -> `inst-2`
+        // (or gets a single `mesh_reconnecting` error first, then reconnects on retry).
+        let mut restarted = Vec::new();
+        let mut cursor = Some(52);
+        while restarted.len() < 2 {
+            match link.next_events(cursor).await {
+                Ok(text) => {
+                    let batch: Vec<Value> = serde_json::from_str(&text).unwrap();
+                    if let Some(last) = batch.last().and_then(|e| e["seq"].as_u64()) {
+                        cursor = Some(last);
+                    }
+                    restarted.extend(batch);
+                }
+                Err(error) => assert!(error.starts_with("mesh_reconnecting:"), "{error}"),
+            }
+        }
+        let second_hello = device.hellos.recv().await.unwrap();
+        assert_eq!(second_hello["instanceId"], "inst-1");
+        assert_eq!(second_hello["lastSeq"], 52);
+        assert_eq!(
+            restarted
+                .iter()
+                .map(|e| (e["event"].as_str().unwrap(), e["seq"].as_u64().unwrap()))
+                .collect::<Vec<_>>(),
+            [("backend://events-dropped", 2), ("agentic://text-chunk", 3)]
+        );
+        assert_eq!(lock(&link.resume).instance_id.as_deref(), Some("inst-2"));
+        assert_eq!(lock(&link.resume).last_seq, Some(3));
+
+        // Wait for `inst-2` to finish closing, then let `hello()` redial `inst-3`
+        // BEFORE `next_events(Some(3))` runs with the stale cursor from `inst-2`.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while lock(&link.current)
+                .as_ref()
+                .is_some_and(|conn| conn.closed().is_none())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("inst-2 should close after delivering its events");
+        let _ = link.hello().await.unwrap();
+        let third_hello = device.hellos.recv().await.unwrap();
+        assert_eq!(third_hello["instanceId"], "inst-2");
+        assert_eq!(third_hello["lastSeq"], 3);
+
+        let mut third_events = Vec::new();
+        let mut cursor = Some(3);
+        while third_events.len() < 2 {
+            let batch: Vec<Value> =
+                serde_json::from_str(&link.next_events(cursor).await.unwrap()).unwrap();
+            if let Some(last) = batch.last().and_then(|e| e["seq"].as_u64()) {
+                cursor = Some(last);
+            }
+            third_events.extend(batch);
+        }
+        assert_eq!(
+            third_events
+                .iter()
+                .map(|e| (e["event"].as_str().unwrap(), e["seq"].as_u64().unwrap()))
+                .collect::<Vec<_>>(),
+            [("backend://events-dropped", 1), ("agentic://text-chunk", 2)]
+        );
+        assert_eq!(lock(&link.resume).instance_id.as_deref(), Some("inst-3"));
+        assert_eq!(lock(&link.resume).last_seq, Some(2));
+        link.close();
+    }
+
+    #[tokio::test]
+    async fn close_during_inflight_dial_leaves_no_zombie_connection() {
+        use crate::obp::tests::{dial_with, scripted_device, ScriptedSession};
+
+        let key = [12u8; 32];
+        let device = scripted_device(
+            key,
+            "phone-1",
+            "desk-1",
+            vec![ScriptedSession {
+                instance_id: "inst-1".into(),
+                last_seq: 1,
+                events: vec![],
+                close_after_events: false,
+            }],
+        )
+        .await;
+        let addr = device.addr;
+        let dial_started = Arc::new(tokio::sync::Notify::new());
+        let dial_release = Arc::new(tokio::sync::Notify::new());
+        let started_flag = Arc::clone(&dial_started);
+        let release_flag = Arc::clone(&dial_release);
+
+        let link = Arc::new(DeviceLink::new(
+            "desk-1".into(),
+            LinkDialer::Custom(Arc::new(move |resume| {
+                let started = Arc::clone(&started_flag);
+                let release = Arc::clone(&release_flag);
+                Box::pin(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    dial_with(addr, key, resume).await
+                })
+            })),
+            None,
+        ));
+
+        let dial_task = tokio::spawn({
+            let link = Arc::clone(&link);
+            async move { link.hello().await }
+        });
+        dial_started.notified().await;
+
+        // Closing while dial is blocked must wake/cancel it immediately and leave no connection.
+        link.close();
+        let result = tokio::time::timeout(Duration::from_secs(2), dial_task)
+            .await
+            .expect("close must cancel in-flight dial promptly")
+            .unwrap();
+        assert!(result.is_err());
+        assert!(lock(&link.current).is_none());
+        dial_release.notify_one();
+
+        // Also exercise the post-dial closed check: if `close()` wins the
+        // race right after `dial()` finishes, the fresh connection must be
+        // closed instead of stored.
+        let device2 = scripted_device(
+            key,
+            "phone-1",
+            "desk-1",
+            vec![ScriptedSession {
+                instance_id: "inst-2".into(),
+                last_seq: 1,
+                events: vec![],
+                close_after_events: false,
+            }],
+        )
+        .await;
+        let addr2 = device2.addr;
+        let link2_slot: Arc<Mutex<Option<Weak<DeviceLink>>>> = Arc::new(Mutex::new(None));
+        let link2_slot_for_dial = Arc::clone(&link2_slot);
+        let link2 = Arc::new(DeviceLink::new(
+            "desk-1".into(),
+            LinkDialer::Custom(Arc::new(move |resume| {
+                let slot = Arc::clone(&link2_slot_for_dial);
+                Box::pin(async move {
+                    let conn = dial_with(addr2, key, resume).await?;
+                    // Mark closed right as dial finishes, before `current()` stores `conn`.
+                    if let Some(link) = lock(&slot).as_ref().and_then(Weak::upgrade) {
+                        link.closed.store(true, Ordering::Release);
+                    }
+                    Ok(conn)
+                })
+            })),
+            None,
+        ));
+        *lock(&link2_slot) = Some(Arc::downgrade(&link2));
+        assert!(link2.current().await.is_err());
+        assert!(lock(&link2.current).is_none());
+
+        // Closing a live connection removes and shuts it down without `try_lock`.
+        let device3 = scripted_device(
+            key,
+            "phone-1",
+            "desk-1",
+            vec![ScriptedSession {
+                instance_id: "inst-3".into(),
+                last_seq: 1,
+                events: vec![],
+                close_after_events: false,
+            }],
+        )
+        .await;
+        let addr3 = device3.addr;
+        let link3 = Arc::new(DeviceLink::new(
+            "desk-1".into(),
+            LinkDialer::Custom(Arc::new(move |resume| {
+                Box::pin(async move { dial_with(addr3, key, resume).await })
+            })),
+            None,
+        ));
+        let conn = link3.current().await.unwrap();
+        assert!(conn.closed().is_none());
+        link3.close();
+        assert!(lock(&link3.current).is_none());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while conn.closed().is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("closed connection should shut down");
+    }
+
+    #[tokio::test]
+    async fn next_events_error_does_not_clobber_newer_connection() {
+        use crate::obp::tests::{dial_with, scripted_device, ScriptedSession};
+
+        let key = [13u8; 32];
+        let device = scripted_device(
+            key,
+            "phone-1",
+            "desk-1",
+            vec![
+                ScriptedSession {
+                    instance_id: "inst-1".into(),
+                    last_seq: 1,
+                    events: vec![],
+                    close_after_events: false,
+                },
+                ScriptedSession {
+                    instance_id: "inst-1".into(),
+                    last_seq: 1,
+                    events: vec![],
+                    close_after_events: false,
+                },
+            ],
+        )
+        .await;
+        let addr = device.addr;
+        let conn1 = Arc::new(dial_with(addr, key, obp::Resume::default()).await.unwrap());
+        let conn2 = Arc::new(dial_with(addr, key, obp::Resume::default()).await.unwrap());
+        let link = Arc::new(DeviceLink::new(
+            "desk-1".into(),
+            LinkDialer::Custom(Arc::new(|_| Box::pin(async { Err("unused".into()) }))),
+            None,
+        ));
+        *lock(&link.current) = Some(Arc::clone(&conn1));
+
+        let poll_task = tokio::spawn({
+            let link = Arc::clone(&link);
+            async move { link.next_events(None).await }
+        });
+        // Give `next_events` a moment to grab `conn1` and await its events.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Simulate a concurrent caller swapping `current` to a fresh `conn2`,
+        // then `conn1` failing.
+        *lock(&link.current) = Some(Arc::clone(&conn2));
+        conn1.close();
+
+        assert!(poll_task.await.unwrap().is_err());
+        let live = lock(&link.current)
+            .clone()
+            .expect("newer connection must remain installed");
+        assert!(
+            Arc::ptr_eq(&live, &conn2),
+            "error from conn1 must not clear conn2"
+        );
+        link.close();
+    }
+
+    #[test]
+    fn package_version_is_synced_to_product_line() {
+        assert!(
+            !env!("CARGO_PKG_VERSION").starts_with("0."),
+            "mobile native crate version should track the 2.x product version, got {}",
+            env!("CARGO_PKG_VERSION")
         );
     }
 

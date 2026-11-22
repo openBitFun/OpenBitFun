@@ -475,9 +475,28 @@ impl Drop for FleetDigestProducer {
 
 /// Whether a host event may change the digest (hosts call
 /// [`FleetDigestProducer::notify_changed`] for these).
+///
+/// Only lifecycle and state-changing `agentic://` events match; high-frequency
+/// streaming deltas (`agentic://text-chunk`, `agentic://thinking-chunk`,
+/// `agentic://tool-event`, `agentic://token-usage-updated`, model round ticks)
+/// are excluded so streaming never triggers repeated workspace disk scans.
 pub fn is_digest_relevant_event(event: &str) -> bool {
+    const AGENTIC_LIFECYCLE_EVENTS: &[&str] = &[
+        "agentic://session-created",
+        "agentic://session-deleted",
+        "agentic://session-state-changed",
+        "agentic://session-history-changed",
+        "agentic://session-title-generated",
+        "agentic://dialog-turn-started",
+        "agentic://dialog-turn-completed",
+        "agentic://dialog-turn-failed",
+        "agentic://dialog-turn-cancelled",
+        "agentic://dialog-turn-interrupted",
+        "agentic://dialog-turn-recovered",
+        "agentic://subagent-session-linked",
+        "agentic://thread-goal-updated",
+    ];
     const PREFIXES: &[&str] = &[
-        "agentic://",
         "session",
         "workspace",
         "permission",
@@ -485,8 +504,13 @@ pub fn is_digest_relevant_event(event: &str) -> bool {
         "user_question",
         "dispatch",
     ];
-    !event.starts_with(FLEET_EVENT_PREFIX)
-        && PREFIXES.iter().any(|prefix| event.starts_with(prefix))
+    if event.starts_with(FLEET_EVENT_PREFIX) {
+        return false;
+    }
+    if event.starts_with("agentic://") {
+        return AGENTIC_LIFECYCLE_EVENTS.contains(&event);
+    }
+    PREFIXES.iter().any(|prefix| event.starts_with(prefix))
 }
 
 // ---------------------------------------------------------------------------

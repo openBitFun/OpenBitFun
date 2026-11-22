@@ -581,6 +581,12 @@ impl ConfigService {
         Ok(())
     }
 
+    /// Returns the persisted configuration file path managed by this service.
+    pub async fn config_file_path(&self) -> std::path::PathBuf {
+        let manager = self.manager.read().await;
+        manager.config_file().to_path_buf()
+    }
+
     /// Reloads when another writer (a hand edit, another OpenBitFun process)
     /// replaced the config file since this service last loaded or wrote it.
     ///

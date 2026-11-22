@@ -45,8 +45,9 @@ use tokio::sync::{watch, Mutex};
 pub const SETTINGS_COLLECTION: &str = "settings";
 /// Quiet time after the last local change before it is written.
 pub const LOCAL_DEBOUNCE: Duration = Duration::from_millis(500);
-/// How often the binder re-reads the replica's state without a change.
-const STATUS_POLL: Duration = Duration::from_secs(2);
+/// How often the binder checks replica delivery state while an exchange is
+/// actively in progress (`SyncPhase::Syncing`); idle phases do not poll.
+const ACTIVE_STATUS_POLL: Duration = Duration::from_secs(2);
 
 /// The group a synced setting belongs to (what the UI names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -408,7 +409,20 @@ impl SettingsSync {
     }
 
     pub fn status(&self) -> SyncStatus {
-        self.status.borrow().clone()
+        let current = self.status.borrow().clone();
+        if !current.enabled {
+            return current;
+        }
+        if let Some(replica) = self.provider.replica() {
+            let replica_state = replica.state();
+            let phase = phase_of(&replica_state);
+            let fresh = SyncStatus::of(true, phase, Some(&replica_state));
+            if fresh != current {
+                self.publish(fresh.clone());
+            }
+            return fresh;
+        }
+        current
     }
 
     pub fn subscribe_status(&self) -> watch::Receiver<SyncStatus> {
@@ -599,16 +613,45 @@ impl SettingsSync {
         phase
     }
 
+    /// Lightweight status-only refresh from the current replica without
+    /// re-reading or hashing local settings.
+    fn refresh_status(&self) -> SyncPhase {
+        let current = self.status.borrow().clone();
+        if !current.enabled {
+            return SyncPhase::Off;
+        }
+        let Some(replica) = self.provider.replica() else {
+            let phase = if self.provider.signed_in() {
+                SyncPhase::Offline
+            } else {
+                SyncPhase::SignedOut
+            };
+            self.publish(SyncStatus::of(true, phase, None));
+            return phase;
+        };
+        let replica_state = replica.state();
+        let phase = phase_of(&replica_state);
+        self.publish(SyncStatus::of(true, phase, Some(&replica_state)));
+        phase
+    }
+
     /// Runs rounds until the process ends: after a local change (debounced),
-    /// a replica change, a wake, or every few seconds for the state.
+    /// a replica change, or an explicit wake. While actively syncing, only
+    /// lightweight status checks run until delivery settles; idle phases do
+    /// not poll.
     pub async fn run(self: Arc<Self>, local_changes: watch::Receiver<()>) {
         let mut changes = LocalChanges {
             receiver: local_changes,
             alive: true,
         };
         let mut replica_changes: Option<(String, watch::Receiver<u64>)> = None;
+        let mut run_full_round = true;
         loop {
-            self.round().await;
+            let phase = if run_full_round {
+                self.round().await
+            } else {
+                self.refresh_status()
+            };
             // Follow the current replica's changes (it moves with the account).
             match self.provider.replica() {
                 Some(replica) => {
@@ -629,12 +672,19 @@ impl SettingsSync {
                     None => std::future::pending::<()>().await,
                 }
             };
-            tokio::select! {
-                _ = changes.next() => {}
-                _ = replica_changed => {}
-                _ = self.wake.notified() => {}
-                _ = tokio::time::sleep(STATUS_POLL) => {}
-            }
+            let active_status_tick = async {
+                if phase == SyncPhase::Syncing {
+                    tokio::time::sleep(ACTIVE_STATUS_POLL).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            run_full_round = tokio::select! {
+                _ = changes.next() => true,
+                _ = replica_changed => true,
+                _ = self.wake.notified() => true,
+                _ = active_status_tick => false,
+            };
         }
     }
 }

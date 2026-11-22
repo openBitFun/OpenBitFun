@@ -19,7 +19,7 @@
 //! device) every fleet verb answers `fleet_unavailable: ...`.
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use openbitfun_core::service::fleet::{
     is_digest_relevant_event, CoreFleetDigestSource, FleetDigestProducer, FleetDispatchPrompt,
@@ -50,6 +50,39 @@ use crate::runtime::CliRuntimeContext;
 static CURRENT: RwLock<Option<Arc<FleetHost>>> = RwLock::new(None);
 /// The digest producer of the running fleet (Detached Dispatch pokes it).
 static DIGEST: RwLock<Option<Arc<FleetDigestProducer>>> = RwLock::new(None);
+/// Single active watcher task forwarding local model config changes to the
+/// running fleet digest producer; aborted on reconnect and `stop()`.
+static MODEL_CONFIG_FOLLOWER: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+
+fn replace_model_config_follower(next: Option<tokio::task::JoinHandle<()>>) {
+    let previous = std::mem::replace(
+        &mut *MODEL_CONFIG_FOLLOWER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        next,
+    );
+    if let Some(handle) = previous {
+        handle.abort();
+    }
+}
+
+fn spawn_model_config_follower(digest: &Arc<FleetDigestProducer>) {
+    let weak = Arc::downgrade(digest);
+    let handle = tokio::spawn(async move {
+        let Ok(service) = openbitfun_core::service::config::get_global_config_service().await
+        else {
+            return;
+        };
+        let mut changes = service.subscribe_local_changes();
+        while changes.changed().await.is_ok() {
+            let Some(producer) = weak.upgrade() else {
+                return;
+            };
+            producer.notify_changed();
+        }
+    });
+    replace_model_config_follower(Some(handle));
+}
 
 /// The running fleet, if this host serves one now.
 pub(crate) fn current() -> Option<Arc<FleetHost>> {
@@ -342,12 +375,7 @@ pub(crate) fn start(start: CliFleetStart) {
         digest: Arc::clone(&digest),
     });
     // The digest follows model changes too (its catalog).
-    {
-        let digest = Arc::clone(&digest);
-        tokio::spawn(async move {
-            openbitfun_core::service::fleet::models::follow_model_config(&digest).await;
-        });
-    }
+    spawn_model_config_follower(&digest);
     let on_local_event: LocalEventHook = Arc::new(move |event: &str| {
         if is_digest_relevant_event(event) {
             digest.notify_changed();
@@ -492,6 +520,7 @@ pub(crate) async fn dispatch_target_answered(command: &str, workspace_path: Opti
 }
 
 pub(crate) fn stop() {
+    replace_model_config_follower(None);
     openbitfun_core::service::fleet::models::clear_peers();
     DIGEST
         .write()
@@ -721,5 +750,41 @@ mod tests {
         fleet.shutdown();
         server.shutdown();
         assert!(super::current().is_none());
+    }
+
+    #[tokio::test]
+    async fn model_config_follower_aborts_previous_task_on_reconnect_and_stop() {
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel::<()>();
+        let first = tokio::spawn(async move {
+            let _guard = first_tx;
+            std::future::pending::<()>().await;
+        });
+        super::replace_model_config_follower(Some(first));
+
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel::<()>();
+        let second = tokio::spawn(async move {
+            let _guard = second_tx;
+            std::future::pending::<()>().await;
+        });
+        super::replace_model_config_follower(Some(second));
+
+        // Replacing the follower aborts the first task promptly.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), first_rx)
+                .await
+                .expect("first follower must abort on reconnect")
+                .is_err(),
+            "aborted first follower drops its oneshot sender"
+        );
+
+        // Clearing the follower (as `stop()` does) aborts the active follower as well.
+        super::replace_model_config_follower(None);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), second_rx)
+                .await
+                .expect("active follower must abort on stop")
+                .is_err(),
+            "aborted active follower drops its oneshot sender"
+        );
     }
 }

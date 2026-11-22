@@ -718,12 +718,22 @@ async fn poll_round(
     }
     // The caller dropped the stream (cancelled): stop the owner's round.
     let cancel = json!({ "request": { "requestId": request_id } });
-    if let Err(error) = peers.call(&device_id, FLEET_MODEL_CANCEL, cancel).await {
-        log::debug!(
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        peers.call(&device_id, FLEET_MODEL_CANCEL, cancel),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => log::debug!(
             "Fleet model round cancel not delivered: device_id={}, error={}",
             device_id,
             error
-        );
+        ),
+        Err(_) => log::debug!(
+            "Fleet model round cancel timed out: device_id={}",
+            device_id
+        ),
     }
 }
 

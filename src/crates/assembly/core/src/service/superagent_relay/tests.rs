@@ -505,3 +505,88 @@ fn the_persisted_section_is_what_the_device_enforces() {
         SuperagentDeviceSettings::default()
     );
 }
+
+#[tokio::test]
+async fn model_relay_evicts_finished_rounds_after_ttl_without_further_calls() {
+    struct ImmediateProvider;
+    impl ModelProvider for ImmediateProvider {
+        fn open(&self, _: ProviderRequest) -> BoxFuture<Result<ProviderStream, RelayError>> {
+            Box::pin(async move {
+                Ok(ProviderStream {
+                    model_id: "m".into(),
+                    model_name: "m".into(),
+                    stream: futures::stream::iter(vec![Ok(text("hello"))]).boxed(),
+                })
+            })
+        }
+    }
+    let relay = ModelRelay::new(
+        Arc::new(ImmediateProvider),
+        Arc::new(Arc::new(RecordingSink::default())),
+        RelayLimits {
+            retain_finished: Duration::from_millis(60),
+            ..RelayLimits::default()
+        },
+    );
+    relay
+        .handle(FLEET_MODEL_START, start_args("ttl-round"))
+        .await
+        .unwrap();
+    let done = poll(&relay, "ttl-round", 0, 5_000).await;
+    assert_eq!(done["done"], true);
+    assert_eq!(relay.retained_count(), 1);
+    // Without any further start/poll calls, the one-shot TTL timer evicts it.
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        relay.retained_count(),
+        0,
+        "finished round must be evicted automatically once retain_finished elapses"
+    );
+}
+
+#[tokio::test]
+async fn model_relay_evicts_oldest_finished_rounds_when_byte_cap_is_exceeded() {
+    struct ChunkProvider(String);
+    impl ModelProvider for ChunkProvider {
+        fn open(&self, _: ProviderRequest) -> BoxFuture<Result<ProviderStream, RelayError>> {
+            let payload = self.0.clone();
+            Box::pin(async move {
+                Ok(ProviderStream {
+                    model_id: "m".into(),
+                    model_name: "m".into(),
+                    stream: futures::stream::iter(vec![Ok(text(&payload))]).boxed(),
+                })
+            })
+        }
+    }
+    // Each round stores payload once in chunks and once in result (2 KiB total).
+    let relay = ModelRelay::new(
+        Arc::new(ChunkProvider("x".repeat(1024))),
+        Arc::new(Arc::new(RecordingSink::default())),
+        RelayLimits {
+            max_retained: 32,
+            max_retained_bytes: 3 * 1024,
+            ..RelayLimits::default()
+        },
+    );
+    for id in ["cap-1", "cap-2", "cap-3"] {
+        relay
+            .handle(FLEET_MODEL_START, start_args(id))
+            .await
+            .unwrap();
+        let page = poll(&relay, id, 0, 5_000).await;
+        assert_eq!(page["done"], true);
+    }
+    // Only the newest finished round fits under the 3 KiB cap (each is 2 KiB).
+    assert_eq!(relay.retained_count(), 1);
+    let err = relay
+        .handle(
+            FLEET_MODEL_POLL,
+            json!({ "requestId": "cap-1", "afterSeq": 0, "waitMs": 0 }),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.starts_with("fleet_model_unknown_request:"), "{err}");
+    let latest = poll(&relay, "cap-3", 0, 0).await;
+    assert_eq!(latest["done"], true);
+}

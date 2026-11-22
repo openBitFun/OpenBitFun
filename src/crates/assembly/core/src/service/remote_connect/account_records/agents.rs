@@ -114,21 +114,47 @@ impl LocalCollection for AgentRecords {
     }
 
     async fn list(&self, _device: &DeviceContext) -> Result<Vec<LocalItem>> {
-        let mut items = Vec::new();
-        for (id, (path, markdown)) in self.files() {
-            let record_id = format!("agent:{id}");
-            if !valid_record_id(&record_id) {
-                continue;
+        let dir = self.dir.clone();
+        let mut items = tokio::task::spawn_blocking(move || {
+            let mut items = Vec::new();
+            let mut files = BTreeMap::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                let mut entries: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+                entries.sort();
+                for path in entries {
+                    let is_markdown = path.extension().is_some_and(|ext| ext == "md")
+                        && !path
+                            .file_name()
+                            .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+                    if !is_markdown || !path.is_file() {
+                        continue;
+                    }
+                    let Ok(markdown) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    if let Some(id) = agent_id(&markdown) {
+                        files.entry(id).or_insert((path, markdown));
+                    }
+                }
             }
-            let file_name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_default();
-            items.push(LocalItem::new(
-                record_id,
-                json!({ "fileName": file_name, "markdown": markdown }),
-            ));
-        }
+            for (id, (path, markdown)) in files {
+                let record_id = format!("agent:{id}");
+                if !valid_record_id(&record_id) {
+                    continue;
+                }
+                let file_name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                items.push(LocalItem::new(
+                    record_id,
+                    json!({ "fileName": file_name, "markdown": markdown }),
+                ));
+            }
+            items
+        })
+        .await
+        .map_err(|error| anyhow!("scan agents directory: {error}"))?;
         for (mode, profile) in self.profiles().await {
             let record_id = format!("profile:{mode}");
             if valid_record_id(&record_id) {

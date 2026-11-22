@@ -100,8 +100,44 @@ pub struct AccountIdentityClient {
 
 /// An access token this close to its expiry is refreshed before use.
 const ACCESS_REFRESH_MARGIN_SECS: i64 = 30;
-/// Bounds a refresh request, which runs under the credential update guard.
+/// Bounds a refresh or logout request, which runs under the credential update guard.
 const REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Default timeouts for account API HTTP requests.
+const DEFAULT_HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DEFAULT_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn shared_account_client() -> Result<reqwest::Client, MarketClientError> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            crate::reqwest_client_builder()
+                .user_agent(format!("OpenBitFun/{}", env!("CARGO_PKG_VERSION")))
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(DEFAULT_HTTP_CONNECT_TIMEOUT)
+                .timeout(DEFAULT_HTTP_TIMEOUT)
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(|error| local_error("market_client_init_failed", error))
+}
+
+fn shared_verify_client() -> Result<reqwest::Client, MarketClientError> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            crate::reqwest_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(3))
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(|error| local_error("identity_client_failed", error))
+}
 
 impl AccountIdentityClient {
     /// Verify a controller credential without reading or mutating host credentials.
@@ -115,12 +151,7 @@ impl AccountIdentityClient {
                 "Invalid GitHub account credential.",
             ));
         }
-        let client = crate::reqwest_client_builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(3))
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .map_err(|error| local_error("identity_client_failed", error.to_string()))?;
+        let client = shared_verify_client()?;
         let response = client
             .get(format!("{DEFAULT_ACCOUNT_API_URL}/me"))
             .bearer_auth(access_token)
@@ -177,11 +208,7 @@ impl AccountIdentityClient {
                 "The GitHub account API must use HTTPS.",
             ));
         }
-        let client = crate::reqwest_client_builder()
-            .user_agent(format!("OpenBitFun/{}", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| local_error("market_client_init_failed", error.to_string()))?;
+        let client = shared_account_client()?;
         let credentials = store.load().await.map_err(store_error)?;
         Ok(Self {
             base_url,
@@ -277,11 +304,16 @@ impl AccountIdentityClient {
     }
 
     pub async fn logout(&mut self) -> Result<(), MarketClientError> {
-        if let Some(credentials) = self.credentials.as_ref() {
+        let _guard = self.store.update_guard().await;
+        let stored = self.store.load().await.map_err(store_error)?;
+        let credentials = stored.as_ref().or(self.credentials.as_ref());
+        if let Some(credentials) = credentials {
             let response = self
                 .client
                 .post(self.url("/auth/logout"))
                 .bearer_auth(&credentials.access_token)
+                // The update guard is held across this request.
+                .timeout(REFRESH_TIMEOUT)
                 .send()
                 .await
                 .map_err(transport_error)?;

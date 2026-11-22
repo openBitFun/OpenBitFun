@@ -2446,9 +2446,10 @@ dependencies = [
 
 [[package]]
 name = "openbitfun-mobile-native"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "base64 0.22.1",
+ "core-foundation 0.10.1",
  "futures",
  "hkdf",
  "jni 0.21.1",

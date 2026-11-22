@@ -91,6 +91,8 @@ pub(crate) trait SecretStore: Send + Sync + 'static {
 const SERVICE: &str = "com.openbitfun.mobile.controller";
 #[cfg(any(all(target_os = "ios", not(target_abi = "sim")), target_os = "macos"))]
 const ACCOUNT: &str = "identity";
+#[cfg(any(all(target_os = "ios", not(target_abi = "sim")), target_os = "macos"))]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
 /// The platform's store for this app.
 pub(crate) fn platform_store(data_dir: &std::path::Path) -> Box<dyn SecretStore> {
@@ -132,8 +134,7 @@ impl SecretStore for Keychain {
         use security_framework::passwords::get_generic_password;
         match get_generic_password(SERVICE, ACCOUNT) {
             Ok(bytes) => Ok(Some(bytes)),
-            // errSecItemNotFound
-            Err(error) if error.code() == -25300 => Ok(None),
+            Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
             Err(error) => Err(format!(
                 "the Keychain refused to read the device key: {error}"
             )),
@@ -141,29 +142,189 @@ impl SecretStore for Keychain {
     }
 
     fn save(&self, bytes: &[u8]) -> Result<(), String> {
-        use security_framework::passwords::{
-            delete_generic_password, set_generic_password_options,
+        use core_foundation::data::CFData;
+        use security_framework::item::{
+            update_item, ItemClass, ItemSearchOptions, ItemUpdateOptions, ItemUpdateValue,
         };
+        use security_framework::passwords::set_generic_password_options;
         use security_framework::passwords_options::PasswordOptions;
-        let _ = delete_generic_password(SERVICE, ACCOUNT);
-        #[cfg_attr(not(target_os = "ios"), allow(unused_mut))]
-        let mut options = PasswordOptions::new_generic_password(SERVICE, ACCOUNT);
-        #[cfg(target_os = "ios")]
-        {
-            use security_framework::access_control::{ProtectionMode, SecAccessControl};
-            let access = SecAccessControl::create_with_protection(
-                Some(ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly),
-                0,
-            )
-            .map_err(|error| format!("the Keychain access control failed: {error}"))?;
-            options.set_access_control(access);
+
+        // Update the existing item in place (`SecItemUpdate`) before falling
+        // back to `SecItemAdd`, so a failed write or crash never leaves a
+        // window with the previous device key deleted.
+        let mut search = ItemSearchOptions::new();
+        search
+            .class(ItemClass::generic_password())
+            .service(SERVICE)
+            .account(ACCOUNT);
+        let mut update = ItemUpdateOptions::new();
+        update.set_value(ItemUpdateValue::Data(CFData::from_buffer(bytes)));
+
+        match update_item(&search, &update) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {
+                #[cfg_attr(not(target_os = "ios"), allow(unused_mut))]
+                let mut options = PasswordOptions::new_generic_password(SERVICE, ACCOUNT);
+                #[cfg(target_os = "ios")]
+                {
+                    use security_framework::access_control::{ProtectionMode, SecAccessControl};
+                    let access = SecAccessControl::create_with_protection(
+                        Some(ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly),
+                        0,
+                    )
+                    .map_err(|error| format!("the Keychain access control failed: {error}"))?;
+                    options.set_access_control(access);
+                }
+                match set_generic_password_options(bytes, options) {
+                    Ok(()) => Ok(()),
+                    Err(add_error) => {
+                        // A concurrent writer may have added the item after our
+                        // first update saw errSecItemNotFound; retry update once.
+                        if update_item(&search, &update).is_ok() {
+                            return Ok(());
+                        }
+                        Err(format!(
+                            "the Keychain refused to keep the device key: {add_error}"
+                        ))
+                    }
+                }
+            }
+            Err(error) => Err(format!(
+                "the Keychain refused to keep the device key: {error}"
+            )),
         }
-        set_generic_password_options(bytes, options)
-            .map_err(|error| format!("the Keychain refused to keep the device key: {error}"))
     }
 
     fn kind(&self) -> &'static str {
         "keychain"
+    }
+}
+
+/// Platform key sealing backend (Android Keystore).
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+pub(crate) trait RecordSealer: Send + Sync + 'static {
+    fn seal(&self, plaintext: &[u8]) -> Result<SealedRecord, String>;
+    fn open(&self, sealed: &SealedRecord) -> Result<Vec<u8>, String>;
+}
+
+/// A 0600 sealed record file (`identity.sealed`) with one-time migration from
+/// an older build's plaintext file (`identity.json`). Once sealing is in use,
+/// Keystore errors fail loudly instead of downgrading to plaintext.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+pub(crate) struct SealedFileStore<S> {
+    sealer: S,
+    sealed: PathBuf,
+    legacy: PathBuf,
+    /// True only when an existing legacy plaintext file could not yet be
+    /// migrated on read; `save()` always requires sealing.
+    legacy_active: std::sync::atomic::AtomicBool,
+}
+
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+impl<S: RecordSealer> SealedFileStore<S> {
+    pub(crate) fn new(sealer: S, sealed: PathBuf, legacy: PathBuf) -> Self {
+        Self {
+            sealer,
+            sealed,
+            legacy,
+            legacy_active: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn read_sealed(&self) -> Result<Option<Vec<u8>>, String> {
+        let bytes = match std::fs::read(&self.sealed) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("the sealed device key file is unreadable: {error}")),
+        };
+        let sealed = SealedRecord::parse(&bytes)?;
+        self.sealer
+            .open(&sealed)
+            .map(Some)
+            .map_err(|error| format!("the Android Keystore could not open the device key: {error}"))
+    }
+
+    fn write_sealed(&self, bytes: &[u8]) -> Result<(), String> {
+        let sealed = self.sealer.seal(bytes)?;
+        write_private(&self.sealed, &sealed.to_bytes())
+            .map_err(|error| format!("the sealed device key file could not be written: {error}"))
+    }
+}
+
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+impl<S: RecordSealer> SecretStore for SealedFileStore<S> {
+    fn load(&self) -> Result<Option<Vec<u8>>, String> {
+        use std::sync::atomic::Ordering;
+        if let Some(bytes) = self.read_sealed()? {
+            self.legacy_active.store(false, Ordering::Relaxed);
+            return Ok(Some(bytes));
+        }
+        let plaintext = match std::fs::read(&self.legacy) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("the device key file is unreadable: {error}")),
+        };
+        // A record of an older build: seal it, check it opens, then remove
+        // the plaintext copy.
+        match self
+            .write_sealed(&plaintext)
+            .and_then(|()| self.read_sealed())
+        {
+            Ok(Some(reopened)) if reopened == plaintext => {
+                if let Err(error) = std::fs::remove_file(&self.legacy) {
+                    log::warn!(
+                        "The plaintext device key file could not be removed after sealing: {error}"
+                    );
+                }
+                self.legacy_active.store(false, Ordering::Relaxed);
+                log::info!("The device key record is now sealed with the Android Keystore");
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_file(&self.sealed);
+                log::warn!("The sealed device key did not match; the legacy private file is kept");
+                self.legacy_active.store(true, Ordering::Relaxed);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&self.sealed);
+                log::warn!(
+                    "The device key could not be sealed; the legacy private file is kept: {error}"
+                );
+                self.legacy_active.store(true, Ordering::Relaxed);
+            }
+        }
+        Ok(Some(plaintext))
+    }
+
+    fn save(&self, bytes: &[u8]) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        match self.write_sealed(bytes) {
+            Ok(()) => {
+                if self.legacy.exists() {
+                    if let Err(error) = std::fs::remove_file(&self.legacy) {
+                        log::warn!("The plaintext device key file could not be removed: {error}");
+                    }
+                }
+                self.legacy_active.store(false, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                log::warn!("The Android Keystore refused to seal the device key: {error}");
+                Err(format!(
+                    "the Android Keystore could not seal the device key: {error}"
+                ))
+            }
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        if self
+            .legacy_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            "private_file"
+        } else {
+            "android_keystore"
+        }
     }
 }
 
@@ -280,6 +441,121 @@ mod tests {
             Some(&b"{\"version\":2}"[..])
         );
         assert!(!store.path.with_extension("tmp").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct StubSealer {
+        fail_seal: std::sync::atomic::AtomicBool,
+    }
+
+    impl RecordSealer for StubSealer {
+        fn seal(&self, plaintext: &[u8]) -> Result<SealedRecord, String> {
+            if self.fail_seal.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("binder unavailable".to_string());
+            }
+            let mut data = plaintext.to_vec();
+            data.extend_from_slice(&[0xAA; 16]);
+            Ok(SealedRecord::new("test-alias", &[1u8; 12], &data))
+        }
+
+        fn open(&self, sealed: &SealedRecord) -> Result<Vec<u8>, String> {
+            let (_iv, data) = sealed.parts()?;
+            Ok(data[..data.len() - 16].to_vec())
+        }
+    }
+
+    #[test]
+    fn sealed_store_fails_loudly_without_downgrading_to_plaintext() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!(
+            "obf-mobile-sealed-{}",
+            crate::crypto::new_device_id()
+        ));
+        let sealed_path = dir.join("controller").join("identity.sealed");
+        let legacy_path = dir.join("controller").join("identity.json");
+        let store = SealedFileStore::new(
+            StubSealer {
+                fail_seal: AtomicBool::new(true),
+            },
+            sealed_path.clone(),
+            legacy_path.clone(),
+        );
+
+        // Initial Keystore failure must fail loudly and never write plaintext.
+        assert!(store.save(b"{\"version\":1}").is_err());
+        assert!(!sealed_path.exists());
+        assert!(!legacy_path.exists());
+
+        // Succeeding seal writes identity.sealed and never identity.json.
+        store.sealer.fail_seal.store(false, Ordering::Relaxed);
+        store.save(b"{\"version\":1,\"deviceId\":\"a\"}").unwrap();
+        assert!(sealed_path.exists());
+        assert!(!legacy_path.exists());
+        assert_eq!(store.kind(), "android_keystore");
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some(&b"{\"version\":1,\"deviceId\":\"a\"}"[..])
+        );
+
+        // A transient Keystore error on a subsequent save must fail loudly,
+        // keep the existing identity.sealed intact, and never write identity.json.
+        store.sealer.fail_seal.store(true, Ordering::Relaxed);
+        assert!(store.save(b"{\"version\":1,\"deviceId\":\"b\"}").is_err());
+        assert!(sealed_path.exists());
+        assert!(!legacy_path.exists());
+        assert_eq!(store.kind(), "android_keystore");
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some(&b"{\"version\":1,\"deviceId\":\"a\"}"[..])
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sealed_store_migrates_legacy_plaintext_and_never_rewrites_it_on_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::env::temp_dir().join(format!(
+            "obf-mobile-sealed-mig-{}",
+            crate::crypto::new_device_id()
+        ));
+        let sealed_path = dir.join("controller").join("identity.sealed");
+        let legacy_path = dir.join("controller").join("identity.json");
+        write_private(&legacy_path, b"{\"version\":1,\"legacy\":true}").unwrap();
+
+        let store = SealedFileStore::new(
+            StubSealer {
+                fail_seal: AtomicBool::new(true),
+            },
+            sealed_path.clone(),
+            legacy_path.clone(),
+        );
+        // When migration fails on load, the legacy file remains readable.
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some(&b"{\"version\":1,\"legacy\":true}"[..])
+        );
+        assert!(legacy_path.exists());
+        assert!(!sealed_path.exists());
+        assert_eq!(store.kind(), "private_file");
+        // Saving while Keystore is failing must still fail loudly (no plaintext write).
+        assert!(store.save(b"{\"version\":1,\"new\":true}").is_err());
+        assert_eq!(
+            std::fs::read(&legacy_path).unwrap(),
+            b"{\"version\":1,\"legacy\":true}"
+        );
+
+        // Once Keystore recovers, save seals and removes the legacy file.
+        store.sealer.fail_seal.store(false, Ordering::Relaxed);
+        store.save(b"{\"version\":1,\"new\":true}").unwrap();
+        assert!(sealed_path.exists());
+        assert!(!legacy_path.exists());
+        assert_eq!(store.kind(), "android_keystore");
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some(&b"{\"version\":1,\"new\":true}"[..])
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -535,3 +535,23 @@ async fn content_this_device_lost_is_put_back_from_its_files() {
     a.sync.round().await;
     assert!(a.port.has_blob(&hash));
 }
+
+#[tokio::test]
+async fn untrusted_file_bytes_in_envelope_does_not_panic() {
+    let a = device("a", &[]);
+    let evil = json!({
+        "v": { "name": "evil" },
+        "files": [{
+            "path": "SKILL.md",
+            "bytes": u64::MAX,
+            "sha256": "00",
+            "chunks": []
+        }],
+        "base": ""
+    });
+    a.port.put(COLLECTION, "evil", evil, &[], false).unwrap();
+    // Must reject cleanly instead of panicking inside Vec::with_capacity(u64::MAX).
+    a.sync.round().await;
+    assert_eq!(a.sync.status().waiting, 1);
+    assert!(a.owner.items.lock().unwrap().is_empty());
+}

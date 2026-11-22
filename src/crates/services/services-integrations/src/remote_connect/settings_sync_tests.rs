@@ -171,6 +171,7 @@ struct Config {
     defaults: HashMap<String, Value>,
     applies: StdMutex<Vec<String>>,
     disabled: AtomicBool,
+    reads: AtomicU64,
 }
 
 impl Config {
@@ -215,6 +216,7 @@ impl LocalSettings for Config {
     }
 
     async fn read(&self, key: &str) -> Result<Option<Value>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.get(key))
     }
 
@@ -595,4 +597,26 @@ fn digests_ignore_key_order() {
         value_digest(&json!({ "b": { "d": null, "c": [1, 2] }, "a": 1 }))
     );
     assert_ne!(value_digest(&json!([1, 2])), value_digest(&json!([2, 1])));
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_loop_does_not_poll_config_while_synced() {
+    let laptop = host("laptop", &[]);
+    let (_changes, receiver) = watch::channel(());
+    let task = tokio::spawn(Arc::clone(&laptop.sync).run(receiver));
+    tokio::time::advance(Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(laptop.sync.status().phase, SyncPhase::Synced);
+    let reads_after_initial = laptop.config.reads.load(Ordering::SeqCst);
+    assert!(reads_after_initial > 0);
+
+    // Advance well past the old 2 s STATUS_POLL without any change or wake.
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        laptop.config.reads.load(Ordering::SeqCst),
+        reads_after_initial,
+        "idle settings sync loop must not re-read config periodically"
+    );
+    task.abort();
 }

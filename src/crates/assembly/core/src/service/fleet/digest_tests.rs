@@ -322,7 +322,26 @@ fn session_status_prefers_waiting_then_running() {
         session_status(Some(&activity("external", 0))),
         FleetSessionStatus::Idle
     );
+    assert!(is_digest_relevant_event("agentic://dialog-turn-started"));
     assert!(is_digest_relevant_event("agentic://dialog-turn-completed"));
+    assert!(is_digest_relevant_event("agentic://dialog-turn-failed"));
+    assert!(is_digest_relevant_event("agentic://dialog-turn-cancelled"));
+    assert!(is_digest_relevant_event("agentic://session-created"));
+    assert!(is_digest_relevant_event("agentic://session-deleted"));
+    assert!(is_digest_relevant_event("agentic://session-state-changed"));
+    assert!(is_digest_relevant_event(
+        "agentic://session-title-generated"
+    ));
+    assert!(is_digest_relevant_event("workspace-opened"));
+    assert!(is_digest_relevant_event("permission-requested"));
+    assert!(is_digest_relevant_event("dispatch-job-updated"));
+    assert!(!is_digest_relevant_event("agentic://text-chunk"));
+    assert!(!is_digest_relevant_event("agentic://thinking-chunk"));
+    assert!(!is_digest_relevant_event("agentic://tool-event"));
+    assert!(!is_digest_relevant_event("agentic://token-usage-updated"));
+    assert!(!is_digest_relevant_event("agentic://model-round-started"));
+    assert!(!is_digest_relevant_event("agentic://model-round-completed"));
+    assert!(!is_digest_relevant_event("agentic://prompt-suggestion"));
     assert!(!is_digest_relevant_event("fleet://digest-changed"));
     assert!(!is_digest_relevant_event("terminal-output"));
 }

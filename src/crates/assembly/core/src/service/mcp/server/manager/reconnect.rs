@@ -27,10 +27,22 @@ impl MCPServerManager {
     }
 
     async fn reconnect_once(&self) -> OpenBitFunResult<()> {
-        let has_registered_servers = !self.runtime.is_empty().await;
         let has_pending_reconnects = self.runtime.has_pending_reconnects().await;
-        if !has_registered_servers && !has_pending_reconnects {
-            return Ok(());
+        if !has_pending_reconnects {
+            let needs_retry =
+                self.runtime
+                    .get_all_statuses()
+                    .await
+                    .into_iter()
+                    .any(|(_, status)| {
+                        matches!(
+                            status,
+                            MCPServerStatus::Reconnecting | MCPServerStatus::Failed
+                        )
+                    });
+            if !needs_retry {
+                return Ok(());
+            }
         }
 
         let configs = self.config_service.load_all_configs().await?;

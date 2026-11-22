@@ -364,7 +364,7 @@ pub(crate) fn process_alive(pid: u32) -> bool {
         // that is trying to exit with the E modifier. Require a known live
         // state with no exit modifier before authenticating SIGKILL escalation;
         // a failed or unrecognized query must fail closed.
-        let output = Command::new("ps")
+        let output = openbitfun_services_core::process_manager::create_command("ps")
             .args(["-p", &pid.to_string(), "-o", "stat="])
             .output();
         let Ok(output) = output else {
@@ -417,7 +417,7 @@ fn process_matches_job(pid: u32, job_id: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 fn process_matches_action(pid: u32, action: &str, job_id: &str) -> bool {
-    let output = Command::new("ps")
+    let output = openbitfun_services_core::process_manager::create_command("ps")
         .args(["-p", &pid.to_string(), "-o", "command="])
         .output();
     let Ok(output) = output else {
@@ -682,7 +682,7 @@ mod tests {
         let job_id = "leader-exits-after-term";
         let ready_dir = tempfile::tempdir().expect("ready directory");
         let ready_path = ready_dir.path().join("term-resistant-child-ready");
-        let mut command = Command::new("/bin/sh");
+        let mut command = openbitfun_services_core::process_manager::create_command("/bin/sh");
         command
             .arg("-c")
             // Keep the leader in the shell's `wait` builtin so TERM runs its

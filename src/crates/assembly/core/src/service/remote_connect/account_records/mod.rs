@@ -116,7 +116,7 @@ pub fn start(
     let store = Arc::new(FileRecordsStateStore::new(
         super::settings_sync::state_directory()?,
     ));
-    let changes = config.subscribe_local_changes();
+    let config_changes = config.subscribe_local_changes();
     let engine =
         AccountRecordsSync::new(collections, provider, store, Arc::new(ConfigSwitch(config)));
     if let Some(observer) = observer {
@@ -127,7 +127,43 @@ pub fn start(
     }
     let handle = tokio::runtime::Handle::try_current()
         .map_err(|_| anyhow!("account records sync needs a runtime"))?;
-    handle.spawn(Arc::clone(&engine).run(changes));
+
+    #[cfg(feature = "file-watch")]
+    let (merged_tx, merged_rx) = tokio::sync::watch::channel(());
+    #[cfg(feature = "file-watch")]
+    let fs_watcher = {
+        let paths = crate::infrastructure::get_path_manager_arc();
+        let watch_targets = vec![
+            (paths.user_agents_dir(), false),
+            (paths.user_skills_dir(), true),
+            (paths.memories_root_dir(), false),
+            (paths.assistant_workspace_base_dir(None), true),
+        ];
+        let tx = merged_tx.clone();
+        openbitfun_services_integrations::file_watch::PathChangeWatcher::watch_paths(
+            &watch_targets,
+            move || {
+                tx.send_replace(());
+            },
+        )
+    };
+    #[cfg(feature = "file-watch")]
+    {
+        let mut config_rx = config_changes;
+        let tx = merged_tx;
+        handle.spawn(async move {
+            while config_rx.changed().await.is_ok() {
+                tx.send_replace(());
+            }
+        });
+        let run_engine = Arc::clone(&engine);
+        handle.spawn(async move {
+            let _watcher = fs_watcher;
+            run_engine.run(merged_rx).await;
+        });
+    }
+    #[cfg(not(feature = "file-watch"))]
+    handle.spawn(Arc::clone(&engine).run(config_changes));
     log::info!(
         "Account records sync started: collections={}",
         engine.collection_names().join(",")

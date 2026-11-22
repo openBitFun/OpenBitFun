@@ -115,6 +115,19 @@ pub(crate) fn attach_replica(account_id: &str) {
     openbitfun_core::service::remote_connect::account_records::wake();
 }
 
+/// Detaches the active replica when Link stops or the account signs out,
+/// waking both binders so they transition cleanly out of the attached state.
+pub(crate) fn detach_replica(signed_out: bool) {
+    if signed_out {
+        SIGNED_IN.store(false, Ordering::SeqCst);
+    }
+    let removed = REPLICA.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if removed.is_some() || signed_out {
+        settings_sync::wake();
+        openbitfun_core::service::remote_connect::account_records::wake();
+    }
+}
+
 /// The signed-in account's replica on this device (the account records
 /// binder reads it; wave24-replica).
 pub(crate) fn current_account_replica() -> Option<(String, Arc<AccountReplica>)> {

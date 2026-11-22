@@ -27,6 +27,9 @@ pub struct RelayLimits {
     pub max_active: usize,
     /// Requests kept (running and finished) for resumable polling.
     pub max_retained: usize,
+    /// Total output+result bytes kept across finished rounds before oldest
+    /// finished entries are evicted.
+    pub max_retained_bytes: usize,
     /// How long a finished round stays readable.
     pub retain_finished: Duration,
     /// Streamed output (text, reasoning, tool arguments) per round.
@@ -45,8 +48,9 @@ impl Default for RelayLimits {
     fn default() -> Self {
         Self {
             max_active: 4,
-            max_retained: 64,
-            retain_finished: Duration::from_secs(10 * 60),
+            max_retained: 32,
+            max_retained_bytes: 32 * 1024 * 1024,
+            retain_finished: Duration::from_secs(5 * 60),
             max_output_bytes: 4 * 1024 * 1024,
             max_request_bytes: 8 * 1024 * 1024,
             max_messages: 1024,
@@ -89,6 +93,21 @@ impl Entry {
 
     fn is_done(&self) -> bool {
         self.state().done
+    }
+
+    /// Approximate bytes retained by this entry's streamed chunks and final result.
+    fn retained_bytes(&self) -> usize {
+        let state = self.state();
+        let result_bytes = state.result.as_ref().map_or(0, |result| {
+            result.text.len()
+                + result.reasoning.len()
+                + result
+                    .tool_calls
+                    .iter()
+                    .map(|call| call.id.len() + call.name.len() + call.arguments.len())
+                    .sum::<usize>()
+        });
+        state.output_bytes.saturating_add(result_bytes)
     }
 
     /// Finishes the round once (a later finish, e.g. after a cancel, is a
@@ -162,6 +181,11 @@ impl ModelRelay {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_count(&self) -> usize {
+        self.requests().len()
+    }
+
     /// Runs one `fleet_model_*` command.
     pub async fn handle(self: &Arc<Self>, command: &str, args: Value) -> Result<Value, String> {
         match command {
@@ -178,7 +202,13 @@ impl ModelRelay {
                 self.start(parse(command, &args)?)
             }
             FLEET_MODEL_POLL => self.poll(parse(command, &args)?).await,
-            FLEET_MODEL_CANCEL => Ok(self.cancel(parse(command, &args)?)),
+            FLEET_MODEL_CANCEL => {
+                let answer = self.cancel(parse(command, &args)?);
+                if answer.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                    self.evict_and_schedule_expiry();
+                }
+                Ok(answer)
+            }
             other => Err(format!(
                 "fleet_model_unknown_command: '{other}' is not a model relay command"
             )),
@@ -191,7 +221,7 @@ impl ModelRelay {
         let print = fingerprint(&request);
         let entry = {
             let mut requests = self.requests();
-            self.evict(&mut requests);
+            self.evict(&mut requests, 1);
             if let Some(existing) = requests.get(&request.request_id) {
                 if existing.fingerprint != print {
                     return Err(format!(
@@ -243,7 +273,7 @@ impl ModelRelay {
     pub async fn poll(&self, request: FleetModelPollRequest) -> Result<Value, String> {
         let entry = {
             let mut requests = self.requests();
-            self.evict(&mut requests);
+            self.evict(&mut requests, 0);
             requests.get(&request.request_id).cloned()
         }
         .ok_or_else(|| {
@@ -325,9 +355,31 @@ impl ModelRelay {
         json!({ "requestId": request.request_id, "cancelled": cancelled })
     }
 
-    /// Drops finished rounds past their retention, then the oldest finished
-    /// ones while over the bound.
-    fn evict(&self, requests: &mut HashMap<String, Arc<Entry>>) {
+    /// Immediately applies retention caps and schedules a one-shot expiry sweep
+    /// for `retain_finished` so completed rounds do not linger indefinitely
+    /// when no further calls arrive.
+    fn evict_and_schedule_expiry(self: &Arc<Self>) {
+        {
+            let mut requests = self.requests();
+            self.evict(&mut requests, 0);
+        }
+        let delay = self.limits.retain_finished;
+        let weak = Arc::downgrade(self);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                tokio::time::sleep(delay).await;
+                if let Some(relay) = weak.upgrade() {
+                    let mut requests = relay.requests();
+                    relay.evict(&mut requests, 0);
+                }
+            });
+        }
+    }
+
+    /// Drops finished rounds past their retention TTL, then evicts the oldest
+    /// finished rounds until both the entry count and total retained byte caps
+    /// are satisfied.
+    fn evict(&self, requests: &mut HashMap<String, Arc<Entry>>, reserve_slots: usize) {
         let now = Instant::now();
         let retain = self.limits.retain_finished;
         requests.retain(|_, entry| {
@@ -336,7 +388,8 @@ impl ModelRelay {
                 .finished_at
                 .is_none_or(|finished| now.duration_since(finished) < retain)
         });
-        while requests.len() >= self.limits.max_retained {
+        let max_count = self.limits.max_retained.saturating_sub(reserve_slots);
+        while requests.len() > max_count {
             let oldest = requests
                 .iter()
                 .filter(|(_, entry)| entry.is_done())
@@ -345,6 +398,25 @@ impl ModelRelay {
             match oldest {
                 Some(id) => {
                     requests.remove(&id);
+                }
+                None => break,
+            }
+        }
+        let mut finished_bytes: usize = requests
+            .values()
+            .filter(|entry| entry.is_done())
+            .map(|entry| entry.retained_bytes())
+            .sum();
+        while finished_bytes > self.limits.max_retained_bytes {
+            let oldest = requests
+                .iter()
+                .filter(|(_, entry)| entry.is_done())
+                .min_by_key(|(_, entry)| entry.created_at)
+                .map(|(id, entry)| (id.clone(), entry.retained_bytes()));
+            match oldest {
+                Some((id, bytes)) => {
+                    requests.remove(&id);
+                    finished_bytes = finished_bytes.saturating_sub(bytes);
                 }
                 None => break,
             }
@@ -425,10 +497,12 @@ impl ModelRelay {
                     request_id,
                     error.code
                 );
-                entry.finish(RelayResult {
+                if entry.finish(RelayResult {
                     error: Some(error),
                     ..RelayResult::default()
-                });
+                }) {
+                    self.evict_and_schedule_expiry();
+                }
                 return;
             }
         };
@@ -481,6 +555,7 @@ impl ModelRelay {
         result.error = failure;
         let ok = result.error.is_none();
         if entry.finish(result) {
+            self.evict_and_schedule_expiry();
             log::info!(
                 "Superagent relay round finished: request_id={}, ok={}",
                 request_id,

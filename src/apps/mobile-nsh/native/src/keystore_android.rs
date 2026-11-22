@@ -21,14 +21,12 @@
 //! cannot open (restored onto another phone, Keystore reset) is kept and
 //! reported unreadable; the next sign-in replaces it.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use jni::objects::{JByteArray, JObject, JValue};
 use jni::{JNIEnv, JavaVM};
 
-use crate::keystore::{write_private, SealedRecord, SecretStore};
+use crate::keystore::{RecordSealer, SealedFileStore, SealedRecord, SecretStore};
 
 /// The Keystore alias of the record key.
 const KEY_ALIAS: &str = "com.openbitfun.mobile.controller.record.v1";
@@ -92,32 +90,25 @@ unsafe fn find_java_vm() -> Option<JavaVM> {
 }
 
 /// The record store for Android: sealed with a Keystore key when the JVM is
-/// reachable, the owner-only private file otherwise.
+/// reachable, the owner-only private file otherwise (Android 8 to 11).
 pub(crate) fn store(data_dir: &std::path::Path) -> Box<dyn SecretStore> {
     let directory = data_dir.join("controller");
     let legacy = directory.join("identity.json");
     match java_vm() {
-        Some(vm) => Box::new(KeystoreFile {
-            vm,
-            sealed: directory.join("identity.sealed"),
+        Some(vm) => Box::new(SealedFileStore::new(
+            AndroidKeystore { vm },
+            directory.join("identity.sealed"),
             legacy,
-            degraded: AtomicBool::new(false),
-        }),
+        )),
         None => Box::new(crate::keystore::PrivateFile { path: legacy }),
     }
 }
 
-struct KeystoreFile {
+struct AndroidKeystore {
     vm: &'static JavaVM,
-    sealed: PathBuf,
-    /// The plaintext record of builds before Keystore protection, and the
-    /// fallback when the Keystore refuses to seal.
-    legacy: PathBuf,
-    /// The last save fell back to the plaintext file.
-    degraded: AtomicBool,
 }
 
-impl KeystoreFile {
+impl AndroidKeystore {
     fn with_env<T>(
         &self,
         work: impl FnOnce(&mut JNIEnv<'_>) -> Result<T, String>,
@@ -131,7 +122,9 @@ impl KeystoreFile {
         env.with_local_frame(32, |env| work(env).map_err(Failure))
             .map_err(|failure| failure.0)
     }
+}
 
+impl RecordSealer for AndroidKeystore {
     fn seal(&self, plaintext: &[u8]) -> Result<SealedRecord, String> {
         self.with_env(|env| {
             let key = record_key(env, true)?.ok_or("the Keystore made no key")?;
@@ -188,98 +181,6 @@ impl KeystoreFile {
             update_aad(env, &cipher)?;
             do_final(env, &cipher, &data)
         })
-    }
-
-    fn read_sealed(&self) -> Result<Option<Vec<u8>>, String> {
-        let bytes = match std::fs::read(&self.sealed) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("the sealed device key file is unreadable: {error}")),
-        };
-        let sealed = SealedRecord::parse(&bytes)?;
-        self.open(&sealed)
-            .map(Some)
-            .map_err(|error| format!("the Android Keystore could not open the device key: {error}"))
-    }
-
-    fn write_sealed(&self, bytes: &[u8]) -> Result<(), String> {
-        let sealed = self.seal(bytes)?;
-        write_private(&self.sealed, &sealed.to_bytes())
-            .map_err(|error| format!("the sealed device key file could not be written: {error}"))
-    }
-}
-
-impl SecretStore for KeystoreFile {
-    fn load(&self) -> Result<Option<Vec<u8>>, String> {
-        if let Some(bytes) = self.read_sealed()? {
-            return Ok(Some(bytes));
-        }
-        let plaintext = match std::fs::read(&self.legacy) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("the device key file is unreadable: {error}")),
-        };
-        // A record of an older build: seal it, check it opens, then remove
-        // the plaintext copy.
-        match self
-            .write_sealed(&plaintext)
-            .and_then(|()| self.read_sealed())
-        {
-            Ok(Some(reopened)) if reopened == plaintext => {
-                if let Err(error) = std::fs::remove_file(&self.legacy) {
-                    log::warn!(
-                        "The plaintext device key file could not be removed after sealing: {error}"
-                    );
-                }
-                log::info!("The device key record is now sealed with the Android Keystore");
-            }
-            Ok(_) => {
-                let _ = std::fs::remove_file(&self.sealed);
-                log::warn!("The sealed device key did not match; the private file is kept");
-                self.degraded.store(true, Ordering::Relaxed);
-            }
-            Err(error) => {
-                let _ = std::fs::remove_file(&self.sealed);
-                log::warn!("The device key could not be sealed; the private file is kept: {error}");
-                self.degraded.store(true, Ordering::Relaxed);
-            }
-        }
-        Ok(Some(plaintext))
-    }
-
-    fn save(&self, bytes: &[u8]) -> Result<(), String> {
-        match self.write_sealed(bytes) {
-            Ok(()) => {
-                if self.legacy.exists() {
-                    if let Err(error) = std::fs::remove_file(&self.legacy) {
-                        log::warn!("The plaintext device key file could not be removed: {error}");
-                    }
-                }
-                self.degraded.store(false, Ordering::Relaxed);
-                Ok(())
-            }
-            Err(error) => {
-                // Loud fallback: the newest record must be the one read
-                // back, so the plaintext file replaces the sealed one.
-                log::warn!(
-                    "The Android Keystore refused to seal the device key; keeping it in the owner-only private file: {error}"
-                );
-                write_private(&self.legacy, bytes).map_err(|error| {
-                    format!("the device key file could not be written: {error}")
-                })?;
-                let _ = std::fs::remove_file(&self.sealed);
-                self.degraded.store(true, Ordering::Relaxed);
-                Ok(())
-            }
-        }
-    }
-
-    fn kind(&self) -> &'static str {
-        if self.degraded.load(Ordering::Relaxed) {
-            "private_file"
-        } else {
-            "android_keystore"
-        }
     }
 }
 

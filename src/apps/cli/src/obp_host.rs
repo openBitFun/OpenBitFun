@@ -79,6 +79,7 @@ pub(crate) fn wake() {
 pub(crate) async fn shutdown() {
     if let Some(host) = HOST.get() {
         crate::fleet_host::stop();
+        crate::account_settings_sync::detach_replica(false);
         host.server.shutdown();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(8), host.link.shutdown()).await;
         if let Some(dir) = host_dir() {
@@ -179,6 +180,9 @@ pub(crate) fn install(runtime: &Arc<CliRuntimeContext>) {
                 crate::fleet_host::presence_changed();
             } else {
                 crate::fleet_host::stop();
+                crate::account_settings_sync::detach_replica(
+                    status.state == openbitfun_link::MeshState::SignedOut,
+                );
                 crate::mesh_route::detach();
             }
             write_status(&dir, status, port, &status_server, &gate);

@@ -5,6 +5,10 @@ use crate::remote_connect::RemoteToolStatus;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 
+/// Single-frame OBP `obp_remote_command` attachment limit (20 MiB raw -> ~26.7 MiB
+/// base64 + JSON envelope, safely under OBP's 32 MiB `MAX_MESSAGE_BYTES`).
+pub const MAX_OBP_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
 impl RemoteBotTarget {
     pub async fn require_session_attachments(&self) -> Result<(), String> {
         let info = self.rpc(json!({"cmd":"get_workspace_info"})).await?;
@@ -19,14 +23,21 @@ impl RemoteBotTarget {
         Ok(())
     }
 
-    /// File bytes travel in the existing authenticated, encrypted bulk RPC lane.
-    /// 30 MiB becomes under 54 MiB after both base64 envelopes (64 MiB limit).
+    /// File bytes travel in one authenticated, E2E-encrypted OBP RPC frame
+    /// (`MAX_MESSAGE_BYTES = 32 MiB`). Capped at 20 MiB raw (~26.7 MiB base64)
+    /// so oversized attachments fail clearly instead of tearing down the OBP
+    /// connection.
     pub async fn store_attachment(
         &self,
         file: &super::inbound_files::InboundFile,
     ) -> Result<String, String> {
-        if file.bytes.len() > super::inbound_files::MAX_SESSION_ATTACHMENT_BYTES {
-            return Err("Session attachment exceeds the transfer limit".into());
+        let limit =
+            MAX_OBP_ATTACHMENT_BYTES.min(super::inbound_files::MAX_SESSION_ATTACHMENT_BYTES);
+        if file.bytes.len() > limit {
+            return Err(format!(
+                "Session attachment exceeds the {} MiB remote transfer limit",
+                limit / (1024 * 1024)
+            ));
         }
         let attachment_id = uuid::Uuid::new_v4().to_string();
         let reply = self.rpc(json!({"cmd":"store_session_attachment", "session_id": self.session_id,
@@ -310,5 +321,33 @@ mod tests {
         first["chunk_size"] = json!(0);
         first["chunk_base64"] = json!("");
         assert!(transfer.append(first, 2).is_err());
+    }
+
+    #[tokio::test]
+    async fn obp_attachment_cap_fits_within_32_mib_frame_and_rejects_oversized() {
+        const OBP_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+        let encoded_len = MAX_OBP_ATTACHMENT_BYTES.div_ceil(3) * 4;
+        assert!(
+            encoded_len + 64 * 1024 < OBP_MAX_MESSAGE_BYTES,
+            "base64-encoded attachment plus JSON/OBP envelope must fit within 32 MiB"
+        );
+        let target = RemoteBotTarget {
+            relay_url: "https://example.invalid".into(),
+            device_id: "dev-1".into(),
+            device_name: "Dev 1".into(),
+            session_id: "sess-1".into(),
+            account: crate::remote_connect::account::AccountSession::new(
+                "fixture".into(),
+                "user".into(),
+                [7; 32],
+            )
+            .into(),
+        };
+        let oversized = super::super::inbound_files::InboundFile {
+            name: "too-big.bin".into(),
+            bytes: vec![0u8; MAX_OBP_ATTACHMENT_BYTES + 1],
+        };
+        let err = target.store_attachment(&oversized).await.unwrap_err();
+        assert!(err.contains("20 MiB"), "unexpected error: {err}");
     }
 }

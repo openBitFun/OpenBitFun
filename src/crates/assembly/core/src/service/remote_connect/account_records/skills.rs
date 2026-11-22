@@ -96,29 +96,35 @@ impl LocalCollection for SkillRecords {
     }
 
     async fn list(&self, _device: &DeviceContext) -> Result<Vec<LocalItem>> {
-        let mut items = Vec::new();
-        let mut dirs: Vec<_> = std::fs::read_dir(&self.root)
-            .map(|entries| entries.flatten().collect())
-            .unwrap_or_default();
-        dirs.sort_by_key(|entry| entry.file_name());
-        for entry in dirs {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let id = format!("skill:{name}");
-            if name.starts_with('.')
-                || !valid_record_id(&id)
-                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
-            {
-                continue;
+        let root = self.root.clone();
+        let mut items = tokio::task::spawn_blocking(move || {
+            let mut items = Vec::new();
+            let mut dirs: Vec<_> = std::fs::read_dir(&root)
+                .map(|entries| entries.flatten().collect())
+                .unwrap_or_default();
+            dirs.sort_by_key(|entry| entry.file_name());
+            for entry in dirs {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let id = format!("skill:{name}");
+                if name.starts_with('.')
+                    || !valid_record_id(&id)
+                    || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+                {
+                    continue;
+                }
+                let Some(files) = read_tree(&entry.path(), SKILL_LIMITS) else {
+                    log::debug!("Skill stays on this device (over the sync limits): name={name}");
+                    continue;
+                };
+                if !files.iter().any(|file| file.path.ends_with("SKILL.md")) {
+                    continue;
+                }
+                items.push(LocalItem::new(id, json!({ "dir": name })).with_files(files));
             }
-            let Some(files) = read_tree(&entry.path(), SKILL_LIMITS) else {
-                log::debug!("Skill stays on this device (over the sync limits): name={name}");
-                continue;
-            };
-            if !files.iter().any(|file| file.path.ends_with("SKILL.md")) {
-                continue;
-            }
-            items.push(LocalItem::new(id, json!({ "dir": name })).with_files(files));
-        }
+            items
+        })
+        .await
+        .map_err(|error| anyhow!("scan skills directory: {error}"))?;
         let defaults = serde_json::to_value(GlobalConfig::default()).unwrap_or(Value::Null);
         let disabled = self.read(DISABLED_PATH).await;
         let disabled = if disabled.is_null() {

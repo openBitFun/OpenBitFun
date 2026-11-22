@@ -140,6 +140,11 @@ async fn serve(service: Arc<Mutex<Service>>) -> String {
                         ),
                         None => unauthorized,
                     }
+                } else if request_line.starts_with("POST /api/v1/auth/logout") {
+                    if let Some(token) = bearer {
+                        service.lock().unwrap().revoke_family_of(&token);
+                    }
+                    (200, "{}".to_string())
                 } else if request_line.starts_with("GET /api/v1/me") {
                     if bearer.is_some_and(|token| service.lock().unwrap().live(&token)) {
                         (
@@ -296,6 +301,22 @@ async fn a_revoked_sign_in_is_still_signed_out() {
         .revoke_family_of(&original.access_token);
     assert!(client.me().await.unwrap().is_none());
     assert!(profile.store.load().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn logout_serializes_with_in_flight_refresh_via_update_guard() {
+    let (profile, _) = profile(true).await;
+    let mut refresher = profile.client().await;
+    let mut logger_out = profile.client().await;
+    let (refresh_res, logout_res) = tokio::join!(refresher.access_token(), logger_out.logout());
+    assert!(refresh_res.is_ok());
+    assert!(logout_res.is_ok());
+    // Regardless of which task acquired the guard first, the store must end
+    // signed out and never retain credentials resurrected by a racing refresh.
+    assert!(
+        profile.store.load().await.unwrap().is_none(),
+        "credentials must stay cleared after logout"
+    );
 }
 
 async fn futures_join_all<F: std::future::Future>(

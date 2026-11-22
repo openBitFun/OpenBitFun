@@ -52,10 +52,16 @@ pub use openbitfun_product_domains::fleet::account_records::*;
 
 use super::settings_sync::value_digest;
 
-/// How often local stores are re-listed without a change signal.
-const LOCAL_RESCAN: Duration = Duration::from_secs(10);
+/// Rare fallback rescan when attached and idle with no change signal.
+const IDLE_FALLBACK_RESCAN: Duration = Duration::from_secs(600);
+/// Retry interval while remote records are waiting for missing content blobs.
+const WAITING_BLOB_RETRY: Duration = Duration::from_secs(15);
 /// Quiet time after the last local change before it is written.
 const LOCAL_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Hard cap on any single synced content file assembled from remote blobs.
+const MAX_CONTENT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// Upper bound on upfront `Vec::with_capacity` from an untrusted `FileEntry::bytes`.
+const MAX_PREALLOC_FILE_BYTES: usize = MAX_CHUNK_BYTES;
 
 // ── Items ────────────────────────────────────────────────────────────────
 
@@ -592,11 +598,21 @@ impl AccountRecordsSync {
                     None => std::future::pending::<()>().await,
                 }
             };
+            let fallback_rescan = async {
+                let status = self.status.borrow().clone();
+                if !status.enabled || !status.attached {
+                    std::future::pending::<()>().await;
+                } else if status.waiting > 0 {
+                    tokio::time::sleep(WAITING_BLOB_RETRY).await;
+                } else {
+                    tokio::time::sleep(IDLE_FALLBACK_RESCAN).await;
+                }
+            };
             tokio::select! {
                 _ = local_changed => {}
                 _ = replica_changed => {}
                 _ = self.wake.notified() => {}
-                _ = tokio::time::sleep(LOCAL_RESCAN) => {}
+                _ = fallback_rescan => {}
             }
         }
     }
@@ -721,9 +737,29 @@ impl Round<'_> {
             if !safe_relative_path(&entry.path) {
                 return None;
             }
-            let mut bytes = Vec::with_capacity(entry.bytes as usize);
+            if entry.bytes > MAX_CONTENT_FILE_BYTES {
+                log::warn!(
+                    "Account record file exceeds maximum size limit: path={}, bytes={}",
+                    entry.path,
+                    entry.bytes
+                );
+                return None;
+            }
+            let prealloc = usize::try_from(entry.bytes)
+                .unwrap_or(MAX_PREALLOC_FILE_BYTES)
+                .min(MAX_PREALLOC_FILE_BYTES);
+            let mut bytes = Vec::with_capacity(prealloc);
             for hash in &entry.chunks {
-                bytes.extend(self.port.fetch_blob(hash, false).await?);
+                let chunk = self.port.fetch_blob(hash, false).await?;
+                if (bytes.len() as u64).saturating_add(chunk.len() as u64) > MAX_CONTENT_FILE_BYTES
+                {
+                    log::warn!(
+                        "Account record file exceeded maximum size while fetching chunks: path={}",
+                        entry.path
+                    );
+                    return None;
+                }
+                bytes.extend_from_slice(&chunk);
             }
             if sha256_hex(&bytes) != entry.sha256 {
                 log::warn!(
@@ -747,13 +783,28 @@ impl Round<'_> {
     ) -> Result<()> {
         let name = binding.collection();
         let local = binding.list(&self.device).await?;
-        let local: BTreeMap<String, (LocalItem, String)> = local
-            .into_iter()
-            .map(|item| {
-                let digest = local_digest(&item);
-                (item.id.clone(), (item, digest))
+        let has_files = local.iter().any(|item| !item.files.is_empty());
+        let local: BTreeMap<String, (LocalItem, String)> = if has_files {
+            tokio::task::spawn_blocking(move || {
+                local
+                    .into_iter()
+                    .map(|item| {
+                        let digest = local_digest(&item);
+                        (item.id.clone(), (item, digest))
+                    })
+                    .collect()
             })
-            .collect();
+            .await
+            .map_err(|error| anyhow!("hash local account records: {error}"))?
+        } else {
+            local
+                .into_iter()
+                .map(|item| {
+                    let digest = local_digest(&item);
+                    (item.id.clone(), (item, digest))
+                })
+                .collect()
+        };
 
         // First sync on this device: offer the non-default items.
         if !state.seeded {

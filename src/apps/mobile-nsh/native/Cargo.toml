@@ -14,7 +14,7 @@
 
 [package]
 name = "openbitfun-mobile-native"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.97"
 description = "OpenBitFun phone app native module (`openbitfun/mobile`): sign-in, device key, Link controller, OBP client"
@@ -55,6 +55,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 # The device key and account tokens live in the Keychain.
+core-foundation = "0.10"
 security-framework = "3.7"
 
 [target.'cfg(target_os = "ios")'.dependencies]

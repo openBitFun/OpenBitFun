@@ -94,45 +94,50 @@ impl LocalCollection for PersonaRecords {
     }
 
     async fn list(&self, _device: &DeviceContext) -> Result<Vec<LocalItem>> {
-        let mut items = Vec::new();
-        let mut entries: Vec<_> = std::fs::read_dir(&self.base)
-            .map(|entries| entries.flatten().collect())
-            .unwrap_or_default();
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let id = match name.as_str() {
-                "workspace" => "default".to_string(),
-                other => match other.strip_prefix("workspace-") {
-                    Some(id) if valid_record_id(id) && !id.contains(':') => id.to_string(),
-                    _ => continue,
-                },
-            };
-            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
+        let base = self.base.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut items = Vec::new();
+            let mut entries: Vec<_> = std::fs::read_dir(&base)
+                .map(|entries| entries.flatten().collect())
+                .unwrap_or_default();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let id = match name.as_str() {
+                    "workspace" => "default".to_string(),
+                    other => match other.strip_prefix("workspace-") {
+                        Some(id) if valid_record_id(id) && !id.contains(':') => id.to_string(),
+                        _ => continue,
+                    },
+                };
+                if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    continue;
+                }
+                let files: Vec<ItemFile> = PERSONA_FILES
+                    .iter()
+                    .filter_map(|file| {
+                        std::fs::read(entry.path().join(file))
+                            .ok()
+                            .map(|bytes| ItemFile {
+                                path: (*file).to_string(),
+                                bytes,
+                            })
+                    })
+                    .collect();
+                if files.is_empty() {
+                    continue;
+                }
+                let offer = !files.iter().all(is_template);
+                items.push(
+                    LocalItem::new(id, json!({ "kind": "persona" }))
+                        .with_files(files)
+                        .offered(offer),
+                );
             }
-            let files: Vec<ItemFile> = PERSONA_FILES
-                .iter()
-                .filter_map(|file| {
-                    std::fs::read(entry.path().join(file))
-                        .ok()
-                        .map(|bytes| ItemFile {
-                            path: (*file).to_string(),
-                            bytes,
-                        })
-                })
-                .collect();
-            if files.is_empty() {
-                continue;
-            }
-            let offer = !files.iter().all(is_template);
-            items.push(
-                LocalItem::new(id, json!({ "kind": "persona" }))
-                    .with_files(files)
-                    .offered(offer),
-            );
-        }
-        Ok(items)
+            items
+        })
+        .await
+        .map_err(|error| anyhow!("scan personas directory: {error}"))
     }
 
     async fn apply(&self, item: &RemoteItem, context: &ApplyContext) -> Result<()> {

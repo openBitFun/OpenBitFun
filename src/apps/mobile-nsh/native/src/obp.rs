@@ -156,7 +156,7 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[cfg(test)]
 #[allow(clippy::result_large_err)]
-mod tests {
+pub(crate) mod tests {
     //! The client against a loopback device that speaks the server side of
     //! the account mesh handshake with `openbitfun_link::handshake` (the
     //! functions the desktop's mesh listener verifies with).
@@ -316,7 +316,176 @@ mod tests {
         dial_with(addr, pair_key, Resume::default()).await
     }
 
-    async fn dial_with(
+    pub(crate) struct ScriptedSession {
+        pub(crate) instance_id: String,
+        pub(crate) last_seq: u64,
+        pub(crate) events: Vec<Value>,
+        pub(crate) close_after_events: bool,
+    }
+
+    pub(crate) struct ScriptedDevice {
+        pub(crate) addr: std::net::SocketAddr,
+        pub(crate) hellos: mpsc::UnboundedReceiver<Value>,
+    }
+
+    /// Loopback OBP device whose successive connections play `sessions` in order.
+    pub(crate) async fn scripted_device(
+        pair_key: [u8; 32],
+        client: &'static str,
+        server: &'static str,
+        sessions: Vec<ScriptedSession>,
+    ) -> ScriptedDevice {
+        openbitfun_services_core::tls_provider::ensure_ring_crypto_provider();
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["openbitfun.local".to_string()]).unwrap();
+        let cert_der = certified.cert.der().clone();
+        let fingerprint = crate::crypto::fingerprint(cert_der.as_ref());
+        let key = rustls::pki_types::PrivateKeyDer::try_from(certified.signing_key.serialize_der())
+            .unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (hello_sender, hellos) = mpsc::unbounded_channel();
+        let sessions = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+            sessions,
+        )));
+        tokio::spawn(async move {
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    return;
+                };
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    continue;
+                };
+                let fingerprint = fingerprint.clone();
+                let hellos = hello_sender.clone();
+                let session = sessions.lock().unwrap().pop_front();
+                tokio::spawn(async move {
+                    let hs_key = handshake::handshake_key(&pair_key);
+                    let callback = |request: &Request,
+                                    mut response: Response|
+                     -> Result<Response, ErrorResponse> {
+                        let header = |name: &str| {
+                            request
+                                .headers()
+                                .get(name)
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or_default()
+                                .to_string()
+                        };
+                        let claims = Claims {
+                            client_device_id: header(handshake::HEADER_DEVICE),
+                            server_device_id: header(handshake::HEADER_TARGET),
+                            cert_fingerprint: fingerprint.clone(),
+                            time_ms: header(handshake::HEADER_TIME).parse().unwrap_or_default(),
+                            nonce: header(handshake::HEADER_NONCE),
+                        };
+                        let proof = header("authorization")
+                            .strip_prefix(&format!("{} ", handshake::AUTH_SCHEME))
+                            .unwrap_or_default()
+                            .to_string();
+                        if claims.client_device_id != client
+                            || claims.server_device_id != server
+                            || !handshake::verify(&hs_key, Role::Client, &claims, &proof)
+                        {
+                            let mut refusal =
+                                ErrorResponse::new(Some("handshake refused".to_string()));
+                            *refusal.status_mut() =
+                                tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+                            return Err(refusal);
+                        }
+                        response.headers_mut().insert(
+                            handshake::HEADER_SERVER_PROOF,
+                            handshake::prove(&hs_key, Role::Server, &claims)
+                                .parse()
+                                .unwrap(),
+                        );
+                        Ok(response)
+                    };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(tls, callback).await
+                    else {
+                        return;
+                    };
+                    let Some(session) = session else {
+                        return;
+                    };
+                    let send = |value: Value| Message::Text(value.to_string().into());
+                    while let Some(Ok(message)) = ws.next().await {
+                        let Message::Text(text) = message else {
+                            continue;
+                        };
+                        let frame: Value = serde_json::from_str(text.as_str()).unwrap();
+                        match frame["method"].as_str().unwrap_or_default() {
+                            "hello" => {
+                                let _ = hellos.send(frame["params"].clone());
+                                let result = json!({
+                                    "protocol": 1,
+                                    "scope": "account-device",
+                                    "capabilities": ["mesh_v1"],
+                                    "backend": {
+                                        "version": "2.0.0",
+                                        "platform": "test",
+                                        "instanceId": session.instance_id,
+                                    },
+                                    "lastSeq": session.last_seq,
+                                    "creditBytes": 1048576,
+                                });
+                                if ws
+                                    .send(send(json!({
+                                        "jsonrpc": "2.0",
+                                        "id": frame["id"],
+                                        "result": result,
+                                    })))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                for event in &session.events {
+                                    if ws
+                                        .send(send(json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "event",
+                                            "params": event,
+                                        })))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                                if session.close_after_events {
+                                    let _ = ws.close(None).await;
+                                    return;
+                                }
+                            }
+                            "call" => {
+                                let id = frame["id"].clone();
+                                let answer = match frame["params"]["command"].as_str().unwrap() {
+                                    "echo" => {
+                                        json!({"jsonrpc": "2.0", "id": id, "result": frame["params"]["args"]})
+                                    }
+                                    "bye" => break,
+                                    _ => {
+                                        json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "unsupported"}})
+                                    }
+                                };
+                                let _ = ws.send(send(answer)).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        ScriptedDevice { addr, hellos }
+    }
+
+    pub(crate) async fn dial_with(
         addr: std::net::SocketAddr,
         pair_key: [u8; 32],
         resume: Resume,

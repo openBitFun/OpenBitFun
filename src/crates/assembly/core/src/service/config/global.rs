@@ -217,26 +217,96 @@ impl GlobalConfigManager {
     }
 }
 
-/// Interval between checks of the persisted config file for edits made by
-/// another writer (a hand edit, or another OpenBitFun process on this host).
+/// Fallback polling interval when OS filesystem watching is unavailable.
 #[cfg(feature = "agent-runtime")]
-const CONFIG_FILE_RELOAD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const CONFIG_FILE_RELOAD_FALLBACK_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(30);
+/// Debounce window after a filesystem notification so atomic editor saves
+/// coalesce into one reload.
+#[cfg(all(feature = "agent-runtime", feature = "file-watch"))]
+const CONFIG_FILE_RELOAD_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+/// Retry delay when a watched config file fails to parse (e.g. editor mid-write).
+#[cfg(all(feature = "agent-runtime", feature = "file-watch"))]
+const CONFIG_FILE_RELOAD_ERROR_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Long-running hosts (CLI daemon, desktop, server) otherwise keep serving the
-/// configuration they loaded at startup until something reloads in-process.
-/// Polling instead of a file-system watch keeps this working for atomic
-/// replacement, network home directories, and platforms without inotify.
+/// Long-running hosts (CLI daemon, desktop, server) watch the configuration
+/// directory for edits made by another writer (a hand edit or another
+/// OpenBitFun process on this host). Uses an OS filesystem watcher when
+/// available so idle processes perform zero periodic disk stats, with a slow
+/// fallback poll only when watching is unavailable.
 #[cfg(feature = "agent-runtime")]
 fn spawn_config_file_reload_poller() {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        log::warn!("No async runtime available; config file reload polling is disabled");
+        log::warn!("No async runtime available; config file reload watching is disabled");
         return;
     };
     runtime.spawn(async move {
-        let mut interval = tokio::time::interval(CONFIG_FILE_RELOAD_POLL_INTERVAL);
+        let mut last_error: Option<String> = None;
+
+        #[cfg(feature = "file-watch")]
+        {
+            let fs_changed = std::sync::Arc::new(tokio::sync::Notify::new());
+            let watch_dir = match GlobalConfigManager::get_service().await {
+                Ok(service) => service
+                    .config_file_path()
+                    .await
+                    .parent()
+                    .map(std::path::Path::to_path_buf),
+                Err(_) => None,
+            };
+            let watcher = watch_dir.and_then(|dir| {
+                let signal = std::sync::Arc::clone(&fs_changed);
+                openbitfun_services_integrations::file_watch::PathChangeWatcher::watch_paths(
+                    &[(dir, false)],
+                    move || {
+                        signal.notify_one();
+                    },
+                )
+            });
+
+            if let Some(_watcher) = watcher {
+                let mut retry_after_error = false;
+                loop {
+                    if retry_after_error {
+                        tokio::select! {
+                            _ = fs_changed.notified() => {
+                                tokio::time::sleep(CONFIG_FILE_RELOAD_DEBOUNCE).await;
+                            }
+                            _ = tokio::time::sleep(CONFIG_FILE_RELOAD_ERROR_RETRY) => {}
+                        }
+                    } else {
+                        fs_changed.notified().await;
+                        tokio::time::sleep(CONFIG_FILE_RELOAD_DEBOUNCE).await;
+                    }
+                    // Resolve on each wakeup so a replaced global service is followed.
+                    let Ok(service) = GlobalConfigManager::get_service().await else {
+                        retry_after_error = false;
+                        continue;
+                    };
+                    match service.reload_if_changed_on_disk().await {
+                        Ok(_) => {
+                            last_error = None;
+                            retry_after_error = false;
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            if last_error.as_deref() != Some(message.as_str()) {
+                                log::warn!(
+                                    "Config file changed on disk but could not be loaded: {message}"
+                                );
+                                last_error = Some(message);
+                            }
+                            // Retry once in case an editor was mid-write, then wait for next FS event.
+                            retry_after_error = !retry_after_error;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut interval = tokio::time::interval(CONFIG_FILE_RELOAD_FALLBACK_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
-        let mut last_error: Option<String> = None;
         loop {
             interval.tick().await;
             // Resolve each tick so a replaced global service is followed.

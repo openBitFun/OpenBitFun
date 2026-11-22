@@ -1,6 +1,6 @@
 //! Shared Peer Host service handles and bounded Peer-owned turn state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use openbitfun_agent_runtime::sdk::{AgentRuntime, SessionEventJournal};
@@ -10,9 +10,11 @@ use openbitfun_core::service::token_usage::TokenUsageService;
 use openbitfun_core::service::workspace::WorkspaceService;
 use openbitfun_runtime_ports::{AgentSubmissionSource, AgentTurnCancellationRequest};
 
-const MAX_TRACKED_PEER_TURNS: usize = i32::MAX as usize;
-const MAX_BACKGROUND_PEER_AUTHORIZATIONS: usize = i32::MAX as usize;
-const MAX_PENDING_PEER_TASK_CANCELLATIONS: usize = i32::MAX as usize;
+const MAX_TRACKED_PEER_TURNS: usize = 4096;
+const MAX_INTERRUPTED_PEER_TURNS: usize = 1024;
+const MAX_BACKGROUND_PEER_AUTHORIZATIONS: usize = 4096;
+const MAX_COMPLETED_BACKGROUND_SOURCES: usize = 1024;
+const MAX_PENDING_PEER_TASK_CANCELLATIONS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PeerTurnKey {
@@ -56,6 +58,7 @@ struct PeerTurnTrackerInner {
     started: HashSet<PeerTurnKey>,
     terminal_deliveries: HashSet<PeerTurnKey>,
     interrupted_turns: HashSet<PeerTurnKey>,
+    interrupted_turn_order: VecDeque<PeerTurnKey>,
     background_task_calls: HashMap<(PeerTurnKey, String), PeerBackgroundTaskCall>,
     background_task_cancellations: HashMap<(PeerTurnKey, String), String>,
     background_source_children: HashSet<PeerTurnKey>,
@@ -63,6 +66,7 @@ struct PeerTurnTrackerInner {
     background_follow_ups: HashSet<PeerTurnKey>,
     early_background_follow_ups: HashSet<PeerTurnKey>,
     completed_background_sources: HashMap<PeerTurnKey, PeerTurnKey>,
+    completed_background_source_order: VecDeque<PeerTurnKey>,
 }
 
 #[derive(Default)]
@@ -87,6 +91,7 @@ impl PeerTurnTracker {
                 started: HashSet::new(),
                 terminal_deliveries: HashSet::new(),
                 interrupted_turns: HashSet::new(),
+                interrupted_turn_order: VecDeque::new(),
                 background_task_calls: HashMap::new(),
                 background_task_cancellations: HashMap::new(),
                 background_source_children: HashSet::new(),
@@ -94,6 +99,7 @@ impl PeerTurnTracker {
                 background_follow_ups: HashSet::new(),
                 early_background_follow_ups: HashSet::new(),
                 completed_background_sources: HashMap::new(),
+                completed_background_source_order: VecDeque::new(),
             })),
         }
     }
@@ -408,10 +414,7 @@ impl PeerTurnTracker {
             .lock()
             .map(|mut inner| {
                 let removed = session_tree_keys(&inner, session_id);
-                if !try_quarantine_active_turns(&mut inner, &removed) {
-                    inner.interrupted_turns.clear();
-                    inner.stream = PeerEventStreamState::Closed;
-                }
+                quarantine_active_turns(&mut inner, &removed);
                 let mut drain = peer_turn_drain_for_keys(&inner, &removed);
                 merge_completed_background_subagents(&inner, &mut drain, Some(session_id));
                 remove_completed_background_sources_for_session(&mut inner, session_id);
@@ -426,14 +429,15 @@ impl PeerTurnTracker {
             return PeerTurnDrain::default();
         };
         let interrupted = inner.active.clone();
-        let quarantine_fits = try_quarantine_active_turns(&mut inner, &interrupted);
-        let stream_closed = closed || !quarantine_fits;
-        if stream_closed {
+        if closed {
             inner.interrupted_turns.clear();
+            inner.interrupted_turn_order.clear();
+        } else {
+            quarantine_active_turns(&mut inner, &interrupted);
         }
         let turns = drain_peer_turns(&mut inner);
         inner.stream_generation = inner.stream_generation.wrapping_add(1);
-        inner.stream = if stream_closed {
+        inner.stream = if closed {
             PeerEventStreamState::Closed
         } else {
             PeerEventStreamState::Recovering
@@ -441,15 +445,25 @@ impl PeerTurnTracker {
         turns
     }
 
+    /// Clears tracked turn bookkeeping after a broadcast lag gap so turns whose
+    /// terminal events were skipped do not leak capacity. Leaves the stream
+    /// ready and does not quarantine turn IDs into `interrupted_turns`, so any
+    /// still-running turn still publishes its eventual terminal event.
+    pub(crate) fn reset_after_lag(&self) -> usize {
+        let Ok(mut inner) = self.inner.lock() else {
+            return 0;
+        };
+        let cleared = inner.active.len();
+        let _ = drain_peer_turns(&mut inner);
+        cleared
+    }
+
     pub(crate) fn drain_peer_turns(&self) -> PeerTurnDrain {
         self.inner
             .lock()
             .map(|mut inner| {
                 let active = inner.active.clone();
-                if !try_quarantine_active_turns(&mut inner, &active) {
-                    inner.interrupted_turns.clear();
-                    inner.stream = PeerEventStreamState::Closed;
-                }
+                quarantine_active_turns(&mut inner, &active);
                 drain_peer_turns(&mut inner)
             })
             .unwrap_or_default()
@@ -524,23 +538,25 @@ fn drain_peer_turns(inner: &mut PeerTurnTrackerInner) -> PeerTurnDrain {
     inner.background_follow_ups.clear();
     inner.early_background_follow_ups.clear();
     inner.completed_background_sources.clear();
+    inner.completed_background_source_order.clear();
     drain
 }
 
-fn try_quarantine_active_turns(
-    inner: &mut PeerTurnTrackerInner,
-    keys: &HashSet<PeerTurnKey>,
-) -> bool {
-    let new_keys = keys
-        .iter()
-        .filter(|key| inner.active.contains(*key) && !inner.interrupted_turns.contains(*key))
-        .cloned()
-        .collect::<Vec<_>>();
-    if inner.interrupted_turns.len().saturating_add(new_keys.len()) > MAX_TRACKED_PEER_TURNS {
-        return false;
+fn quarantine_active_turns(inner: &mut PeerTurnTrackerInner, keys: &HashSet<PeerTurnKey>) {
+    for key in keys {
+        if !inner.active.contains(key) {
+            continue;
+        }
+        if inner.interrupted_turns.insert(key.clone()) {
+            inner.interrupted_turn_order.push_back(key.clone());
+        }
     }
-    inner.interrupted_turns.extend(new_keys);
-    true
+    while inner.interrupted_turns.len() > MAX_INTERRUPTED_PEER_TURNS {
+        let Some(oldest) = inner.interrupted_turn_order.pop_front() else {
+            break;
+        };
+        inner.interrupted_turns.remove(&oldest);
+    }
 }
 
 fn finish_turn_locked(inner: &mut PeerTurnTrackerInner, key: &PeerTurnKey) {
@@ -705,10 +721,24 @@ fn remember_completed_background_source(
     inner
         .completed_background_sources
         .insert(source.clone(), parent.clone());
+    inner
+        .completed_background_source_order
+        .push_back(source.clone());
+    while inner.completed_background_sources.len() > MAX_COMPLETED_BACKGROUND_SOURCES {
+        let Some(oldest) = inner.completed_background_source_order.pop_front() else {
+            break;
+        };
+        if inner.completed_background_sources.contains_key(&oldest) {
+            take_completed_background_source(inner, &oldest);
+        }
+    }
 }
 
 fn take_completed_background_source(inner: &mut PeerTurnTrackerInner, source: &PeerTurnKey) {
     inner.completed_background_sources.remove(source);
+    inner
+        .completed_background_source_order
+        .retain(|key| key != source);
     inner
         .background_source_tasks
         .retain(|_, (_, mapped_source)| mapped_source != source);
@@ -721,6 +751,10 @@ fn remove_completed_background_sources_for_session(
     inner.completed_background_sources.retain(|source, parent| {
         source.session_id != session_id && parent.session_id != session_id
     });
+    let remaining = &inner.completed_background_sources;
+    inner
+        .completed_background_source_order
+        .retain(|source| remaining.contains_key(source));
     inner.background_source_tasks.retain(|_, (parent, source)| {
         source.session_id != session_id && parent.session_id != session_id
     });
@@ -889,7 +923,7 @@ impl PeerHostState {
         drain: PeerTurnDrain,
         reason: &'static str,
     ) -> Result<(), String> {
-        const MAX_CONCURRENT_CANCELLATIONS: usize = i32::MAX as usize;
+        const MAX_CONCURRENT_CANCELLATIONS: usize = 64;
 
         let mut failure_count = 0usize;
         let mut pending_background = drain.background_subagents.into_iter();
@@ -1287,13 +1321,122 @@ mod tests {
     }
 
     #[test]
-    fn peer_tracking_capacities_are_effectively_unbounded() {
-        assert_eq!(super::MAX_TRACKED_PEER_TURNS, i32::MAX as usize);
-        assert_eq!(super::MAX_BACKGROUND_PEER_AUTHORIZATIONS, i32::MAX as usize);
-        assert_eq!(
-            super::MAX_PENDING_PEER_TASK_CANCELLATIONS,
-            i32::MAX as usize
+    fn peer_tracking_capacities_are_bounded() {
+        assert_eq!(super::MAX_TRACKED_PEER_TURNS, 4096);
+        assert_eq!(super::MAX_INTERRUPTED_PEER_TURNS, 1024);
+        assert_eq!(super::MAX_BACKGROUND_PEER_AUTHORIZATIONS, 4096);
+        assert_eq!(super::MAX_COMPLETED_BACKGROUND_SOURCES, 1024);
+        assert_eq!(super::MAX_PENDING_PEER_TASK_CANCELLATIONS, 4096);
+    }
+
+    #[test]
+    fn tracker_enforces_max_tracked_peer_turns_bound() {
+        let tracker = PeerTurnTracker::new();
+        tracker.mark_event_stream_ready();
+        for index in 0..super::MAX_TRACKED_PEER_TURNS {
+            tracker
+                .register_root(PeerTurnKey::new(
+                    format!("session-{index}"),
+                    format!("turn-{index}"),
+                ))
+                .expect("register within capacity");
+        }
+        let error = tracker
+            .register_root(PeerTurnKey::new("session-overflow", "turn-overflow"))
+            .expect_err("overflow turn must be rejected");
+        assert!(error.contains("capacity is exhausted"), "{error}");
+    }
+
+    #[test]
+    fn interrupted_turn_quarantine_prunes_oldest_entries_without_closing_stream() {
+        let tracker = PeerTurnTracker::new();
+        tracker.mark_event_stream_ready();
+        let total = super::MAX_INTERRUPTED_PEER_TURNS + 64;
+        for index in 0..total {
+            let key = PeerTurnKey::new(format!("session-{index}"), format!("turn-{index}"));
+            tracker.register_root(key.clone()).expect("register root");
+            tracker.drain_session_turns(&key.session_id);
+        }
+
+        // Oldest entries beyond the FIFO cap are pruned.
+        for index in 0..64 {
+            let evicted = PeerTurnKey::new(format!("session-{index}"), format!("turn-{index}"));
+            assert!(
+                !tracker.is_interrupted_terminal(&evicted),
+                "oldest interrupted turn {index} should have been evicted"
+            );
+        }
+        // Most recent MAX_INTERRUPTED_PEER_TURNS entries remain quarantined.
+        for index in 64..total {
+            let retained = PeerTurnKey::new(format!("session-{index}"), format!("turn-{index}"));
+            assert!(
+                tracker.is_interrupted_terminal(&retained),
+                "recent interrupted turn {index} should remain quarantined"
+            );
+        }
+        // Stream stays ready so new turns are still accepted.
+        tracker
+            .register_root(PeerTurnKey::new("fresh-session", "fresh-turn"))
+            .expect("tracker must remain ready after pruning interrupted turns");
+    }
+
+    #[test]
+    fn completed_background_sources_prune_oldest_entries_at_bound() {
+        let tracker = PeerTurnTracker::new();
+        tracker.mark_event_stream_ready();
+        let total = super::MAX_COMPLETED_BACKGROUND_SOURCES + 32;
+        for index in 0..total {
+            let root = PeerTurnKey::new(format!("parent-{index}"), format!("root-{index}"));
+            let child = PeerTurnKey::new(format!("child-{index}"), format!("child-turn-{index}"));
+            tracker.register_root(root.clone()).expect("register root");
+            register_background_child(&tracker, &root, child.clone());
+            tracker.finish_turn(&child);
+            tracker.finish_turn(&root);
+        }
+
+        let oldest_root = PeerTurnKey::new("parent-0", "root-0");
+        let oldest_child = PeerTurnKey::new("child-0", "child-turn-0");
+        assert!(
+            !tracker
+                .register_background_follow_up(
+                    &oldest_root,
+                    &oldest_child,
+                    PeerTurnKey::new("parent-0", "late-follow-up"),
+                )
+                .expect("evicted completed source should not authorize follow-up"),
+            "oldest completed background source should have been pruned"
         );
+
+        let latest = total - 1;
+        let newest_root = PeerTurnKey::new(format!("parent-{latest}"), format!("root-{latest}"));
+        let newest_child =
+            PeerTurnKey::new(format!("child-{latest}"), format!("child-turn-{latest}"));
+        assert!(
+            tracker
+                .register_background_follow_up(
+                    &newest_root,
+                    &newest_child,
+                    PeerTurnKey::new(format!("parent-{latest}"), "follow-up"),
+                )
+                .expect("recent completed source must still authorize follow-up"),
+            "most recent completed background source should remain retained"
+        );
+    }
+
+    #[test]
+    fn reset_after_lag_clears_active_turns_without_quarantining_or_closing_stream() {
+        let tracker = PeerTurnTracker::new();
+        tracker.mark_event_stream_ready();
+        let turn = PeerTurnKey::new("session-1", "turn-1");
+        tracker.register_root(turn.clone()).expect("register root");
+
+        assert_eq!(tracker.reset_after_lag(), 1);
+        assert!(!tracker.owns("session-1", Some("turn-1")));
+        assert!(!tracker.is_interrupted_terminal(&turn));
+
+        tracker
+            .register_root(PeerTurnKey::new("session-2", "turn-2"))
+            .expect("tracker remains ready after lag reset");
     }
 
     #[test]

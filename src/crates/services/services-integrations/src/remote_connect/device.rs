@@ -278,17 +278,47 @@ pub fn set_remote_control_allowed(allowed: bool) -> Result<()> {
 
 static REMOTE_CONTROL_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
-/// Local writes wake listeners immediately. Other hosts share the same file.
+/// Fallback polling interval when OS filesystem watching is unavailable.
+const REMOTE_CONTROL_FALLBACK_POLL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Local writes wake listeners immediately. Other hosts share the same marker
+/// file, observed via filesystem watch (or a slow fallback poll if watching is
+/// unavailable).
 pub async fn wait_for_remote_control_change(previous: bool) -> bool {
+    let fs_changed = std::sync::Arc::new(tokio::sync::Notify::new());
+    #[cfg(feature = "file-watch")]
+    let _watcher = remote_control_marker()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .and_then(|dir| {
+            let signal = std::sync::Arc::clone(&fs_changed);
+            crate::file_watch::PathChangeWatcher::watch_paths(&[(dir, false)], move || {
+                signal.notify_one();
+            })
+        });
+    #[cfg(feature = "file-watch")]
+    let watching = _watcher.is_some();
+    #[cfg(not(feature = "file-watch"))]
+    let watching = false;
+
     loop {
         let notified = REMOTE_CONTROL_CHANGED.notified();
+        let fs_notified = fs_changed.notified();
         let allowed = remote_control_allowed().unwrap_or(false);
         if allowed != previous {
             return allowed;
         }
+        let fallback_poll = async {
+            if watching {
+                std::future::pending::<()>().await;
+            } else {
+                tokio::time::sleep(REMOTE_CONTROL_FALLBACK_POLL).await;
+            }
+        };
         tokio::select! {
             _ = notified => {},
-            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {},
+            _ = fs_notified => {},
+            _ = fallback_poll => {},
         }
     }
 }

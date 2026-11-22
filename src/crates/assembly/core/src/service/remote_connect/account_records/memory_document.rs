@@ -38,29 +38,29 @@ impl LocalCollection for MemoryRecords {
     }
 
     async fn list(&self, _device: &DeviceContext) -> Result<Vec<LocalItem>> {
-        let files: Vec<ItemFile> = MEMORY_FILES
-            .iter()
-            .filter_map(|name| {
-                std::fs::read(self.root.join(name))
-                    .ok()
-                    .map(|bytes| ItemFile {
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || {
+            let files: Vec<ItemFile> = MEMORY_FILES
+                .iter()
+                .filter_map(|name| {
+                    std::fs::read(root.join(name)).ok().map(|bytes| ItemFile {
                         path: (*name).to_string(),
                         bytes,
                     })
-            })
-            .collect();
-        if files.is_empty() {
-            return Ok(Vec::new());
-        }
-        let offer = files
-            .iter()
-            .any(|file| !file.bytes.iter().all(u8::is_ascii_whitespace));
-        Ok(vec![LocalItem::new(
-            RECORD_ID,
-            json!({ "kind": "consolidated" }),
-        )
-        .with_files(files)
-        .offered(offer)])
+                })
+                .collect();
+            if files.is_empty() {
+                return Vec::new();
+            }
+            let offer = files
+                .iter()
+                .any(|file| !file.bytes.iter().all(u8::is_ascii_whitespace));
+            vec![LocalItem::new(RECORD_ID, json!({ "kind": "consolidated" }))
+                .with_files(files)
+                .offered(offer)]
+        })
+        .await
+        .map_err(|error| anyhow!("scan memory directory: {error}"))
     }
 
     async fn apply(&self, item: &RemoteItem, context: &ApplyContext) -> Result<()> {

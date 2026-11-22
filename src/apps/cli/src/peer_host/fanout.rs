@@ -57,9 +57,13 @@ pub(crate) fn start_peer_event_fanout(state: PeerHostState, mut rx: AgentEventRe
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::error!("CLI session event source lagged by {skipped} events");
+                    let cleared = state.turns.reset_after_lag();
+                    tracing::error!(
+                        "CLI session event source lagged by {skipped} events; cleared {cleared} tracked turn(s)"
+                    );
                 }
                 Err(broadcast::error::RecvError::Closed) => {
+                    state.turns.interrupt_event_stream(true);
                     tracing::error!("CLI session event source closed");
                     break;
                 }
