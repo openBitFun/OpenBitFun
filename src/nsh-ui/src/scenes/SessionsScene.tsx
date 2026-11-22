@@ -3741,7 +3741,10 @@ function handleMentionKeyNavigation(key: string): void {
 
 /** Unified Floating 3-Band `ChatInput` dock with paste, file drop, and caret-anchored @ mentions. */
 const permissionPillAnchor = signal<ViewRef | null>(null);
+const fullAccessTriggerAnchor = signal<ViewRef | null>(null);
+const permissionModeAlign = signal<"start" | "end">("start");
 const contextRingAnchor = signal<ViewRef | null>(null);
+const contextUsageAlign = signal<"start" | "end">("end");
 const contextPopoverOpen = signal(false);
 
 const PERMISSION_MODE_ROWS: ReadonlyArray<{
@@ -3777,11 +3780,13 @@ function FullAccessNotice() {
       }
     >
       <View
+        ref={el => fullAccessTriggerAnchor.set(el)}
         role="button"
         accessibilityLabel="permission-mode-warning"
         tooltip={<TooltipBubble text={tr("chat.permissionMode.tooltip")} />}
         onPress={() => {
-          permissionPillAnchor.set(composerPlusAnchor());
+          permissionPillAnchor.set(fullAccessTriggerAnchor());
+          permissionModeAlign.set("end");
           const next = !permissionModePickerOpen();
           closePickers();
           permissionModePickerOpen.set(next);
@@ -3824,13 +3829,15 @@ function FullAccessNotice() {
   );
 }
 
-function PermissionModeSurface(props: { placement: Placement }) {
-  const motion = usePopoverMotion(() => props.placement, "start", () => {
+function PermissionModeSurface(props: { placement: Placement; align: "start" | "end" }) {
+  const motion = usePopoverMotion(() => props.placement, props.align, () => {
     permissionModePickerOpen.set(false);
     permissionModePlacement.set("top");
   });
   return (
     <View
+      testID="permission-mode-surface"
+      accessibilityLabel={`permission-mode-popover-${props.align}`}
       style={[
         overlayPopoverStyle(),
         {
@@ -3838,7 +3845,7 @@ function PermissionModeSurface(props: { placement: Placement }) {
           maxWidth: "92%",
           padding: space.chip,
           gap: space.hair,
-          transformOrigin: popoverOrigin(props.placement, "start"),
+          transformOrigin: popoverOrigin(props.placement, props.align),
         },
         motion.style,
       ]}
@@ -3910,15 +3917,24 @@ const activeContextUsage = computed(() => {
 
 /** How full the context window is, as a ring with the numbers behind it on press. */
 function ContextUsageRing() {
+  let triggerRef: ViewRef | null = null;
   return (
     <If when={activeContextUsage()}>
       {usage => (
-        <View ref={el => contextRingAnchor.set(el)} style={{ flexShrink: 0 }}>
+        <View
+          ref={el => {
+            triggerRef = el;
+            contextRingAnchor.set(el);
+          }}
+          style={{ flexShrink: 0 }}
+        >
           <View
             role="button"
             accessibilityLabel="context-usage"
             tooltip={<TooltipBubble text={tr("chat.context.tooltip")} />}
             onPress={() => {
+              contextRingAnchor.set(triggerRef);
+              contextUsageAlign.set("end");
               const next = !contextPopoverOpen();
               closePickers();
               contextPopoverOpen.set(next);
@@ -3962,8 +3978,8 @@ function ContextUsageRing() {
   );
 }
 
-function ContextUsageSurface(props: { placement: Placement }) {
-  const motion = usePopoverMotion(() => props.placement, "end", () => {
+function ContextUsageSurface(props: { placement: Placement; align: "start" | "end" }) {
+  const motion = usePopoverMotion(() => props.placement, props.align, () => {
     contextPopoverOpen.set(false);
     contextUsagePlacement.set("top");
   });
@@ -3978,7 +3994,7 @@ function ContextUsageSurface(props: { placement: Placement }) {
               maxWidth: "92%",
               padding: space.md,
               gap: space.chip,
-              transformOrigin: popoverOrigin(props.placement, "end"),
+              transformOrigin: popoverOrigin(props.placement, props.align),
             },
             motion.style,
           ]}
@@ -4136,6 +4152,7 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
       label: tr("sessions.quickActions"),
       accessibilityLabel: "Actions",
       onSelect: fromPlus(() => {
+        quickActionsAnchor.set(composerPlusAnchor());
         closePickers("actions");
         quickActionMenuOpen.set(true);
       }),
@@ -4149,6 +4166,8 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
       trailingHint: permissionModeLabel(effectivePermissionMode(activeSessionId())),
       accessibilityLabel: "permission-mode-pill",
       onSelect: fromPlus(() => {
+        permissionPillAnchor.set(composerPlusAnchor());
+        permissionModeAlign.set("start");
         closePickers();
         permissionModePickerOpen.set(true);
       }),
@@ -4203,6 +4222,7 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
         accessibilityLabel: "context-usage",
         onSelect: fromPlus(() => {
           contextRingAnchor.set(composerPlusAnchor());
+          contextUsageAlign.set("start");
           closePickers();
           contextPopoverOpen.set(true);
         }),
@@ -4813,7 +4833,7 @@ function ComposerDock() {
         <Overlay
           anchor={quickActionsAnchor()}
           placement="top"
-          align="end"
+          align="start"
           offset={6}
           margin={8}
           onPosition={pos => quickActionsPlacement.set(pos.placement)}
@@ -4888,7 +4908,7 @@ function ComposerDock() {
         <Overlay
           anchor={permissionPillAnchor()}
           placement="top"
-          align="start"
+          align={permissionModeAlign()}
           offset={6}
           margin={8}
           onPosition={pos => permissionModePlacement.set(pos.placement)}
@@ -4901,7 +4921,7 @@ function ComposerDock() {
             permissionModePlacement.set("top");
           }}
         >
-          <PermissionModeSurface placement={permissionModePlacement()} />
+          <PermissionModeSurface placement={permissionModePlacement()} align={permissionModeAlign()} />
         </Overlay>
       </If>
 
@@ -4909,7 +4929,7 @@ function ComposerDock() {
         <Overlay
           anchor={contextRingAnchor()}
           placement="top"
-          align="end"
+          align={contextUsageAlign()}
           offset={6}
           margin={8}
           onPosition={pos => contextUsagePlacement.set(pos.placement)}
@@ -4922,7 +4942,7 @@ function ComposerDock() {
             contextUsagePlacement.set("top");
           }}
         >
-          <ContextUsageSurface placement={contextUsagePlacement()} />
+          <ContextUsageSurface placement={contextUsagePlacement()} align={contextUsageAlign()} />
         </Overlay>
       </If>
 
@@ -4946,9 +4966,13 @@ function ComposerDock() {
 
 /** Compact readable agent selector pill matching Codex / Claude Desktop composer chrome. */
 function AgentPickerTrigger(props: { compact: () => boolean }) {
+  let triggerRef: ViewRef | null = null;
   return (
     <View
-      ref={el => agentPickerAnchor.set(el)}
+      ref={el => {
+        triggerRef = el;
+        agentPickerAnchor.set(el);
+      }}
       role="button"
       accessibilityLabel="agent-picker"
       tooltip={
@@ -4957,6 +4981,7 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
         />
       }
       onPress={() => {
+        agentPickerAnchor.set(triggerRef);
         const next = !agentPickerOpen();
         closePickers(next ? "agent" : undefined);
         agentPickerOpen.set(next);
@@ -5011,6 +5036,8 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
 
 /** Compact readable Model & Reasoning selector pills separated by a thin hairline. */
 function ModelReasoningCapsule(props: { compact: () => boolean }) {
+  let modelTriggerRef: ViewRef | null = null;
+  let reasoningTriggerRef: ViewRef | null = null;
   return (
     <View
       style={{
@@ -5022,7 +5049,10 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
       }}
     >
       <View
-        ref={el => modelPickerAnchor.set(el)}
+        ref={el => {
+          modelTriggerRef = el;
+          modelPickerAnchor.set(el);
+        }}
         role="button"
         accessibilityLabel="bot-capsule-trigger"
         tooltip={
@@ -5033,6 +5063,7 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
           />
         }
         onPress={() => {
+          modelPickerAnchor.set(modelTriggerRef);
           const next = !modelPickerOpen();
           closePickers(next ? "model" : undefined);
           modelPickerOpen.set(next);
@@ -5101,7 +5132,10 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         >
           <View style={{ width: 1, height: space.md, flexShrink: 0, backgroundColor: palette().borderSubtle }} />
           <View
-            ref={el => reasoningPickerAnchor.set(el)}
+            ref={el => {
+              reasoningTriggerRef = el;
+              reasoningPickerAnchor.set(el);
+            }}
             role="button"
             accessibilityLabel="reasoning-picker"
             tooltip={
@@ -5110,6 +5144,7 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
               />
             }
             onPress={() => {
+              reasoningPickerAnchor.set(reasoningTriggerRef);
               const next = !reasoningPickerOpen();
               closePickers(next ? "reasoning" : undefined);
               reasoningPickerOpen.set(next);
@@ -5353,7 +5388,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
 }
 
 function QuickActionsSurface(props: { placement: Placement }) {
-  const motion = usePopoverMotion(() => props.placement, "end", () => closePickers());
+  const motion = usePopoverMotion(() => props.placement, "start", () => closePickers());
   return (
     <View
       style={[
@@ -5363,7 +5398,7 @@ function QuickActionsSurface(props: { placement: Placement }) {
           maxWidth: 320,
           gap: space.sm,
           padding: space.md,
-          transformOrigin: popoverOrigin(props.placement, "end"),
+          transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}

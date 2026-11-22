@@ -29,6 +29,7 @@ import {
   loadLocalWorkspace,
   newSessionHere,
   openSessionRow,
+  remoteWorkspaceHost,
   sessionTarget,
   workspaceTarget,
   type DeviceTreeNode,
@@ -86,7 +87,7 @@ function deviceExpanded(node: DeviceTreeNode): boolean {
 function workspaceIcon(workspace: TreeWorkspace, open: boolean): IconName {
   const kind = (workspace.kind ?? "").toLowerCase();
   if (kind.includes("assistant")) return "bot";
-  if (kind.includes("ssh") || kind.includes("remote") || (workspace.sshHost && workspace.sshHost !== "localhost")) {
+  if (kind.includes("ssh") || kind.includes("remote") || Boolean(remoteWorkspaceHost(workspace))) {
     return "server";
   }
   return open ? "folder-open" : "folder";
@@ -307,7 +308,11 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
     localCatalogueRead.add(id);
     untracked(() => void loadLocalWorkspace(id));
   });
-  const childIndent = () => props.indent + INDENT;
+  // Sessions and quiet rows share the workspace's indent so their 16 px leading
+  // slot sits directly under the workspace icon (for any active StateMark) and
+  // their labels align vertically with the workspace title without a 24 px gap.
+  const childIndent = () => props.indent;
+  const host = () => remoteWorkspaceHost(props.workspace);
   return (
     <View accessibilityLabel={`sidebar-workspace-${props.workspace.workspaceId}`}>
       <TreeRow
@@ -344,7 +349,39 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: TreeWorkspace
           </HoverActions>
         }
       >
-        <RowLabel text={props.workspace.name} weight={current() ? "600" : "500"} />
+        <If
+          when={host()}
+          else={<RowLabel text={props.workspace.name} weight={current() ? "600" : "500"} />}
+        >
+          {remoteHost => (
+            <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+              <Text
+                style={{
+                  ...textStyle("label", { color: palette().chromeText }),
+                  fontWeight: current() ? "600" : "500",
+                  flexShrink: 0,
+                  maxWidth: "65%",
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {props.workspace.name}
+              </Text>
+              <Text
+                testID={`sidebar-workspace-host-${props.workspace.workspaceId}`}
+                style={{
+                  ...textStyle("caption", { color: palette().chromeTextMuted }),
+                  flex: 1,
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {`· ${remoteHost()}`}
+              </Text>
+            </View>
+          )}
+        </If>
       </TreeRow>
       <If when={open()}>
         <View>

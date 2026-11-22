@@ -562,6 +562,8 @@ test("the permission pill writes the session's mode", async () => {
   await app.waitFor("composer-plus");
   await app.press("composer-plus");
   await app.press("permission-mode-pill");
+  // Opening from "+" aligns to start above the "+" button.
+  await app.waitFor("label:permission-mode-popover-start");
   await app.press("permission-mode-full_access");
   expect(backend.calls.find(call => call.action === "update_session_permission_mode")?.request).toMatchObject({
     sessionId: "session-1",
@@ -569,6 +571,17 @@ test("the permission pill writes the session's mode", async () => {
     workspaceId: "workspace-1",
   });
   await app.waitFor("Full access");
+
+  // Pressing the inline FullAccessNotice trigger opens the popover right-aligned over itself, not over "+".
+  await app.press("permission-mode-warning");
+  await app.waitFor("label:permission-mode-popover-end");
+  await app.press("permission-mode-warning");
+  await app.waitFor("id:permission-mode-surface", { state: "gone" });
+
+  // Opening again from "+" restores start alignment on the "+" anchor.
+  await app.press("composer-plus");
+  await app.press("permission-mode-pill");
+  await app.waitFor("label:permission-mode-popover-start");
 });
 
 test("editing a user message rolls back to that turn and reruns it", async () => {

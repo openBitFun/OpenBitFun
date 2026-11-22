@@ -118,7 +118,14 @@ export interface BackendOptions {
   /** Workspaces the host remembers as recent but has not opened. */
   recentOnlyWorkspaces?: Array<{ id: string; name: string; rootPath: string; workspaceKind?: string }>;
   /** Opened workspaces; the default is the local `workspace-1` and the remote `workspace-2`. */
-  openedWorkspaces?: Array<{ id: string; name: string; rootPath: string; workspaceKind?: string }>;
+  openedWorkspaces?: Array<{
+    id: string;
+    name: string;
+    rootPath: string;
+    workspaceKind?: string;
+    sshHost?: string;
+    connectionId?: string;
+  }>;
   /** The workspace `get_current_workspace` reports; the default is the first opened one. */
   currentWorkspaceId?: string | null;
   // view models (wave 4)
@@ -1225,7 +1232,14 @@ export function createBackend(options: BackendOptions = {}): Backend {
   // Sessions carry their agent binding, so a switch shows up in the next read the
   // way the host reports it.
   let sessions: Array<Record<string, unknown>> = options.sessions ?? DEFAULT_SESSIONS;
-  let openedWorkspaces: Array<{ id: string; name: string; rootPath: string; workspaceKind?: string }> =
+  let openedWorkspaces: Array<{
+    id: string;
+    name: string;
+    rootPath: string;
+    workspaceKind?: string;
+    sshHost?: string;
+    connectionId?: string;
+  }> =
     options.openedWorkspaces ?? [
       { id: "workspace-1", name: "OpenBitFun", rootPath: "/repo", workspaceKind: "local" },
       { id: "workspace-2", name: "remote-host", rootPath: "/srv/app", workspaceKind: "remote" },
@@ -3898,7 +3912,15 @@ export function fleetSessionRow(
 export function fleetDeviceRow(
   deviceId: string,
   name: string,
-  workspaces: Array<{ workspaceId: string; name: string; rootPath: string; sessions: Array<Record<string, unknown>>; isHostCurrent?: boolean }>,
+  workspaces: Array<{
+    workspaceId: string;
+    name: string;
+    rootPath: string;
+    kind?: string;
+    sshHost?: string;
+    sessions: Array<Record<string, unknown>>;
+    isHostCurrent?: boolean;
+  }>,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {

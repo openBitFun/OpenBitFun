@@ -185,3 +185,79 @@ test("Recent draws the entry's served list in its order with the labels it proje
   await showAllSessions(oldApp, "Fix flaky test");
   expect(oldApp.shows("text:Build release")).toBe(true);
 });
+
+test("remote workspaces display their SSH host in the sidebar and By device, while local and assistant workspaces never show localhost", async () => {
+  const nav = {
+    revision: 3,
+    full: true,
+    removedDeviceIds: [],
+    totals: { running: 0, waiting: 0, unread: 0 },
+    devices: [
+      fleetDeviceRow(
+        "dev-a",
+        "MacBook",
+        [
+          {
+            workspaceId: "ws-local",
+            name: "OpenBitFun",
+            rootPath: "/Users/me/OpenBitFun",
+            kind: "local",
+            sshHost: "localhost",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "ws-local", "s-local-1", "Local thread")],
+          },
+          {
+            workspaceId: "ws-remote",
+            name: "OpenBitFun",
+            rootPath: "/home/dev/OpenBitFun",
+            kind: "remote_ssh",
+            sshHost: "lwb",
+            sessions: [fleetSessionRow("dev-a", "ws-remote", "s-remote-1", "Remote thread")],
+          },
+          {
+            workspaceId: "ws-assistant",
+            name: "Companion",
+            rootPath: "/Users/me/.openbitfun/assistant",
+            kind: "assistant",
+            sshHost: "lwb",
+            sessions: [],
+          },
+        ],
+        { isClientDevice: true },
+      ),
+    ],
+  };
+  const { app } = await openFleet(nav);
+  // Sidebar displays the remote SSH host beside the remote workspace name, and never localhost or assistant host.
+  await app.waitFor("id:sidebar-workspace-host-ws-remote");
+  expect(app.shows("id:sidebar-workspace-row-ws-remote >> text:· lwb")).toBe(true);
+  expect(app.shows("id:sidebar-workspace-host-ws-local")).toBe(false);
+  expect(app.shows("id:sidebar-workspace-host-ws-assistant")).toBe(false);
+  expect(app.texts().some(text => text.includes("localhost"))).toBe(false);
+  // Sessions under both local and remote workspaces render and open.
+  expect(app.shows("id:sidebar-session-s-local-1")).toBe(true);
+  expect(app.shows("id:sidebar-session-s-remote-1")).toBe(true);
+
+  // All sessions › By device displays the same remote SSH host consistently.
+  await showAllSessions(app);
+  await app.press("all-sessions-tab-by-device");
+  await app.waitFor("id:workspace-host-ws-remote");
+  expect(app.shows("label:workspace-row-ws-remote >> text:· lwb")).toBe(true);
+  expect(app.shows("id:workspace-host-ws-local")).toBe(false);
+  expect(app.shows("id:workspace-host-ws-assistant")).toBe(false);
+});
+
+test("without the fleet layer, local fallback shows remote workspace SSH host and suppresses localhost", async () => {
+  const backend = createBackend({
+    openedWorkspaces: [
+      { id: "ws-local", name: "OpenBitFun", rootPath: "/Users/me/OpenBitFun", workspaceKind: "normal", sshHost: "localhost" },
+      { id: "ws-remote", name: "repos", rootPath: "/srv/repos", workspaceKind: "remote", sshHost: "lwb" },
+    ],
+  });
+  const host = fleetObpHost(backend, { fleet: null });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitFor("id:sidebar-workspace-host-ws-remote");
+  expect(app.shows("id:sidebar-workspace-row-ws-remote >> text:· lwb")).toBe(true);
+  expect(app.shows("id:sidebar-workspace-host-ws-local")).toBe(false);
+  expect(app.texts().some(text => text.includes("localhost"))).toBe(false);
+});

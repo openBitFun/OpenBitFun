@@ -64,6 +64,7 @@ import {
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import { sessionMenuItems, type SessionActionTarget } from "../ui/sessionActions";
 import { workspaceMenuItems, type WorkspaceActionTarget } from "../ui/workspaceActions";
+import { savedConnections } from "../sshRemoteStore";
 import { superAgentUi } from "../productGates"; // wave23-E
 
 /** One Recent row, whatever source it came from. */
@@ -99,6 +100,36 @@ const recentError = signal("");
 const localWorkspaceRows = signal<Record<string, SessionSummary[]>>({});
 
 const NON_RUNTIME_HOST_KINDS = new Set(["cloud", "mobile", "phone", "browser", "web"]);
+const LOCAL_HOST_NAMES = new Set(["localhost", "127.0.0.1", "::1"]);
+
+/**
+ * Displayable remote SSH host for a workspace. Filters out assistant workspaces
+ * and local placeholders (`localhost`, `127.0.0.1`, `::1`), and falls back to
+ * `savedConnections()` via `connectionId` / `remoteConnectionId` when `sshHost`
+ * is absent.
+ */
+export function remoteWorkspaceHost(workspace: {
+  kind?: string;
+  sshHost?: string;
+  connectionId?: string;
+  remoteConnectionId?: string;
+}): string | undefined {
+  const kind = (workspace.kind ?? "").toLowerCase();
+  if (kind.includes("assistant")) return undefined;
+  const host = (workspace.sshHost ?? "").trim();
+  if (host && !LOCAL_HOST_NAMES.has(host.toLowerCase())) {
+    return host;
+  }
+  const connId = (workspace.connectionId ?? workspace.remoteConnectionId ?? "").trim();
+  if (connId) {
+    const saved = savedConnections().find(conn => conn.id === connId);
+    const savedHost = (saved?.host ?? saved?.name ?? "").trim();
+    if (savedHost && !LOCAL_HOST_NAMES.has(savedHost.toLowerCase())) {
+      return savedHost;
+    }
+  }
+  return undefined;
+}
 
 /** Runtime devices (includes local desktop with `isClientDevice: true`; excludes cloud & mobile/browser clients). */
 function isRuntimeFleetDevice(device: FleetDevice): boolean {
@@ -566,7 +597,10 @@ export function deviceTree(): DeviceTreeNode[] {
             name: workspaceLabel(workspace),
             rootPath: workspace.rootPath,
             kind: workspace.kind,
-            sshHost: workspace.sshHost,
+            sshHost: remoteWorkspaceHost({
+              kind: workspace.kind,
+              sshHost: workspace.sshHost,
+            }),
             total: workspace.sessionTotal,
             sessions: workspace.sessions.map(row => ({
               sessionId: row.sessionId,
@@ -599,7 +633,12 @@ export function deviceTree(): DeviceTreeNode[] {
           name: workspaceLabel(workspace),
           rootPath: workspace.rootPath,
           kind: workspace.workspaceKind,
-          sshHost: workspace.sshHost,
+          sshHost: remoteWorkspaceHost({
+            kind: workspace.workspaceKind,
+            sshHost: workspace.sshHost,
+            connectionId: workspace.connectionId,
+            remoteConnectionId: (workspace as { remoteConnectionId?: string }).remoteConnectionId,
+          }),
           total: rows.length,
           sessions: rows.map(row => ({
             sessionId: row.sessionId,
@@ -825,6 +864,13 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
   const hovered = signal(false);
   const menuOpen = signal(false);
   const showActions = () => hovered() || menuOpen();
+  const host = () => remoteWorkspaceHost(props.workspace);
+  const workspaceIconName = () => {
+    const kind = (props.workspace.kind ?? "").toLowerCase();
+    if (kind.includes("assistant")) return "bot" as const;
+    if (kind.includes("ssh") || kind.includes("remote") || Boolean(host())) return "server" as const;
+    return "folder" as const;
+  };
   const preview = () => {
     const titles = props.workspace.sessions.slice(0, WORKSPACE_PREVIEW).map(row => row.title);
     const rest = props.workspace.total - titles.length;
@@ -880,7 +926,7 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
             ...pressTransition(MOTION_DURATION.fast),
           }}
         >
-          <Icon name="folder" size={14} color={palette().textMuted} />
+          <Icon name={workspaceIconName()} size={14} color={palette().textMuted} />
           <If
             when={phone()}
             else={
@@ -888,6 +934,16 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
                 <Text style={{ ...textStyle("label"), flexShrink: 0, maxWidth: "40%", numberOfLines: 1, textOverflow: "ellipsis" }}>
                   {props.workspace.name}
                 </Text>
+                <If when={host()}>
+                  {remoteHost => (
+                    <Text
+                      testID={`workspace-host-${props.workspace.workspaceId}`}
+                      style={{ ...textStyle("caption"), flexShrink: 0, maxWidth: "25%", numberOfLines: 1, textOverflow: "ellipsis" }}
+                    >
+                      {`· ${remoteHost()}`}
+                    </Text>
+                  )}
+                </If>
                 <Text style={{ ...textStyle("caption"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
                   {preview()}
                 </Text>
@@ -895,9 +951,21 @@ function WorkspaceBranch(props: { node: DeviceTreeNode; workspace: DeviceTreeNod
             }
           >
             <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-              <Text style={{ ...textStyle("label"), numberOfLines: 1, textOverflow: "ellipsis" }}>
-                {props.workspace.name}
-              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
+                <Text style={{ ...textStyle("label"), flexShrink: 0, maxWidth: host() ? "65%" : "100%", numberOfLines: 1, textOverflow: "ellipsis" }}>
+                  {props.workspace.name}
+                </Text>
+                <If when={host()}>
+                  {remoteHost => (
+                    <Text
+                      testID={`workspace-host-${props.workspace.workspaceId}`}
+                      style={{ ...textStyle("caption"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}
+                    >
+                      {`· ${remoteHost()}`}
+                    </Text>
+                  )}
+                </If>
+              </View>
               <If when={preview()}>
                 {text => (
                   <Text style={{ ...textStyle("caption"), numberOfLines: 1, textOverflow: "ellipsis" }}>
