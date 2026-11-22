@@ -107,7 +107,9 @@ pub(crate) struct DesktopMiniApps {
     operations: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
     endpoint: Mutex<Option<ipc::Endpoint>>,
     socket_dir: Mutex<Option<tempfile::TempDir>>,
-    worker_listeners: Mutex<HashSet<String>>,
+    sdk_listeners: Mutex<Vec<crate::host::ListenerId>>,
+    liveness_wake: tokio::sync::Notify,
+    last_emitted_snapshot: Mutex<Option<Value>>,
     /// Agent bridge calls waiting on a Shell relay. Bounded, and every entry is
     /// removed by its waiter, so a Shell that never answers leaks nothing.
     agents: Mutex<HashMap<String, PendingAgentRequest>>,
@@ -549,9 +551,29 @@ struct Ticket {
     view: MiniAppView,
 }
 
-fn changed(app: &HostHandle) {
-    let snapshot = app.state::<DesktopMiniApps>().instances.snapshot();
+fn emit_snapshot_if_changed(app: &HostHandle, force: bool) {
+    let host = app.state::<DesktopMiniApps>();
+    let snapshot = host.instances.snapshot();
+    let has_instances = !snapshot.instances.is_empty();
+    if let Ok(value) = serde_json::to_value(&snapshot) {
+        let mut last = host
+            .last_emitted_snapshot
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !force && last.as_ref() == Some(&value) {
+            return;
+        }
+        *last = Some(value);
+    }
     let _ = app.emit_to("main", "miniapp-instances-changed", snapshot);
+    if has_instances {
+        host.liveness_wake.notify_one();
+    }
+}
+
+fn changed(app: &HostHandle) {
+    emit_snapshot_if_changed(app, true);
+    sdk::sync_event_subscriptions(app);
 }
 
 async fn local_workspace(app: &HostHandle, path: Option<String>) -> Result<Option<String>, String> {
@@ -921,6 +943,12 @@ async fn stop_instance(app: &HostHandle, instance_id: &str) -> Result<(), String
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .remove(instance_id);
+    let snapshot = host.instances.snapshot();
+    host.shells
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|id, _| snapshot.instances.iter().any(|i| i.accepts_view(id)));
+    sdk::sync_event_subscriptions(app);
     Ok(())
 }
 
@@ -957,14 +985,6 @@ async fn dispatch(app: &HostHandle, method: &str, params: Value) -> Result<Value
             .join(launch_id)
             .join("launch.json");
         let record = launcher::read_record(&path)?;
-        if host
-            .worker_listeners
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(record.app_id.clone())
-        {
-            sdk::install_worker_events(app, &record.app_id);
-        }
         let workspace = local_workspace(app, record.workspace_path.clone()).await?;
         let miniapp = miniapp_api::get_miniapp(
             crate::host::State::from(app.state()),
@@ -1008,6 +1028,8 @@ async fn dispatch(app: &HostHandle, method: &str, params: Value) -> Result<Value
                 );
             }
         }
+        host.liveness_wake.notify_one();
+        sdk::sync_event_subscriptions(app);
         changed(app);
         let locale =
             crate::api::i18n_api::i18n_get_current_language(crate::host::State::from(app.state()))
@@ -1667,6 +1689,19 @@ pub(crate) fn install(app: &HostHandle) -> Result<(), String> {
     let handle = app.clone();
     tokio::spawn(async move {
         loop {
+            let state = handle.state::<DesktopMiniApps>();
+            let has_active = !state.instances.snapshot().instances.is_empty()
+                || !state
+                    .shells
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_empty();
+            if !has_active {
+                // Park completely when no MiniApps are running; wake on launch.
+                sdk::sync_event_subscriptions(&handle);
+                state.liveness_wake.notified().await;
+                continue;
+            }
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             let state = handle.state::<DesktopMiniApps>();
             // The native UI renders no MiniApp tabs, so tab views are never renewed.
@@ -1692,14 +1727,12 @@ pub(crate) fn install(app: &HostHandle) -> Result<(), String> {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .retain(|id, _| snapshot.instances.iter().any(|i| i.accepts_view(id)));
-            let _ = handle.emit_to("main", "miniapp-instances-changed", snapshot);
+            sdk::sync_event_subscriptions(&handle);
+            emit_snapshot_if_changed(&handle, false);
         }
     });
     let handle = app.clone();
-    app.listen("miniapp-deleted", move |event| {
-        let Ok(payload) = serde_json::from_str::<Value>(event) else {
-            return;
-        };
+    app.listen_value("miniapp-deleted", move |_event, payload| {
         let Some(app_id) = payload["id"].as_str() else {
             return;
         };
@@ -1717,9 +1750,13 @@ pub(crate) fn install(app: &HostHandle) -> Result<(), String> {
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(&instance.instance_id);
         }
+        let snapshot = host.instances.snapshot();
+        host.shells
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|id, _| snapshot.instances.iter().any(|i| i.accepts_view(id)));
         miniapp_api::cancel_miniapp_streams(app_id);
         changed(&handle);
     });
-    sdk::install_events(app);
     Ok(())
 }

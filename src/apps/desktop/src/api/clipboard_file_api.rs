@@ -73,6 +73,12 @@ pub async fn paste_files(request: PasteFilesRequest) -> Result<PasteFilesRespons
         ));
     }
 
+    tokio::task::spawn_blocking(move || paste_files_local_sync(request))
+        .await
+        .map_err(|e| format!("Failed to paste files: {}", e))?
+}
+
+fn paste_files_local_sync(request: PasteFilesRequest) -> Result<PasteFilesResponse, String> {
     let target_dir = Path::new(&request.target_directory);
 
     if !target_dir.exists() {
@@ -89,6 +95,7 @@ pub async fn paste_files(request: PasteFilesRequest) -> Result<PasteFilesRespons
         ));
     }
 
+    let canonical_target_dir = std::fs::canonicalize(target_dir).ok();
     let mut success_count = 0;
     let mut directory_count = 0;
     let mut failed_files = Vec::new();
@@ -123,7 +130,23 @@ pub async fn paste_files(request: PasteFilesRequest) -> Result<PasteFilesRespons
             target_path
         };
 
-        let is_dir = source.is_dir();
+        let is_dir = std::fs::symlink_metadata(source)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if is_dir {
+            if let (Ok(canonical_source), Some(canonical_target)) =
+                (std::fs::canonicalize(source), canonical_target_dir.as_ref())
+            {
+                if canonical_target.starts_with(&canonical_source) {
+                    failed_files.push(FailedFile {
+                        path: source_path.clone(),
+                        error: "Cannot copy a directory into itself or one of its subdirectories"
+                            .to_string(),
+                    });
+                    continue;
+                }
+            }
+        }
         let result = if is_dir {
             copy_directory_recursive(source, &final_target)
         } else {
@@ -189,19 +212,41 @@ fn generate_unique_path(path: &Path) -> std::path::PathBuf {
     }
 }
 
+const MAX_COPY_DEPTH: usize = 128;
+
 pub(crate) fn copy_directory_recursive(source: &Path, target: &Path) -> Result<(), String> {
+    copy_directory_recursive_bounded(source, target, 0)
+}
+
+fn copy_directory_recursive_bounded(
+    source: &Path,
+    target: &Path,
+    depth: usize,
+) -> Result<(), String> {
+    if depth >= MAX_COPY_DEPTH {
+        return Err(format!(
+            "Directory nesting exceeded maximum copy depth ({})",
+            MAX_COPY_DEPTH
+        ));
+    }
     std::fs::create_dir_all(target).map_err(|e| format!("Failed to create directory: {}", e))?;
 
     for entry in
         std::fs::read_dir(source).map_err(|e| format!("Failed to read directory: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect directory entry: {}", e))?;
+        if file_type.is_symlink() {
+            continue;
+        }
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
 
-        if source_path.is_dir() {
-            copy_directory_recursive(&source_path, &target_path)?;
-        } else {
+        if file_type.is_dir() {
+            copy_directory_recursive_bounded(&source_path, &target_path, depth + 1)?;
+        } else if file_type.is_file() {
             std::fs::copy(&source_path, &target_path)
                 .map_err(|e| format!("Failed to copy file: {}", e))?;
         }
@@ -250,6 +295,23 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_directory_recursive_skips_symlink_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("ok.txt"), b"hello").unwrap();
+        symlink(&source, source.join("loop")).unwrap();
+
+        copy_directory_recursive(&source, &target).expect("should skip symlink cycle");
+        assert_eq!(std::fs::read(target.join("ok.txt")).unwrap(), b"hello");
+        assert!(!target.join("loop").exists());
     }
 }
 

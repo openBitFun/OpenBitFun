@@ -148,7 +148,9 @@ pub struct CommandOutputResponse {
 
 // @backend-command
 pub async fn check_command_exists(command: String) -> Result<CheckCommandResponse, String> {
-    let result = system::check_command(&command);
+    let result = tokio::task::spawn_blocking(move || system::check_command(&command))
+        .await
+        .map_err(|e| format!("Failed to check command: {}", e))?;
 
     Ok(CheckCommandResponse {
         exists: result.exists,
@@ -160,8 +162,12 @@ pub async fn check_command_exists(command: String) -> Result<CheckCommandRespons
 pub async fn check_commands_exist(
     commands: Vec<String>,
 ) -> Result<Vec<(String, CheckCommandResponse)>, String> {
-    let cmd_refs: Vec<&str> = commands.iter().map(|s| s.as_str()).collect();
-    let results = system::check_commands(&cmd_refs);
+    let results = tokio::task::spawn_blocking(move || {
+        let cmd_refs: Vec<&str> = commands.iter().map(|s| s.as_str()).collect();
+        system::check_commands(&cmd_refs)
+    })
+    .await
+    .map_err(|e| format!("Failed to check commands: {}", e))?;
 
     Ok(results
         .into_iter()

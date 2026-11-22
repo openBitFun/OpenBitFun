@@ -549,22 +549,16 @@ impl AppState {
     }
 }
 
-/// Try every layout we know about for `worker_host.js`, dev or bundled:
-///   1. `CARGO_MANIFEST_DIR/resources/worker_host.js` — `cargo run` / `tauri dev`.
-///   2. `<exe_dir>/resources/worker_host.js` — generic side-by-side bundle.
-///   3. `<exe_dir>/../Resources/resources/worker_host.js` — macOS `.app` (Tauri
-///      copies bundle.resources into `Contents/Resources/`).
-///   4. `<exe_dir>/../Resources/worker_host.js` — flat macOS layout fallback.
-///   5. `<exe_dir>/../lib/<bin>/resources/worker_host.js` — typical Linux deb/AppImage.
-///   6. `<exe_dir>/../share/<bin>/resources/worker_host.js` — alt Linux layout.
+/// Try every layout we know about for `worker_host.js`, bundled first and
+/// source-tree fallback only in debug builds:
+///   1. `<exe_dir>/resources/worker_host.js` — generic side-by-side bundle.
+///   2. `<exe_dir>/../Resources/resources/worker_host.js` — macOS `.app` bundle.
+///   3. `<exe_dir>/../Resources/worker_host.js` — flat macOS layout fallback.
+///   4. `<exe_dir>/../lib/<bin>/resources/worker_host.js` — typical Linux deb/package.
+///   5. `<exe_dir>/../share/<bin>/resources/worker_host.js` — alt Linux layout.
+///   6. `CARGO_MANIFEST_DIR/resources/worker_host.js` — debug dev builds only.
 fn resolve_worker_host_path() -> Option<std::path::PathBuf> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-
-    candidates.push(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("worker_host.js"),
-    );
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
@@ -595,6 +589,14 @@ fn resolve_worker_host_path() -> Option<std::path::PathBuf> {
                 }
             }
         }
+    }
+
+    if cfg!(debug_assertions) {
+        candidates.push(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("worker_host.js"),
+        );
     }
 
     candidates.into_iter().find(|p| p.exists())

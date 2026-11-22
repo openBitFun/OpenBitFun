@@ -3541,6 +3541,8 @@ pub struct CompressPathRequest {
     pub path: String,
     #[serde(default)]
     pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3549,18 +3551,36 @@ pub struct DecompressPathRequest {
     pub path: String,
     #[serde(default)]
     pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// Compress a local file or directory into a `.zip` archive placed in the same
 /// parent directory. For remote workspaces, delegates to SSH command execution
-/// (tries `zip`, falls back to `tar`).
+/// (tries `zip`, falls back to `tar`). Never falls back to local disk on a
+/// remote workspace.
 // @backend-command
 pub async fn compress_path(
     state: State<'_, AppState>,
     request: CompressPathRequest,
 ) -> Result<String, String> {
-    let src = request.path;
-    let remote_cid = request.remote_connection_id;
+    let target = resolve_desktop_path_target(
+        &state,
+        &request.path,
+        request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
+    )
+    .await?;
+
+    let (src, remote_cid) = match target {
+        DesktopPathTarget::Remote {
+            requested_path,
+            entry,
+        } => (requested_path, Some(entry.connection_id)),
+        DesktopPathTarget::Local { resolved_path, .. } => {
+            (resolved_path.to_string_lossy().into_owned(), None)
+        }
+    };
 
     // Remote: execute compress command via SSH.
     if let Some(cid) = &remote_cid {
@@ -3793,17 +3813,43 @@ fn create_local_zip_archive(
     result
 }
 
+const MAX_LOCAL_ARCHIVE_DEPTH: usize = 128;
+
 /// Recursively add a directory's children to a zip archive.
+/// Uses `entry.file_type()` (symlink-safe) and skips symbolic links to prevent
+/// symlink-cycle recursion and unbounded archive growth.
 fn add_dir_contents_to_zip(
     zip: &mut zip::ZipWriter<std::fs::File>,
     dir: &Path,
     archive_prefix: &str,
     options: zip::write::SimpleFileOptions,
 ) -> Result<(), String> {
+    add_dir_contents_to_zip_bounded(zip, dir, archive_prefix, options, 0)
+}
+
+fn add_dir_contents_to_zip_bounded(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    dir: &Path,
+    archive_prefix: &str,
+    options: zip::write::SimpleFileOptions,
+    depth: usize,
+) -> Result<(), String> {
+    if depth >= MAX_LOCAL_ARCHIVE_DEPTH {
+        return Err(format!(
+            "Directory nesting exceeded maximum archive depth ({})",
+            MAX_LOCAL_ARCHIVE_DEPTH
+        ));
+    }
     for entry in std::fs::read_dir(dir)
         .map_err(|e| format!("Failed to read directory '{}': {}", dir.display(), e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect directory entry: {}", e))?;
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         let archive_path = if archive_prefix.is_empty() {
@@ -3812,11 +3858,11 @@ fn add_dir_contents_to_zip(
             format!("{}/{}", archive_prefix, name)
         };
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             zip.add_directory(format!("{}/", archive_path.replace('\\', "/")), options)
                 .map_err(|e| format!("Failed to add directory '{}' to zip: {}", archive_path, e))?;
-            add_dir_contents_to_zip(zip, &path, &archive_path, options)?;
-        } else if path.is_file() {
+            add_dir_contents_to_zip_bounded(zip, &path, &archive_path, options, depth + 1)?;
+        } else if file_type.is_file() {
             add_file_to_zip(zip, &path, &archive_path, options)?;
         }
     }
@@ -3859,8 +3905,23 @@ pub async fn decompress_path(
     state: State<'_, AppState>,
     request: DecompressPathRequest,
 ) -> Result<String, String> {
-    let src = request.path;
-    let remote_cid = request.remote_connection_id;
+    let target = resolve_desktop_path_target(
+        &state,
+        &request.path,
+        request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
+    )
+    .await?;
+
+    let (src, remote_cid) = match target {
+        DesktopPathTarget::Remote {
+            requested_path,
+            entry,
+        } => (requested_path, Some(entry.connection_id)),
+        DesktopPathTarget::Local { resolved_path, .. } => {
+            (resolved_path.to_string_lossy().into_owned(), None)
+        }
+    };
 
     // Remote: execute decompress command via SSH.
     if let Some(cid) = &remote_cid {
@@ -4783,40 +4844,45 @@ pub async fn list_directory_files(
             Ok(files)
         }
         DesktopPathTarget::Local { resolved_path, .. } => {
-            let dir_path = resolved_path.as_path();
-            if !dir_path.exists() {
-                return Ok(Vec::new());
-            }
+            let extensions = request.extensions;
+            tokio::task::spawn_blocking(move || {
+                let dir_path = resolved_path.as_path();
+                if !dir_path.exists() {
+                    return Ok(Vec::new());
+                }
 
-            if !dir_path.is_dir() {
-                return Err("Path is not a directory".to_string());
-            }
+                if !dir_path.is_dir() {
+                    return Err("Path is not a directory".to_string());
+                }
 
-            let mut files = Vec::new();
-            let entries = std::fs::read_dir(dir_path)
-                .map_err(|e| format!("Failed to read directory: {}", e))?;
+                let mut files = Vec::new();
+                let entries = std::fs::read_dir(dir_path)
+                    .map_err(|e| format!("Failed to read directory: {}", e))?;
 
-            for entry in entries {
-                let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-                let path = entry.path();
+                for entry in entries {
+                    let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+                    let path = entry.path();
 
-                if path.is_file() {
-                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                        if let Some(ref extensions) = request.extensions {
-                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                if extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
-                                    files.push(file_name.to_string());
+                    if path.is_file() {
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Some(ref extensions) = extensions {
+                                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                    if extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                                        files.push(file_name.to_string());
+                                    }
                                 }
+                            } else {
+                                files.push(file_name.to_string());
                             }
-                        } else {
-                            files.push(file_name.to_string());
                         }
                     }
                 }
-            }
 
-            files.sort();
-            Ok(files)
+                files.sort();
+                Ok(files)
+            })
+            .await
+            .map_err(|e| format!("Failed to list directory: {}", e))?
         }
     }
 }
@@ -4830,7 +4896,7 @@ pub async fn reveal_in_explorer(
         resolve_desktop_path_target(&state, &request.path, None, request.workspace_id.as_deref())
             .await?;
     let path = match target.as_local_path() {
-        Some(path) => path,
+        Some(path) => path.to_path_buf(),
         None => {
             return Err(format!(
                 "Cannot reveal remote path in local file explorer: {}",
@@ -4838,7 +4904,10 @@ pub async fn reveal_in_explorer(
             ))
         }
     };
-    reveal_local_path_in_explorer(path, &request.path)
+    let display_path = request.path;
+    tokio::task::spawn_blocking(move || reveal_local_path_in_explorer(&path, &display_path))
+        .await
+        .map_err(|e| format!("Failed to reveal in explorer: {}", e))?
 }
 
 pub(crate) fn reveal_local_path_in_explorer(

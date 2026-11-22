@@ -17,7 +17,7 @@ const MAX_TARGET_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) async fn dispatch(command: &str, args: Value) -> anyhow::Result<Value> {
     let verb = target_cli_verb(command)
         .ok_or_else(|| anyhow!("Unknown detached dispatch target command '{command}'"))?;
-    let executable = discover_cli().ok_or_else(|| {
+    let executable = discover_cli_cached().await.ok_or_else(|| {
         anyhow!(
             "OpenBitFun CLI dispatch runner is not installed on this device; install `openbitfun` in ~/.local/bin or PATH"
         )
@@ -27,7 +27,8 @@ pub(crate) async fn dispatch(command: &str, args: Value) -> anyhow::Result<Value
         .and_then(Value::as_str)
         .map(str::to_string);
     let answer = run_target_verb(executable, command, verb, args).await?;
-    // The runner is another process: tell this host's catalog and digest.
+    // The runner is another process: tell this host's catalog, digest, and prompt poller.
+    wake_prompts_poller();
     crate::fleet::dispatch_target_answered(command, workspace_path).await;
     Ok(answer)
 }
@@ -173,8 +174,22 @@ async fn invoke_cli(executable: &Path, verb: &str, args: Value) -> anyhow::Resul
 }
 
 /// How often the desktop re-reads the dispatch store's pending permissions
-/// while this host has dispatch jobs at all.
+/// while this host has at least one live (non-terminal) dispatch job.
 const PENDING_PROMPTS_POLL: Duration = Duration::from_secs(15);
+/// When no live dispatch jobs exist, the poller parks on `PROMPTS_WAKE` and
+/// only re-checks the directory on this slow safety-net cadence (without
+/// spawning any CLI process unless a live job appears).
+const IDLE_PROMPTS_RECHECK: Duration = Duration::from_secs(300);
+
+static PROMPTS_WAKE: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+static CACHED_CLI_PATH: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn wake_prompts_poller() {
+    if let Some(notify) = PROMPTS_WAKE.get() {
+        notify.notify_one();
+    }
+}
 
 /// The Detached Dispatch permission mailbox of this host, for the fleet
 /// digest (`dispatch` prompts).
@@ -182,8 +197,8 @@ const PENDING_PROMPTS_POLL: Duration = Duration::from_secs(15);
 /// The dispatch store is owned by the CLI runner, so the desktop reads it out
 /// of process (`openbitfun dispatch __pending_prompts`, read-only). The digest
 /// reads synchronously, so a background poller keeps a cached answer and
-/// pokes the digest when it changes; a host with no dispatch jobs never
-/// spawns the runner.
+/// pokes the digest when it changes; a host with no live dispatch jobs never
+/// spawns the runner and parks until woken.
 #[derive(Default)]
 pub(crate) struct DesktopDispatchPrompts {
     inner: std::sync::Arc<PromptsInner>,
@@ -221,12 +236,18 @@ impl DesktopDispatchPrompts {
         };
         state.poller = true;
         let weak = std::sync::Arc::downgrade(&self.inner);
+        let wake = PROMPTS_WAKE.get_or_init(tokio::sync::Notify::new);
         runtime.spawn(async move {
             loop {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let outcome = read_pending_prompts().await;
+                // Register interest before reading so a wake arriving mid-read is not lost.
+                let notified = wake.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+
+                let (has_live, outcome) = read_pending_prompts().await;
                 let changed = {
                     let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
                     let changed = match outcome {
@@ -254,7 +275,15 @@ impl DesktopDispatchPrompts {
                     }
                 }
                 drop(inner);
-                tokio::time::sleep(PENDING_PROMPTS_POLL).await;
+                let sleep_duration = if has_live {
+                    PENDING_PROMPTS_POLL
+                } else {
+                    IDLE_PROMPTS_RECHECK
+                };
+                tokio::select! {
+                    _ = &mut notified => {}
+                    _ = tokio::time::sleep(sleep_duration) => {}
+                }
             }
         });
     }
@@ -283,27 +312,109 @@ impl openbitfun_core::service::fleet::FleetDispatchPromptSource for DesktopDispa
     }
 }
 
-/// One read of the CLI dispatch store's pending permissions and questions.
-async fn read_pending_prompts() -> anyhow::Result<(
+type PendingPromptsPayload = (
     Value,
     Vec<openbitfun_core::service::fleet::FleetDispatchPrompt>,
     Vec<openbitfun_core::service::fleet::FleetDispatchQuestion>,
-)> {
-    let jobs = openbitfun_core::infrastructure::PathManager::new()
-        .map_err(|error| anyhow!("resolve OpenBitFun storage root: {error}"))?
-        .product_home_dir()
-        .join("dispatch")
-        .join("jobs");
-    let has_jobs = std::fs::read_dir(&jobs)
-        .map(|mut entries| entries.any(|entry| entry.is_ok_and(|entry| entry.path().is_dir())))
-        .unwrap_or(false);
-    if !has_jobs {
-        return Ok((Value::Array(Vec::new()), Vec::new(), Vec::new()));
+);
+
+/// Inspects `<product_home>/dispatch/jobs` off the Tokio worker pool and
+/// returns `true` only if at least one non-terminal (live) job exists.
+fn has_live_dispatch_jobs(jobs_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(jobs_dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let job_dir = entry.path();
+        if job_dir_is_live(&job_dir) {
+            return true;
+        }
     }
-    let executable = discover_cli()
-        .ok_or_else(|| anyhow!("OpenBitFun CLI dispatch runner is not installed on this device"))?;
-    let permissions = invoke_cli(&executable, "__pending_prompts", serde_json::json!({})).await?;
-    let prompts = parse_pending_prompts(&permissions)?;
+    false
+}
+
+fn job_dir_is_live(job_dir: &Path) -> bool {
+    let state_path = job_dir.join("state");
+    if let Ok(raw) = std::fs::read(&state_path) {
+        #[derive(serde::Deserialize)]
+        struct MinimalState {
+            #[serde(default)]
+            state: String,
+        }
+        if let Ok(parsed) = serde_json::from_slice::<MinimalState>(&raw) {
+            return !matches!(parsed.state.as_str(), "succeeded" | "failed" | "cancelled");
+        }
+        // Unparseable or in-flight write: conservatively treat as live.
+        return true;
+    }
+    // Before `state` is written, a freshly submitted job holds `preparing` or `job.json`.
+    job_dir.join("preparing").exists() || job_dir.join("job.json").exists()
+}
+
+async fn discover_cli_cached() -> Option<PathBuf> {
+    let cache = CACHED_CLI_PATH.get_or_init(|| std::sync::Mutex::new(None));
+    let cached = cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(path) = cached {
+        let still_exists = tokio::fs::try_exists(&path).await.unwrap_or(false);
+        if still_exists {
+            return Some(path);
+        }
+        *cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    let discovered = tokio::task::spawn_blocking(discover_cli)
+        .await
+        .ok()
+        .flatten();
+    if let Some(ref path) = discovered {
+        *cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
+    }
+    discovered
+}
+
+/// One read of the CLI dispatch store's pending permissions and questions.
+/// Returns `(has_live_jobs, outcome)`.
+async fn read_pending_prompts() -> (bool, anyhow::Result<PendingPromptsPayload>) {
+    let jobs = match openbitfun_core::infrastructure::PathManager::new() {
+        Ok(pm) => pm.product_home_dir().join("dispatch").join("jobs"),
+        Err(error) => {
+            return (
+                false,
+                Err(anyhow!("resolve OpenBitFun storage root: {error}")),
+            );
+        }
+    };
+    let has_live = tokio::task::spawn_blocking(move || has_live_dispatch_jobs(&jobs))
+        .await
+        .unwrap_or(false);
+    if !has_live {
+        return (
+            false,
+            Ok((Value::Array(Vec::new()), Vec::new(), Vec::new())),
+        );
+    }
+    let Some(executable) = discover_cli_cached().await else {
+        return (
+            true,
+            Err(anyhow!(
+                "OpenBitFun CLI dispatch runner is not installed on this device"
+            )),
+        );
+    };
+    let permissions =
+        match invoke_cli(&executable, "__pending_prompts", serde_json::json!({})).await {
+            Ok(value) => value,
+            Err(error) => return (true, Err(error)),
+        };
+    let prompts = match parse_pending_prompts(&permissions) {
+        Ok(prompts) => prompts,
+        Err(error) => return (true, Err(error)),
+    };
     // An older runner has no question mailbox (and no verb for it): no
     // questions, not an error for the permission half.
     let raw_questions = invoke_cli(&executable, "__pending_questions", serde_json::json!({}))
@@ -312,9 +423,12 @@ async fn read_pending_prompts() -> anyhow::Result<(
             log::debug!("Dispatch runner without a question mailbox: {error:#}");
             Value::Array(Vec::new())
         });
-    let questions = parse_pending_questions(&raw_questions)?;
+    let questions = match parse_pending_questions(&raw_questions) {
+        Ok(questions) => questions,
+        Err(error) => return (true, Err(error)),
+    };
     let raw = serde_json::json!({ "permissions": permissions, "questions": raw_questions });
-    Ok((raw, prompts, questions))
+    (true, Ok((raw, prompts, questions)))
 }
 
 fn parse_pending_questions(
@@ -547,5 +661,38 @@ mod tests {
             resolve_cli_candidate(link),
             Some(binary.canonicalize().expect("canonical binary"))
         );
+    }
+
+    #[test]
+    fn has_live_dispatch_jobs_ignores_historical_terminal_jobs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let jobs = temp.path();
+        assert!(!has_live_dispatch_jobs(jobs));
+
+        for (id, state) in [
+            ("job-done", "succeeded"),
+            ("job-fail", "failed"),
+            ("job-cancel", "cancelled"),
+        ] {
+            let dir = jobs.join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("job.json"), "{}").unwrap();
+            std::fs::write(dir.join("state"), format!(r#"{{"state":"{state}"}}"#)).unwrap();
+        }
+        assert!(
+            !has_live_dispatch_jobs(jobs),
+            "terminal historical job directories must not wake the CLI poller"
+        );
+
+        let preparing = jobs.join("job-preparing");
+        std::fs::create_dir_all(&preparing).unwrap();
+        std::fs::write(preparing.join("preparing"), "").unwrap();
+        assert!(has_live_dispatch_jobs(jobs));
+        std::fs::remove_dir_all(&preparing).unwrap();
+
+        let running = jobs.join("job-running");
+        std::fs::create_dir_all(&running).unwrap();
+        std::fs::write(running.join("state"), r#"{"state":"running"}"#).unwrap();
+        assert!(has_live_dispatch_jobs(jobs));
     }
 }

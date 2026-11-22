@@ -29,8 +29,8 @@ fn library_file_name() -> String {
 }
 
 /// Where the library is looked for: `OPENBITFUN_BACKEND_LIB`, next to the
-/// executable (development: `target/<profile>`), the app bundle's
-/// `Frameworks`.
+/// executable (development: `target/<profile>`), the macOS app bundle's
+/// `Frameworks`, and Linux's `../lib` FHS directory.
 fn candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("OPENBITFUN_BACKEND_LIB") {
@@ -40,7 +40,10 @@ fn candidates() -> Vec<PathBuf> {
         let exe = exe.canonicalize().unwrap_or(exe);
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(library_file_name()));
+            #[cfg(target_os = "macos")]
             candidates.push(dir.join("../Frameworks").join(library_file_name()));
+            #[cfg(target_os = "linux")]
+            candidates.push(dir.join("../lib").join(library_file_name()));
         }
     }
     candidates

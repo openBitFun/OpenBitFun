@@ -156,6 +156,16 @@ impl PreviewReader for PeerPreviewReader {
     }
 }
 
+const MAX_PREVIEW_SESSIONS: usize = 16;
+const PREVIEW_IDLE_TTL_SECS: u64 = 20 * 60;
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[derive(Clone)]
 struct PreviewState {
     token: String,
@@ -164,13 +174,33 @@ struct PreviewState {
     request: HtmlPreviewResourceRequest,
     transfer: Arc<HtmlPreviewTransfer>,
     closed: watch::Receiver<bool>,
+    last_activity: Arc<std::sync::atomic::AtomicU64>,
+}
+
+struct PreviewSessionEntry {
+    shutdown: watch::Sender<bool>,
+    last_activity: Arc<std::sync::atomic::AtomicU64>,
 }
 
 static SESSIONS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, watch::Sender<bool>>>,
+    std::sync::Mutex<std::collections::HashMap<String, PreviewSessionEntry>>,
 > = std::sync::OnceLock::new();
-fn sessions() -> &'static std::sync::Mutex<std::collections::HashMap<String, watch::Sender<bool>>> {
+fn sessions() -> &'static std::sync::Mutex<std::collections::HashMap<String, PreviewSessionEntry>> {
     SESSIONS.get_or_init(Default::default)
+}
+
+/// Closes every active local HTML preview loopback server and drops its
+/// underlying peer/remote reader (called on shutdown and account teardown).
+pub(crate) fn release_all_previews() {
+    let entries: Vec<PreviewSessionEntry> = {
+        let mut map = sessions()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.drain().map(|(_, entry)| entry).collect()
+    };
+    for entry in entries {
+        let _ = entry.shutdown.send(true);
+    }
 }
 
 // @backend-command
@@ -260,6 +290,7 @@ async fn start_preview(
     request.expected_source = Some(entry.source);
     let token = Uuid::new_v4().simple().to_string();
     let session_id = Uuid::new_v4().simple().to_string();
+    let last_activity = Arc::new(std::sync::atomic::AtomicU64::new(now_epoch_secs()));
     let state = PreviewState {
         token: token.clone(),
         cookie_name: format!("openbitfun_html_preview_{session_id}"),
@@ -267,6 +298,7 @@ async fn start_preview(
         request,
         transfer,
         closed: closed.clone(),
+        last_activity: Arc::clone(&last_activity),
     };
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -278,17 +310,67 @@ async fn start_preview(
     let router = Router::new()
         .fallback(any(preview_handler))
         .with_state(state);
-    sessions()
-        .lock()
-        .map_err(|_| "HTML preview registry poisoned")?
-        .insert(session_id.clone(), shutdown);
+    let evicted = {
+        let mut map = sessions()
+            .lock()
+            .map_err(|_| "HTML preview registry poisoned")?;
+        let mut evicted = Vec::new();
+        while map.len() >= MAX_PREVIEW_SESSIONS {
+            let lru_key = map
+                .iter()
+                .min_by_key(|(_, entry)| {
+                    entry
+                        .last_activity
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                })
+                .map(|(k, _)| k.clone());
+            let Some(key) = lru_key else {
+                break;
+            };
+            if let Some(entry) = map.remove(&key) {
+                evicted.push(entry.shutdown);
+            }
+        }
+        map.insert(
+            session_id.clone(),
+            PreviewSessionEntry {
+                shutdown,
+                last_activity: Arc::clone(&last_activity),
+            },
+        );
+        evicted
+    };
+    for old_shutdown in evicted {
+        let _ = old_shutdown.send(true);
+    }
+    let session_id_for_task = session_id.clone();
     tokio::spawn(async move {
         let mut closed = closed;
+        let idle_session_id = session_id_for_task.clone();
         let _ = axum::serve(listener, router)
             .with_graceful_shutdown(async move {
-                let _ = closed.wait_for(|closed| *closed).await;
+                loop {
+                    let last = last_activity.load(std::sync::atomic::Ordering::Relaxed);
+                    let elapsed = now_epoch_secs().saturating_sub(last);
+                    if elapsed >= PREVIEW_IDLE_TTL_SECS {
+                        if let Ok(mut map) = sessions().lock() {
+                            if let Some(entry) = map.remove(&idle_session_id) {
+                                let _ = entry.shutdown.send(true);
+                            }
+                        }
+                        break;
+                    }
+                    let remaining = PREVIEW_IDLE_TTL_SECS - elapsed;
+                    tokio::select! {
+                        _ = closed.wait_for(|closed| *closed) => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(remaining.max(1))) => {}
+                    }
+                }
             })
             .await;
+        if let Ok(mut map) = sessions().lock() {
+            map.remove(&session_id_for_task);
+        }
     });
     Ok(HtmlPreviewCreateResponse {
         url: format!("http://127.0.0.1:{port}/__openbitfun_preview_bootstrap?previewToken={token}"),
@@ -298,12 +380,12 @@ async fn start_preview(
 
 // @backend-command
 pub async fn html_preview_release(request: HtmlPreviewReleaseRequest) -> Result<(), String> {
-    if let Some(shutdown) = sessions()
+    if let Some(entry) = sessions()
         .lock()
         .map_err(|_| "HTML preview registry poisoned")?
         .remove(&request.session_id)
     {
-        let _ = shutdown.send(true);
+        let _ = entry.shutdown.send(true);
     }
     Ok(())
 }
@@ -314,6 +396,9 @@ async fn preview_handler(
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
+    state
+        .last_activity
+        .store(now_epoch_secs(), std::sync::atomic::Ordering::Relaxed);
     let query_token = uri.query().and_then(|query| {
         query.split('&').find_map(|pair| {
             let (key, value) = pair.split_once('=')?;

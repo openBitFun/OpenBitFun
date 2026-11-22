@@ -4,9 +4,11 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use super::State;
 use crate::backend_protocol::EventHub;
@@ -23,12 +25,43 @@ pub struct NativeHostInfo {
     pub data_dir: String,
 }
 
+/// Token returned by [`NativeHost::listen`] / [`NativeHost::listen_value`] that
+/// can be passed to [`NativeHost::unlisten`] to remove the subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ListenerId(u64);
+
 type StateEntry = &'static (dyn Any + Send + Sync);
 
-/// A backend-internal event listener (`HostHandle::listen`): gets the JSON
-/// text of each matching event's payload, as Tauri's `Event::payload()`.
-type Listener = Arc<dyn Fn(&str) + Send + Sync>;
-type Listeners = Arc<RwLock<Vec<(String, Listener)>>>;
+#[derive(Clone)]
+enum EventMatcher {
+    Exact(String),
+    Prefix(String),
+}
+
+impl EventMatcher {
+    fn matches(&self, event_name: &str) -> bool {
+        match self {
+            Self::Exact(expected) => expected == event_name,
+            Self::Prefix(prefix) => event_name.starts_with(prefix),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum ListenerCallback {
+    /// Receives the serialized JSON payload string (legacy Tauri shape).
+    JsonText(Arc<dyn Fn(&str) + Send + Sync>),
+    /// Receives `(event_name, &payload)` directly without re-serializing JSON.
+    Value(Arc<dyn Fn(&str, &Value) + Send + Sync>),
+}
+
+struct ListenerEntry {
+    id: ListenerId,
+    matcher: EventMatcher,
+    callback: ListenerCallback,
+}
+
+type Listeners = Arc<RwLock<Vec<ListenerEntry>>>;
 
 /// The native host. Lives for the whole process.
 pub struct NativeHost {
@@ -37,6 +70,7 @@ pub struct NativeHost {
     info: RwLock<NativeHostInfo>,
     shell: super::shell::ShellBridge,
     listeners: Listeners,
+    next_listener_id: AtomicU64,
     listener_task: std::sync::Once,
 }
 
@@ -49,6 +83,7 @@ impl NativeHost {
             info: RwLock::new(info),
             shell: super::shell::ShellBridge::default(),
             listeners: Arc::default(),
+            next_listener_id: AtomicU64::new(1),
             listener_task: std::sync::Once::new(),
         })
     }
@@ -103,20 +138,72 @@ impl NativeHost {
     }
 
     /// Calls `handler` with the payload JSON of every later event named
-    /// `event`, for backend code that reacts
-    /// to its own events (MiniApp windows relay agent and worker events).
+    /// `event`, for backend code that reacts to its own events.
     /// Listeners run on one dispatcher task over the event stream, in order.
-    pub fn listen<F>(&self, event: impl Into<String>, handler: F)
+    pub fn listen<F>(&self, event: impl Into<String>, handler: F) -> ListenerId
     where
         F: Fn(&str) + Send + Sync + 'static,
     {
+        self.register_listener(
+            EventMatcher::Exact(event.into()),
+            ListenerCallback::JsonText(Arc::new(handler)),
+        )
+    }
+
+    /// Calls `handler` with `(event_name, &payload)` for every later event
+    /// matching `event`, avoiding JSON serialize+deserialize round-trips.
+    pub fn listen_value<F>(&self, event: impl Into<String>, handler: F) -> ListenerId
+    where
+        F: Fn(&str, &Value) + Send + Sync + 'static,
+    {
+        self.register_listener(
+            EventMatcher::Exact(event.into()),
+            ListenerCallback::Value(Arc::new(handler)),
+        )
+    }
+
+    /// Calls `handler` with `(event_name, &payload)` for every later event
+    /// whose name starts with `prefix`.
+    pub fn listen_prefix_value<F>(&self, prefix: impl Into<String>, handler: F) -> ListenerId
+    where
+        F: Fn(&str, &Value) + Send + Sync + 'static,
+    {
+        self.register_listener(
+            EventMatcher::Prefix(prefix.into()),
+            ListenerCallback::Value(Arc::new(handler)),
+        )
+    }
+
+    /// Removes a listener previously registered with [`Self::listen`],
+    /// [`Self::listen_value`], or [`Self::listen_prefix_value`].
+    pub fn unlisten(&self, id: ListenerId) -> bool {
+        let mut listeners = match self.listeners.write() {
+            Ok(listeners) => listeners,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let before = listeners.len();
+        listeners.retain(|entry| entry.id != id);
+        listeners.len() != before
+    }
+
+    fn register_listener(&self, matcher: EventMatcher, callback: ListenerCallback) -> ListenerId {
+        let id = ListenerId(self.next_listener_id.fetch_add(1, Ordering::Relaxed));
         {
             let mut listeners = match self.listeners.write() {
                 Ok(listeners) => listeners,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            listeners.push((event.into(), Arc::new(handler)));
+            listeners.push(ListenerEntry {
+                id,
+                matcher,
+                callback,
+            });
         }
+        self.ensure_listener_task();
+        id
+    }
+
+    fn ensure_listener_task(&self) {
         self.listener_task.call_once(|| {
             let listeners = Arc::clone(&self.listeners);
             let mut subscription = self.events.subscribe(None);
@@ -124,23 +211,38 @@ impl NativeHost {
                 loop {
                     let batch = subscription.next_batch(256).await;
                     for event in &batch.events {
-                        let matching: Vec<Listener> = {
+                        let matching: Vec<ListenerCallback> = {
                             let listeners = match listeners.read() {
                                 Ok(listeners) => listeners,
                                 Err(poisoned) => poisoned.into_inner(),
                             };
-                            listeners
-                                .iter()
-                                .filter(|(name, _)| *name == event.event)
-                                .map(|(_, listener)| Arc::clone(listener))
-                                .collect()
+                            if listeners.is_empty() {
+                                Vec::new()
+                            } else {
+                                listeners
+                                    .iter()
+                                    .filter(|entry| entry.matcher.matches(&event.event))
+                                    .map(|entry| entry.callback.clone())
+                                    .collect()
+                            }
                         };
                         if matching.is_empty() {
                             continue;
                         }
-                        let payload = event.payload.to_string();
-                        for listener in matching {
-                            listener(&payload);
+                        // Only serialize payload to JSON string if at least one
+                        // legacy JsonText listener actually matched this event.
+                        let mut serialized: Option<String> = None;
+                        for callback in matching {
+                            match callback {
+                                ListenerCallback::Value(handler) => {
+                                    handler(&event.event, &event.payload);
+                                }
+                                ListenerCallback::JsonText(handler) => {
+                                    let text =
+                                        serialized.get_or_insert_with(|| event.payload.to_string());
+                                    handler(text);
+                                }
+                            }
                         }
                     }
                     if batch.closed {

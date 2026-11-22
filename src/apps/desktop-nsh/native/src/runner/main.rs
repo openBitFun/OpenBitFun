@@ -20,7 +20,7 @@
 mod backend_library;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod bridge;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod folder_picker;
 
 use std::process::ExitCode;
@@ -71,41 +71,59 @@ fn main() -> ExitCode {
             None
         }
     };
+    let mut native_registry = openbitfun_nsh_native::registry();
     if let Some(backend) = backend {
         bridge::start(backend);
+        register_lifecycle_shutdown(&mut native_registry, backend);
+        #[cfg(not(windows))]
         register_exit_shutdown(backend);
     }
 
-    platform::set_ui_sets(vec![
-        nsh_base::registry(),
-        openbitfun_nsh_native::registry(),
-    ]);
+    platform::set_ui_sets(vec![nsh_base::registry(), native_registry]);
     let exit = platform::run();
 
-    // The UI quit (`Application.quit()` or the last window closed): shut the
-    // backend down gracefully, bounded so a stuck service cannot keep the
-    // process alive.
+    // Fallback when the runner returned before the NSH engine started; after a
+    // normal quit `on_app_quit` already ran and this is an idempotent no-op.
     if let Some(backend) = backend {
         backend.shutdown(SHUTDOWN_TIMEOUT_MS);
     }
     exit
 }
 
-/// A quit the app intercepted (a JS quit handler that then approves it)
-/// ends in AppKit's `terminate:` (and the platform's exit elsewhere), which
-/// exits the process without returning from the runner: shut the backend
-/// down from `atexit` too. The shutdown is idempotent, so the normal path's
-/// explicit call makes this a no-op.
+/// Triggers graceful backend shutdown from the NSH app lifecycle before the
+/// platform exits the process (including macOS intercepted system quits and
+/// Windows/Linux exits where `atexit` cannot safely run `runtime.block_on`).
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn register_lifecycle_shutdown(
+    registry: &mut nsh_core::element::Registry,
+    backend: &'static backend_library::BackendLibrary,
+) {
+    registry.setup(move || {
+        let _ = nsh_core::element::create_root(|| {
+            nsh_core::element::desktop::on_app_quit(move || {
+                backend.shutdown(SHUTDOWN_TIMEOUT_MS);
+                std::future::ready(())
+            });
+        });
+    });
+}
+
+/// Non-blocking last-resort fallback on Unix (`timeout_ms == 0`, so it never
+/// calls `runtime.block_on` during process teardown). Skipped on Windows,
+/// where `ExitProcess` terminates worker threads before running `atexit`.
+/// When `on_app_quit` or `main` already ran, this is an instant atomic no-op.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn register_exit_shutdown(backend: &'static backend_library::BackendLibrary) {
     use std::sync::OnceLock;
 
     static BACKEND: OnceLock<&'static backend_library::BackendLibrary> = OnceLock::new();
 
     extern "C" fn shutdown_at_exit() {
-        if let Some(backend) = BACKEND.get() {
-            backend.shutdown(SHUTDOWN_TIMEOUT_MS);
-        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(backend) = BACKEND.get() {
+                backend.shutdown(0);
+            }
+        }));
     }
 
     extern "C" {

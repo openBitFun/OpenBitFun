@@ -10,7 +10,8 @@
 //! stops sending events after it (calls are not windowed).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use openbitfun_services_integrations::remote_connect::mesh_route::AccountDeviceMeshRoute;
@@ -23,14 +24,41 @@ use crate::backend_protocol::ws::mesh_client::{MeshConnectOptions, MeshObpConnec
 /// Smallest event window the server accepts; the route only makes calls.
 const CALL_ONLY_CREDIT_BYTES: u64 = 64 * 1024;
 
-type Slot = Arc<Mutex<Option<Arc<MeshObpConnection>>>>;
+type Slot = Arc<Mutex<Option<(u64, Arc<MeshObpConnection>)>>>;
+
+static GLOBAL_ROUTE: OnceLock<Arc<DesktopMeshRoute>> = OnceLock::new();
 
 #[derive(Default)]
 pub struct DesktopMeshRoute {
+    generation: AtomicU64,
     connections: std::sync::Mutex<HashMap<String, Slot>>,
 }
 
 impl DesktopMeshRoute {
+    /// Returns the process-wide route instance so sign-out and mesh teardown
+    /// can drop all cached peer OBP connections.
+    pub fn global() -> Arc<Self> {
+        Arc::clone(GLOBAL_ROUTE.get_or_init(|| Arc::new(Self::default())))
+    }
+
+    /// Drops every cached peer connection and bumps the generation so any
+    /// in-flight dial from the previous account/session cannot repopulate it.
+    pub fn clear(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        let drained: Vec<Slot> = {
+            let mut connections = self
+                .connections
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            connections.drain().map(|(_, slot)| slot).collect()
+        };
+        for slot in drained {
+            if let Ok(mut guard) = slot.try_lock() {
+                guard.take();
+            }
+        }
+    }
+
     fn slot(&self, device_id: &str) -> Slot {
         let mut connections = self
             .connections
@@ -45,13 +73,17 @@ impl DesktopMeshRoute {
         device_id: &str,
         fresh: bool,
     ) -> Result<Arc<MeshObpConnection>, String> {
+        let generation = self.generation.load(Ordering::Acquire);
         let slot = self.slot(device_id);
         let mut guard = slot.lock().await;
         if fresh {
             guard.take();
         }
-        if let Some(connection) = guard.as_ref() {
-            return Ok(Arc::clone(connection));
+        if let Some((conn_gen, connection)) = guard.as_ref() {
+            if *conn_gen == generation {
+                return Ok(Arc::clone(connection));
+            }
+            guard.take();
         }
         let connection = Arc::new(
             runtime
@@ -64,7 +96,10 @@ impl DesktopMeshRoute {
                 )
                 .await?,
         );
-        *guard = Some(Arc::clone(&connection));
+        // Only cache if no sign-out / account reset happened while dialing.
+        if self.generation.load(Ordering::Acquire) == generation {
+            *guard = Some((generation, Arc::clone(&connection)));
+        }
         Ok(connection)
     }
 

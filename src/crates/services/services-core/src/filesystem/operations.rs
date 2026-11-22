@@ -108,23 +108,28 @@ impl FileOperationService {
 
         self.validate_file_access(path, false).await?;
 
-        if !path.exists() {
-            return Err(FileSystemError::service(format!(
-                "File does not exist: {}",
-                file_path
-            )));
-        }
+        let metadata = match fs::metadata(path).await {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(FileSystemError::service(format!(
+                    "File does not exist: {}",
+                    file_path
+                )));
+            }
+            Err(e) => {
+                return Err(FileSystemError::service(format!(
+                    "Failed to read file metadata: {}",
+                    e
+                )));
+            }
+        };
 
-        if path.is_dir() {
+        if metadata.is_dir() {
             return Err(FileSystemError::service(format!(
                 "Path is a directory: {}",
                 file_path
             )));
         }
-
-        let metadata = fs::metadata(path).await.map_err(|e| {
-            FileSystemError::service(format!("Failed to read file metadata: {}", e))
-        })?;
 
         let file_size = metadata.len();
         if file_size > self.max_file_size_mb * 1024 * 1024 {
@@ -135,7 +140,11 @@ impl FileOperationService {
             )));
         }
 
-        match fs::read_to_string(path).await {
+        let bytes = fs::read(path)
+            .await
+            .map_err(|e| FileSystemError::service(format!("Failed to read file: {}", e)))?;
+
+        match String::from_utf8(bytes) {
             Ok(content) => {
                 let line_count = content.lines().count();
                 Ok(FileReadResult {
@@ -146,11 +155,8 @@ impl FileOperationService {
                     line_count: Some(line_count),
                 })
             }
-            Err(_) => {
-                let bytes = fs::read(path)
-                    .await
-                    .map_err(|e| FileSystemError::service(format!("Failed to read file: {}", e)))?;
-
+            Err(err) => {
+                let bytes = err.into_bytes();
                 let is_binary = self.is_binary_content(&bytes);
 
                 if is_binary {
@@ -164,13 +170,14 @@ impl FileOperationService {
                         line_count: None,
                     })
                 } else {
-                    let content = String::from_utf8_lossy(&bytes).to_string();
+                    let content = String::from_utf8_lossy(&bytes).into_owned();
+                    let line_count = content.lines().count();
                     Ok(FileReadResult {
-                        content: content.clone(),
+                        content,
                         encoding: "UTF-8-lossy".to_string(),
                         size: file_size,
                         is_binary: false,
-                        line_count: Some(content.lines().count()),
+                        line_count: Some(line_count),
                     })
                 }
             }
@@ -183,23 +190,29 @@ impl FileOperationService {
 
         self.validate_file_access(path, false).await?;
 
-        if !path.exists() {
-            return Err(FileSystemError::service(format!(
-                "File does not exist: {}",
-                file_path
-            )));
-        }
+        let metadata = match fs::metadata(path).await {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(FileSystemError::service(format!(
+                    "File does not exist: {}",
+                    file_path
+                )));
+            }
+            Err(e) => {
+                return Err(FileSystemError::service(format!(
+                    "Failed to read file metadata: {}",
+                    e
+                )));
+            }
+        };
 
-        if path.is_dir() {
+        if metadata.is_dir() {
             return Err(FileSystemError::service(format!(
                 "Path is a directory: {}",
                 file_path
             )));
         }
 
-        let metadata = fs::metadata(path).await.map_err(|e| {
-            FileSystemError::service(format!("Failed to read file metadata: {}", e))
-        })?;
         let file_size = metadata.len();
         if file_size > self.max_file_size_mb * 1024 * 1024 {
             return Err(FileSystemError::service(format!(
@@ -235,23 +248,28 @@ impl FileOperationService {
 
         self.validate_file_access(path, false).await?;
 
-        if !path.exists() {
-            return Err(FileSystemError::service(format!(
-                "File does not exist: {}",
-                file_path
-            )));
-        }
+        let metadata = match fs::metadata(path).await {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(FileSystemError::service(format!(
+                    "File does not exist: {}",
+                    file_path
+                )));
+            }
+            Err(e) => {
+                return Err(FileSystemError::service(format!(
+                    "Failed to read file metadata: {}",
+                    e
+                )));
+            }
+        };
 
-        if path.is_dir() {
+        if metadata.is_dir() {
             return Err(FileSystemError::service(format!(
                 "Path is a directory: {}",
                 file_path
             )));
         }
-
-        let metadata = fs::metadata(path).await.map_err(|e| {
-            FileSystemError::service(format!("Failed to read file metadata: {}", e))
-        })?;
 
         let file_size = metadata.len();
         if file_size > self.max_file_size_mb * 1024 * 1024 {
@@ -282,7 +300,7 @@ impl FileOperationService {
         let mut backup_created = false;
         let mut backup_path = None;
 
-        if options.backup_on_overwrite && path.exists() {
+        if options.backup_on_overwrite && fs::try_exists(path).await.unwrap_or(false) {
             let backup_file_path = self.create_backup(path).await?;
             backup_created = true;
             backup_path = Some(backup_file_path);

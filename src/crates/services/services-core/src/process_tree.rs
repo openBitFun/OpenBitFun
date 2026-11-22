@@ -7,7 +7,8 @@
 
 use std::fmt;
 use std::io;
-#[cfg(windows)]
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 #[cfg(unix)]
@@ -44,14 +45,22 @@ impl ProcessTreeChild {
         #[cfg(unix)]
         {
             command.process_group(0);
-            let child = command.spawn()?;
+            let mut child = command.spawn()?;
             let process_group_id = child
                 .id()
                 .ok_or_else(|| io::Error::other("spawned process has no process id"))?
                 as i32;
+            let group = match register_unix_process_group(process_group_id) {
+                Ok(group) => group,
+                Err(error) => {
+                    let _ = signal_process_group(process_group_id, libc::SIGKILL);
+                    let _ = child.wait().await;
+                    return Err(error);
+                }
+            };
             Ok(Self {
                 child,
-                platform: PlatformProcessTree { process_group_id },
+                platform: PlatformProcessTree { group },
             })
         }
 
@@ -74,11 +83,21 @@ impl ProcessTreeChild {
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
-        self.child.try_wait()
+        let status = self.child.try_wait()?;
+        #[cfg(unix)]
+        if status.is_some() && !process_group_is_alive(self.platform.group.process_group_id) {
+            self.platform.group.mark_closed();
+        }
+        Ok(status)
     }
 
     pub async fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
-        self.child.wait().await
+        let status = self.child.wait().await?;
+        #[cfg(unix)]
+        if !process_group_is_alive(self.platform.group.process_group_id) {
+            self.platform.group.mark_closed();
+        }
+        Ok(status)
     }
 
     pub async fn terminate(&mut self, grace: Duration) -> io::Result<CleanupOutcome> {
@@ -86,11 +105,20 @@ impl ProcessTreeChild {
 
         #[cfg(unix)]
         {
-            if parent_exited && !process_group_is_alive(self.platform.process_group_id) {
+            let pgid = self.platform.group.process_group_id;
+            if self.platform.group.is_closed() {
+                if !parent_exited {
+                    let _ = self.child.wait().await;
+                }
                 return Ok(CleanupOutcome::AlreadyExited);
             }
-            terminate_unix_process_tree(&mut self.child, self.platform.process_group_id, grace)
-                .await
+            if parent_exited && !process_group_is_alive(pgid) {
+                self.platform.group.mark_closed();
+                return Ok(CleanupOutcome::AlreadyExited);
+            }
+            let outcome = terminate_unix_process_tree(&mut self.child, pgid, grace).await?;
+            self.platform.group.mark_closed();
+            Ok(outcome)
         }
 
         #[cfg(windows)]
@@ -131,9 +159,13 @@ impl Drop for ProcessTreeChild {
 
         #[cfg(unix)]
         {
-            // SAFETY: negative PID targets the process group created by
-            // `process_group(0)`; no borrowed memory crosses the FFI boundary.
-            let _ = unsafe { libc::kill(-self.platform.process_group_id, libc::SIGKILL) };
+            // Only signal the process group if it has not already been closed/reaped
+            // (prevents killing an unrelated process after OS PGID reuse).
+            if self.platform.group.claim_for_close() {
+                // SAFETY: negative PID targets the process group created by
+                // `process_group(0)`; no borrowed memory crosses the FFI boundary.
+                let _ = unsafe { libc::kill(-self.platform.group.process_group_id, libc::SIGKILL) };
+            }
         }
         #[cfg(windows)]
         {
@@ -147,7 +179,100 @@ impl Drop for ProcessTreeChild {
 
 #[cfg(unix)]
 struct PlatformProcessTree {
+    group: Arc<ManagedUnixGroup>,
+}
+
+#[cfg(unix)]
+struct ManagedUnixGroup {
     process_group_id: i32,
+    closed: AtomicBool,
+}
+
+#[cfg(unix)]
+impl ManagedUnixGroup {
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    fn mark_closed(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    fn claim_for_close(&self) -> bool {
+        !self.closed.swap(true, Ordering::AcqRel)
+    }
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct ManagedUnixGroups {
+    shutting_down: bool,
+    groups: Vec<Weak<ManagedUnixGroup>>,
+}
+
+#[cfg(unix)]
+static MANAGED_UNIX_GROUPS: LazyLock<Mutex<ManagedUnixGroups>> =
+    LazyLock::new(|| Mutex::new(ManagedUnixGroups::default()));
+
+#[cfg(unix)]
+fn register_unix_process_group(process_group_id: i32) -> io::Result<Arc<ManagedUnixGroup>> {
+    let mut registry = MANAGED_UNIX_GROUPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.shutting_down {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "managed process trees are shutting down",
+        ));
+    }
+    let group = Arc::new(ManagedUnixGroup {
+        process_group_id,
+        closed: AtomicBool::new(false),
+    });
+    registry
+        .groups
+        .retain(|weak| weak.upgrade().is_some_and(|g| !g.is_closed()));
+    registry.groups.push(Arc::downgrade(&group));
+    Ok(group)
+}
+
+#[cfg(unix)]
+fn cleanup_unix_process_groups(mark_shutting_down: bool) {
+    let active: Vec<Arc<ManagedUnixGroup>> = {
+        let mut registry = MANAGED_UNIX_GROUPS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if mark_shutting_down {
+            registry.shutting_down = true;
+        }
+        registry
+            .groups
+            .drain(..)
+            .filter_map(|weak| weak.upgrade())
+            .filter(|group| group.claim_for_close())
+            .collect()
+    };
+    if active.is_empty() {
+        return;
+    }
+    for group in &active {
+        let _ = signal_process_group(group.process_group_id, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < deadline {
+        if !active
+            .iter()
+            .any(|group| process_group_is_alive(group.process_group_id))
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for group in &active {
+        if process_group_is_alive(group.process_group_id) {
+            let _ = signal_process_group(group.process_group_id, libc::SIGKILL);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -233,6 +358,10 @@ static MANAGED_WINDOWS_JOBS: LazyLock<Mutex<ManagedWindowsJobs>> =
 /// Emergency/final cleanup for managed children. Protocol shutdown belongs to
 /// callers and runs first. Host-lifetime Jobs are deliberately not registered.
 pub(crate) fn cleanup_all_process_trees() {
+    #[cfg(unix)]
+    {
+        cleanup_unix_process_groups(true);
+    }
     #[cfg(windows)]
     {
         let mut registry = MANAGED_WINDOWS_JOBS
@@ -409,6 +538,53 @@ mod tests {
             .await
             .expect("terminate orphaned descendant");
         wait_until_process_exits(descendant_pid).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_cleanup_terminates_active_process_groups_and_marks_reaped_closed() {
+        let temporary = tempfile::tempdir().expect("create cleanup fixture directory");
+        let pid_file = temporary.path().join("cleanup-descendant.pid");
+        let mut command = descendant_fixture(&pid_file);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let tree = ProcessTreeChild::spawn(&mut command)
+            .await
+            .expect("spawn managed unix tree");
+        let descendant_pid = wait_for_descendant_pid(&pid_file).await;
+        assert!(process_is_alive(descendant_pid));
+        assert!(!tree.platform.group.is_closed());
+
+        super::cleanup_unix_process_groups(false);
+        assert!(tree.platform.group.is_closed());
+        wait_until_process_exits(descendant_pid).await;
+
+        // Dropping an already-closed tree must not signal again (prevents PGID reuse hazard).
+        drop(tree);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_wait_marks_exited_group_closed_before_drop() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("exit 0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut tree = ProcessTreeChild::spawn(&mut command)
+            .await
+            .expect("spawn short unix child");
+        let status = tree.wait().await.expect("wait on short unix child");
+        assert!(status.success());
+        assert!(
+            tree.platform.group.is_closed(),
+            "reaped empty process group should be marked closed before Drop"
+        );
     }
 
     #[cfg(unix)]

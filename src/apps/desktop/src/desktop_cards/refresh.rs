@@ -1,6 +1,5 @@
 //! Data source fetching for desktop cards.
 
-use std::path::Path;
 use std::time::Duration;
 
 use openbitfun_core::agentic::tools::desktop_card_host::{
@@ -76,15 +75,27 @@ pub(crate) async fn fetch(source: &DesktopCardDataSourceKind) -> Result<FetchOut
     }
 }
 
+static SHARED_HTTP_CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+    std::sync::OnceLock::new();
+
+fn shared_http_client() -> Result<&'static reqwest::Client, String> {
+    SHARED_HTTP_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(HTTP_TIMEOUT)
+                .build()
+                .map_err(|error| format!("Failed to create HTTP client: {error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 async fn fetch_http(
     url: &str,
     headers: &std::collections::BTreeMap<String, String>,
     parse: DesktopCardDataParse,
 ) -> Result<Value, String> {
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(|error| format!("Failed to create HTTP client: {error}"))?;
+    let client = shared_http_client()?;
     let mut request = client.get(url);
     let has_user_agent = headers
         .keys()
@@ -133,6 +144,21 @@ fn shell_command(command: &str) -> tokio::process::Command {
     process
 }
 
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    limit: usize,
+) -> Result<(Vec<u8>, bool), std::io::Error> {
+    use tokio::io::AsyncReadExt;
+    let mut limited = reader.take((limit + 1) as u64);
+    let mut buf = Vec::new();
+    limited.read_to_end(&mut buf).await?;
+    let exceeded = buf.len() > limit;
+    if exceeded {
+        buf.truncate(limit);
+    }
+    Ok((buf, exceeded))
+}
+
 async fn fetch_command(
     command: &str,
     cwd: Option<&str>,
@@ -141,7 +167,11 @@ async fn fetch_command(
 ) -> Result<FetchOutput, String> {
     let mut process = shell_command(command);
     if let Some(cwd) = cwd {
-        if !Path::new(cwd).is_dir() {
+        let cwd_path = std::path::PathBuf::from(cwd);
+        let is_dir = tokio::fs::metadata(&cwd_path)
+            .await
+            .is_ok_and(|meta| meta.is_dir());
+        if !is_dir {
             return Err(format!("Working directory does not exist: {cwd}"));
         }
         process.current_dir(cwd);
@@ -151,25 +181,52 @@ async fn fetch_command(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let child = process
+    let mut child = process
         .spawn()
         .map_err(|error| format!("Failed to start command: {error}"))?;
-    let output = tokio::time::timeout(
-        Duration::from_secs(timeout_seconds),
-        child.wait_with_output(),
-    )
-    .await
-    .map_err(|_| format!("Command timed out after {timeout_seconds}s"))?
-    .map_err(|error| format!("Command failed: {error}"))?;
-    if output.stdout.len() > MAX_RESPONSE_BYTES {
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture command stdout".to_string())?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture command stderr".to_string())?;
+    let max_stderr_bytes: usize = 64 * 1024;
+    let run_result = tokio::time::timeout(Duration::from_secs(timeout_seconds), async {
+        let (stdout_res, stderr_res, status_res) = tokio::join!(
+            read_bounded(stdout_pipe, MAX_RESPONSE_BYTES),
+            read_bounded(stderr_pipe, max_stderr_bytes),
+            child.wait(),
+        );
+        let (stdout_bytes, stdout_exceeded) =
+            stdout_res.map_err(|error| format!("Failed to read command stdout: {error}"))?;
+        let (stderr_bytes, _) =
+            stderr_res.map_err(|error| format!("Failed to read command stderr: {error}"))?;
+        let status = status_res.map_err(|error| format!("Command failed: {error}"))?;
+        Ok::<_, String>((stdout_bytes, stdout_exceeded, stderr_bytes, status))
+    })
+    .await;
+    let (stdout_bytes, stdout_exceeded, stderr_bytes, status) = match run_result {
+        Ok(Ok(parts)) => parts,
+        Ok(Err(err)) => {
+            let _ = child.kill().await;
+            return Err(err);
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(format!("Command timed out after {timeout_seconds}s"));
+        }
+    };
+    if stdout_exceeded {
         return Err(format!(
             "Command output is larger than {} KiB",
             MAX_RESPONSE_BYTES / 1024
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+    if !status.success() {
         let detail = if stderr.trim().is_empty() {
             stdout.trim().to_string()
         } else {
@@ -177,8 +234,7 @@ async fn fetch_command(
         };
         return Err(format!(
             "Command exited with {}: {}",
-            output
-                .status
+            status
                 .code()
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "a signal".to_string()),

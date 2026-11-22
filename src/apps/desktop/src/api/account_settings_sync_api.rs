@@ -134,6 +134,17 @@ pub(crate) fn current_account_replica() -> Option<(String, Arc<AccountReplica>)>
     current_replica().map(|adapter| (adapter.account_id.clone(), Arc::clone(&adapter.replica)))
 }
 
+/// Detaches the active replica handle (Link/fleet teardown) without changing
+/// the signed-in flag.
+pub(crate) fn detach_replica() {
+    REPLICA
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    settings_sync::wake();
+    openbitfun_core::service::remote_connect::account_records::wake();
+}
+
 /// Signed out: no replica until the next sign-in.
 pub(crate) fn signed_out() {
     SIGNED_IN.store(false, Ordering::SeqCst);
@@ -142,12 +153,14 @@ pub(crate) fn signed_out() {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
     settings_sync::wake();
+    openbitfun_core::service::remote_connect::account_records::wake();
 }
 
 /// Signed in (the device network follows).
 pub(crate) fn signed_in() {
     SIGNED_IN.store(true, Ordering::SeqCst);
     settings_sync::wake();
+    openbitfun_core::service::remote_connect::account_records::wake();
 }
 
 struct DesktopReplicas;

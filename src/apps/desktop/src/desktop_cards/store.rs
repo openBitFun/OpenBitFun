@@ -270,11 +270,18 @@ impl LocalStateStore {
 pub(crate) struct CardStore {
     definitions: Box<dyn CardDefinitionStore>,
     local: LocalStateStore,
+    definitions_dirty: bool,
+    local_dirty: bool,
 }
 
 impl CardStore {
     pub(crate) fn new(definitions: Box<dyn CardDefinitionStore>, local: LocalStateStore) -> Self {
-        Self { definitions, local }
+        Self {
+            definitions,
+            local,
+            definitions_dirty: false,
+            local_dirty: false,
+        }
     }
 
     /// The device store under `desktop-cards/`.
@@ -319,25 +326,57 @@ impl CardStore {
     pub(crate) fn put(&mut self, card: DesktopCardRecord) {
         let previous_local = self.local.get(&card.id);
         let local = CardLocalState::from_record(&card, previous_local.as_ref());
-        let definition = match self.definitions.definition(&card.id) {
-            Some(existing) => definition_keeping_display(card.clone(), &existing),
-            None => card.clone(),
+        let definition_changed = match self.definitions.definition(&card.id) {
+            Some(existing) => {
+                let updated = definition_keeping_display(card.clone(), &existing);
+                if updated != existing {
+                    self.definitions.put_definition(updated);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                self.definitions.put_definition(card.clone());
+                true
+            }
         };
-        self.definitions.put_definition(definition);
+        if definition_changed {
+            self.definitions_dirty = true;
+        }
         self.local.put(&card.id, &local);
+        self.local_dirty = true;
     }
 
     pub(crate) fn remove(&mut self, id: &str) -> Option<DesktopCardRecord> {
         let removed = self.get(id);
         self.definitions.remove_definition(id)?;
         self.local.remove(id);
+        self.definitions_dirty = true;
+        self.local_dirty = true;
         removed
     }
 
-    /// Saves both halves; the first failure is reported after both tried.
+    /// Saves only the dirty halves; the first failure is reported after both tried.
     pub(crate) fn save(&mut self) -> Result<(), String> {
-        let definitions = self.definitions.save();
-        let local = self.local.save();
+        let definitions = if self.definitions_dirty {
+            let res = self.definitions.save();
+            if res.is_ok() {
+                self.definitions_dirty = false;
+            }
+            res
+        } else {
+            Ok(())
+        };
+        let local = if self.local_dirty {
+            let res = self.local.save();
+            if res.is_ok() {
+                self.local_dirty = false;
+            }
+            res
+        } else {
+            Ok(())
+        };
         definitions.and(local)
     }
 }

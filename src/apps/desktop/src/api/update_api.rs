@@ -203,6 +203,7 @@ fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn save_package(
     dir: &Path,
     record: &PendingUpdateRecord,
@@ -210,6 +211,28 @@ pub(crate) fn save_package(
 ) -> Result<(), String> {
     // Commit the metadata last. A partial download can never become installable.
     atomic_write(dir, &record.package_name()?, bytes)?;
+    atomic_write(
+        dir,
+        RECORD_NAME,
+        &serde_json::to_vec(record).map_err(|e| e.to_string())?,
+    )
+}
+
+/// Persists an already-written temporary package file into `dir` and commits
+/// `pending.json` last, avoiding buffering the archive in RAM.
+pub(crate) fn commit_package_file(
+    dir: &Path,
+    record: &PendingUpdateRecord,
+    temp_file: tempfile::NamedTempFile,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Failed to sync update package: {e}"))?;
+    temp_file
+        .persist(dir.join(record.package_name()?))
+        .map_err(|e| format!("Failed to commit update package: {}", e.error))?;
     atomic_write(
         dir,
         RECORD_NAME,
@@ -227,6 +250,62 @@ pub(crate) fn verify_package(
             "Pending update signature verification failed: package checksum mismatch".into(),
         );
     }
+    let (public_key, signature) = decode_minisign_key_and_sig(pubkey, &record.signature)?;
+    public_key
+        .verify(bytes, &signature, true)
+        .map_err(|e| format!("Update signature verification failed: {e}"))
+}
+
+/// Streams a package file from disk to verify both its SHA-256 digest and its
+/// minisign signature without loading the archive into RAM.
+pub(crate) fn verify_package_file(
+    path: &Path,
+    record: &PendingUpdateRecord,
+    pubkey: &str,
+) -> Result<(), String> {
+    use std::io::Read;
+
+    let (public_key, signature) = decode_minisign_key_and_sig(pubkey, &record.signature)?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("Failed to open update package: {e}"))?;
+    let mut sha = Sha256::new();
+    match public_key.verify_stream(&signature) {
+        Ok(mut stream_verifier) => {
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| format!("Failed to read update package: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                sha.update(&buf[..n]);
+                stream_verifier.update(&buf[..n]);
+            }
+            if format!("{:x}", sha.finalize()) != record.sha256 {
+                return Err(
+                    "Pending update signature verification failed: package checksum mismatch"
+                        .into(),
+                );
+            }
+            stream_verifier
+                .finalize()
+                .map_err(|e| format!("Update signature verification failed: {e}"))
+        }
+        Err(minisign_verify::Error::UnsupportedLegacyMode) => {
+            // Legacy (non-prehashed) minisign signatures require the full byte slice.
+            let bytes =
+                std::fs::read(path).map_err(|e| format!("Failed to read update package: {e}"))?;
+            verify_package(&bytes, record, pubkey)
+        }
+        Err(e) => Err(format!("Update signature verification failed: {e}")),
+    }
+}
+
+fn decode_minisign_key_and_sig(
+    pubkey: &str,
+    sig: &str,
+) -> Result<(minisign_verify::PublicKey, minisign_verify::Signature), String> {
     // The official downloader verified the original transfer. Re-verify cached
     // bytes against the bundled trust root before handing them to our adapter.
     let decode = |value: &str| -> Result<String, String> {
@@ -237,11 +316,9 @@ pub(crate) fn verify_package(
     };
     let public_key = minisign_verify::PublicKey::decode(&decode(pubkey)?)
         .map_err(|e| format!("Update signature public key is invalid: {e}"))?;
-    let signature = minisign_verify::Signature::decode(&decode(&record.signature)?)
+    let signature = minisign_verify::Signature::decode(&decode(sig)?)
         .map_err(|e| format!("Update signature is invalid: {e}"))?;
-    public_key
-        .verify(bytes, &signature, true)
-        .map_err(|e| format!("Update signature verification failed: {e}"))
+    Ok((public_key, signature))
 }
 
 #[cfg(test)]

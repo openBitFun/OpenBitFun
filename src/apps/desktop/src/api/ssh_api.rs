@@ -162,7 +162,7 @@ pub async fn ssh_connect(
     log::info!("ssh_connect: about to establish connection");
     let config_to_save = config.clone();
     let result = manager.connect(config).await.map_err(|e| e.to_string());
-    if result.is_ok() {
+    if result.as_ref().is_ok_and(|connected| connected.success) {
         log::info!("ssh_connect: about to save successful connection config");
         if let Err(e) = manager.save_connection(&config_to_save).await {
             log::warn!(

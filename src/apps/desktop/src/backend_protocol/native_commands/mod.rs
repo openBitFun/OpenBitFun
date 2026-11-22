@@ -280,7 +280,7 @@ fn png_from_args(args: &Value) -> Result<String, String> {
             .map_err(|_| "write_clipboard_image expects PNG bytes".to_string())?,
         Value::Object(map) => match map.get("png").or_else(|| map.get("base64")) {
             Some(Value::String(text)) => text.trim().to_string(),
-            Some(Value::Array(_)) => serde_json::from_value::<Vec<u8>>(map["png"].clone())
+            Some(value @ Value::Array(_)) => serde_json::from_value::<Vec<u8>>(value.clone())
                 .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
                 .map_err(|_| "write_clipboard_image expects PNG bytes".to_string())?,
             _ => return Err("write_clipboard_image expects `png` (base64 PNG bytes)".to_string()),
@@ -447,5 +447,14 @@ mod tests {
             .unwrap();
         responder.await.unwrap();
         assert_eq!(facts, json!({ "isFullscreen": true, "isMaximized": false }));
+    }
+
+    #[test]
+    fn png_from_args_accepts_base64_byte_array_without_panicking() {
+        let png_header: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00];
+        let encoded = png_from_args(&json!({ "base64": png_header })).unwrap();
+        assert!(!encoded.is_empty());
+        let encoded_png = png_from_args(&json!({ "png": png_header })).unwrap();
+        assert_eq!(encoded, encoded_png);
     }
 }

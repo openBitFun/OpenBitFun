@@ -217,92 +217,109 @@ pub(crate) async fn call(
     result
 }
 
-pub(crate) fn install_events(app: &HostHandle) {
-    let handle = app.clone();
-    app.listen("miniapp://ai-stream", move |event| {
-        let Ok(payload) = serde_json::from_str::<Value>(event) else {
-            return;
-        };
-        let Some(stream) = payload["streamId"].as_str() else {
-            return;
-        };
-        let host = handle.state::<DesktopMiniApps>();
-        for lease in host
-            .shells
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values_mut()
-        {
-            if lease.streams.contains(stream) {
-                let mut payload = payload.clone();
-                payload["streamId"] =
-                    json!(stream.split_once(':').map(|(_, id)| id).unwrap_or(stream));
-                lease.push("ai:stream", payload);
-            }
+const AGENTIC_EVENTS: &[&str] = &[
+    "dialog-turn-started",
+    "model-round-started",
+    "model-round-completed",
+    "text-chunk",
+    "tool-event",
+    "dialog-turn-completed",
+    "dialog-turn-failed",
+    "dialog-turn-cancelled",
+    "token-usage-updated",
+    "subagent-session-linked",
+];
+
+/// Subscribes MiniApp SDK event listeners only while at least one MiniApp shell
+/// is active, and removes them as soon as the last shell closes. Uses
+/// `listen_value` / `listen_prefix_value` so hot-path streaming events never
+/// incur JSON serialize+deserialize round-trips.
+pub(crate) fn sync_event_subscriptions(app: &HostHandle) {
+    let host = app.state::<DesktopMiniApps>();
+    let has_shells = !host
+        .shells
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_empty();
+    let mut listeners = host.sdk_listeners.lock().unwrap_or_else(|p| p.into_inner());
+    if !has_shells {
+        for id in listeners.drain(..) {
+            app.unlisten(id);
         }
-    });
-    for event_name in [
-        "dialog-turn-started",
-        "model-round-started",
-        "model-round-completed",
-        "text-chunk",
-        "tool-event",
-        "dialog-turn-completed",
-        "dialog-turn-failed",
-        "dialog-turn-cancelled",
-        "token-usage-updated",
-        "subagent-session-linked",
-    ] {
-        let handle = app.clone();
-        app.listen(format!("agentic://{event_name}"), move |event| {
-            let Ok(mut payload) = serde_json::from_str::<Value>(event) else {
+        return;
+    }
+    if !listeners.is_empty() {
+        return;
+    }
+
+    let handle = app.clone();
+    listeners.push(
+        app.listen_value("miniapp://ai-stream", move |_event, payload| {
+            let Some(stream) = payload["streamId"].as_str() else {
                 return;
             };
-            let Some(session) = payload["sessionId"].as_str().map(str::to_owned) else {
-                return;
-            };
-            let parent = payload["parentSessionId"].as_str().map(str::to_owned);
-            payload["sourceEvent"] = json!(event_name);
             let host = handle.state::<DesktopMiniApps>();
-            let mut owners = host.sessions.lock().unwrap_or_else(|p| p.into_inner());
             for lease in host
                 .shells
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .values_mut()
             {
-                let sessions = owners.entry(lease.instance_id.clone()).or_default();
-                if sessions.contains(&session)
-                    || (event_name == "subagent-session-linked"
-                        && parent
-                            .as_ref()
-                            .is_some_and(|parent| sessions.contains(parent)))
-                {
-                    sessions.insert(session.clone());
-                    lease.push("agent:event", payload.clone());
+                if lease.streams.contains(stream) {
+                    let mut payload = payload.clone();
+                    payload["streamId"] =
+                        json!(stream.split_once(':').map(|(_, id)| id).unwrap_or(stream));
+                    lease.push("ai:stream", payload);
                 }
             }
-        });
-    }
-}
+        }),
+    );
 
-pub(crate) fn install_worker_events(app: &HostHandle, app_id: &str) {
     let handle = app.clone();
-    let app_id = app_id.to_string();
+    listeners.push(
+        app.listen_prefix_value("agentic://", move |full_event, payload| {
+            let Some(event_name) = full_event.strip_prefix("agentic://") else {
+                return;
+            };
+            if !AGENTIC_EVENTS.contains(&event_name) {
+                return;
+            }
+            let Some(session) = payload["sessionId"].as_str() else {
+                return;
+            };
+            let parent = payload["parentSessionId"].as_str();
+            let host = handle.state::<DesktopMiniApps>();
+            let mut owners = host.sessions.lock().unwrap_or_else(|p| p.into_inner());
+            let mut shells = host.shells.lock().unwrap_or_else(|p| p.into_inner());
+            let mut enriched: Option<Value> = None;
+            for lease in shells.values_mut() {
+                let sessions = owners.entry(lease.instance_id.clone()).or_default();
+                if sessions.contains(session)
+                    || (event_name == "subagent-session-linked"
+                        && parent.is_some_and(|parent| sessions.contains(parent)))
+                {
+                    sessions.insert(session.to_owned());
+                    let event_payload = enriched.get_or_insert_with(|| {
+                        let mut cloned = payload.clone();
+                        cloned["sourceEvent"] = json!(event_name);
+                        cloned
+                    });
+                    lease.push("agent:event", event_payload.clone());
+                }
+            }
+        }),
+    );
+
     for name in [
         "miniapp-updated",
         "miniapp-recompiled",
         "miniapp-rolled-back",
     ] {
         let handle = app.clone();
-        let id = app_id.clone();
-        app.listen(name, move |event| {
-            let Ok(payload) = serde_json::from_str::<Value>(event) else {
+        listeners.push(app.listen_value(name, move |_event, payload| {
+            let Some(app_id) = payload["id"].as_str() else {
                 return;
             };
-            if payload["id"].as_str() != Some(id.as_str()) {
-                return;
-            }
             let host = handle.state::<DesktopMiniApps>();
             let instances = host.instances.snapshot();
             for lease in host
@@ -312,33 +329,38 @@ pub(crate) fn install_worker_events(app: &HostHandle, app_id: &str) {
                 .values_mut()
             {
                 if instances.instances.iter().any(|instance| {
-                    instance.instance_id == lease.instance_id && instance.app_id == id
+                    instance.instance_id == lease.instance_id && instance.app_id == app_id
                 }) {
                     lease.push("reload", Value::Null);
                 }
             }
-        });
+        }));
     }
-    app.listen(format!("miniapp://worker-event:{app_id}"), move |event| {
-        let Ok(payload) = serde_json::from_str::<Value>(event) else {
-            return;
-        };
-        let host = handle.state::<DesktopMiniApps>();
-        let instances = host.instances.snapshot();
-        for lease in host
-            .shells
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values_mut()
-        {
-            if instances.instances.iter().any(|instance| {
-                instance.instance_id == lease.instance_id && instance.app_id == app_id
-            }) {
-                lease.push(
-                    "worker:event",
-                    json!({"event":payload["event"],"data":payload["data"]}),
-                );
+
+    let handle = app.clone();
+    listeners.push(app.listen_prefix_value(
+        "miniapp://worker-event:",
+        move |full_event, payload| {
+            let Some(app_id) = full_event.strip_prefix("miniapp://worker-event:") else {
+                return;
+            };
+            let host = handle.state::<DesktopMiniApps>();
+            let instances = host.instances.snapshot();
+            for lease in host
+                .shells
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values_mut()
+            {
+                if instances.instances.iter().any(|instance| {
+                    instance.instance_id == lease.instance_id && instance.app_id == app_id
+                }) {
+                    lease.push(
+                        "worker:event",
+                        json!({"event": payload["event"], "data": payload["data"]}),
+                    );
+                }
             }
-        }
-    });
+        },
+    ));
 }

@@ -1568,7 +1568,9 @@ fn setup_panic_hook() {
         let thread = std::thread::current();
         let thread_name = thread.name().map(str::to_string);
         let thread_id = format!("{:?}", thread.id());
-        let is_main_thread = thread_name.as_deref() == Some("main") || thread_name.is_none(); // unnamed threads in simple test contexts
+        // Never treat unnamed worker threads (e.g., std::thread::spawn in
+        // third-party crates) as the main thread.
+        let is_main_thread = thread_name.as_deref() == Some("main");
 
         let location = panic_info
             .location()
@@ -1626,6 +1628,7 @@ fn setup_panic_hook() {
 static PROCESS_EXIT_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 static PROCESS_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
 static PROCESS_EXIT_CLEANUP_NOTIFY: OnceLock<tokio::sync::Notify> = OnceLock::new();
+static EMERGENCY_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) async fn perform_process_exit_cleanup() -> bool {
     let notify = PROCESS_EXIT_CLEANUP_NOTIFY.get_or_init(tokio::sync::Notify::new);
@@ -1664,15 +1667,32 @@ pub(crate) async fn perform_process_exit_cleanup() -> bool {
 }
 
 pub(crate) fn perform_process_exit_cleanup_emergency() -> bool {
-    if PROCESS_EXIT_CLEANUP_COMPLETE.load(Ordering::Acquire) {
+    if PROCESS_EXIT_CLEANUP_COMPLETE.load(Ordering::Acquire)
+        || EMERGENCY_CLEANUP_STARTED.swap(true, Ordering::AcqRel)
+    {
         return false;
     }
     log::warn!("Desktop emergency process cleanup started");
-    if let Some(search_service) = get_global_workspace_search_service() {
-        search_service.shutdown_blocking();
+    // Run emergency cleanup on a helper thread with a bounded wait so a mutex
+    // held by the panicking thread can never deadlock the panic hook.
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    if std::thread::Builder::new()
+        .name("emergency-exit-cleanup".to_string())
+        .spawn(move || {
+            if let Some(search_service) = get_global_workspace_search_service() {
+                search_service.shutdown_blocking();
+            }
+            openbitfun_core::util::process_manager::cleanup_all_processes();
+            api::remote_connect_api::cleanup_on_exit();
+            let _ = done_tx.send(());
+        })
+        .is_ok()
+    {
+        let _ = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+    } else {
+        openbitfun_core::util::process_manager::cleanup_all_processes();
+        api::remote_connect_api::cleanup_on_exit();
     }
-    openbitfun_core::util::process_manager::cleanup_all_processes();
-    api::remote_connect_api::cleanup_on_exit();
     true
 }
 
@@ -1712,7 +1732,7 @@ pub(crate) async fn deliver_projected_event(
     projected: openbitfun_events::AgenticFrontendEvent,
 ) {
     if let Err(e) = transport
-        .emit_generic(&projected.event_name, projected.payload.clone())
+        .emit_generic(&projected.event_name, projected.payload)
         .await
     {
         log::error!("Failed to emit event: {:?}", e);

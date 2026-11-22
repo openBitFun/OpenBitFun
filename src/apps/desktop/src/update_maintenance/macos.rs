@@ -1,7 +1,12 @@
 use openbitfun_services_core::process_manager::create_command;
 use std::{fs, io, path::Path};
 
-pub(super) fn install(bytes: &[u8]) -> io::Result<()> {
+pub(super) fn install_file(archive_path: &Path) -> io::Result<()> {
+    let file = fs::File::open(archive_path)?;
+    install_reader(io::BufReader::new(file))
+}
+
+fn install_reader<R: io::Read>(reader: R) -> io::Result<()> {
     let executable = std::env::current_exe()?;
     let target = bundle_of_executable(&executable)?;
     if !target
@@ -28,7 +33,7 @@ pub(super) fn install(bytes: &[u8]) -> io::Result<()> {
     let unpack = stage.path().join("unpack");
     fs::create_dir(&unpack)?;
     // tar validates traversal and symlink parents during unpack.
-    tar::Archive::new(flate2::read::GzDecoder::new(bytes)).unpack(&unpack)?;
+    tar::Archive::new(flate2::read::GzDecoder::new(reader)).unpack(&unpack)?;
     let apps = fs::read_dir(&unpack)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?
@@ -50,6 +55,11 @@ pub(super) fn install(bytes: &[u8]) -> io::Result<()> {
     if !new_app.join("Contents/MacOS").join(name).is_file() {
         return Err(io::Error::other(
             "Update bundle is missing the application executable",
+        ));
+    }
+    if !new_app.join("Contents/Resources/nsh/bundle.nshc").is_file() {
+        return Err(io::Error::other(
+            "Update bundle is missing the native NSH UI bundle",
         ));
     }
     if !authorize {

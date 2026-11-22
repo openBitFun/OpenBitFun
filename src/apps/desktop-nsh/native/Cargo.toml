@@ -53,10 +53,14 @@ dispatch = { version = "0.2", optional = true }
 [target.'cfg(windows)'.dependencies]
 nsh-windows-app = { version = "=0.6.1", default-features = false, optional = true }
 nsh-platform-windows = { version = "=0.6.1", default-features = false, optional = true }
+windows = { version = "0.62", default-features = false, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-linux-app = { version = "=0.6.1", default-features = false, optional = true }
 nsh-platform-linux = { version = "=0.6.1", default-features = false, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.52", default-features = false, features = ["macros", "rt", "time"] }
 
 [features]
 default = []
@@ -89,6 +93,7 @@ runner = [
     # Windows (`nsh-windows-app`, WebView2) and Linux (`nsh-linux-app`, GTK).
     "dep:nsh-windows-app",
     "dep:nsh-platform-windows",
+    "dep:windows",
     "nsh-windows-app?/js",
     "nsh-windows-app?/shader",
     "nsh-windows-app?/editor",

@@ -11,9 +11,10 @@ mod macos;
 mod publication;
 
 /// Replaces the running native (NSH) desktop bundle with the verified
-/// `.app.tar.gz` of a newer one. The archive's bundle must carry the running
-/// executable's name.
+/// `.app.tar.gz` of a newer one from a file on disk (single unpack pass).
+/// The archive's bundle must carry the running executable's name and the NSH
+/// UI bundle.
 #[cfg(target_os = "macos")]
-pub(crate) fn install_native_app_bundle(bytes: &[u8]) -> Result<(), String> {
-    macos::install(bytes).map_err(|error| error.to_string())
+pub(crate) fn install_native_app_bundle_file(path: &std::path::Path) -> Result<(), String> {
+    macos::install_file(path).map_err(|error| error.to_string())
 }

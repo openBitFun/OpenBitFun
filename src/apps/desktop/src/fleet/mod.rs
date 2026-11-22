@@ -63,6 +63,32 @@ struct Installed {
 
 static INSTALLED: OnceLock<Installed> = OnceLock::new();
 static CURRENT: RwLock<Option<Arc<FleetHost>>> = RwLock::new(None);
+static MODEL_CONFIG_FOLLOWER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn ensure_model_config_follower() {
+    if MODEL_CONFIG_FOLLOWER.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    tokio::spawn(async move {
+        let Ok(service) = openbitfun_core::service::config::get_global_config_service().await
+        else {
+            MODEL_CONFIG_FOLLOWER.store(false, std::sync::atomic::Ordering::Release);
+            return;
+        };
+        let mut changes = service.subscribe_local_changes();
+        while changes.changed().await.is_ok() {
+            let digest = DIGEST
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            if let Some(digest) = digest {
+                digest.notify_changed();
+            }
+        }
+        MODEL_CONFIG_FOLLOWER.store(false, std::sync::atomic::Ordering::Release);
+    });
+}
 /// The digest producer of the running fleet (Detached Dispatch pokes it).
 static DIGEST: RwLock<Option<Arc<FleetDigestProducer>>> = RwLock::new(None);
 
@@ -286,13 +312,9 @@ pub fn start(device_id: String, authority: Arc<dyn MeshAuthority>, link: Arc<Lin
         service: installed.service.clone(),
         digest: Arc::clone(&digest),
     });
-    // The digest follows model changes too (its catalog).
-    {
-        let digest = Arc::clone(&digest);
-        tokio::spawn(async move {
-            openbitfun_core::service::fleet::models::follow_model_config(&digest).await;
-        });
-    }
+    // Follow local model config changes with a single process-wide task so
+    // repeated Link/fleet reconnects never accumulate parked follower tasks.
+    ensure_model_config_follower();
     let on_local_event: LocalEventHook = Arc::new(move |event: &str| {
         if is_digest_relevant_event(event) {
             digest.notify_changed();

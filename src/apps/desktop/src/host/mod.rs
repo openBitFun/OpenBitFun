@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-pub use native::{NativeHost, NativeHostInfo};
+pub use native::{ListenerId, NativeHost, NativeHostInfo};
 pub use transport::HostTransportAdapter;
 
 /// Error prefix used whenever the host cannot perform an operation (no shell
@@ -141,11 +141,34 @@ impl HostHandle {
 
     /// Calls `handler` with the payload JSON of every event named `event`
     /// this host emits.
-    pub fn listen<F>(&self, event: impl Into<String>, handler: F)
+    pub fn listen<F>(&self, event: impl Into<String>, handler: F) -> ListenerId
     where
         F: Fn(&str) + Send + Sync + 'static,
     {
         self.0.listen(event, handler)
+    }
+
+    /// Calls `handler` with `(event_name, &payload)` for every event named
+    /// `event` without re-serializing JSON.
+    pub fn listen_value<F>(&self, event: impl Into<String>, handler: F) -> ListenerId
+    where
+        F: Fn(&str, &serde_json::Value) + Send + Sync + 'static,
+    {
+        self.0.listen_value(event, handler)
+    }
+
+    /// Calls `handler` with `(event_name, &payload)` for every event whose
+    /// name starts with `prefix`.
+    pub fn listen_prefix_value<F>(&self, prefix: impl Into<String>, handler: F) -> ListenerId
+    where
+        F: Fn(&str, &serde_json::Value) + Send + Sync + 'static,
+    {
+        self.0.listen_prefix_value(prefix, handler)
+    }
+
+    /// Removes a listener registered on this host.
+    pub fn unlisten(&self, id: ListenerId) -> bool {
+        self.0.unlisten(id)
     }
 
     /// The application version.

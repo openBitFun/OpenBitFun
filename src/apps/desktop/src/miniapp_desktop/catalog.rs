@@ -371,7 +371,7 @@ pub(crate) fn install(app: &HostHandle) {
         "miniapp-rolled-back",
         "miniapp-recompiled",
     ] {
-        app.listen(event, |_payload| {
+        app.listen_value(event, |_event, _payload| {
             let Ok(handle) = tokio::runtime::Handle::try_current() else {
                 return;
             };

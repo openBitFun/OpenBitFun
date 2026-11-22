@@ -98,14 +98,6 @@ async fn open(app: &HostHandle, params: Value) -> Result<Value, String> {
     let workspace = local_workspace(app, workspace_path).await?;
     let host = app.state::<DesktopMiniApps>();
     let _guard = host.launches.lock().await;
-    if host
-        .worker_listeners
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(app_id.clone())
-    {
-        sdk::install_worker_events(app, &app_id);
-    }
     let appearance = params
         .get("appearanceMode")
         .and_then(Value::as_str)

@@ -166,9 +166,36 @@ pub async fn start_native_backend(host: Arc<NativeHost>) -> Result<BackendServic
     Ok(service)
 }
 
-/// Graceful shutdown: stops plugin host, search daemons and child processes,
-/// marks a clean exit and closes the event stream.
+/// Graceful shutdown: stops HTML previews, terminals/remote PTYs, SSH port
+/// forwards and connections, mesh/OBP, plugin host, search daemons and child
+/// processes, marks a clean exit and closes the event stream.
 pub async fn shutdown_native_backend(service: &BackendService, reason: &'static str) {
+    crate::api::html_preview_api::release_all_previews();
+    let host = service.host();
+    if let Some(terminal_state) = host.try_state::<crate::api::terminal_api::TerminalState>() {
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crate::api::terminal_api::terminal_shutdown_all(terminal_state),
+        )
+        .await
+        .is_err()
+        {
+            log::warn!("Timed out shutting down terminal sessions during exit");
+        }
+    }
+    if let Some(app_state) = host.try_state::<crate::api::app_state::AppState>() {
+        if tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            app_state.port_forward_manager.stop_all().await;
+            if let Ok(manager) = app_state.get_ssh_manager_async().await {
+                manager.disconnect_all().await;
+            }
+        })
+        .await
+        .is_err()
+        {
+            log::warn!("Timed out stopping SSH connections and port forwards during exit");
+        }
+    }
     crate::mesh::shutdown_global().await;
     crate::backend_protocol::ws::shutdown_global();
     crate::perform_process_exit_cleanup().await;

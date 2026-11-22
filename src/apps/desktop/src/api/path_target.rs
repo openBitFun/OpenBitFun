@@ -418,7 +418,9 @@ pub async fn path_exists(
     )
     .await?
     {
-        DesktopPathTarget::Local { resolved_path, .. } => Ok(resolved_path.exists()),
+        DesktopPathTarget::Local { resolved_path, .. } => {
+            Ok(tokio::fs::try_exists(&resolved_path).await.unwrap_or(false))
+        }
         DesktopPathTarget::Remote {
             requested_path,
             entry,
@@ -454,8 +456,11 @@ pub async fn get_path_metadata(
             resolved_path,
             is_runtime_artifact,
         } => {
-            let metadata =
-                stat_local_path_metadata(&requested_path, &resolved_path, is_runtime_artifact)?;
+            let metadata = tokio::task::spawn_blocking(move || {
+                stat_local_path_metadata(&requested_path, &resolved_path, is_runtime_artifact)
+            })
+            .await
+            .map_err(|e| format!("Failed to stat local file: {}", e))??;
             serde_json::to_value(metadata)
                 .map_err(|e| format!("Failed to serialize file metadata: {}", e))
         }

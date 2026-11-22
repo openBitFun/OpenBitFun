@@ -252,7 +252,7 @@ impl CredentialVault {
                 )
             });
         }
-        restrict_file_permissions(&self.vault_path)
+        restrict_file_permissions_async(&self.vault_path).await
     }
 }
 
@@ -362,6 +362,24 @@ fn restrict_file_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+async fn restrict_file_permissions_async(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .await
+        .with_context(|| {
+            format!(
+                "restrict local credential file permissions {}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+async fn restrict_file_permissions_async(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 async fn read_private_file(path: &Path) -> Result<Option<Vec<u8>>> {
     use tokio::io::AsyncReadExt;
 
@@ -376,7 +394,7 @@ async fn read_private_file(path: &Path) -> Result<Option<Vec<u8>>> {
                 .with_context(|| format!("open local credential file {}", path.display()));
         }
     };
-    restrict_file_permissions(path)?;
+    restrict_file_permissions_async(path).await?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .await

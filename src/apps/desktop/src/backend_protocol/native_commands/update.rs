@@ -250,10 +250,17 @@ pub(in crate::backend_protocol) fn get_pending_update(
     })
 }
 
+const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+const PROGRESS_EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const UNSUPPORTED_IN_PLACE_UPDATE: &str = "Installing updates in place is available for the native desktop on macOS only; download the new version from openbitfun.com";
+
 async fn download(
     host: &NativeHost,
     request: update_api::DownloadUpdateRequest,
 ) -> Result<update_api::PendingUpdateResponse, String> {
+    if cfg!(not(target_os = "macos")) {
+        return Err(UNSUPPORTED_IN_PLACE_UPDATE.to_string());
+    }
     let pubkey = release_pubkey().ok_or_else(|| NO_RELEASE_KEY.to_string())?;
     let _operation = UPDATE
         .get_or_init(Default::default)
@@ -265,8 +272,11 @@ async fn download(
         .lock()
         .map_err(|_| "Download cancellation state is unavailable".to_string())? = Some(cancel_tx);
     let cancellation = DownloadCancellation;
+    let dir = cache_dir()?;
+    let transfer_dir = dir.clone();
     let transfer = async {
         use futures::StreamExt;
+        use tokio::io::AsyncWriteExt;
 
         let client = http_client()?;
         let release = latest_release(&client)
@@ -286,19 +296,69 @@ async fn download(
             .and_then(reqwest::Response::error_for_status)
             .map_err(|error| format!("The update download failed: {error}"))?;
         let total = response.content_length();
-        let mut bytes = Vec::with_capacity(total.unwrap_or(0).min(512 << 20) as usize);
+        if let Some(len) = total {
+            if len > MAX_ARCHIVE_BYTES {
+                return Err(format!(
+                    "Update archive exceeds maximum size limit ({} MiB)",
+                    MAX_ARCHIVE_BYTES / (1024 * 1024)
+                ));
+            }
+        }
+        // Stream directly to a temporary file inside the update cache directory
+        // so large archives never sit in RAM.
+        let temp_file = tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&transfer_dir).map_err(|e| e.to_string())?;
+            tempfile::NamedTempFile::new_in(&transfer_dir).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        let async_file = temp_file
+            .as_file()
+            .try_clone()
+            .map_err(|error| format!("Failed to prepare update temp file: {error}"))?;
+        let mut writer =
+            tokio::io::BufWriter::with_capacity(64 * 1024, tokio::fs::File::from_std(async_file));
+        let mut hasher = Sha256::new();
+        let mut downloaded: u64 = 0;
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(PROGRESS_EMIT_INTERVAL)
+            .unwrap_or_else(std::time::Instant::now);
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| format!("The update download failed: {error}"))?;
-            bytes.extend_from_slice(&chunk);
-            let _ = host.emit(
-                PROGRESS_EVENT,
-                json!({ "downloaded": bytes.len() as u64, "total": total }),
-            );
+            downloaded = downloaded.saturating_add(chunk.len() as u64);
+            if downloaded > MAX_ARCHIVE_BYTES {
+                return Err(format!(
+                    "Update archive exceeds maximum size limit ({} MiB)",
+                    MAX_ARCHIVE_BYTES / (1024 * 1024)
+                ));
+            }
+            hasher.update(&chunk);
+            writer
+                .write_all(&chunk)
+                .await
+                .map_err(|error| format!("Failed to write update archive: {error}"))?;
+            if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
+                last_emit = std::time::Instant::now();
+                let _ = host.emit(
+                    PROGRESS_EVENT,
+                    json!({ "downloaded": downloaded, "total": total }),
+                );
+            }
         }
-        Ok::<_, String>((release, platform, bytes))
+        writer
+            .flush()
+            .await
+            .map_err(|error| format!("Failed to flush update archive: {error}"))?;
+        drop(writer);
+        let _ = host.emit(
+            PROGRESS_EVENT,
+            json!({ "downloaded": downloaded, "total": total }),
+        );
+        let sha256 = format!("{:x}", hasher.finalize());
+        Ok::<_, String>((release, platform, temp_file, sha256))
     };
-    let (release, platform, bytes) = tokio::select! {
+    let (release, platform, temp_file, sha256) = tokio::select! {
         result = transfer => result?,
         _ = cancel_rx => return Err("Update download canceled".into()),
     };
@@ -308,16 +368,18 @@ async fn download(
         version: release.version.to_string(),
         platform: update_api::platform(),
         signature: platform.signature,
-        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        sha256,
         package_kind: Some(NATIVE_PACKAGE_KIND.to_string()),
     };
-    let dir = cache_dir()?;
     let pubkey = pubkey.to_string();
     tokio::task::spawn_blocking(move || {
         // Verify before anything is committed: a bad signature leaves no record.
-        update_api::verify_package(&bytes, &record, &pubkey)?;
-        validate_native_archive(&bytes)?;
-        update_api::save_package(&dir, &record, &bytes)?;
+        update_api::verify_package_file(temp_file.path(), &record, &pubkey)?;
+        let reader = std::io::BufReader::new(
+            std::fs::File::open(temp_file.path()).map_err(|error| error.to_string())?,
+        );
+        validate_native_archive_reader(reader)?;
+        update_api::commit_package_file(&dir, &record, temp_file)?;
         Ok::<_, String>(record.response())
     })
     .await
@@ -326,7 +388,12 @@ async fn download(
 
 /// The archive must hold exactly one application bundle with the native
 /// runner in it, so a Tauri package can never be staged for this install.
+#[cfg(test)]
 fn validate_native_archive(bytes: &[u8]) -> Result<(), String> {
+    validate_native_archive_reader(bytes)
+}
+
+fn validate_native_archive_reader<R: std::io::Read>(reader: R) -> Result<(), String> {
     let runner = std::env::current_exe()
         .ok()
         .and_then(|exe| {
@@ -334,7 +401,7 @@ fn validate_native_archive(bytes: &[u8]) -> Result<(), String> {
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "openbitfun-nsh".to_string());
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(reader));
     let mut bundles = std::collections::HashSet::new();
     let mut has_runner = false;
     let mut has_ui_bundle = false;
@@ -400,6 +467,9 @@ pub(in crate::backend_protocol) fn download_update(
 }
 
 async fn install(host: &NativeHost, version: String) -> Result<(), String> {
+    if cfg!(not(target_os = "macos")) {
+        return Err(UNSUPPORTED_IN_PLACE_UPDATE.to_string());
+    }
     let pubkey = release_pubkey().ok_or_else(|| NO_RELEASE_KEY.to_string())?;
     let _operation = UPDATE
         .get_or_init(Default::default)
@@ -408,7 +478,7 @@ async fn install(host: &NativeHost, version: String) -> Result<(), String> {
     let dir = cache_dir()?;
     let current = current_version()?;
     let pubkey = pubkey.to_string();
-    let bytes = tokio::task::spawn_blocking(move || {
+    let package_path = tokio::task::spawn_blocking(move || {
         let record = update_api::read_record_for_kind(
             &dir,
             &current,
@@ -421,15 +491,14 @@ async fn install(host: &NativeHost, version: String) -> Result<(), String> {
                 "The downloaded update has changed; reopen About before installing".to_string(),
             );
         }
-        let bytes =
-            std::fs::read(dir.join(record.package_name()?)).map_err(|error| error.to_string())?;
-        update_api::verify_package(&bytes, &record, &pubkey)?;
-        validate_native_archive(&bytes)?;
-        Ok::<_, String>(bytes)
+        let package_path = dir.join(record.package_name()?);
+        update_api::verify_package_file(&package_path, &record, &pubkey)?;
+        Ok::<_, String>(package_path)
     })
     .await
     .map_err(|error| error.to_string())??;
-    install_bundle(bytes).await?;
+    // Unpack and validate once directly from the verified package file on disk.
+    install_bundle_file(package_path).await?;
     // The shell restarts the app: the new bundle starts once this run exited.
     log::info!("Native desktop update installed; restarting");
     host.shell_request(
@@ -442,18 +511,18 @@ async fn install(host: &NativeHost, version: String) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-async fn install_bundle(bytes: Vec<u8>) -> Result<(), String> {
+async fn install_bundle_file(path: std::path::PathBuf) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        crate::update_maintenance::install_native_app_bundle(&bytes)
+        crate::update_maintenance::install_native_app_bundle_file(&path)
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn install_bundle(bytes: Vec<u8>) -> Result<(), String> {
-    let _ = bytes;
-    Err("Installing updates in place is available for the native desktop on macOS only; download the new version from openbitfun.com".to_string())
+async fn install_bundle_file(path: std::path::PathBuf) -> Result<(), String> {
+    let _ = path;
+    Err(UNSUPPORTED_IN_PLACE_UPDATE.to_string())
 }
 
 pub(in crate::backend_protocol) fn install_pending_update(

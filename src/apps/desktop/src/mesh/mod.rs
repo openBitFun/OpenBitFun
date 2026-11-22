@@ -307,9 +307,12 @@ impl MeshRuntime {
             return;
         }
         if serving.take().is_some() {
-            // The fleet and Peer Device Mode links ride the network; they end
-            // with it.
+            // The fleet, mesh route cache, HTML previews, and peer links ride
+            // the network; they end with it.
             crate::fleet::stop();
+            crate::api::account_settings_sync_api::detach_replica();
+            crate::api::html_preview_api::release_all_previews();
+            route::DesktopMeshRoute::global().clear();
             peer_link::shutdown_global().await;
             if let Some(server) = &self.obp {
                 server.stop_mesh();
@@ -348,6 +351,7 @@ impl MeshRuntime {
             {
                 log::warn!("OBP mesh listener not started: {}", error);
                 crate::fleet::stop();
+                crate::api::account_settings_sync_api::detach_replica();
                 return;
             }
         }
@@ -672,9 +676,9 @@ pub fn start_for_native_host(data_dir: &Path) {
         return;
     }
     // Detached dispatch and IM bots reach new account devices over Link.
-    openbitfun_services_integrations::remote_connect::mesh_route::install_mesh_route(Arc::new(
-        route::DesktopMeshRoute::default(),
-    ));
+    openbitfun_services_integrations::remote_connect::mesh_route::install_mesh_route(
+        route::DesktopMeshRoute::global(),
+    );
     tokio::spawn(runtime.run());
 }
 
@@ -684,6 +688,8 @@ pub async fn shutdown_global() {
         return;
     };
     crate::fleet::stop();
+    crate::api::account_settings_sync_api::detach_replica();
+    route::DesktopMeshRoute::global().clear();
     peer_link::shutdown_global().await;
     if let Some(server) = &runtime.obp {
         server.stop_mesh();

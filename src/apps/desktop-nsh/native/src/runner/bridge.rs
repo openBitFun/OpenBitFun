@@ -25,16 +25,22 @@ unsafe fn callback_text(data: *const u8, len: usize) -> String {
 }
 
 extern "C" fn on_result(ctx: *mut c_void, status: i32, data: *const u8, len: usize) {
-    // SAFETY: `ctx` is the `Box<ResultSender>` leaked by `request`; the ABI
-    // calls back exactly once.
-    let sender = unsafe { Box::from_raw(ctx.cast::<ResultSender>()) };
-    // SAFETY: valid for the callback's duration.
-    let text = unsafe { callback_text(data, len) };
-    let _ = sender.send(if status == BACKEND_STATUS_OK {
-        Ok(text)
-    } else {
-        Err(text)
-    });
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if ctx.is_null() {
+            log::error!("Backend result callback received null context");
+            return;
+        }
+        // SAFETY: `ctx` is the `Box<ResultSender>` leaked by `request`; the ABI
+        // calls back exactly once.
+        let sender = unsafe { Box::from_raw(ctx.cast::<ResultSender>()) };
+        // SAFETY: valid for the callback's duration.
+        let text = unsafe { callback_text(data, len) };
+        let _ = sender.send(if status == BACKEND_STATUS_OK {
+            Ok(text)
+        } else {
+            Err(text)
+        });
+    }));
 }
 
 extern "C" fn on_events(
@@ -45,16 +51,22 @@ extern "C" fn on_events(
     last_seq: u64,
     closed: bool,
 ) {
-    // SAFETY: `ctx` is the `Box<EventsSender>` leaked by `events_after`;
-    // the ABI calls back exactly once.
-    let sender = unsafe { Box::from_raw(ctx.cast::<EventsSender>()) };
-    let _ = sender.send(EventBatch {
-        // SAFETY: valid for the callback's duration.
-        json: unsafe { callback_text(data, len) },
-        count: count as usize,
-        last_seq,
-        closed,
-    });
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if ctx.is_null() {
+            log::error!("Backend events callback received null context");
+            return;
+        }
+        // SAFETY: `ctx` is the `Box<EventsSender>` leaked by `events_after`;
+        // the ABI calls back exactly once.
+        let sender = unsafe { Box::from_raw(ctx.cast::<EventsSender>()) };
+        let _ = sender.send(EventBatch {
+            // SAFETY: valid for the callback's duration.
+            json: unsafe { callback_text(data, len) },
+            count: count as usize,
+            last_seq,
+            closed,
+        });
+    }));
 }
 
 /// A result channel whose sender is handed to the library as `ctx`.
@@ -99,7 +111,6 @@ impl BackendBridge for NativeBridge {
         self.backend.log(level, message);
     }
 
-    #[cfg(target_os = "macos")]
     fn pick_directory(&self, options_json: String) -> Option<BoxFuture<Result<String, String>>> {
         Some(crate::folder_picker::pick_directory(options_json))
     }
@@ -128,5 +139,16 @@ pub(crate) fn start(backend: &'static BackendLibrary) {
         });
     if let Err(error) = spawned {
         openbitfun_nsh_native::fail(format!("Failed to wait for the backend: {error}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callbacks_ignore_null_context_without_panicking() {
+        on_result(std::ptr::null_mut(), BACKEND_STATUS_OK, b"ok".as_ptr(), 2);
+        on_events(std::ptr::null_mut(), b"[]".as_ptr(), 2, 0, 0, true);
     }
 }

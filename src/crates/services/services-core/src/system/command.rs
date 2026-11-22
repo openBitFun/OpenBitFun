@@ -198,33 +198,16 @@ fn homebrew_node_opt_bin_entries() -> Vec<PathBuf> {
     dedup_existing_dirs(entries)
 }
 
-/// Reads `PATH` from a login shell.
-///
-/// macOS keeps the direct `output()` call because Finder-launched apps there
-/// depend on this exact behavior. Linux resolves the same value with a bounded
-/// wait: an interactive-looking rc file (a prompt, a blocking `read`, a slow
-/// version manager) must not freeze the first child spawn of the app.
-#[cfg(target_os = "macos")]
-fn read_path_from_login_shell(shell: &str) -> Option<String> {
-    let output = Command::new(shell)
-        .arg("-lc")
-        .arg("printf '%s' \"$PATH\"")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    normalized_login_shell_path(&output.stdout)
-}
-
-#[cfg(target_os = "linux")]
+/// Reads `PATH` from a login shell with stdin closed and a bounded timeout so
+/// an interactive or slow rc file (a prompt, a blocking `read`, a slow version
+/// manager) can never hang startup or starve worker threads.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn read_path_from_login_shell(shell: &str) -> Option<String> {
     use std::io::Read;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
-    const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(2);
+    const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(3);
     const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
     let mut child = Command::new(shell)
@@ -319,10 +302,10 @@ pub fn check_command(cmd: &str) -> CheckCommandResult {
             path: Some(path.to_string_lossy().to_string()),
         },
         Err(_) => {
-            // On macOS, GUI apps (e.g. Tauri release builds launched from Finder) often do not
-            // inherit the interactive shell PATH, so common package manager dirs may be missing.
-            // Try again with platform PATH extras to improve command discovery.
-            #[cfg(target_os = "macos")]
+            // On macOS and Linux, GUI apps launched from Finder or `.desktop` launchers
+            // often do not inherit the interactive shell PATH, so common package manager
+            // dirs may be missing. Try again with platform PATH extras.
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             {
                 let mut merged = Vec::new();
                 if let Some(existing) = std::env::var_os("PATH") {
