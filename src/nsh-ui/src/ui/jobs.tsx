@@ -8,11 +8,11 @@
 // (the only place a state takes a color). Nothing is sorted, merged or counted
 // beyond folding a long stack behind "+{n} more jobs".
 
-import { Scroll, Text, View, cleanup, reduceMotion, signal, type JSX, type ViewRef, type ViewStyle } from "nsh";
+import { Scroll, Text, View, cleanup, reduceMotion, safeArea, signal, type JSX, type ViewRef, type ViewStyle } from "nsh";
 import { Dialog, Input } from "nsh/base";
 import { fleetDeviceById, fleetPromptList, fleetSessionRow, refreshFleetNavigator } from "../fleetStore";
 import { tr, type MessageKey } from "../i18n";
-import { navigateScene, openDevicePage, selectSession } from "../state";
+import { activeScene, navigateScene, openDevicePage, selectSession } from "../state";
 import {
   conversationGroups,
   conversationsCursor,
@@ -44,17 +44,18 @@ import {
   radii,
   space,
   textLineHeight,
+  textSize,
   textStyle,
   touchSlop,
 } from "../theme";
 import { startVoiceInput, finishVoiceInput, voiceInputEnabled, voicePhase, voiceRecognizerAvailable } from "../voiceInputStore";
 import { answerPrompt } from "../attentionStore";
 import { ATTENTION_INDENT, PromptAttention, formatAge } from "./attention";
-import { DeviceBadge, StateLabel, StateMark, markState, type DeviceException, type MarkState } from "./fleet";
+import { DeviceBadge, MatrixMark, StateLabel, StateMark, deviceException as fleetDeviceException, markState, type DeviceException, type MarkState } from "./fleet";
 import { Icon } from "./icons";
-import { MOTION_DURATION, MOTION_EASE_STANDARD, enterMotion, paintTransition, tactileActiveStyle } from "./motion";
-import { DropdownMenu, ModalDialog, pushToast } from "./overlays";
-import { Button, IconButton, TextField } from "./primitives";
+import { MOTION_DURATION, MOTION_EASE_STANDARD, drawerEnterMotion, enterMotion, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
+import { DropdownMenu, ModalDialog, pushToast, registerEscapeDismiss } from "./overlays";
+import { Button, IconButton, TextField, focusRingStyle } from "./primitives";
 
 /** How long a cited card keeps its `accentSoft` highlight while it fades out. */
 export const CITATION_FADE_MS = 600;
@@ -104,42 +105,59 @@ export interface CitationChipProps {
  * "{label} · {device}" 12/500 `textSecondary`.
  */
 export function CitationChip(props: CitationChipProps) {
+  const hovered = signal(false);
   const text = () => (props.device ? `${props.label} · ${props.device}` : props.label);
+  const compactButton = () => Boolean(props.onPress) && compactLayout();
   return (
     <View
       testID={props.testID}
       role={props.onPress ? "button" : undefined}
       accessibilityLabel={props.accessibilityLabel ?? text()}
-      hitSlop={touchSlop(20)}
+      hitSlop={props.onPress && !compactLayout() ? touchSlop(space.xl) : undefined}
+      onMouseEnter={props.onPress ? () => hovered.set(true) : undefined}
+      onMouseLeave={props.onPress ? () => hovered.set(false) : undefined}
       onPress={props.onPress ? () => props.onPress?.() : undefined}
       style={{
-        flexDirection: "row",
-        alignItems: "center",
         alignSelf: "flex-start",
-        height: space.xl,
+        justifyContent: "center",
+        minHeight: compactButton() ? layout.touchTarget : space.xl,
+        minWidth: compactButton() ? layout.touchTarget : undefined,
         maxWidth: 280,
-        paddingHorizontal: space.chip,
         borderRadius: radii.sm,
         borderCurve: "continuous",
-        backgroundColor: palette().chip,
         cursor: props.onPress ? "pointer" : undefined,
-        ...paintTransition(120),
+        userSelect: props.onPress ? "none" : undefined,
+        ...pressTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={props.onPress ? { backgroundColor: palette().panelHover } : undefined}
       activeStyle={props.onPress ? tactileActiveStyle(0.98) : undefined}
+      focusVisibleStyle={props.onPress ? focusRingStyle() : undefined}
     >
-      <Text
+      <View
         style={{
-          ...textStyle("caption", { color: palette().textSecondary }),
-          fontWeight: "500",
-          flexShrink: 1,
-          minWidth: 0,
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
+          flexDirection: "row",
+          alignItems: "center",
+          height: space.xl,
+          maxWidth: 280,
+          paddingHorizontal: space.chip,
+          borderRadius: radii.sm,
+          borderCurve: "continuous",
+          backgroundColor: props.onPress && hovered() ? palette().panelHover : palette().chip,
+          ...paintTransition(MOTION_DURATION.fast),
         }}
       >
-        {text()}
-      </Text>
+        <Text
+          style={{
+            ...textStyle("caption", { color: palette().textSecondary }),
+            fontWeight: "500",
+            flexShrink: 1,
+            minWidth: 0,
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {text()}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -162,32 +180,7 @@ export function citedHighlightStyle(active: boolean): ViewStyle {
 
 /** OpenBitFun's static mark: the 3×3 Bit Matrix (spec §1), drawn in one color. */
 export function BitMatrixGlyph(props: { size?: number; color?: string }) {
-  const size = () => props.size ?? 12;
-  return (
-    <View
-      style={{
-        width: size(),
-        height: size(),
-        flexShrink: 0,
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr 1fr",
-        gap: Math.max(1, Math.round(size() * 0.12)),
-      }}
-    >
-      <Each of={[0, 1, 2, 3, 4, 5, 6, 7, 8]} key={cell => cell}>
-        {() => (
-          <View
-            style={{
-              width: "100%",
-              height: "100%",
-              borderRadius: Math.max(1, Math.round(size() * 0.08)),
-              backgroundColor: props.color ?? palette().textMuted,
-            }}
-          />
-        )}
-      </Each>
-    </View>
-  );
+  return <MatrixMark size={props.size ?? 12} color={props.color ?? palette().textMuted} />;
 }
 
 // ── Job cards ────────────────────────────────────────────────────────────────
@@ -228,8 +221,7 @@ function gateReason(card: JobCardData, reason: string | undefined): string {
 }
 
 function deviceException(deviceId: string): DeviceException | null {
-  const state = fleetDeviceById(deviceId)?.state;
-  return state === "offline" ? "offline" : state === "update_required" ? "update_required" : null;
+  return fleetDeviceException(fleetDeviceById(deviceId)?.state);
 }
 
 function diffStatText(card: JobCardData): string {
@@ -281,6 +273,7 @@ function CardTextAction(props: {
   allowed: boolean;
   reason?: string;
   onPress: () => void;
+  onFocusChange?: (focused: boolean) => void;
   testID?: string;
 }) {
   return (
@@ -290,18 +283,25 @@ function CardTextAction(props: {
       accessibilityLabel={props.label}
       tooltip={props.allowed ? undefined : props.reason}
       onPress={props.allowed ? () => props.onPress() : undefined}
-      hitSlop={touchSlop(controlHeight.xs)}
+      onFocus={() => props.onFocusChange?.(true)}
+      onBlur={() => props.onFocusChange?.(false)}
+      hitSlop={compactLayout() ? undefined : touchSlop(controlHeight.xs)}
       style={{
-        height: controlHeight.xs,
+        height: compactLayout() ? layout.touchTarget : controlHeight.xs,
+        minWidth: compactLayout() ? layout.touchTarget : undefined,
         justifyContent: "center",
+        alignItems: "center",
         paddingHorizontal: space.sm,
         borderRadius: radii.sm,
         borderCurve: "continuous",
         opacity: props.allowed ? 1 : 0.4,
         cursor: props.allowed ? "pointer" : "default",
-        ...paintTransition(120),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={props.allowed ? { backgroundColor: palette().buttonSecondaryHover } : undefined}
+      activeStyle={props.allowed ? tactileActiveStyle(0.97) : undefined}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Text
         style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}
@@ -330,6 +330,8 @@ export interface JobCardProps {
 export function JobCard(props: JobCardProps) {
   useAgeTick();
   const hovered = signal(false);
+  const focused = signal(false);
+  const actionFocused = signal(false);
   const steering = signal(false);
   const steerText = signal("");
   const sheetOpen = signal(false);
@@ -340,7 +342,7 @@ export function JobCard(props: JobCardProps) {
   const prompt = () => cardPrompt(card(), fleetPromptList());
   const phone = () => compactLayout();
   const showHoverActions = () =>
-    !phone() && (hovered() || steering()) && Boolean(actions().message || actions().cancel);
+    !phone() && (hovered() || focused() || actionFocused() || steering()) && Boolean(actions().message || actions().cancel);
   const motion = enterMotion("fadeIn", MOTION_DURATION.popover);
   const pressCard = () => {
     if (phone()) sheetOpen.set(true);
@@ -371,12 +373,19 @@ export function JobCard(props: JobCardProps) {
         role="button"
         accessibilityLabel={`${card().title} · ${card().deviceName}`}
         onPress={pressCard}
+        onFocus={() => focused.set(true)}
+        onBlur={() => focused.set(false)}
         style={{
           gap: space.xs,
           paddingVertical: space.md,
           paddingHorizontal: phone() ? space.md : space.lg,
           cursor: "pointer",
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
+        hoverStyle={{ backgroundColor: palette().panelHover }}
+        activeStyle={tactileActiveStyle(0.99)}
+        focusVisibleStyle={focusRingStyle()}
       >
         <View style={{ flexDirection: "row", alignItems: "center", minHeight: space.xl, gap: space.md }}>
           <StateMark state={mark()} seen={Boolean(card().seen)} device={card().deviceName} />
@@ -411,6 +420,7 @@ export function JobCard(props: JobCardProps) {
                     label={tr("job.steer")}
                     allowed={gate().allowed}
                     reason={gateReason(card(), gate().reason)}
+                    onFocusChange={value => actionFocused.set(value)}
                     onPress={() => {
                       clearSteerOutcome(card().jobId);
                       steering.set(!steering());
@@ -426,6 +436,7 @@ export function JobCard(props: JobCardProps) {
                     danger
                     allowed={gate().allowed}
                     reason={gateReason(card(), gate().reason)}
+                    onFocusChange={value => actionFocused.set(value)}
                     onPress={() => void stopCard(card())}
                   />
                 )}
@@ -447,7 +458,7 @@ export function JobCard(props: JobCardProps) {
             name={card().deviceName}
             kind={card().hostKind}
             exception={deviceException(card().deviceId)}
-            onPress={() => openDevicePage(card().deviceId)}
+            onPress={phone() ? undefined : () => openDevicePage(card().deviceId)}
           />
           <If when={phone()}>
             <Text style={textStyle("caption")}>·</Text>
@@ -520,7 +531,15 @@ export function JobCard(props: JobCardProps) {
       </View>
       <If when={prompt()}>
         {pending => (
-          <View style={{ borderTopWidth: 1, borderTopColor: palette().borderSubtle }}>
+          <View>
+            <View
+              style={{
+                height: 1,
+                marginLeft: (phone() ? space.md : space.lg) + ATTENTION_INDENT,
+                marginRight: phone() ? space.md : space.lg,
+                backgroundColor: palette().borderSubtle,
+              }}
+            />
             <PromptAttention
               testID={`job-prompt-${card().jobId}`}
               prompt={pending()}
@@ -533,50 +552,73 @@ export function JobCard(props: JobCardProps) {
       </If>
       <If when={answeredByText(card())}>
         {text => (
-          <View
-            testID={`job-answered-${card().jobId}`}
-            style={{
-              borderTopWidth: 1,
-              borderTopColor: palette().borderSubtle,
-              paddingVertical: space.sm,
-              paddingLeft: (phone() ? space.md : space.lg) + ATTENTION_INDENT,
-              paddingRight: phone() ? space.md : space.lg,
-              gap: space.sm,
-            }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: space.xl }}>
-              <BitMatrixGlyph size={12} />
-              <Text style={{ ...textStyle("caption", { tabular: true }), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
-                {typeof card().lastAnswer?.atMs === "number"
-                  ? `${text()} · ${tr("time.ago", { time: (ageTick(), formatAge(Date.now() - (card().lastAnswer?.atMs ?? 0))) })}`
-                  : text()}
-              </Text>
-              <If when={card().lastAnswer?.detail ?? ""}>
-                <Text
-                  role="button"
-                  accessibilityLabel={tr("common.details")}
-                  onPress={() => detailsOpen.set(!detailsOpen())}
-                  style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500", cursor: "pointer" }}
-                >
-                  {tr("common.details")}
+          <View testID={`job-answered-${card().jobId}`}>
+            <View
+              style={{
+                height: 1,
+                marginLeft: (phone() ? space.md : space.lg) + ATTENTION_INDENT,
+                marginRight: phone() ? space.md : space.lg,
+                backgroundColor: palette().borderSubtle,
+              }}
+            />
+            <View
+              style={{
+                paddingVertical: space.sm,
+                paddingLeft: (phone() ? space.md : space.lg) + ATTENTION_INDENT,
+                paddingRight: phone() ? space.md : space.lg,
+                gap: space.sm,
+              }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: space.xl }}>
+                <BitMatrixGlyph size={12} />
+                <Text style={{ ...textStyle("caption", { tabular: true }), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
+                  {typeof card().lastAnswer?.atMs === "number"
+                    ? `${text()} · ${tr("time.ago", { time: (ageTick(), formatAge(Date.now() - (card().lastAnswer?.atMs ?? 0))) })}`
+                    : text()}
                 </Text>
+                <If when={card().lastAnswer?.detail ?? ""}>
+                  <View
+                    role="button"
+                    accessibilityLabel={tr("common.details")}
+                    onPress={() => detailsOpen.set(!detailsOpen())}
+                    style={{
+                      minHeight: phone() ? layout.touchTarget : controlHeight.xs,
+                      minWidth: phone() ? layout.touchTarget : undefined,
+                      paddingHorizontal: space.xs,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      borderRadius: radii.sm,
+                      borderCurve: "continuous",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      ...pressTransition(MOTION_DURATION.fast),
+                    }}
+                    hoverStyle={{ backgroundColor: palette().buttonSecondaryHover }}
+                    activeStyle={tactileActiveStyle(0.97)}
+                    focusVisibleStyle={focusRingStyle()}
+                  >
+                    <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}>
+                      {tr("common.details")}
+                    </Text>
+                  </View>
+                </If>
+              </View>
+              <If when={detailsOpen() ? card().lastAnswer?.detail ?? "" : ""}>
+                {detail => (
+                  <View
+                    style={{
+                      paddingVertical: space.chip,
+                      paddingHorizontal: space.sm,
+                      borderRadius: radii.sm,
+                      borderCurve: "continuous",
+                      backgroundColor: palette().surfaceTertiary,
+                    }}
+                  >
+                    <Text style={textStyle("mono")}>{detail()}</Text>
+                  </View>
+                )}
               </If>
             </View>
-            <If when={detailsOpen() ? card().lastAnswer?.detail ?? "" : ""}>
-              {detail => (
-                <View
-                  style={{
-                    paddingVertical: space.chip,
-                    paddingHorizontal: space.sm,
-                    borderRadius: radii.sm,
-                    borderCurve: "continuous",
-                    backgroundColor: palette().surfaceTertiary,
-                  }}
-                >
-                  <Text style={textStyle("mono")}>{detail()}</Text>
-                </View>
-              )}
-            </If>
           </View>
         )}
       </If>
@@ -632,8 +674,10 @@ function SteerField(props: {
 }
 
 /** The phone's card sheet: Open · Steer · Stop rows of 52, for the verbs the card offers. */
-function JobActionsSheet(props: { open: boolean; card: JobCardData; onClose: () => void; onSteer: () => void }) {
+function JobActionsSheetPanel(props: { card: JobCardData; onClose: () => void; onSteer: () => void }) {
+  cleanup(registerEscapeDismiss(() => props.onClose()));
   const actions = () => props.card.actions ?? {};
+  const motion = drawerEnterMotion("bottom");
   const row = (label: string, gate: { allowed: boolean; reason?: string } | undefined, run: () => void, danger = false) => (
     <If when={gate}>
       {g => (
@@ -651,7 +695,13 @@ function JobActionsSheet(props: { open: boolean; card: JobCardData; onClose: () 
             opacity: g().allowed ? 1 : 0.4,
             borderTopWidth: 1,
             borderTopColor: palette().borderSubtle,
+            cursor: g().allowed ? "pointer" : "default",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
           }}
+          hoverStyle={g().allowed ? { backgroundColor: palette().panelHover } : undefined}
+          activeStyle={g().allowed ? tactileActiveStyle(0.985) : undefined}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Text style={{ ...textStyle("body", { color: danger ? palette().danger : palette().text }) }}>{label}</Text>
           <If when={g().allowed ? "" : gateReason(props.card, g().reason)}>
@@ -662,46 +712,52 @@ function JobActionsSheet(props: { open: boolean; card: JobCardData; onClose: () 
     </If>
   );
   return (
-    <If when={props.open}>
-      <Dialog
-        open={props.open}
-        animation="none"
-        accessibilityLabel={props.card.title}
-        closeOnBackdropPress
-        closeOnEscape
-        onOpenChange={event => {
-          if (!event.open) props.onClose();
-        }}
-        onCancel={props.onClose}
-        backdropStyle={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, backgroundColor: palette().scrimBg }}
-        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, justifyContent: "flex-end", pointerEvents: "box-none" }}
+    <Dialog
+      open
+      animation="none"
+      accessibilityLabel={props.card.title}
+      closeOnBackdropPress
+      closeOnEscape
+      onOpenChange={event => {
+        if (!event.open) props.onClose();
+      }}
+      onCancel={props.onClose}
+      backdropStyle={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, backgroundColor: palette().scrimBg }}
+      style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, justifyContent: "flex-end", pointerEvents: "box-none" }}
+    >
+      <View
+        style={[
+          {
+            borderTopLeftRadius: radii.xl,
+            borderTopRightRadius: radii.xl,
+            borderCurve: "continuous",
+            backgroundColor: palette().surfaceElevated,
+            boxShadow: elevationShadow(3),
+            paddingBottom: space.xxl + safeArea().bottom,
+            maxHeight: "90%",
+          },
+          motion.style,
+        ]}
       >
-        <View
-          style={[
-            {
-              borderTopLeftRadius: radii.xl,
-              borderTopRightRadius: radii.xl,
-              borderCurve: "continuous",
-              backgroundColor: palette().surfaceElevated,
-              boxShadow: elevationShadow(3),
-              paddingBottom: space.xxl,
-              maxHeight: "90%",
-            },
-            enterMotion("fadeInUp", MOTION_DURATION.toast).style,
-          ]}
-        >
-          <View style={{ alignItems: "center", paddingVertical: space.sm }}>
-            <View style={{ width: space.x3l + space.xs, height: space.xs, borderRadius: radii.pill, backgroundColor: palette().border }} />
-          </View>
-          <View style={{ paddingHorizontal: space.lg, paddingBottom: space.md, gap: space.xs }}>
-            <Text style={{ ...textStyle("body"), fontWeight: "500", numberOfLines: 2 }}>{props.card.title}</Text>
-            <DeviceBadge name={props.card.deviceName} kind={props.card.hostKind} />
-          </View>
-          {row(tr("job.open"), actions().openTranscript, () => void openJob(props.card))}
-          {row(tr("job.steer"), actions().message, () => props.onSteer())}
-          {row(tr("job.stop"), actions().cancel, () => void stopCard(props.card), true)}
+        <View style={{ alignItems: "center", paddingVertical: space.sm }}>
+          <View style={{ width: space.x3l + space.xs, height: space.xs, borderRadius: radii.pill, backgroundColor: palette().border }} />
         </View>
-      </Dialog>
+        <View style={{ paddingHorizontal: space.lg, paddingBottom: space.md, gap: space.xs }}>
+          <Text style={{ ...textStyle("body"), fontWeight: "500", numberOfLines: 2 }}>{props.card.title}</Text>
+          <DeviceBadge name={props.card.deviceName} kind={props.card.hostKind} />
+        </View>
+        {row(tr("job.open"), actions().openTranscript, () => void openJob(props.card))}
+        {row(tr("job.steer"), actions().message, () => props.onSteer())}
+        {row(tr("job.stop"), actions().cancel, () => void stopCard(props.card), true)}
+      </View>
+    </Dialog>
+  );
+}
+
+function JobActionsSheet(props: { open: boolean; card: JobCardData; onClose: () => void; onSteer: () => void }) {
+  return (
+    <If when={props.open}>
+      <JobActionsSheetPanel card={props.card} onClose={props.onClose} onSteer={props.onSteer} />
     </If>
   );
 }
@@ -751,14 +807,17 @@ export function JobStack(props: JobStackProps) {
               flexDirection: "row",
               alignItems: "center",
               gap: space.xs,
-              height: space.x3l + space.xs,
+              minHeight: compactLayout() ? layout.touchTarget : space.x3l + space.xs,
               paddingHorizontal: space.lg,
               borderTopWidth: 1,
               borderTopColor: palette().borderSubtle,
               cursor: "pointer",
-              ...paintTransition(120),
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{ backgroundColor: palette().panelHover }}
+            activeStyle={tactileActiveStyle(0.985)}
+            focusVisibleStyle={focusRingStyle()}
           >
             <Text style={textStyle("label", { color: palette().textSecondary })}>
               {folded() ? tr("job.more", { count: cards().length - JOB_STACK_FOLD }) : tr("job.fewer")}
@@ -779,6 +838,7 @@ function WorkingNowRow(props: { card: JobCardData; divided: boolean }) {
   const card = () => props.card;
   const mark = () => jobMarkState(card());
   const prompt = () => cardPrompt(card(), fleetPromptList());
+  const phone = () => compactLayout();
   const canAllow = () =>
     Boolean(prompt()) && prompt()?.kind === "permission" && card().actions?.answer?.allowed !== false;
   return (
@@ -794,28 +854,62 @@ function WorkingNowRow(props: { card: JobCardData; divided: boolean }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        minHeight: compactLayout() ? layout.touchTarget : controlHeight.lg,
+        minHeight: phone() ? layout.touchTarget : controlHeight.lg,
+        paddingHorizontal: space.xs,
+        paddingVertical: phone() ? space.sm : 0,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
         gap: space.md,
         cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
+      hoverStyle={{ backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <StateMark state={mark()} seen={Boolean(card().seen)} device={card().deviceName} />
-      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
-        <Text style={{ ...textStyle("body"), fontWeight: "500", flexShrink: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
-          {card().title}
-        </Text>
-        <Text style={textStyle("caption")}>·</Text>
-        <DeviceBadge
-          name={card().deviceName}
-          kind={card().hostKind}
-          exception={deviceException(card().deviceId)}
-          onPress={() => openDevicePage(card().deviceId)}
-        />
-      </View>
-      <If when={canAllow() && !compactLayout()}>
+      <If
+        when={phone()}
+        else={
+          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+            <Text style={{ ...textStyle("body"), fontWeight: "500", flexShrink: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
+              {card().title}
+            </Text>
+            <Text style={textStyle("caption")}>·</Text>
+            <DeviceBadge
+              name={card().deviceName}
+              kind={card().hostKind}
+              exception={deviceException(card().deviceId)}
+              onPress={() => openDevicePage(card().deviceId)}
+            />
+          </View>
+        }
+      >
+        <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
+          <Text style={{ ...textStyle("body"), fontWeight: "500", minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
+            {card().title}
+          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, minWidth: 0 }}>
+            <DeviceBadge
+              name={card().deviceName}
+              kind={card().hostKind}
+              exception={deviceException(card().deviceId)}
+            />
+            <Text style={textStyle("caption")}>·</Text>
+            <StateLabel
+              state={mark()}
+              seen={Boolean(card().seen)}
+              device={card().deviceName}
+              detail={mark() === "waiting" ? undefined : cardAge(card())}
+            />
+          </View>
+        </View>
+      </If>
+      <If when={canAllow()}>
         <AllowOnceButton card={card()} />
       </If>
-      <If when={!compactLayout()}>
+      <If when={!phone()}>
         <StateLabel
           state={mark()}
           seen={Boolean(card().seen)}
@@ -836,6 +930,7 @@ function AllowOnceButton(props: { card: JobCardData }) {
       variant="secondary"
       size="sm"
       accessibilityLabel={`working-allow-${props.card.jobId}`}
+      style={compactLayout() ? { minHeight: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
       onPress={() => {
         const prompt = cardPrompt(props.card, fleetPromptList());
         if (!prompt) return;
@@ -949,7 +1044,25 @@ export function SuperComposer(props: SuperComposerProps) {
               <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), flexShrink: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
                 {context().label}
               </Text>
-              <View role="button" accessibilityLabel={tr("common.remove")} onPress={() => context().onClear()} style={{ cursor: "pointer" }}>
+              <View
+                role="button"
+                accessibilityLabel={tr("common.remove")}
+                hitSlop={compactLayout() ? undefined : touchSlop(space.lg)}
+                onPress={() => context().onClear()}
+                style={{
+                  minWidth: compactLayout() ? layout.touchTarget : space.lg,
+                  minHeight: compactLayout() ? layout.touchTarget : space.lg,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: radii.xs,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().panelHover }}
+                activeStyle={tactileActiveStyle(0.97)}
+                focusVisibleStyle={focusRingStyle()}
+              >
                 <Icon name="close" size={12} color={palette().textMuted} />
               </View>
             </View>
@@ -965,9 +1078,11 @@ export function SuperComposer(props: SuperComposerProps) {
           readonly={Boolean(blocked())}
           submitBehavior="submit"
           style={{
-            minHeight: textLineHeight(15, 24 / 15),
+            minHeight: compactLayout() ? layout.touchTarget : textLineHeight(15, 24 / 15),
             maxHeight: props.maxFieldHeight,
             ...textStyle("prose"),
+            fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
+            lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
             color: palette().text,
             placeholderColor: palette().textMuted,
             caretColor: palette().accent,
@@ -987,10 +1102,10 @@ export function SuperComposer(props: SuperComposerProps) {
             style={{
               flexDirection: "row",
               alignItems: "center",
-              height: controlHeight.lg,
+              minHeight: compactLayout() ? layout.touchTarget + space.xs : controlHeight.lg,
               paddingHorizontal: space.sm,
               paddingBottom: space.sm,
-              gap: space.xs,
+              gap: space.sm,
             }}
           >
             <IconButton
@@ -1000,6 +1115,7 @@ export function SuperComposer(props: SuperComposerProps) {
               disabled
               accessibilityLabel="super-composer-attach"
               tooltip={tr("sa.attachUnavailable")}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => undefined}
             />
             <If when={voiceInputEnabled()}>
@@ -1010,6 +1126,7 @@ export function SuperComposer(props: SuperComposerProps) {
                 active={dictating()}
                 accessibilityLabel="super-composer-mic"
                 tooltip={voiceRecognizerAvailable() === false ? tr("voice.unavailable") : tr("voice.dictate")}
+                style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
                 onPress={() => {
                   const insert = (text: string) => props.onChange(props.value ? `${props.value} ${text}` : text);
                   if (voicePhase() === "idle") startVoiceInput(insert);
@@ -1035,7 +1152,7 @@ export function SuperComposer(props: SuperComposerProps) {
               flexDirection: "row",
               alignItems: "center",
               flexWrap: "wrap",
-              minHeight: controlHeight.lg,
+              minHeight: compactLayout() ? layout.touchTarget + space.xs : controlHeight.lg,
               paddingHorizontal: space.lg,
               paddingBottom: space.sm,
               gap: space.md,
@@ -1045,7 +1162,15 @@ export function SuperComposer(props: SuperComposerProps) {
               {state().reason}
             </Text>
             <If when={state().actionLabel ?? ""}>
-              {label => <Button label={label()} variant="secondary" size="sm" onPress={() => state().onAction?.()} />}
+              {label => (
+                <Button
+                  label={label()}
+                  variant="secondary"
+                  size="sm"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                  onPress={() => state().onAction?.()}
+                />
+              )}
             </If>
           </View>
         )}
@@ -1056,35 +1181,54 @@ export function SuperComposer(props: SuperComposerProps) {
 
 /** The send circle: 32, `actionPrimaryBg` with `arrow-up` 16; muted when empty; `pause` 14 stops a running turn. */
 function SendCircle(props: { running: boolean; empty: boolean; onSend: () => void; onStop: () => void }) {
+  const hovered = signal(false);
   const live = () => props.running || !props.empty;
   return (
     <View
       role="button"
       accessibilityLabel={props.running ? tr("common.stop") : tr("common.send")}
       tooltip={compactLayout() ? undefined : props.running ? tr("common.stop") : tr("sa.sendTooltip")}
-      hitSlop={touchSlop(controlHeight.md)}
+      hitSlop={compactLayout() ? undefined : touchSlop(controlHeight.md)}
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
       onPress={() => {
         if (props.running) props.onStop();
         else if (!props.empty) props.onSend();
       }}
       style={{
-        width: controlHeight.md,
-        height: controlHeight.md,
+        width: compactLayout() ? layout.touchTarget : controlHeight.md,
+        height: compactLayout() ? layout.touchTarget : controlHeight.md,
         borderRadius: radii.pill,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: live() ? palette().actionPrimaryBg : palette().buttonSecondaryBg,
         cursor: live() ? "pointer" : "default",
-        ...paintTransition(120),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={live() ? { backgroundColor: palette().actionPrimaryHover } : undefined}
-      activeStyle={live() ? tactileActiveStyle(0.96) : undefined}
+      activeStyle={live() ? tactileActiveStyle(0.97) : undefined}
+      focusVisibleStyle={focusRingStyle()}
     >
-      <Icon
-        name={props.running ? "pause" : "arrow-up"}
-        size={props.running ? 14 : 16}
-        color={live() ? palette().actionPrimaryFg : palette().textMuted}
-      />
+      <View
+        style={{
+          width: controlHeight.md,
+          height: controlHeight.md,
+          borderRadius: radii.pill,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: live()
+            ? hovered()
+              ? palette().actionPrimaryHover
+              : palette().actionPrimaryBg
+            : palette().buttonSecondaryBg,
+          ...paintTransition(MOTION_DURATION.fast),
+        }}
+      >
+        <Icon
+          name={props.running ? "pause" : "arrow-up"}
+          size={props.running ? 14 : 16}
+          color={live() ? palette().actionPrimaryFg : palette().textMuted}
+        />
+      </View>
     </View>
   );
 }
@@ -1105,32 +1249,51 @@ export function SuggestionChips(props: { suggestions: string[]; onPick: (text: s
 
 function SuggestionChipList(props: { suggestions: string[]; onPick: (text: string) => void }) {
   return (
-        <Each of={props.suggestions} key={(text, index) => `${index}:${text}`}>
-          {text => (
-            <View
-              role="button"
-              accessibilityLabel={text()}
-              onPress={() => props.onPick(text())}
-              hitSlop={touchSlop(controlHeight.sm)}
-              style={{
-                height: controlHeight.sm,
-                justifyContent: "center",
-                paddingHorizontal: space.md,
-                borderRadius: radii.md,
-                borderCurve: "continuous",
-                borderWidth: 1,
-                borderColor: palette().border,
-                flexShrink: 0,
-                cursor: "pointer",
-                ...paintTransition(120),
-              }}
-              hoverStyle={{ backgroundColor: palette().panelHover }}
-              activeStyle={tactileActiveStyle(0.98)}
-            >
-              <Text style={{ ...textStyle("label", { color: palette().textSecondary }), fontWeight: "400", numberOfLines: 1 }}>{text()}</Text>
-            </View>
-          )}
-        </Each>
+    <Each of={props.suggestions} key={(text, index) => `${index}:${text}`}>
+      {text => <SuggestionChipItem text={text()} onPick={props.onPick} />}
+    </Each>
+  );
+}
+
+function SuggestionChipItem(props: { text: string; onPick: (text: string) => void }) {
+  const hovered = signal(false);
+  return (
+    <View
+      role="button"
+      accessibilityLabel={props.text}
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
+      onPress={() => props.onPick(props.text)}
+      hitSlop={compactLayout() ? undefined : touchSlop(controlHeight.sm)}
+      style={{
+        height: compactLayout() ? layout.touchTarget : controlHeight.sm,
+        justifyContent: "center",
+        flexShrink: 0,
+        borderRadius: radii.md,
+        borderCurve: "continuous",
+        cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
+      activeStyle={tactileActiveStyle(0.98)}
+      focusVisibleStyle={focusRingStyle()}
+    >
+      <View
+        style={{
+          height: compactLayout() ? controlHeight.md : controlHeight.sm,
+          justifyContent: "center",
+          paddingHorizontal: space.md,
+          borderRadius: radii.md,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().border,
+          backgroundColor: hovered() ? palette().panelHover : "transparent",
+          ...paintTransition(MOTION_DURATION.fast),
+        }}
+      >
+        <Text style={{ ...textStyle("label", { color: palette().textSecondary }), fontWeight: "400", numberOfLines: 1 }}>{props.text}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -1291,6 +1454,8 @@ export interface ConversationRowProps {
  */
 export function ConversationRow(props: ConversationRowProps) {
   const hovered = signal(false);
+  const focused = signal(false);
+  const menuFocused = signal(false);
   const menuOpen = signal(false);
   let anchor: ViewRef | undefined;
   const mark = () => conversationMark(props.row);
@@ -1302,20 +1467,24 @@ export function ConversationRow(props: ConversationRowProps) {
       onPress={() => props.onPress()}
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
-      hitSlop={touchSlop(controlHeight.md)}
+      onFocus={() => focused.set(true)}
+      onBlur={() => focused.set(false)}
       style={{
         flexDirection: "row",
         alignItems: "center",
-        height: compactLayout() ? 44 : controlHeight.md,
+        height: compactLayout() ? layout.touchTarget : controlHeight.md,
         paddingHorizontal: space.sm,
         gap: space.sm,
         borderRadius: radii.md,
         borderCurve: "continuous",
         backgroundColor: props.active ? palette().chromeActive : "transparent",
         cursor: "pointer",
-        ...paintTransition(120),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={props.active ? undefined : { backgroundColor: palette().chromeHover }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <View style={{ width: space.lg, height: space.lg, alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <If when={mark()}>{state => <StateMark state={state()} />}</If>
@@ -1332,13 +1501,15 @@ export function ConversationRow(props: ConversationRowProps) {
       >
         {props.row.title}
       </Text>
-      <If when={(hovered() || menuOpen()) && !compactLayout()}>
+      <If when={(hovered() || focused() || menuFocused() || menuOpen()) && !compactLayout()}>
         <View
           ref={node => {
             anchor = node;
           }}
           role="button"
           accessibilityLabel={`conversation-menu-${props.row.id}`}
+          onFocus={() => menuFocused.set(true)}
+          onBlur={() => menuFocused.set(false)}
           onPress={() => menuOpen.set(true)}
           style={{
             width: space.xl,
@@ -1347,9 +1518,12 @@ export function ConversationRow(props: ConversationRowProps) {
             justifyContent: "center",
             borderRadius: radii.xs,
             cursor: "pointer",
-            ...paintTransition(120),
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
           }}
           hoverStyle={{ backgroundColor: palette().chromeHover }}
+          activeStyle={tactileActiveStyle(0.97)}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Icon name="more" size={14} color={palette().chromeTextMuted} />
         </View>
@@ -1407,7 +1581,7 @@ export function ConversationHistory(props: { onOpen?: () => void } = {}) {
               {row => (
                 <ConversationRow
                   row={row()}
-                  active={activeConversationId() === row().id}
+                  active={activeScene() === "openbitfun" && activeConversationId() === row().id}
                   onPress={() => {
                     openConversation(row().id);
                     navigateScene("openbitfun");
@@ -1425,15 +1599,19 @@ export function ConversationHistory(props: { onOpen?: () => void } = {}) {
           accessibilityLabel={tr("history.showMore")}
           onPress={() => void loadMoreConversations()}
           style={{
-            height: controlHeight.md,
+            height: compactLayout() ? layout.touchTarget : controlHeight.md,
             justifyContent: "center",
             paddingHorizontal: space.sm,
             paddingLeft: space.sm + space.lg + space.sm,
             borderRadius: radii.md,
+            borderCurve: "continuous",
             cursor: "pointer",
-            ...paintTransition(120),
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
           }}
           hoverStyle={{ backgroundColor: palette().chromeHover }}
+          activeStyle={tactileActiveStyle(0.98)}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Text style={textStyle("label", { color: palette().chromeTextMuted })}>{tr("history.showMore")}</Text>
         </View>
@@ -1441,14 +1619,28 @@ export function ConversationHistory(props: { onOpen?: () => void } = {}) {
       <If when={superagentPhase() === "ready" && conversationsError() && conversationGroups().length === 0 ? conversationsError() : ""}>
         <View style={{ paddingHorizontal: space.sm, gap: space.xs }}>
           <Text style={textStyle("caption", { color: palette().chromeTextMuted })}>{tr("history.loadFailed")}</Text>
-          <Text
+          <View
             role="button"
             accessibilityLabel={tr("common.tryAgain")}
             onPress={() => void refreshConversations()}
-            style={{ ...textStyle("caption", { color: palette().chromeText }), fontWeight: "500", cursor: "pointer" }}
+            style={{
+              alignSelf: "flex-start",
+              minHeight: compactLayout() ? layout.touchTarget : controlHeight.xs,
+              justifyContent: "center",
+              paddingHorizontal: space.xs,
+              borderRadius: radii.sm,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{ backgroundColor: palette().chromeHover }}
+            activeStyle={tactileActiveStyle(0.98)}
+            focusVisibleStyle={focusRingStyle()}
           >
-            {tr("common.tryAgain")}
-          </Text>
+            <Text style={{ ...textStyle("caption", { color: palette().chromeText }), fontWeight: "500" }}>
+              {tr("common.tryAgain")}
+            </Text>
+          </View>
         </View>
       </If>
       <ConversationDialogs />

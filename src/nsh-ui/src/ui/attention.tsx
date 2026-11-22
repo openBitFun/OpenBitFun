@@ -15,7 +15,7 @@
 // Display only: groups, order, titles, reasons and answerability come from the
 // backend; the only enum mapping here is a permission action to its verb.
 
-import { Text, View, reduceMotion, signal, type JSX } from "nsh";
+import { Text, View, cleanup, reduceMotion, signal, type JSX } from "nsh";
 import {
   ANSWERED_HOLD_MS,
   answerPrompt,
@@ -30,11 +30,11 @@ import {
 import { fleetDeviceById } from "../fleetStore";
 import type { FleetPrompt } from "../fleetTypes";
 import { tr } from "../i18n";
-import { compactLayout, controlHeight, fontMono, palette, radii, space, textLineHeight, textSize, textStyle, touchSlop } from "../theme";
-import { DeviceBadge, StateMark, markState, type DeviceException, type MarkState } from "./fleet";
+import { compactLayout, controlHeight, fontMono, layout, palette, radii, space, textLineHeight, textSize, textStyle } from "../theme";
+import { DeviceBadge, StateMark, deviceException, markState, type DeviceException, type MarkState } from "./fleet";
 import { Icon } from "./icons";
-import { MOTION_DURATION, MOTION_EASE_STANDARD, animateLayout, paintTransition, tactileActiveStyle } from "./motion";
-import { Button, EmptyStateCard, TextField } from "./primitives";
+import { MOTION_DURATION, MOTION_EASE_STANDARD, animateLayout, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
+import { Button, EmptyStateCard, SkeletonBlock, TextField, focusRingStyle } from "./primitives";
 
 export { ANSWERED_HOLD_MS };
 
@@ -140,21 +140,24 @@ function OpenLink(props: { onOpen: () => void }) {
     <View
       role="button"
       accessibilityLabel={tr("common.open")}
-      hitSlop={touchSlop(controlHeight.sm)}
       onPress={() => props.onOpen()}
       style={{
         flexDirection: "row",
         alignItems: "center",
+        justifyContent: "center",
         gap: space.hair,
-        height: controlHeight.sm,
+        minWidth: compactLayout() ? layout.touchTarget : undefined,
+        height: compactLayout() ? layout.touchTarget : controlHeight.sm,
         paddingHorizontal: space.sm,
         borderRadius: radii.md,
         borderCurve: "continuous",
         cursor: "pointer",
-        ...paintTransition(120),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().buttonSecondaryHover }}
       activeStyle={tactileActiveStyle(0.98)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Text style={textStyle("label", { color: palette().textSecondary })}>{tr("common.open")}</Text>
       <Icon name="chevron-right" size={12} color={palette().textMuted} />
@@ -204,6 +207,7 @@ export function AttentionItem(props: AttentionItemProps) {
                     exception={device().exception}
                     exceptionDetail={device().exceptionDetail}
                     onPress={device().onPress}
+                    style={compactLayout() && device().onPress ? { minWidth: layout.touchTarget, height: layout.touchTarget } : undefined}
                   />
                   <If when={props.source ?? ""}>
                     <Text style={textStyle("caption")}>·</Text>
@@ -252,17 +256,29 @@ export function AttentionItem(props: AttentionItemProps) {
           )}
         </If>
         <If when={showAllVisible()}>
-          <Text
+          <View
             role="button"
             accessibilityLabel={tr("inbox.showAll")}
             onPress={() => {
               if (compactLayout() && props.onShowAll) props.onShowAll();
               else expanded.set(true);
             }}
-            style={{ ...textStyle("label", { color: palette().textSecondary }), cursor: "pointer" }}
+            style={{
+              alignSelf: "flex-start",
+              minHeight: compactLayout() ? layout.touchTarget : undefined,
+              justifyContent: "center",
+              borderRadius: radii.sm,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            activeStyle={tactileActiveStyle(0.98)}
+            focusVisibleStyle={focusRingStyle()}
           >
-            {tr("inbox.showAll")}
-          </Text>
+            <Text style={textStyle("label", { color: palette().textSecondary })}>
+              {tr("inbox.showAll")}
+            </Text>
+          </View>
         </If>
         <If when={props.command ?? ""}>{command => <MonoWell text={command()} muted={answered()} />}</If>
         {props.children}
@@ -396,7 +412,6 @@ function OptionChip(props: { label: string; selected: boolean; disabled?: boolea
       accessibilityLabel={props.label}
       accessibilityState={{ selected: props.selected, disabled: Boolean(props.disabled) }}
       disabled={Boolean(props.disabled)}
-      hitSlop={touchSlop(controlHeight.md)}
       onPress={() => {
         if (!props.disabled) props.onPress();
       }}
@@ -404,7 +419,9 @@ function OptionChip(props: { label: string; selected: boolean; disabled?: boolea
         flexDirection: "row",
         alignItems: "center",
         gap: space.xs,
-        height: compactLayout() ? 44 : controlHeight.md,
+        height: compactLayout() ? layout.touchTarget : controlHeight.md,
+        minWidth: compactLayout() ? layout.touchTarget : undefined,
+        justifyContent: "center",
         paddingHorizontal: space.md,
         borderRadius: radii.md,
         borderCurve: "continuous",
@@ -412,10 +429,12 @@ function OptionChip(props: { label: string; selected: boolean; disabled?: boolea
         borderColor: props.selected ? palette().accentBorder : palette().border,
         backgroundColor: props.selected ? palette().accentSoft : "transparent",
         cursor: props.disabled ? "not-allowed" : "pointer",
-        ...paintTransition(120),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: props.selected ? palette().accentSoft : palette().panelHover }}
       activeStyle={tactileActiveStyle(0.98)}
+      focusVisibleStyle={focusRingStyle()}
       disabledStyle={{ opacity: 0.4 }}
     >
       <Text style={{ ...textStyle("label", { color: palette().text }), fontWeight: props.selected ? "500" : "400", numberOfLines: 1 }}>
@@ -462,7 +481,7 @@ function defaultDevice(prompt: FleetPrompt): AttentionDevice | null {
   return {
     name: device.name,
     kind: device.hostKind,
-    exception: device.state === "offline" ? "offline" : device.state === "update_required" ? "update_required" : null,
+    exception: deviceException(device.state),
   };
 }
 
@@ -483,6 +502,9 @@ export function PromptAttention(props: PromptAttentionProps) {
   const questions = () => (isQuestion() ? readQuestionPayload(props.prompt.payload) : []);
   const permission = () => permissionRequestText(props.prompt);
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  cleanup(() => {
+    if (settleTimer) clearTimeout(settleTimer);
+  });
 
   const finish = (answer: PromptAnswer, ok: boolean) => {
     if (!ok) return;
@@ -591,7 +613,7 @@ export function PromptAttention(props: PromptAttentionProps) {
                 accessibilityLabel={`allow-once-${props.prompt.promptId}`}
                 loading={busy() && status()?.reply === "once"}
                 disabled={busy() || phase() === "held"}
-                style={compactLayout() ? { height: 44 } : undefined}
+                style={compactLayout() ? { height: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
                 onPress={() => reply("once")}
               />
               <Button
@@ -601,7 +623,7 @@ export function PromptAttention(props: PromptAttentionProps) {
                 accessibilityLabel={`allow-always-${props.prompt.promptId}`}
                 loading={busy() && status()?.reply === "always"}
                 disabled={busy() || phase() === "held"}
-                style={compactLayout() ? { height: 44 } : undefined}
+                style={compactLayout() ? { height: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
                 onPress={() => reply("always")}
               />
               <Button
@@ -611,7 +633,7 @@ export function PromptAttention(props: PromptAttentionProps) {
                 accessibilityLabel={`deny-${props.prompt.promptId}`}
                 loading={busy() && status()?.reply === "reject"}
                 disabled={busy() || phase() === "held"}
-                style={compactLayout() ? { height: 44 } : undefined}
+                style={compactLayout() ? { height: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
                 onPress={() => reply("reject")}
               />
               {props.extraActions}
@@ -620,6 +642,7 @@ export function PromptAttention(props: PromptAttentionProps) {
                   label={tr("common.tryAgain")}
                   variant="ghost"
                   size="sm"
+                  style={compactLayout() ? { height: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
                   onPress={() => resetPromptStatus(props.prompt)}
                 />
               </If>
@@ -674,7 +697,7 @@ export function PromptAttention(props: PromptAttentionProps) {
                 accessibilityLabel={`prompt-send-${props.prompt.promptId}`}
                 loading={busy()}
                 disabled={busy() || (!typed().trim() && Object.keys(draft()).length === 0)}
-                style={compactLayout() ? { height: 44 } : undefined}
+                style={compactLayout() ? { height: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
                 onPress={() => submitTyped()}
               />
             </View>
@@ -713,20 +736,28 @@ export function AttentionLine(props: AttentionLineProps) {
         flexDirection: "row",
         alignItems: "center",
         gap: space.md,
-        minHeight: compactLayout() ? 44 : 40,
+        minHeight: compactLayout() ? layout.touchTarget : 40,
         borderRadius: radii.md,
         borderCurve: "continuous",
         cursor: props.onOpen ? "pointer" : undefined,
-        ...paintTransition(120),
+        userSelect: props.onOpen ? "none" : undefined,
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={props.onOpen ? { backgroundColor: palette().panelHover } : undefined}
+      activeStyle={props.onOpen ? tactileActiveStyle(0.985) : undefined}
+      focusVisibleStyle={props.onOpen ? focusRingStyle() : undefined}
     >
       <StateMark state={props.state} seen={props.seen} />
       <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
         <If when={props.device}>
           {device => (
             <>
-              <DeviceBadge name={device().name} kind={device().kind} exception={device().exception} onPress={device().onPress} />
+              <DeviceBadge
+                name={device().name}
+                kind={device().kind}
+                exception={device().exception}
+                onPress={compactLayout() ? undefined : device().onPress}
+              />
               <Text style={textStyle("caption")}>·</Text>
             </>
           )}
@@ -784,7 +815,7 @@ function entryDevice(entry: AttentionEntry, onDevice?: (deviceId: string) => voi
   return {
     name,
     kind: entry.source.deviceId === "cloud" ? "cloud" : (entry.hostKind ?? fleet?.hostKind),
-    exception: fleet?.state === "offline" ? "offline" : fleet?.state === "update_required" ? "update_required" : null,
+    exception: deviceException(fleet?.state),
     onPress: onDevice && entry.source.deviceId !== "cloud" ? () => onDevice(entry.source.deviceId) : undefined,
   };
 }
@@ -804,8 +835,29 @@ export interface AttentionTrayProps {
   onAnswered?: (entry: AttentionEntry) => void;
   /** The groups to draw; defaults to the store's. */
   groups?: AttentionGroup[];
+  /** True while the first async read is still in flight (draws calm static skeleton instead of flashing empty). */
+  loading?: boolean;
   /** Sends a prompt's answer instead of the default route (a backend without the fleet layer). */
   sendPrompt?: (prompt: FleetPrompt, answer: PromptAnswer) => Promise<void>;
+}
+
+function AttentionSkeleton() {
+  return (
+    <View accessibilityLabel="inbox-loading" style={{ gap: space.xl }}>
+      <View style={{ gap: space.md }}>
+        <SkeletonBlock width={96} height={14} borderRadius={radii.xs} />
+        <View style={{ gap: space.sm, paddingVertical: space.sm }}>
+          <SkeletonBlock width="68%" height={16} borderRadius={radii.xs} />
+          <SkeletonBlock width="46%" height={14} borderRadius={radii.xs} />
+        </View>
+        <View style={{ height: 1, marginLeft: ATTENTION_INDENT, backgroundColor: palette().borderSubtle }} />
+        <View style={{ gap: space.sm, paddingVertical: space.sm }}>
+          <SkeletonBlock width="58%" height={16} borderRadius={radii.xs} />
+          <SkeletonBlock width="38%" height={14} borderRadius={radii.xs} />
+        </View>
+      </View>
+    </View>
+  );
 }
 
 /**
@@ -820,7 +872,14 @@ export function AttentionTray(props: AttentionTrayProps) {
   return (
     <If
       when={groups().length > 0}
-      else={<EmptyStateCard icon="inbox" title={tr("inbox.emptyTitle")} subtitle={tr("inbox.emptyBody")} />}
+      else={
+        <If
+          when={Boolean(props.loading)}
+          else={<EmptyStateCard icon="inbox" title={tr("inbox.emptyTitle")} subtitle={tr("inbox.emptyBody")} />}
+        >
+          <AttentionSkeleton />
+        </If>
+      }
     >
       <View style={{ gap: space.x3l }}>
         <Each of={groups()} key={group => group.id}>
@@ -923,6 +982,7 @@ export function ReviewNotesBar(props: ReviewNotesBarProps) {
           size="sm"
           loading={props.sending}
           accessibilityLabel="review-notes-send"
+          style={compactLayout() ? { height: layout.touchTarget } : undefined}
           onPress={() => props.onSend()}
         />
       </View>

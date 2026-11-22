@@ -4,11 +4,13 @@
 // on the device that runs it; SessionsScene mounts them in anchored slots.
 
 import {
+  cleanup,
   computed,
   effect,
   Scroll,
   signal,
   Text,
+  untracked,
   View,
   WebView,
   type JSX,
@@ -85,8 +87,9 @@ import {
 import { activeSessionDevice, activeSessionId, activeWorkspaceId, composerText } from "../state";
 import { compactLayout, fontMono, layout, palette, radii, space, textStyle } from "../theme";
 import { createMarkdownStyles, STATIC_MARKDOWN_OPTIONS, STREAMING_MARKDOWN_OPTIONS } from "./markdown";
+import { BrandSpinner, MOTION_DURATION, pressTransition, tactileActiveStyle } from "./motion";
 import { DropdownMenu, ModalDialog, pushToast, type DropdownMenuItem } from "./overlays";
-import { Button, IconButton, TextField } from "./primitives";
+import { Button, IconButton, TextField, focusRingStyle } from "./primitives";
 import { Icon } from "./icons";
 
 function errorText(error: unknown): string {
@@ -99,7 +102,10 @@ function goalTarget(): GoalTarget | null {
   return { sessionId, deviceId: activeSessionDevice(), workspaceId: activeWorkspaceId() };
 }
 
-let extrasListening = false;
+let extrasMountCount = 0;
+let extrasTimer: ReturnType<typeof setTimeout> | null = null;
+let extrasUnsubTool: (() => void) | null = null;
+let extrasUnsubTurn: (() => void) | null = null;
 
 /** Starts the per-session reads; mounted once with the session scene. */
 export function useSessionExtras(): void {
@@ -115,22 +121,36 @@ export function useSessionExtras(): void {
     if (!activeSessionId()) return;
     void loadMcpPrompts(activeSessionDevice());
   });
-  if (extrasListening) return;
-  extrasListening = true;
-  // Background commands start and end with the agent's tool calls.
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const refresh = (payload: unknown) => {
-    const sessionId = payload && typeof payload === "object" ? (payload as Record<string, unknown>).sessionId : null;
-    const target = goalTarget();
-    if (!target || sessionId !== target.sessionId) return;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = null;
-      void loadBackgroundCommands({ sessionId: target.sessionId, deviceId: target.deviceId });
-    }, 600);
-  };
-  listenEvent("agentic://tool-event", refresh);
-  listenEvent("agentic://dialog-turn-completed", refresh);
+  extrasMountCount += 1;
+  if (extrasMountCount === 1) {
+    // Background commands start and end with the agent's tool calls.
+    const refresh = (payload: unknown) => {
+      const sessionId = payload && typeof payload === "object" ? (payload as Record<string, unknown>).sessionId : null;
+      const target = goalTarget();
+      if (!target || sessionId !== target.sessionId) return;
+      if (extrasTimer) clearTimeout(extrasTimer);
+      extrasTimer = setTimeout(() => {
+        extrasTimer = null;
+        void loadBackgroundCommands({ sessionId: target.sessionId, deviceId: target.deviceId });
+      }, 600);
+    };
+    extrasUnsubTool = listenEvent("agentic://tool-event", refresh);
+    extrasUnsubTurn = listenEvent("agentic://dialog-turn-completed", refresh);
+  }
+  cleanup(() => {
+    extrasMountCount -= 1;
+    if (extrasMountCount <= 0) {
+      extrasMountCount = 0;
+      if (extrasTimer) {
+        clearTimeout(extrasTimer);
+        extrasTimer = null;
+      }
+      extrasUnsubTool?.();
+      extrasUnsubTool = null;
+      extrasUnsubTurn?.();
+      extrasUnsubTurn = null;
+    }
+  });
 }
 
 // ── Goal ──────────────────────────────────────────────────────────────────────
@@ -270,6 +290,7 @@ export function GoalStrip(): JSX.Element {
               size="xs"
               tooltip={tr("goal.actions")}
               accessibilityLabel="session-goal-menu"
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => goalMenuOpen.set(!goalMenuOpen())}
             />
           </View>
@@ -304,11 +325,11 @@ function GoalDialog(): JSX.Element {
       onClose={() => goalDialog.set(null)}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => goalDialog.set(null)} />
+          <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={() => goalDialog.set(null)} />
           <Button
             label={goalDialog() === "edit" ? tr("common.save") : tr("goal.start")}
             variant="primary"
-            size="sm"
+            size="md"
             loading={goalBusy()}
             disabled={!goalDraft().trim()}
             accessibilityLabel="session-goal-save"
@@ -367,14 +388,14 @@ function SideQuestionSheet(): JSX.Element {
       onClose={() => closeSideQuestion()}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.close")} variant="secondary" size="sm" onPress={() => closeSideQuestion()} />
+          <Button label={tr("common.close")} variant="ghost" size="md" onPress={() => closeSideQuestion()} />
           <If
             when={running()}
             else={
               <Button
                 label={tr("btw.ask")}
                 variant="primary"
-                size="sm"
+                size="md"
                 disabled={!sideQuestionDraft().trim()}
                 accessibilityLabel="side-question-ask"
                 onPress={askFromSheet}
@@ -384,7 +405,7 @@ function SideQuestionSheet(): JSX.Element {
             <Button
               label={tr("btw.stop")}
               variant="secondary"
-              size="sm"
+              size="md"
               accessibilityLabel="side-question-stop"
               onPress={() => void cancelSideQuestion()}
             />
@@ -479,10 +500,17 @@ export function BackgroundCommandsStrip(): JSX.Element {
           flexDirection: "row",
           alignItems: "center",
           gap: space.sm,
-          minHeight: space.x3l,
+          minHeight: compactLayout() ? layout.touchTarget : space.x3l,
           paddingHorizontal: space.lg,
+          borderRadius: radii.md,
+          borderCurve: "continuous",
           cursor: "pointer",
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
+        hoverStyle={{ backgroundColor: palette().panelHover }}
+        activeStyle={tactileActiveStyle(0.985)}
+        focusVisibleStyle={focusRingStyle()}
       >
         <Icon name="terminal" size={14} color={palette().textMuted} />
         <Text style={{ ...textStyle("label", { color: palette().textSecondary }), flex: 1, minWidth: 0 }}>
@@ -507,12 +535,17 @@ function BackgroundCommandRow(props: { command: BackgroundCommand }) {
         flexDirection: "row",
         alignItems: "center",
         gap: space.md,
-        minHeight: space.xxl + space.lg,
+        minHeight: compactLayout() ? layout.touchTarget : space.xxl + space.lg,
         paddingHorizontal: space.sm,
         borderRadius: radii.md,
+        borderCurve: "continuous",
         cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Text
         style={{
@@ -552,7 +585,7 @@ function BackgroundCommandsDialog(): JSX.Element {
             <Button
               label={tr("background.back")}
               variant="ghost"
-              size="sm"
+              size="md"
               leadingIcon="chevron-left"
               accessibilityLabel="background-output-back"
               onPress={() => closeBackgroundOutput()}
@@ -561,7 +594,7 @@ function BackgroundCommandsDialog(): JSX.Element {
             <Button
               label={tr("background.interrupt")}
               variant="secondary"
-              size="sm"
+              size="md"
               disabled={!running()}
               accessibilityLabel="background-output-interrupt"
               onPress={() => void controlBackgroundCommand("interrupt").catch(error => pushToast(errorText(error), "error"))}
@@ -569,7 +602,7 @@ function BackgroundCommandsDialog(): JSX.Element {
             <Button
               label={tr("background.kill")}
               variant="danger"
-              size="sm"
+              size="md"
               disabled={!running()}
               accessibilityLabel="background-output-kill"
               onPress={() => void controlBackgroundCommand("kill").catch(error => pushToast(errorText(error), "error"))}
@@ -701,12 +734,18 @@ export function McpPromptRows(): JSX.Element {
                 flexDirection: "row",
                 alignItems: "center",
                 gap: space.sm,
+                minHeight: compactLayout() ? layout.touchTarget : space.x3l,
                 paddingHorizontal: space.sm,
                 paddingVertical: space.chip,
                 borderRadius: radii.md,
+                borderCurve: "continuous",
                 cursor: "pointer",
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
               }}
               hoverStyle={{ backgroundColor: palette().panelHover }}
+              activeStyle={tactileActiveStyle(0.985)}
+              focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -1 }}
             >
               <Icon name="plug" size={14} color={palette().textMuted} />
               <Text style={{ ...textStyle("mono", { color: palette().text }), fontFamily: fontMono }}>
@@ -745,11 +784,11 @@ function McpPromptDialog(): JSX.Element {
       onClose={() => closeMcpPromptForm()}
       footer={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Button label={tr("common.cancel")} variant="secondary" size="sm" onPress={() => closeMcpPromptForm()} />
+          <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={() => closeMcpPromptForm()} />
           <Button
             label={tr("mcpPrompts.insert")}
             variant="primary"
-            size="sm"
+            size="md"
             loading={mcpPromptBusy()}
             disabled={missing()}
             accessibilityLabel="mcp-prompt-insert"
@@ -787,18 +826,30 @@ function McpPromptDialog(): JSX.Element {
 // ── MCP App panels ────────────────────────────────────────────────────────────
 
 const appDescriptors = signal<Record<string, McpAppDescriptor | null>>({});
+const pendingAppLookups = new Set<string>();
 
 /** "Open app" on a finished MCP tool call whose tool declares a UI; nothing otherwise. */
 export function McpAppLauncher(props: { call: ToolCallView; cardId: string }): JSX.Element {
-  const done = props.call.status === "completed" || props.call.success === true;
-  const key = `${activeSessionDevice()}/${props.cardId}`;
-  if (done && !(key in appDescriptors())) {
-    void mcpAppFor(props.call, activeSessionDevice()).then(found => {
-      appDescriptors.set({ ...appDescriptors(), [key]: found });
-    });
-  }
+  const done = computed(() => props.call.status === "completed" || props.call.success === true);
+  const key = computed(() => `${activeSessionDevice()}/${props.cardId}`);
+  effect(() => {
+    if (!done()) return;
+    const currentKey = key();
+    const device = activeSessionDevice();
+    const call = props.call;
+    if (currentKey in untracked(appDescriptors) || pendingAppLookups.has(currentKey)) return;
+    pendingAppLookups.add(currentKey);
+    void mcpAppFor(call, device)
+      .then(found => {
+        appDescriptors.set({ ...untracked(appDescriptors), [currentKey]: found });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        pendingAppLookups.delete(currentKey);
+      });
+  });
   return (
-    <If when={appDescriptors()[key] ?? null}>
+    <If when={done() ? (appDescriptors()[key()] ?? null) : null}>
       {descriptor => (
         <Button
           label={tr("mcpApp.open")}
@@ -806,7 +857,10 @@ export function McpAppLauncher(props: { call: ToolCallView; cardId: string }): J
           size="sm"
           leadingIcon="layout-grid"
           accessibilityLabel={`mcp-app-open-${props.cardId}`}
-          style={{ alignSelf: "flex-start" }}
+          style={{
+            alignSelf: "flex-start",
+            minHeight: compactLayout() ? layout.touchTarget : undefined,
+          }}
           onPress={() => void openMcpApp(descriptor())}
         />
       )}
@@ -828,12 +882,28 @@ function McpAppPanel(): JSX.Element {
     >
       <View style={{ gap: space.sm }}>
         <If when={mcpAppLoading()}>
-          <Text style={textStyle("label", { color: palette().textMuted })}>{tr("mcpApp.loading")}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, paddingVertical: space.xs }}>
+            <BrandSpinner variant="matrix" size={12} color={palette().accent} />
+            <Text style={textStyle("label", { color: palette().textMuted })}>{tr("mcpApp.loading")}</Text>
+          </View>
         </If>
         <If when={mcpAppError()}>
-          <Text accessibilityLabel="mcp-app-error" style={textStyle("label", { color: palette().textSecondary })}>
-            {mcpAppError() === "empty" ? tr("mcpApp.empty") : tr("mcpApp.failed", { error: errorText(mcpAppError()) })}
-          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+            <Text accessibilityLabel="mcp-app-error" style={{ ...textStyle("label", { color: palette().textSecondary }), flex: 1, minWidth: 0 }}>
+              {mcpAppError() === "empty" ? tr("mcpApp.empty") : tr("mcpApp.failed", { error: errorText(mcpAppError()) })}
+            </Text>
+            <If when={mcpAppOpen()}>
+              {current => (
+                <Button
+                  label={tr("common.tryAgain")}
+                  variant="ghost"
+                  size="sm"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                  onPress={() => void openMcpApp(current())}
+                />
+              )}
+            </If>
+          </View>
         </If>
         <If when={mcpAppDocument()}>
           {document => (
@@ -856,7 +926,7 @@ function McpAppPanel(): JSX.Element {
               }
               onError={event => mcpAppError.set(event.message || "error")}
               style={{
-                height: Math.min(Math.max(document().height ?? 420, 160), 640),
+                height: Math.min(Math.max(document().height ?? 420, 160), compactLayout() ? 420 : 540),
                 alignSelf: "stretch",
                 borderRadius: radii.md,
                 overflow: "hidden",

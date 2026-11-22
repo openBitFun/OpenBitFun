@@ -12,7 +12,7 @@
  */
 
 import { McpAppLauncher } from "./sessionExtras"; // wave22-p5
-import { Clipboard, computed, Image, openUrl, Scroll, signal, Text, View } from "nsh";
+import { cleanup, Clipboard, computed, Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import type { JSX, Signal, ViewStyle } from "nsh";
 import { DiffView } from "nsh/base";
 import {
@@ -30,18 +30,18 @@ import {
 import { tr, type MessageKey } from "../i18n";
 import { addReviewNote, editingReviewNote, removeReviewNote, reviewNotesFor, updateReviewNote, type ReviewNote } from "../reviewStore";
 import { activeSessionKey, openInAuxPane, selectSession } from "../state";
-import { fontMono, palette, radii, space, textLineHeight, textSize } from "../theme";
+import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
+import { stateColor } from "./fleet";
 import { Icon, type IconName } from "./icons";
 import { createDiffViewStyles, inferCodeLanguage } from "./markdown";
 import {
   animateLayout,
   BrandSpinner,
   MOTION_DURATION,
-  paintTransition,
   pressTransition,
   tactileActiveStyle,
 } from "./motion";
-import { IconButton, InputBox, StatusDot } from "./primitives";
+import { Button, IconButton, InputBox, StatusDot, focusRingStyle } from "./primitives";
 
 export type ToolRunState = "completed" | "running" | "failed" | "cancelled" | "confirmation";
 
@@ -411,6 +411,13 @@ const copiedToolBlock = signal("");
 
 function SmallCopyButton(props: { copyKey: string; text: string }) {
   const copied = computed(() => copiedToolBlock() === props.copyKey);
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (copyTimer) {
+      clearTimeout(copyTimer);
+      copyTimer = null;
+    }
+  });
   return (
     <View
       role="button"
@@ -418,7 +425,9 @@ function SmallCopyButton(props: { copyKey: string; text: string }) {
       onPress={() => {
         void Clipboard.writeText(props.text).then(() => {
           copiedToolBlock.set(props.copyKey);
-          setTimeout(() => {
+          if (copyTimer) clearTimeout(copyTimer);
+          copyTimer = setTimeout(() => {
+            copyTimer = null;
             if (copiedToolBlock() === props.copyKey) copiedToolBlock.set("");
           }, 1500);
         });
@@ -426,23 +435,28 @@ function SmallCopyButton(props: { copyKey: string; text: string }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 4,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
+        justifyContent: "center",
+        minHeight: compactLayout() ? layout.touchTarget : undefined,
+        minWidth: compactLayout() ? layout.touchTarget : undefined,
+        gap: space.xs,
+        paddingHorizontal: space.chip,
+        paddingVertical: space.hair,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         cursor: "pointer",
+        userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-      activeStyle={tactileActiveStyle(0.96)}
+      activeStyle={tactileActiveStyle(0.97)}
+      focusVisibleStyle={focusRingStyle()}
     >
-      <Icon name={copied() ? "check" : "copy"} size={12} color={copied() ? palette().success : palette().textMuted} />
+      <Icon name={copied() ? "check" : "copy"} size={12} color={copied() ? stateColor("done") : palette().textMuted} />
       <Text
         style={{
-          color: copied() ? palette().success : palette().textMuted,
-          fontSize: textSize(11),
-          lineHeight: textLineHeight(11, 1.3),
+          color: copied() ? stateColor("done") : palette().textMuted,
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           fontWeight: "500",
         }}
       >
@@ -454,12 +468,12 @@ function SmallCopyButton(props: { copyKey: string; text: string }) {
 
 function SectionLabel(props: { label: string; danger?: boolean; children?: JSX.Element }) {
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space.sm }}>
       <Text
         style={{
-          color: props.danger ? palette().danger : palette().textMuted,
-          fontSize: textSize(11),
-          lineHeight: textLineHeight(11, 1.3),
+          color: props.danger ? stateColor("failed") : palette().textMuted,
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           fontWeight: "600",
         }}
       >
@@ -473,7 +487,7 @@ function SectionLabel(props: { label: string; danger?: boolean; children?: JSX.E
 /** A bounded monospace block with its own copy button. */
 function MonoBlock(props: { copyKey: string; label: string; text: string; danger?: boolean; maxHeight?: number }) {
   return (
-    <View style={{ gap: 4 }}>
+    <View style={{ gap: space.xs }}>
       <SectionLabel label={props.label} danger={props.danger}>
         <SmallCopyButton copyKey={props.copyKey} text={props.text} />
       </SectionLabel>
@@ -482,7 +496,7 @@ function MonoBlock(props: { copyKey: string; label: string; text: string; danger
           borderRadius: radii.md,
           borderCurve: "continuous",
           borderLeftWidth: props.danger ? 2 : 0,
-          borderColor: palette().danger,
+          borderColor: stateColor("failed"),
           backgroundColor: palette().surfaceTertiary,
           overflow: "hidden",
         }}
@@ -494,7 +508,7 @@ function MonoBlock(props: { copyKey: string; label: string; text: string; danger
         >
           <Text
             style={{
-              color: props.danger ? palette().danger : palette().textSecondary,
+              color: props.danger ? stateColor("failed") : palette().textSecondary,
               fontFamily: fontMono,
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 18 / 12),
@@ -530,12 +544,12 @@ function ChecklistBody(props: { call: ToolCallView }) {
   const todos = computed(() => todosOf(props.call.input));
   const done = computed(() => todos().filter(item => item.state === "done").length);
   return (
-    <View style={{ gap: 7 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View style={{ gap: space.sm }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
         <View
           style={{
             flex: 1,
-            height: 4,
+            height: space.xs,
             borderRadius: radii.pill,
             backgroundColor: palette().surfaceSubtle,
             overflow: "hidden",
@@ -543,9 +557,9 @@ function ChecklistBody(props: { call: ToolCallView }) {
         >
           <View
             style={{
-              height: 4,
+              height: space.xs,
               borderRadius: radii.pill,
-              backgroundColor: done() === todos().length ? palette().success : palette().accent,
+              backgroundColor: done() === todos().length ? stateColor("done") : stateColor("working"),
               width: `${Math.round((done() / Math.max(1, todos().length)) * 100)}%`,
             }}
           />
@@ -565,8 +579,8 @@ function ChecklistBody(props: { call: ToolCallView }) {
       </View>
       <Each of={todos()} key="index">
         {item => (
-          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-            <View style={{ marginTop: 6, flexShrink: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
+            <View style={{ marginTop: space.chip, flexShrink: 0 }}>
               <StatusDot
                 kind={item().state === "done" ? "success" : item().state === "active" ? "accent" : "muted"}
                 pulse={item().state === "active"}
@@ -612,16 +626,32 @@ function ReviewNoteView(props: { note: ReviewNote }) {
       <If
         when={editingReviewNote() === props.note.id}
         else={
-          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
-            <Text
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+            <View
               role="button"
               accessibilityLabel={`edit-review-note-${props.note.id}`}
               onPress={() => editingReviewNote.set(props.note.id)}
-              style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 18 / 13), cursor: "text" }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: compactLayout() ? layout.touchTarget : undefined,
+                justifyContent: "center",
+                borderRadius: radii.xs,
+                cursor: "text",
+              }}
+              focusVisibleStyle={focusRingStyle()}
             >
-              {props.note.text || tr("reviewNotes.add")}
-            </Text>
-            <IconButton icon="close" size="xs" accessibilityLabel={`remove-review-note-${props.note.id}`} onPress={() => removeReviewNote(props.note.id)} />
+              <Text style={{ color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 18 / 13) }}>
+                {props.note.text || tr("reviewNotes.add")}
+              </Text>
+            </View>
+            <IconButton
+              icon="close"
+              size="xs"
+              accessibilityLabel={`remove-review-note-${props.note.id}`}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+              onPress={() => removeReviewNote(props.note.id)}
+            />
           </View>
         }
       >
@@ -701,14 +731,18 @@ function DiffBody(props: { call: ToolCallView; kind: ToolKind }) {
                     });
                   }}
                   style={{
-                    width: 16,
-                    height: 16,
+                    width: space.lg,
+                    height: space.lg,
                     alignItems: "center",
                     justifyContent: "center",
                     borderRadius: radii.xs,
                     backgroundColor: palette().accentSoft,
                     cursor: "pointer",
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
                   }}
+                  activeStyle={tactileActiveStyle(0.97)}
+                  focusVisibleStyle={focusRingStyle()}
                 >
                   <Icon name="message-circle" size={12} color={palette().accent} />
                 </View>
@@ -761,12 +795,12 @@ function ListBody(props: { call: ToolCallView; cardId: string; openFiles: boolea
   const rows = computed(() => listRowsOf(props.call));
   const visible = computed(() => rows().slice(0, 60));
   return (
-    <View style={{ gap: 4 }}>
+    <View style={{ gap: space.xs }}>
       <SectionLabel label={tr("chat.tool.matches", { count: rows().length })}>
         <SmallCopyButton copyKey={`${props.cardId}-list`} text={rows().join("\n")} />
       </SectionLabel>
       <Scroll style={{ maxHeight: 240, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: 1 }}>
+        <View style={{ gap: space.hair }}>
           <Each of={visible()} key="index">
             {row => (
               <View
@@ -775,12 +809,18 @@ function ListBody(props: { call: ToolCallView; cardId: string; openFiles: boolea
                   if (props.openFiles) openInAuxPane("files", pathOfListRow(row()));
                 }}
                 style={{
-                  paddingHorizontal: 6,
-                  paddingVertical: 2,
+                  minHeight: props.openFiles && compactLayout() ? layout.touchTarget : undefined,
+                  justifyContent: "center",
+                  paddingHorizontal: space.chip,
+                  paddingVertical: space.hair,
                   borderRadius: radii.xs,
                   cursor: props.openFiles ? "pointer" : "default",
+                  userSelect: props.openFiles ? "none" : undefined,
+                  ...pressTransition(MOTION_DURATION.fast),
                 }}
                 hoverStyle={props.openFiles ? { backgroundColor: palette().surfaceSubtle } : undefined}
+                activeStyle={props.openFiles ? tactileActiveStyle(0.985) : undefined}
+                focusVisibleStyle={props.openFiles ? focusRingStyle() : undefined}
               >
                 <Text
                   style={{
@@ -800,7 +840,7 @@ function ListBody(props: { call: ToolCallView; cardId: string; openFiles: boolea
         </View>
       </Scroll>
       <If when={rows().length > visible().length}>
-        <Text style={{ color: palette().textMuted, fontSize: textSize(11), lineHeight: textLineHeight(11, 1.3) }}>
+        <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
           {tr("chat.tool.moreRows", { count: rows().length - visible().length })}
         </Text>
       </If>
@@ -839,8 +879,20 @@ function WebLinkRow(props: { row: WebResultRow }) {
       role="button"
       accessibilityLabel={`web-result-${props.row.url}`}
       onPress={() => void openUrl(props.row.url).catch(() => undefined)}
-      style={{ gap: 2, paddingHorizontal: 6, paddingVertical: 4, borderRadius: radii.xs, cursor: "pointer" }}
+      style={{
+        gap: space.hair,
+        minHeight: compactLayout() ? layout.touchTarget : undefined,
+        justifyContent: "center",
+        paddingHorizontal: space.chip,
+        paddingVertical: space.xs,
+        borderRadius: radii.xs,
+        cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
       hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Text
         style={{
@@ -857,8 +909,8 @@ function WebLinkRow(props: { row: WebResultRow }) {
       <Text
         style={{
           color: palette().textMuted,
-          fontSize: textSize(11),
-          lineHeight: textLineHeight(11, 1.3),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           numberOfLines: 1,
           textOverflow: "ellipsis-middle",
         }}
@@ -938,7 +990,7 @@ function SubagentSteps(props: { call: ToolCallView; cardId: string }) {
   const visible = computed(() => (showAll() ? rows() : rows().slice(-SUBAGENT_STEP_PREVIEW)));
   const hidden = computed(() => Math.max(0, rows().length - visible().length));
   return (
-    <View style={{ gap: 2 }} accessibilityLabel={`subagent-steps-${props.cardId}`}>
+    <View style={{ gap: space.hair }} accessibilityLabel={`subagent-steps-${props.cardId}`}>
       <SectionLabel label={formatPlural(rows().length, "chat.tool.task.stepsOne", "chat.tool.task.stepsOther")} />
       <If when={hidden() > 0}>
         <View
@@ -948,33 +1000,45 @@ function SubagentSteps(props: { call: ToolCallView; cardId: string }) {
             animateLayout();
             subagentStepsOpen.update(current => ({ ...current, [props.cardId]: true }));
           }}
-          style={{ paddingVertical: 3, paddingHorizontal: 6, borderRadius: radii.xs, cursor: "pointer", alignSelf: "flex-start" }}
+          style={{
+            minHeight: compactLayout() ? layout.touchTarget : undefined,
+            justifyContent: "center",
+            paddingVertical: space.xs,
+            paddingHorizontal: space.chip,
+            borderRadius: radii.xs,
+            cursor: "pointer",
+            alignSelf: "flex-start",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
           hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+          activeStyle={tactileActiveStyle(0.98)}
+          focusVisibleStyle={focusRingStyle()}
         >
-          <Text style={{ color: palette().accent, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
+          <Text style={{ color: palette().accent, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3), fontWeight: "500" }}>
             {tr("chat.tool.task.showEarlier", { count: hidden() })}
           </Text>
         </View>
       </If>
       <Each of={visible()} key={row => row.key}>
         {row => (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 24, paddingHorizontal: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: space.xxl, paddingHorizontal: space.chip }}>
             <Icon
               name={row().icon}
               size={14}
               color={
                 row().state === "failed"
-                  ? palette().danger
+                  ? stateColor("failed")
                   : row().state === "running"
-                    ? palette().accent
-                    : palette().textMuted
+                    ? stateColor("working")
+                    : stateColor("idle")
               }
             />
             <Text
               style={{
                 flexShrink: 0,
                 maxWidth: "45%",
-                color: row().state === "failed" ? palette().danger : palette().textSecondary,
+                color: row().state === "failed" ? stateColor("failed") : palette().textSecondary,
                 fontSize: textSize(12),
                 lineHeight: textLineHeight(12, 1.35),
                 fontWeight: "500",
@@ -1040,63 +1104,79 @@ function argumentsTextOf(call: ToolCallView): string {
 
 function SmallButton(props: { label: string; icon: IconName; accessibilityLabel: string; onPress: () => void }) {
   return (
-    <View
-      role="button"
+    <Button
+      label={props.label}
+      variant="secondary"
+      size="sm"
+      leadingIcon={props.icon}
       accessibilityLabel={props.accessibilityLabel}
-      onPress={props.onPress}
       style={{
-        flexDirection: "row",
-        alignItems: "center",
         alignSelf: "flex-start",
-        gap: 5,
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-        borderRadius: radii.pill,
-        borderWidth: 1,
-        borderColor: palette().border,
-        cursor: "pointer",
-        ...pressTransition(MOTION_DURATION.fast),
+        minHeight: compactLayout() ? layout.touchTarget : undefined,
       }}
-      hoverStyle={{ backgroundColor: palette().surfaceSubtle, borderColor: palette().borderStrong }}
-      activeStyle={tactileActiveStyle(0.96)}
+      onPress={props.onPress}
+    />
+  );
+}
+
+function ToolImagePreview(props: { src: string }) {
+  const failed = signal(false);
+  return (
+    <If
+      when={!failed()}
+      else={
+        <Text
+          style={{
+            color: palette().textMuted,
+            fontFamily: fontMono,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.45),
+            numberOfLines: 2,
+            textOverflow: "ellipsis-middle",
+          }}
+        >
+          {props.src}
+        </Text>
+      }
     >
-      <Icon name={props.icon} size={12} color={palette().accent} />
-      <Text style={{ color: palette().accent, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3), fontWeight: "500" }}>
-        {props.label}
-      </Text>
-    </View>
+      <Image
+        src={props.src}
+        onError={() => failed.set(true)}
+        style={{ width: 360, maxWidth: "100%", maxHeight: 280, borderRadius: radii.sm, alignSelf: "flex-start" }}
+      />
+    </If>
   );
 }
 
 function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind }) {
-  const kind = props.kind;
+  const kind = () => props.kind;
   return (
-    <View style={{ gap: 10 }}>
-      <If when={kind === "todo"}>
+    <View style={{ gap: space.sm }}>
+      <If when={kind() === "todo"}>
         <ChecklistBody call={props.call} />
       </If>
-      <If when={kind === "edit" || kind === "write"}>
-        <DiffBody call={props.call} kind={kind} />
+      <If when={kind() === "edit" || kind() === "write"}>
+        <DiffBody call={props.call} kind={kind()} />
       </If>
-      <If when={kind === "exec" ? execCommandOf(props.call) : ""}>
+      <If when={kind() === "exec" ? execCommandOf(props.call) : ""}>
         {command => (
           <MonoBlock copyKey={`${props.cardId}-command`} label={tr("chat.tool.command")} text={`$ ${command()}`} maxHeight={140} />
         )}
       </If>
-      <If when={kind === "grep" || kind === "glob" || kind === "ls"}>
-        <ListBody call={props.call} cardId={props.cardId} openFiles={kind !== "ls"} />
+      <If when={kind() === "grep" || kind() === "glob" || kind() === "ls"}>
+        <ListBody call={props.call} cardId={props.cardId} openFiles={kind() !== "ls"} />
       </If>
-      <If when={kind === "websearch" && webResultsOf(props.call).length > 0}>
-        <View style={{ gap: 2 }}>
+      <If when={kind() === "websearch" && webResultsOf(props.call).length > 0}>
+        <View style={{ gap: space.hair }}>
           <Each of={webResultsOf(props.call)} key={row => row.url}>
             {row => <WebLinkRow row={row()} />}
           </Each>
         </View>
       </If>
-      <If when={kind === "webfetch" ? firstStringOf(inputRecord(props.call), ["url"]) : ""}>
+      <If when={kind() === "webfetch" ? firstStringOf(inputRecord(props.call), ["url"]) : ""}>
         {url => <WebLinkRow row={{ url: url(), title: url(), snippet: "" }} />}
       </If>
-      <If when={kind === "task" ? firstStringOf(inputRecord(props.call), ["prompt"]) : ""}>
+      <If when={kind() === "task" ? firstStringOf(inputRecord(props.call), ["prompt"]) : ""}>
         {prompt => (
           <Text
             style={{
@@ -1112,10 +1192,10 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
           </Text>
         )}
       </If>
-      <If when={kind === "task" && (props.call.subagentItems?.length ?? 0) > 0}>
+      <If when={kind() === "task" && (props.call.subagentItems?.length ?? 0) > 0}>
         <SubagentSteps call={props.call} cardId={props.cardId} />
       </If>
-      <If when={kind === "task" ? subagentSessionOf(props.call) : ""}>
+      <If when={kind() === "task" ? subagentSessionOf(props.call) : ""}>
         {sessionId => (
           <SmallButton
             label={tr("chat.tool.openSession")}
@@ -1125,31 +1205,26 @@ function ToolBody(props: { call: ToolCallView; cardId: string; kind: ToolKind })
           />
         )}
       </If>
-      <If when={kind === "image" ? imageSourceOf(props.call) : ""}>
-        {src => (
-          <Image
-            src={src()}
-            style={{ maxWidth: 360, maxHeight: 280, borderRadius: radii.sm, alignSelf: "flex-start" }}
-          />
-        )}
+      <If when={kind() === "image" ? imageSourceOf(props.call) : ""}>
+        {src => <ToolImagePreview src={src()} />}
       </If>
-      <If when={kind === "mcp" || kind === "generic" || kind === "question" ? argumentsTextOf(props.call) : ""}>
+      <If when={kind() === "mcp" || kind() === "generic" || kind() === "question" ? argumentsTextOf(props.call) : ""}>
         {args => (
           <MonoBlock copyKey={`${props.cardId}-args`} label={tr("chat.tool.arguments")} text={args()} maxHeight={160} />
         )}
       </If>
       {/* wave22-p5: an MCP tool with an interactive UI opens it in a panel. */}
-      <If when={kind === "mcp"}>
+      <If when={kind() === "mcp"}>
         <McpAppLauncher call={props.call} cardId={props.cardId} />
       </If>
-      <If when={kind !== "grep" && kind !== "glob" && kind !== "ls" && !(kind === "websearch" && webResultsOf(props.call).length > 0)}>
+      <If when={kind() !== "grep" && kind() !== "glob" && kind() !== "ls" && !(kind() === "websearch" && webResultsOf(props.call).length > 0)}>
         <ResultSection
           call={props.call}
           cardId={props.cardId}
-          label={kind === "exec" ? tr("chat.tool.output") : undefined}
+          label={kind() === "exec" ? tr("chat.tool.output") : undefined}
         />
       </If>
-      <If when={(kind === "grep" || kind === "glob" || kind === "ls") && Boolean(props.call.error)}>
+      <If when={(kind() === "grep" || kind() === "glob" || kind() === "ls") && Boolean(props.call.error)}>
         <MonoBlock copyKey={`${props.cardId}-error`} label={tr("chat.tool.error")} text={props.call.error ?? ""} danger={true} />
       </If>
     </View>
@@ -1208,10 +1283,10 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
   });
   const statusColor = computed(() =>
     state() === "failed" || (exitCode() ?? 0) !== 0
-      ? palette().danger
+      ? stateColor("failed")
       : state() === "confirmation"
-        ? palette().warning
-        : palette().textMuted,
+        ? stateColor("needs_you")
+        : stateColor("idle"),
   );
   /** Duration and exit code stay one hover away instead of on every row. */
   const hoverHint = computed(() => {
@@ -1223,7 +1298,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
     return parts.join(" · ");
   });
   const titleColor = computed(() =>
-    state() === "failed" ? palette().danger : muted() ? palette().textMuted : palette().text,
+    state() === "failed" ? stateColor("failed") : muted() ? palette().textMuted : palette().text,
   );
 
   // Visual spec §3 Tool: every call is one quiet 28 row; nothing is boxed.
@@ -1231,18 +1306,19 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    minHeight: 28,
+    minHeight: compactLayout() ? layout.touchTarget : 28,
     paddingHorizontal: space.chip,
     paddingVertical: 0,
     borderRadius: radii.md,
     borderCurve: "continuous",
     cursor: expandable() ? "pointer" : "default",
-    ...paintTransition(MOTION_DURATION.fast),
+    userSelect: expandable() ? "none" : undefined,
+    ...pressTransition(MOTION_DURATION.fast),
   });
 
   return (
     <View style={{ borderRadius: radii.md, borderCurve: "continuous" }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
         <View
           role={expandable() ? "button" : undefined}
           accessibilityLabel={`tool-card-${props.call.name}`}
@@ -1252,6 +1328,8 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
           }}
           style={{ flex: 1, minWidth: 0, ...rowStyle() }}
           hoverStyle={expandable() ? { backgroundColor: palette().surfaceSubtle } : undefined}
+          activeStyle={expandable() ? tactileActiveStyle(0.985) : undefined}
+          focusVisibleStyle={expandable() ? focusRingStyle() : undefined}
         >
           <If
             when={state() === "running"}
@@ -1259,7 +1337,7 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
               <Icon name={ICON_BY_KIND[kind()]} size={14} color={palette().textMuted} />
             }
           >
-            <BrandSpinner size={12} color={palette().accent} variant="matrix" />
+            <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
           </If>
           <Text
             style={{
@@ -1324,8 +1402,8 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
           <If when={statusText()}>
             {text => (
               <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
-                <If when={statusColor() === palette().danger}>
-                  <Icon name="close" size={12} color={palette().danger} />
+                <If when={statusColor() === stateColor("failed")}>
+                  <Icon name="close" size={12} color={stateColor("failed")} />
                 </If>
                 <Text
                   style={{
@@ -1338,21 +1416,6 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
                   {text()}
                 </Text>
               </View>
-            )}
-          </If>
-          <If when={!statusText() && state() === "completed" ? formatDuration(props.call.durationMs) : ""}>
-            {duration => (
-              <Text
-                style={{
-                  flexShrink: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 16 / 12),
-                  fontVariant: ["tabular-nums"],
-                }}
-              >
-                {duration()}
-              </Text>
             )}
           </If>
           <If when={expandable()}>
@@ -1369,18 +1432,22 @@ export function ToolCard(props: { call: ToolCallView; cardId: string; status?: T
               style={{
                 flexDirection: "row",
                 alignItems: "center",
+                justifyContent: "center",
                 flexShrink: 0,
-                gap: 4,
-                marginRight: 0,
-                paddingHorizontal: 6,
-                paddingVertical: 3,
+                width: compactLayout() ? layout.touchTarget : undefined,
+                height: compactLayout() ? layout.touchTarget : undefined,
+                gap: space.xs,
+                paddingHorizontal: compactLayout() ? 0 : space.chip,
+                paddingVertical: compactLayout() ? 0 : space.xs,
                 borderRadius: radii.xs,
                 borderCurve: "continuous",
                 cursor: "pointer",
+                userSelect: "none",
                 ...pressTransition(MOTION_DURATION.fast),
               }}
               hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-              activeStyle={tactileActiveStyle(0.96)}
+              activeStyle={tactileActiveStyle(0.97)}
+              focusVisibleStyle={focusRingStyle()}
             >
               <Icon name="external-link" size={14} color={palette().textMuted} />
             </View>
@@ -1415,7 +1482,7 @@ export function ExploreGroupCard(props: {
     return parts.join(", ");
   });
   return (
-    <View style={{ gap: 2 }}>
+    <View style={{ gap: space.hair }}>
       <View
         role="button"
         accessibilityLabel={`explore-group-${props.cardId}`}
@@ -1423,19 +1490,22 @@ export function ExploreGroupCard(props: {
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: 8,
-          minHeight: 28,
-          paddingHorizontal: 6,
-          paddingVertical: 3,
+          gap: space.sm,
+          minHeight: compactLayout() ? layout.touchTarget : 28,
+          paddingHorizontal: space.chip,
+          paddingVertical: space.xs,
           borderRadius: radii.sm,
           borderCurve: "continuous",
           cursor: "pointer",
-          ...paintTransition(MOTION_DURATION.fast),
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+        activeStyle={tactileActiveStyle(0.985)}
+        focusVisibleStyle={focusRingStyle()}
       >
         <If when={running()} else={<Icon name="compass" size={16} color={palette().textSecondary} />}>
-          <BrandSpinner size={14} color={palette().accent} variant="bars" />
+          <BrandSpinner size={12} color={stateColor("working")} variant="matrix" />
         </If>
         <Text
           style={{
@@ -1464,13 +1534,13 @@ export function ExploreGroupCard(props: {
         <Icon name={expanded() ? "chevron-down" : "chevron-right"} size={14} color={palette().textMuted} />
       </View>
       <If when={expanded()}>
-        <View style={{ paddingLeft: 14, gap: 2 }}>
-          <Each of={props.calls} key={(call: ToolCallView) => call.id ?? `${call.name}-${call.detail}`}>
-            {call => (
+        <View style={{ paddingLeft: space.lg, gap: space.hair }}>
+          <Each of={props.calls} key={(call: ToolCallView, index: number) => call.id ?? `${index}:${call.name}-${call.detail}`}>
+            {(call, index) => (
               <ToolCard
                 call={call()}
                 status={props.stateOf(call())}
-                cardId={`${props.cardId}|${call().id ?? `${call().name}-${call().detail}`}`}
+                cardId={`${props.cardId}|${call().id ?? `${index()}:${call().name}-${call().detail}`}`}
               />
             )}
           </Each>

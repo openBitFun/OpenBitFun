@@ -6,10 +6,12 @@
  */
 
 import { Buffer } from "buffer";
-import { Canvas, cleanup, Clipboard, computed, effect, Image, openUrl, Overlay, Scroll, signal, Text, untracked, View } from "nsh";
+import { Canvas, cleanup, Clipboard, computed, effect, Image, openUrl, Overlay, reduceMotion, Scroll, signal, Text, untracked, View } from "nsh";
 import type {
+  Align,
   Bounds,
   InputRef,
+  Motion,
   PasteEvent,
   Placement,
   ScrollEvent,
@@ -107,7 +109,7 @@ import { fleetDeviceById, fleetSessionRow } from "../fleetStore";
 import type { FleetPrompt } from "../fleetTypes";
 import { activeConversationId } from "../superagentStore";
 import { PromptAttention, ReviewNotesBar, type AttentionDevice } from "../ui/attention";
-import { DeviceBadge, StateMark, type MarkState } from "../ui/fleet";
+import { DeviceBadge, StateMark, deviceException, type MarkState } from "../ui/fleet";
 import {
   type QuestionPrompt,
   type QuestionView,
@@ -194,6 +196,7 @@ import {
   activeWorkspace,
   auxPaneOpen,
   auxPaneTab,
+  canGoBack,
   goBackScene,
   navigateScene,
   openAllSessions,
@@ -255,6 +258,7 @@ import {
 } from "../ui/markdown";
 import {
   MOTION_DURATION,
+  MOTION_EASE_STANDARD_BEZIER,
   animateLayout,
   BrandSpinner,
   enterMotion,
@@ -265,7 +269,7 @@ import {
   pressTransition,
   tactileActiveStyle,
 } from "../ui/motion";
-import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
+import { DropdownMenu, pushToast, registerEscapeDismiss, type DropdownMenuItem } from "../ui/overlays";
 import { sessionMenuItems } from "../ui/sessionActions";
 import { ReviewLauncherDialog } from "../ui/ReviewLauncher";
 import { VoiceDictationBar, VoiceInputButtons, type VoiceComposerActions } from "../ui/VoiceInput";
@@ -304,6 +308,7 @@ import {
   StatusDot,
   TapOptionRow,
   TooltipBubble,
+  focusRingStyle as baseFocusRingStyle,
 } from "../ui/primitives";
 
 const renaming = signal(false);
@@ -334,6 +339,9 @@ const quickActionsPlacement = signal<Placement>("top");
 const agentPickerPlacement = signal<Placement>("top");
 const modelPickerPlacement = signal<Placement>("top");
 const reasoningPickerPlacement = signal<Placement>("top");
+const slashMenuPlacement = signal<Placement>("top");
+const permissionModePlacement = signal<Placement>("top");
+const contextUsagePlacement = signal<Placement>("top");
 const transcriptScrolled = signal(false);
 const sessionsPaneWidth = signal(0);
 const sessionsCompact = computed(() => sessionsPaneWidth() > 0 && sessionsPaneWidth() < 600);
@@ -410,11 +418,39 @@ function offlineNoticeText(): string {
 const composerDisabled = computed(() => !activeSessionId() || sessionDeviceOffline() !== null);
 
 function focusRingStyle(offset = 2): ViewStyle {
-  return {
-    outlineWidth: 2,
-    outlineColor: palette().borderFocus,
-    outlineOffset: offset,
-  };
+  return offset === 2 ? baseFocusRingStyle() : { ...baseFocusRingStyle(), outlineOffset: offset };
+}
+
+/**
+ * Anchored popover entrance that reacts cleanly when `<Overlay>` flips its
+ * placement after measurement, and registers Escape dismissal on the shared
+ * LIFO stack while mounted.
+ */
+function usePopoverMotion(placement: () => Placement, align: Align, onClose?: () => void): Motion {
+  if (onClose) cleanup(registerEscapeDismiss(onClose));
+  const initial = placement();
+  const motion = popoverEnterMotion(initial, align, MOTION_DURATION.popover);
+  let settled = initial;
+  effect(() => {
+    const next = placement();
+    if (next === settled) return;
+    settled = next;
+    if (reduceMotion()) return;
+    const keyframes =
+      next === "top"
+        ? { opacity: [0.92, 1], scale: [0.97, 1], translateY: [4, 0] }
+        : next === "left"
+          ? { opacity: [0.92, 1], scale: [0.97, 1], translateX: [4, 0] }
+          : next === "right"
+            ? { opacity: [0.92, 1], scale: [0.97, 1], translateX: [-4, 0] }
+            : { opacity: [0.92, 1], scale: [0.97, 1], translateY: [-4, 0] };
+    void motion.play({
+      keyframes,
+      duration: MOTION_DURATION.fast,
+      easing: MOTION_EASE_STANDARD_BEZIER,
+    });
+  });
+  return motion;
 }
 
 function toggleThreadMenu(): void {
@@ -451,7 +487,9 @@ function closePickers(except?: "model" | "reasoning" | "agent" | "actions"): voi
     quickActionsPlacement.set("top");
   }
   permissionModePickerOpen.set(false);
+  permissionModePlacement.set("top");
   contextPopoverOpen.set(false);
+  contextUsagePlacement.set("top");
   composerPlusOpen.set(false);
 }
 
@@ -464,36 +502,8 @@ function overlayPopoverStyle(): ViewStyle {
     borderColor: palette().border,
     backgroundColor: palette().glassOverlayBg,
     backdropFilter: "blur(16px)",
-    boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+    boxShadow: palette().shadowOverlay,
   };
-}
-
-/** Maps a profile or agent id to its OpenBitFun harness identity color. */
-function harnessColorFor(id: string): string {
-  const normalized = id.trim().toLowerCase();
-  const colors = palette().harnessColors;
-  if (normalized.includes("minimal") || normalized.includes("fast") || normalized.includes("lite")) {
-    return colors.minimal;
-  }
-  if (normalized.includes("ultimate") || normalized.includes("deep") || normalized.includes("max")) {
-    return colors.ultimate;
-  }
-  if (
-    normalized.includes("creative") ||
-    normalized.includes("plan") ||
-    normalized.includes("architect")
-  ) {
-    return colors.creative;
-  }
-  if (
-    !normalized ||
-    normalized.includes("standard") ||
-    normalized.includes("agentic") ||
-    normalized.includes("default")
-  ) {
-    return colors.standard;
-  }
-  return palette().accent;
 }
 
 function isArchived(session: { status?: string; persistedStatus?: string }): boolean {
@@ -591,6 +601,8 @@ function stepSearchMatch(direction: -1 | 1): void {
   revealSearchMatch();
 }
 
+let copiedTranscriptTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function copyWholeTranscript(): Promise<void> {
   const lines: string[] = [];
   for (const turn of sessionTurns()) {
@@ -605,7 +617,11 @@ async function copyWholeTranscript(): Promise<void> {
   await Clipboard.writeText(text);
   copiedTranscript.set(true);
   pushToast(tr("sessions.transcriptCopied"), "success");
-  setTimeout(() => copiedTranscript.set(false), 1600);
+  if (copiedTranscriptTimer) clearTimeout(copiedTranscriptTimer);
+  copiedTranscriptTimer = setTimeout(() => {
+    copiedTranscriptTimer = null;
+    copiedTranscript.set(false);
+  }, 1600);
 }
 
 
@@ -771,7 +787,7 @@ const sessionDeviceLabel = computed<AttentionDevice | null>(() => {
   return {
     name: device.name,
     kind: device.hostKind,
-    exception: device.state === "offline" ? "offline" : device.state === "update_required" ? "update_required" : null,
+    exception: deviceException(device.state),
     onPress: () => openDevicePage(device.deviceId),
   };
 });
@@ -835,10 +851,11 @@ function ToolToggle(props: { id: ToolPaneId; icon: IconName; label: string }) {
         borderCurve: "continuous",
         backgroundColor: toolActive(props.id) ? palette().accentSoft : "transparent",
         cursor: "pointer",
-        ...paintTransition(120),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: toolActive(props.id) ? palette().accentSoft : palette().panelHover }}
-      activeStyle={tactileActiveStyle(0.96)}
+      activeStyle={tactileActiveStyle(0.97)}
       focusVisibleStyle={focusRingStyle()}
     >
       <Icon name={props.icon} size={16} color={toolActive(props.id) ? palette().accent : palette().textSecondary} />
@@ -907,27 +924,41 @@ function SessionBreadcrumb() {
       <If when={!compactLayout() ? sessionWorkspaceName() : ""}>
         {name => (
           <>
-            <If when={sessionDeviceLabel()}>
+            <If
+              when={sessionDeviceLabel()}
+              else={<Text style={textStyle("caption", { color: palette().textMuted })}>·</Text>}
+            >
               <Icon name="chevron-right" size={12} color={palette().textMuted} />
             </If>
-            <Text
+            <View
               role="button"
               accessibilityLabel="session-breadcrumb-workspace"
               onPress={() => openAllSessions("by-device")}
               style={{
-                ...textStyle("caption", { color: palette().textSecondary }),
-                fontWeight: "500",
                 minWidth: 0,
                 flexShrink: 1,
-                numberOfLines: 1,
-                textOverflow: "ellipsis",
+                borderRadius: radii.xs,
+                paddingHorizontal: space.hair,
                 cursor: "pointer",
-                ...paintTransition(120),
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
               }}
-              hoverStyle={{ color: palette().text }}
+              hoverStyle={{ backgroundColor: palette().panelHover }}
+              activeStyle={tactileActiveStyle(0.98)}
+              focusVisibleStyle={focusRingStyle()}
             >
-              {name()}
-            </Text>
+              <Text
+                style={{
+                  ...textStyle("caption", { color: palette().textSecondary }),
+                  fontWeight: "500",
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {name()}
+              </Text>
+            </View>
           </>
         )}
       </If>
@@ -978,6 +1009,13 @@ function ThreadMenuTrigger() {
  * Phone: 48, ‹ back, the title 15/600 over the device badge, ⋯.
  */
 function ConversationHeader() {
+  let searchRevealTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (searchRevealTimer) {
+      clearTimeout(searchRevealTimer);
+      searchRevealTimer = null;
+    }
+  });
   return (
     <View>
       <If
@@ -1031,20 +1069,25 @@ function ConversationHeader() {
             </View>
             <If when={sessionOrigin()}>
               {origin => (
-                <Text
+                <View
                   role="button"
                   accessibilityLabel="session-origin"
                   onPress={() => openOrigin(origin())}
                   style={{
-                    ...textStyle("caption"),
                     alignSelf: "flex-start",
+                    borderRadius: radii.xs,
                     cursor: "pointer",
-                    ...paintTransition(120),
+                    userSelect: "none",
+                    ...pressTransition(MOTION_DURATION.fast),
                   }}
-                  hoverStyle={{ color: palette().textSecondary }}
+                  hoverStyle={{ backgroundColor: palette().panelHover }}
+                  activeStyle={tactileActiveStyle(0.98)}
+                  focusVisibleStyle={focusRingStyle()}
                 >
-                  {`${origin().title ? tr("session.origin", { title: origin().title }) : tr("session.originPlain")} ›`}
-                </Text>
+                  <Text style={textStyle("caption")}>
+                    {`${origin().title ? tr("session.origin", { title: origin().title }) : tr("session.originPlain")} ›`}
+                  </Text>
+                </View>
               )}
             </If>
           </View>
@@ -1063,7 +1106,12 @@ function ConversationHeader() {
             borderColor: palette().borderSubtle,
           }}
         >
-          <TouchTargetButton icon="chevron-left" tone="ghost" accessibilityLabel="session-back" onPress={goBackScene} />
+          <TouchTargetButton
+            icon="chevron-left"
+            tone="ghost"
+            accessibilityLabel="session-back"
+            onPress={() => (canGoBack() ? goBackScene() : navigateScene("all-sessions"))}
+          />
           <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
             <Text
               testID="session-title"
@@ -1079,7 +1127,7 @@ function ConversationHeader() {
             </Text>
             <If when={sessionDeviceLabel()}>
               {device => (
-                <DeviceBadge name={device().name} kind={device().kind} exception={device().exception} onPress={device().onPress} />
+                <DeviceBadge name={device().name} kind={device().kind} exception={device().exception} />
               )}
             </If>
           </View>
@@ -1115,7 +1163,7 @@ function ConversationHeader() {
         <View
           style={{
             paddingHorizontal: sessionsPadX(),
-            paddingVertical: 7,
+            paddingVertical: space.sm,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvasSubtle,
@@ -1128,7 +1176,7 @@ function ConversationHeader() {
               alignSelf: "center",
               flexDirection: "row",
               alignItems: "center",
-              gap: 8,
+              gap: space.sm,
             }}
           >
             <InputBox
@@ -1151,6 +1199,7 @@ function ConversationHeader() {
               label={tr("common.save")}
               variant="primary"
               size="sm"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => {
                 const id = activeSessionId();
                 const next = renameValue().trim();
@@ -1163,6 +1212,7 @@ function ConversationHeader() {
               label={tr("common.cancel")}
               variant="ghost"
               size="sm"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => {
                 animateLayout();
                 renaming.set(false);
@@ -1177,7 +1227,7 @@ function ConversationHeader() {
         <View
           style={{
             paddingHorizontal: sessionsPadX(),
-            paddingVertical: 7,
+            paddingVertical: space.sm,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvasSubtle,
@@ -1190,7 +1240,7 @@ function ConversationHeader() {
               alignSelf: "center",
               flexDirection: "row",
               alignItems: "center",
-              gap: 8,
+              gap: space.sm,
             }}
           >
             <InputBox
@@ -1204,7 +1254,11 @@ function ConversationHeader() {
               onChange={value => {
                 transcriptSearchQuery.set(value);
                 searchMatchIndex.set(0);
-                setTimeout(revealSearchMatch, 0);
+                if (searchRevealTimer) clearTimeout(searchRevealTimer);
+                searchRevealTimer = setTimeout(() => {
+                  searchRevealTimer = null;
+                  revealSearchMatch();
+                }, 0);
               }}
               onSubmit={() => stepSearchMatch(1)}
               trailing={
@@ -1243,6 +1297,7 @@ function ConversationHeader() {
               disabled={transcriptMatchCount() === 0}
               accessibilityLabel="search-prev"
               tooltip={tr("chat.searchPrevious")}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => stepSearchMatch(-1)}
             />
             <IconButton
@@ -1251,6 +1306,7 @@ function ConversationHeader() {
               disabled={transcriptMatchCount() === 0}
               accessibilityLabel="search-next"
               tooltip={tr("chat.searchNext")}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => stepSearchMatch(1)}
             />
             <IconButton
@@ -1258,6 +1314,7 @@ function ConversationHeader() {
               size="sm"
               accessibilityLabel="close-transcript-search"
               tooltip={tr("sessions.closeSearch")}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => {
                 animateLayout();
                 transcriptSearchOpen.set(false);
@@ -1299,7 +1356,7 @@ function ConversationHeader() {
 }
 
 function ThreadActionsSurface(props: { placement: Placement }) {
-  const motion = popoverEnterMotion(props.placement, "end", MOTION_DURATION.popover);
+  const motion = usePopoverMotion(() => props.placement, "end", closeThreadMenu);
   return (
     <View
       role="menu"
@@ -1308,8 +1365,8 @@ function ThreadActionsSurface(props: { placement: Placement }) {
         {
           minWidth: 236,
           maxWidth: 300,
-          padding: 6,
-          gap: 3,
+          padding: space.chip,
+          gap: space.xs,
           transformOrigin: popoverOrigin(props.placement, "end"),
         },
         motion.style,
@@ -1352,9 +1409,9 @@ function ThreadActionsSurface(props: { placement: Placement }) {
       <If when={openSessionIds().length > 0}>
         <View
           style={{
-            gap: 2,
-            paddingTop: 5,
-            marginTop: 2,
+            gap: space.hair,
+            paddingTop: space.sm,
+            marginTop: space.hair,
             borderTopWidth: 1,
             borderColor: palette().borderSubtle,
           }}
@@ -1362,17 +1419,17 @@ function ThreadActionsSurface(props: { placement: Placement }) {
           <Text
             style={{
               color: palette().textElevatedMuted,
-              fontSize: textSize(10.5),
-              lineHeight: textLineHeight(10.5, 1.3),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.3),
               fontWeight: "600",
-              paddingHorizontal: 8,
-              paddingBottom: 2,
+              paddingHorizontal: space.sm,
+              paddingBottom: space.hair,
             }}
           >
             {tr("sessions.openTabs")}
           </Text>
           <Scroll style={{ maxHeight: 180, minHeight: 0 }} scrollbar={true}>
-            <View style={{ gap: 2 }}>
+            <View style={{ gap: space.hair }}>
               <Each of={openSessionIds()} key="index">
                 {id => <SessionMenuTab id={id()} />}
               </Each>
@@ -1385,9 +1442,9 @@ function ThreadActionsSurface(props: { placement: Placement }) {
         {session => (
           <View
             style={{
-              gap: 2,
-              paddingTop: 5,
-              marginTop: 2,
+              gap: space.hair,
+              paddingTop: space.sm,
+              marginTop: space.hair,
               borderTopWidth: 1,
               borderColor: palette().borderSubtle,
             }}
@@ -1533,14 +1590,15 @@ function ThreadMenuAction(props: {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        minHeight: sessionsCompact() ? 44 : 30,
+        gap: space.sm,
+        minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : 30,
         opacity: props.disabled ? 0.45 : 1,
-        paddingHorizontal: 9,
-        paddingVertical: 6,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.chip,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         cursor: "pointer",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: props.danger ? palette().dangerSoft : palette().panelHover }}
@@ -1553,7 +1611,7 @@ function ThreadMenuAction(props: {
       <Icon
         name={props.icon}
         size={13}
-        color={props.danger ? palette().danger : palette().textSecondary}
+        color={palette().textSecondary}
       />
       <Text
         style={{
@@ -1575,8 +1633,8 @@ function ThreadMenuAction(props: {
             style={{
               flexShrink: 0,
               color: palette().textMuted,
-              fontSize: textSize(10),
-              lineHeight: textLineHeight(10, 1.3),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.3),
             }}
           >
             {hintText()}
@@ -1598,9 +1656,10 @@ function SessionMenuTab(props: { id: string }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
+        minHeight: compactLayout() ? layout.touchTarget : undefined,
+        gap: space.chip,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.xs,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         backgroundColor: active() ? palette().accentSoft : "transparent",
@@ -1615,7 +1674,7 @@ function SessionMenuTab(props: { id: string }) {
           selectSession(props.id);
           closeThreadMenu();
         }}
-        style={{ flex: 1, minWidth: 0, cursor: "pointer", borderRadius: 4 }}
+        style={{ flex: 1, minWidth: 0, cursor: "pointer", borderRadius: radii.xs, userSelect: "none" }}
         focusVisibleStyle={focusRingStyle()}
       >
         <Text
@@ -1633,20 +1692,25 @@ function SessionMenuTab(props: { id: string }) {
       </View>
       <View
         role="button"
-        hitSlop={4}
+        hitSlop={compactLayout() ? undefined : 4}
         accessibilityLabel={`close-session-tab-${props.id}`}
         onPress={() => closeSessionTab(props.id)}
         style={{
           flexShrink: 0,
-          paddingHorizontal: 5,
-          paddingVertical: 1,
+          minWidth: compactLayout() ? layout.touchTarget : undefined,
+          minHeight: compactLayout() ? layout.touchTarget : undefined,
+          alignItems: "center",
+          justifyContent: "center",
+          paddingHorizontal: space.xs,
+          paddingVertical: space.hair,
           borderRadius: radii.xs,
           borderCurve: "continuous",
           cursor: "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{ backgroundColor: palette().panelHover }}
-        activeStyle={tactileActiveStyle(0.92)}
+        activeStyle={tactileActiveStyle(0.97)}
         focusVisibleStyle={focusRingStyle()}
       >
         <Text style={{ color: palette().textMuted, fontSize: textSize(11), fontWeight: "600" }}>×</Text>
@@ -1660,13 +1724,22 @@ const copiedBlock = signal("");
 
 function CopyChip(props: { partKey: string; text: string }) {
   const copied = computed(() => copiedBlock() === props.partKey);
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (copyTimer) {
+      clearTimeout(copyTimer);
+      copyTimer = null;
+    }
+  });
   return (
     <View
       role="button"
       onPress={() => {
         void Clipboard.writeText(props.text).then(() => {
           copiedBlock.set(props.partKey);
-          setTimeout(() => {
+          if (copyTimer) clearTimeout(copyTimer);
+          copyTimer = setTimeout(() => {
+            copyTimer = null;
             if (copiedBlock() === props.partKey) copiedBlock.set("");
           }, 1500);
         });
@@ -1674,17 +1747,21 @@ function CopyChip(props: { partKey: string; text: string }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
+        justifyContent: "center",
         flexShrink: 0,
-        gap: 4,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
+        minWidth: compactLayout() ? layout.touchTarget : undefined,
+        minHeight: compactLayout() ? layout.touchTarget : undefined,
+        gap: space.xs,
+        paddingHorizontal: compactLayout() ? space.sm : space.chip,
+        paddingVertical: space.hair,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         cursor: "pointer",
+        userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-      activeStyle={tactileActiveStyle(0.96)}
+      activeStyle={tactileActiveStyle(0.97)}
       focusVisibleStyle={focusRingStyle()}
     >
       <Icon
@@ -1695,8 +1772,8 @@ function CopyChip(props: { partKey: string; text: string }) {
       <Text
         style={{
           color: copied() ? palette().success : palette().textMuted,
-          fontSize: textSize(11),
-          lineHeight: textLineHeight(11, 1.3),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           fontWeight: "500",
         }}
       >
@@ -1742,9 +1819,9 @@ function UserImageStrip(props: { images: UserImage[] }) {
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 8,
-                  paddingVertical: 4,
+                  gap: space.xs,
+                  paddingHorizontal: space.sm,
+                  paddingVertical: space.xs,
                   borderRadius: radii.sm,
                   borderWidth: 1,
                   borderColor: palette().borderSubtle,
@@ -1787,6 +1864,7 @@ function UserBubble(props: {
   const expanded = computed(() => expandedUserMessages().includes(props.partKey));
   const revealActions = computed(
     () =>
+      compactLayout() ||
       hovered() ||
       copiedBlock() === props.partKey ||
       Boolean(props.turnId && rerunTarget()?.turnId === props.turnId),
@@ -1816,8 +1894,8 @@ function UserBubble(props: {
           backgroundColor: palette().userBubble,
           borderRadius: radii.lg,
           borderCurve: "continuous",
-          paddingHorizontal: 14,
-          paddingVertical: 10,
+          paddingHorizontal: space.lg,
+          paddingVertical: space.md,
           gap: space.xs,
         }}
       >
@@ -1844,7 +1922,19 @@ function UserBubble(props: {
                   : [...current, props.partKey],
               );
             }}
-            style={{ alignSelf: "flex-start", cursor: "pointer" }}
+            style={{
+              alignSelf: "flex-start",
+              minHeight: compactLayout() ? layout.touchTarget : undefined,
+              justifyContent: "center",
+              paddingHorizontal: space.xs,
+              borderRadius: radii.sm,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{ backgroundColor: palette().panelHover }}
+            activeStyle={tactileActiveStyle(0.98)}
+            focusVisibleStyle={focusRingStyle()}
           >
             <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}>
               {expanded() ? tr("chat.showLess") : tr("chat.showMore")}
@@ -1856,11 +1946,12 @@ function UserBubble(props: {
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: 4,
-          paddingHorizontal: 2,
+          gap: space.xs,
+          paddingHorizontal: space.hair,
           opacity: revealActions() ? 1 : 0,
           ...paintTransition(MOTION_DURATION.fast),
         }}
+        focusWithinStyle={{ opacity: 1 }}
       >
         <If when={props.timestamp ? formatTimestamp(props.timestamp) : ""}>
           {stamp => (
@@ -1876,6 +1967,7 @@ function UserBubble(props: {
               size="xs"
               accessibilityLabel={`edit-rerun-${turnId()}`}
               tooltip={tr("chat.editAndRerun")}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => beginRerun(turnId(), props.text)}
             />
           )}
@@ -1989,15 +2081,17 @@ function ThinkingBlock(props: {
           flexDirection: "row",
           alignItems: "center",
           gap: space.chip,
-          minHeight: 24,
+          minHeight: compactLayout() ? layout.touchTarget : controlHeight.xs,
           paddingHorizontal: space.chip,
           marginLeft: -space.chip,
           borderRadius: radii.sm,
           borderCurve: "continuous",
           cursor: "pointer",
-          ...paintTransition(MOTION_DURATION.fast),
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+        activeStyle={tactileActiveStyle(0.98)}
         focusVisibleStyle={focusRingStyle(-1)}
       >
         <If when={Boolean(props.live)} else={<Icon name="bulb" size={14} color={palette().textMuted} />}>
@@ -2278,6 +2372,14 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
   const meta = computed(() =>
     [turnMetadataLabel(props.turn), turnTokenLabel(props.turn)].filter(Boolean).join(" · "),
   );
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (copyTimer) {
+      clearTimeout(copyTimer);
+      copyTimer = null;
+    }
+  });
+  const revealed = () => props.visible !== false || copiedBlock() === `answer-${turnId()}`;
   return (
     <View
       style={{
@@ -2285,9 +2387,10 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
         alignItems: "center",
         gap: space.hair,
         marginLeft: -space.xs,
-        opacity: props.visible === false ? 0 : 1,
+        opacity: revealed() ? 1 : 0,
         ...paintTransition(MOTION_DURATION.fast),
       }}
+      focusWithinStyle={{ opacity: 1 }}
     >
       <If when={answer()}>
         {text => (
@@ -2296,11 +2399,15 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
             size="sm"
             accessibilityLabel={`copy-answer-${turnId()}`}
             tooltip={tr("chat.copyAnswer")}
+            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
             onPress={() => {
+              const id = turnId();
               void Clipboard.writeText(text()).then(() => {
-                copiedBlock.set(`answer-${turnId()}`);
-                setTimeout(() => {
-                  if (copiedBlock() === `answer-${turnId()}`) copiedBlock.set("");
+                copiedBlock.set(`answer-${id}`);
+                if (copyTimer) clearTimeout(copyTimer);
+                copyTimer = setTimeout(() => {
+                  copyTimer = null;
+                  if (copiedBlock() === `answer-${id}`) copiedBlock.set("");
                 }, 1500);
               });
             }}
@@ -2314,6 +2421,7 @@ function TurnFooter(props: { turn: unknown; visible?: boolean }) {
             size="sm"
             accessibilityLabel={`fork-turn-${id()}`}
             tooltip={tr("chat.forkFromHere")}
+            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
             onPress={() => void forkActiveSession(id())}
           />
         )}
@@ -2577,15 +2685,15 @@ function WelcomeStudio() {
       style={{
         flexGrow: 1,
         justifyContent: "center",
-        paddingVertical: 28,
-        gap: 24,
+        paddingVertical: space.x3l,
+        gap: space.xxl,
         alignItems: "center",
         width: "100%",
         maxWidth: 640,
         alignSelf: "center",
       }}
     >
-      <View style={[{ alignItems: "center", gap: 14 }, heroMotion.style]}>
+      <View style={[{ alignItems: "center", gap: space.md }, heroMotion.style]}>
         <BotCharacter
           seed={activeWorkspace()?.name || "OpenBitFun"}
           variant="grok"
@@ -2593,14 +2701,14 @@ function WelcomeStudio() {
           ringColor={palette().canvas}
           status={runningTurnId() ? "running" : undefined}
         />
-        <View style={{ alignItems: "center", gap: 6 }}>
+        <View style={{ alignItems: "center", gap: space.chip }}>
           <Text
             style={{
               color: palette().text,
-              fontSize: textSize(24),
-              lineHeight: textLineHeight(24, 1.22),
+              fontSize: textSize(22),
+              lineHeight: textLineHeight(22, 1.25),
               fontWeight: "600",
-              letterSpacing: textTracking(24),
+              letterSpacing: textTracking(22),
               textAlign: "center",
             }}
           >
@@ -2626,7 +2734,7 @@ function WelcomeStudio() {
         style={{
           display: "grid",
           gridTemplateColumns: sessionsCompact() ? "1fr" : "repeat(auto-fit, minmax(260px, 1fr))",
-          gap: 12,
+          gap: space.md,
           width: "100%",
         }}
       >
@@ -2643,17 +2751,18 @@ function WelcomeStudio() {
                 }}
                 style={[
                   {
-                    padding: 16,
-                    minHeight: 44,
-                    borderRadius: 12,
+                    padding: space.lg,
+                    minHeight: layout.touchTarget,
+                    borderRadius: radii.lg,
                     borderCurve: "continuous",
                     borderWidth: 1,
                     borderColor: palette().borderSubtle,
                     backgroundColor: palette().panelRaised,
                     flexDirection: "row",
                     alignItems: "flex-start",
-                    gap: 12,
+                    gap: space.md,
                     cursor: "pointer",
+                    userSelect: "none",
                     ...pressTransition(MOTION_DURATION.fast),
                   },
                   cardMotion.style,
@@ -2662,10 +2771,10 @@ function WelcomeStudio() {
                 activeStyle={tactileActiveStyle(0.98)}
                 focusVisibleStyle={focusRingStyle()}
               >
-                <View style={{ paddingTop: 1, flexShrink: 0 }}>
+                <View style={{ paddingTop: space.hair, flexShrink: 0 }}>
                   <Icon name={card().icon} size={16} color={palette().textSecondary} />
                 </View>
-                <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+                <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
                   <Text
                     style={{
                       color: palette().text,
@@ -2706,35 +2815,35 @@ function LatestPill() {
       style={[
         {
           position: "absolute",
-          bottom: 12,
+          bottom: space.md,
           alignSelf: "center",
           flexDirection: "row",
           alignItems: "center",
-          gap: 5,
-          paddingHorizontal: 12,
-          paddingVertical: 6,
+          minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
+          gap: space.xs,
+          paddingHorizontal: space.md,
+          paddingVertical: space.chip,
           borderRadius: radii.pill,
           borderWidth: 1,
           borderColor: palette().borderStrong,
           backgroundColor: palette().glassOverlayBg,
           backdropFilter: "blur(12px)",
-          boxShadow: `${palette().shadowOverlay}, ${palette().innerHighlight}`,
+          boxShadow: palette().shadowOverlay,
           transformOrigin: "bottom center",
           cursor: "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         },
         motion.style,
       ]}
       hoverStyle={{ backgroundColor: palette().panelHover }}
-      activeStyle={tactileActiveStyle(0.96)}
+      activeStyle={tactileActiveStyle(0.97)}
       focusVisibleStyle={focusRingStyle()}
     >
       <Icon name="arrow-down" size={12} color={palette().text} />
       <Text
         style={{
-          color: palette().text,
-          fontSize: textSize(11.5),
-          lineHeight: textLineHeight(11.5, 1.25),
+          ...textStyle("caption", { color: palette().text }),
           fontWeight: "500",
         }}
       >
@@ -2860,6 +2969,7 @@ function TranscriptSkeleton() {
 }
 
 const loadingEarlier = signal(false);
+let earlierRevealTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Widens the history window and keeps the turn that was first on screen where
@@ -2875,7 +2985,13 @@ async function showEarlierTurns(): Promise<void> {
   } finally {
     loadingEarlier.set(false);
   }
-  if (anchorKey) setTimeout(() => turnRefs.get(anchorKey)?.reveal({ vertical: "start", animated: false }), 0);
+  if (anchorKey) {
+    if (earlierRevealTimer) clearTimeout(earlierRevealTimer);
+    earlierRevealTimer = setTimeout(() => {
+      earlierRevealTimer = null;
+      turnRefs.get(anchorKey)?.reveal({ vertical: "start", animated: false });
+    }, 0);
+  }
 }
 
 /**
@@ -2894,10 +3010,10 @@ function TranscriptTurn(props: { turn: () => unknown }) {
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
       style={{
-        gap: 12,
-        marginHorizontal: matches() ? -10 : 0,
-        paddingHorizontal: matches() ? 10 : 0,
-        paddingVertical: matches() ? 8 : 0,
+        gap: space.md,
+        marginHorizontal: matches() ? -space.sm : 0,
+        paddingHorizontal: matches() ? space.sm : 0,
+        paddingVertical: matches() ? space.sm : 0,
         borderRadius: radii.lg,
         borderCurve: "continuous",
         borderWidth: matches() ? 1 : 0,
@@ -2990,8 +3106,8 @@ function Transcript() {
         contentStyle={{
           flexGrow: 1,
           paddingHorizontal: sessionsPadX(),
-          paddingTop: 20,
-          paddingBottom: 28,
+          paddingTop: space.xl,
+          paddingBottom: space.x3l,
         }}
         onScroll={handleTranscriptScroll}
         onLayout={event => {
@@ -3139,9 +3255,21 @@ async function executeSlashCommand(command: SlashCommand, arg = ""): Promise<voi
 }
 
 /** Shown under a typed `/` when the host offers no session commands at all. */
-function SlashCommandsUnavailable() {
+function SlashCommandsUnavailable(props: { placement: Placement }) {
+  const motion = usePopoverMotion(() => props.placement, "start", () => composerText.set(""));
   return (
-    <View style={[overlayPopoverStyle(), { width: 320, padding: 10 }]}>
+    <View
+      style={[
+        overlayPopoverStyle(),
+        {
+          width: 320,
+          maxWidth: "92%",
+          padding: space.md,
+          transformOrigin: popoverOrigin(props.placement, "start"),
+        },
+        motion.style,
+      ]}
+    >
       <Text
         style={{
           color: palette().textMuted,
@@ -3155,17 +3283,30 @@ function SlashCommandsUnavailable() {
   );
 }
 
-function SlashCommandSurface() {
+function SlashCommandSurface(props: { placement: Placement }) {
+  const motion = usePopoverMotion(() => props.placement, "start", () => composerText.set(""));
   return (
-    <View style={[overlayPopoverStyle(), { width: 320, padding: 6, gap: 2 }]}>
+    <View
+      style={[
+        overlayPopoverStyle(),
+        {
+          width: 320,
+          maxWidth: "92%",
+          padding: space.chip,
+          gap: space.hair,
+          transformOrigin: popoverOrigin(props.placement, "start"),
+        },
+        motion.style,
+      ]}
+    >
       <Text
         style={{
-          paddingHorizontal: 8,
-          paddingTop: 2,
-          paddingBottom: 4,
+          paddingHorizontal: space.sm,
+          paddingTop: space.hair,
+          paddingBottom: space.xs,
           color: palette().textMuted,
-          fontSize: textSize(11),
-          lineHeight: textLineHeight(11, 1.3),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           fontWeight: "600",
         }}
       >
@@ -3180,13 +3321,18 @@ function SlashCommandSurface() {
             style={{
               flexDirection: "row",
               alignItems: "center",
-              gap: 10,
-              paddingHorizontal: 8,
-              paddingVertical: 6,
+              minHeight: compactLayout() ? layout.touchTarget : 30,
+              gap: space.sm,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.chip,
               borderRadius: radii.sm,
+              borderCurve: "continuous",
               cursor: "pointer",
+              userSelect: "none",
+              ...paintTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{ backgroundColor: palette().panelHover }}
+            focusVisibleStyle={focusRingStyle(-1)}
           >
             <Text style={{ color: palette().text, fontFamily: fontMono, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.35) }}>
               {entry().command}
@@ -3295,7 +3441,7 @@ function permissionModeLabel(mode: "ask" | "auto" | "full_access"): string {
 
 /**
  * The permission mode lives in the "+" menu; only full access, the one mode
- * that runs every tool unasked, stays visible as quiet warning text.
+ * that runs every tool unasked, stays visible as quiet neutral text.
  */
 function FullAccessNotice() {
   return (
@@ -3319,22 +3465,27 @@ function FullAccessNotice() {
         style={{
           flexDirection: "row",
           alignItems: "center",
+          justifyContent: "center",
           flexShrink: 0,
-          gap: 4,
-          minHeight: sessionsCompact() ? 44 : 26,
-          paddingHorizontal: 6,
+          gap: space.xs,
+          minHeight: compactLayout() || sessionsCompact() ? layout.touchTarget : 26,
+          minWidth: compactLayout() || sessionsCompact() ? layout.touchTarget : undefined,
+          paddingHorizontal: space.chip,
           borderRadius: radii.sm,
+          borderCurve: "continuous",
           cursor: "pointer",
-          ...paintTransition(MOTION_DURATION.fast),
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+        activeStyle={tactileActiveStyle(0.97)}
         focusVisibleStyle={focusRingStyle()}
       >
-        <Icon name="warning" size={14} color={palette().warning} />
+        <Icon name="shield" size={14} color={palette().textMuted} />
         <If when={!sessionsCompact()}>
           <Text
             style={{
-              color: palette().warning,
+              color: palette().textMuted,
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 1.3),
               fontWeight: "500",
@@ -3349,9 +3500,25 @@ function FullAccessNotice() {
   );
 }
 
-function PermissionModeSurface() {
+function PermissionModeSurface(props: { placement: Placement }) {
+  const motion = usePopoverMotion(() => props.placement, "start", () => {
+    permissionModePickerOpen.set(false);
+    permissionModePlacement.set("top");
+  });
   return (
-    <View style={[overlayPopoverStyle(), { width: 280, padding: 6, gap: 2 }]}>
+    <View
+      style={[
+        overlayPopoverStyle(),
+        {
+          width: 280,
+          maxWidth: "92%",
+          padding: space.chip,
+          gap: space.hair,
+          transformOrigin: popoverOrigin(props.placement, "start"),
+        },
+        motion.style,
+      ]}
+    >
       <Each of={PERMISSION_MODE_ROWS} key={row => String(row.mode)}>
         {row => (
           <View
@@ -3361,11 +3528,14 @@ function PermissionModeSurface() {
             style={{
               flexDirection: "row",
               alignItems: "flex-start",
-              gap: 8,
-              paddingHorizontal: 8,
-              paddingVertical: 6,
+              minHeight: compactLayout() ? layout.touchTarget : undefined,
+              gap: space.sm,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.chip,
               borderRadius: radii.sm,
+              borderCurve: "continuous",
               cursor: "pointer",
+              userSelect: "none",
               backgroundColor:
                 (row().mode === null && followsDefaultMode(activeSessionId())) ||
                 (row().mode !== null &&
@@ -3373,10 +3543,12 @@ function PermissionModeSurface() {
                   effectivePermissionMode(activeSessionId()) === row().mode)
                   ? palette().surfaceSubtle
                   : "transparent",
+              ...paintTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{ backgroundColor: palette().panelHover }}
+            focusVisibleStyle={focusRingStyle(-1)}
           >
-            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+            <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
               <Text style={{ color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.35), fontWeight: "500" }}>
                 {row().mode === null
                   ? tr("chat.permissionMode.defaultWith", { mode: permissionModeLabel(permissionMode() ?? "ask") })
@@ -3391,7 +3563,7 @@ function PermissionModeSurface() {
       </Each>
       <If when={permissionModeNotice()}>
         {notice => (
-          <Text style={{ paddingHorizontal: 8, color: palette().danger, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+          <Text style={{ paddingHorizontal: space.sm, color: palette().danger, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
             {notice()}
           </Text>
         )}
@@ -3427,8 +3599,19 @@ function ContextUsageRing() {
               closePickers();
               contextPopoverOpen.set(next);
             }}
-            style={{ width: 26, height: 26, alignItems: "center", justifyContent: "center", borderRadius: radii.pill, cursor: "pointer" }}
+            style={{
+              width: 26,
+              height: 26,
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: radii.pill,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
             hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+            activeStyle={tactileActiveStyle(0.97)}
+            focusVisibleStyle={focusRingStyle()}
           >
             <Canvas
               style={{ width: 16, height: 16, pointerEvents: "none" }}
@@ -3455,11 +3638,27 @@ function ContextUsageRing() {
   );
 }
 
-function ContextUsageSurface() {
+function ContextUsageSurface(props: { placement: Placement }) {
+  const motion = usePopoverMotion(() => props.placement, "end", () => {
+    contextPopoverOpen.set(false);
+    contextUsagePlacement.set("top");
+  });
   return (
     <If when={activeContextUsage()}>
       {usage => (
-        <View style={[overlayPopoverStyle(), { width: 240, padding: 12, gap: 6 }]}>
+        <View
+          style={[
+            overlayPopoverStyle(),
+            {
+              width: 240,
+              maxWidth: "92%",
+              padding: space.md,
+              gap: space.chip,
+              transformOrigin: popoverOrigin(props.placement, "end"),
+            },
+            motion.style,
+          ]}
+        >
           <Text style={{ color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.35), fontWeight: "600" }}>
             {tr("chat.context.title")}
           </Text>
@@ -3514,13 +3713,15 @@ function TouchTargetButton(props: {
         if (!props.disabled) props.onPress();
       }}
       style={{
-        width: 44,
-        height: 44,
+        width: layout.touchTarget,
+        height: layout.touchTarget,
         alignItems: "center",
         justifyContent: "center",
         cursor: props.disabled ? "default" : "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
-      activeStyle={props.disabled ? undefined : tactileActiveStyle(0.94)}
+      activeStyle={props.disabled ? undefined : tactileActiveStyle(0.97)}
       focusVisibleStyle={focusRingStyle(-4)}
     >
       <View
@@ -3619,7 +3820,7 @@ function composerPlusItems(compact: boolean): DropdownMenuItem[] {
   if (permissionModeSupported() !== false && activeSessionId()) {
     items.push({
       id: "permission",
-      icon: effectivePermissionMode(activeSessionId()) === "full_access" ? "warning" : "shield",
+      icon: "shield",
       label: tr("chat.permissionMode.tooltip"),
       trailingHint: permissionModeLabel(effectivePermissionMode(activeSessionId())),
       accessibilityLabel: "permission-mode-pill",
@@ -3741,9 +3942,9 @@ function ComposerDock() {
       onFileDrop={event => handleComposerFileDrop(event)}
       style={{
         paddingHorizontal: sessionsPadX(),
-        paddingTop: 6,
-        paddingBottom: 14,
-        gap: 6,
+        paddingTop: space.chip,
+        paddingBottom: space.lg,
+        gap: space.chip,
       }}
     >
       <View
@@ -3751,7 +3952,7 @@ function ComposerDock() {
           width: "100%",
           maxWidth: contentWidth(),
           alignSelf: "center",
-          gap: 6,
+          gap: space.chip,
         }}
       >
         {/* Band 1: Pending Agent Mode Confirmation Banner (when triggered) */}
@@ -3765,18 +3966,20 @@ function ComposerDock() {
                 next: agentLabel(mode()),
               })}
               action={
-                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 6 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.chip }}>
                   <Button
                     label={tr("sessions.startSession")}
                     variant="primary"
                     size="xs"
                     pill={true}
+                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                     onPress={() => void startSessionAs(mode())}
                   />
                   <Button
                     label={tr("common.cancel")}
                     variant="ghost"
                     size="xs"
+                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                     onPress={() => pendingAgentSession.set(null)}
                   />
                 </View>
@@ -3800,7 +4003,7 @@ function ComposerDock() {
             borderColor: composerFileDragActive() ? palette().accent : palette().border,
             backgroundColor: composerFileDragActive()
               ? palette().accentSoft
-              : palette().surfaceElevated,
+              : palette().inputBg,
             boxShadow: palette().shadowComposer,
             overflow: "hidden",
             ...paintTransition(MOTION_DURATION.fast),
@@ -3823,13 +4026,13 @@ function ComposerDock() {
           >
             <View
               style={{
-                paddingHorizontal: 14,
-                paddingTop: 10,
-                paddingBottom: 2,
+                paddingHorizontal: space.md,
+                paddingTop: space.sm,
+                paddingBottom: space.hair,
                 flexDirection: "row",
                 flexWrap: "wrap",
                 alignItems: "center",
-                gap: 6,
+                gap: space.chip,
               }}
             >
               <If when={composerFileDragActive()}>
@@ -3837,9 +4040,9 @@ function ComposerDock() {
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: 6,
-                    paddingHorizontal: 9,
-                    paddingVertical: 4,
+                    gap: space.chip,
+                    paddingHorizontal: space.sm,
+                    paddingVertical: space.xs,
                     borderRadius: radii.sm,
                     borderCurve: "continuous",
                     borderWidth: 1,
@@ -3851,8 +4054,8 @@ function ComposerDock() {
                   <Text
                     style={{
                       color: palette().accent,
-                      fontSize: textSize(11),
-                      lineHeight: textLineHeight(11, 1.3),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.3),
                       fontWeight: "600",
                     }}
                   >
@@ -3868,9 +4071,9 @@ function ComposerDock() {
                       flexDirection: "row",
                       alignItems: "center",
                       maxWidth: 240,
-                      gap: 6,
-                      paddingHorizontal: 9,
-                      paddingVertical: 4,
+                      gap: space.chip,
+                      paddingHorizontal: space.sm,
+                      paddingVertical: space.xs,
                       borderRadius: radii.sm,
                       borderCurve: "continuous",
                       borderWidth: 1,
@@ -3892,8 +4095,8 @@ function ComposerDock() {
                         flexShrink: 1,
                         minWidth: 0,
                         color: palette().text,
-                        fontSize: textSize(11),
-                        lineHeight: textLineHeight(11, 1.3),
+                        fontSize: textSize(12),
+                        lineHeight: textLineHeight(12, 1.3),
                         fontWeight: "500",
                         numberOfLines: 1,
                         textOverflow: "ellipsis-middle",
@@ -3906,8 +4109,8 @@ function ComposerDock() {
                         style={{
                           flexShrink: 0,
                           color: palette().textMuted,
-                          fontSize: textSize(10),
-                          lineHeight: textLineHeight(10, 1.25),
+                          fontSize: textSize(12),
+                          lineHeight: textLineHeight(12, 1.25),
                           fontVariant: ["tabular-nums"],
                         }}
                       >
@@ -3916,22 +4119,27 @@ function ComposerDock() {
                     </If>
                     <View
                       role="button"
-                      hitSlop={4}
+                      hitSlop={compactLayout() ? undefined : 4}
                       accessibilityLabel={`remove-attachment-${entry().id}`}
                       onPress={() => removeAttachment(entry().id)}
                       style={{
                         flexShrink: 0,
-                        padding: 2,
-                        borderRadius: 4,
+                        minWidth: compactLayout() ? layout.touchTarget : undefined,
+                        minHeight: compactLayout() ? layout.touchTarget : undefined,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: space.hair,
+                        borderRadius: radii.xs,
                         borderCurve: "continuous",
                         cursor: "pointer",
+                        userSelect: "none",
                         ...pressTransition(MOTION_DURATION.fast),
                       }}
                       hoverStyle={{ backgroundColor: palette().panelHover }}
-                      activeStyle={tactileActiveStyle(0.92)}
+                      activeStyle={tactileActiveStyle(0.97)}
                       focusVisibleStyle={focusRingStyle()}
                     >
-                      <Icon name="close" size={11} color={palette().textMuted} />
+                      <Icon name="close" size={12} color={palette().textMuted} />
                     </View>
                   </View>
                 )}
@@ -3941,8 +4149,8 @@ function ComposerDock() {
                 <Text
                   style={{
                     color: palette().warning,
-                    fontSize: textSize(11),
-                    lineHeight: textLineHeight(11, 1.35),
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.35),
                   }}
                 >
                   {localizeHostError(attachmentNotice())}
@@ -3954,7 +4162,7 @@ function ComposerDock() {
           <VoiceDictationBar actions={composerVoiceActions} />
 
           {/* Multiline Editor */}
-          <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}>
+          <View style={{ paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs }}>
             <Input
               ref={composerInputRef}
               value={composerText()}
@@ -3972,10 +4180,10 @@ function ComposerDock() {
               readonly={composerDisabled()}
               submitBehavior="submit"
               style={{
-                minHeight: 28,
+                minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
                 maxHeight: 160,
-                fontSize: textSize(14),
-                lineHeight: textLineHeight(14, 1.54),
+                fontSize: compactLayout() ? Math.max(16, textSize(15)) : textSize(15),
+                lineHeight: compactLayout() ? textLineHeight(16, 1.5) : textLineHeight(15, 24 / 15),
                 color: palette().text,
                 placeholderColor: palette().textMuted,
                 caretColor: palette().accent,
@@ -4002,10 +4210,10 @@ function ComposerDock() {
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "space-between",
-              gap: compactComposer() ? 4 : 6,
-              paddingHorizontal: compactComposer() ? 8 : 12,
-              paddingTop: 4,
-              paddingBottom: 9,
+              gap: compactComposer() ? space.xs : space.chip,
+              paddingHorizontal: compactComposer() ? space.sm : space.md,
+              paddingTop: space.xs,
+              paddingBottom: space.sm,
             }}
           >
             {/* Left: "+" (rarely used items), attach, agent, model. Narrow: "+" holds them all. */}
@@ -4015,7 +4223,7 @@ function ComposerDock() {
                 minWidth: 0,
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 4,
+                gap: space.xs,
                 overflow: "hidden",
               }}
             >
@@ -4073,7 +4281,7 @@ function ComposerDock() {
                 flexDirection: "row",
                 alignItems: "center",
                 flexShrink: 0,
-                gap: compactComposer() ? 2 : 4,
+                gap: compactComposer() ? space.hair : space.xs,
               }}
             >
               <VoiceInputButtons actions={composerVoiceActions} />
@@ -4082,7 +4290,7 @@ function ComposerDock() {
               </If>
 
               <If when={Boolean(runningTurnId() && composerText().trim().length > 0)}>
-                <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: 5, paddingLeft: 2 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", flexShrink: 0, gap: space.xs, paddingLeft: space.hair }}>
                   <Button
                     label={
                       midTurnSendPolicy() === "queue"
@@ -4092,6 +4300,7 @@ function ComposerDock() {
                     variant="secondary"
                     size="xs"
                     pill={true}
+                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                     onPress={() =>
                       void submitComposer(midTurnSendPolicy() === "queue" ? "immediate" : "queue")
                     }
@@ -4105,6 +4314,7 @@ function ComposerDock() {
                     variant="primary"
                     size="xs"
                     pill={true}
+                    style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                     onPress={() => void submitComposer()}
                   />
                   <IconButton
@@ -4113,41 +4323,82 @@ function ComposerDock() {
                     tone="danger"
                     accessibilityLabel="Stop"
                     tooltip={tr("sessions.stopTurn")}
+                    style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
                     onPress={() => void stopRunningTurn()}
                   />
                 </View>
               </If>
 
               <If when={Boolean(runningTurnId() && !composerText().trim())}>
-                <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? 2 : 4 }}>
-                  <View
-                    role="button"
-                    accessibilityLabel="Stop"
-                    tooltip={<TooltipBubble text={tr("sessions.stopTurn")} />}
-                    onPress={() => void stopRunningTurn()}
-                    style={{
-                      boxSizing: "border-box",
-                      width: compactComposer() ? 28 : 30,
-                      height: compactComposer() ? 28 : 30,
-                      borderRadius: radii.sm,
-                      borderCurve: "continuous",
-                      borderWidth: 1,
-                      borderColor: palette().dangerBorder,
-                      backgroundColor: palette().dangerSoft,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                      ...pressTransition(MOTION_DURATION.fast),
-                    }}
-                    hoverStyle={{
-                      backgroundColor: palette().dangerHoverBg,
-                      borderColor: palette().danger,
-                    }}
-                    activeStyle={tactileActiveStyle(0.94)}
-                    focusVisibleStyle={focusRingStyle()}
+                <View style={{ flexShrink: 0, paddingLeft: compactComposer() ? space.hair : space.xs }}>
+                  <If
+                    when={compactComposer() || compactLayout()}
+                    else={
+                      <View
+                        role="button"
+                        accessibilityLabel="Stop"
+                        tooltip={<TooltipBubble text={tr("sessions.stopTurn")} />}
+                        onPress={() => void stopRunningTurn()}
+                        style={{
+                          boxSizing: "border-box",
+                          width: 30,
+                          height: 30,
+                          borderRadius: radii.sm,
+                          borderCurve: "continuous",
+                          borderWidth: 1,
+                          borderColor: palette().dangerBorder,
+                          backgroundColor: palette().dangerSoft,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "pointer",
+                          userSelect: "none",
+                          ...pressTransition(MOTION_DURATION.fast),
+                        }}
+                        hoverStyle={{
+                          backgroundColor: palette().dangerHoverBg,
+                          borderColor: palette().danger,
+                        }}
+                        activeStyle={tactileActiveStyle(0.97)}
+                        focusVisibleStyle={focusRingStyle()}
+                      >
+                        <Icon name="stop" size={13} color={palette().danger} />
+                      </View>
+                    }
                   >
-                    <Icon name="stop" size={13} color={palette().danger} />
-                  </View>
+                    <View
+                      role="button"
+                      accessibilityLabel="Stop"
+                      onPress={() => void stopRunningTurn()}
+                      style={{
+                        width: layout.touchTarget,
+                        height: layout.touchTarget,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        ...pressTransition(MOTION_DURATION.fast),
+                      }}
+                      activeStyle={tactileActiveStyle(0.97)}
+                      focusVisibleStyle={focusRingStyle(-4)}
+                    >
+                      <View
+                        style={{
+                          boxSizing: "border-box",
+                          width: 34,
+                          height: 34,
+                          borderRadius: radii.pill,
+                          borderWidth: 1,
+                          borderColor: palette().dangerBorder,
+                          backgroundColor: palette().dangerSoft,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          pointerEvents: "none",
+                        }}
+                      >
+                        <Icon name="stop" size={14} color={palette().danger} />
+                      </View>
+                    </View>
+                  </If>
                 </View>
               </If>
 
@@ -4286,10 +4537,11 @@ function ComposerDock() {
           align="start"
           offset={6}
           margin={8}
+          onPosition={pos => slashMenuPlacement.set(pos.placement)}
           onPressOutside={() => undefined}
           onCancel={() => composerText.set("")}
         >
-          <SlashCommandSurface />
+          <SlashCommandSurface placement={slashMenuPlacement()} />
         </Overlay>
       </If>
 
@@ -4300,10 +4552,11 @@ function ComposerDock() {
           align="start"
           offset={6}
           margin={8}
+          onPosition={pos => slashMenuPlacement.set(pos.placement)}
           onPressOutside={() => undefined}
           onCancel={() => composerText.set("")}
         >
-          <SlashCommandsUnavailable />
+          <SlashCommandsUnavailable placement={slashMenuPlacement()} />
         </Overlay>
       </If>
 
@@ -4314,10 +4567,17 @@ function ComposerDock() {
           align="start"
           offset={6}
           margin={8}
-          onPressOutside={() => permissionModePickerOpen.set(false)}
-          onCancel={() => permissionModePickerOpen.set(false)}
+          onPosition={pos => permissionModePlacement.set(pos.placement)}
+          onPressOutside={() => {
+            permissionModePickerOpen.set(false);
+            permissionModePlacement.set("top");
+          }}
+          onCancel={() => {
+            permissionModePickerOpen.set(false);
+            permissionModePlacement.set("top");
+          }}
         >
-          <PermissionModeSurface />
+          <PermissionModeSurface placement={permissionModePlacement()} />
         </Overlay>
       </If>
 
@@ -4328,10 +4588,17 @@ function ComposerDock() {
           align="end"
           offset={6}
           margin={8}
-          onPressOutside={() => contextPopoverOpen.set(false)}
-          onCancel={() => contextPopoverOpen.set(false)}
+          onPosition={pos => contextUsagePlacement.set(pos.placement)}
+          onPressOutside={() => {
+            contextPopoverOpen.set(false);
+            contextUsagePlacement.set("top");
+          }}
+          onCancel={() => {
+            contextPopoverOpen.set(false);
+            contextUsagePlacement.set("top");
+          }}
         >
-          <ContextUsageSurface />
+          <ContextUsageSurface placement={contextUsagePlacement()} />
         </Overlay>
       </If>
 
@@ -4361,11 +4628,9 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
       role="button"
       accessibilityLabel="agent-picker"
       tooltip={
-        props.compact() ? (
-          <TooltipBubble
-            text={tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
-          />
-        ) : undefined
+        <TooltipBubble
+          text={tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
+        />
       }
       onPress={() => {
         const next = !agentPickerOpen();
@@ -4374,10 +4639,10 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
       }}
       style={{
         height: controlHeight.sm,
-        minWidth: props.compact() ? 48 : 72,
+        minWidth: props.compact() ? 48 : 64,
         flexShrink: 1,
         maxWidth: props.compact() ? 132 : 168,
-        paddingHorizontal: props.compact() ? 7 : 9,
+        paddingHorizontal: props.compact() ? space.chip : space.sm,
         borderRadius: radii.sm,
         borderCurve: "continuous",
         borderWidth: 1,
@@ -4385,8 +4650,9 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
         backgroundColor: agentPickerOpen() ? palette().surfaceSubtle : "transparent",
         flexDirection: "row",
         alignItems: "center",
-        gap: props.compact() ? 4 : 5.5,
+        gap: space.xs,
         cursor: "pointer",
+        userSelect: "none",
         ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{
@@ -4396,34 +4662,23 @@ function AgentPickerTrigger(props: { compact: () => boolean }) {
       activeStyle={tactileActiveStyle(0.97)}
       focusVisibleStyle={focusRingStyle(-1)}
     >
-      <View
-        style={{
-          width: 5.5,
-          height: 5.5,
-          flexShrink: 0,
-          borderRadius: radii.pill,
-          backgroundColor: harnessColorFor(agentTypeOf(activeSessionId())),
-        }}
-      />
       <Text
         style={{
           flexShrink: 1,
           minWidth: 0,
           color: palette().textSecondary,
-          fontSize: textSize(11.5),
-          lineHeight: textLineHeight(11.5, 1.25),
+          fontSize: textSize(13),
+          lineHeight: textLineHeight(13, 18 / 13),
           fontWeight: "500",
           numberOfLines: 1,
           textOverflow: "ellipsis",
         }}
       >
-        {props.compact()
-          ? agentLabel(agentTypeOf(activeSessionId()))
-          : tr("sessions.agentLabel", { name: agentLabel(agentTypeOf(activeSessionId())) })}
+        {agentLabel(agentTypeOf(activeSessionId()))}
       </Text>
       <Icon
         name={agentPickerOpen() ? "chevron-up" : "chevron-down"}
-        size={10.5}
+        size={12}
         color={palette().textMuted}
       />
     </View>
@@ -4436,21 +4691,17 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
     <View
       style={{
         flexShrink: 1,
-        minWidth: props.compact() ? 56 : 84,
+        minWidth: props.compact() ? 56 : 72,
         flexDirection: "row",
         alignItems: "center",
-        gap: 2,
+        gap: space.hair,
       }}
     >
       <View
         ref={el => modelPickerAnchor.set(el)}
         role="button"
         accessibilityLabel="bot-capsule-trigger"
-        tooltip={
-          props.compact() ? (
-            <TooltipBubble text={tr("sessions.modelLabel", { name: activeModelLabel() })} />
-          ) : undefined
-        }
+        tooltip={<TooltipBubble text={tr("sessions.modelLabel", { name: activeModelLabel() })} />}
         onPress={() => {
           const next = !modelPickerOpen();
           closePickers(next ? "model" : undefined);
@@ -4464,19 +4715,20 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
             ? activeReasoningChoices().length > 0
               ? 52
               : 56
-            : 84,
+            : 72,
           flexShrink: 1,
           maxWidth: props.compact() ? 172 : 216,
-          paddingHorizontal: props.compact() ? 7 : 9,
+          paddingHorizontal: props.compact() ? space.chip : space.sm,
           borderRadius: radii.sm,
           borderCurve: "continuous",
           borderWidth: 1,
           borderColor: modelPickerOpen() ? palette().border : "transparent",
           flexDirection: "row",
           alignItems: "center",
-          gap: props.compact() ? 3.5 : 4.5,
+          gap: space.xs,
           backgroundColor: modelPickerOpen() ? palette().surfaceSubtle : "transparent",
           cursor: "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
         hoverStyle={{
@@ -4491,20 +4743,18 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
             flexShrink: 1,
             minWidth: 0,
             color: palette().textSecondary,
-            fontSize: textSize(11.5),
-            lineHeight: textLineHeight(11.5, 1.25),
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 18 / 13),
             fontWeight: "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
         >
-          {props.compact()
-            ? activeModelLabel()
-            : tr("sessions.modelLabel", { name: activeModelLabel() })}
+          {activeModelLabel()}
         </Text>
         <Icon
           name={modelPickerOpen() ? "chevron-up" : "chevron-down"}
-          size={10.5}
+          size={12}
           color={palette().textMuted}
         />
       </View>
@@ -4516,20 +4766,18 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
             flexShrink: 1,
             flexDirection: "row",
             alignItems: "center",
-            gap: 2,
+            gap: space.hair,
           }}
         >
-          <View style={{ width: 1, height: 12, flexShrink: 0, backgroundColor: palette().borderSubtle }} />
+          <View style={{ width: 1, height: space.md, flexShrink: 0, backgroundColor: palette().borderSubtle }} />
           <View
             ref={el => reasoningPickerAnchor.set(el)}
             role="button"
             accessibilityLabel="reasoning-picker"
             tooltip={
-              props.compact() ? (
-                <TooltipBubble
-                  text={tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
-                />
-              ) : undefined
+              <TooltipBubble
+                text={tr("sessions.reasoningLabel", { name: activeReasoningLabel() })}
+              />
             }
             onPress={() => {
               const next = !reasoningPickerOpen();
@@ -4541,16 +4789,17 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
               minWidth: 0,
               flexShrink: 1,
               maxWidth: props.compact() ? 92 : 156,
-              paddingHorizontal: props.compact() ? 6 : 8,
+              paddingHorizontal: props.compact() ? space.chip : space.sm,
               borderRadius: radii.sm,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: reasoningPickerOpen() ? palette().border : "transparent",
               flexDirection: "row",
               alignItems: "center",
-              gap: 3.5,
+              gap: space.xs,
               backgroundColor: reasoningPickerOpen() ? palette().surfaceSubtle : "transparent",
               cursor: "pointer",
+              userSelect: "none",
               ...pressTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{
@@ -4565,8 +4814,8 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
                 flexShrink: 1,
                 minWidth: 0,
                 color: palette().textMuted,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.25),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 16 / 12),
                 fontWeight: "500",
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
@@ -4578,7 +4827,7 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
             </Text>
             <Icon
               name={reasoningPickerOpen() ? "chevron-up" : "chevron-down"}
-              size={10.5}
+              size={12}
               color={palette().textMuted}
             />
           </View>
@@ -4591,9 +4840,12 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
 function MentionPopoverSurface(props: { placement: Placement }) {
   // Inline `@` mention is keyboard-triggered (100+/day) -> zero animation (Raycast/autocomplete bar).
   const isInline = mentionInline();
-  const motion = isInline
-    ? null
-    : popoverEnterMotion(props.placement, "start", MOTION_DURATION.popover);
+  let motion: Motion | null = null;
+  if (isInline) {
+    cleanup(registerEscapeDismiss(closeMentionPopover));
+  } else {
+    motion = usePopoverMotion(() => props.placement, "start", closeMentionPopover);
+  }
   return (
     <View
       style={[
@@ -4601,8 +4853,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         {
           width: 440,
           maxWidth: "92%",
-          gap: 8,
-          padding: 12,
+          gap: space.sm,
+          padding: space.md,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion ? motion.style : undefined,
@@ -4630,8 +4882,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
       <Text
         style={{
           color: palette().textElevatedMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.32),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.35),
         }}
       >
         {mentionInline()
@@ -4639,13 +4891,13 @@ function MentionPopoverSurface(props: { placement: Placement }) {
           : tr("sessions.mentionPickerHint")}
       </Text>
       <If when={mentionLoading()}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-          <BrandSpinner size={11} color={palette().accent} variant="bars" />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <BrandSpinner size={12} color={palette().accent} variant="matrix" />
           <Text
             style={{
               color: palette().textElevatedMuted,
-              fontSize: textSize(11),
-              lineHeight: textLineHeight(11, 1.35),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.35),
             }}
           >
             {tr("sessions.searchingFiles")}
@@ -4656,8 +4908,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         <Text
           style={{
             color: palette().warning,
-            fontSize: textSize(11),
-            lineHeight: textLineHeight(11, 1.35),
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.35),
           }}
         >
           {localizeHostError(mentionNotice())}
@@ -4675,8 +4927,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         <Text
           style={{
             color: palette().textElevatedMuted,
-            fontSize: textSize(11),
-            lineHeight: textLineHeight(11, 1.35),
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.35),
           }}
         >
           {tr("sessions.mentionNoMatch", { query: mentionQuery().trim() })}
@@ -4686,8 +4938,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
         <Text
           style={{
             color: palette().textElevatedMuted,
-            fontSize: textSize(10.5),
-            lineHeight: textLineHeight(10.5, 1.32),
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.35),
           }}
         >
           {tr("sessions.moreMatchesHint")}
@@ -4695,7 +4947,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
       </If>
       <If when={mentionHits().length > 0}>
         <Scroll style={{ maxHeight: 220, minHeight: 0 }} scrollbar={true}>
-          <View style={{ gap: 2 }}>
+          <View style={{ gap: space.hair }}>
             <Each of={mentionHits()} key={hit => hit.path}>
               {(hit, idx) => (
                 <View
@@ -4705,14 +4957,16 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: 10,
-                    paddingHorizontal: 9,
-                    paddingVertical: 6,
+                    minHeight: compactLayout() ? layout.touchTarget : 30,
+                    gap: space.sm,
+                    paddingHorizontal: space.sm,
+                    paddingVertical: space.chip,
                     borderRadius: radii.xs,
                     borderCurve: "continuous",
                     backgroundColor:
                       idx() === mentionSelectedIndex() ? palette().accentSoft : "transparent",
                     cursor: "pointer",
+                    userSelect: "none",
                     ...paintTransition(MOTION_DURATION.fast),
                   }}
                   hoverStyle={{ backgroundColor: palette().panelHover }}
@@ -4734,8 +4988,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                       flexShrink: 0,
                       color:
                         idx() === mentionSelectedIndex() ? palette().accent : palette().text,
-                      fontSize: textSize(11.5),
-                      lineHeight: textLineHeight(11.5, 1.3),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.35),
                       fontWeight: "600",
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
@@ -4750,8 +5004,8 @@ function MentionPopoverSurface(props: { placement: Placement }) {
                       textAlign: "right",
                       color: palette().textElevatedMuted,
                       fontFamily: fontMono,
-                      fontSize: textSize(10.5),
-                      lineHeight: textLineHeight(10.5, 1.3),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.3),
                       numberOfLines: 1,
                       textOverflow: "ellipsis-middle",
                     }}
@@ -4769,7 +5023,7 @@ function MentionPopoverSurface(props: { placement: Placement }) {
 }
 
 function QuickActionsSurface(props: { placement: Placement }) {
-  const motion = popoverEnterMotion(props.placement, "end", MOTION_DURATION.popover);
+  const motion = usePopoverMotion(() => props.placement, "end", () => closePickers());
   return (
     <View
       style={[
@@ -4777,8 +5031,8 @@ function QuickActionsSurface(props: { placement: Placement }) {
         {
           minWidth: 248,
           maxWidth: 320,
-          gap: 8,
-          padding: 12,
+          gap: space.sm,
+          padding: space.md,
           transformOrigin: popoverOrigin(props.placement, "end"),
         },
         motion.style,
@@ -4787,14 +5041,14 @@ function QuickActionsSurface(props: { placement: Placement }) {
       <Text
         style={{
           color: palette().textElevatedMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.3),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           fontWeight: "600",
         }}
       >
         {tr("sessions.quickActions")}
       </Text>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.chip }}>
         <Each of={enabledQuickActions()} key={action => action.id}>
           {action => (
             <Button
@@ -4802,6 +5056,7 @@ function QuickActionsSurface(props: { placement: Placement }) {
               variant="secondary"
               size="xs"
               pill={true}
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => void runQuickAction(action().id)}
             />
           )}
@@ -4810,8 +5065,8 @@ function QuickActionsSurface(props: { placement: Placement }) {
       <Text
         style={{
           color: palette().textElevatedMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.35),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.35),
         }}
       >
         {runningTurnId()
@@ -4852,34 +5107,27 @@ function AgentRow(props: { choice: AgentChoice }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        paddingHorizontal: 10,
-        paddingVertical: 7,
+        minHeight: compactLayout() ? layout.touchTarget : undefined,
+        gap: space.sm,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.chip,
         borderRadius: radii.sm,
         borderCurve: "continuous",
         backgroundColor: current() ? palette().accentSoft : "transparent",
         cursor: "pointer",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: current() ? palette().accentSoft : palette().panelHover }}
       activeStyle={{ backgroundColor: palette().panelHover, opacity: 0.92 }}
       focusVisibleStyle={focusRingStyle(-1)}
     >
-      <View
-        style={{
-          width: 7,
-          height: 7,
-          flexShrink: 0,
-          borderRadius: radii.pill,
-          backgroundColor: harnessColorFor(props.choice.id),
-        }}
-      />
-      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
         <Text
           style={{
             color: current() ? palette().accent : palette().text,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.32),
+            fontSize: textSize(13),
+            lineHeight: textLineHeight(13, 1.35),
             fontWeight: current() ? "600" : "500",
             numberOfLines: 1,
             textOverflow: "ellipsis",
@@ -4892,8 +5140,8 @@ function AgentRow(props: { choice: AgentChoice }) {
             <Text
               style={{
                 color: palette().textElevatedMuted,
-                fontSize: textSize(10.5),
-                lineHeight: textLineHeight(10.5, 1.34),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
               }}
@@ -4916,7 +5164,7 @@ function AgentRow(props: { choice: AgentChoice }) {
 }
 
 function AgentPickerSurface(props: { placement: Placement }) {
-  const motion = popoverEnterMotion(props.placement, "start", MOTION_DURATION.popover);
+  const motion = usePopoverMotion(() => props.placement, "start", () => closePickers());
   return (
     <View
       style={[
@@ -4924,25 +5172,24 @@ function AgentPickerSurface(props: { placement: Placement }) {
         {
           width: 320,
           maxWidth: "92%",
-          gap: 6,
-          padding: 8,
+          gap: space.chip,
+          padding: space.sm,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
       ]}
     >
       <Scroll style={{ maxHeight: 332, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: 6 }}>
-          <View style={{ gap: 2 }}>
+        <View style={{ gap: space.chip }}>
+          <View style={{ gap: space.hair }}>
             <Text
               style={{
                 color: palette().textElevatedMuted,
-                fontSize: textSize(10),
-                lineHeight: textLineHeight(10, 1.3),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.3),
                 fontWeight: "600",
-                letterSpacing: textTracking(10, true),
-                paddingHorizontal: 10,
-                paddingVertical: 3,
+                paddingHorizontal: space.sm,
+                paddingVertical: space.xs,
               }}
             >
               {tr("sessions.profiles")}
@@ -4954,8 +5201,8 @@ function AgentPickerSurface(props: { placement: Placement }) {
           <If when={agentAgents().length > 0}>
             <View
               style={{
-                gap: 2,
-                paddingTop: 6,
+                gap: space.hair,
+                paddingTop: space.chip,
                 borderTopWidth: 1,
                 borderColor: palette().borderSubtle,
               }}
@@ -4963,12 +5210,11 @@ function AgentPickerSurface(props: { placement: Placement }) {
               <Text
                 style={{
                   color: palette().textElevatedMuted,
-                  fontSize: textSize(10),
-                  lineHeight: textLineHeight(10, 1.3),
+                  fontSize: textSize(12),
+                  lineHeight: textLineHeight(12, 1.3),
                   fontWeight: "600",
-                  letterSpacing: textTracking(10, true),
-                  paddingHorizontal: 10,
-                  paddingVertical: 3,
+                  paddingHorizontal: space.sm,
+                  paddingVertical: space.xs,
                 }}
               >
                 {tr("sessions.agents")}
@@ -4982,19 +5228,19 @@ function AgentPickerSurface(props: { placement: Placement }) {
       </Scroll>
       <View
         style={{
-          paddingHorizontal: 10,
-          paddingTop: 6,
-          paddingBottom: 2,
+          paddingHorizontal: space.sm,
+          paddingTop: space.chip,
+          paddingBottom: space.hair,
           borderTopWidth: 1,
           borderColor: palette().borderSubtle,
-          gap: 6,
+          gap: space.chip,
         }}
       >
         <Text
           style={{
             color: palette().textElevatedMuted,
-            fontSize: textSize(10.5),
-            lineHeight: textLineHeight(10.5, 1.38),
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.38),
           }}
         >
           {activeSessionStarted()
@@ -5002,14 +5248,14 @@ function AgentPickerSurface(props: { placement: Placement }) {
             : tr("sessions.agentPickerNewHint")}
         </Text>
         <If when={agentCatalogNotice().length > 0}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Text
               style={{
                 flex: 1,
                 minWidth: 0,
                 color: palette().warning,
-                fontSize: textSize(10.5),
-                lineHeight: textLineHeight(10.5, 1.35),
+                fontSize: textSize(12),
+                lineHeight: textLineHeight(12, 1.35),
               }}
             >
               {localizeHostError(agentCatalogNotice())}
@@ -5018,6 +5264,7 @@ function AgentPickerSurface(props: { placement: Placement }) {
               label={tr("common.reload")}
               variant="secondary"
               size="xs"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() => reloadAgentModes()}
             />
           </View>
@@ -5026,8 +5273,8 @@ function AgentPickerSurface(props: { placement: Placement }) {
           <Text
             style={{
               color: palette().danger,
-              fontSize: textSize(10.5),
-              lineHeight: textLineHeight(10.5, 1.35),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.35),
             }}
           >
             {localizeHostError(agentNotice())}
@@ -5039,7 +5286,7 @@ function AgentPickerSurface(props: { placement: Placement }) {
 }
 
 function ModelPickerSurface(props: { placement: Placement }) {
-  const motion = popoverEnterMotion(props.placement, "start", MOTION_DURATION.popover);
+  const motion = usePopoverMotion(() => props.placement, "start", () => closePickers());
   return (
     <View
       style={[
@@ -5047,8 +5294,8 @@ function ModelPickerSurface(props: { placement: Placement }) {
         {
           width: 344,
           maxWidth: "92%",
-          padding: 10,
-          gap: 6,
+          padding: space.sm,
+          gap: space.chip,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
@@ -5057,10 +5304,10 @@ function ModelPickerSurface(props: { placement: Placement }) {
       <Text
         style={{
           color: palette().textElevatedMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.3),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           fontWeight: "600",
-          paddingHorizontal: 6,
+          paddingHorizontal: space.chip,
         }}
       >
         {tr("sessions.model")}
@@ -5070,7 +5317,7 @@ function ModelPickerSurface(props: { placement: Placement }) {
       </If>
       <If when={!fleetModelGroups()}>
       <Scroll style={{ maxHeight: 204, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: space.hair }}>
           <Each of={chatModels()} key="index">
             {option => (
               <View
@@ -5080,14 +5327,16 @@ function ModelPickerSurface(props: { placement: Placement }) {
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 8,
-                  paddingHorizontal: 9,
-                  paddingVertical: 6.5,
+                  minHeight: compactLayout() ? layout.touchTarget : 30,
+                  gap: space.sm,
+                  paddingHorizontal: space.sm,
+                  paddingVertical: space.chip,
                   borderRadius: radii.sm,
                   borderCurve: "continuous",
                   backgroundColor:
                     option().id === activeModelId() ? palette().accentSoft : "transparent",
                   cursor: "pointer",
+                  userSelect: "none",
                   ...paintTransition(MOTION_DURATION.fast),
                 }}
                 hoverStyle={{
@@ -5112,7 +5361,7 @@ function ModelPickerSurface(props: { placement: Placement }) {
                   {`${option().label}${option().provider ? ` · ${option().provider}` : ""}`}
                 </Text>
                 <If when={option().id === activeModelId()}>
-                  <Icon name="check" size={12.5} color={palette().accent} />
+                  <Icon name="check" size={12} color={palette().accent} />
                 </If>
               </View>
             )}
@@ -5142,18 +5391,18 @@ function deviceModelsNote(device: FleetModelsDevice): string {
 function FleetModelList(props: { groups: FleetModelsDevice[] }) {
   return (
     <Scroll style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
-      <View style={{ gap: 2 }}>
+      <View style={{ gap: space.hair }}>
         <Each of={props.groups} key="index">
           {device => (
-            <View testID={`model-device-${device().deviceId}`} style={{ gap: 2, paddingTop: 4 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 6, paddingVertical: 2 }}>
+            <View testID={`model-device-${device().deviceId}`} style={{ gap: space.hair, paddingTop: space.xs }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.chip, paddingHorizontal: space.chip, paddingVertical: space.hair }}>
                 <Text
                   style={{
                     flexShrink: 1,
                     minWidth: 0,
                     color: palette().textElevatedMuted,
-                    fontSize: textSize(10.5),
-                    lineHeight: textLineHeight(10.5, 1.3),
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.3),
                     fontWeight: "600",
                     numberOfLines: 1,
                     textOverflow: "ellipsis",
@@ -5168,8 +5417,8 @@ function FleetModelList(props: { groups: FleetModelsDevice[] }) {
                       flexShrink: 1,
                       minWidth: 0,
                       color: palette().textMuted,
-                      fontSize: textSize(10.5),
-                      lineHeight: textLineHeight(10.5, 1.3),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.3),
                       numberOfLines: 1,
                       textOverflow: "ellipsis",
                     }}
@@ -5203,14 +5452,16 @@ function FleetModelRow(props: { choice: FleetModelChoice }) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 9,
-        paddingVertical: 6.5,
+        minHeight: compactLayout() ? layout.touchTarget : 30,
+        gap: space.sm,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.chip,
         borderRadius: radii.sm,
         borderCurve: "continuous",
         backgroundColor: active() ? palette().accentSoft : "transparent",
         opacity: props.choice.selectable ? 1 : 0.5,
         cursor: props.choice.selectable ? "pointer" : "not-allowed",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={props.choice.selectable ? { backgroundColor: active() ? palette().accentSoft : palette().panelHover } : {}}
@@ -5231,19 +5482,19 @@ function FleetModelRow(props: { choice: FleetModelChoice }) {
         {`${props.choice.displayName || props.choice.modelId}${props.choice.provider ? ` · ${props.choice.provider}` : ""}`}
       </Text>
       <If when={props.choice.primary}>
-        <Text style={{ color: palette().textMuted, fontSize: textSize(10.5), lineHeight: textLineHeight(10.5, 1.3) }}>
+        <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
           {tr("models.primary")}
         </Text>
       </If>
       <If when={active()}>
-        <Icon name="check" size={12.5} color={palette().accent} />
+        <Icon name="check" size={12} color={palette().accent} />
       </If>
     </View>
   );
 }
 
 function ReasoningPickerSurface(props: { placement: Placement }) {
-  const motion = popoverEnterMotion(props.placement, "start", MOTION_DURATION.popover);
+  const motion = usePopoverMotion(() => props.placement, "start", () => closePickers());
   return (
     <View
       style={[
@@ -5251,8 +5502,8 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
         {
           minWidth: 228,
           maxWidth: 300,
-          padding: 10,
-          gap: 6,
+          padding: space.sm,
+          gap: space.chip,
           transformOrigin: popoverOrigin(props.placement, "start"),
         },
         motion.style,
@@ -5261,16 +5512,16 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
       <Text
         style={{
           color: palette().textElevatedMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.3),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.3),
           fontWeight: "600",
-          paddingHorizontal: 6,
+          paddingHorizontal: space.chip,
         }}
       >
         {tr("sessions.reasoning")}
       </Text>
       <Scroll style={{ maxHeight: 176, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: space.hair }}>
           <View
             role="button"
             accessibilityLabel="reasoning-option-default"
@@ -5278,13 +5529,15 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
             style={{
               flexDirection: "row",
               alignItems: "center",
-              gap: 8,
-              paddingHorizontal: 9,
-              paddingVertical: 6.5,
+              minHeight: compactLayout() ? layout.touchTarget : 30,
+              gap: space.sm,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.chip,
               borderRadius: radii.sm,
               borderCurve: "continuous",
               backgroundColor: activeReasoningId() === null ? palette().accentSoft : "transparent",
               cursor: "pointer",
+              userSelect: "none",
               ...paintTransition(MOTION_DURATION.fast),
             }}
             hoverStyle={{
@@ -5309,7 +5562,7 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
               {tr("common.default")}
             </Text>
             <If when={activeReasoningId() === null}>
-              <Icon name="check" size={12.5} color={palette().accent} />
+              <Icon name="check" size={12} color={palette().accent} />
             </If>
           </View>
           <Each of={activeReasoningChoices()} key={choice => choice.id}>
@@ -5321,14 +5574,16 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 8,
-                  paddingHorizontal: 9,
-                  paddingVertical: 6.5,
+                  minHeight: compactLayout() ? layout.touchTarget : 30,
+                  gap: space.sm,
+                  paddingHorizontal: space.sm,
+                  paddingVertical: space.chip,
                   borderRadius: radii.sm,
                   borderCurve: "continuous",
                   backgroundColor:
                     choice().id === activeReasoningId() ? palette().accentSoft : "transparent",
                   cursor: "pointer",
+                  userSelect: "none",
                   ...paintTransition(MOTION_DURATION.fast),
                 }}
                 hoverStyle={{
@@ -5355,7 +5610,7 @@ function ReasoningPickerSurface(props: { placement: Placement }) {
                   {choice().label}
                 </Text>
                 <If when={choice().id === activeReasoningId()}>
-                  <Icon name="check" size={12.5} color={palette().accent} />
+                  <Icon name="check" size={12} color={palette().accent} />
                 </If>
               </View>
             )}
@@ -5535,13 +5790,13 @@ function PermissionPrompts() {
 function QuestionPrompts() {
   return (
     <If when={activeQuestions().length > 0}>
-      <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: 6 }}>
+      <View style={{ paddingHorizontal: sessionsPadX(), paddingTop: space.chip }}>
         <View
           style={{
             width: "100%",
             maxWidth: contentWidth(),
             alignSelf: "center",
-            gap: 10,
+            gap: space.sm,
           }}
         >
           <Each of={activeQuestions()} key={prompt => prompt.toolId}>
@@ -5579,7 +5834,12 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
           <If when={sessionDeviceLabel()}>
             {device => (
               <>
-                <DeviceBadge name={device().name} kind={device().kind} exception={device().exception} onPress={device().onPress} />
+                <DeviceBadge
+                  name={device().name}
+                  kind={device().kind}
+                  exception={device().exception}
+                  onPress={compactLayout() ? undefined : device().onPress}
+                />
                 <Text style={textStyle("caption")}>·</Text>
               </>
             )}
@@ -5590,7 +5850,7 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
         </View>
       </View>
       <Scroll style={{ maxHeight: 320, minHeight: 0 }} scrollbar={true}>
-        <View style={{ gap: 12 }}>
+        <View style={{ gap: space.md }}>
           <Each of={prompt().questions} key="index">
             {(question, index) => (
               <If when={prompt().questions.length <= 1 || index() === questionPageOf(prompt().toolId, prompt().questions.length)}>
@@ -5609,15 +5869,16 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
           </Text>
         )}
       </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
         <If when={prompt().questions.length > 1}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
             <IconButton
               icon="chevron-left"
               size="sm"
               accessibilityLabel={`question-prev-${prompt().toolId}`}
               tooltip={tr("chat.question.previous")}
               disabled={questionPageOf(prompt().toolId, prompt().questions.length) === 0}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => stepQuestionPage(prompt().toolId, -1, prompt().questions.length)}
             />
             <Text
@@ -5636,6 +5897,7 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
               accessibilityLabel={`question-next-${prompt().toolId}`}
               tooltip={tr("chat.question.next")}
               disabled={questionPageOf(prompt().toolId, prompt().questions.length) >= prompt().questions.length - 1}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => stepQuestionPage(prompt().toolId, 1, prompt().questions.length)}
             />
           </View>
@@ -5646,6 +5908,7 @@ function QuestionCard(props: { prompt: () => QuestionPrompt }) {
           size="sm"
           loading={prompt().submitting}
           disabled={prompt().submitting}
+          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
           onPress={() => void submitQuestion(prompt().toolId)}
         />
       </View>
@@ -5756,10 +6019,10 @@ function QueueHostNotice() {
       <Text
         accessibilityLabel="queue-host-update"
         style={{
-          paddingHorizontal: 12,
+          paddingHorizontal: space.md,
           color: palette().textMuted,
-          fontSize: textSize(10.5),
-          lineHeight: textLineHeight(10.5, 1.35),
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.35),
         }}
       >
         {localizeHostError(queueFallbackReason())}
@@ -5773,9 +6036,9 @@ function QueuedPanel() {
     <If when={queuedForActive().length > 0}>
       <View
         style={{
-          gap: 6,
-          paddingHorizontal: 12,
-          paddingVertical: 8,
+          gap: space.chip,
+          paddingHorizontal: space.md,
+          paddingVertical: space.sm,
           borderRadius: radii.lg,
           borderCurve: "continuous",
           borderWidth: 1,
@@ -5792,10 +6055,12 @@ function QueuedPanel() {
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 6,
-            paddingVertical: 2,
+            minHeight: compactLayout() ? layout.touchTarget : undefined,
+            gap: space.chip,
+            paddingVertical: space.hair,
             borderRadius: radii.xs,
             cursor: "pointer",
+            userSelect: "none",
           }}
           focusVisibleStyle={focusRingStyle()}
         >
@@ -5804,14 +6069,14 @@ function QueuedPanel() {
             size={12}
             color={palette().textMuted}
           />
-          <Icon name="clock" size={11} color={palette().textMuted} />
+          <Icon name="clock" size={12} color={palette().textMuted} />
           <Text
             style={{
               flex: 1,
               minWidth: 0,
               color: palette().textMuted,
-              fontSize: textSize(10.5),
-              lineHeight: textLineHeight(10.5, 1.3),
+              fontSize: textSize(12),
+              lineHeight: textLineHeight(12, 1.3),
               fontWeight: "600",
               fontVariant: ["tabular-nums"],
               numberOfLines: 1,
@@ -5823,7 +6088,7 @@ function QueuedPanel() {
         </View>
         <If when={!queueCollapsed()}>
           <Scroll style={{ maxHeight: 176, minHeight: 0 }} scrollbar={true}>
-            <View style={{ gap: 6 }}>
+            <View style={{ gap: space.chip }}>
               <Each of={queuedForActive()} key={item => item.id}>
                 {item => (
                   <View
@@ -5831,9 +6096,9 @@ function QueuedPanel() {
                       flexDirection: "row",
                       alignItems: "center",
                       flexWrap: "wrap",
-                      gap: 6,
-                      paddingHorizontal: 10,
-                      paddingVertical: 7,
+                      gap: space.chip,
+                      paddingHorizontal: space.md,
+                      paddingVertical: space.sm,
                       borderRadius: radii.sm,
                       borderCurve: "continuous",
                       borderWidth: 1,
@@ -5860,7 +6125,7 @@ function QueuedPanel() {
                         alignItems: "center",
                         flexWrap: "wrap",
                         flexShrink: 0,
-                        gap: 4,
+                        gap: space.xs,
                       }}
                     >
                       <If when={item().status !== "queued"}>
@@ -5871,12 +6136,14 @@ function QueuedPanel() {
                           label={tr("common.up")}
                           variant="ghost"
                           size="xs"
+                          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                           onPress={() => void moveQueued(item().id, -1)}
                         />
                         <Button
                           label={tr("common.down")}
                           variant="ghost"
                           size="xs"
+                          style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                           onPress={() => void moveQueued(item().id, 1)}
                         />
                       </If>
@@ -5884,12 +6151,14 @@ function QueuedPanel() {
                         label={tr("sessions.sendNow")}
                         variant="secondary"
                         size="xs"
+                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                         onPress={() => void sendQueuedNow(item().id)}
                       />
                       <Button
                         label={tr("common.edit")}
                         variant="ghost"
                         size="xs"
+                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                         onPress={() => {
                           void takeQueued(item().id).then(text => {
                             if (text) composerText.set(text);
@@ -5900,6 +6169,7 @@ function QueuedPanel() {
                         label={tr("common.delete")}
                         variant="danger"
                         size="xs"
+                        style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
                         onPress={() => void removeQueued(item().id)}
                       />
                     </View>
@@ -5911,8 +6181,8 @@ function QueuedPanel() {
                   <Text
                     style={{
                       color: palette().warning,
-                      fontSize: textSize(10.5),
-                      lineHeight: textLineHeight(10.5, 1.35),
+                      fontSize: textSize(12),
+                      lineHeight: textLineHeight(12, 1.35),
                     }}
                   >
                     {tr("sessions.queuedWaiting", { reason: localizeHostError(item().reason) })}
@@ -5923,8 +6193,8 @@ function QueuedPanel() {
                 <Text
                   style={{
                     color: palette().textMuted,
-                    fontSize: textSize(10.5),
-                    lineHeight: textLineHeight(10.5, 1.35),
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.35),
                   }}
                 >
                   {localizeHostError(queueFallbackReason())}
@@ -5934,8 +6204,8 @@ function QueuedPanel() {
                 <Text
                   style={{
                     color: palette().danger,
-                    fontSize: textSize(10.5),
-                    lineHeight: textLineHeight(10.5, 1.35),
+                    fontSize: textSize(12),
+                    lineHeight: textLineHeight(12, 1.35),
                   }}
                 >
                   {localizeHostError(queueNotice())}
@@ -5954,12 +6224,21 @@ function QueuedPanel() {
  * is open and the turn is rendered, scroll it into view and clear the request.
  */
 function followSearchRevealRequests(): void {
+  let revealTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (revealTimer) {
+      clearTimeout(revealTimer);
+      revealTimer = null;
+    }
+  });
   effect(() => {
     const request = searchRevealTurn();
     if (!request || activeSessionId() !== request.sessionId) return;
     const loaded = sessionTurns().some(turn => turnKeyOf(turn) === request.turnId);
     if (!loaded) return;
-    setTimeout(() => {
+    if (revealTimer) clearTimeout(revealTimer);
+    revealTimer = setTimeout(() => {
+      revealTimer = null;
       const ref = turnRefs.get(request.turnId);
       if (!ref) return;
       followLatest.set(false);

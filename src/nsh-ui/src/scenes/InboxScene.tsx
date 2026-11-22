@@ -5,8 +5,15 @@
 // Display only: the groups, their order, the badge and every item come from
 // the backend (`attentionStore`).
 
-import { Scroll, Text, View, createMotion, reduceMotion } from "nsh";
-import { inboxSheetOpen, startAttentionStore, type AttentionEntry, type PromptAnswer } from "../attentionStore";
+import { Overlay, Scroll, Text, View, cleanup, safeArea } from "nsh";
+import {
+  attentionError,
+  attentionServed,
+  inboxSheetOpen,
+  startAttentionStore,
+  type AttentionEntry,
+  type PromptAnswer,
+} from "../attentionStore";
 import type { FleetPrompt } from "../fleetTypes";
 import {
   clearInboxHistory,
@@ -23,8 +30,8 @@ import { navigateScene, openDevicePage, selectSession } from "../state";
 import { compactLayout, elevationScrim, elevationShadow, layout, palette, radii, space, textStyle } from "../theme";
 import { AttentionTray } from "../ui/attention";
 import { IconButton, Button } from "../ui/primitives";
-import { pushToast } from "../ui/overlays";
-import { MOTION_DURATION, MOTION_EASE_DRAWER_BEZIER } from "../ui/motion";
+import { pushToast, registerEscapeDismiss } from "../ui/overlays";
+import { drawerEnterMotion } from "../ui/motion";
 
 export { inboxSheetOpen };
 
@@ -67,37 +74,51 @@ function sendPrompt() {
   return inboxIsLocal() ? sendLocalPrompt : undefined;
 }
 
+function inboxLoading(): boolean {
+  return !inboxIsLocal() && attentionServed() === null && !attentionError();
+}
+
 function InboxHeader(props: { sheet?: boolean }) {
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: 28 }}>
-      {/* On a phone the shell's 48 top bar already says "Inbox". */}
-      <If when={props.sheet || !compactLayout()} else={<View style={{ flex: 1 }} />}>
-        <Text role="header" style={{ ...textStyle(props.sheet ? "sectionTitle" : "pageTitle"), flex: 1, minWidth: 0 }}>
-          {tr("inbox.title")}
-        </Text>
-      </If>
-      <If when={canMarkRead()}>
-        <Button
-          label={tr("inbox.markAllRead")}
-          variant="ghost"
-          size="sm"
-          accessibilityLabel="inbox-mark-all-read"
-          onPress={() => void markInboxRead()}
-        />
-      </If>
-      <If when={inboxCanClear()}>
-        <Button
-          label={tr("inbox.clear")}
-          variant="ghost"
-          size="sm"
-          accessibilityLabel="inbox-clear"
-          onPress={() => clearInboxHistory()}
-        />
-      </If>
-      <If when={Boolean(props.sheet)}>
-        <IconButton icon="close" size="sm" accessibilityLabel={tr("common.close")} onPress={() => inboxSheetOpen.set(false)} />
-      </If>
-    </View>
+    <If when={Boolean(props.sheet) || !compactLayout() || canMarkRead() || inboxCanClear()}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: compactLayout() ? layout.touchTarget : 28 }}>
+        {/* On a phone the shell's 48 top bar already says "Inbox". */}
+        <If when={props.sheet || !compactLayout()} else={<View style={{ flex: 1 }} />}>
+          <Text role="header" style={{ ...textStyle(props.sheet ? "sectionTitle" : "pageTitle"), flex: 1, minWidth: 0 }}>
+            {tr("inbox.title")}
+          </Text>
+        </If>
+        <If when={canMarkRead()}>
+          <Button
+            label={tr("inbox.markAllRead")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel="inbox-mark-all-read"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+            onPress={() => void markInboxRead()}
+          />
+        </If>
+        <If when={inboxCanClear()}>
+          <Button
+            label={tr("inbox.clear")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel="inbox-clear"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+            onPress={() => clearInboxHistory()}
+          />
+        </If>
+        <If when={Boolean(props.sheet)}>
+          <IconButton
+            icon="close"
+            size="sm"
+            accessibilityLabel={tr("common.close")}
+            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+            onPress={() => inboxSheetOpen.set(false)}
+          />
+        </If>
+      </View>
+    </If>
   );
 }
 
@@ -105,10 +126,11 @@ function InboxHeader(props: { sheet?: boolean }) {
 export function InboxScene() {
   startAttentionStore();
   return (
-    <Scroll testID="inbox-scene" style={{ flex: 1, minHeight: 0 }} scrollbar={true}>
+    <Scroll testID="inbox-scene" style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
       <View
         style={{
           width: "100%",
+          flexGrow: 1,
           maxWidth: layout.pageWidth + 2 * (compactLayout() ? layout.phoneGutter : layout.pageGutter),
           alignSelf: "center",
           paddingTop: compactLayout() ? layout.phonePagePaddingTop : layout.pagePaddingTop,
@@ -118,13 +140,16 @@ export function InboxScene() {
         }}
       >
         <InboxHeader />
-        <AttentionTray
-          groups={inboxGroups()}
-          sendPrompt={sendPrompt()}
-          onOpen={openAttentionEntry}
-          onDevice={openDevice}
-          onAnswered={answeredToast}
-        />
+        <View style={{ flexGrow: inboxGroups().length === 0 && !inboxLoading() ? 1 : 0, justifyContent: inboxGroups().length === 0 && !inboxLoading() ? "center" : "flex-start" }}>
+          <AttentionTray
+            groups={inboxGroups()}
+            loading={inboxLoading()}
+            sendPrompt={sendPrompt()}
+            onOpen={openAttentionEntry}
+            onDevice={openDevice}
+            onAnswered={answeredToast}
+          />
+        </View>
       </View>
     </Scroll>
   );
@@ -132,57 +157,66 @@ export function InboxScene() {
 
 const SHEET_WIDTH = 440;
 
-function sheetMotion() {
-  return createMotion({
-    enter: reduceMotion()
-      ? { keyframes: { opacity: [0, 1] }, duration: 120, easing: "ease", ignoreReduceMotion: true }
-      : { keyframes: { opacity: [0, 1], translateX: [24, 0] }, duration: MOTION_DURATION.toast, easing: MOTION_EASE_DRAWER_BEZIER },
-  });
-}
-
 function SheetPanel() {
-  const motion = sheetMotion();
+  const motion = drawerEnterMotion("right");
+  cleanup(registerEscapeDismiss(() => inboxSheetOpen.set(false)));
   return (
-    <View
-      testID="inbox-sheet"
-      style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 40, flexDirection: "row" }}
+    <Overlay
+      onCancel={() => inboxSheetOpen.set(false)}
+      style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, flexDirection: "row" }}
     >
-      <View
-        role="button"
-        accessibilityLabel={tr("common.close")}
-        onPress={() => inboxSheetOpen.set(false)}
-        style={{ flex: 1, backgroundColor: elevationScrim() }}
-      />
-      <View
-        style={[
-          {
-            width: compactLayout() ? "100%" : SHEET_WIDTH,
-            height: "100%",
-            backgroundColor: palette().canvas,
-            borderLeftWidth: 1,
-            borderColor: palette().borderSubtle,
-            boxShadow: elevationShadow(3),
-            borderTopLeftRadius: compactLayout() ? 0 : radii.lg,
-            borderBottomLeftRadius: compactLayout() ? 0 : radii.lg,
-            borderCurve: "continuous",
-          },
-          motion.style,
-        ]}
-      >
-        <Scroll style={{ flex: 1, minHeight: 0 }} scrollbar={true}>
-          <View style={{ padding: space.xxl, gap: space.xl }}>
-            <InboxHeader sheet={true} />
-            <AttentionTray
-              groups={inboxGroups()}
-              sendPrompt={sendPrompt()}
-              onOpen={openAttentionEntry}
-              onDevice={openDevice}
-              onAnswered={answeredToast}
-            />
-          </View>
-        </Scroll>
+      <View testID="inbox-sheet" style={{ flex: 1, flexDirection: "row" }}>
+        <View
+          role="button"
+          accessibilityLabel={tr("common.close")}
+          onPress={() => inboxSheetOpen.set(false)}
+          style={{ flex: 1, backgroundColor: elevationScrim() }}
+        />
+        <View
+          role="dialog"
+          accessibilityLabel={tr("inbox.title")}
+          style={[
+            {
+              width: compactLayout() ? "100%" : SHEET_WIDTH,
+              height: "100%",
+              paddingTop: safeArea().top,
+              paddingBottom: safeArea().bottom,
+              backgroundColor: palette().canvas,
+              borderLeftWidth: compactLayout() ? 0 : 1,
+              borderColor: palette().borderSubtle,
+              boxShadow: elevationShadow(3),
+              borderTopLeftRadius: compactLayout() ? 0 : radii.lg,
+              borderBottomLeftRadius: compactLayout() ? 0 : radii.lg,
+              borderCurve: "continuous",
+            },
+            motion.style,
+          ]}
+        >
+          <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }} scrollbar={true}>
+            <View
+              style={{
+                flexGrow: 1,
+                paddingHorizontal: compactLayout() ? layout.phoneGutter : space.xxl,
+                paddingVertical: compactLayout() ? space.lg : space.xxl,
+                gap: space.xl,
+              }}
+            >
+              <InboxHeader sheet={true} />
+              <View style={{ flexGrow: inboxGroups().length === 0 && !inboxLoading() ? 1 : 0, justifyContent: inboxGroups().length === 0 && !inboxLoading() ? "center" : "flex-start" }}>
+                <AttentionTray
+                  groups={inboxGroups()}
+                  loading={inboxLoading()}
+                  sendPrompt={sendPrompt()}
+                  onOpen={openAttentionEntry}
+                  onDevice={openDevice}
+                  onAnswered={answeredToast}
+                />
+              </View>
+            </View>
+          </Scroll>
+        </View>
       </View>
-    </View>
+    </Overlay>
   );
 }
 

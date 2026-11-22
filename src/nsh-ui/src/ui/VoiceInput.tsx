@@ -4,7 +4,7 @@
 
 import { Text, View } from "nsh";
 import { tr } from "../i18n";
-import { palette, radii, textLineHeight, textSize } from "../theme";
+import { compactLayout, controlHeight, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import {
   cancelVoiceInput,
   explainVoiceCallUnsupported,
@@ -17,8 +17,8 @@ import {
   voiceRecognizerAvailable,
   voiceTranscript,
 } from "../voiceInputStore";
+import { StateMark } from "./fleet";
 import { Icon } from "./icons";
-import { MOTION_DURATION, paintTransition } from "./motion";
 import { Button, IconButton } from "./primitives";
 
 export interface VoiceComposerActions {
@@ -33,7 +33,7 @@ export interface VoiceComposerActions {
 /** The microphone button (and the voice-call button when calls are on). */
 export function VoiceInputButtons(props: { actions: VoiceComposerActions }) {
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
       <If when={voiceCallEnabled()}>
         <IconButton
           icon="waveform"
@@ -41,6 +41,7 @@ export function VoiceInputButtons(props: { actions: VoiceComposerActions }) {
           iconSize={15}
           accessibilityLabel="voice-call"
           tooltip={tr("voice.call")}
+          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
           onPress={explainVoiceCallUnsupported}
         />
       </If>
@@ -53,6 +54,7 @@ export function VoiceInputButtons(props: { actions: VoiceComposerActions }) {
           disabled={props.actions.disabled()}
           accessibilityLabel="voice-input"
           tooltip={voiceRecognizerAvailable() === false ? tr("voice.unavailable") : tr("voice.dictate")}
+          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
           onPress={() => {
             if (voicePhase() === "idle") startVoiceInput(text => props.actions.insert(text));
             else finishVoiceInput(text => props.actions.insert(text));
@@ -77,26 +79,17 @@ export function VoiceDictationBar(props: { actions: VoiceComposerActions }) {
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 10,
-            marginHorizontal: 12,
-            marginTop: 10,
-            paddingHorizontal: 12,
-            minHeight: 40,
+            gap: space.sm,
+            marginHorizontal: space.md,
+            marginTop: space.sm,
+            paddingHorizontal: space.md,
+            minHeight: compactLayout() ? layout.touchTarget : controlHeight.lg,
             borderRadius: radii.lg,
             borderCurve: "continuous",
             backgroundColor: palette().surfaceSubtle,
           }}
         >
-          <View
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              flexShrink: 0,
-              backgroundColor: voicePhase() === "listening" ? palette().danger : palette().textMuted,
-              ...paintTransition(MOTION_DURATION.fast),
-            }}
-          />
+          <StateMark state={voicePhase() === "listening" ? "working" : "idle"} size={12} />
           <Text
             style={{
               flex: 1,
@@ -120,22 +113,25 @@ export function VoiceDictationBar(props: { actions: VoiceComposerActions }) {
             size="sm"
             accessibilityLabel="voice-cancel"
             tooltip={tr("voice.cancel")}
+            style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
             onPress={cancelVoiceInput}
           />
           <Button
             label={tr("voice.insert")}
             variant="secondary"
-            size="xs"
+            size="sm"
             accessibilityLabel="voice-insert"
             disabled={voicePhase() === "finishing"}
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => finishVoiceInput(text => props.actions.insert(text))}
           />
           <Button
             label={tr("voice.send")}
             variant="primary"
-            size="xs"
+            size="sm"
             accessibilityLabel="voice-send"
             disabled={voicePhase() === "finishing" || props.actions.disabled()}
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => finishVoiceInput(text => props.actions.send(text))}
           />
         </View>
@@ -144,9 +140,9 @@ export function VoiceDictationBar(props: { actions: VoiceComposerActions }) {
         {notice => (
           <View
             accessibilityLabel="voice-notice"
-            style={{ flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 16, marginTop: 10 }}
+            style={{ flexDirection: "row", alignItems: "center", gap: space.sm, marginHorizontal: space.lg, marginTop: space.sm }}
           >
-            <Icon name="info" size={14} color={palette().warning} />
+            <Icon name="info" size={14} color={palette().textMuted} />
             <Text
               style={{
                 flex: 1,
@@ -160,9 +156,10 @@ export function VoiceDictationBar(props: { actions: VoiceComposerActions }) {
             </Text>
             <IconButton
               icon="close"
-              size="xs"
+              size="sm"
               accessibilityLabel="voice-notice-dismiss"
               tooltip={tr("common.dismiss")}
+              style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
               onPress={() => voiceNotice.set("")}
             />
           </View>

@@ -13,19 +13,19 @@
 // their static HTML with scripts off; YouTube is a link. Unknown components are
 // listed under the card rather than dropped silently.
 
-import { Canvas, Clipboard, computed, openUrl, Path2D, Scroll, signal, Text, View, WebView } from "nsh";
+import { Canvas, cleanup, Clipboard, computed, openUrl, Path2D, Scroll, signal, Text, View, WebView } from "nsh";
 import type { JSX, Signal } from "nsh";
 import { Input, Slider, TextView } from "nsh/base";
 import type { ToolCallView } from "../format";
 import { tr } from "../i18n";
 import { sendTurn } from "../state";
-import { fontMono, palette, radii, textLineHeight, textSize } from "../theme";
+import { compactLayout, controlHeight, fontMono, layout, palette, radii, space as themeSpace, textLineHeight, textSize, typeScale } from "../theme";
 import { Icon, type IconName } from "../ui/icons";
 import { LUCIDE_PATHS } from "../ui/lucideIcons";
 import { createMarkdownStyles } from "../ui/markdown";
 import { MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { SelectDropdown } from "../ui/overlays";
-import { Button, IconButton, SegmentedTabs } from "../ui/primitives";
+import { Button, IconButton, SegmentedTabs, focusRingStyle } from "../ui/primitives";
 import type { ToolRunState } from "../ui/toolCards";
 import { genuiDocumentOf, type GenUIDocument } from "./genuiSource";
 import {
@@ -111,10 +111,17 @@ function GenUIPlaceholder() {
   return (
     <View
       accessibilityLabel="genui-generating"
-      style={{ gap: 8, paddingVertical: 12, paddingHorizontal: 16, borderRadius: radii.lg, backgroundColor: palette().surfaceSubtle }}
+      style={{
+        gap: themeSpace.sm,
+        paddingVertical: themeSpace.md,
+        paddingHorizontal: themeSpace.lg,
+        borderRadius: radii.lg,
+        borderCurve: "continuous",
+        backgroundColor: palette().surfaceSubtle,
+      }}
     >
-      <View style={{ width: "40%", height: 12, borderRadius: 6, backgroundColor: palette().skeletonBg }} />
-      <View style={{ width: "70%", height: 10, borderRadius: 5, backgroundColor: palette().skeletonBg }} />
+      <View style={{ width: "40%", height: themeSpace.md, borderRadius: radii.sm, backgroundColor: palette().skeletonBg }} />
+      <View style={{ width: "70%", height: themeSpace.sm + themeSpace.hair, borderRadius: radii.sm, backgroundColor: palette().skeletonBg }} />
       <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
         {tr("genui.generating")}
       </Text>
@@ -308,7 +315,7 @@ function colorOf(value: unknown, fallback: string): string {
 
 function radiusOf(value: unknown, fallback: number): number {
   if (typeof value === "number") return Math.max(0, value);
-  const named: Record<string, number> = { none: 0, sm: radii.sm, md: radii.md, lg: radii.lg, xl: radii.xl, full: 999 };
+  const named: Record<string, number> = { none: 0, sm: radii.sm, md: radii.md, lg: radii.lg, xl: radii.xl, full: radii.pill };
   return typeof value === "string" ? named[value] ?? fallback : fallback;
 }
 
@@ -318,8 +325,20 @@ function dimension(value: unknown): number | `${number}%` | undefined {
   return undefined;
 }
 
-const TITLE_SIZES: Record<string, number> = { sm: 15, md: 17, lg: 20, xl: 24, "2xl": 28, "3xl": 34 };
-const TEXT_SIZES: Record<string, number> = { xs: 11, sm: 13, md: 14, lg: 16 };
+const TITLE_SIZES: Record<string, number> = {
+  sm: typeScale.prose,
+  md: typeScale.modalTitle,
+  lg: typeScale.pageTitle,
+  xl: typeScale.pageTitle,
+  "2xl": typeScale.display,
+  "3xl": typeScale.display,
+};
+const TEXT_SIZES: Record<string, number> = {
+  xs: typeScale.caption,
+  sm: typeScale.label,
+  md: typeScale.body,
+  lg: typeScale.sectionTitle,
+};
 const ICON_SIZES: Record<string, number> = { sm: 14, md: 16, lg: 20, xl: 24 };
 
 function hasMarkdown(text: string): boolean {
@@ -422,8 +441,8 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
       return (
         <View
           style={{
-            gap: space(p().gap, 10),
-            padding: space(p().padding, 16),
+            gap: space(p().gap, themeSpace.md),
+            padding: space(p().padding, themeSpace.lg),
             borderRadius: radii.lg,
             borderCurve: "continuous",
             borderWidth: p().variant === "soft" ? 0 : 1,
@@ -518,7 +537,17 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
           role="link"
           accessibilityLabel={`genui-link-${display(p().text)}`}
           onPress={() => ctx.run({ kind: "action", steps: [{ kind: "fn", name: "OpenUrl", args: [{ kind: "literal", value: display(p().url) }] }], scope: { vars: {} } })}
-          style={{ cursor: "pointer", alignSelf: "flex-start" }}
+          style={{
+            minHeight: compactLayout() ? layout.touchTarget : undefined,
+            justifyContent: "center",
+            borderRadius: radii.xs,
+            cursor: "pointer",
+            alignSelf: "flex-start",
+            userSelect: "none",
+            ...pressTransition(MOTION_DURATION.fast),
+          }}
+          activeStyle={tactileActiveStyle(0.98)}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Text style={{ color: palette().accent, fontSize: textSize(14), lineHeight: textLineHeight(14, 1.5) }}>
             {display(p().text) || display(p().url)}
@@ -559,6 +588,7 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
             leadingIcon={iconNameOf(p().icon) ?? undefined}
             disabled={truthy(p().disabled) || !ctx.interactive()}
             accessibilityLabel={`genui-button-${display(p().label)}`}
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
             onPress={() => ctx.run(isGenAction(p().action) ? (p().action as GenAction) : null, display(p().label))}
           />
         </View>
@@ -571,6 +601,7 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
           tooltip={display(p().label) || undefined}
           disabled={!ctx.interactive()}
           accessibilityLabel={`genui-icon-${display(p().label) || display(p().icon)}`}
+          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
           onPress={() => ctx.run(isGenAction(p().action) ? (p().action as GenAction) : null, display(p().label))}
         />
       );
@@ -588,10 +619,12 @@ function GenNode(props: { node: GenElement; ctx: GenContext }): JSX.Element {
             borderCurve: "continuous",
             backgroundColor: truthy(p().selected) ? palette().accentSoft : typeof p().background === "string" ? colorOf(p().background, "transparent") : "transparent",
             cursor: "pointer",
+            userSelect: "none",
             ...pressTransition(MOTION_DURATION.fast),
           }}
           hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
           activeStyle={tactileActiveStyle(0.98)}
+          focusVisibleStyle={focusRingStyle()}
         >
           <Children value={p().children} parentKey={key()} ctx={ctx} />
         </View>
@@ -704,25 +737,37 @@ function GenGrid(props: { node: GenElement; ctx: GenContext }) {
 function GenPopover(props: { node: GenElement; ctx: GenContext }) {
   const open = signal(false);
   return (
-    <View style={{ gap: 6, alignSelf: "flex-start" }}>
+    <View style={{ gap: themeSpace.chip, alignSelf: "flex-start" }}>
       <View
         role="button"
         accessibilityLabel={`genui-popover-${props.node.key}`}
         onPress={() => open.set(!open())}
-        style={{ cursor: "pointer", flexDirection: "row", alignItems: "center", gap: 4 }}
+        style={{
+          minHeight: compactLayout() ? layout.touchTarget : undefined,
+          borderRadius: radii.sm,
+          cursor: "pointer",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: themeSpace.xs,
+          userSelect: "none",
+          ...pressTransition(MOTION_DURATION.fast),
+        }}
+        activeStyle={tactileActiveStyle(0.98)}
+        focusVisibleStyle={focusRingStyle()}
       >
         <Children value={props.node.props.trigger} parentKey={`${props.node.key}/trigger`} ctx={props.ctx} inline />
       </View>
       <If when={open()}>
         <View
           style={{
-            padding: 12,
+            padding: themeSpace.md,
             borderRadius: radii.md,
+            borderCurve: "continuous",
             borderWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().popoverBg,
             maxWidth: 360,
-            gap: 6,
+            gap: themeSpace.chip,
           }}
         >
           <Children value={props.node.props.content} parentKey={`${props.node.key}/content`} ctx={props.ctx} />
@@ -824,23 +869,43 @@ function GenListItem(props: { node: GenElement; ctx: GenContext; marker: string 
 }
 
 function GenCode(props: { node: GenElement }) {
+  const copied = signal(false);
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (copyTimer) {
+      clearTimeout(copyTimer);
+      copyTimer = null;
+    }
+  });
   return (
-    <View style={{ borderRadius: radii.md, backgroundColor: palette().surfaceSubtle, padding: 12, gap: 6 }}>
+    <View style={{ borderRadius: radii.md, borderCurve: "continuous", backgroundColor: palette().surfaceSubtle, padding: themeSpace.md, gap: themeSpace.chip }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-        <Text style={{ color: palette().textMuted, fontSize: textSize(11), lineHeight: textLineHeight(11, 1.3) }}>
+        <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
           {display(props.node.props.language)}
         </Text>
         <IconButton
-          icon="copy"
+          icon={copied() ? "check" : "copy"}
           size="xs"
           accessibilityLabel="genui-copy-code"
-          tooltip={tr("common.copy")}
-          onPress={() => void Clipboard.writeText(display(props.node.props.code))}
+          tooltip={copied() ? tr("common.copied") : tr("common.copy")}
+          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+          onPress={() => {
+            void Clipboard.writeText(display(props.node.props.code)).then(() => {
+              copied.set(true);
+              if (copyTimer) clearTimeout(copyTimer);
+              copyTimer = setTimeout(() => {
+                copyTimer = null;
+                copied.set(false);
+              }, 1600);
+            });
+          }}
         />
       </View>
-      <Text style={{ color: palette().text, fontFamily: fontMono, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.55), userSelect: "text" }}>
-        {display(props.node.props.code)}
-      </Text>
+      <Scroll horizontal style={{ minHeight: 0 }}>
+        <Text style={{ color: palette().text, fontFamily: fontMono, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.55), userSelect: "text" }}>
+          {display(props.node.props.code)}
+        </Text>
+      </Scroll>
     </View>
   );
 }
@@ -858,11 +923,12 @@ function fieldLabel(props: { label: unknown }) {
 }
 
 function GenField(props: { node: GenElement; ctx: GenContext }) {
+  const focused = signal(false);
   const p = () => props.node.props;
   const binding = () => props.node.bindings.value;
   const multiline = props.node.component === "TextArea";
   return (
-    <View style={{ gap: 6 }}>
+    <View style={{ gap: themeSpace.chip }}>
       {fieldLabel({ label: p().label })}
       <Input
         value={display(p().value)}
@@ -870,17 +936,26 @@ function GenField(props: { node: GenElement; ctx: GenContext }) {
         multiline={multiline}
         accessibilityLabel={`genui-field-${display(p().label) || binding() || props.node.key}`}
         readonly={!binding() || !props.ctx.interactive()}
+        onFocus={() => focused.set(true)}
+        onBlur={() => focused.set(false)}
         style={{
-          minHeight: multiline ? 20 * Math.max(2, toNumber(p().rows) || 3) : 32,
-          paddingHorizontal: 10,
-          paddingVertical: 6,
+          minHeight: multiline
+            ? 20 * Math.max(2, toNumber(p().rows) || 3)
+            : compactLayout()
+              ? layout.touchTarget
+              : controlHeight.md,
+          paddingHorizontal: themeSpace.md,
+          paddingVertical: themeSpace.chip,
           borderRadius: radii.sm,
+          borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: palette().border,
+          borderColor: focused() ? palette().fieldFocusBorder : palette().border,
           backgroundColor: palette().inputBg,
-          fontSize: textSize(14),
+          fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(14),
           color: palette().text,
           placeholderColor: palette().textMuted,
+          caretColor: palette().accent,
+          ...paintTransition(MOTION_DURATION.fast),
         }}
         onChange={event => {
           const name = binding();
@@ -924,10 +999,16 @@ function GenChoice(props: { node: GenElement; ctx: GenContext }) {
     const name = props.node.bindings.value;
     if (name && props.ctx.interactive()) props.ctx.set(name, value);
   };
-  const kind = props.node.component;
-  if (kind === "Select") {
+  const kind = () => props.node.component;
+  const useSegmented = computed(
+    () =>
+      kind() === "SegmentedControl" ||
+      p().variant === "pills" ||
+      (kind() === "RadioGroup" && !p().variant && options().length <= 4 && !options().some(option => option.description)),
+  );
+  if (props.node.component === "Select") {
     return (
-      <View style={{ gap: 6, alignSelf: "flex-start" }}>
+      <View style={{ gap: themeSpace.chip, alignSelf: "flex-start" }}>
         {fieldLabel({ label: p().label })}
         <SelectDropdown
           options={options().map(option => ({ value: option.value, label: option.label }))}
@@ -939,9 +1020,60 @@ function GenChoice(props: { node: GenElement; ctx: GenContext }) {
       </View>
     );
   }
-  if (kind === "SegmentedControl" || p().variant === "pills" || (kind === "RadioGroup" && !p().variant && options().length <= 4 && !options().some(option => option.description))) {
-    return (
-      <View style={{ gap: 6, alignSelf: truthy(p().block) ? "stretch" : "flex-start" }}>
+  return (
+    <If
+      when={useSegmented()}
+      else={
+        <View style={{ gap: themeSpace.chip }}>
+          {fieldLabel({ label: p().label })}
+          <Each of={options()} key={option => option.value}>
+            {option => (
+              <View
+                role="radio"
+                accessibilityLabel={`genui-option-${option().value}`}
+                accessibilityState={{ selected: current() === option().value }}
+                onPress={() => choose(option().value)}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  minHeight: compactLayout() ? layout.touchTarget : undefined,
+                  gap: themeSpace.sm,
+                  padding: p().variant === "cards" ? themeSpace.md : themeSpace.chip,
+                  borderRadius: radii.md,
+                  borderCurve: "continuous",
+                  borderWidth: p().variant === "cards" ? 1 : 0,
+                  borderColor: current() === option().value ? palette().accentBorder : palette().borderSubtle,
+                  backgroundColor: current() === option().value && p().variant === "cards" ? palette().accentSoft : "transparent",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
+                activeStyle={tactileActiveStyle(0.985)}
+                focusVisibleStyle={focusRingStyle()}
+              >
+                <View
+                  style={{
+                    width: themeSpace.lg,
+                    height: themeSpace.lg,
+                    borderRadius: radii.pill,
+                    borderWidth: current() === option().value ? 5 : 1.5,
+                    borderColor: current() === option().value ? palette().accent : palette().borderStrong,
+                  }}
+                />
+                <View style={{ flex: 1, minWidth: 0, gap: themeSpace.hair }}>
+                  <Text style={{ color: palette().text, fontSize: textSize(14), lineHeight: textLineHeight(14, 1.4) }}>{option().label}</Text>
+                  <If when={option().description ?? ""}>
+                    {text => <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>{text()}</Text>}
+                  </If>
+                </View>
+              </View>
+            )}
+          </Each>
+        </View>
+      }
+    >
+      <View style={{ gap: themeSpace.chip, alignSelf: truthy(p().block) ? "stretch" : "flex-start" }}>
         {fieldLabel({ label: p().label })}
         <SegmentedTabs
           options={options().map(option => ({ value: option.value, label: option.label }))}
@@ -950,52 +1082,7 @@ function GenChoice(props: { node: GenElement; ctx: GenContext }) {
           onChange={value => choose(value)}
         />
       </View>
-    );
-  }
-  return (
-    <View style={{ gap: 6 }}>
-      {fieldLabel({ label: p().label })}
-      <Each of={options()} key={option => option.value}>
-        {option => (
-          <View
-            role="radio"
-            accessibilityLabel={`genui-option-${option().value}`}
-            accessibilityState={{ selected: current() === option().value }}
-            onPress={() => choose(option().value)}
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-start",
-              gap: 10,
-              padding: p().variant === "cards" ? 12 : 6,
-              borderRadius: radii.md,
-              borderWidth: p().variant === "cards" ? 1 : 0,
-              borderColor: current() === option().value ? palette().accentBorder : palette().borderSubtle,
-              backgroundColor: current() === option().value && p().variant === "cards" ? palette().accentSoft : "transparent",
-              cursor: "pointer",
-              ...paintTransition(MOTION_DURATION.fast),
-            }}
-            hoverStyle={{ backgroundColor: palette().surfaceSubtle }}
-          >
-            <View
-              style={{
-                width: 16,
-                height: 16,
-                marginTop: 2,
-                borderRadius: 8,
-                borderWidth: current() === option().value ? 5 : 1.5,
-                borderColor: current() === option().value ? palette().accent : palette().borderStrong,
-              }}
-            />
-            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-              <Text style={{ color: palette().text, fontSize: textSize(14), lineHeight: textLineHeight(14, 1.4) }}>{option().label}</Text>
-              <If when={option().description ?? ""}>
-                {text => <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>{text()}</Text>}
-              </If>
-            </View>
-          </View>
-        )}
-      </Each>
-    </View>
+    </If>
   );
 }
 
@@ -1010,7 +1097,7 @@ function GenSlider(props: { node: GenElement; ctx: GenContext }) {
     return unit === "$" ? `$${text}` : unit ? `${text}${unit === "%" ? "" : " "}${unit}` : text;
   };
   return (
-    <View style={{ gap: 6 }}>
+    <View style={{ gap: themeSpace.chip }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
         {fieldLabel({ label: p().label })}
         <Text style={{ color: palette().textSecondary, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.4), fontVariant: ["tabular-nums"] }}>
@@ -1024,11 +1111,11 @@ function GenSlider(props: { node: GenElement; ctx: GenContext }) {
         step={toNumber(p().step) || 1}
         accessibilityLabel={`genui-slider-${display(p().label) || props.node.key}`}
         disabled={!props.node.bindings.value || !props.ctx.interactive()}
-        style={{ height: 20, justifyContent: "center" }}
-        trackStyle={{ height: 20, justifyContent: "center" }}
-        indicatorStyle={{ height: 4, borderRadius: 2, backgroundColor: palette().surfaceTertiary }}
-        rangeStyle={{ height: 4, borderRadius: 2, backgroundColor: palette().accent }}
-        thumbStyle={{ width: 16, height: 16, borderRadius: 8, backgroundColor: palette().panelRaised, borderWidth: 1, borderColor: palette().borderStrong }}
+        style={{ height: compactLayout() ? layout.touchTarget : themeSpace.xl, justifyContent: "center" }}
+        trackStyle={{ height: compactLayout() ? layout.touchTarget : themeSpace.xl, justifyContent: "center" }}
+        indicatorStyle={{ height: themeSpace.xs, borderRadius: radii.pill, backgroundColor: palette().surfaceTertiary }}
+        rangeStyle={{ height: themeSpace.xs, borderRadius: radii.pill, backgroundColor: palette().accent }}
+        thumbStyle={{ width: themeSpace.lg, height: themeSpace.lg, borderRadius: radii.pill, backgroundColor: palette().panelRaised, borderWidth: 1, borderColor: palette().borderStrong }}
         onChange={event => {
           const name = props.node.bindings.value;
           if (name && typeof event.value === "number") props.ctx.set(name, event.value);
@@ -1049,13 +1136,26 @@ function GenCheckbox(props: { node: GenElement; ctx: GenContext }) {
         const name = props.node.bindings.checked;
         if (name && props.ctx.interactive()) props.ctx.set(name, !checked());
       }}
-      style={{ flexDirection: "row", alignItems: "center", gap: 10, cursor: "pointer", alignSelf: "flex-start", paddingVertical: 2 }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        minHeight: compactLayout() ? layout.touchTarget : undefined,
+        gap: themeSpace.sm,
+        cursor: "pointer",
+        alignSelf: "flex-start",
+        paddingVertical: themeSpace.hair,
+        borderRadius: radii.xs,
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
+      }}
+      activeStyle={tactileActiveStyle(0.98)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <View
         style={{
-          width: 16,
-          height: 16,
-          borderRadius: 4,
+          width: themeSpace.lg,
+          height: themeSpace.lg,
+          borderRadius: radii.xs,
           borderWidth: checked() ? 0 : 1.5,
           borderColor: palette().borderStrong,
           backgroundColor: checked() ? palette().accent : "transparent",
@@ -1098,6 +1198,7 @@ function GenTimer(props: { node: GenElement; ctx: GenContext }) {
     interval = null;
     running.set(false);
   };
+  cleanup(stop);
   const start = () => {
     if (interval !== null || seconds() <= 0) return;
     running.set(true);
@@ -1112,20 +1213,35 @@ function GenTimer(props: { node: GenElement; ctx: GenContext }) {
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
   };
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 10, alignSelf: "flex-start" }}>
-      <View style={{ gap: 2 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: themeSpace.sm, alignSelf: "flex-start" }}>
+      <View style={{ gap: themeSpace.hair }}>
         <If when={display(props.node.props.label)}>
           {label => <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>{label()}</Text>}
         </If>
-        <Text style={{ color: palette().text, fontSize: textSize(24), lineHeight: textLineHeight(24, 1.2), fontWeight: "600", fontVariant: ["tabular-nums"] }}>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: textSize(typeScale.pageTitle),
+            lineHeight: textLineHeight(typeScale.pageTitle, 1.2),
+            fontWeight: "600",
+            fontVariant: ["tabular-nums"],
+          }}
+        >
           {clock()}
         </Text>
       </View>
-      <IconButton icon={running() ? "pause" : "play"} size="sm" accessibilityLabel="genui-timer-toggle" onPress={() => (running() ? stop() : start())} />
+      <IconButton
+        icon={running() ? "pause" : "play"}
+        size="sm"
+        accessibilityLabel="genui-timer-toggle"
+        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
+        onPress={() => (running() ? stop() : start())}
+      />
       <IconButton
         icon="undo"
         size="sm"
         accessibilityLabel="genui-timer-reset"
+        style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
         onPress={() => {
           stop();
           write(initial);
@@ -1141,21 +1257,31 @@ function GenMediaTile(props: { icon: IconName; caption: string; url: string; not
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        padding: 12,
+        gap: themeSpace.sm,
+        padding: themeSpace.md,
         borderRadius: radii.md,
+        borderCurve: "continuous",
         backgroundColor: palette().surfaceSubtle,
       }}
     >
       <Icon name={props.icon} size={18} color={palette().textMuted} />
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: themeSpace.hair }}>
         <Text style={{ color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.4), numberOfLines: 2, textOverflow: "ellipsis" }}>
           {props.caption || tr("genui.image")}
         </Text>
-        <Text style={{ color: palette().textMuted, fontSize: textSize(11), lineHeight: textLineHeight(11, 1.35) }}>{props.note}</Text>
+        <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.35) }}>{props.note}</Text>
       </View>
       <If when={/^https?:\/\//i.test(props.url) ? props.url : ""}>
-        {url => <Button label={tr("genui.open")} variant="ghost" size="xs" trailingIcon="external-link" onPress={() => void openUrl(url()).catch(() => undefined)} />}
+        {url => (
+          <Button
+            label={tr("genui.open")}
+            variant="ghost"
+            size="xs"
+            trailingIcon="external-link"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+            onPress={() => void openUrl(url()).catch(() => undefined)}
+          />
+        )}
       </If>
     </View>
   );
@@ -1170,8 +1296,8 @@ function GenMap(props: { node: GenElement }) {
     ),
   );
   return (
-    <View style={{ gap: 4, padding: 12, borderRadius: radii.md, backgroundColor: palette().surfaceSubtle }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View style={{ gap: themeSpace.xs, padding: themeSpace.md, borderRadius: radii.md, borderCurve: "continuous", backgroundColor: palette().surfaceSubtle }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: themeSpace.sm }}>
         <Icon name="compass" size={16} color={palette().textMuted} />
         <Text style={{ flex: 1, color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
           {tr("genui.mapNotDrawn")}
@@ -1179,7 +1305,7 @@ function GenMap(props: { node: GenElement }) {
       </View>
       <Each of={markers()} key={marker => marker.key}>
         {marker => (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: themeSpace.sm, minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm }}>
             <Text style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.4) }}>
               {marker().label}
             </Text>
@@ -1188,6 +1314,7 @@ function GenMap(props: { node: GenElement }) {
               variant="ghost"
               size="xs"
               trailingIcon="external-link"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
               onPress={() =>
                 void openUrl(`https://www.openstreetmap.org/?mlat=${marker().lat}&mlon=${marker().lng}#map=15/${marker().lat}/${marker().lng}`).catch(
                   () => undefined,
@@ -1212,54 +1339,58 @@ function GenTable(props: { node: GenElement; ctx: GenContext }) {
   );
   const cellStyle = (column: number) => ({
     flex: 1,
-    minWidth: 0,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    minWidth: compactLayout() ? 112 : 96,
+    paddingHorizontal: themeSpace.md,
+    paddingVertical: themeSpace.sm,
     alignItems: numeric()[column] ? ("flex-end" as const) : ("flex-start" as const),
   });
   return (
-    <View style={{ borderRadius: radii.md, borderWidth: 1, borderColor: palette().borderSubtle, overflow: "hidden" }}>
-      <View style={{ flexDirection: "row", backgroundColor: palette().surfaceSubtle }}>
-        <Each of={columns().map((name, index) => ({ name, index }))} key={column => `${column.index}`}>
-          {column => (
-            <View style={cellStyle(column().index)}>
-              <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3), fontWeight: "600" }}>
-                {column().name}
-              </Text>
-            </View>
-          )}
-        </Each>
-      </View>
-      <Each of={rows()} key={row => row.key}>
-        {row => (
-          <View style={{ flexDirection: "row", borderTopWidth: 1, borderColor: palette().borderSubtle }}>
-            <Each of={columns().map((_, index) => index)} key={index => String(index)}>
-              {index => (
-                <View style={cellStyle(index())}>
-                  <If
-                    when={isGenElement(row().cells[index()])}
-                    else={
-                      <Text
-                        style={{
-                          color: palette().text,
-                          fontSize: textSize(13),
-                          lineHeight: textLineHeight(13, 1.4),
-                          fontVariant: numeric()[index()] ? ["tabular-nums"] : undefined,
-                          userSelect: "text",
-                        }}
-                      >
-                        {display(row().cells[index()])}
-                      </Text>
-                    }
-                  >
-                    <GenNode node={row().cells[index()] as GenElement} ctx={props.ctx} />
-                  </If>
+    <View style={{ borderRadius: radii.md, borderCurve: "continuous", borderWidth: 1, borderColor: palette().borderSubtle, overflow: "hidden" }}>
+      <Scroll horizontal style={{ minHeight: 0 }} contentStyle={{ minWidth: "100%" }}>
+        <View style={{ minWidth: "100%" }}>
+          <View style={{ flexDirection: "row", backgroundColor: palette().surfaceSubtle }}>
+            <Each of={columns().map((name, index) => ({ name, index }))} key={column => `${column.index}`}>
+              {column => (
+                <View style={cellStyle(column().index)}>
+                  <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3), fontWeight: "600" }}>
+                    {column().name}
+                  </Text>
                 </View>
               )}
             </Each>
           </View>
-        )}
-      </Each>
+          <Each of={rows()} key={row => row.key}>
+            {row => (
+              <View style={{ flexDirection: "row", borderTopWidth: 1, borderColor: palette().borderSubtle }}>
+                <Each of={columns().map((_, index) => index)} key={index => String(index)}>
+                  {index => (
+                    <View style={cellStyle(index())}>
+                      <If
+                        when={isGenElement(row().cells[index()])}
+                        else={
+                          <Text
+                            style={{
+                              color: palette().text,
+                              fontSize: textSize(13),
+                              lineHeight: textLineHeight(13, 1.4),
+                              fontVariant: numeric()[index()] ? ["tabular-nums"] : undefined,
+                              userSelect: "text",
+                            }}
+                          >
+                            {display(row().cells[index()])}
+                          </Text>
+                        }
+                      >
+                        <GenNode node={row().cells[index()] as GenElement} ctx={props.ctx} />
+                      </If>
+                    </View>
+                  )}
+                </Each>
+              </View>
+            )}
+          </Each>
+        </View>
+      </Scroll>
     </View>
   );
 }
@@ -1286,134 +1417,165 @@ function GenChart(props: { node: GenElement }) {
   });
   const type = () => display(p().type) || "bar";
   const height = () => Math.max(120, Math.min(480, toNumber(p().height) || 220));
+  const empty = computed(() => data().length === 0 || series().length === 0);
   return (
-    <View style={{ gap: 8 }} accessibilityLabel={`genui-chart-${type()}`}>
-      <Canvas
-        style={{ height: height(), alignSelf: "stretch" }}
-        draw={(cx, size) => {
-          const rows = data();
-          const keys = series();
-          const colors = SERIES_COLORS();
-          const pal = palette();
-          if (size.width <= 0 || size.height <= 0 || rows.length === 0 || keys.length === 0) return;
-          const kind = type();
-          if (kind === "pie" || kind === "donut") {
-            const values = rows.map(row => Math.max(0, toNumber(row[keys[0]])));
-            const total = values.reduce((sum, value) => sum + value, 0) || 1;
-            const radius = Math.min(size.width, size.height) / 2 - 8;
-            const centerX = size.width / 2;
-            const centerY = size.height / 2;
-            let angle = -Math.PI / 2;
-            values.forEach((value, index) => {
-              const sweep = (value / total) * Math.PI * 2;
-              cx.beginPath();
-              cx.moveTo(centerX, centerY);
-              cx.arc(centerX, centerY, radius, angle, angle + sweep);
-              cx.closePath();
-              cx.fillStyle = colors[index % colors.length];
-              cx.fill();
-              angle += sweep;
-            });
-            if (kind === "donut") {
-              cx.beginPath();
-              cx.arc(centerX, centerY, radius * 0.58, 0, Math.PI * 2);
-              cx.fillStyle = pal.canvas;
-              cx.fill();
-            }
-            return;
-          }
-          const left = 36;
-          const bottom = 20;
-          const plotWidth = size.width - left - 8;
-          const plotHeight = size.height - bottom - 8;
-          const stacked = truthy(p().stacked);
-          const totals = rows.map(row => keys.reduce((sum, key) => sum + Math.max(0, toNumber(row[key])), 0));
-          const maxValue = Math.max(1, ...(stacked && kind === "bar" ? totals : rows.flatMap(row => keys.map(key => toNumber(row[key])))));
-          const minValue = Math.min(0, ...rows.flatMap(row => keys.map(key => toNumber(row[key]))));
-          const yOf = (value: number) => 8 + plotHeight - ((value - minValue) / (maxValue - minValue || 1)) * plotHeight;
-          cx.strokeStyle = pal.borderSubtle;
-          cx.lineWidth = 1;
-          cx.fillStyle = pal.textMuted;
-          cx.font = "11px sans-serif";
-          for (let step = 0; step <= 4; step += 1) {
-            const value = minValue + ((maxValue - minValue) * step) / 4;
-            const y = yOf(value);
-            cx.beginPath();
-            cx.moveTo(left, y);
-            cx.lineTo(size.width - 8, y);
-            cx.stroke();
-            cx.fillText(formatChartValue(value, p().format, p().currency), 2, y + 4);
-          }
-          const slot = plotWidth / rows.length;
-          rows.forEach((row, index) => {
-            const label = display(row[xKey()]);
-            if (rows.length <= 12 || index % Math.ceil(rows.length / 12) === 0) {
-              cx.fillStyle = pal.textMuted;
-              cx.fillText(label.slice(0, 10), left + index * slot + 2, size.height - 4);
-            }
-          });
-          if (kind === "bar") {
-            rows.forEach((row, index) => {
-              let base = 0;
-              const groupWidth = slot * 0.7;
-              keys.forEach((key, seriesIndex) => {
-                const value = toNumber(row[key]);
-                cx.fillStyle = colors[seriesIndex % colors.length];
-                if (stacked) {
-                  const top = yOf(base + value);
-                  cx.fillRect(left + index * slot + slot * 0.15, top, groupWidth, yOf(base) - top);
-                  base += value;
-                } else {
-                  const width = groupWidth / keys.length;
-                  const top = yOf(Math.max(0, value));
-                  cx.fillRect(left + index * slot + slot * 0.15 + seriesIndex * width, top, width - 2, Math.abs(yOf(value) - yOf(0)));
-                }
-              });
-            });
-            return;
-          }
-          keys.forEach((key, seriesIndex) => {
-            const color = colors[seriesIndex % colors.length];
-            const points = rows.map((row, index) => [left + index * slot + slot / 2, yOf(toNumber(row[key]))] as const);
-            if (kind === "scatter") {
-              cx.fillStyle = color;
-              for (const [x, y] of points) {
+    <View style={{ gap: themeSpace.sm }} accessibilityLabel={`genui-chart-${type()}`}>
+      <If
+        when={!empty()}
+        else={
+          <View
+            style={{
+              padding: themeSpace.md,
+              borderRadius: radii.md,
+              backgroundColor: palette().surfaceSubtle,
+              alignItems: "center",
+            }}
+          >
+            <Text style={{ color: palette().textMuted, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.45) }}>
+              {tr("genui.empty")}
+            </Text>
+          </View>
+        }
+      >
+        <Canvas
+          style={{ height: height(), alignSelf: "stretch" }}
+          draw={(cx, size) => {
+            const rows = data();
+            const keys = series();
+            const colors = SERIES_COLORS();
+            const pal = palette();
+            if (size.width <= 0 || size.height <= 0 || rows.length === 0 || keys.length === 0) return;
+            const kind = type();
+            if (kind === "pie" || kind === "donut") {
+              const values = rows.map(row => Math.max(0, toNumber(row[keys[0]])));
+              const total = values.reduce((sum, value) => sum + value, 0) || 1;
+              const radius = Math.max(8, Math.min(size.width, size.height) / 2 - 8);
+              const centerX = size.width / 2;
+              const centerY = size.height / 2;
+              let angle = -Math.PI / 2;
+              values.forEach((value, index) => {
+                const sweep = (value / total) * Math.PI * 2;
                 cx.beginPath();
-                cx.arc(x, y, 3, 0, Math.PI * 2);
+                cx.moveTo(centerX, centerY);
+                cx.arc(centerX, centerY, radius, angle, angle + sweep);
+                cx.closePath();
+                cx.fillStyle = colors[index % colors.length];
+                cx.fill();
+                angle += sweep;
+              });
+              if (kind === "donut") {
+                cx.beginPath();
+                cx.arc(centerX, centerY, radius * 0.58, 0, Math.PI * 2);
+                cx.fillStyle = pal.canvas;
                 cx.fill();
               }
               return;
             }
-            cx.beginPath();
-            points.forEach(([x, y], index) => (index === 0 ? cx.moveTo(x, y) : cx.lineTo(x, y)));
-            cx.strokeStyle = color;
-            cx.lineWidth = 2;
-            cx.stroke();
-            if (kind === "area" && points.length > 1) {
-              cx.lineTo(points[points.length - 1][0], yOf(0));
-              cx.lineTo(points[0][0], yOf(0));
-              cx.closePath();
-              cx.globalAlpha = 0.15;
-              cx.fillStyle = color;
-              cx.fill();
-              cx.globalAlpha = 1;
+            const stacked = truthy(p().stacked);
+            const totals = rows.map(row => keys.reduce((sum, key) => sum + Math.max(0, toNumber(row[key])), 0));
+            const maxValue = Math.max(1, ...(stacked && kind === "bar" ? totals : rows.flatMap(row => keys.map(key => toNumber(row[key])))));
+            const minValue = Math.min(0, ...rows.flatMap(row => keys.map(key => toNumber(row[key]))));
+            cx.font = `${textSize(11)}px sans-serif`;
+            const yLabels: Array<{ value: number; text: string }> = [];
+            let maxLabelWidth = 24;
+            for (let step = 0; step <= 4; step += 1) {
+              const value = minValue + ((maxValue - minValue) * step) / 4;
+              const label = formatChartValue(value, p().format, p().currency);
+              yLabels.push({ value, text: label });
+              const measured =
+                typeof cx.measureText === "function" ? cx.measureText(label).width : label.length * 6.5;
+              if (measured > maxLabelWidth) maxLabelWidth = measured;
             }
-          });
-        }}
-      />
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
-        <Each
-          of={(type() === "pie" || type() === "donut" ? data().map(row => display(row[xKey()])) : series()).map((name, index) => ({ name, index }))}
-          key={entry => `${entry.index}`}
-        >
-          {entry => (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: SERIES_COLORS()[entry().index % SERIES_COLORS().length] }} />
-              <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>{entry().name}</Text>
-            </View>
-          )}
-        </Each>
-      </View>
+            const left = Math.max(36, Math.min(Math.round(size.width * 0.35), Math.ceil(maxLabelWidth) + 12));
+            const bottom = 20;
+            const plotWidth = Math.max(24, size.width - left - 8);
+            const plotHeight = Math.max(24, size.height - bottom - 8);
+            const yOf = (value: number) => 8 + plotHeight - ((value - minValue) / (maxValue - minValue || 1)) * plotHeight;
+            cx.strokeStyle = pal.borderSubtle;
+            cx.lineWidth = 1;
+            cx.fillStyle = pal.textMuted;
+            for (const entry of yLabels) {
+              const y = yOf(entry.value);
+              cx.beginPath();
+              cx.moveTo(left, y);
+              cx.lineTo(size.width - 8, y);
+              cx.stroke();
+              cx.fillText(entry.text, 2, y + 4);
+            }
+            const slot = plotWidth / rows.length;
+            const maxXLabels = Math.max(1, Math.floor(plotWidth / 52));
+            const xStep = Math.max(1, Math.ceil(rows.length / maxXLabels));
+            rows.forEach((row, index) => {
+              const label = display(row[xKey()]);
+              if (index % xStep === 0) {
+                cx.fillStyle = pal.textMuted;
+                cx.fillText(label.slice(0, 10), left + index * slot + 2, size.height - 4);
+              }
+            });
+            if (kind === "bar") {
+              rows.forEach((row, index) => {
+                let base = 0;
+                const groupWidth = Math.max(2, slot * 0.7);
+                keys.forEach((key, seriesIndex) => {
+                  const value = toNumber(row[key]);
+                  cx.fillStyle = colors[seriesIndex % colors.length];
+                  if (stacked) {
+                    const top = yOf(base + value);
+                    cx.fillRect(left + index * slot + slot * 0.15, top, groupWidth, yOf(base) - top);
+                    base += value;
+                  } else {
+                    const width = groupWidth / keys.length;
+                    const barWidth = Math.max(2, width - 2);
+                    const top = yOf(Math.max(0, value));
+                    cx.fillRect(left + index * slot + slot * 0.15 + seriesIndex * width, top, barWidth, Math.abs(yOf(value) - yOf(0)));
+                  }
+                });
+              });
+              return;
+            }
+            keys.forEach((key, seriesIndex) => {
+              const color = colors[seriesIndex % colors.length];
+              const points = rows.map((row, index) => [left + index * slot + slot / 2, yOf(toNumber(row[key]))] as const);
+              if (kind === "scatter") {
+                cx.fillStyle = color;
+                for (const [x, y] of points) {
+                  cx.beginPath();
+                  cx.arc(x, y, 3, 0, Math.PI * 2);
+                  cx.fill();
+                }
+                return;
+              }
+              cx.beginPath();
+              points.forEach(([x, y], index) => (index === 0 ? cx.moveTo(x, y) : cx.lineTo(x, y)));
+              cx.strokeStyle = color;
+              cx.lineWidth = 2;
+              cx.stroke();
+              if (kind === "area" && points.length > 1) {
+                cx.lineTo(points[points.length - 1][0], yOf(0));
+                cx.lineTo(points[0][0], yOf(0));
+                cx.closePath();
+                cx.globalAlpha = 0.15;
+                cx.fillStyle = color;
+                cx.fill();
+                cx.globalAlpha = 1;
+              }
+            });
+          }}
+        />
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: themeSpace.md }}>
+          <Each
+            of={(type() === "pie" || type() === "donut" ? data().map(row => display(row[xKey()])) : series()).map((name, index) => ({ name, index }))}
+            key={entry => `${entry.index}`}
+          >
+            {entry => (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: themeSpace.chip }}>
+                <View style={{ width: themeSpace.sm, height: themeSpace.sm, borderRadius: radii.pill, backgroundColor: SERIES_COLORS()[entry().index % SERIES_COLORS().length] }} />
+                <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>{entry().name}</Text>
+              </View>
+            )}
+          </Each>
+        </View>
+      </If>
     </View>
   );
 }
@@ -1427,17 +1589,22 @@ function GenFlashcard(props: { node: GenElement; ctx: GenContext }) {
       onPress={() => flipped.set(!flipped())}
       style={{
         minHeight: 120,
-        padding: 20,
-        gap: 8,
+        padding: themeSpace.xl,
+        gap: themeSpace.sm,
         borderRadius: radii.lg,
+        borderCurve: "continuous",
         borderWidth: 1,
         borderColor: palette().borderSubtle,
         backgroundColor: flipped() ? palette().surfaceSubtle : palette().panelRaised,
         alignItems: "center",
         justifyContent: "center",
         cursor: "pointer",
-        ...paintTransition(MOTION_DURATION.base),
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
+      hoverStyle={{ borderColor: palette().border }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <If when={flipped()} else={<Children value={props.node.props.front} parentKey={`${props.node.key}/front`} ctx={props.ctx} />}>
         <Children value={props.node.props.back} parentKey={`${props.node.key}/back`} ctx={props.ctx} />
@@ -1590,7 +1757,7 @@ function sandboxedHtml(html: string, css?: string): string {
 function GenHtml(props: { html: string; css?: string; title?: string; height: number }) {
   const failed = signal("");
   return (
-    <View style={{ gap: 6 }}>
+    <View style={{ gap: themeSpace.chip }}>
       <If
         when={failed()}
         else={
@@ -1598,16 +1765,30 @@ function GenHtml(props: { html: string; css?: string; title?: string; height: nu
             html={sandboxedHtml(props.html, props.css)}
             javaScriptEnabled={false}
             incognito
-            style={{ height: props.height, alignSelf: "stretch", borderRadius: radii.md, overflow: "hidden" }}
+            style={{
+              height: Math.min(props.height, compactLayout() ? 320 : props.height),
+              alignSelf: "stretch",
+              borderRadius: radii.md,
+              overflow: "hidden",
+            }}
             onError={(event: { message: string }) => failed.set(event.message || "error")}
           />
         }
       >
-        <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
-          {tr("genui.htmlUnavailable")}
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: themeSpace.sm }}>
+          <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4), flex: 1, minWidth: 0 }}>
+            {tr("genui.htmlUnavailable")}
+          </Text>
+          <Button
+            label={tr("common.tryAgain")}
+            variant="ghost"
+            size="sm"
+            style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+            onPress={() => failed.set("")}
+          />
+        </View>
       </If>
-      <Text style={{ color: palette().textMuted, fontSize: textSize(11), lineHeight: textLineHeight(11, 1.35) }}>
+      <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.35) }}>
         {tr("genui.scriptsOff")}
       </Text>
     </View>

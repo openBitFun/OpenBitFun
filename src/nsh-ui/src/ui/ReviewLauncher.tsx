@@ -1,7 +1,7 @@
 // Review launcher sheet (wave 5). Display only: what is listed, refused or
 // launched is the host's answer to `launch_review` (see `src/reviewStore.ts`).
 
-import { Scroll, Text, View, type JSX } from "nsh";
+import { Scroll, Text, View, signal, type JSX } from "nsh";
 import { Input } from "nsh/base";
 import { formatCount } from "../format";
 import { tr } from "../i18n";
@@ -26,11 +26,11 @@ import {
   type ReviewLaunchFile,
 } from "../reviewStore";
 import { activeWorkspace } from "../state";
-import { fontMono, palette, textLineHeight, textSize } from "../theme";
+import { compactLayout, fontMono, layout, palette, radii, space, textLineHeight, textSize } from "../theme";
 import { Icon } from "./icons";
-import { Spinner } from "./motion";
+import { MOTION_DURATION, Spinner, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { ModalDialog } from "./overlays";
-import { Button, SegmentedTabs } from "./primitives";
+import { Button, SegmentedTabs, focusRingStyle } from "./primitives";
 
 const STATUS_MARK: Record<string, string> = {
   added: "A",
@@ -42,7 +42,7 @@ const STATUS_MARK: Record<string, string> = {
 
 function SectionHeader(props: { text: string; trailing?: JSX.Element }) {
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8, gap: 8 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: space.sm, gap: space.sm }}>
       <Text
         style={{
           flex: 1,
@@ -70,23 +70,27 @@ function FileRow(props: { file: () => ReviewLaunchFile; first: () => boolean }) 
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 10,
-        minHeight: 36,
-        paddingHorizontal: 16,
+        gap: space.sm,
+        minHeight: compactLayout() ? layout.touchTarget : space.x3l + space.xs,
+        paddingHorizontal: space.lg,
         borderTopWidth: props.first() ? 0 : 1,
         borderColor: palette().borderSubtle,
         cursor: "pointer",
+        userSelect: "none",
+        ...pressTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
+      activeStyle={tactileActiveStyle(0.985)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Icon
         name={included() ? "check-circle" : "circle-dot"}
         size={14}
-        color={included() ? palette().accent : palette().textMuted}
+        color={included() ? palette().text : palette().textMuted}
       />
       <Text
         style={{
-          width: 14,
+          width: space.lg,
           color: palette().textMuted,
           fontFamily: fontMono,
           fontSize: textSize(12),
@@ -104,7 +108,7 @@ function FileRow(props: { file: () => ReviewLaunchFile; first: () => boolean }) 
           fontSize: textSize(12),
           lineHeight: textLineHeight(12, 1.35),
           numberOfLines: 1,
-          textOverflow: "ellipsis",
+          textOverflow: "ellipsis-middle",
         }}
       >
         {props.file().previousPath ? `${props.file().previousPath} → ${props.file().path}` : props.file().path}
@@ -122,6 +126,7 @@ function scopeSummary(): string {
 }
 
 export function ReviewLauncherDialog() {
+  const focusFocused = signal(false);
   const intentOptions = () => [
     { value: "review" as ReviewIntent, label: tr("review.intentStandard"), accessibilityLabel: "review-intent-review" },
     { value: "strict" as ReviewIntent, label: tr("review.intentStrict"), accessibilityLabel: "review-intent-strict" },
@@ -135,11 +140,12 @@ export function ReviewLauncherDialog() {
       accessibilityLabel="review-launcher"
       onClose={closeReviewLauncher}
       footer={
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <Button label={tr("common.cancel")} variant="ghost" onPress={closeReviewLauncher} />
+        <View style={{ flexDirection: "row", gap: space.sm }}>
+          <Button label={tr("common.cancel")} variant="ghost" size="md" onPress={closeReviewLauncher} />
           <Button
             label={tr("review.start")}
             variant="primary"
+            size="md"
             accessibilityLabel="review-start"
             loading={reviewLaunching()}
             disabled={
@@ -153,7 +159,7 @@ export function ReviewLauncherDialog() {
         </View>
       }
     >
-      <View style={{ gap: 8 }}>
+      <View style={{ gap: space.sm }}>
         <SegmentedTabs options={intentOptions()} value={reviewIntent()} onChange={chooseReviewIntent} />
         <Text
           style={{
@@ -182,9 +188,20 @@ export function ReviewLauncherDialog() {
                 role="button"
                 accessibilityLabel="review-include-all"
                 onPress={includeAllReviewFiles}
-                style={{ cursor: "pointer" }}
+                style={{
+                  minHeight: compactLayout() ? layout.touchTarget : undefined,
+                  justifyContent: "center",
+                  paddingHorizontal: space.xs,
+                  borderRadius: radii.sm,
+                  cursor: "pointer",
+                  userSelect: "none",
+                  ...pressTransition(MOTION_DURATION.fast),
+                }}
+                hoverStyle={{ backgroundColor: palette().panelHover }}
+                activeStyle={tactileActiveStyle(0.97)}
+                focusVisibleStyle={focusRingStyle()}
               >
-                <Text style={{ color: palette().accent, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
+                <Text style={{ color: palette().textSecondary, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3), fontWeight: "500" }}>
                   {tr("review.includeAll", { summary: scopeSummary() })}
                 </Text>
               </View>
@@ -194,7 +211,7 @@ export function ReviewLauncherDialog() {
         <If
           when={reviewAllFiles().length > 0}
           else={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 36 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: space.x3l + space.xs }}>
               <If when={reviewPreviewLoading()}>
                 <Spinner size={14} />
               </If>
@@ -206,7 +223,7 @@ export function ReviewLauncherDialog() {
         >
           <View
             style={{
-              borderRadius: 12,
+              borderRadius: radii.lg,
               borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().borderSubtle,
@@ -224,7 +241,7 @@ export function ReviewLauncherDialog() {
         <If when={reviewPreview()?.completeness === "partial" && reviewPreview()?.status !== "refused"}>
           <Text
             style={{
-              marginTop: 8,
+              marginTop: space.sm,
               color: palette().textMuted,
               fontSize: textSize(12),
               lineHeight: textLineHeight(12, 1.45),
@@ -243,27 +260,31 @@ export function ReviewLauncherDialog() {
           accessibilityLabel="review-focus"
           multiline={true}
           submitBehavior="newline"
+          onFocus={() => focusFocused.set(true)}
+          onBlur={() => focusFocused.set(false)}
           style={{
             minHeight: 64,
-            paddingHorizontal: 12,
-            paddingVertical: 10,
-            borderRadius: 10,
+            paddingHorizontal: space.md,
+            paddingVertical: space.sm,
+            borderRadius: radii.md,
+            borderCurve: "continuous",
             borderWidth: 1,
-            borderColor: palette().borderSubtle,
+            borderColor: focusFocused() ? palette().fieldFocusBorder : palette().borderSubtle,
             backgroundColor: palette().inputBg,
             color: palette().text,
             placeholderColor: palette().textMuted,
             caretColor: palette().accent,
-            fontSize: textSize(13),
-            lineHeight: textLineHeight(13, 1.5),
+            fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
+            lineHeight: compactLayout() ? textLineHeight(16, 1.45) : textLineHeight(13, 1.5),
+            ...paintTransition(MOTION_DURATION.fast),
           }}
           onChange={event => reviewFocus.set(event.value)}
         />
       </View>
 
       <If when={reviewNotice()}>
-        <View accessibilityLabel="review-notice" style={{ flexDirection: "row", gap: 8, alignItems: "flex-start" }}>
-          <Icon name="alert-circle" size={14} color={palette().warning} />
+        <View accessibilityLabel="review-notice" style={{ flexDirection: "row", gap: space.sm, alignItems: "flex-start" }}>
+          <Icon name="info" size={14} color={palette().textSecondary} />
           <Text
             style={{
               flex: 1,

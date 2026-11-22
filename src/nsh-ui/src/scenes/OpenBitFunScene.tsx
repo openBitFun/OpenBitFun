@@ -11,7 +11,7 @@
 // model picker chooses only where the model rounds run: Auto (the cloud node
 // picks) or a device and one of its models, as the cloud node lists them.
 
-import { Scroll, Text, View, openUrl, signal, type ScrollRef, type ViewRef } from "nsh";
+import { Scroll, Text, View, cleanup, openUrl, signal, type ScrollRef, type ViewRef } from "nsh";
 import { TextView } from "nsh/base";
 import { contentWidth } from "../contentWidthStore";
 import { tr } from "../i18n";
@@ -60,9 +60,9 @@ import {
   type ComposerBlocked,
 } from "../ui/jobs";
 import { createMarkdownCodeActions, createMarkdownStyles, STATIC_MARKDOWN_OPTIONS, STREAMING_MARKDOWN_OPTIONS } from "../ui/markdown";
-import { BrandSpinner, paintTransition } from "../ui/motion";
+import { BrandSpinner, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "../ui/motion";
 import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
-import { Button, EmptyStateCard, IconButton } from "../ui/primitives";
+import { Button, EmptyStateCard, IconButton, SkeletonBlock, focusRingStyle } from "../ui/primitives";
 import { CardsStrip } from "../ui/cardView"; // wave22-p3
 
 /** The user bubble's widest (spec §3: min(560, 72 %)). */
@@ -205,6 +205,7 @@ function ModelPicker() {
         trailingIcon="chevron-down"
         accessibilityLabel="sa-model-picker"
         tooltip={tr("models.superAgentTitle")}
+        style={compactLayout() ? { minHeight: layout.touchTarget, minWidth: layout.touchTarget } : undefined}
         onPress={() => {
           open.set(!open());
           if (open()) void refreshSuperagentStatus();
@@ -259,6 +260,10 @@ function Composer(props: { maxFieldHeight: number }) {
 
 // ── New conversation ─────────────────────────────────────────────────────────
 
+function maxComposerHeight(height: number): number {
+  return height > 0 ? Math.max(controlHeight.lg * 3, Math.round(height * 0.4)) : 320;
+}
+
 function NewConversation(props: { height: number }) {
   const workingNow = () => superagentStatus()?.workingNow ?? { needsYou: [], working: [] };
   const showEmpty = () =>
@@ -272,12 +277,16 @@ function NewConversation(props: { height: number }) {
       testID="sa-new-conversation"
       style={{ flex: 1, minHeight: 0 }}
       contentStyle={{
+        flexGrow: 1,
         alignItems: "center",
         paddingHorizontal: gutter(),
-        paddingTop: compactLayout() ? space.xxl : Math.round(props.height * 0.22),
+        paddingTop: compactLayout() ? space.xxl : space.x3l,
         paddingBottom: space.x3l,
       }}
     >
+      <If when={!compactLayout()}>
+        <View style={{ flexGrow: 22, minHeight: space.x3l }} />
+      </If>
       <View style={{ width: "100%", maxWidth: contentWidth(), gap: space.xxl }}>
         <Text
           style={{
@@ -288,7 +297,7 @@ function NewConversation(props: { height: number }) {
           {tr("sa.hero")}
         </Text>
         <View style={{ gap: space.md }}>
-          <Composer maxFieldHeight={Math.max(controlHeight.lg * 3, Math.round(props.height * 0.4))} />
+          <Composer maxFieldHeight={maxComposerHeight(props.height)} />
           <If when={superagentPhase() === "ready"}>
             <SuggestionChips
               suggestions={(superagentStatus()?.suggestions ?? []).slice(0, 3)}
@@ -305,6 +314,9 @@ function NewConversation(props: { height: number }) {
           <EmptyStateCard title={tr("sa.emptyTitle")} subtitle={tr("sa.emptyBody")} />
         </If>
       </View>
+      <If when={!compactLayout()}>
+        <View style={{ flexGrow: 78 }} />
+      </If>
     </Scroll>
   );
 }
@@ -378,23 +390,57 @@ function handleLink(event: { url: string }): void {
 }
 
 function UserBubble(props: { text: string; pending?: boolean }) {
+  const expanded = signal(false);
+  const longText = () => props.text.length > 600 || props.text.split("\n").length > 10;
   return (
     <View style={{ alignSelf: "flex-end", maxWidth: "72%" }}>
       <View
         style={{
           maxWidth: USER_BUBBLE_MAX,
-          paddingVertical: space.sm + space.hair,
-          paddingHorizontal: space.md + space.hair,
+          paddingVertical: space.md,
+          paddingHorizontal: space.lg,
           borderRadius: radii.lg,
           borderCurve: "continuous",
           backgroundColor: palette().userBubble,
           opacity: props.pending ? 0.72 : 1,
+          gap: space.xs,
           ...paintTransition(160),
         }}
       >
-        <Text style={{ ...textStyle("prose", { color: palette().userBubbleText }) }}>
+        <Text
+          style={{
+            ...textStyle("prose", { color: palette().userBubbleText }),
+            userSelect: "text",
+            numberOfLines: longText() && !expanded() ? 12 : undefined,
+            textOverflow: longText() && !expanded() ? "ellipsis" : undefined,
+          }}
+        >
           {props.text}
         </Text>
+        <If when={longText()}>
+          <View
+            role="button"
+            accessibilityLabel={expanded() ? tr("session.showLess") : tr("session.showMore")}
+            onPress={() => expanded.set(!expanded())}
+            style={{
+              alignSelf: "flex-start",
+              minHeight: compactLayout() ? layout.touchTarget : controlHeight.xs,
+              justifyContent: "center",
+              paddingHorizontal: space.xs,
+              borderRadius: radii.sm,
+              cursor: "pointer",
+              userSelect: "none",
+              ...pressTransition(MOTION_DURATION.fast),
+            }}
+            hoverStyle={{ backgroundColor: palette().panelHover }}
+            activeStyle={tactileActiveStyle(0.98)}
+            focusVisibleStyle={focusRingStyle()}
+          >
+            <Text style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}>
+              {expanded() ? tr("session.showLess") : tr("session.showMore")}
+            </Text>
+          </View>
+        </If>
       </View>
     </View>
   );
@@ -437,7 +483,7 @@ function AssistantProse(props: {
   );
 }
 
-function Notice(props: { text: string; failed: boolean }) {
+function Notice(props: { text: string; failed: boolean; onRetry?: () => void }) {
   return (
     <If
       when={props.failed}
@@ -453,8 +499,34 @@ function Notice(props: { text: string; failed: boolean }) {
           <Icon name="close" size={14} color={palette().danger} />
           <Text style={{ ...textStyle("body"), flex: 1, minWidth: 0 }}>{tr("session.turnStopped", { reason: props.text })}</Text>
         </View>
+        <If when={Boolean(props.onRetry)}>
+          <View style={{ alignSelf: "flex-start" }}>
+            <Button
+              label={tr("common.tryAgain")}
+              variant="ghost"
+              size="sm"
+              style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+              onPress={() => props.onRetry?.()}
+            />
+          </View>
+        </If>
       </View>
     </If>
+  );
+}
+
+function ConversationSkeleton() {
+  return (
+    <View testID="sa-loading" style={{ gap: space.xxl, paddingVertical: space.sm }}>
+      <View style={{ alignSelf: "flex-end", width: "54%", gap: space.xs }}>
+        <SkeletonBlock width="100%" height={44} borderRadius={radii.lg} />
+      </View>
+      <View style={{ gap: space.sm }}>
+        <SkeletonBlock width="84%" height={14} borderRadius={radii.xs} />
+        <SkeletonBlock width="68%" height={14} borderRadius={radii.xs} />
+        <SkeletonBlock width="42%" height={14} borderRadius={radii.xs} />
+      </View>
+    </View>
   );
 }
 
@@ -477,7 +549,7 @@ function ConversationHeader() {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        height: layout.topBarHeight,
+        minHeight: compactLayout() ? layout.phoneTopBarHeight : layout.topBarHeight,
         paddingHorizontal: compactLayout() ? space.lg : space.xxl,
         gap: space.md,
         flexShrink: 0,
@@ -493,6 +565,7 @@ function ConversationHeader() {
           icon="more"
           size="sm"
           accessibilityLabel="sa-conversation-menu"
+          style={compactLayout() ? { width: layout.touchTarget, height: layout.touchTarget } : undefined}
           onPress={() => menuOpen.set(true)}
         />
       </View>
@@ -513,6 +586,12 @@ function Thread(props: { height: number }) {
   const distanceFromEnd = signal(0);
   const offsets = new Map<string, number>();
   let citeTimer: ReturnType<typeof setTimeout> | null = null;
+  cleanup(() => {
+    if (citeTimer) {
+      clearTimeout(citeTimer);
+      citeTimer = null;
+    }
+  });
   const stick = () => {
     if (following()) scrollRef?.scrollToEnd({ animated: false });
   };
@@ -549,7 +628,7 @@ function Thread(props: { height: number }) {
             onLayout={() => stick()}
           >
             <If when={conversationLoading() && !conversationView()}>
-              <ThinkingLine />
+              <ConversationSkeleton />
             </If>
             <Each of={threadItems()} key={item => item.key}>
               {(item, index) => (
@@ -575,7 +654,11 @@ function Thread(props: { height: number }) {
                     <JobStack jobIds={(item() as { jobIds: string[] }).jobIds} citedJobId={citedJobId()} />
                   </If>
                   <If when={item().kind === "notice"}>
-                    <Notice text={(item() as { text: string }).text} failed={(item() as { failed: boolean }).failed} />
+                    <Notice
+                      text={(item() as { text: string }).text}
+                      failed={(item() as { failed: boolean }).failed}
+                      onRetry={(item() as { failed: boolean }).failed ? () => void refreshConversation() : undefined}
+                    />
                   </If>
                 </View>
               )}
@@ -591,7 +674,13 @@ function Thread(props: { height: number }) {
                 <Text style={{ ...textStyle("label", { color: palette().textMuted }), fontWeight: "400", flex: 1 }}>
                   {tr("sa.loadFailed")}
                 </Text>
-                <Button label={tr("common.tryAgain")} variant="ghost" size="sm" onPress={() => void refreshConversation()} />
+                <Button
+                  label={tr("common.tryAgain")}
+                  variant="ghost"
+                  size="sm"
+                  style={compactLayout() ? { minHeight: layout.touchTarget } : undefined}
+                  onPress={() => void refreshConversation()}
+                />
               </View>
             </If>
           </View>
@@ -611,13 +700,20 @@ function Thread(props: { height: number }) {
                 flexDirection: "row",
                 alignItems: "center",
                 gap: space.xs,
-                height: controlHeight.sm,
+                minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
                 paddingHorizontal: space.md,
                 borderRadius: radii.pill,
+                borderWidth: 1,
+                borderColor: palette().border,
                 backgroundColor: palette().surfaceElevated,
                 boxShadow: palette().shadowTooltip,
                 cursor: "pointer",
+                userSelect: "none",
+                ...pressTransition(MOTION_DURATION.fast),
               }}
+              hoverStyle={{ backgroundColor: palette().panelHover }}
+              activeStyle={tactileActiveStyle(0.97)}
+              focusVisibleStyle={focusRingStyle()}
             >
               <Icon name="arrow-down" size={12} color={palette().textSecondary} />
               <Text style={textStyle("caption", { color: palette().textSecondary })}>{tr("session.jumpLatest")}</Text>
@@ -636,7 +732,7 @@ function Thread(props: { height: number }) {
         }}
       >
         <View style={{ width: "100%", maxWidth: contentWidth() }}>
-          <Composer maxFieldHeight={Math.max(controlHeight.lg * 3, Math.round(props.height * 0.4))} />
+          <Composer maxFieldHeight={maxComposerHeight(props.height)} />
         </View>
       </View>
     </View>
