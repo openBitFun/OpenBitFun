@@ -53,6 +53,24 @@ pub struct FleetRouter {
     backend: Arc<dyn FleetBackend>,
     index: Arc<FleetIndex>,
     peers: Arc<dyn FleetPeerTransport>,
+    /// The host's device network is off (a local-only fleet): another
+    /// device is never dialed, and a call aimed at one is refused as
+    /// `fleet_device_offline: <id> (device_network_off)`.
+    local_only: bool,
+}
+
+/// The `fleet_device_offline` reason while this host's device network is
+/// off (signed out, the network switched off, still starting, or failed).
+pub const DEVICE_NETWORK_OFF: &str = "device_network_off";
+
+/// The refusal of a call aimed at `device_id` while this host's device
+/// network is off.
+pub fn device_network_off(device_id: String) -> FleetCallError {
+    let refusal = FleetCallRefusal::DeviceOffline {
+        device_id,
+        reason: DEVICE_NETWORK_OFF,
+    };
+    FleetCallError::refusal(refusal.prefix(), refusal.message())
 }
 
 fn request_of<T: DeserializeOwned + Default>(args: &Value) -> Result<T, FleetCallError> {
@@ -77,7 +95,29 @@ impl FleetRouter {
             backend,
             index,
             peers,
+            local_only: false,
         })
+    }
+
+    /// A router for a host whose device network is off: commands aimed at
+    /// this host run here exactly as with the network on; any other target
+    /// is refused with [`DEVICE_NETWORK_OFF`].
+    pub fn new_local_only(
+        backend: Arc<dyn FleetBackend>,
+        index: Arc<FleetIndex>,
+        peers: Arc<dyn FleetPeerTransport>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            backend,
+            index,
+            peers,
+            local_only: true,
+        })
+    }
+
+    /// Whether this router serves a local-only fleet (device network off).
+    pub fn is_local_only(&self) -> bool {
+        self.local_only
     }
 
     /// The index behind this router.
@@ -171,7 +211,17 @@ impl FleetRouter {
             .backend
             .local_device_id()
             .unwrap_or_else(|| self.index.self_device_id().to_string());
-        match fleet_call_verdict(&self_id, &request, self.index.as_ref()) {
+        let verdict = fleet_call_verdict(&self_id, &request, self.index.as_ref());
+        if self.local_only {
+            if let Some(device_id) = aimed_elsewhere(&self_id, &request, &verdict) {
+                log::debug!(
+                    "Fleet call refused while the device network is off: command={}",
+                    request.command
+                );
+                return Err(device_network_off(device_id));
+            }
+        }
+        match verdict {
             FleetCallVerdict::Local => {
                 self.backend
                     .dispatch_local(request.command, request.args)
@@ -210,5 +260,29 @@ impl FleetRouter {
                 Err(FleetCallError::refusal(refusal.prefix(), refusal.message()))
             }
         }
+    }
+}
+
+/// The other device a call is aimed at, for a host that cannot reach any:
+/// the forward target, the unknown device a refusal names, or the given
+/// target of a refused owner check. `None` when the call stays here.
+fn aimed_elsewhere(
+    self_id: &str,
+    request: &FleetCallRequest,
+    verdict: &FleetCallVerdict,
+) -> Option<String> {
+    match verdict {
+        FleetCallVerdict::Local => None,
+        FleetCallVerdict::Forward { target } => Some(target.clone()),
+        FleetCallVerdict::Refuse(FleetCallRefusal::DeviceOffline { device_id, .. })
+        | FleetCallVerdict::Refuse(FleetCallRefusal::DeviceOutdated { device_id }) => {
+            Some(device_id.clone())
+        }
+        FleetCallVerdict::Refuse(FleetCallRefusal::OwnerMismatch { .. }) => request
+            .target
+            .as_deref()
+            .filter(|target| !target.is_empty() && *target != self_id)
+            .map(str::to_string),
+        FleetCallVerdict::Refuse(_) => None,
     }
 }

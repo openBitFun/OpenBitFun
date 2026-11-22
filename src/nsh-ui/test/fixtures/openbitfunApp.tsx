@@ -1,6 +1,7 @@
 // The OpenBitFun scene beside its history slot, as the shell lays them out
 // (sidebar 264 on `chromeBg`, the scene on the canvas), for
 // `test/superagent-conversation.test.tsx`. The shell's own stores load first.
+import "./superAgentOn";
 import "../../src/sessionStatusStore";
 import "../../src/agentEvents";
 import { View, mount } from "nsh";

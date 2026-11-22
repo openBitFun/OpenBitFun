@@ -38,6 +38,7 @@ import {
 import { markSessionSeen, reconcileSessionReadState } from "./sessionStatusStore";
 import { isCommandUnavailable as isMissingCommand } from "./hostCommands";
 import { loadQuestionMailbox } from "./userQuestionStore";
+import { superAgentUi } from "./productGates";
 import {
   archiveSession,
   cancelDialogTurn,
@@ -102,7 +103,16 @@ export type AuxPaneTab = "files" | "git" | "terminal" | "browser";
 export type AuxPaneSide = "right" | "left";
 export type SessionGrouping = "grouped" | "flat";
 
-export const activeScene = signal<SceneId>("openbitfun");
+/**
+ * The scene the app opens on: the session view (the last session of the
+ * selected workspace, else a new one), or the Super Agent conversation while
+ * that gate is on (`productGates.ts`).
+ */
+export function landingScene(): SceneId {
+  return superAgentUi() ? "openbitfun" : "sessions";
+}
+
+export const activeScene = signal<SceneId>(landingScene());
 export const drawerOpen = signal(true);
 
 export function toggleDrawer(): void {
@@ -110,13 +120,13 @@ export function toggleDrawer(): void {
 }
 
 /** Navigation history across scenes (`NavBar` back/forward). */
-export const navHistory = signal<SceneId[]>(["openbitfun"]);
+export const navHistory = signal<SceneId[]>([landingScene()]);
 export const navIndex = signal(0);
 export const canGoBack = computed(() => navIndex() > 0);
 export const canGoForward = computed(() => navIndex() < navHistory().length - 1);
 
 /** Open scene tabs shown in `SceneBar`. */
-export const openSceneTabs = signal<SceneId[]>(["openbitfun"]);
+export const openSceneTabs = signal<SceneId[]>([landingScene()]);
 
 export function openSceneTab(scene: SceneId): void {
   if (!openSceneTabs().includes(scene)) {
@@ -156,8 +166,11 @@ export const devicePageId = signal<string>("");
  */
 export function resolveSceneAlias(scene: SceneId): SceneId {
   switch (scene) {
+    case "openbitfun":
+      // The Super Agent scene is gated off (`productGates.ts`): its links land on the session view.
+      return superAgentUi() ? scene : "sessions";
     case "home":
-      return "openbitfun";
+      return superAgentUi() ? "openbitfun" : "sessions";
     case "assistants":
     case "agents":
     case "skills":
@@ -198,6 +211,15 @@ export function navigateScene(requested: SceneId): void {
   const next = [...history.slice(0, idx + 1), scene];
   navHistory.set(next);
   navIndex.set(next.length - 1);
+}
+
+/** Starts the history over at `scene` (the phone's first screen replacing the landing scene). */
+export function resetNavigation(scene: SceneId): void {
+  const resolved = resolveSceneAlias(scene);
+  openSceneTabs.set([resolved]);
+  activeScene.set(resolved);
+  navHistory.set([resolved]);
+  navIndex.set(0);
 }
 
 export function goBackScene(): void {
@@ -1757,7 +1779,8 @@ effect(() => {
   }
   // The account's cloud node (OpenBitFun) streams its turns and job cards
   // (`superagent://…`) to this client only while followed; they are small.
-  const cloud = fleetNavigator()?.devices.find(device => device.hostKind === "cloud")?.deviceId;
+  // wave23-E: not while the Super Agent UI is gated off (`productGates.ts`); nothing would draw them.
+  const cloud = superAgentUi() ? fleetNavigator()?.devices.find(device => device.hostKind === "cloud")?.deviceId : undefined;
   if (cloud && !follow[cloud]) follow[cloud] = { all: true };
   const signature = `${entry}|${JSON.stringify(follow)}`;
   if (signature === lastFollow) return;

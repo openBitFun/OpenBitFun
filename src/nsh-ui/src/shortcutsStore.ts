@@ -8,6 +8,7 @@
 import { signal } from "nsh";
 import { entryDeviceId, fleetActive, invokeCommand } from "./bridge";
 import type { MessageKey } from "./locales/en-US";
+import { superAgentUi } from "./productGates"; // wave23-E
 
 export interface ShortcutDefinition {
   id: string;
@@ -19,7 +20,8 @@ export interface ShortcutDefinition {
 /** The shell's shortcuts, in the order Settings lists them. Ids match `App.tsx`'s `SHELL_SHORTCUTS`. */
 export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "search.global", keystroke: "mod+k", labelKey: "shortcuts.action.search" },
-  { id: "chat.newSession", keystroke: "mod+n", labelKey: "shortcuts.action.newConversation" },
+  // wave23-E: ⌘N starts a session while the Super Agent UI is gated off (`productGates.ts`).
+  { id: "chat.newSession", keystroke: "mod+n", labelKey: superAgentUi() ? "shortcuts.action.newConversation" : "nav.newSession" },
   { id: "inbox.toggle", keystroke: "mod+i", labelKey: "shortcuts.action.inbox" },
   { id: "panel.toggleLeft", keystroke: "mod+b", labelKey: "shortcuts.action.sidebar" },
   { id: "panel.toggleRight", keystroke: "mod+j", labelKey: "shortcuts.action.sidePane" },

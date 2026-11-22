@@ -19,8 +19,12 @@
 //!   catalog mirrored as runtime model entries, rounds over the links.
 //!
 //! It starts with the mesh listener (before it, so the first hello already
-//! advertises `fleet_v1`) and stops with it. Without a running fleet every
-//! fleet command answers `fleet_unavailable: ...`.
+//! advertises `fleet_v1`) and stops with it. While it is not running (signed
+//! out, the device network off, still starting, or failed) this host's own
+//! UI is served by a local-only fleet ([`serving`], `FleetHost::start_local`):
+//! the same verbs over this device alone, so a runtime's own commands never
+//! depend on its device network. Only the owner verbs other hosts call
+//! answer `fleet_unavailable: ...` then.
 //!
 //! Remote scenarios: a phone or browser reaches this through the mesh
 //! listener (`account-device` scope); Peer Device Mode keeps working beside
@@ -37,8 +41,8 @@ use openbitfun_core::service::fleet::{
 };
 use openbitfun_link::session::Link;
 use openbitfun_obp::fleet::host::{
-    dispatch_as_account_device, fleet_unavailable, FleetDirectory, FleetDirectoryDevice, FleetHost,
-    FleetHostParts, LinkPresence, LocalEventHook,
+    dispatch_as_account_device, fleet_call_without_fleet, fleet_unavailable, FleetDirectory,
+    FleetDirectoryDevice, FleetHost, FleetHostParts, LinkPresence, LocalEventHook,
 };
 use openbitfun_obp::fleet::index::index_cache_path;
 use openbitfun_obp::fleet::mux::FleetMux;
@@ -63,6 +67,14 @@ struct Installed {
 
 static INSTALLED: OnceLock<Installed> = OnceLock::new();
 static CURRENT: RwLock<Option<Arc<FleetHost>>> = RwLock::new(None);
+/// The local-only fleet serving this host's own UI while [`CURRENT`] is not
+/// running, with its digest producer.
+static LOCAL: RwLock<Option<(Arc<FleetHost>, Arc<FleetDigestProducer>)>> = RwLock::new(None);
+/// What the in-process UI follows (`fleet_subscribe`), re-applied to a fleet
+/// that starts later, so a switch between the local-only and the account
+/// fleet keeps other devices' events flowing.
+static LOCAL_FOLLOW: RwLock<Option<openbitfun_product_domains::fleet::FleetSubscribeRequest>> =
+    RwLock::new(None);
 static MODEL_CONFIG_FOLLOWER: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -78,13 +90,7 @@ fn ensure_model_config_follower() {
         };
         let mut changes = service.subscribe_local_changes();
         while changes.changed().await.is_ok() {
-            let digest = DIGEST
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            if let Some(digest) = digest {
-                digest.notify_changed();
-            }
+            notify_digests();
         }
         MODEL_CONFIG_FOLLOWER.store(false, std::sync::atomic::Ordering::Release);
     });
@@ -108,9 +114,129 @@ pub fn current() -> Option<Arc<FleetHost>> {
         .clone()
 }
 
-/// The running fleet, or the `fleet_unavailable` answer for `command`.
+/// The running account fleet, or the `fleet_unavailable` answer for
+/// `command` (the owner verbs other hosts call need the device network).
 pub(crate) fn require(command: &str) -> Result<Arc<FleetHost>, String> {
     current().ok_or_else(|| fleet_unavailable(command))
+}
+
+/// The fleet that serves this host's own clients: the account fleet while
+/// the device network runs, else a local-only fleet over this device alone
+/// (started on first use once the backend runtime is ready). The
+/// `fleet_unavailable` answer only while the backend is still starting.
+pub(crate) fn serving(command: &str) -> Result<Arc<FleetHost>, String> {
+    if let Some(host) = current() {
+        return Ok(host);
+    }
+    local().ok_or_else(|| fleet_unavailable(command))
+}
+
+/// `fleet_call` while no fleet can serve (the backend runtime is not ready
+/// for a digest yet): a call aimed at this host runs through the local
+/// dispatcher under the same allowlist; another target is the
+/// `device_network_off` refusal.
+pub(crate) async fn fleet_call_here(
+    request: openbitfun_product_domains::fleet::FleetCallRequest,
+) -> Result<Value, FleetCallError> {
+    let Some(installed) = INSTALLED.get() else {
+        return Err(FleetCallError::command(fleet_unavailable("fleet_call")));
+    };
+    let device_id =
+        crate::api::remote_connect_api::current_device_id_for_peer().unwrap_or_default();
+    let args = serde_json::json!({ "request": request });
+    fleet_call_without_fleet(&installed.service, &device_id, &args).await
+}
+
+fn local() -> Option<Arc<FleetHost>> {
+    if let Some((host, _)) = LOCAL
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+    {
+        return Some(Arc::clone(host));
+    }
+    let installed = INSTALLED.get()?;
+    let device_id = crate::api::remote_connect_api::current_device_id_for_peer()
+        .map_err(|error| log::debug!("Local-only fleet not started: {error}"))
+        .ok()?;
+    let mut slot = LOCAL
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((host, _)) = slot.as_ref() {
+        return Some(Arc::clone(host));
+    }
+    // The account fleet started meanwhile: it serves.
+    if let Some(host) = current() {
+        return Some(host);
+    }
+    let hub = Arc::clone(installed.service.events());
+    let digest = digest_producer(&installed.service, &device_id, &hub)?;
+    let backend: Arc<dyn FleetBackend> = Arc::new(DesktopFleetBackend {
+        device_id: device_id.clone(),
+        service: installed.service.clone(),
+        digest: Arc::clone(&digest),
+    });
+    ensure_model_config_follower();
+    let hook_digest = Arc::clone(&digest);
+    let on_local_event: LocalEventHook = Arc::new(move |event: &str| {
+        if is_digest_relevant_event(event) {
+            hook_digest.notify_changed();
+        }
+    });
+    let host = FleetHost::start_local(device_id, backend, hub, Some(on_local_event));
+    reapply_follow(&host);
+    *slot = Some((Arc::clone(&host), digest));
+    Some(host)
+}
+
+fn stop_local() {
+    let local = LOCAL
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some((host, _)) = local {
+        host.shutdown();
+    }
+}
+
+/// Every digest producer of this host (the account fleet's and the
+/// local-only one's) re-reads its owners.
+fn notify_digests() {
+    let account = DIGEST
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let local = LOCAL
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|(_, digest)| Arc::clone(digest));
+    for digest in account.into_iter().chain(local) {
+        digest.notify_changed();
+    }
+}
+
+/// Remembers what the in-process UI follows (`fleet_subscribe`).
+pub(crate) fn remember_follow(request: &openbitfun_product_domains::fleet::FleetSubscribeRequest) {
+    *LOCAL_FOLLOW
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(request.clone());
+}
+
+fn reapply_follow(host: &Arc<FleetHost>) {
+    let follow = LOCAL_FOLLOW
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let Some(follow) = follow else {
+        return;
+    };
+    let host = Arc::clone(host);
+    tokio::spawn(async move {
+        if let Err(error) = host.subscribe(follow).await {
+            log::debug!("Fleet follow not re-applied: {error}");
+        }
+    });
 }
 
 /// The event mux of the running fleet (`ObpBackend::fleet_mux`).
@@ -339,9 +465,12 @@ pub fn start(device_id: String, authority: Arc<dyn MeshAuthority>, link: Arc<Lin
             on_local_event: Some(on_local_event),
         },
     );
+    reapply_follow(&host);
     *CURRENT
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(host);
+    // The account fleet serves this host's UI now.
+    stop_local();
     // Sessions here may run other devices' models (`fleet_models`).
     openbitfun_core::service::fleet::models::install_peers(Arc::new(models::DesktopModelPeers));
     models::schedule_sync();
@@ -361,7 +490,23 @@ pub fn stop() {
         .take();
     if let Some(host) = host {
         host.shutdown();
+        // This host's own UI moves to the local-only fleet now, so its
+        // navigator drops the account's other devices right away.
+        if !SHUTTING_DOWN.load(std::sync::atomic::Ordering::Acquire)
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            let _ = local();
+        }
     }
+}
+
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Stops every fleet of this host for good (backend shutdown).
+pub fn shutdown() {
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::Release);
+    stop();
+    stop_local();
 }
 
 /// A Detached Dispatch target verb answered on this host. The job runs in the
@@ -389,13 +534,7 @@ pub(crate) async fn dispatch_target_answered(command: &str, workspace_path: Opti
             }
         }
     }
-    let digest = DIGEST
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    if let Some(digest) = digest {
-        digest.notify_changed();
-    }
+    notify_digests();
 }
 
 /// The device network changed (devices came, left, or moved).
@@ -409,6 +548,8 @@ pub fn presence_changed() {
 /// this build speaks and this device's id, so the native UI keys its own
 /// device before the first fleet call.
 pub fn ready_info() -> Option<Value> {
+    // Always present once the device has an identity: the host serves the
+    // fleet verbs with or without its device network (`serving`).
     let device_id = current()
         .map(|host| host.device_id().to_string())
         .or_else(|| crate::api::remote_connect_api::current_device_id_for_peer().ok())?;

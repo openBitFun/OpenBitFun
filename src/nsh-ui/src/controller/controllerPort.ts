@@ -15,6 +15,7 @@
 // Keep this file free of browser and platform types: both implementations and
 // the shell compile against it.
 
+import type { AccountIdentity } from "../accountIdentity";
 import type { BackendConnection } from "../backendConnection";
 import type { FleetHello } from "../fleetTypes";
 
@@ -23,12 +24,10 @@ export type ControllerKind = "web" | "native";
 
 /** The signed-in account, as the server reports it. */
 export interface ControllerAccount {
-  /** The account id (the identity authority's `accountId`). */
+  /** The account id (the identity authority's `accountId`). Never shown. */
   accountId: string;
-  /** The verified email of an email-code account; `null` for other sign-ins. */
-  email: string | null;
-  /** The account's handle, when the server reports one. */
-  login: string | null;
+  /** Who is signed in, as every surface shows it; `null` when the server named no one. */
+  identity: AccountIdentity | null;
   /** This controller's own device id in the account's device directory. */
   deviceId: string;
 }

@@ -10,6 +10,8 @@ import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow } from "./
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const PHONE = { width: 375, height: 812, platform: "ios" as const };
 const HARNESS = "./fixtures/settingsApp.tsx";
+/** The same harness with the Super Agent UI gate on (`src/productGates.ts`). */
+const HARNESS_SUPER_AGENT = "./fixtures/settingsAppSuperAgent.tsx";
 
 function fleetNavigator() {
   return {
@@ -47,6 +49,8 @@ function fleetNavigator() {
 interface SettingsOptions {
   /** The cloud agent's `superagent_status`; `null` makes it a node without the commands. */
   superagent?: Record<string, unknown> | null;
+  /** Opens the harness with the Super Agent UI gate on. */
+  superAgentUi?: boolean;
   /** Optional custom invoke override run before default fixture dispatch. */
   onInvoke?: (action: string, request: Record<string, unknown> | undefined) => unknown | undefined;
 }
@@ -77,7 +81,7 @@ async function openSettings(options: SettingsOptions = {}, size: typeof DESKTOP 
     fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
     navigator: fleetNavigator(),
   });
-  const app = await open(HARNESS, { ...size, host: { handlers: host.handlers } });
+  const app = await open(options.superAgentUi ? HARNESS_SUPER_AGENT : HARNESS, { ...size, host: { handlers: host.handlers } });
   return { app, host, backend, superagentCalls };
 }
 
@@ -87,9 +91,11 @@ test("the left list draws three scopes without icons, and only Preferences pages
   for (const scope of ["Preferences", "Account", "Device"]) {
     expect([scope, app.shows(`text:${scope}`)]).toEqual([scope, true]);
   }
-  for (const page of ["profile", "devices", "openbitfun", "activity", "models", "permissions", "archived", "mcp"]) {
+  for (const page of ["profile", "devices", "activity", "models", "permissions", "archived", "mcp"]) {
     expect([page, app.shows(`nav-settings-page-${page}`)]).toEqual([page, true]);
   }
+  // Account › Super Agent is gated off with the Super Agent entry (`src/productGates.ts`).
+  expect(app.shows("nav-settings-page-openbitfun")).toBe(false);
   // The pet page is listed everywhere and says "Desktop only" off the desktop
   // app (tauri-gap §1.5, wave22-p3); the old groups are gone.
   expect(app.shows("nav-settings-page-pet")).toBe(true);
@@ -133,7 +139,7 @@ test("the device scope chip lists runtime devices, disables an offline one and m
 });
 
 test("Account › OpenBitFun turns the agent off and deletes its data through the cloud node", async () => {
-  const { app, host, superagentCalls } = await openSettings();
+  const { app, host, superagentCalls } = await openSettings({ superAgentUi: true });
   await app.press("nav-settings-page-openbitfun");
   await app.waitFor("Talk to one agent that starts work on all your devices.");
   await app.waitFor("obf-toggle");
@@ -157,14 +163,24 @@ test("Account › OpenBitFun turns the agent off and deletes its data through th
 });
 
 test("a node without the OpenBitFun commands answers with an explicit unsupported row", async () => {
-  const { app } = await openSettings({ superagent: null });
+  const { app } = await openSettings({ superagent: null, superAgentUi: true });
   await app.press("nav-settings-page-openbitfun");
   await app.waitFor("Super Agent can't be reached from here yet.");
   expect(app.shows("obf-toggle")).toBe(false);
 });
 
+test("with Super Agent gated off, Permissions shows the modes without the Super Agent switches", async () => {
+  const { app, superagentCalls } = await openSettings();
+  await app.press("nav-settings-page-permissions");
+  await app.waitFor("Full access");
+  expect(app.shows("superagent-accept-dispatch")).toBe(false);
+  expect(app.texts().some(text => text.includes("Super Agent"))).toBe(false);
+  // No superagent command leaves the UI while the gate is off.
+  expect(superagentCalls).toEqual([]);
+});
+
 test("Permissions names the modes in plain words and writes the OpenBitFun device switches through set_superagent_settings", async () => {
-  const { app, backend } = await openSettings();
+  const { app, backend } = await openSettings({ superAgentUi: true });
   await app.press("nav-settings-page-permissions");
   await app.waitFor("Let Super Agent answer for me");
   await app.waitFor("Accept jobs from Super Agent");
@@ -205,12 +221,12 @@ test("the phone lists the scopes first, hides desktop-only Pet, and pushes one p
   const { app } = await openSettings({}, PHONE);
   await app.waitFor("settings-compact-page-general");
   expect(app.shows("settings-scope-list")).toBe(false);
-  expect(app.shows("settings-compact-page-openbitfun")).toBe(true);
+  expect(app.shows("settings-compact-page-openbitfun")).toBe(false);
   expect(app.shows("settings-compact-page-pet")).toBe(false);
   await app.press("settings-compact-page-permissions");
   await app.waitFor("settings-compact-pages");
   expect(app.shows("settings-compact-back")).toBe(false);
-  await app.waitFor("Let Super Agent answer for me");
+  await app.waitFor("Full access");
   await app.press("settings-compact-pages");
   await app.waitFor("settings-compact-page-general");
 });
@@ -335,8 +351,10 @@ test("Settings coalesces parent config reads when the host returns full section 
   await app.waitFor("nav-settings-page-general");
   // Wait for the initial settings load to settle.
   await app.waitUntil(() => readPaths.includes("terminal") && readPaths.includes("memories"));
-  // Coalesced parent reads: only the 6 section roots are read for SETTINGS_SECTIONS (never 63 leaf RPCs).
+  // Coalesced parent reads: only the section roots are read for SETTINGS_SECTIONS (never 63 leaf RPCs);
+  // `superagent` is not among them while the Super Agent UI is gated off (`src/productGates.ts`).
   const settingsRootReads = readPaths.filter(p => p in fullDocs);
-  expect(new Set(settingsRootReads).size).toBe(6);
+  expect(new Set(settingsRootReads).size).toBe(5);
+  expect(settingsRootReads.includes("superagent")).toBe(false);
   expect(readPaths.filter(p => p.startsWith("editor.") || p.startsWith("terminal.") || p.startsWith("memories.")).length).toBe(0);
 });

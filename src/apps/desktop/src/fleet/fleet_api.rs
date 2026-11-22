@@ -9,6 +9,12 @@
 //! in the connection layer, so they never reach these handlers from a mesh
 //! client. The owner verbs `fleet_digest` / `fleet_replay` are mesh host
 //! verbs ([`owner_verb`], routed by `backend_protocol::ws::mesh_verbs`).
+//!
+//! The client-facing verbs are served by the local-only fleet while the
+//! device network is off (`super::serving`): a command aimed at this host
+//! runs here whether or not the network runs, and one aimed at another
+//! device answers `fleet_device_offline: <id> (device_network_off)`. The
+//! owner verbs need the account fleet (`super::require`).
 
 use openbitfun_obp::fleet::FleetCallError;
 use openbitfun_product_domains::fleet::{
@@ -24,17 +30,24 @@ use serde_json::Value;
 /// `fleet_call {target, command, args}`: runs here or on the owner device.
 // @backend-command
 pub async fn fleet_call(request: FleetCallRequest) -> Result<Value, String> {
-    super::require("fleet_call")?
-        .router()
-        .fleet_call(request)
-        .await
-        .map_err(FleetCallError::into_message)
+    match super::serving("fleet_call") {
+        Ok(host) => host
+            .router()
+            .fleet_call(request)
+            .await
+            .map_err(FleetCallError::into_message),
+        // No fleet can be built yet (the backend runtime is still starting):
+        // a call aimed here still runs here.
+        Err(_) => super::fleet_call_here(request)
+            .await
+            .map_err(FleetCallError::into_message),
+    }
 }
 
 /// `fleet_navigator {sinceRevision?}`: every device, workspace and session.
 // @backend-command
 pub async fn fleet_navigator(request: FleetNavigatorRequest) -> Result<FleetNavigator, String> {
-    Ok(super::require("fleet_navigator")?
+    Ok(super::serving("fleet_navigator")?
         .router()
         .navigator(request))
 }
@@ -43,7 +56,7 @@ pub async fn fleet_navigator(request: FleetNavigatorRequest) -> Result<FleetNavi
 // @backend-command
 pub async fn fleet_prompts(request: FleetPromptsRequest) -> Result<FleetPromptsResponse, String> {
     let _ = request;
-    Ok(super::require("fleet_prompts")?.router().prompts())
+    Ok(super::serving("fleet_prompts")?.router().prompts())
 }
 
 /// `fleet_attention`: the Inbox of every device (prompts, the cloud
@@ -51,7 +64,7 @@ pub async fn fleet_prompts(request: FleetPromptsRequest) -> Result<FleetPromptsR
 // @backend-command
 pub async fn fleet_attention(request: FleetAttentionRequest) -> Result<FleetAttentionView, String> {
     let _ = request;
-    Ok(super::require("fleet_attention")?.attention().view().await)
+    Ok(super::serving("fleet_attention")?.attention().view().await)
 }
 
 /// `fleet_attention_mark_read {revision}`: marks the Done and Failed items
@@ -60,7 +73,7 @@ pub async fn fleet_attention(request: FleetAttentionRequest) -> Result<FleetAtte
 pub async fn fleet_attention_mark_read(
     request: FleetAttentionMarkReadRequest,
 ) -> Result<FleetAttentionMarkReadResponse, String> {
-    Ok(super::require("fleet_attention_mark_read")?
+    Ok(super::serving("fleet_attention_mark_read")?
         .attention()
         .mark_read(request.revision))
 }
@@ -71,7 +84,7 @@ pub async fn fleet_attention_mark_read(
 pub async fn fleet_recent_sessions(
     request: FleetRecentSessionsRequest,
 ) -> Result<FleetRecentSessions, String> {
-    Ok(super::require("fleet_recent_sessions")?
+    Ok(super::serving("fleet_recent_sessions")?
         .views()
         .recent_sessions(&request))
 }
@@ -80,7 +93,7 @@ pub async fn fleet_recent_sessions(
 /// the device that runs the session first, with each device's online state.
 // @backend-command
 pub async fn fleet_models(request: FleetModelsRequest) -> Result<FleetModels, String> {
-    Ok(super::require("fleet_models")?.views().models(&request))
+    Ok(super::serving("fleet_models")?.views().models(&request))
 }
 
 /// `fleet_device_detail {deviceId}`: the device page (facts, route,
@@ -89,7 +102,7 @@ pub async fn fleet_models(request: FleetModelsRequest) -> Result<FleetModels, St
 pub async fn fleet_device_detail(
     request: FleetDeviceDetailRequest,
 ) -> Result<FleetDeviceDetail, String> {
-    super::require("fleet_device_detail")?
+    super::serving("fleet_device_detail")?
         .views()
         .device_detail(&request)
         .await
@@ -100,14 +113,15 @@ pub async fn fleet_device_detail(
 pub async fn fleet_subscribe(
     request: FleetSubscribeRequest,
 ) -> Result<FleetSubscribeResponse, String> {
-    super::require("fleet_subscribe")?.subscribe(request).await
+    super::remember_follow(&request);
+    super::serving("fleet_subscribe")?.subscribe(request).await
 }
 
 /// `fleet_events {cursor, waitMs}`: the native UI's long poll for the
 /// events of other devices (its own stay in-process).
 // @backend-command
 pub async fn fleet_events(request: FleetEventsRequest) -> Result<FleetEventsResponse, String> {
-    Ok(super::require("fleet_events")?.events(request).await)
+    Ok(super::serving("fleet_events")?.events(request).await)
 }
 
 /// `fleet_ui_bundle`: the web UI a browser loads through this entry.
@@ -116,7 +130,7 @@ pub async fn fleet_ui_bundle(
     request: FleetUiBundleRequest,
 ) -> Result<FleetUiBundleResponse, String> {
     let _ = request;
-    super::require("fleet_ui_bundle")?.ui_bundle().await
+    super::serving("fleet_ui_bundle")?.ui_bundle().await
 }
 
 /// The owner verbs another runtime host calls on the mesh listener.

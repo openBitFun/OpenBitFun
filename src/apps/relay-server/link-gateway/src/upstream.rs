@@ -338,19 +338,8 @@ struct DesktopStart {
 
 /// The sign-in ticket in the authority's authorization URL (`…#ticket=<t>`).
 pub(crate) fn ticket_of(authorization_url: &str) -> Option<String> {
-    let fragment = authorization_url.split_once('#')?.1;
-    fragment
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(name, _)| *name == "ticket")
-        .map(|(_, value)| value.to_string())
-        .filter(|ticket| {
-            !ticket.is_empty()
-                && ticket.len() <= 256
-                && ticket
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        })
+    // The one reading every host shares (desktop, CLI, phone, gateway).
+    openbitfun_product_domains::account::email_sign_in_ticket(authorization_url)
 }
 
 impl Accounts for HttpAccounts {

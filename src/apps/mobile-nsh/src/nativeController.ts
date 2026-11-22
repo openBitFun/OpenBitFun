@@ -10,6 +10,7 @@
 // in-process backend also speaks, so the UI cannot tell the two apart.
 
 import { Controller } from "openbitfun/mobile";
+import { readAccountIdentity } from "../../../nsh-ui/src/accountIdentity";
 import { errorMessageOf } from "../../../nsh-ui/src/backendConnection";
 import { installBackendConnection, installWindowShell } from "../../../nsh-ui/src/bridge";
 import { createIdleConnection } from "../../../nsh-ui/src/controller/controllerStore";
@@ -76,7 +77,7 @@ export function readAccount(value: unknown): ControllerAccount | null {
   const accountId = text(item.accountId);
   const deviceId = text(item.deviceId);
   if (!accountId || !deviceId) return null;
-  return { accountId, email: text(item.email), login: text(item.login), deviceId };
+  return { accountId, identity: readAccountIdentity(item.identity), deviceId };
 }
 
 function readChallenge(value: unknown): ControllerCodeChallenge {

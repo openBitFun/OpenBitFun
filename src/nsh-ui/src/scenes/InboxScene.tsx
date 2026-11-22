@@ -34,13 +34,14 @@ import { AttentionTray } from "../ui/attention";
 import { IconButton, Button } from "../ui/primitives";
 import { pushToast, registerEscapeDismiss } from "../ui/overlays";
 import { drawerEnterMotion } from "../ui/motion";
+import { superAgentUi } from "../productGates"; // wave23-E
 
 export { inboxSheetOpen };
 
 /** Opens what an item belongs to: an OpenBitFun conversation or a device's session. */
 export function openAttentionEntry(entry: AttentionEntry): void {
   inboxSheetOpen.set(false);
-  if (entry.source.conversationId) {
+  if (entry.source.conversationId && superAgentUi()) {
     openConversation(entry.source.conversationId);
     navigateScene("openbitfun");
     return;

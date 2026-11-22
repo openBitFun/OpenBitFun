@@ -98,6 +98,7 @@ import {
   InsetRow,
   StudioEmpty,
   StudioSection,
+  firstAvatarGrapheme,
   galleryCardHoverStyle,
   galleryCardStyle,
   studioCompact,
@@ -121,8 +122,10 @@ const SPACE_ICON_MAP: Readonly<Record<string, IconName>> = {
   "git-pull-request": "git-pull-request",
   globe: "globe",
   "grid-3x3": "layout-grid",
+  grid3x3: "layout-grid",
   image: "image",
   "layout-grid": "layout-grid",
+  "pen-tool": "edit",
   presentation: "monitor",
   regex: "hash",
   rocket: "zap",
@@ -139,6 +142,23 @@ export function spaceIconName(icon: string): IconName {
     .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
     .toLowerCase();
   return SPACE_ICON_MAP[key] ?? "package";
+}
+
+/**
+ * A Space's icon as its manifest names it: an emoji is drawn as it is written
+ * (the authoring guide's examples use them), a name as this surface's glyph.
+ */
+export function SpaceIcon(props: { icon: string; color: string }) {
+  const emoji = () => (/\p{Extended_Pictographic}/u.test(props.icon) ? firstAvatarGrapheme(props.icon) : "");
+  return (
+    <If when={emoji()} else={<Icon name={spaceIconName(props.icon)} size={16} color={props.color} />}>
+      {glyph => (
+        <Text style={{ flexShrink: 0, fontSize: textSize(13), lineHeight: textLineHeight(13, 1.2), textAlign: "center" }}>
+          {glyph()}
+        </Text>
+      )}
+    </If>
+  );
 }
 
 const HEART_PATH =
@@ -278,7 +298,7 @@ function MarketCard(props: { item: () => MarketListing }) {
       focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
-        <Icon name={spaceIconName(props.item().icon)} size={16} color={palette().textSecondary} />
+        <SpaceIcon icon={props.item().icon} color={palette().textSecondary} />
         <Text
           style={{
             flex: 1,
@@ -902,7 +922,7 @@ function SubmissionRow(props: { item: () => MarketSubmission; first: boolean }) 
     <View>
       <InsetRow
         first={props.first}
-        leading={<Icon name={spaceIconName(props.item().icon)} size={16} color={palette().textMuted} />}
+        leading={<SpaceIcon icon={props.item().icon} color={palette().textMuted} />}
         label={props.item().name}
         detail={[
           `${props.item().slug} · v${props.item().releaseNumber}`,

@@ -2,9 +2,11 @@
 // account dialog and the browser launcher draw the same steps with the same copy.
 //
 // It is display only: the caller owns the flow (which step, the email, the code,
-// the errors and every action) and passes them in, so the browser's controller
-// port and the desktop host's account commands both drive it. One step replaces
-// the next with a 160 ms crossfade; there is no stepper.
+// the errors and every action) and passes them in, so the browser's and phone's
+// controller port and the desktop host's account commands (`account_email_*`)
+// all drive the same email and code steps. GitHub, the secondary option, is
+// the only sign-in that goes through the user's browser (`browser`). One step
+// replaces the next with a 160 ms crossfade; there is no stepper.
 
 import { cleanup, effect, signal, Text, untracked, View, type JSX } from "nsh";
 import { Input } from "nsh/base";
@@ -25,11 +27,11 @@ import {
 import { DeviceBadge, MatrixMark, type DeviceException } from "./fleet";
 import { enterMotion, MOTION_DURATION, paintTransition, pressTransition, tactileActiveStyle } from "./motion";
 import { Button, TextField, focusRingStyle } from "./primitives";
+import { superAgentUi } from "../productGates"; // wave23-E
 
 /**
- * The steps, in order. `browser` is the sign-in a host without the email code
- * runs instead of `code`: the code is confirmed on the sign-in page in the
- * user's browser.
+ * The steps, in order. `browser` is the GitHub sign-in, the secondary option:
+ * GitHub's own page in the user's browser authorizes it.
  */
 export type SignInStep = "email" | "code" | "browser" | "ready" | "model";
 
@@ -59,6 +61,8 @@ export interface SignInViewProps {
   onContinue: () => void;
   /** "Use on this device only" (desktop only). */
   onLocalOnly?: () => void;
+  /** "Sign in with GitHub": the secondary sign-in in the browser, when the host offers it. */
+  onGitHub?: () => void;
 
   // code
   codeEmail?: string;
@@ -117,13 +121,14 @@ export function signInStepBody(props: Pick<SignInViewProps, "step" | "codeEmail"
     case "code":
       return tr("signin.codeBody", { email: props.codeEmail ?? props.email ?? "" });
     case "browser":
-      return tr("signin.browserBody");
+      return tr("signin.githubBody");
     case "ready":
       return "";
+    // wave23-E: the copy names Super Agent only while that gate is on (`productGates.ts`).
     case "model":
-      return tr("signin.modelBody");
+      return tr(superAgentUi() ? "signin.modelBody" : "gate.signinModelBody");
     default:
-      return tr("signin.body");
+      return tr(superAgentUi() ? "signin.body" : "gate.signinBody");
   }
 }
 
@@ -264,6 +269,14 @@ function EmailStep(outer: { p: SignInViewProps }) {
         accessibilityLabel={`${props.idPrefix}-continue`}
         onPress={submit}
       />
+      <If when={props.onGitHub ? "1" : ""}>
+        <LinkButton
+          label={tr("signin.github")}
+          accessibilityLabel={`${props.idPrefix}-github`}
+          disabled={Boolean(props.busy)}
+          onPress={() => props.onGitHub?.()}
+        />
+      </If>
       <If when={props.onLocalOnly ? "1" : ""}>
         <LinkButton
           label={tr("signin.localOnly")}

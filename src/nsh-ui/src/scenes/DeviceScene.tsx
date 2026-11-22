@@ -37,6 +37,7 @@ import { InsetGroup, InsetRow } from "../ui/studio";
 import { controllerPort } from "../controller/controllerPort";
 import { DeviceJobsEntry } from "./DeviceJobsPanel";
 import { removeAccountDevice, saveDeviceAlias } from "../accountDevicesStore";
+import { superAgentUi } from "../productGates"; // wave23-E
 
 /** One job of `fleet_device_detail` (`FleetDeviceJob`); every field optional here. */
 interface DeviceDetailJob {
@@ -456,6 +457,8 @@ function capabilityWords(view: DeviceView): string {
   const words: string[] = [];
   for (const id of ids) {
     const key = CAPABILITY_WORDS[id];
+    // wave23-E: "Jobs from Super Agent" is not named while that gate is off (`productGates.ts`).
+    if (key === "device.cap.jobs" && !superAgentUi()) continue;
     if (key && !words.includes(tr(key))) words.push(tr(key));
   }
   return words.join(" · ");
@@ -477,14 +480,22 @@ function Sections(props: { view: DeviceView }) {
               <InsetRow
                 first
                 label={tr("device.running")}
-                value={tr("device.runningValue", {
-                  sessions: count(served().runningSessions, served().running?.sessions),
-                  jobs: count(served().runningJobs, served().running?.jobs),
-                })}
+                value={
+                  superAgentUi()
+                    ? tr("device.runningValue", {
+                        sessions: count(served().runningSessions, served().running?.sessions),
+                        jobs: count(served().runningJobs, served().running?.jobs),
+                      })
+                    : formatPlural(
+                        count(served().runningSessions, served().running?.sessions),
+                        "gate.sessionsOne",
+                        "gate.sessionsOther",
+                      )
+                }
                 chevron
                 onPress={() => openAllSessions("by-device")}
               />
-              <If when={count(served().waitingJobs, served().waiting?.jobs) > 0}>
+              <If when={superAgentUi() && count(served().waitingJobs, served().waiting?.jobs) > 0}>
                 <InsetRow
                   label={tr("device.waiting")}
                   value={waitingValue(served())}

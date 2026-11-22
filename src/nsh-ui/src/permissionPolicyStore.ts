@@ -300,6 +300,8 @@ interface HostApprovalModel {
   role?: "fast" | "primary" | null;
   modelId?: string;
   modelName?: string | null;
+  /** The secondary text beside `modelName` (the provider); absent from an older host. */
+  modelDetail?: string | null;
   available?: boolean;
 }
 
@@ -314,15 +316,17 @@ function approvalOptionsOf(rows: HostApprovalModel[] | undefined): ApprovalModel
   for (const row of rows ?? []) {
     if (!row?.value) continue;
     const name = row.modelName ?? "";
+    const detail = row.modelDetail ?? "";
     if (row.role) {
       options.push({
         value: row.value,
         label: row.role === "fast" ? "Fast model" : "Primary model",
-        hint: row.available ? name : `Unavailable model (${row.modelId ?? row.value})`,
+        hint: row.available ? (detail ? `${name} · ${detail}` : name) : `Unavailable model (${row.modelId ?? row.value})`,
         disabled: row.available !== true,
       });
     } else {
-      options.push({ value: row.value, label: name || row.value, hint: row.modelId ?? row.value, disabled: false });
+      // The model, then its provider as the host labelled it (an older host sends only the id).
+      options.push({ value: row.value, label: name || row.value, hint: detail || row.modelId || row.value, disabled: false });
     }
   }
   const selected = approvalSettings()?.chatModelId ?? "";

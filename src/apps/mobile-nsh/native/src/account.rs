@@ -92,9 +92,12 @@ pub(crate) struct Me {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MeUser {
     #[serde(default)]
     pub(crate) login: String,
+    #[serde(default)]
+    pub(crate) avatar_url: String,
 }
 
 /// One device of the account directory.
@@ -143,14 +146,10 @@ pub(crate) fn now_secs() -> i64 {
     (openbitfun_link::now_ms() / 1000) as i64
 }
 
-/// The `ticket` of a sign-in page address (`…/sign-in#ticket=<ticket>`).
+/// The `ticket` of a sign-in page address (`…/sign-in#ticket=<ticket>`), the
+/// same reading every host uses (`product-domains`).
 pub(crate) fn ticket_of(authorization_url: &str) -> Option<String> {
-    let fragment = authorization_url.split_once('#')?.1;
-    fragment
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("ticket="))
-        .filter(|ticket| !ticket.is_empty() && ticket.bytes().all(|b| b.is_ascii_graphic()))
-        .map(str::to_string)
+    openbitfun_product_domains::account::email_sign_in_ticket(authorization_url)
 }
 
 /// An HTTPS client for the account APIs.
@@ -193,23 +192,10 @@ async fn refusal(service: &str, response: reqwest::Response) -> String {
     format!("{code}: {message} (HTTP {status})")
 }
 
-/// The port code of a refusal.
+/// The port code of a refusal, the same wording every host uses
+/// (`product-domains`).
 pub(crate) fn refusal_code(status: u16, service_code: &str) -> &'static str {
-    match service_code {
-        "invalid_email" => return "invalid_email",
-        "invalid_email_code" | "login_flow_expired" | "desktop_auth_expired" => {
-            return "invalid_code"
-        }
-        "email_rate_limit" | "auth_capacity" => return "rate_limited",
-        "email_not_configured" => return "unsupported",
-        _ => {}
-    }
-    match status {
-        401 | 403 => "signed_out",
-        404 | 405 | 501 => "unsupported",
-        429 => "rate_limited",
-        _ => "unavailable",
-    }
+    openbitfun_product_domains::account::email_sign_in_refusal_code(status, service_code)
 }
 
 fn transport(service: &str, error: reqwest::Error) -> String {

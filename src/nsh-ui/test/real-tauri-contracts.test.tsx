@@ -355,9 +355,10 @@ test("real Rust model catalog resolves primary role, text_chat capability, confi
 
   // Picker offers `"text_chat"` enabled models and hides disabled + image-only models.
   await app.press("label:bot-capsule-trigger");
-  await app.waitFor("Claude Haiku 4.5 · anthropic");
-  expect(app.texts()).not.toContain("Disabled Model · openai");
-  expect(app.texts()).not.toContain("DALL-E · openai");
+  await app.waitFor("label:model-option-cfg-claude-haiku >> text:Claude Haiku 4.5");
+  expect(app.shows("label:model-option-cfg-claude-haiku >> text:anthropic")).toBe(true);
+  expect(app.texts()).not.toContain("Disabled Model");
+  expect(app.texts()).not.toContain("DALL-E");
 
   // Choosing a model sends real config ID (`cfg-claude-haiku`), NOT upstream `model_name`.
   await app.press("model-option-cfg-claude-haiku");

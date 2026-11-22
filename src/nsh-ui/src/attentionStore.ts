@@ -29,6 +29,7 @@ import {
   type FleetPrompt,
 } from "./fleetTypes";
 import { tr } from "./i18n";
+import { superAgentUi } from "./productGates"; // wave23-E
 
 /** How long an answered item holds before it leaves (spec §2.6). */
 export const ANSWERED_HOLD_MS = 1600;
@@ -129,6 +130,12 @@ function sessionTitleOf(prompt: FleetPrompt): string {
  */
 export const attentionGroups = computed<AttentionGroup[]>(() => {
   const view = attentionView();
+  // wave23-E: a Super Agent conversation's items have nowhere to open while that gate is off.
+  if (view && !superAgentUi()) {
+    return view.groups
+      .map(group => ({ ...group, items: group.items.filter(item => !item.source.conversationId) }))
+      .filter(group => group.items.length > 0);
+  }
   if (view) return view.groups;
   if (!fleetActive() || !fleetPrompts()) return [];
   const prompts = fleetPromptList();

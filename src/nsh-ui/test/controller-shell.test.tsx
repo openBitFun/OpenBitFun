@@ -122,7 +122,12 @@ function controllerHost(options: HostOptions = {}) {
   };
   const record = (request: Request) =>
     requests.push({ method: request.method, url: request.url, body: request.body ? JSON.parse(request.body) : null });
-  const account = { accountId: "email-1", email: "me@example.com", deviceId: "web-1" };
+  // The gateway's account: the identity projection every surface shows.
+  const account = {
+    accountId: "email-1",
+    identity: { provider: "email", accountId: "email-1", displayName: "me@example.com", initial: "M" },
+    deviceId: "web-1",
+  };
   const network = {
     [`GET ${API}/session`]: () => {
       sessionChecks.push(Date.now());

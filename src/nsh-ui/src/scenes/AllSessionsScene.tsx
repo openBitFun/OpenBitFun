@@ -64,6 +64,7 @@ import {
 import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import { sessionMenuItems, type SessionActionTarget } from "../ui/sessionActions";
 import { workspaceMenuItems, type WorkspaceActionTarget } from "../ui/workspaceActions";
+import { superAgentUi } from "../productGates"; // wave23-E
 
 /** One Recent row, whatever source it came from. */
 interface RecentRow {
@@ -117,7 +118,9 @@ function workspaceLabel(workspace: { name?: string; rootPath?: string }): string
   return parts[parts.length - 1] ?? path;
 }
 
-function openSessionRow(sessionId: string, deviceId: string, workspaceId: string): void {
+// wave23-E: the device tree's projection and row actions are shared with the
+// sidebar tree (`ui/deviceSidebar.tsx`), so both draw the same backend rows.
+export function openSessionRow(sessionId: string, deviceId: string, workspaceId: string): void {
   if (fleetActive()) {
     selectSession(sessionId, deviceId, workspaceId || undefined);
   } else {
@@ -127,7 +130,7 @@ function openSessionRow(sessionId: string, deviceId: string, workspaceId: string
   navigateScene("sessions");
 }
 
-async function newSessionHere(workspaceId: string, deviceId: string): Promise<void> {
+export async function newSessionHere(workspaceId: string, deviceId: string): Promise<void> {
   selectWorkspace(workspaceId, fleetActive() ? { deviceId } : undefined);
   // backend-owned: `create_session` requires an agent type, and the host's
   // default (`default_mode_strategy` / `last_mode_id`) arrives with its mode
@@ -227,7 +230,7 @@ function recentRows(): RecentRow[] {
     }));
 }
 
-async function loadLocalWorkspace(workspaceId: string): Promise<void> {
+export async function loadLocalWorkspace(workspaceId: string): Promise<void> {
   try {
     const page = await listSessions(workspaceId, 20);
     localWorkspaceRows.update(all => ({
@@ -256,7 +259,7 @@ function rowHover() {
 }
 
 /** The session ⋯ target of a row. */
-function sessionTarget(row: { sessionId: string; title: string }, deviceId: string, workspaceId: string): SessionActionTarget {
+export function sessionTarget(row: { sessionId: string; title: string }, deviceId: string, workspaceId: string): SessionActionTarget {
   return { sessionId: row.sessionId, deviceId, workspaceId, title: row.title, archived: false };
 }
 
@@ -481,7 +484,7 @@ function RecentList() {
           else={
             <If
               when={searchText().trim()}
-              else={<EmptyStateCard icon="layers" title={tr("allSessions.emptyTitle")} subtitle={tr("allSessions.emptyBody")} />}
+              else={<EmptyStateCard icon="layers" title={tr("allSessions.emptyTitle")} subtitle={tr(superAgentUi() ? "allSessions.emptyBody" : "gate.allSessionsEmptyBody")} />}
             >
               {query => (
                 <EmptyStateCard
@@ -515,7 +518,7 @@ function RecentList() {
 
 // ── By device ────────────────────────────────────────────────────────────────
 
-interface DeviceTreeNode {
+export interface DeviceTreeNode {
   deviceId: string;
   name: string;
   kind: string;
@@ -540,7 +543,7 @@ function deviceUiHint(device: FleetDevice): { expanded?: boolean; rollup?: strin
   return ui ?? {};
 }
 
-function deviceTree(): DeviceTreeNode[] {
+export function deviceTree(): DeviceTreeNode[] {
   if (fleetActive()) {
     return fleetDevices()
       // Runtime devices only: keeps this local desktop (`isClientDevice: true`) even with 0 workspaces,
@@ -716,7 +719,7 @@ function DeviceHeader(props: { node: DeviceTreeNode }) {
   );
 }
 
-function workspaceTarget(node: DeviceTreeNode, workspace: DeviceTreeNode["workspaces"][number]): WorkspaceActionTarget {
+export function workspaceTarget(node: DeviceTreeNode, workspace: DeviceTreeNode["workspaces"][number]): WorkspaceActionTarget {
   return {
     workspaceId: workspace.workspaceId,
     deviceId: node.deviceId,

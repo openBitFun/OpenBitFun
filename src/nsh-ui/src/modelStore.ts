@@ -40,6 +40,20 @@ export interface FleetModel {
   capabilities?: string[];
   contextWindow?: number;
   primary?: boolean;
+  /** What every list shows first: the model (the host's label rule). */
+  label?: string;
+  /** The secondary text beside `label`: the provider, numbered when two read the same. */
+  detail?: string;
+}
+
+/**
+ * A device model's label and secondary text as the host projected them. A host
+ * from before the label rule sends neither: its name and provider are read as
+ * they were shown then.
+ */
+export function fleetModelText(model: FleetModel): { label: string; detail: string } {
+  if (model.label) return { label: model.label, detail: model.detail ?? "" };
+  return { label: model.displayName || model.modelId, detail: model.provider ?? "" };
 }
 
 /** One row of the picker (`FleetModelChoice`). */
@@ -120,7 +134,10 @@ export interface ModelOption {
   configId: string;
   /** Upstream model identifier (`RemoteModelConfig.model_name`). */
   modelName: string;
+  /** What the picker shows first (the host's `label`). */
   label: string;
+  /** The secondary text beside `label` (the host's `detail`). */
+  detail: string;
   provider: string;
   /** Models that cannot chat (image or speech models) are not offered. */
   chat: boolean;
@@ -197,16 +214,25 @@ function boundModelOf(sessionId: string, deviceId?: string): string | undefined 
   return name && name.trim() ? name.trim() : undefined;
 }
 
-export const activeModelLabel = computed<string>(() => {
+const activeModelText = computed<{ label: string; detail: string }>(() => {
   const id = activeModelId();
-  if (!id) return "default model";
-  const match = findOption(id);
-  if (match) return match.label;
-  // Another device's model: its name and the device it lives on.
+  if (!id) return { label: "default model", detail: "" };
+  // Another device's model: its label and the device it lives on.
   const remote = fleetChoiceOf(id);
-  if (remote && !remote.device.isThisDevice) return `${remote.choice.displayName || remote.choice.modelId} · ${remote.device.name}`;
-  return remote ? remote.choice.displayName || id : id;
+  if (remote) {
+    const text = fleetModelText(remote.choice);
+    return remote.device.isThisDevice ? text : { label: `${text.label} · ${remote.device.name}`, detail: text.detail };
+  }
+  const match = findOption(id);
+  if (match) return { label: match.label, detail: match.detail };
+  return { label: id, detail: "" };
 });
+
+/** The session's model as the composer badge names it: the model, and the device for another device's. */
+export const activeModelLabel = computed<string>(() => activeModelText().label);
+
+/** The secondary text of the session's model (its provider), for the badge's tooltip. */
+export const activeModelDetail = computed<string>(() => activeModelText().detail);
 
 /** What the picker offers: a model that cannot chat is not a choice here. */
 export const chatModels = computed<ModelOption[]>(() => models().filter(option => option.chat));
@@ -279,7 +305,10 @@ function optionOf(entry: ModelCatalogEntry, legacyModelNameKeying: boolean): Mod
     id: legacyModelNameKeying ? modelName : configId,
     configId,
     modelName,
-    label: entry.name || modelName,
+    // The host labels each model; a host from before the rule sends no label,
+    // and its entries read as they were shown then.
+    label: entry.label || entry.name || modelName,
+    detail: entry.label ? entry.detail ?? "" : entry.provider ?? "",
     provider: entry.provider ?? "",
     // Real Rust emits `"text_chat"`; accept `"chat"` as well for legacy fixtures.
     // An empty capability list stays offerable for hosts without capability metadata.

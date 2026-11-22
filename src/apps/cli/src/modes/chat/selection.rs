@@ -44,19 +44,15 @@ fn fleet_items_of(catalog: &openbitfun_product_domains::fleet::FleetModels) -> V
                 .iter()
                 .filter(|choice| choice.selectable && !choice.model_ref.is_empty())
                 .map(move |choice| {
-                    let display = if choice.model.display_name.trim().is_empty() {
-                        choice.model.model_id.clone()
-                    } else {
-                        choice.model.display_name.clone()
-                    };
+                    // The model, then its provider and the device it lives on.
+                    let shown = choice.model.model_label();
                     ModelItem {
                         id: choice.model_ref.clone(),
-                        name: display.clone(),
-                        provider: device.name.clone(),
-                        model_name: if choice.model.model_name.trim().is_empty() {
-                            display
+                        name: shown.label,
+                        detail: if shown.detail.is_empty() {
+                            device.name.clone()
                         } else {
-                            choice.model.model_name.clone()
+                            format!("{} · {}", shown.detail, device.name)
                         },
                     }
                 })
@@ -568,11 +564,7 @@ impl ChatMode {
                     session_model_id.as_deref(),
                 )?;
                 Some(
-                    catalog
-                        .models
-                        .iter()
-                        .find(|model| model.id == model_id)
-                        .map(crate::model_selection::tui_model_display_name)
+                    crate::model_selection::tui_model_display_name(&catalog.models, &model_id)
                         .unwrap_or(model_id),
                 )
             })
@@ -607,17 +599,8 @@ impl ChatMode {
                     &catalog,
                     chat_state.current_model_id.as_deref(),
                 );
-                let mut model_items: Vec<ModelItem> = catalog
-                    .models
-                    .into_iter()
-                    .filter(|model| model.enabled)
-                    .map(|model| ModelItem {
-                        id: model.id,
-                        name: model.name,
-                        provider: model.provider,
-                        model_name: model.model_name,
-                    })
-                    .collect();
+                let mut model_items: Vec<ModelItem> =
+                    crate::model_selection::tui_model_items(&catalog.models);
                 // The account's other devices' models (`fleet_models`, as the
                 // desktop picker lists them): picked as `fleet:<device>/<model>`,
                 // each round runs on that device.
@@ -647,7 +630,7 @@ impl ChatMode {
         rt_handle: &tokio::runtime::Handle,
     ) {
         let selected_id = selected.id.clone();
-        let selected_display_name = format!("{} / {}", selected.model_name, selected.name);
+        let selected_display_name = selected.display_name();
         if chat_state.current_model_id.as_deref() == Some(selected_id.as_str()) {
             chat_view.set_status(Some(format!(
                 "Current session already uses {selected_display_name}"
@@ -1011,8 +994,16 @@ mod fleet_model_tests {
         let items = fleet_items_of(&catalog);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "fleet:desk/big");
-        assert_eq!(items[0].provider, "Studio");
-        assert_eq!(items[0].model_name, "Big");
+        // An older device publishes no label: the rule reads its name.
         assert_eq!(items[0].name, "Big");
+        assert_eq!(items[0].detail, "Studio");
+        let labelled: FleetModels = serde_json::from_value(serde_json::json!({
+            "devices": [{ "deviceId": "desk", "name": "Studio", "online": true,
+              "models": [{ "modelId": "big", "displayName": "OpenAI", "modelName": "gpt-5",
+                "label": "gpt-5", "detail": "OpenAI #2", "modelRef": "fleet:desk/big", "selectable": true }] }]
+        }))
+        .unwrap();
+        let items = fleet_items_of(&labelled);
+        assert_eq!(items[0].display_name(), "gpt-5 / OpenAI #2 · Studio");
     }
 }

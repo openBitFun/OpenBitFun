@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:43c1f3ff79890fcc",
+  "digest": "fnv1a64:3ca641bb0e8af83e",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -21,7 +21,6 @@
       "runtime_attachment_upload_v1",
       "btw_initial_model_selection_v1",
       "btw_model_pool_selection_v1",
-      "btw_model_defaults_v1",
       "control_conversation_v1",
       "control_conversation_reset_v1",
       "targeted_session_rollback",
@@ -79,7 +78,6 @@
       "runtime_attachment_upload_v1",
       "btw_initial_model_selection_v1",
       "btw_model_pool_selection_v1",
-      "btw_model_defaults_v1",
       "control_conversation_v1",
       "control_conversation_reset_v1",
       "targeted_session_rollback",
@@ -138,7 +136,6 @@
       "runtime_attachment_upload_v1",
       "btw_initial_model_selection_v1",
       "btw_model_pool_selection_v1",
-      "btw_model_defaults_v1",
       "targeted_session_rollback",
       "token_usage_statistics",
       "model_channel_routing_v1",
@@ -238,6 +235,30 @@
       }
     },
     {
+      "id": "account_email_start",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "account_email_verify",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
       "id": "account_execute_on_device",
       "surface": "host_invoke_only",
       "remoteWorkspace": "LocalOnly",
@@ -264,14 +285,15 @@
     },
     {
       "id": "account_github_info",
-      "surface": "tauri_command",
-      "remoteWorkspace": "WorkspaceAgnostic",
+      "surface": "host_invoke_only",
+      "remoteWorkspace": "LocalOnly",
       "peer": {
-        "kind": "controller_local"
+        "kind": "retired",
+        "reason": "the account's provider profile is no longer read by surfaces; account_identity answers the one identity projection every surface shows"
       },
       "cliPeer": {
         "kind": "unsupported",
-        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+        "reason": "the account's provider profile is no longer read by surfaces; account_identity answers the one identity projection every surface shows"
       }
     },
     {
@@ -288,6 +310,18 @@
     },
     {
       "id": "account_github_start",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "account_identity",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
@@ -5060,6 +5094,18 @@
     },
     {
       "id": "load_agent_companion_pet_spritesheet",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "controller_local"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the controller keeps this command; peer hosts refuse it before dispatch"
+      }
+    },
+    {
+      "id": "load_agent_companion_pet_still",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
@@ -9844,13 +9890,19 @@
       }
     },
     {
-      "id": "account_get_credential_hint",
+      "id": "account_email_start",
       "route": {
         "kind": "entry_local"
       }
     },
     {
-      "id": "account_github_info",
+      "id": "account_email_verify",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_get_credential_hint",
       "route": {
         "kind": "entry_local"
       }
@@ -9863,6 +9915,12 @@
     },
     {
       "id": "account_github_start",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "account_identity",
       "route": {
         "kind": "entry_local"
       }
@@ -12286,6 +12344,12 @@
     },
     {
       "id": "load_agent_companion_pet_spritesheet",
+      "route": {
+        "kind": "entry_local"
+      }
+    },
+    {
+      "id": "load_agent_companion_pet_still",
       "route": {
         "kind": "entry_local"
       }

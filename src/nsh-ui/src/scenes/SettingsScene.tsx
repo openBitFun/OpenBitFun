@@ -78,7 +78,6 @@ import {
   cancelInsights,
   closeInsightsModal,
   generateInsightsReport,
-  githubUser,
   insightsDays,
   insightsError,
   insightsGenerating,
@@ -95,6 +94,7 @@ import {
   revealInsightsHtml,
   selectedInsightsPath,
 } from "../homeStore";
+import { accountDisplay } from "../accountDisplay";
 import {
   ACP_PERMISSION_MODES,
   acpBusy,
@@ -292,7 +292,9 @@ import {
   deleteModel,
   isSelectableForCapability,
   loadDefaultModels,
+  modelOptionDetail,
   modelOptionLabel,
+  modelOptionText,
   selectableChatModels,
   type DefaultModelSlot,
   loadModels,
@@ -614,6 +616,7 @@ import {
   webSearchNotice,
   type WebSearchProviderId,
 } from "../webSearchStore";
+import { superAgentUi } from "../productGates"; // wave23-E
 
 /** One settings page, as the desktop's settings registry lists it. */
 export interface SettingsPageEntry {
@@ -886,6 +889,8 @@ const SETTINGS_PAGE_ALIASES: Partial<Record<SettingsPageId, { pageId: SettingsPa
 
 /** The page an id draws on (an alias resolves to the page that hosts it). */
 export function resolveSettingsPage(id: SettingsPageId): SettingsPageId {
+  // wave23-E: Account › Super Agent is gated off (`productGates.ts`); a request for it opens Profile.
+  if (id === "openbitfun" && !superAgentUi()) return "profile";
   return SETTINGS_PAGE_ALIASES[id]?.pageId ?? id;
 }
 
@@ -898,6 +903,7 @@ export function settingsScopeOf(id: SettingsPageId): SettingsScope {
 }
 
 function settingsPageVisible(page: SettingsPageEntry): boolean {
+  if (page.id === "openbitfun" && !superAgentUi()) return false; // wave23-E: Super Agent gated off
   if (page.nativeOnly && windowShellId() !== "nsh-desktop") return false;
   if (page.id === "pet" && compactLayout() && !companionAvailableHere()) return false;
   return true;
@@ -1346,10 +1352,9 @@ function stepNumber(spec: FieldSpec, direction: 1 | -1): void {
   void writeField(spec, clampNumber(spec, base + direction * stepFor(spec)));
 }
 
+/** The account's name from the backend's identity projection (`accountDisplay`). */
 function signedInAccountDisplay(): string {
-  const login = githubUser()?.login;
-  if (login) return `@${login}`;
-  return tr("home.signedIn");
+  return accountDisplay().identity?.displayName || tr("home.signedIn");
 }
 
 // --- Settings layout (calm inset grouped lists) -----------------------------
@@ -1477,11 +1482,13 @@ function SettingsRow(props: {
       <If when={Boolean(props.children)}>
         <View
           style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            alignItems: "center",
+            // Stacked content takes the row's width, so a wrapping grid inside it
+            // wraps; as an item of a wrapping row it would keep its one-line width.
+            flexDirection: props.stacked ? "column" : "row",
+            flexWrap: props.stacked ? undefined : "wrap",
+            alignItems: props.stacked ? "stretch" : "center",
             justifyContent: props.stacked ? "flex-start" : "flex-end",
-            flexShrink: 1,
+            flexShrink: props.stacked ? 0 : 1,
             minWidth: 0,
             maxWidth: props.stacked || settingsCompact() ? "100%" : "60%",
             marginLeft: props.stacked ? undefined : "auto",
@@ -1550,25 +1557,39 @@ function SectionFootnote(props: { text: string }) {
   );
 }
 
-/** A notice beside a section header: quiet inline text in its status color. */
-function HeaderNotice(props: { text: string }) {
+/**
+ * The one place a settings section reports the outcome of its own load or
+ * write: a banner between its header and its list, localized, in its status
+ * tone. A success clears itself after a few seconds; a failure stays until it
+ * is dismissed. Never drawn inside a header beside the section's controls.
+ */
+function SectionNoticeBanner(props: { notice: string; onDismiss?: () => void }) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  effect(() => {
+    const notice = props.notice;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (notice && noticeTone(notice) === "success" && props.onDismiss) {
+      const dismiss = props.onDismiss;
+      timer = setTimeout(() => {
+        timer = null;
+        dismiss();
+      }, 4500);
+    }
+  });
+  cleanup(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
   return (
-    <Text
-      style={{
-        ...textStyle("caption"),
-        maxWidth: 320,
-        color:
-          noticeTone(props.text) === "danger"
-            ? stateColor("failed")
-            : noticeTone(props.text) === "warning"
-              ? stateColor("needs_you")
-              : palette().textSecondary,
-        numberOfLines: 2,
-        textOverflow: "ellipsis",
-      }}
-    >
-      {localizeHostError(props.text)}
-    </Text>
+    <If when={props.notice}>
+      {notice => (
+        <View style={{ marginBottom: space.sm }}>
+          <InlineBanner tone={noticeTone(notice())} message={localizeHostError(notice())} onDismiss={props.onDismiss} />
+        </View>
+      )}
+    </If>
   );
 }
 
@@ -1618,40 +1639,12 @@ function SettingsGroup(props: {
   extra?: JSX.Element;
   children?: JSX.Element;
 }) {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  effect(() => {
-    const notice = props.notice ?? "";
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-    if (notice && noticeTone(notice) === "success" && props.onDismissNotice) {
-      const dismiss = props.onDismissNotice;
-      timer = setTimeout(() => {
-        timer = null;
-        dismiss();
-      }, 4500);
-    }
-  });
-  cleanup(() => {
-    if (timer !== null) clearTimeout(timer);
-  });
   return (
     <View ref={el => registerSectionAnchor(props.id, el)} style={{ minWidth: 0 }}>
       <If when={!props.hideTitle || Boolean(props.extra)}>
         <SectionHeader title={props.hideTitle ? "" : props.title} extra={props.extra} />
       </If>
-      <If when={props.notice ?? ""}>
-        {notice => (
-          <View style={{ marginBottom: 8 }}>
-            <InlineBanner
-              tone={noticeTone(notice())}
-              message={localizeHostError(notice())}
-              onDismiss={props.onDismissNotice}
-            />
-          </View>
-        )}
-      </If>
+      <SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />
       <View style={insetGroupStyle()}>{props.children}</View>
       <If when={props.description ?? ""}>{description => <SectionFootnote text={description()} />}</If>
     </View>
@@ -1669,6 +1662,9 @@ function SettingsSection(props: {
   title: string;
   subtitle?: string;
   extra?: JSX.Element;
+  /** The outcome of this section's own load or write (`SectionNoticeBanner`). */
+  notice?: string;
+  onDismissNotice?: () => void;
   bodyPadding?: number;
   flush?: boolean;
   children?: JSX.Element;
@@ -1679,6 +1675,7 @@ function SettingsSection(props: {
       <If when={!repeatsPageTitle(props.title) || Boolean(props.extra)}>
         <SectionHeader title={repeatsPageTitle(props.title) ? "" : props.title} extra={props.extra} />
       </If>
+      <SectionNoticeBanner notice={props.notice ?? ""} onDismiss={props.onDismissNotice} />
       <View style={insetGroupStyle(inset())}>
         <SettingsInsetContext.Provider value={inset()}>{props.children}</SettingsInsetContext.Provider>
       </View>
@@ -1859,7 +1856,7 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
       { value: "fast", label: tr("settings.field.fastRole"), accessibilityLabel: `${spec.id}-fast` },
       ...selectableChatModels().map(model => ({
         value: model.id,
-        label: modelOptionLabel(model),
+        label: modelOptionText(model),
         accessibilityLabel: `${spec.id}-${model.id}`,
       })),
     ];
@@ -1895,26 +1892,53 @@ function ModelChoiceControl(props: { spec: FieldSpec }) {
 }
 
 /**
- * A number field: `−` / `+` step and save at once (clamped), and the value can
- * also be typed — Return or the Save that appears beside it saves the typed
- * value. A field the host keeps as `Option` can be cleared to "no limit".
+ * Every number row's stepper has this width, so the boxes of all number rows
+ * share one right-aligned column and their values line up.
  */
-function NumberControl(props: { spec: FieldSpec }) {
-  const spec = props.spec;
-  const unavailable = () => fieldMissing(spec) && defaultForField(spec) === undefined && !spec.clearable;
-  const value = (): number | null => {
-    const raw = fieldDisplay(spec);
-    if (raw === undefined || raw === null || raw === "") return null;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : null;
-  };
-  const min = () => minForField(spec);
-  const max = () => maxForField(spec);
+const NUMBER_STEPPER_WIDTH = 168;
+
+/**
+ * The one number control of the settings pages: `−` value unit `+` in a box of
+ * fixed width flush with the row's right edge. Editable when `onChangeText` is
+ * given (Return saves). The empty value shows `placeholder`: the backend's
+ * default, or what an empty value means ("No limit"). `leading` (a spinner,
+ * Save, Reset, No limit) sits left of the box, so it never moves the column.
+ */
+function SettingsNumberStepper(props: {
+  /** Accessibility base: the value is `id`, the buttons `id-decrease` / `id-increase`. */
+  id: string;
+  text: string;
+  placeholder?: string;
+  unit?: string;
+  dirty?: boolean;
+  readonly?: boolean;
+  decreaseDisabled?: boolean;
+  increaseDisabled?: boolean;
+  onDecrease: () => void;
+  onIncrease: () => void;
+  onChangeText?: (value: string) => void;
+  onSubmit?: () => void;
+  leading?: JSX.Element;
+}) {
+  const editable = (): boolean => Boolean(props.onChangeText) && !props.readonly;
+  const stepButton = () => ({
+    width: compactLayout() ? 36 : controlHeight.xs,
+    minHeight: compactLayout() ? 36 : controlHeight.xs,
+    paddingHorizontal: 0,
+  });
+  const valueStyle = () => ({
+    ...textStyle("label", { color: palette().text, tabular: true }),
+    fontWeight: "600" as const,
+  });
+  const unit = (): string => props.unit ?? "";
   return (
-    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.sm, maxWidth: "100%" }}>
+      {props.leading}
       <View
         style={{
-          minHeight: compactLayout() ? layout.touchTarget : controlHeight.md,
+          boxSizing: "border-box",
+          width: NUMBER_STEPPER_WIDTH,
+          minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
           flexDirection: "row",
           alignItems: "center",
           padding: space.hair,
@@ -1922,7 +1946,7 @@ function NumberControl(props: { spec: FieldSpec }) {
           borderRadius: radii.md,
           borderCurve: "continuous",
           borderWidth: 1,
-          borderColor: fieldDirty(spec) ? palette().accent : palette().borderSubtle,
+          borderColor: props.dirty ? palette().accent : palette().borderSubtle,
           backgroundColor: palette().inputBg,
           flexShrink: 0,
           ...paintTransition(MOTION_DURATION.fast),
@@ -1933,68 +1957,160 @@ function NumberControl(props: { spec: FieldSpec }) {
           label="−"
           variant="ghost"
           size="xs"
-          accessibilityLabel={`${spec.id}-decrease`}
-          disabled={unavailable() || fieldSaving(spec) || (value() !== null && value()! <= (min() ?? Number.NEGATIVE_INFINITY))}
-          style={{
-            width: compactLayout() ? 36 : controlHeight.sm,
-            minHeight: compactLayout() ? 36 : controlHeight.xs,
-            paddingHorizontal: 0,
-          }}
-          onPress={() => stepNumber(spec, -1)}
+          accessibilityLabel={`${props.id}-decrease`}
+          disabled={props.decreaseDisabled}
+          style={stepButton()}
+          onPress={props.onDecrease}
         />
-        <Input
-          value={draftOf(spec)}
-          accessibilityLabel={spec.id}
-          placeholder={fieldPlaceholder(spec)}
-          readonly={unavailable()}
-          keyboardType="number-pad"
-          onChange={event => setDraft(spec, event.value)}
-          onSubmit={() => void commitDraft(spec)}
-          style={{
-            width: 104,
-            minHeight: compactLayout() ? 36 : controlHeight.md - 6,
-            paddingHorizontal: space.sm,
-            textAlign: "center",
-            color: palette().text,
-            placeholderColor: palette().textMuted,
-            caretColor: palette().accent,
-            fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
-            fontWeight: "600",
-            fontVariant: ["tabular-nums"],
-            backgroundColor: "transparent",
-            borderWidth: 0,
-          }}
-        />
+        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.xs }}>
+          <If when={editable()}>
+            <Input
+              value={props.text}
+              accessibilityLabel={props.id}
+              placeholder={props.placeholder ?? ""}
+              keyboardType="number-pad"
+              onChange={event => props.onChangeText?.(event.value)}
+              onSubmit={() => props.onSubmit?.()}
+              style={{
+                ...valueStyle(),
+                flex: 1,
+                minWidth: 0,
+                minHeight: compactLayout() ? 36 : controlHeight.xs,
+                paddingHorizontal: 0,
+                textAlign: unit() ? "right" : "center",
+                placeholderColor: palette().textMuted,
+                caretColor: palette().accent,
+                fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
+                backgroundColor: "transparent",
+                borderWidth: 0,
+              }}
+            />
+          </If>
+          <If when={!editable()}>
+            <Text
+              accessibilityLabel={props.id}
+              style={{
+                ...valueStyle(),
+                color: props.text ? palette().text : palette().textMuted,
+                flex: unit() ? 1 : undefined,
+                textAlign: unit() ? "right" : "center",
+                numberOfLines: 1,
+              }}
+            >
+              {props.text || props.placeholder || ""}
+            </Text>
+          </If>
+          <If when={unit()}>
+            {value => (
+              <Text style={{ ...textStyle("caption", { tabular: true }), flex: 1, minWidth: 0, numberOfLines: 1 }}>
+                {value()}
+              </Text>
+            )}
+          </If>
+        </View>
         <ActionButton
           label="+"
           variant="ghost"
           size="xs"
-          accessibilityLabel={`${spec.id}-increase`}
-          disabled={unavailable() || fieldSaving(spec) || (value() !== null && max() !== undefined && value()! >= max()!)}
-          style={{
-            width: compactLayout() ? 36 : controlHeight.sm,
-            minHeight: compactLayout() ? 36 : controlHeight.xs,
-            paddingHorizontal: 0,
-          }}
-          onPress={() => stepNumber(spec, 1)}
+          accessibilityLabel={`${props.id}-increase`}
+          disabled={props.increaseDisabled}
+          style={stepButton()}
+          onPress={props.onIncrease}
         />
       </View>
-      <If when={fieldUnit(spec) ?? ""}>
-        {unit => <Text style={textStyle("caption", { tabular: true })}>{unit()}</Text>}
-      </If>
-      <If when={spec.clearable === true && value() !== null && !fieldDirty(spec)}>
-        <IconButton
-          icon="close"
-          size="sm"
-          tooltip={tr("settings.field.clearLimit")}
-          accessibilityLabel={`${spec.id}-clear`}
-          onPress={() => void writeField(spec, null)}
-        />
-      </If>
-      <If when={fieldDirty(spec)}>
-        <RowSaveButton spec={spec} onPress={() => void commitDraft(spec)} />
-      </If>
     </View>
+  );
+}
+
+/** A quiet text button left of a number box (Reset, No limit). */
+function StepperAccessory(props: { label: string; tooltip?: string; accessibilityLabel: string; onPress: () => void }) {
+  return (
+    <Button
+      label={props.label}
+      variant="ghost"
+      size="sm"
+      tooltip={props.tooltip}
+      accessibilityLabel={props.accessibilityLabel}
+      onPress={props.onPress}
+    />
+  );
+}
+
+/**
+ * A number field: `−` / `+` step and save at once (clamped), and the value can
+ * also be typed — Return or the Save that appears beside it saves the typed
+ * value. Empty shows the backend's default (`get_settings_schema`), or "No
+ * limit" for a value the host keeps as `Option` and holds unset; such a value
+ * can be set back to no limit, any other back to the backend's default.
+ */
+function NumberControl(props: { spec: FieldSpec }) {
+  const spec = props.spec;
+  const unavailable = () => fieldMissing(spec) && defaultForField(spec) === undefined && !spec.clearable;
+  const value = (): number | null => {
+    const raw = fieldDisplay(spec);
+    if (raw === undefined || raw === null || raw === "") return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const backendDefault = (): number | null => {
+    const fallback = defaultForField(spec);
+    return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : null;
+  };
+  /** An `Option` value held unset: the host applies no limit. */
+  const noLimit = (): boolean => spec.clearable === true && value() === null;
+  const placeholder = (): string => {
+    if (noLimit()) return tr("settings.placeholder.noLimit");
+    const fallback = backendDefault();
+    return fallback !== null ? String(fallback) : fieldPlaceholder(spec);
+  };
+  const showsUnit = (): boolean => !(noLimit() && draftOf(spec).trim() === "");
+  const min = () => minForField(spec);
+  const max = () => maxForField(spec);
+  const resettable = (): boolean => {
+    const fallback = backendDefault();
+    return !spec.clearable && fallback !== null && value() !== null && value() !== fallback;
+  };
+  return (
+    <SettingsNumberStepper
+      id={spec.id}
+      text={draftOf(spec)}
+      placeholder={placeholder()}
+      unit={showsUnit() ? fieldUnit(spec) : undefined}
+      dirty={fieldDirty(spec)}
+      readonly={unavailable()}
+      decreaseDisabled={unavailable() || fieldSaving(spec) || (value() !== null && value()! <= (min() ?? Number.NEGATIVE_INFINITY))}
+      increaseDisabled={unavailable() || fieldSaving(spec) || (value() !== null && max() !== undefined && value()! >= max()!)}
+      onDecrease={() => stepNumber(spec, -1)}
+      onIncrease={() => stepNumber(spec, 1)}
+      onChangeText={text => setDraft(spec, text)}
+      onSubmit={() => void commitDraft(spec)}
+      leading={
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <If when={fieldSaving(spec)}>
+            <Spinner size={12} color={palette().accent} />
+          </If>
+          <If when={fieldDirty(spec)}>
+            <RowSaveButton spec={spec} onPress={() => void commitDraft(spec)} />
+          </If>
+          <If when={!fieldDirty(spec) && spec.clearable === true && value() !== null}>
+            <StepperAccessory
+              label={tr("settings.placeholder.noLimit")}
+              tooltip={tr("settings.field.clearLimit")}
+              accessibilityLabel={`${spec.id}-clear`}
+              onPress={() => void writeField(spec, null)}
+            />
+          </If>
+          <If when={!fieldDirty(spec) && resettable()}>
+            <StepperAccessory
+              label={tr("common.reset")}
+              tooltip={tr("settings.field.resetToDefault", { value: String(backendDefault() ?? "") })}
+              accessibilityLabel={`${spec.id}-reset`}
+              onPress={() => void writeField(spec, backendDefault())}
+            />
+          </If>
+        </View>
+      }
+    />
   );
 }
 
@@ -2357,7 +2473,8 @@ function PermissionsSection() {
                   hint: modeHint(permissionMode()!),
                 })
           }
-          extra={permissionsNotice() ? <HeaderNotice text={permissionsNotice()} /> : undefined}
+          notice={permissionsNotice()}
+          onDismissNotice={() => permissionsNotice.set("")}
         >
           <Each of={PERMISSION_MODES} key={entry => entry.value}>
             {(entry, index) => (
@@ -2642,11 +2759,44 @@ function PermissionsSection() {
 function ApprovalSection() {
   const kind = (): "chat" | "decision" => approvalSettings()?.modelKind ?? "chat";
   const pick = (field: string, fallback = ""): string => approvalDrafts()[field] ?? fallback;
+  const approvalTimeoutDirty = (): boolean => {
+    const typed = approvalDrafts().timeout;
+    return typed !== undefined && typed.trim() !== String(approvalSettings()?.timeoutSeconds ?? "");
+  };
+  const clearTimeoutDraft = (): void =>
+    approvalDrafts.update(current => {
+      if (!("timeout" in current)) return current;
+      const next = { ...current };
+      delete next.timeout;
+      return next;
+    });
+  // The host bounds the timeout and answers with what it stored.
+  const saveApprovalTimeout = (): void => {
+    const typed = pick("timeout").trim();
+    if (!typed) {
+      clearTimeoutDraft();
+      return;
+    }
+    const seconds = Number.parseInt(typed, 10);
+    if (!Number.isFinite(seconds)) {
+      approvalNotice.set(tr("settings.permissions.timeoutValidation"));
+      return;
+    }
+    clearTimeoutDraft();
+    void saveApproval({ timeoutSeconds: seconds });
+  };
+  const stepApprovalTimeout = (direction: 1 | -1): void => {
+    const current = approvalSettings()?.timeoutSeconds;
+    if (current === undefined) return;
+    clearTimeoutDraft();
+    void saveApproval({ timeoutSeconds: Math.max(1, current + direction) });
+  };
   return (
     <SettingsSection
       title={tr("settings.permissions.autoTitle")}
       flush={true}
-      extra={approvalNotice() ? <HeaderNotice text={approvalNotice()} /> : undefined}
+      notice={approvalNotice()}
+      onDismissNotice={() => approvalNotice.set("")}
     >
       <If
         when={permissionMode() === "auto"}
@@ -2776,30 +2926,29 @@ function ApprovalSection() {
           </If>
         </If>
         <SettingsConfigRow label={tr("settings.permissions.timeout")}>
-          <InputBox
-            size="sm"
-            value={pick("timeout")}
-            placeholder={String(approvalSettings()?.timeoutSeconds ?? 30)}
-            accessibilityLabel="approval-timeout"
-            style={{ width: 108, minWidth: 104 }}
-            onChange={val => approvalDrafts.update(current => ({ ...current, timeout: val }))}
-          />
-          <Text style={textStyle("caption")}>{tr("settings.permissions.seconds")}</Text>
-          <Button
-            label={tr("settings.field.saveShort")}
-            variant="secondary"
-            size="sm"
-            accessibilityLabel="save-approval-timeout"
-            onPress={() => {
-              const typed = pick("timeout").trim();
-              const seconds = typed ? Number.parseInt(typed, 10) : (approvalSettings()?.timeoutSeconds ?? 30);
-              if (!Number.isFinite(seconds)) {
-                approvalNotice.set(tr("settings.permissions.timeoutValidation"));
-                return;
-              }
-              // The host bounds the timeout and answers with what it stored.
-              void saveApproval({ timeoutSeconds: seconds });
-            }}
+          <SettingsNumberStepper
+            id="approval-timeout"
+            text={pick("timeout", approvalSettings() ? String(approvalSettings()!.timeoutSeconds) : "")}
+            unit={tr("settings.unit.seconds")}
+            dirty={approvalTimeoutDirty()}
+            readonly={!approvalSettings()}
+            decreaseDisabled={!approvalSettings() || (approvalSettings()?.timeoutSeconds ?? 0) <= 1}
+            increaseDisabled={!approvalSettings()}
+            onDecrease={() => stepApprovalTimeout(-1)}
+            onIncrease={() => stepApprovalTimeout(1)}
+            onChangeText={val => approvalDrafts.update(current => ({ ...current, timeout: val }))}
+            onSubmit={() => saveApprovalTimeout()}
+            leading={
+              <If when={approvalTimeoutDirty()}>
+                <Button
+                  label={tr("settings.field.saveShort")}
+                  variant="secondary"
+                  size="sm"
+                  accessibilityLabel="save-approval-timeout"
+                  onPress={() => saveApprovalTimeout()}
+                />
+              </If>
+            }
           />
         </SettingsConfigRow>
         <SettingsConfigRow label={tr("settings.permissions.whenUnsure")}>
@@ -2840,11 +2989,8 @@ function SendPolicySection() {
       flush={true}
       title={tr("settings.sendPolicy.title")}
       subtitle={tr("settings.sendPolicy.subtitle")}
-      extra={
-        sendPolicyNotice() ? (
-          <HeaderNotice text={sendPolicyNotice()} />
-        ) : undefined
-      }
+      notice={sendPolicyNotice()}
+      onDismissNotice={() => sendPolicyNotice.set("")}
     >
       <SettingsConfigRow
         label={tr("settings.sendPolicy.duringTurn")}
@@ -2923,11 +3069,8 @@ function WebSearchSection() {
       flush={true}
       title={tr("settings.webSearch.title")}
       subtitle={tr("settings.webSearch.subtitle")}
-      extra={
-        webSearchNotice() ? (
-          <HeaderNotice text={webSearchNotice()} />
-        ) : undefined
-      }
+      notice={webSearchNotice()}
+      onDismissNotice={() => webSearchNotice.set("")}
     >
       <View>
         <SettingsConfigRow
@@ -3110,11 +3253,10 @@ function QuickActionsSection() {
       flush={true}
       title={tr("settings.quickActions.title")}
       subtitle={tr("settings.quickActions.subtitle")}
+      notice={quickActionsNotice()}
+      onDismissNotice={() => quickActionsNotice.set("")}
       extra={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <If when={quickActionsNotice()}>
-            {notice => <HeaderNotice text={notice()} />}
-          </If>
           <Button
             label={tr("common.add")}
             variant="primary"
@@ -4572,11 +4714,10 @@ function UsageSection() {
         title={tr("settings.usage.title")}
         flush={true}
         subtitle={tr("settings.usage.subtitle")}
+        notice={usageNotice()}
+        onDismissNotice={() => usageNotice.set("")}
         extra={
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: space.sm, maxWidth: "100%" }}>
-            <If when={usageNotice()}>
-              {notice => <HeaderNotice text={notice()} />}
-            </If>
             <Scroll horizontal style={{ maxWidth: "100%", flexShrink: 1 }}>
               <SegmentedTabs
                 size="sm"
@@ -5187,8 +5328,7 @@ function TaskModelsSection() {
       { value: "fast", label: tr("settings.field.fastRole"), accessibilityLabel: `task-model-choice-${task}-fast` },
       ...selectableChatModels().map(model => ({
         value: model.id,
-        label: modelOptionLabel(model),
-        description: model.provider,
+        label: modelOptionText(model),
         accessibilityLabel: `task-model-choice-${task}-${model.id}`,
       })),
     ];
@@ -5256,7 +5396,8 @@ function TaskModelsSection() {
 function ModelRow(props: { model: () => ReturnType<typeof storedModels>[number]; index: () => number }) {
   const compactMeta = (): string => {
     const m = props.model();
-    const parts: string[] = [m.model_name];
+    // The model leads the row already; the meta line names it only when it differs.
+    const parts: string[] = m.model_name === modelOptionLabel(m) ? [] : [m.model_name];
     if (m.context_window) {
       parts.push(
         tr("settings.models.ctxCompact", { value: formatTokens(m.context_window) }),
@@ -5309,11 +5450,13 @@ function ModelRow(props: { model: () => ReturnType<typeof storedModels>[number];
                 textOverflow: "ellipsis",
               }}
             >
-              {props.model().name}
+              {modelOptionLabel(props.model())}
             </Text>
-            <Text style={textStyle("caption")}>
-              {props.model().provider}
-            </Text>
+            <If when={modelOptionDetail(props.model())}>
+              <Text style={textStyle("caption")}>
+                {modelOptionDetail(props.model())}
+              </Text>
+            </If>
             <If when={outcome().status === "testing"}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
                 <Spinner size={11} color={palette().accent} />
@@ -5418,10 +5561,10 @@ function ModelRow(props: { model: () => ReturnType<typeof storedModels>[number];
           message={
             defaultModelReferences(props.model().id) > 0
               ? tr("settings.models.deleteConfirmReferenced", {
-                  name: props.model().name,
+                  name: modelOptionText(props.model()),
                   count: defaultModelReferences(props.model().id),
                 })
-              : tr("settings.models.deleteConfirm", { name: props.model().name })
+              : tr("settings.models.deleteConfirm", { name: modelOptionText(props.model()) })
           }
           confirmLabel={tr("common.delete")}
           danger={true}
@@ -5464,11 +5607,10 @@ function LogFilesSection() {
       title={tr("settings.logs.title")}
       flush={true}
       subtitle={tr("settings.logs.subtitle")}
+      notice={loggingNotice()}
+      onDismissNotice={() => loggingNotice.set("")}
       extra={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <If when={loggingNotice()}>
-            {notice => <HeaderNotice text={notice()} />}
-          </If>
           <IconButton
             icon="refresh"
             size="sm"
@@ -5940,11 +6082,10 @@ function ModelSection() {
       flush={true}
       title={tr("settings.models.title")}
       subtitle={tr("settings.models.subtitle")}
+      notice={modelSettingsNotice()}
+      onDismissNotice={() => modelSettingsNotice.set("")}
       extra={
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <If when={modelSettingsNotice()}>
-            {notice => <HeaderNotice text={notice()} />}
-          </If>
           <Button
             label={tr("settings.models.addModel")}
             leadingIcon="plus"
@@ -6842,76 +6983,6 @@ function AppearanceSection() {
   );
 }
 
-function NumericStepper(props: {
-  valueText: string;
-  decreaseAccessibilityLabel: string;
-  increaseAccessibilityLabel: string;
-  decreaseDisabled?: boolean;
-  increaseDisabled?: boolean;
-  onDecrease: () => void;
-  onIncrease: () => void;
-}) {
-  return (
-    <View
-      style={{
-        boxSizing: "border-box",
-        width: 128,
-        minHeight: compactLayout() ? layout.touchTarget : controlHeight.sm,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: space.hair,
-        borderRadius: radii.md,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: palette().borderSubtle,
-        backgroundColor: palette().segmentedTrackBg,
-        gap: space.hair,
-        flexShrink: 0,
-      }}
-    >
-      <ActionButton
-        label="−"
-        variant="ghost"
-        size="xs"
-        accessibilityLabel={props.decreaseAccessibilityLabel}
-        disabled={props.decreaseDisabled}
-        style={{
-          width: compactLayout() ? 36 : 26,
-          minHeight: compactLayout() ? 36 : controlHeight.xs,
-          paddingHorizontal: 0,
-        }}
-        onPress={props.onDecrease}
-      />
-      <Text
-        style={{
-          ...textStyle("caption", { color: palette().text, tabular: true }),
-          flex: 1,
-          minWidth: 0,
-          fontWeight: "600",
-          textAlign: "center",
-          numberOfLines: 1,
-        }}
-      >
-        {props.valueText}
-      </Text>
-      <ActionButton
-        label="+"
-        variant="ghost"
-        size="xs"
-        accessibilityLabel={props.increaseAccessibilityLabel}
-        disabled={props.increaseDisabled}
-        style={{
-          width: compactLayout() ? 36 : 26,
-          minHeight: compactLayout() ? 36 : controlHeight.xs,
-          paddingHorizontal: 0,
-        }}
-        onPress={props.onIncrease}
-      />
-    </View>
-  );
-}
-
 function ContentWidthRow() {
   const isCustomWidth = () => contentWidth() !== DEFAULT_CONTENT_WIDTH;
   return (
@@ -6940,25 +7011,23 @@ function ContentWidthRow() {
             {tr("settings.appearance.contentWidthDesc", { px: contentWidth() })}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm }}>
-          <If when={isCustomWidth()}>
-            <Button
-              label={tr("common.reset")}
-              variant="ghost"
-              size="sm"
-              accessibilityLabel="content-width-reset"
-              onPress={() => resetContentWidth()}
-            />
-          </If>
-          <NumericStepper
-            valueText={`${contentWidth()} px`}
-            decreaseAccessibilityLabel="content-width-decrease"
-            increaseAccessibilityLabel="content-width-increase"
-            decreaseDisabled={contentWidth() <= MIN_CONTENT_WIDTH}
-            onDecrease={() => adjustContentWidth(-CONTENT_WIDTH_STEP)}
-            onIncrease={() => adjustContentWidth(CONTENT_WIDTH_STEP)}
-          />
-        </View>
+        <SettingsNumberStepper
+          id="content-width"
+          text={String(contentWidth())}
+          unit={tr("settings.unit.px")}
+          decreaseDisabled={contentWidth() <= MIN_CONTENT_WIDTH}
+          onDecrease={() => adjustContentWidth(-CONTENT_WIDTH_STEP)}
+          onIncrease={() => adjustContentWidth(CONTENT_WIDTH_STEP)}
+          leading={
+            <If when={isCustomWidth()}>
+              <StepperAccessory
+                label={tr("common.reset")}
+                accessibilityLabel="content-width-reset"
+                onPress={() => resetContentWidth()}
+              />
+            </If>
+          }
+        />
       </View>
       <If when={contentWidthNotice().length > 0 ? contentWidthNotice() : ""}>
         {notice => (
@@ -7001,26 +7070,24 @@ function FontSizeRows() {
             {tr("settings.appearance.fontBaseline", { px: fontPx() })}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", flexShrink: 0, gap: space.sm }}>
-          <If when={fontLevel() !== "default"}>
-            <Button
-              label={tr("common.reset")}
-              variant="ghost"
-              size="sm"
-              accessibilityLabel="font-size-reset"
-              onPress={() => void resetFontPreference()}
-            />
-          </If>
-          <NumericStepper
-            valueText={`${fontPx()} px`}
-            decreaseAccessibilityLabel="font-size-decrease"
-            increaseAccessibilityLabel="font-size-increase"
-            decreaseDisabled={fontPx() <= MIN_FONT_PX}
-            increaseDisabled={fontPx() >= MAX_FONT_PX}
-            onDecrease={() => void adjustFontPx(-1)}
-            onIncrease={() => void adjustFontPx(1)}
-          />
-        </View>
+        <SettingsNumberStepper
+          id="font-size"
+          text={String(fontPx())}
+          unit={tr("settings.unit.px")}
+          decreaseDisabled={fontPx() <= MIN_FONT_PX}
+          increaseDisabled={fontPx() >= MAX_FONT_PX}
+          onDecrease={() => void adjustFontPx(-1)}
+          onIncrease={() => void adjustFontPx(1)}
+          leading={
+            <If when={fontLevel() !== "default"}>
+              <StepperAccessory
+                label={tr("common.reset")}
+                accessibilityLabel="font-size-reset"
+                onPress={() => void resetFontPreference()}
+              />
+            </If>
+          }
+        />
       </View>
       <Scroll horizontal style={{ maxWidth: "100%" }}>
         <SegmentedTabs
@@ -7061,11 +7128,10 @@ function PoolsSection() {
         flush={true}
         title={tr("settings.pools.title")}
         subtitle={tr("settings.pools.subtitle")}
+        notice={poolsNotice()}
+        onDismissNotice={() => poolsNotice.set("")}
         extra={
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <If when={poolsNotice()}>
-              {notice => <HeaderNotice text={notice()} />}
-            </If>
             <Button
               label={tr("settings.pools.addPool")}
               leadingIcon="plus"
@@ -7163,8 +7229,10 @@ function PoolsSection() {
 }
 
 function PoolRow(props: { pool: () => ModelPool; first?: () => boolean }) {
-  const labelOf = (modelId: string): string =>
-    storedModels().find(model => model.id === modelId)?.name || modelId;
+  const labelOf = (modelId: string): string => {
+    const found = storedModels().find(model => model.id === modelId);
+    return found ? modelOptionText(found) : modelId;
+  };
   const statusesOf = () => poolStatuses()[props.pool().id] ?? [];
   const strategyLabel = () => {
     const strategy = props.pool().strategy;
@@ -7304,7 +7372,7 @@ function PoolEditor() {
   const hasMember = (modelId: string) => membersOf().includes(modelId);
   const memberName = (modelId: string) => {
     const found = storedModels().find(m => m.id === modelId);
-    return found && found.name && found.name !== modelId ? `${found.name} (${modelId})` : modelId;
+    return found ? modelOptionText(found) : modelId;
   };
   const strategyHint = () => {
     const mapped = POOL_STRATEGY_KEYS[strategyOf()];
@@ -7422,7 +7490,7 @@ function PoolEditor() {
           <Each of={storedModels()} key={model => model.id}>
             {model => (
               <SelectableChip
-                label={`${hasMember(model().id) ? "✓ " : "+ "}${model().name || model().id}`}
+                label={`${hasMember(model().id) ? "✓ " : "+ "}${modelOptionText(model())}`}
                 active={hasMember(model().id)}
                 accessibilityLabel={`pool-toggle-${model().id}`}
                 onPress={() => togglePoolMember(model().id)}
@@ -7615,8 +7683,7 @@ function DefaultModelsSection() {
     for (const model of models) {
       rows.push({
         value: model.id,
-        label: modelOptionLabel(model),
-        description: model.provider,
+        label: modelOptionText(model),
         accessibilityLabel: `default-model-${slot}-${model.id}`,
       });
     }

@@ -32,6 +32,9 @@ pub struct AccountSnapshotResponse {
     pub info: Option<AccountInfo>,
     #[serde(default)]
     pub devices: Vec<AccountDevice>,
+    /// Who is signed in, as every surface shows it (absent from older servers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<openbitfun_product_domains::account::AccountIdentityView>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,6 +79,9 @@ pub struct AccountLoginResponse {
     pub user_id: String,
     pub relay_url: String,
     pub status_message: String,
+    /// The signed-in account's name (its email or GitHub login).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

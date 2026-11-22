@@ -179,7 +179,9 @@ function modelMenuItems(): DropdownMenuItem[] {
     for (const model of device.models ?? []) {
       items.push({
         id: `model:${device.deviceId}/${model.modelId}`,
-        label: model.displayName || model.modelId,
+        // The model, then its provider, as the backend labelled them.
+        label: model.label || model.displayName || model.modelId,
+        hint: (model.label ? model.detail : model.provider) || undefined,
         trailingHint: model.primary ? tr("models.primary") : undefined,
         active: selection.mode === "pinned" && selection.deviceId === device.deviceId && selection.modelId === model.modelId,
         disabled: Boolean(device.unavailableReason),

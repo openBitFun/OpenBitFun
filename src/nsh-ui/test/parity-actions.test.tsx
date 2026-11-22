@@ -85,7 +85,7 @@ test("the session header ⋯ copies the session ID and exports the transcript as
   const backend = createBackend();
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
   await showAllSessions(app, "Terminal migration");
-  await app.press("Terminal migration");
+  await app.press("label:all-sessions-scene >> Terminal migration");
   await app.press("thread-actions-trigger >> nth=0");
   await app.press("session-menu-copy-id-session-2");
   await app.waitUntil(() => app.clipboard() === "session-2");

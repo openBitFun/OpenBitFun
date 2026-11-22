@@ -58,6 +58,7 @@ import {
   MiniAppMarketView,
   MiniAppSubmissionsView,
   PackageImportModal,
+  SpaceIcon,
   spaceIconName,
 } from "../ui/MiniAppMarket";
 import {
@@ -358,7 +359,7 @@ function SpaceCard(props: { space: () => SpaceMeta }) {
           focusVisibleStyle={{ ...focusRingStyle(), outlineOffset: -2 }}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, minWidth: 0 }}>
-            <Icon name={spaceIconName(props.space().icon)} size={16} color={palette().textSecondary} />
+            <SpaceIcon icon={props.space().icon} color={palette().textSecondary} />
             <Text
               style={{
                 flexShrink: 1,

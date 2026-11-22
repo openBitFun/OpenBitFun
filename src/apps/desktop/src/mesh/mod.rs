@@ -685,9 +685,10 @@ pub fn start_for_native_host(data_dir: &Path) {
 /// Leaves the network (backend shutdown); waits up to a few seconds.
 pub async fn shutdown_global() {
     let Some(runtime) = RUNTIME.get() else {
+        crate::fleet::shutdown();
         return;
     };
-    crate::fleet::stop();
+    crate::fleet::shutdown();
     crate::api::account_settings_sync_api::detach_replica();
     route::DesktopMeshRoute::global().clear();
     peer_link::shutdown_global().await;

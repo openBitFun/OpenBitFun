@@ -47,7 +47,7 @@ impl ChatMode {
             chat_view.show_login_form();
             return;
         };
-        chat_view.show_account_panel(info, snapshot.devices);
+        chat_view.show_account_panel(info, snapshot.identity, snapshot.devices);
     }
 
     fn handle_login_form_action(
@@ -58,7 +58,50 @@ impl ChatMode {
         rt_handle: &tokio::runtime::Handle,
     ) -> Result<Option<ChatExitReason>> {
         match action {
-            LoginFormAction::Submit(transaction_id) => {
+            LoginFormAction::SendCode(email) => {
+                let result = tokio::task::block_in_place(|| {
+                    rt_handle.block_on(async {
+                        let account = self.account_runtime.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("Account management is unavailable for this TUI Host")
+                        })?;
+                        account.start_email_sign_in(email, None).await
+                    })
+                });
+                match result {
+                    Ok(challenge) => chat_view.login_form_set_challenge(challenge),
+                    Err(error) => chat_view.login_form_set_error(
+                        crate::account::email_sign_in_failure(&error.to_string()),
+                    ),
+                }
+            }
+            LoginFormAction::VerifyCode { challenge_id, code } => {
+                let result = tokio::task::block_in_place(|| {
+                    rt_handle.block_on(async {
+                        let account = self.account_runtime.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("Account management is unavailable for this TUI Host")
+                        })?;
+                        account.verify_email_sign_in(challenge_id, code).await
+                    })
+                });
+                match result {
+                    Ok(login) => {
+                        chat_state.add_system_message(
+                            crate::account::account_login_status_message(&login),
+                        );
+                        self.open_login_or_account_panel(chat_view, chat_state, rt_handle);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "Email sign-in failed: {}",
+                            crate::account::bounded_account_error(&error.to_string())
+                        );
+                        chat_view.login_form_set_error(crate::account::email_sign_in_failure(
+                            &error.to_string(),
+                        ));
+                    }
+                }
+            }
+            LoginFormAction::GitHub(transaction_id) => {
                 let result = tokio::task::block_in_place(|| {
                     rt_handle.block_on(async {
                         let account = self.account_runtime.as_ref().ok_or_else(|| {

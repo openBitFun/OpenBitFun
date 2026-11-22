@@ -74,41 +74,61 @@ pub(crate) fn account_snapshot_projection(
                 online: device.online,
             })
             .collect(),
+        identity: snapshot.identity,
     }
 }
 
 pub(crate) fn account_login_status_message(
     result: &openbitfun_core::service::remote_connect::account_runtime::AccountLoginResult,
 ) -> String {
+    // The identity projection's name (the email or the GitHub login), never
+    // the account id.
+    let signed_in = match result.display_name.as_deref() {
+        Some(name) => format!("Signed in as {name}."),
+        None => "Signed in.".to_string(),
+    };
     if device::remote_control_allowed().ok() == Some(false) {
-        format!(
-            "Logged in as user {} on {}. Remote control is off.",
-            result.user_id, result.relay_url
-        )
+        format!("{signed_in} Remote control is off.")
     } else if result.routing_standby {
         format!(
-            "Logged in as user {} on {}. Another OpenBitFun host on this machine serves this device; this one takes over when it exits.",
-            result.user_id, result.relay_url
+            "{signed_in} Another OpenBitFun host on this machine serves this device; this one takes over when it exits."
         )
     } else if result.routing_connected {
-        format!(
-            "Logged in as user {} on {}. This host serves this device for remote control.",
-            result.user_id, result.relay_url
-        )
+        format!("{signed_in} This host serves this device for remote control.")
     } else if let Some(error) = &result.routing_error {
         tracing::warn!(
             "Device serving claim failed after sign-in: {}",
             bounded_account_error(error)
         );
-        format!(
-            "Logged in as user {} on {}. Remote control could not start on this host; see the log for details.",
-            result.user_id, result.relay_url
-        )
+        format!("{signed_in} Remote control could not start on this host; see the log for details.")
     } else {
-        format!(
-            "Logged in as user {} on {}.",
-            result.user_id, result.relay_url
-        )
+        signed_in
+    }
+}
+
+/// The line the sign-in panel shows for a failed email sign-in step: the
+/// backend answers `<code>: <sentence>`, and the panel words the code.
+pub(crate) fn email_sign_in_failure(message: &str) -> String {
+    let code = message
+        .split_once(':')
+        .map(|(code, _)| code.trim())
+        .unwrap_or("");
+    match code {
+        "invalid_email" => "Enter a valid email address.".to_string(),
+        "invalid_code" => {
+            "That code is wrong or has expired. Check it, or send a new one.".to_string()
+        }
+        "rate_limited" => {
+            "Too many codes were requested. Wait a minute, then send again.".to_string()
+        }
+        "network" => "OpenBitFun could not be reached. Check your connection.".to_string(),
+        "unsupported" => {
+            "Email sign-in is not available here. Press Tab to sign in with GitHub.".to_string()
+        }
+        _ => format!(
+            "Sign-in failed: {}",
+            crate::account_guidance::account_failure_line(message)
+        ),
     }
 }
 
@@ -433,12 +453,17 @@ mod tests {
                 routing_connected: false,
                 routing_standby: true,
                 routing_error: None,
+                display_name: Some("a@example.com".into()),
             };
         let message = account_login_status_message(&result);
         if device::remote_control_allowed().ok() != Some(false) {
             assert!(message.contains("takes over when it exits"), "{message}");
         }
         assert!(!message.contains("serves this device for"), "{message}");
+        assert!(
+            message.starts_with("Signed in as a@example.com."),
+            "{message}"
+        );
     }
 
     /// A released OS lock can stay held for a moment while another test of

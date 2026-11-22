@@ -877,3 +877,136 @@ async fn detached_fleet_events_receives_events_from_peer_connected_after_subscri
     a.server.shutdown();
     b.server.shutdown();
 }
+
+/// A host's own commands never depend on its device network: with the
+/// network off (`FleetHost::start_local`) a `fleet_call` aimed here runs
+/// through the local dispatcher under the `account-device` allowlist, the
+/// navigator lists this device alone, and a call aimed at another device is
+/// refused as `fleet_device_offline: <id> (device_network_off)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_local_only_fleet_runs_its_own_commands_and_refuses_other_devices() {
+    let hub = EventHub::new(256);
+    let backend = Arc::new(HostBackend {
+        hub: Arc::clone(&hub),
+        fleet: OnceLock::new(),
+        instance: OnceLock::new(),
+    });
+    backend.instance.set("inst-local".into()).unwrap();
+    let fleet = FleetHost::start_local(
+        "desk-solo".into(),
+        Arc::new(FakeOwner {
+            device_id: "desk-solo".into(),
+            instance: "inst-local".into(),
+            backend: Arc::clone(&backend),
+        }),
+        Arc::clone(&hub),
+        None,
+    );
+    assert!(fleet.is_local_only());
+    assert!(backend.fleet.set(Arc::clone(&fleet)).is_ok());
+
+    let call = |target: Option<&str>, command: &str| {
+        let mut request = json!({ "command": command, "args": { "request": { "count": 0 } } });
+        if let Some(target) = target {
+            request["target"] = json!(target);
+        }
+        json!({ "request": request })
+    };
+    let here = fleet
+        .dispatch(
+            "fleet_call",
+            call(Some("desk-solo"), "list_miniapps"),
+            "inst-local",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(here, json!({ "published": 0 }));
+
+    let elsewhere = fleet
+        .dispatch(
+            "fleet_call",
+            call(Some("laptop-2"), "list_miniapps"),
+            "inst-local",
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        elsewhere,
+        "fleet_device_offline: laptop-2 (device_network_off)"
+    );
+
+    // The allowlist is the same as with the network on.
+    let forbidden = fleet
+        .dispatch(
+            "fleet_call",
+            call(Some("desk-solo"), "account_login"),
+            "inst-local",
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(forbidden.contains("account_login"), "{forbidden}");
+
+    let mut devices = Vec::new();
+    for _ in 0..50 {
+        let view = fleet.router().navigator(FleetNavigatorRequest::default());
+        devices = view.devices;
+        if devices.iter().any(|device| !device.workspaces.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    let ids: Vec<&str> = devices
+        .iter()
+        .map(|device| device.device_id.as_str())
+        .collect();
+    assert_eq!(ids, ["desk-solo"]);
+    assert_eq!(devices[0].workspaces.len(), 1);
+    // The Inbox answers too (nothing dialed).
+    assert!(fleet
+        .dispatch("fleet_attention", json!({ "request": {} }), "inst-local")
+        .await
+        .unwrap()
+        .is_ok());
+    fleet.shutdown();
+}
+
+/// A host with no fleet at all (the CLI between sign-out and Link stopping)
+/// still runs a `fleet_call` aimed at itself, with the same verdict and
+/// allowlist; another target is the readable `device_network_off` refusal.
+#[tokio::test]
+async fn fleet_call_without_a_fleet_runs_here_and_refuses_elsewhere() {
+    let backend = HostBackend {
+        hub: EventHub::new(16),
+        fleet: OnceLock::new(),
+        instance: OnceLock::new(),
+    };
+    let args = |target: Option<&str>, command: &str| {
+        let mut request = json!({ "command": command, "args": { "request": { "count": 0 } } });
+        if let Some(target) = target {
+            request["target"] = json!(target);
+        }
+        json!({ "request": request })
+    };
+    let here = fleet_call_without_fleet(&backend, "cli-1", &args(Some("cli-1"), "list_miniapps"))
+        .await
+        .unwrap();
+    assert_eq!(here, json!({ "published": 0 }));
+    let other = fleet_call_without_fleet(&backend, "cli-1", &args(Some("desk-9"), "list_miniapps"))
+        .await
+        .unwrap_err()
+        .into_message();
+    assert_eq!(other, "fleet_device_offline: desk-9 (device_network_off)");
+    let nested = fleet_call_without_fleet(&backend, "cli-1", &args(None, "fleet_navigator"))
+        .await
+        .unwrap_err()
+        .into_message();
+    assert!(nested.starts_with("fleet_nested_call:"), "{nested}");
+    let forbidden =
+        fleet_call_without_fleet(&backend, "cli-1", &args(Some("cli-1"), "account_login"))
+            .await
+            .unwrap_err();
+    assert_eq!(forbidden.code, -32003);
+}

@@ -39,9 +39,13 @@ test("shell and sessions come from the host", async () => {
   const backend = createBackend();
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Super Agent");
-  // The sidebar is Super Agent, Inbox, Search, history, then All sessions and Library.
-  expect(app.shows("nav-openbitfun")).toBe(true);
+  await app.waitFor("nav-all-sessions");
+  // The sidebar is New session, Search, Inbox, this device's workspaces and their
+  // sessions, then All sessions and Library; Super Agent is gated off.
+  expect(app.shows("nav-openbitfun")).toBe(false);
+  expect(app.shows("nav-new-session")).toBe(true);
+  expect(app.shows("sidebar-device-tree")).toBe(true);
+  await app.waitFor("id:sidebar-session-session-1");
   expect(app.shows("nav-inbox")).toBe(true);
   expect(app.shows("nav-all-sessions")).toBe(true);
   expect(app.shows("nav-library")).toBe(true);
@@ -122,7 +126,7 @@ test("deleting a session drops its row and the catalog count with it", async () 
   });
   // The row leaves All sessions with it.
   await showAllSessions(app, "Terminal migration");
-  expect(app.shows("NSH skeleton")).toBe(false);
+  expect(app.shows("label:all-sessions-scene >> NSH skeleton")).toBe(false);
 });
 
 test("session header actions archive, rename and send a turn", async () => {
@@ -847,8 +851,10 @@ test("the composer picks the model the next turn runs on", async () => {
 
   await app.press("label:bot-capsule-trigger");
   // A model that cannot chat is not offered.
-  await app.waitFor("Fast model · openai");
-  expect(app.texts()).not.toContain("Image model · openai");
+  // Each row: the model as the host labels it, then its provider (an older host
+  // without labels reads as the entry's name and request format).
+  await app.waitFor("label:model-option-fast-small >> text:Fast model");
+  expect(app.texts()).not.toContain("Image model");
 
   await app.press("model-option-fast-small");
   const update = backend.calls.find(call => call.action === "update_session_model");
@@ -1272,7 +1278,7 @@ test("settings preserves explicit zh-CN app.language override when writing sibli
   });
   const app = await open("./App.tsx", { ...DESKTOP, host: { handlers: backend.handlers } });
 
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
   // Works both before and after Wave 2 wires `initAppLocale()` into `App.tsx`.
   await app.press(app.shows("设置") ? "设置" : "Settings");
   await app.press("nav-settings-page-general");
@@ -1458,7 +1464,8 @@ test("settings scene lists the configured models and appends one", async () => {
   // Removing asks first, and says the default slot that names the model.
   await app.press("model-actions-model-1");
   await app.press("remove-model-model-1");
-  await app.waitFor("Remove Configured model? 1 default slot(s) name it and will be cleared.");
+  // Named as every list names it: the model, then its provider.
+  await app.waitFor("Remove gpt-4.1-mini · Configured model? 1 default slot(s) name it and will be cleared.");
   expect(backend.settingsWrites.filter(entry => entry.path === "ai.models")).toHaveLength(1);
   await app.press("id:model-delete-confirm-model-1 >> Delete");
   await app.waitFor("Removed Configured model");
@@ -2105,7 +2112,7 @@ test("settings assigns a model to a product task, in the shape the host reads", 
   // The seeded section is in the shape an earlier build of this surface wrote
   // (`{"Fixed":…}` / `"Inherit"`); it still reads, and the model is shown by
   // name, not by id.
-  await app.waitFor("Configured model · gpt-4.1-mini");
+  await app.waitFor("gpt-4.1-mini · Configured model");
   await app.waitFor("inherits the session's model");
 
   await app.press("task-model-git_commit");

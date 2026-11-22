@@ -1,5 +1,8 @@
-//! Shared GitHub identity used by every OpenBitFun product surface.
+//! The OpenBitFun account identity (email or GitHub) shared by every product
+//! surface: the token pair, the in-app email sign-in, the GitHub browser
+//! sign-in, and the one identity projection surfaces show.
 mod credentials;
+mod email;
 mod flow;
 #[cfg(test)]
 mod refresh_tests;
@@ -9,8 +12,9 @@ pub use credentials::{
     clear_market_credentials, load_market_credentials, save_market_credentials,
     StoredMarketCredentials,
 };
+pub use email::{cancel_email_sign_in, start_email_sign_in, verify_email_sign_in};
 pub use flow::{poll_auth_flow, start_auth_flow};
-use openbitfun_product_domains::account::GitHubUser;
+use openbitfun_product_domains::account::{AccountIdentityView, GitHubUser};
 use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -69,12 +73,44 @@ pub struct MarketMe {
     pub is_admin: bool,
 }
 
+impl MarketMe {
+    /// The account as every surface shows it (`None` when the profile names
+    /// no account or no name to show).
+    pub fn identity(&self) -> Option<AccountIdentityView> {
+        AccountIdentityView::from_profile(&self.user, self.email.as_deref())
+    }
+}
+
+/// The signed-in account of this profile as surfaces show it, or `None`.
+pub async fn current_identity() -> Result<Option<AccountIdentityView>, MarketClientError> {
+    let mut client = AccountIdentityClient::from_environment().await?;
+    Ok(client.me().await?.and_then(|me| me.identity()))
+}
+
+/// The identity service's answer to `/auth/email/send`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EmailCodeSent {
+    #[serde(default)]
+    pub(crate) challenge_id: String,
+    #[serde(default)]
+    pub(crate) retry_after_seconds: u32,
+}
+
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
 #[error("{message}")]
 pub struct MarketClientError {
     pub code: String,
     pub message: String,
     pub request_id: Option<String>,
+}
+
+impl MarketClientError {
+    /// `<code>: <message>`, the form host commands answer with so a surface
+    /// can word the failure by its code.
+    pub fn coded_message(&self) -> String {
+        format!("{}: {}", self.code, self.message)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,6 +260,42 @@ impl AccountIdentityClient {
                 .post(self.url("/auth/desktop/start?methods=all")),
         )
         .await
+    }
+
+    /// A device sign-in that goes straight to GitHub (no email page): the
+    /// browser sign-in the surfaces keep as the secondary option.
+    pub async fn start_desktop_github_auth(&self) -> Result<DesktopAuthStart, MarketClientError> {
+        self.json(self.client.post(self.url("/auth/desktop/start")))
+            .await
+    }
+
+    /// Sends the email code for a device sign-in's ticket.
+    pub(crate) async fn send_email_code(
+        &self,
+        ticket: &str,
+        email: &str,
+        locale: &str,
+    ) -> Result<EmailCodeSent, MarketClientError> {
+        self.json(
+            self.client
+                .post(self.url("/auth/email/send"))
+                .json(&serde_json::json!({ "ticket": ticket, "email": email, "locale": locale })),
+        )
+        .await
+    }
+
+    /// Checks the email code; the device sign-in is authorized on success.
+    pub(crate) async fn verify_email_code(
+        &self,
+        ticket: &str,
+        challenge_id: &str,
+        code: &str,
+    ) -> Result<(), MarketClientError> {
+        self.json::<serde_json::Value>(self.client.post(self.url("/auth/email/verify")).json(
+            &serde_json::json!({ "ticket": ticket, "challengeId": challenge_id, "code": code }),
+        ))
+        .await
+        .map(|_| ())
     }
 
     pub async fn poll_desktop_auth(

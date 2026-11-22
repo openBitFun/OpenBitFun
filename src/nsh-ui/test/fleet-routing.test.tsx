@@ -325,10 +325,49 @@ test("the shared UI over a fleet entry addresses every product command and lists
   expect(follows[follows.length - 1]).toEqual({ follow: { "dev-a": { all: true } } });
   // The other device's same-id workspace does not leak into this device's rows:
   // its session is listed once, as its own device's.
-  expect(app.texts().filter(text => text === "Build on Linux").length).toBeLessThanOrEqual(1);
+  // (Counted on the All sessions page; the sidebar's device tree lists it under its device too.)
+  const texts = app.texts();
+  const page = texts.slice(texts.lastIndexOf("By device") + 1);
+  expect(page.filter(text => text === "Build on Linux").length).toBeLessThanOrEqual(1);
 });
 
-test("the entry streams the account's cloud node too, so its turns and job cards reach this client", async () => {
+test("with Super Agent on, the entry streams the account's cloud node too, so its turns and job cards reach this client", async () => {
+  const backend = createBackend();
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: {
+      revision: 2,
+      full: true,
+      devices: [
+        fleetDeviceRow("cloud-1", "OpenBitFun", [], { hostKind: "cloud", hostCapabilities: ["fleet_v1", "superagent_v1"] }),
+        fleetDeviceRow("dev-a", "Studio", [
+          {
+            workspaceId: "workspace-1",
+            name: "OpenBitFun",
+            rootPath: "/repo",
+            isHostCurrent: true,
+            sessions: [fleetSessionRow("dev-a", "workspace-1", "session-1", "NSH skeleton")],
+          },
+        ]),
+      ],
+      removedDeviceIds: [],
+      totals: { running: 0, waiting: 0, unread: 0 },
+    },
+  });
+  const app = await open("./fixtures/obpAppSuperAgent.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await showAllSessions(app, "NSH skeleton");
+  await app.waitUntil(() =>
+    host.calls.some(
+      call =>
+        call.command === "fleet_subscribe" &&
+        Boolean((call.args.request as { follow?: Record<string, unknown> } | undefined)?.follow?.["cloud-1"]),
+    ),
+  );
+  const follows = host.calls.filter(call => call.command === "fleet_subscribe").map(call => call.args.request);
+  expect(follows[follows.length - 1]).toEqual({ follow: { "dev-a": { all: true }, "cloud-1": { all: true } } });
+});
+
+test("with Super Agent gated off, the cloud node is not followed and no superagent command is sent", async () => {
   const backend = createBackend();
   const host = fleetObpHost(backend, {
     fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
@@ -353,15 +392,12 @@ test("the entry streams the account's cloud node too, so its turns and job cards
   });
   const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
   await showAllSessions(app, "NSH skeleton");
-  await app.waitUntil(() =>
-    host.calls.some(
-      call =>
-        call.command === "fleet_subscribe" &&
-        Boolean((call.args.request as { follow?: Record<string, unknown> } | undefined)?.follow?.["cloud-1"]),
-    ),
-  );
+  await app.waitUntil(() => host.calls.some(call => call.command === "fleet_subscribe"));
+  await app.wait(300);
   const follows = host.calls.filter(call => call.command === "fleet_subscribe").map(call => call.args.request);
-  expect(follows[follows.length - 1]).toEqual({ follow: { "dev-a": { all: true }, "cloud-1": { all: true } } });
+  expect(follows[follows.length - 1]).toEqual({ follow: { "dev-a": { all: true } } });
+  expect(host.fleetCalls.some(call => call.command.startsWith("superagent_"))).toBe(false);
+  expect(host.calls.some(call => call.command.startsWith("superagent_"))).toBe(false);
 });
 
 test("the shared UI over an older entry sends no fleet_call and keeps today's lists", async () => {

@@ -24,6 +24,7 @@ import { FLEET_DEVICE_OFFLINE, fleetErrorKind, type FleetPrompt } from "./fleetT
 import { accountStatus } from "./homeStore";
 import { currentLocale, isAuthRequiredError } from "./i18n";
 import { localTimeZone } from "./usageActivity";
+import { superAgentUi } from "./productGates";
 
 export const SUPERAGENT_TURN_DELTA_EVENT = "superagent://turn-delta";
 export const SUPERAGENT_CARD_CHANGED_EVENT = "superagent://card-changed";
@@ -173,6 +174,10 @@ export interface SuperagentModelOption {
   displayName: string;
   provider?: string;
   primary?: boolean;
+  /** What the picker shows first: the model (the backend's label rule). */
+  label?: string;
+  /** The secondary text beside `label`: the provider, numbered when two read the same. */
+  detail?: string;
 }
 
 /** One device's group in the Super Agent model picker (`SuperagentModelDevice`). */
@@ -294,6 +299,8 @@ function cloudTarget(): string | undefined {
 class SuperagentUnreachable extends Error {}
 
 function call<T>(command: string, request: Record<string, unknown> = {}): Promise<T> {
+  // Gated off by owner decision (`productGates.ts`): no `superagent_*` command leaves this UI.
+  if (!superAgentUi()) return Promise.reject(new SuperagentUnreachable("superagent_ui_gated"));
   if (fleetActive()) {
     const target = cloudTarget();
     if (!target) return Promise.reject(new SuperagentUnreachable("superagent_unreachable"));
@@ -683,7 +690,7 @@ export function currentModelSelection(): SuperagentModelSelection {
     deviceId: pick.deviceId,
     deviceName: device?.name,
     modelId: pick.modelId,
-    modelName: model?.displayName,
+    modelName: model ? model.label || model.displayName : undefined,
     unavailableReason: device?.unavailableReason,
   };
 }
@@ -1003,7 +1010,7 @@ let started = false;
  * index or the account signs in or out.
  */
 export function startSuperagentStore(): void {
-  if (started) return;
+  if (started || !superAgentUi()) return;
   started = true;
   listenEvent<TurnDelta>(SUPERAGENT_TURN_DELTA_EVENT, payload => onTurnDelta(payload));
   listenEvent<CardChanged>(SUPERAGENT_CARD_CHANGED_EVENT, payload => onCardChanged(payload));

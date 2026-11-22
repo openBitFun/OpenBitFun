@@ -90,6 +90,9 @@ pub struct AccountLoginResult {
     /// Routing started but waits for another local host to release the device.
     pub routing_standby: bool,
     pub routing_error: Option<String>,
+    /// The signed-in account's name as every surface shows it (the email or
+    /// the GitHub login), when the identity service reported it.
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +131,8 @@ pub struct AccountSnapshot {
     pub logged_in: bool,
     pub info: Option<AccountInfo>,
     pub devices: Vec<AccountDevice>,
+    /// Who is signed in, as every surface shows it.
+    pub identity: Option<openbitfun_product_domains::account::AccountIdentityView>,
 }
 
 pub struct AccountRuntime {
@@ -535,6 +540,47 @@ impl AccountRuntime {
         ))
     }
 
+    /// Sends an email sign-in code (the in-app sign-in; no browser).
+    pub async fn start_email_sign_in(
+        &self,
+        email: String,
+        locale: Option<String>,
+    ) -> Result<openbitfun_product_domains::account::AccountEmailChallenge> {
+        openbitfun_services_integrations::account_identity::start_email_sign_in(
+            openbitfun_product_domains::account::AccountEmailStartRequest { email, locale },
+        )
+        .await
+        .map_err(|error| anyhow!(error.coded_message()))
+    }
+
+    /// Checks the email code, then completes the account session as every
+    /// sign-in does.
+    pub async fn verify_email_sign_in(
+        self: &Arc<Self>,
+        challenge_id: String,
+        code: String,
+    ) -> Result<AccountLoginResult> {
+        openbitfun_services_integrations::account_identity::verify_email_sign_in(
+            openbitfun_product_domains::account::AccountEmailVerifyRequest { challenge_id, code },
+        )
+        .await
+        .map_err(|error| anyhow!(error.coded_message()))?;
+        self.login_with_identity().await
+    }
+
+    /// The signed-in account as surfaces show it (`None` when signed out).
+    pub async fn identity(
+        &self,
+    ) -> Option<openbitfun_product_domains::account::AccountIdentityView> {
+        match openbitfun_services_integrations::account_identity::current_identity().await {
+            Ok(identity) => identity,
+            Err(error) => {
+                log::warn!("Account identity unavailable: {}", error.code);
+                None
+            }
+        }
+    }
+
     pub async fn start_github_auth(
         &self,
     ) -> Result<openbitfun_product_domains::account::GitHubAuthStart> {
@@ -640,6 +686,7 @@ impl AccountRuntime {
         revoke_replaced_account_context(&client, previous_account_context, &relay_url, &token)
             .await;
         let routing_standby = routing.is_ok() && self.host.device_routing_is_standby().await;
+        let display_name = self.identity().await.map(|identity| identity.display_name);
 
         Ok(AccountLoginResult {
             user_id,
@@ -650,6 +697,7 @@ impl AccountRuntime {
                 && self.host.device_routing_is_active().await,
             routing_standby,
             routing_error: routing.err().map(|error| error.to_string()),
+            display_name,
         })
     }
 
@@ -815,10 +863,16 @@ impl AccountRuntime {
         } else {
             Vec::new()
         };
+        let identity = if logged_in {
+            self.identity().await
+        } else {
+            None
+        };
         AccountSnapshot {
             logged_in,
             info,
             devices,
+            identity,
         }
     }
 

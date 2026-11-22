@@ -3601,4 +3601,22 @@ export const zhCNMessages: Record<MessageKey, string> = {
   "devices.chatAppsTitle": "聊天应用",
   "devices.chatAppActive": "已连接：{{name}}",
   "devices.chatAppDisconnect": "断开连接",
+  // wave23-a: in-app email sign-in and the account identity projection.
+  "signin.github": "使用 GitHub 登录",
+  "signin.githubBody": "请在浏览器中授权 OpenBitFun 访问 GitHub，然后回到这里。",
+  "signin.errUnsupported": "暂时无法使用邮箱登录，请改用 GitHub 登录。",
+  // wave23-b: a device whose network is off, and the settings number rows.
+  "error.fleetNetworkOff": "本设备的设备网络未开启，无法连接其他设备。登录账号并开启设备网络后即可使用。",
+  "error.fleetUnavailable": "此操作需要设备网络。请登录账号并开启设备网络。",
+  "error.fleetDeviceOffline": "该设备当前离线或无法连接。",
+  "settings.field.resetToDefault": "恢复默认值（{{value}}）",
+  // wave23-E: the sidebar device tree, and copy used while Super Agent is gated off.
+  "tree.workspaces": "工作区",
+  "tree.deviceDetails": "设备详情",
+  "tree.deviceActions": "设备操作",
+  "gate.sessionsOne": "{{count}} 个会话",
+  "gate.sessionsOther": "{{count}} 个会话",
+  "gate.allSessionsEmptyBody": "在侧边栏的工作区里新建一个会话。",
+  "gate.signinBody": "登录后即可在这里使用你的所有设备及其会话。",
+  "gate.signinModelBody": "本机上的智能体会使用它。",
 };

@@ -3602,6 +3602,24 @@ export const enUSMessages = {
   "devices.chatAppsTitle": "Chat apps",
   "devices.chatAppActive": "Connected: {{name}}",
   "devices.chatAppDisconnect": "Disconnect",
+  // wave23-a: in-app email sign-in and the account identity projection.
+  "signin.github": "Sign in with GitHub",
+  "signin.githubBody": "Authorize OpenBitFun on GitHub in your browser, then come back here.",
+  "signin.errUnsupported": "Email sign-in isn't available right now. Sign in with GitHub instead.",
+  // wave23-b: a device whose network is off, and the settings number rows.
+  "error.fleetNetworkOff": "This device's network is off, so other devices can't be reached. Sign in and turn on the device network to use them.",
+  "error.fleetUnavailable": "This needs the device network. Sign in to your account and turn on the device network.",
+  "error.fleetDeviceOffline": "That device is offline or can't be reached right now.",
+  "settings.field.resetToDefault": "Reset to the default ({{value}})",
+  // wave23-E: the sidebar device tree, and copy used while Super Agent is gated off.
+  "tree.workspaces": "Workspaces",
+  "tree.deviceDetails": "Device details",
+  "tree.deviceActions": "Device actions",
+  "gate.sessionsOne": "{{count}} session",
+  "gate.sessionsOther": "{{count}} sessions",
+  "gate.allSessionsEmptyBody": "Start one from a workspace in the sidebar.",
+  "gate.signinBody": "Sign in to reach all your devices and their sessions from here.",
+  "gate.signinModelBody": "The agents on this device use it.",
 } as const;
 
 export type MessageKey = keyof typeof enUSMessages;

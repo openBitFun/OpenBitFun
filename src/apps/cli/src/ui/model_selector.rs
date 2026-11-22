@@ -17,9 +17,23 @@ use crate::ui::theme::{StyleKind, Theme};
 #[derive(Debug, Clone)]
 pub(crate) struct ModelItem {
     pub id: String,
+    /// The model as every list shows it first
+    /// (`openbitfun_product_domains::fleet::configured_model_label`).
     pub name: String,
-    pub provider: String,
-    pub model_name: String,
+    /// The secondary text: the provider (and the device, for another
+    /// device's model), numbered when two models would read the same.
+    pub detail: String,
+}
+
+impl ModelItem {
+    /// `gpt-5 / OpenAI`, as the status line names the model.
+    pub(crate) fn display_name(&self) -> String {
+        if self.detail.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} / {}", self.name, self.detail)
+        }
+    }
 }
 
 /// Model selector popup state
@@ -179,15 +193,15 @@ impl ModelSelectorState {
                 let name_style = theme.style(StyleKind::Primary).add_modifier(Modifier::BOLD);
                 let detail_style = theme.style(StyleKind::Muted);
 
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled(marker, marker_style),
                     Span::styled(&model.name, name_style),
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("[{}/{}]", model.provider, model.model_name),
-                        detail_style,
-                    ),
-                ]);
+                ];
+                if !model.detail.is_empty() {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(&model.detail, detail_style));
+                }
+                let line = Line::from(spans);
                 ListItem::new(line)
             })
             .collect();
@@ -316,9 +330,8 @@ mod tests {
     fn model() -> ModelItem {
         ModelItem {
             id: "model-1".to_string(),
-            name: "Provider".to_string(),
-            provider: "provider".to_string(),
-            model_name: "Model 1".to_string(),
+            name: "Model 1".to_string(),
+            detail: "Provider".to_string(),
         }
     }
 

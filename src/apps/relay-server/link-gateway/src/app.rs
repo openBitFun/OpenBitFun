@@ -499,11 +499,20 @@ impl Gateway {
     }
 }
 
+/// The signed-in account as the web controller reads it: the identity
+/// projection every surface shows, built by the shared contract. A browser
+/// signs in only with the email code, so the name it knows is that email
+/// whatever shape the account id has.
 fn account_json(session: &Session) -> serde_json::Value {
+    let email = session.email.as_deref();
     serde_json::json!({
         "accountId": session.account_id,
-        "email": session.email,
-        "login": serde_json::Value::Null,
+        "identity": openbitfun_product_domains::account::AccountIdentityView::from_parts(
+            &session.account_id,
+            email,
+            email,
+            None,
+        ),
         "deviceId": session.device_id,
     })
 }

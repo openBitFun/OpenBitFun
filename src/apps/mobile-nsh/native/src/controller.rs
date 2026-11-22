@@ -18,6 +18,7 @@ use openbitfun_link::session::{AccountIdentity, AccountSession, BoxFuture, Link,
 use openbitfun_link::{
     LinkNode, MeshState, MeshStatus, NodeRole, MESH_OBP_PORT_FIRST, MESH_OBP_PORT_LAST,
 };
+use openbitfun_product_domains::account::AccountIdentityView;
 use openbitfun_product_domains::fleet::{
     rank_entry_candidates, FleetCursor, FleetEntryCandidate, FleetHello, FLEET_V1_CAPABILITY,
 };
@@ -65,6 +66,22 @@ pub(crate) struct AccountRecord {
     pub(crate) tokens: TokenPair,
     /// The directory's token for this device.
     pub(crate) directory_token: String,
+}
+
+/// The signed-in account as the UI's controller port reads it: the identity
+/// projection every surface shows (the email, or the GitHub login), built by
+/// the shared contract, never the account's internal handle.
+fn account_json(device_id: &str, account: &AccountRecord) -> Value {
+    json!({
+        "accountId": account.user_id,
+        "identity": AccountIdentityView::from_parts(
+            &account.user_id,
+            account.email.as_deref(),
+            account.login.as_deref(),
+            None,
+        ),
+        "deviceId": device_id,
+    })
 }
 
 /// Where the controller talks to.
@@ -266,12 +283,7 @@ impl Controller {
     pub(crate) async fn restore(&self) -> Value {
         let record = self.record.lock().await;
         match record.account.as_ref() {
-            Some(account) => json!({
-                "accountId": account.user_id,
-                "email": account.email,
-                "login": account.login,
-                "deviceId": record.device_id,
-            }),
+            Some(account) => account_json(&record.device_id, account),
             None => {
                 if let Some(problem) = lock(&self.unreadable).as_deref() {
                     log::warn!("Signed out: {}", problem);
@@ -2079,6 +2091,34 @@ mod tests {
         let account = future.account.unwrap();
         assert_eq!(account.user_id, "email-7");
         assert_eq!(account.email, None);
+    }
+
+    #[test]
+    fn the_port_account_carries_the_identity_projection_not_the_handle() {
+        let record: AccountRecord = serde_json::from_value(json!({
+            "userId": "email-7", "email": "a@example.com",
+            "login": "user-87b544d554494ceaa50e23d89550a954",
+            "deviceSecret": crypto::encode_secret(&[1; 32]),
+            "tokens": {"accessToken": "a", "accessExpiresAt": 1, "refreshToken": "r", "refreshExpiresAt": 2},
+            "directoryToken": "d"
+        }))
+        .unwrap();
+        let shown = account_json("dev", &record);
+        assert_eq!(shown["identity"]["displayName"], "a@example.com");
+        assert_eq!(shown["identity"]["provider"], "email");
+        assert_eq!(shown["identity"]["initial"], "A");
+        assert!(!shown.to_string().contains("user-87b5"));
+        let github: AccountRecord = serde_json::from_value(json!({
+            "userId": "42", "login": "octocat",
+            "deviceSecret": crypto::encode_secret(&[1; 32]),
+            "tokens": {"accessToken": "a", "accessExpiresAt": 1, "refreshToken": "r", "refreshExpiresAt": 2},
+            "directoryToken": "d"
+        }))
+        .unwrap();
+        assert_eq!(
+            account_json("dev", &github)["identity"]["displayName"],
+            "octocat"
+        );
     }
 }
 

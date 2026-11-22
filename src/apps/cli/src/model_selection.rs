@@ -56,24 +56,39 @@ pub(crate) fn resolve_tui_model_id(
     }
 }
 
-pub(crate) fn tui_model_display_name(model: &ModelSummary) -> String {
-    let raw_name = model.name.trim();
-    let model_name = model.model_name.trim();
-    let provider = if !raw_name.is_empty() && !model_name.is_empty() {
-        let dashed_suffix = format!(" - {model_name}");
-        let slash_suffix = format!("/{model_name}");
-        raw_name
-            .strip_suffix(&dashed_suffix)
-            .or_else(|| raw_name.strip_suffix(&slash_suffix))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(raw_name)
-    } else if raw_name.is_empty() {
-        &model.provider
-    } else {
-        raw_name
-    };
-    format!("{} / {}", model.model_name, provider)
+/// The picker rows of a model list: every model labelled by the shared rule
+/// over the whole list (so two that read the same are numbered as every other
+/// surface numbers them), enabled ones listed.
+pub(crate) fn tui_model_items(
+    models: &[ModelSummary],
+) -> Vec<crate::ui::model_selector::ModelItem> {
+    let labels =
+        openbitfun_product_domains::fleet::label_configured_models(models.iter().map(|model| {
+            (
+                model.name.as_str(),
+                model.model_name.as_str(),
+                model.provider.as_str(),
+                model.id.as_str(),
+            )
+        }));
+    models
+        .iter()
+        .zip(labels)
+        .filter(|(model, _)| model.enabled)
+        .map(|(model, label)| crate::ui::model_selector::ModelItem {
+            id: model.id.clone(),
+            name: label.label,
+            detail: label.detail,
+        })
+        .collect()
+}
+
+/// How the status line names a model of the list (`gpt-5 / OpenAI`).
+pub(crate) fn tui_model_display_name(models: &[ModelSummary], model_id: &str) -> Option<String> {
+    tui_model_items(models)
+        .into_iter()
+        .find(|item| item.id == model_id)
+        .map(|item| item.display_name())
 }
 
 pub(crate) fn model_from_mutation(

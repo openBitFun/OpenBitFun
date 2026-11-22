@@ -705,6 +705,7 @@ backend_commands![
     delete_agent_companion_pet_package,
     // Desktop presence: cards and the pet (wave 22, P3)
     api::companion_pet_api::load_agent_companion_pet_spritesheet,
+    api::companion_pet_api::load_agent_companion_pet_still,
     backend_protocol::native_commands::show_agent_companion_desktop_pet,
     backend_protocol::native_commands::hide_agent_companion_desktop_pet,
     backend_protocol::native_commands::resize_agent_companion_desktop_pet,
@@ -1100,7 +1101,9 @@ backend_commands![
     // Account API
     api::account_identity_api::account_github_start,
     api::account_identity_api::account_github_poll,
-    api::account_identity_api::account_github_info,
+    api::account_identity_api::account_email_start,
+    api::account_identity_api::account_email_verify,
+    api::account_identity_api::account_identity,
     // Account settings sync (wave 21, S)
     api::account_settings_sync_api::account_settings_sync_status,
     api::account_settings_sync_api::account_settings_sync_set,

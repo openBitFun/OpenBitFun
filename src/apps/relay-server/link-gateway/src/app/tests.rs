@@ -351,7 +351,12 @@ async fn sign_in_seals_a_session_and_lists_the_accounts_devices() {
         .unwrap();
     assert_eq!(session["signedIn"], true);
     assert_eq!(session["account"]["accountId"], "acct-a");
-    assert_eq!(session["account"]["email"], "a@example.com");
+    assert_eq!(
+        session["account"]["identity"]["displayName"],
+        "a@example.com"
+    );
+    assert_eq!(session["account"]["identity"]["initial"], "A");
+    assert!(session["account"].get("login").is_none());
     // The directory credential never leaves the server in clear.
     assert!(!cookie.contains("token-acct-a"));
 

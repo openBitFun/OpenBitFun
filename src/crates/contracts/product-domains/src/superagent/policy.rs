@@ -314,7 +314,7 @@ pub fn no_holder_notice(
                     .iter()
                     .find(|model| model.model_id == pick.model_id)
             })
-            .map(|model| model.display_name.clone())
+            .map(|model| model.model_label().label)
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| pick.model_id.clone());
         let online = candidate.is_some_and(|candidate| candidate.online);
@@ -378,13 +378,16 @@ pub fn project_model_devices(candidates: &[ModelHolderCandidate]) -> Vec<Superag
             } else {
                 None
             };
+            // A digest of an older build publishes no labels.
+            let mut models = candidate.models.clone();
+            crate::fleet::fill_model_labels(&mut models);
             SuperagentModelDevice {
                 device_id: candidate.device_id.clone(),
                 name: label_of(candidate),
                 host_kind: candidate.host_kind,
                 online: candidate.online,
                 unavailable_reason: unavailable_reason.map(str::to_string),
-                models: candidate.models.clone(),
+                models,
             }
         })
         .collect();
@@ -420,7 +423,7 @@ pub fn project_model_selection(
                 .iter()
                 .find(|model| model.model_id == pick.model_id)
         })
-        .map(|model| model.display_name.clone())
+        .map(|model| model.model_label().label)
         .filter(|name| !name.trim().is_empty());
     let unavailable_reason = match pinned_model_holder(candidates, pick) {
         HolderChoice::Chosen { .. } => None,
@@ -989,6 +992,8 @@ mod tests {
         let ids: Vec<&str> = picker.iter().map(|d| d.device_id.as_str()).collect();
         assert_eq!(ids, ["d", "b", "c", "a"]);
         assert_eq!(picker[0].unavailable_reason, None);
+        // A catalog published before the label rule is labelled here.
+        assert_eq!(picker[0].models[0].label, "X");
         assert_eq!(
             picker[3].unavailable_reason.as_deref(),
             Some(reason::DEVICE_OFFLINE)

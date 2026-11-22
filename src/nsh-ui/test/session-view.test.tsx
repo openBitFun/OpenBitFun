@@ -8,6 +8,8 @@ import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow } from "./
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const PHONE = { width: 375, height: 812, platform: "macos" as const };
 const APP = "./fixtures/sessionApp.tsx";
+/** The same harness with the Super Agent UI gate on (`src/productGates.ts`). */
+const APP_SUPER_AGENT = "./fixtures/sessionAppSuperAgent.tsx";
 
 async function openSession(app: Awaited<ReturnType<typeof open>>): Promise<void> {
   await app.waitFor("text:ready");
@@ -48,7 +50,7 @@ function sessionHost(origin: "superagent" | null = "superagent", deviceState = "
 
 test("the header names the session, its device and workspace, and where it started", async () => {
   const host = sessionHost();
-  const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
+  const app = await open(APP_SUPER_AGENT, { ...DESKTOP, host: { handlers: host.handlers } });
   await openSession(app);
   expect(app.shows("id:session-breadcrumb-device >> text:linux-box")).toBe(true);
   expect(app.shows("label:session-breadcrumb-workspace")).toBe(true);
@@ -63,6 +65,15 @@ test("the header names the session, its device and workspace, and where it start
   // The origin line opens the OpenBitFun conversation that started it.
   await app.press("session-origin");
   await app.waitFor("text:route:openbitfun::c-1");
+});
+
+test("with Super Agent gated off, a session it started shows no origin line", async () => {
+  const host = sessionHost();
+  const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
+  await openSession(app);
+  expect(app.shows("id:session-breadcrumb-device >> text:linux-box")).toBe(true);
+  expect(app.shows("session-origin")).toBe(false);
+  expect(app.texts().some(text => text.includes("Super Agent"))).toBe(false);
 });
 
 test("the device badge opens the device page, and the tool toggles open the inspector", async () => {

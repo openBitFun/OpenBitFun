@@ -5,7 +5,7 @@
 // the stored list. This surface only parses the form text and renders.
 
 import { signal } from "nsh";
-import { getConfig, setConfig } from "./api";
+import { getConfig, getModelCatalog, setConfig } from "./api";
 import { invokeCommand } from "./bridge";
 import { tr } from "./i18n";
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
@@ -68,12 +68,63 @@ export function selectableChatModels(): StoredModel[] {
   return storedModels().filter(model => isSelectableForCapability(model, "text_chat"));
 }
 
-/** The label a model picker shows: the entry's name and the model it calls. */
-export function modelOptionLabel(model: StoredModel): string {
+/**
+ * Model id -> how every list shows it, as the host labels its catalog
+ * (`get_ai_model_catalog`: the model first, then its provider, numbered when two
+ * read the same). This surface keeps no label rule of its own.
+ */
+export const modelLabels = signal<Record<string, { label: string; detail: string }>>({});
+
+let modelLabelsTicket = 0;
+
+/** Re-reads the host's labels; follows every change of the stored list. */
+export async function refreshModelLabels(): Promise<void> {
+  const ticket = ++modelLabelsTicket;
+  try {
+    const catalog = await getModelCatalog();
+    if (ticket !== modelLabelsTicket) return;
+    const next: Record<string, { label: string; detail: string }> = {};
+    for (const entry of catalog?.models ?? []) {
+      if (entry?.id && entry.label) next[entry.id] = { label: entry.label, detail: entry.detail ?? "" };
+    }
+    modelLabels.set(next);
+  } catch {
+    // A host without the catalog keeps the entries' own names below.
+    if (ticket === modelLabelsTicket) modelLabels.set({});
+  }
+}
+
+function setStoredModels(list: StoredModel[]): void {
+  storedModels.set(list);
+  void refreshModelLabels();
+}
+
+/**
+ * The host's label for a stored model. A host from before the label rule sends
+ * none: the entry's name and model are read as they were shown then.
+ */
+function modelText(model: StoredModel): { label: string; detail: string } {
+  const labelled = modelLabels()[model.id];
+  if (labelled) return labelled;
   const name = (model.name ?? "").trim();
   const modelName = (model.model_name ?? "").trim();
-  if (name && modelName && name !== modelName) return `${name} · ${modelName}`;
-  return name || modelName || model.id;
+  return { label: modelName || name || model.id, detail: name && name !== modelName ? name : model.provider ?? "" };
+}
+
+/** What a model list shows first: the model. */
+export function modelOptionLabel(model: StoredModel): string {
+  return modelText(model).label;
+}
+
+/** The secondary text beside the label: the provider. */
+export function modelOptionDetail(model: StoredModel): string {
+  return modelText(model).detail;
+}
+
+/** Both in one line (`gpt-5 · OpenAI`), where a list has room for one text only. */
+export function modelOptionText(model: StoredModel): string {
+  const { label, detail } = modelText(model);
+  return detail ? `${label} · ${detail}` : label;
 }
 
 /** The form the user is filling in; empty strings keep a field untouched on save. */
@@ -292,7 +343,7 @@ export async function loadModels(): Promise<void> {
   await runStep(async () => {
     try {
       const list = await getConfig("ai.models");
-      storedModels.set(normalizeModels(list));
+      setStoredModels(normalizeModels(list));
       modelSettingsLoaded.set(true);
     } catch (error) {
       storedModels.set([]);
@@ -347,7 +398,7 @@ export async function upsertModels(models: ModelUpsert[], done: (result: ModelUp
       ids: Array.isArray(raw?.ids) ? raw.ids.map(String) : [],
       clampedIds: Array.isArray(raw?.clampedIds) ? raw.clampedIds.map(String) : [],
     };
-    storedModels.set(result.models);
+    setStoredModels(result.models);
     const clamped = result.clampedIds.length > 0 ? ` ${tr("settings.models.outputClamped")}` : "";
     modelSettingsNotice.set(`${done(result)}${clamped}`);
     return result;
@@ -519,7 +570,7 @@ export async function deleteModel(id: string): Promise<void> {
     try {
       const target = storedModels().find(entry => entry.id === id);
       const raw = await invokeSettingsMutation<{ models?: unknown; defaultModels?: unknown }>("ai_model_delete", { id });
-      storedModels.set(normalizeModels(raw?.models));
+      setStoredModels(normalizeModels(raw?.models));
       if (raw && raw.defaultModels !== undefined) defaultModels.set(readDefaultModels(raw.defaultModels));
       modelSettingsNotice.set(`Removed ${target?.name ?? id}`);
     } catch (error) {

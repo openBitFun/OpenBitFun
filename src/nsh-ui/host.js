@@ -1439,17 +1439,15 @@ const remoteMethods = [
   { id: "bot_weixin", name: "WeChat (Weixin)", available: true, description: "Via WeChat iLink bot" },
 ];
 
-// Account & Insights state
-let devGithubAccount = {
-  email: "studio@example.com",
-  user: {
-    githubId: 424201,
-    accountId: "acc-studio-demo",
-    login: "studio-user",
-    avatarUrl: "",
-  },
-  isAdmin: false,
+// Account & Insights state. `account_identity` answers the backend's identity
+// projection (an email account shows its email).
+const devEmailIdentity = {
+  provider: "email",
+  accountId: "email-424201",
+  displayName: "studio@example.com",
+  initial: "S",
 };
+let devIdentity = devEmailIdentity;
 let devAccountLoggedIn = true;
 let devAccountSyncEnabled = true;
 
@@ -3342,7 +3340,22 @@ const DEV_FIXTURES = {
   },
 
   // Account & Insights
-  account_github_info: () => (devAccountLoggedIn ? devGithubAccount : null),
+  account_identity: () => (devAccountLoggedIn ? devIdentity : null),
+  account_email_start: args => {
+    const req = payloadOf(args);
+    return {
+      challengeId: "email-challenge-dev-1",
+      email: String(req.email ?? "").trim().toLowerCase(),
+      codeLength: 8,
+      retryAfterSeconds: 60,
+      expiresAt: Date.now() + 600000,
+    };
+  },
+  account_email_verify: () => {
+    devAccountLoggedIn = true;
+    devIdentity = devEmailIdentity;
+    return { identity: devIdentity };
+  },
   account_github_start: () => ({
     transactionId: "github-tx-dev-1",
     userCode: "OBF7-429A",
@@ -3353,16 +3366,7 @@ const DEV_FIXTURES = {
   }),
   account_github_poll: () => {
     devAccountLoggedIn = true;
-    devGithubAccount = {
-      email: "studio@example.com",
-      user: {
-        githubId: 424201,
-        accountId: "acc-studio-demo",
-        login: "studio-user",
-        avatarUrl: "",
-      },
-      isAdmin: false,
-    };
+    devIdentity = { provider: "github", accountId: "424201", displayName: "studio-user", initial: "S" };
     return { status: "authorized" };
   },
   account_status: () => ({

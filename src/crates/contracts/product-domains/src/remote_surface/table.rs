@@ -120,6 +120,9 @@ const RELAY_HOST_INVOKE_RETIRED: &str =
     "Peer Device Mode over the relay HostInvoke bridge was retired in OpenBitFun 2.0; a controller drives a device over OBP on OpenBitFun Link (peer_link_*, the fleet)";
 const MESH_PHONE_JOIN_RETIRED: &str =
     "phones no longer join the device network with the EasyTier app; network credentials are never shown";
+// wave23-a: the provider profile read was replaced by the identity projection.
+const ACCOUNT_PROVIDER_PROFILE_RETIRED: &str =
+    "the account's provider profile is no longer read by surfaces; account_identity answers the one identity projection every surface shows";
 const PAGES_RETIRED: &str =
     "server-hosted Pages publishing was retired in OpenBitFun 2.0; Spaces/MiniApps stay on the account's own devices";
 
@@ -191,11 +194,14 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     retired("account_connect_devices", RELAY_TRANSPORT_RETIRED),
     op("account_delete_device",                                      Agnostic,    ControllerLocal,  REFUSED),
     retired("account_device_rpc", RELAY_TRANSPORT_RETIRED),
+    op("account_email_start",                                        Agnostic,    ControllerLocal,  REFUSED),
+    op("account_email_verify",                                       Agnostic,    ControllerLocal,  REFUSED),
     retired("account_execute_on_device", RELAY_TRANSPORT_RETIRED),
     op("account_get_credential_hint",                                Agnostic,    ControllerLocal,  REFUSED),
-    op("account_github_info",                                        Agnostic,    ControllerLocal,  REFUSED),
+    retired("account_github_info", ACCOUNT_PROVIDER_PROFILE_RETIRED),
     op("account_github_poll",                                        Agnostic,    ControllerLocal,  REFUSED),
     op("account_github_start",                                       Agnostic,    ControllerLocal,  REFUSED),
+    op("account_identity",                                           Agnostic,    ControllerLocal,  REFUSED),
     op("account_list_devices",                                       Agnostic,    ControllerLocal,  REFUSED),
     retired("account_load_older_session", RELAY_TRANSPORT_RETIRED),
     op("account_login",                                              Agnostic,    ControllerLocal,  REFUSED),
@@ -645,6 +651,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("list_visible_subagents",                                     Routed,      Proxied,          HANDLED),
     op("load_acp_json_config",                                       Unaudited,   Proxied,          CLI_NO_ACP_CLIENT_HOST),
     op("load_agent_companion_pet_spritesheet",                       Agnostic,    ControllerLocal,  REFUSED),
+    op("load_agent_companion_pet_still",                             Agnostic,    ControllerLocal,  REFUSED),
     op("load_git_repo_history",                                      Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),
     op("load_insights_report",                                       LocalOnly,   ControllerLocal,  REFUSED),
     op("load_mcp_json_config",                                       Unaudited,   Proxied,          CLI_NOT_IMPLEMENTED),

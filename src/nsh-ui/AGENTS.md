@@ -35,7 +35,21 @@ switcher in the main flow.
 
 ## Information architecture
 
-- **OpenBitFun** (`openbitfun`, the default scene; `scenes/OpenBitFunScene.tsx`): the
+- **Sidebar and landing** (wave 23, owner decision): the sidebar is the account's
+  runtime devices → workspaces → sessions (`ui/deviceSidebar.tsx`, the same
+  `deviceTree()` projection as All sessions › By device; one device draws no device
+  header), under New session (⌘N), Search and Inbox, with All sessions, Library and
+  the account row below. The app opens on the session view (`landingScene()` in
+  `state.ts`); a phone opens on Sessions › By device (tabs Sessions, Inbox, Library).
+- **Super Agent gate** (`src/productGates.ts`, `superAgentUi()`, off by owner
+  decision): hides every Super Agent entry without deleting it (the sidebar row and
+  history, the `openbitfun` scene, its phone tab and ⌘N meaning, the ⌘K command,
+  Account › Super Agent, the per-device `superagent.*` switches, conversation items in
+  the Inbox, "Started by Super Agent", the device page's job rows), and
+  `superagentStore.ts` sends no `superagent_*` command while it is off. Setting
+  `SUPER_AGENT_UI_DEFAULT` to `true` restores the surface below; suites that cover it
+  open `test/fixtures/*SuperAgent.tsx` (or import `test/fixtures/superAgentOn.ts`).
+- **OpenBitFun** (`openbitfun`; `scenes/OpenBitFunScene.tsx`, gated): the
   account's cloud superagent. One input box, the conversation, and live job cards where
   the model dispatched work; no device picker, mode or model chip.
 - **Inbox** (`inbox`, and the ⌘I sheet; `scenes/InboxScene.tsx`): everything that waits
@@ -58,7 +72,12 @@ switcher in the main flow.
   (`home`, `assistants`, `agents`, `skills`, `routines`, `spaces`, `devices`) resolve
   onto these in `navigateScene`.
 - Sign-in: `ui/SignInView.tsx`, one column shared by the desktop's first run and account
-  dialog and the browser launcher; the caller owns the flow.
+  dialog and the browser launcher; the caller owns the flow. Every client signs in inside
+  the app with the email code (desktop: `account_email_start` / `account_email_verify`;
+  browser and phone: their controller port); GitHub is the secondary option and the only
+  one that opens the browser. Who is signed in is the backend's identity projection
+  (`accountIdentity.ts`, read through `accountDisplay()`): the sidebar row and its initial,
+  Settings › Account and the account dialog show its `displayName` and nothing else.
 
 ## Foundations
 

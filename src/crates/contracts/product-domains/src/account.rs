@@ -229,6 +229,10 @@ pub struct AccountSnapshotProjection {
     pub info: Option<AccountInfo>,
     #[serde(default)]
     pub devices: Vec<AccountDevice>,
+    /// Who is signed in, as every surface shows it. Absent in snapshots
+    /// written before the field and when the identity service is unreachable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<AccountIdentityView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,6 +241,185 @@ pub struct AccountLoginProjection {
     pub user_id: String,
     pub relay_url: String,
     pub status_message: String,
+    /// [`AccountIdentityView::display_name`] of the account that signed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// How an account signs in to the identity service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountProvider {
+    /// A verified email address (the in-app email code).
+    Email,
+    /// A GitHub account (OAuth in the browser).
+    Github,
+}
+
+/// The signed-in account as every surface shows it: the sidebar row and its
+/// avatar, Settings › Account, the account dialog, the phone, the browser and
+/// the CLI. The backend builds it from the identity service's profile; a
+/// surface renders these fields and never looks at the provider's handles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountIdentityView {
+    pub provider: AccountProvider,
+    /// The stable account id the device directory and the issuer key by
+    /// ([`GitHubUser::identity_id`]). Never shown.
+    pub account_id: String,
+    /// The email for email accounts, the GitHub login for GitHub accounts.
+    pub display_name: String,
+    /// One uppercase character for the avatar.
+    pub initial: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
+/// Whether an account id names an email account (`email-<n>`), the one rule
+/// [`GitHubUser::identity_id`] and [`AccountIdentityView`] share.
+pub fn is_email_account_id(account_id: &str) -> bool {
+    account_id.starts_with("email-")
+        && account_id.len() <= 64
+        && account_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+}
+
+impl AccountIdentityView {
+    /// The projection of an account id and what the identity service said
+    /// about it: an email account shows its verified email, a GitHub account
+    /// its login. `None` when the name to show is missing (an email account
+    /// whose address was not reported), so no internal handle is ever shown.
+    pub fn from_parts(
+        account_id: &str,
+        email: Option<&str>,
+        login: Option<&str>,
+        avatar_url: Option<&str>,
+    ) -> Option<Self> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return None;
+        }
+        let clean = |value: Option<&str>| {
+            value
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
+                .map(str::to_string)
+        };
+        let (provider, display_name) = if is_email_account_id(account_id) {
+            (AccountProvider::Email, clean(email)?)
+        } else {
+            (AccountProvider::Github, clean(login)?)
+        };
+        let initial = display_name
+            .chars()
+            .find(|c| c.is_alphanumeric())
+            .or_else(|| display_name.chars().next())
+            .map(|c| c.to_uppercase().collect::<String>())
+            .unwrap_or_default();
+        Some(Self {
+            provider,
+            account_id: account_id.to_string(),
+            display_name,
+            initial,
+            avatar_url: clean(avatar_url).filter(|url| url.starts_with("https://")),
+        })
+    }
+
+    /// The projection of the identity service's `/me` profile.
+    pub fn from_profile(user: &GitHubUser, email: Option<&str>) -> Option<Self> {
+        Self::from_parts(
+            &user.identity_id()?,
+            email,
+            Some(&user.login),
+            Some(&user.avatar_url),
+        )
+    }
+}
+
+/// How many digits the identity service's email code has.
+pub const EMAIL_SIGN_IN_CODE_LENGTH: u32 = 8;
+
+/// Sends a sign-in code to an email address (`account_email_start`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEmailStartRequest {
+    pub email: String,
+    /// The email's language (`en-US`, `zh-CN`, ...); the service default when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+}
+
+/// A code the identity service sent. The sign-in transaction's secret and
+/// ticket stay in the host; the surface hands `challenge_id` back unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEmailChallenge {
+    pub challenge_id: String,
+    /// The address the code went to, as the service normalized it.
+    pub email: String,
+    pub code_length: u32,
+    /// Seconds before another code may be requested.
+    pub retry_after_seconds: u32,
+    /// When the pending sign-in expires (epoch milliseconds), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+/// Completes an email sign-in with the code (`account_email_verify`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEmailVerifyRequest {
+    pub challenge_id: String,
+    pub code: String,
+}
+
+/// The account an email sign-in completed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEmailVerifyResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<AccountIdentityView>,
+}
+
+/// The sign-in ticket of a device sign-in's page address
+/// (`…/sign-in#ticket=<ticket>`): what the email code endpoints take.
+pub fn email_sign_in_ticket(authorization_url: &str) -> Option<String> {
+    let fragment = authorization_url.split_once('#')?.1;
+    fragment
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| *name == "ticket")
+        .map(|(_, value)| value.to_string())
+        .filter(|ticket| {
+            !ticket.is_empty()
+                && ticket.len() <= 256
+                && ticket
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+}
+
+/// The stable code of a refused email sign-in step, from the identity
+/// service's error code and, when known, the HTTP status (`0`: unknown):
+/// `invalid_email`, `invalid_code`, `rate_limited`, `signed_out`,
+/// `unsupported` or `unavailable`. Every surface words these codes itself.
+pub fn email_sign_in_refusal_code(status: u16, service_code: &str) -> &'static str {
+    match service_code {
+        "invalid_email" => return "invalid_email",
+        "invalid_email_code" | "login_flow_expired" | "desktop_auth_expired" => {
+            return "invalid_code"
+        }
+        "email_rate_limit" | "auth_capacity" => return "rate_limited",
+        "email_not_configured" => return "unsupported",
+        _ => {}
+    }
+    match status {
+        401 | 403 => "signed_out",
+        404 | 405 | 501 => "unsupported",
+        429 => "rate_limited",
+        _ => "unavailable",
+    }
 }
 
 /// Verified GitHub profile for the global GitHub account.
@@ -279,11 +462,7 @@ impl GitHubUser {
         }
         self.account_id
             .as_ref()
-            .filter(|id| {
-                id.starts_with("email-")
-                    && id.len() <= 64
-                    && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-            })
+            .filter(|id| is_email_account_id(id))
             .cloned()
     }
 }
@@ -365,6 +544,127 @@ mod identity_tests {
         )
         .unwrap();
         assert!(invalid.identity_id().is_none());
+    }
+}
+
+#[cfg(test)]
+mod identity_view_tests {
+    use super::*;
+
+    #[test]
+    fn email_accounts_show_their_email_and_never_the_internal_login() {
+        let user: GitHubUser = serde_json::from_str(
+            r#"{"accountId":"email-7","githubId":0,"login":"user-87b544d554494ceaa50e23d89550a954","avatarUrl":""}"#,
+        )
+        .unwrap();
+        let view = AccountIdentityView::from_profile(&user, Some(" alice@example.com ")).unwrap();
+        assert_eq!(view.provider, AccountProvider::Email);
+        assert_eq!(view.account_id, "email-7");
+        assert_eq!(view.display_name, "alice@example.com");
+        assert_eq!(view.initial, "A");
+        assert_eq!(view.avatar_url, None);
+        // No address reported: nothing to show rather than the handle.
+        assert!(AccountIdentityView::from_profile(&user, None).is_none());
+        let wire = serde_json::to_value(&view).unwrap();
+        assert_eq!(wire["provider"], "email");
+        assert_eq!(wire["displayName"], "alice@example.com");
+        assert!(!wire.to_string().contains("user-87b5"));
+    }
+
+    #[test]
+    fn github_accounts_show_their_login_and_keep_the_numeric_id() {
+        let user: GitHubUser = serde_json::from_str(
+            r#"{"githubId":42,"login":"octocat","avatarUrl":"https://avatars.example/42"}"#,
+        )
+        .unwrap();
+        let view = AccountIdentityView::from_profile(&user, Some("octo@example.com")).unwrap();
+        assert_eq!(view.provider, AccountProvider::Github);
+        assert_eq!(view.account_id, "42");
+        assert_eq!(view.display_name, "octocat");
+        assert_eq!(view.initial, "O");
+        assert_eq!(
+            view.avatar_url.as_deref(),
+            Some("https://avatars.example/42")
+        );
+        let insecure = AccountIdentityView::from_parts("42", None, Some("x"), Some("http://a/b"));
+        assert_eq!(insecure.unwrap().avatar_url, None);
+    }
+
+    #[test]
+    fn the_projection_round_trips_and_snapshots_without_it_still_read() {
+        let view =
+            AccountIdentityView::from_parts("email-1", Some("b@example.com"), None, None).unwrap();
+        let back: AccountIdentityView =
+            serde_json::from_value(serde_json::to_value(&view).unwrap()).unwrap();
+        assert_eq!(view, back);
+
+        let legacy = serde_json::json!({
+            "loggedIn": true,
+            "info": {"userId":"email-1","relayUrl":"https://r","deviceId":"d","deviceName":"Mac"},
+            "devices": []
+        });
+        let snapshot: AccountSnapshotProjection = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(snapshot.identity.is_none());
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), legacy);
+        let login_legacy =
+            serde_json::json!({"userId":"42","relayUrl":"https://r","statusMessage":"ok"});
+        let login: AccountLoginProjection = serde_json::from_value(login_legacy.clone()).unwrap();
+        assert!(login.display_name.is_none());
+        assert_eq!(serde_json::to_value(&login).unwrap(), login_legacy);
+    }
+
+    #[test]
+    fn email_sign_in_helpers_read_the_ticket_and_word_refusals_by_code() {
+        assert_eq!(
+            email_sign_in_ticket("https://auth.example/sign-in#ticket=abc_DEF-1.2").as_deref(),
+            Some("abc_DEF-1.2")
+        );
+        assert_eq!(
+            email_sign_in_ticket("https://auth.example/sign-in#x=1&ticket=t2").as_deref(),
+            Some("t2")
+        );
+        assert_eq!(
+            email_sign_in_ticket("https://github.com/login/oauth/authorize?state=1"),
+            None
+        );
+        assert_eq!(
+            email_sign_in_ticket("https://auth.example/sign-in#ticket="),
+            None
+        );
+        assert_eq!(
+            email_sign_in_ticket("https://auth.example/sign-in#ticket=a b"),
+            None
+        );
+        assert_eq!(
+            email_sign_in_refusal_code(400, "invalid_email"),
+            "invalid_email"
+        );
+        assert_eq!(
+            email_sign_in_refusal_code(400, "invalid_email_code"),
+            "invalid_code"
+        );
+        assert_eq!(
+            email_sign_in_refusal_code(400, "login_flow_expired"),
+            "invalid_code"
+        );
+        assert_eq!(
+            email_sign_in_refusal_code(429, "email_rate_limit"),
+            "rate_limited"
+        );
+        assert_eq!(
+            email_sign_in_refusal_code(503, "email_not_configured"),
+            "unsupported"
+        );
+        assert_eq!(email_sign_in_refusal_code(401, ""), "signed_out");
+        assert_eq!(
+            email_sign_in_refusal_code(0, "market_request_failed"),
+            "unavailable"
+        );
+        let challenge: AccountEmailChallenge = serde_json::from_value(serde_json::json!({
+            "challengeId":"c","email":"a@b.c","codeLength":8,"retryAfterSeconds":60
+        }))
+        .unwrap();
+        assert_eq!(challenge.expires_at, None);
     }
 }
 

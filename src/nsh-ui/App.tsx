@@ -61,7 +61,7 @@ import { installServedBackend } from "./src/servedBackend";
 import { controllerPort } from "./src/controller/controllerPort";
 import { SessionActionDialogs } from "./src/ui/sessionActions";
 import { WorkspaceActionDialogs } from "./src/ui/workspaceActions";
-import { controllerAccount, signOutController } from "./src/controller/controllerStore";
+import { signOutController } from "./src/controller/controllerStore";
 import { ControllerShell } from "./src/controller/ControllerShell";
 import { loadLocalDeviceId, localDeviceId } from "./src/devicePrefsStore";
 import { formatPlural } from "./src/format";
@@ -75,9 +75,9 @@ import {
   tr,
   type MessageKey,
 } from "./src/i18n";
+import { accountDisplay } from "./src/accountDisplay";
 import {
   accountStatus,
-  githubUser,
   isAccountSignedIn,
   loadAccountState,
   signOutAccount,
@@ -138,6 +138,10 @@ import {
   type SceneId,
   devicePageId,
   resolveSceneAlias,
+  allSessionsView,
+  landingScene,
+  navHistory,
+  resetNavigation,
 } from "./src/state";
 import {
   APPEARANCE_PRESETS,
@@ -264,7 +268,6 @@ import { inboxSheetOpen, startAttentionStore, toggleInboxSheet } from "./src/att
 import { inboxBadgeCount } from "./src/localInboxStore";
 import { fleetDeviceById, fleetUnavailable } from "./src/fleetStore";
 import { InboxCountPill, PhoneTabBar, type PhoneTab } from "./src/ui/fleet";
-import { firstAvatarGrapheme } from "./src/ui/studio";
 import { FilesScene } from "./src/scenes/FilesScene";
 import { GitScene } from "./src/scenes/GitScene";
 import { TerminalScene } from "./src/scenes/TerminalScene";
@@ -274,9 +277,14 @@ import {
   SETTINGS_PAGE_GROUPS,
   SettingsNavigation,
   SettingsScene,
+  visibleSettingsPages,
   type SettingsPageEntry,
 } from "./src/scenes/SettingsScene";
 import type { SettingsPageId } from "./src/settingsStore";
+// wave23-E: Super Agent gated off; the sidebar is the account's device → workspace → session tree.
+import { superAgentUi } from "./src/productGates";
+import { DeviceSidebarTree } from "./src/ui/deviceSidebar";
+import { newSessionHere } from "./src/scenes/AllSessionsScene";
 
 // A page served by a backend connects back to it over OBP (before any command runs).
 installServedBackend();
@@ -628,7 +636,8 @@ function sceneElement() {
   switch (activeScene()) {
     case "home":
     case "openbitfun":
-      return <OpenBitFunScene />;
+      // wave23-E: the Super Agent scene draws only while that gate is on (`productGates.ts`).
+      return superAgentUi() ? <OpenBitFunScene /> : <SessionsScene />;
     case "inbox":
       return <InboxScene />;
     case "all-sessions":
@@ -780,22 +789,11 @@ function NavBar() {
   );
 }
 
-/**
- * Whether the account row has an identity. A browser or phone controller is
- * signed in to the page's own account (its port), not to the device's.
- */
-function accountRowSignedIn(): boolean {
-  return controllerPort() ? controllerAccount() !== null : isAccountSignedIn();
-}
-
-/** The name the account row shows: the signed-in identity, else "Sign in". */
+/** The name the account row shows: the backend's identity projection (`accountDisplay`), else "Sign in". */
 function accountLabel(): string {
-  if (controllerPort()) {
-    const account = controllerAccount();
-    return account ? account.login || account.email || account.accountId : tr("nav.signIn");
-  }
-  if (!isAccountSignedIn()) return tr("nav.signIn");
-  return githubUser()?.login || accountStatus()?.userId || tr("nav.signIn");
+  const display = accountDisplay();
+  if (!display.signedIn) return tr("nav.signIn");
+  return display.identity?.displayName || tr("signin.signedIn");
 }
 
 function AccountAvatar(props: { size: number }) {
@@ -813,7 +811,7 @@ function AccountAvatar(props: { size: number }) {
       }}
     >
       <If
-        when={accountRowSignedIn()}
+        when={accountDisplay().identity?.initial ?? ""}
         else={
           <Icon
             name="user"
@@ -830,7 +828,7 @@ function AccountAvatar(props: { size: number }) {
             fontVariant: undefined,
           }}
         >
-          {firstAvatarGrapheme(accountLabel()).toUpperCase()}
+          {accountDisplay().identity?.initial ?? ""}
         </Text>
       </If>
       {/* An update that is ready: a 6 px accent dot on the avatar, no banner. */}
@@ -980,18 +978,137 @@ function AccountRow() {
   );
 }
 
+/**
+ * ⌘N and the sidebar's New session: a session in the selected workspace on its
+ * device (the device context), or the new-workspace sheet when nothing is
+ * selected yet.
+ */
+async function startNewSession(): Promise<void> {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    await openNewWorkspaceModal();
+    return;
+  }
+  await newSessionHere(workspace.id, deviceContext());
+}
+
 function startNewConversation(): void {
+  // wave23-E: with Super Agent gated off (`productGates.ts`), ⌘N starts a session.
+  if (!superAgentUi()) {
+    void startNewSession();
+    return;
+  }
   newConversation();
   navigateScene("openbitfun");
 }
 
 function showCloudHistory(): boolean {
+  if (!superAgentUi()) return false;
   if (superagentPhase() === "signed_out") return false;
   if (accountStatus()?.loggedIn === false && !superagentStatus()?.signedIn) return false;
   return true;
 }
 
 function NavPanel(props: { onNavigate?: () => void }) {
+  return (
+    <If when={superAgentUi()} else={<DeviceNavPanel onNavigate={props.onNavigate} />}>
+      <SuperAgentNavPanel onNavigate={props.onNavigate} />
+    </If>
+  );
+}
+
+/**
+ * The sidebar while Super Agent is gated off (wave 23, the Tauri-era layout):
+ * New session, Search and Inbox; the account's devices → workspaces →
+ * sessions; then All sessions (the flat Recent list and search across every
+ * device), Library (assistants, agents, skills, spaces, routines) and the
+ * account row with Settings.
+ */
+function DeviceNavPanel(props: { onNavigate?: () => void }) {
+  return (
+    <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
+      <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
+        <SidebarRow
+          label={tr("nav.newSession")}
+          icon="edit"
+          active={false}
+          accessibilityLabel="nav-new-session"
+          onPress={() => {
+            void startNewSession();
+            props.onNavigate?.();
+          }}
+          trailing={<KbdHint keys={shortcutLabel("mod+n", "⌘N")} surface="chrome" />}
+        />
+        <SidebarRow
+          label={tr("nav.search")}
+          icon="search"
+          active={false}
+          accessibilityLabel="global-search-trigger"
+          onPress={() => {
+            props.onNavigate?.();
+            openGlobalSearch();
+          }}
+          trailing={<KbdHint keys={shortcutLabel("mod+k", "⌘K")} surface="chrome" />}
+        />
+        <SidebarRow
+          label={tr("nav.inbox")}
+          icon="inbox"
+          active={activeScene() === "inbox"}
+          accessibilityLabel="nav-inbox"
+          onPress={() => {
+            navigateScene("inbox");
+            props.onNavigate?.();
+          }}
+          trailing={<InboxCountPill count={inboxBadgeCount()} testID="sidebar-inbox-count" />}
+        />
+      </View>
+      <Scroll
+        scrollbar={true}
+        accessibilityLabel="sidebar-tree-scroll"
+        style={{ flex: 1, minHeight: 0, marginTop: space.lg }}
+        contentStyle={{ paddingHorizontal: space.sm, paddingBottom: space.md }}
+      >
+        <DeviceSidebarTree onNavigate={props.onNavigate} />
+      </Scroll>
+      <View
+        style={{
+          flexShrink: 0,
+          borderTopWidth: 1,
+          borderColor: palette().chromeBorder,
+          paddingTop: space.sm,
+          gap: space.hair,
+        }}
+      >
+        <View style={{ paddingHorizontal: space.sm, gap: space.hair }}>
+          <SidebarRow
+            label={tr("nav.allSessions")}
+            icon="layers"
+            active={activeScene() === "all-sessions" || activeScene() === "device"}
+            accessibilityLabel="nav-all-sessions"
+            onPress={() => {
+              navigateScene("all-sessions");
+              props.onNavigate?.();
+            }}
+          />
+          <SidebarRow
+            label={tr("nav.library")}
+            icon="package"
+            active={activeScene() === "library"}
+            accessibilityLabel="nav-library"
+            onPress={() => {
+              navigateScene("library");
+              props.onNavigate?.();
+            }}
+          />
+        </View>
+        <AccountRow />
+      </View>
+    </View>
+  );
+}
+
+/** The Super Agent sidebar (shown only while that gate is on, `productGates.ts`). */
+function SuperAgentNavPanel(props: { onNavigate?: () => void }) {
   return (
     <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
       <View style={{ paddingHorizontal: space.sm, gap: space.hair, flexShrink: 0 }}>
@@ -1794,7 +1911,7 @@ function settingsSearchItems(rawNeedle: string): SearchItem[] {
   if (!needle) return [];
   const items: SearchItem[] = [];
   for (const group of SETTINGS_PAGE_GROUPS) {
-    for (const page of group.pages) {
+    for (const page of visibleSettingsPages(group)) {
       const label = tr(page.labelKey);
       const description = tr(page.descriptionKey);
       const hit = [label, description, ...page.keywords].some(text =>
@@ -1826,6 +1943,8 @@ function runShellSearchItem(item: SearchItem): void {
 function localizedCommandItems(rawNeedle: string): SearchItem[] {
   const needle = rawNeedle.trim().toLowerCase();
   return SEARCH_COMMANDS.filter(cmd => {
+    // wave23-E: "Go to Super Agent" only while that gate is on (`productGates.ts`).
+    if (cmd.target === "openbitfun" && !superAgentUi()) return false;
     if (!needle) return true;
     const label = tr(cmd.labelKey).toLowerCase();
     const detail = tr(cmd.detailKey).toLowerCase();
@@ -2559,7 +2678,18 @@ function SceneTopBar() {
 
 const WORKSPACE_TOOL_SCENES: ReadonlyArray<SceneId> = ["files", "git", "terminal", "browser"];
 /** The phone's four tabs (visual spec §3 PhoneTabBar). */
-const PHONE_TAB_SCENES: ReadonlyArray<SceneId> = ["openbitfun", "inbox", "all-sessions", "library"];
+const SUPER_AGENT_PHONE_TAB_SCENES: ReadonlyArray<SceneId> = ["openbitfun", "inbox", "all-sessions", "library"];
+/** wave23-E: with Super Agent gated off, Sessions (the device tree) is the first tab. */
+const DEVICE_PHONE_TAB_SCENES: ReadonlyArray<SceneId> = ["all-sessions", "inbox", "library"];
+
+function phoneTabScenes(): ReadonlyArray<SceneId> {
+  return superAgentUi() ? SUPER_AGENT_PHONE_TAB_SCENES : DEVICE_PHONE_TAB_SCENES;
+}
+
+/** The phone's first tab: where a pushed page goes back to when there is no history. */
+function phoneHomeScene(): SceneId {
+  return phoneTabScenes()[0]!;
+}
 
 function phoneTitle(scene: SceneId): string {
   switch (scene) {
@@ -2568,7 +2698,7 @@ function phoneTitle(scene: SceneId): string {
     case "inbox":
       return tr("nav.inbox");
     case "all-sessions":
-      return tr("nav.allSessions");
+      return superAgentUi() ? tr("nav.allSessions") : tr("nav.sessions");
     case "library":
       return tr("nav.library");
     case "settings":
@@ -2595,7 +2725,8 @@ function phoneTitle(scene: SceneId): string {
  * none here.
  */
 function PhoneTopBar() {
-  const isTab = () => PHONE_TAB_SCENES.includes(activeScene());
+  const isTab = () => phoneTabScenes().includes(activeScene());
+  const isHome = () => activeScene() === phoneHomeScene();
   const isLibrary = () => activeScene() === "library";
   return (
     <View
@@ -2620,12 +2751,12 @@ function PhoneTopBar() {
               icon="chevron-left"
               size="md"
               accessibilityLabel="phone-back"
-              onPress={() => (canGoBack() ? goBackScene() : navigateScene("openbitfun"))}
+              onPress={() => (canGoBack() ? goBackScene() : navigateScene(phoneHomeScene()))}
               style={{ width: layout.touchTarget, height: layout.touchTarget }}
             />
           }
         >
-          <If when={activeScene() === "openbitfun"}>
+          <If when={superAgentUi() && activeScene() === "openbitfun"}>
             <IconButton
               icon="menu"
               size="md"
@@ -2673,7 +2804,7 @@ function PhoneTopBar() {
             style={{ width: layout.touchTarget, height: layout.touchTarget }}
           />
         </If>
-        <If when={activeScene() === "openbitfun"}>
+        <If when={isHome()}>
           <View
             role="button"
             accessibilityLabel="phone-account"
@@ -2700,7 +2831,33 @@ function PhoneTopBar() {
 }
 
 function PhoneTabs() {
-  const tabs = (): PhoneTab[] => [
+  const tabs = (): PhoneTab[] => (superAgentUi() ? superAgentTabs() : deviceTabs());
+  // wave23-E: Sessions (the account's device → workspace → session tree), Inbox, Library.
+  const deviceTabs = (): PhoneTab[] => [
+    {
+      id: "all-sessions",
+      label: tr("nav.sessions"),
+      icon: "layers",
+      active: activeScene() === "all-sessions" || activeScene() === "device",
+      onPress: () => navigateScene("all-sessions"),
+    },
+    {
+      id: "inbox",
+      label: tr("nav.inbox"),
+      icon: "inbox",
+      active: activeScene() === "inbox",
+      badge: inboxBadgeCount(),
+      onPress: () => navigateScene("inbox"),
+    },
+    {
+      id: "library",
+      label: tr("nav.library"),
+      icon: "package",
+      active: activeScene() === "library",
+      onPress: () => navigateScene("library"),
+    },
+  ];
+  const superAgentTabs = (): PhoneTab[] => [
     {
       id: "openbitfun",
       label: tr("nav.superAgent"),
@@ -3046,6 +3203,19 @@ function StudioApp() {
     cleanup(stop);
   });
 
+  // wave23-E: a phone opens on its first screen, the device tree (Sessions ›
+  // By device), instead of the desktop's session view; only while nothing was
+  // opened yet.
+  effect(() => {
+    if (!compactShell() || superAgentUi()) return;
+    untracked(() => {
+      const history = navHistory();
+      if (history.length !== 1 || history[0] !== landingScene() || activeScene() !== landingScene()) return;
+      allSessionsView.set("by-device");
+      resetNavigation("all-sessions");
+    });
+  });
+
   // Entering a compact layout folds the sidebar away; picking a scene there closes it again.
   let wasOverlay = false;
   effect(() => compactLayout.set(compactShell()));
@@ -3234,7 +3404,7 @@ function StudioApp() {
           <BackendConnectionBanner />
           <FleetUpdateNotice />
         </If>
-        <If when={compactShell() && PHONE_TAB_SCENES.includes(activeScene())}>
+        <If when={compactShell() && phoneTabScenes().includes(activeScene())}>
           <PhoneTabs />
         </If>
         {/* Embedded browser pages outlive the Browser scene (agents drive them hidden). */}
@@ -3244,7 +3414,7 @@ function StudioApp() {
       <If when={auxPaneOpen() && auxAsSheet()}>
         <AuxPaneSheet />
       </If>
-      <If when={compactShell() && drawerOpen()}>
+      <If when={compactShell() && drawerOpen() && superAgentUi()}>
         <CompactDrawer />
       </If>
       <If when={overlayNav() && drawerOpen()}>

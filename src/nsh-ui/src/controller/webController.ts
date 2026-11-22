@@ -20,6 +20,7 @@
 //   `/b/<bundleId>/index.html#device=<deviceId>`, where the loader serves
 //   the device's files from the server's pool after verifying every byte.
 
+import { readAccountIdentity } from "../accountIdentity";
 import { createWebSocketConnection } from "../webSocketConnection";
 import { callController, controllerSocketFactory } from "./controllerSocket";
 import {
@@ -124,8 +125,7 @@ function accountOf(value: unknown): ControllerAccount {
   const record = (value ?? {}) as Record<string, unknown>;
   return {
     accountId: asString(record.accountId) ?? "",
-    email: asString(record.email),
-    login: asString(record.login),
+    identity: readAccountIdentity(record.identity),
     deviceId: asString(record.deviceId) ?? "",
   };
 }

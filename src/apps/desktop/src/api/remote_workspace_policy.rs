@@ -147,6 +147,7 @@ mod tests {
             "hide_agent_companion_desktop_pet",
             "resize_agent_companion_desktop_pet",
             "load_agent_companion_pet_spritesheet",
+            "load_agent_companion_pet_still",
         ] {
             assert!(registered.contains(command), "{command} must be registered");
             assert!(

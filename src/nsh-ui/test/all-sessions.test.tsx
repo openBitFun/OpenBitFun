@@ -3,7 +3,9 @@
 // and roll-up hints, offline devices the backend lists last fold into one
 // group, a filter field appears above 8 devices, and "New session here" starts
 // a session in the workspace it was pressed on. The shell around it: the
-// sidebar holds no sessions, and the old `devices` scene id opens By device.
+// sidebar holds the same device → workspace → session tree (wave 23), and the
+// old `devices` scene id opens By device. Assertions about the page are scoped
+// to it, since the sidebar shows the same titles.
 
 import { expect, open, test } from "nsh/test";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, showAllSessions } from "./support";
@@ -48,6 +50,12 @@ function navigator(extraDevices: Array<Record<string, unknown>> = []) {
   };
 }
 
+/** The texts of the All sessions page (after its Recent | By device tabs), in order. */
+function sceneTexts(app: { texts(): string[] }): string[] {
+  const texts = app.texts();
+  return texts.slice(texts.lastIndexOf("By device") + 1);
+}
+
 async function openFleet(nav = navigator()) {
   const backend = createBackend();
   const host = fleetObpHost(backend, { fleet: ENTRY, navigator: nav });
@@ -56,13 +64,15 @@ async function openFleet(nav = navigator()) {
   return { app, host };
 }
 
-test("the sidebar holds conversations; sessions are one press away in All sessions › Recent, in the backend's order", async () => {
+test("the sidebar lists every device's sessions; All sessions › Recent lists them flat in the backend's order", async () => {
   const { app, host } = await openFleet();
-  // No session rows in the shell before All sessions opens.
-  expect(app.shows("text:Fix flaky test")).toBe(false);
+  // The sidebar's tree: each device, its workspace, its sessions.
+  await app.waitFor("id:sidebar-session-session-1");
+  expect(app.shows("id:sidebar-device-row-dev-b")).toBe(true);
+  expect(app.shows("id:sidebar-session-session-5")).toBe(true);
   await showAllSessions(app, "Fix flaky test");
   const order = ["Fix flaky test", "Docs pass", "Port the terminal", "Bump deps", "Build release"];
-  const texts = app.texts();
+  const texts = sceneTexts(app);
   const positions = order.map(title => texts.indexOf(title));
   expect(positions.every(position => position >= 0)).toBe(true);
   expect([...positions].sort((a, b) => a - b)).toEqual(positions);
@@ -70,7 +80,7 @@ test("the sidebar holds conversations; sessions are one press away in All sessio
   expect(app.shows("text:linux-box")).toBe(true);
 
   // Pressing a row of another device opens that session there.
-  await app.press("Build release");
+  await app.press("label:all-sessions-scene >> text:Build release");
   await app.waitUntil(() =>
     host.fleetCalls.some(call => call.target === "dev-b" && call.command === "get_session_transcript_view"),
   );
@@ -87,17 +97,17 @@ test("By device follows the backend's folding and roll-up and states exceptions 
   // Other devices stay folded: a roll-up mark, or the exception words.
   expect(app.shows("label:Needs you")).toBe(true);
   expect(app.shows("text:Update needed")).toBe(true);
-  expect(app.shows("text:Build release")).toBe(false);
+  expect(app.shows("label:all-sessions-by-device >> text:Build release")).toBe(false);
   // Offline devices the backend lists last fold into one group.
   expect(app.shows("text:Offline (2)")).toBe(true);
-  expect(app.shows("text:old-laptop")).toBe(false);
+  expect(app.shows("label:all-sessions-by-device >> text:old-laptop")).toBe(false);
   await app.press("all-sessions-offline-group");
-  await app.waitFor("text:old-laptop");
+  await app.waitFor("label:all-sessions-by-device >> text:old-laptop");
 
   // Unfolding a device and a workspace shows its sessions.
   await app.press("device-fold-dev-b");
   await app.press("workspace-row-workspace-2");
-  await app.waitFor("text:Build release");
+  await app.waitFor("label:all-sessions-by-device >> text:Build release");
 });
 
 test("above 8 devices a filter field narrows the device list", async () => {
@@ -106,9 +116,9 @@ test("above 8 devices a filter field narrows the device list", async () => {
   await showAllSessions(app);
   await app.press("all-sessions-tab-by-device");
   await app.waitFor("all-sessions-device-filter");
-  expect(app.shows("text:builder-3")).toBe(true);
+  expect(app.shows("label:all-sessions-by-device >> text:builder-3")).toBe(true);
   await app.type("all-sessions-device-filter", "linux");
-  await app.waitUntil(() => !app.shows("text:builder-3"));
+  await app.waitUntil(() => !app.shows("label:all-sessions-by-device >> text:builder-3"));
   expect(app.shows("text:linux-box")).toBe(true);
 });
 
@@ -163,10 +173,10 @@ test("Recent draws the entry's served list in its order with the labels it proje
   await app.waitFor("nav-all-sessions");
   await showAllSessions(app, "Build release");
   expect(host.calls.some(call => call.command === "fleet_recent_sessions")).toBe(true);
-  const texts = app.texts();
+  const texts = sceneTexts(app);
   // Exactly the served rows, in the served order (the navigator's other sessions are not merged in).
   expect(texts.indexOf("Build release")).toBeLessThan(texts.indexOf("Docs pass"));
-  expect(app.shows("text:Fix flaky test")).toBe(false);
+  expect(app.shows("label:all-sessions-scene >> text:Fix flaky test")).toBe(false);
   expect(app.shows("text:· infra")).toBe(true);
 
   const older = fleetObpHost(createBackend(), { fleet: ENTRY, navigator: navigator(), recentSessions: false });

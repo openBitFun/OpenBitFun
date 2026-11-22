@@ -460,6 +460,10 @@ export interface ModelCatalogEntry {
   capabilities?: string[];
   /** Embedded reasoning catalog projection from real Rust `RemoteModelConfig`. */
   reasoning?: ReasoningCatalogProjection | null;
+  /** What every list shows first (the model); absent from an older host. */
+  label?: string;
+  /** The secondary text beside `label` (the provider). */
+  detail?: string;
 }
 
 export interface ModelCatalog {

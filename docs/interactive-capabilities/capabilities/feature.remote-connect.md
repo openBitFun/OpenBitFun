@@ -50,8 +50,8 @@ Follow sessions, approve permissions, and keep working from the OpenBitFun phone
   - Connect a WeChat (QR login), Feishu, or Telegram bot
   - 说明：支持微信扫码登录或从本机私有凭据文件加载飞书 / Telegram 配置；同一主机一次连接一个聊天应用（切换前先断开当前机器人，与「手机或浏览器」远控互不影响），凭据安全保存在执行主机。
   - Why & how: Launch WeChat QR login in chat or load Feishu/Telegram configs from a private host file—one chat app stays connected at a time (disconnect before switching; phone and browser control run independently alongside it), and credentials never enter model context.
-- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 通过 GitHub 或邮箱验证码登录账号并查看身份状态
-  - Sign in with GitHub or an email verification code and check account status
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 在应用内用邮箱验证码登录（或用 GitHub 在浏览器中登录）并查看身份状态
+  - Sign in with an email code inside the app (or with GitHub in the browser) and check account status
   - 说明：统一承载多设备发现、手机远控与 Pages 发布的身份认证，随时查看当前登录账号或安全退出。
   - Why & how: Powers device discovery, mobile remote control, and Pages publishing through one account sign-in flow, with clear status and sign-out controls.
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看同账号在线设备、系统型号、自定义设备别名与移除旧设备

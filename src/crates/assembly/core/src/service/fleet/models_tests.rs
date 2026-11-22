@@ -77,6 +77,15 @@ fn a_device_publishes_its_enabled_chat_models_without_relay_entries_or_secrets()
     assert!(catalog[1].primary);
     // An unnamed model shows its upstream name.
     assert_eq!(catalog[1].display_name, "m-fast-upstream");
+    // Every list leads with the model and follows with its provider.
+    assert_eq!(
+        (catalog[0].label.as_str(), catalog[0].detail.as_str()),
+        ("m-chat-upstream", "GPT")
+    );
+    assert_eq!(
+        (catalog[1].label.as_str(), catalog[1].detail.as_str()),
+        ("m-fast-upstream", "anthropic")
+    );
     let wire = serde_json::to_string(&catalog).unwrap();
     assert!(!wire.contains("fixture-secret") && !wire.contains("example.invalid"));
 }
@@ -133,7 +142,8 @@ fn other_devices_models_become_credential_free_runtime_entries() {
     assert_eq!(ids, ["fleet:cli-1/srv", "fleet:desk-2/big"]);
     let entry = &wanted["fleet:desk-2/big"];
     assert_eq!(entry.provider, FLEET_RELAY_PROVIDER);
-    assert_eq!(entry.name, "BIG (Laptop)");
+    // Named by the label rule: its provider, then its device.
+    assert_eq!(entry.name, "openai (Laptop)");
     assert!(entry.api_key.is_empty());
     assert_eq!(entry.request_url.as_deref(), Some("fleet:desk-2/big"));
     assert_eq!(
@@ -413,4 +423,34 @@ async fn a_session_round_runs_on_the_owner_and_fails_at_once_when_it_is_offline(
     assert!(error
         .to_string()
         .contains("not on the account's device network"));
+}
+
+#[test]
+fn two_models_that_read_the_same_are_numbered_in_the_published_catalog() {
+    let mut ai = ConfigAIConfig::default();
+    let twin = |id: &str| AIModelConfig {
+        model_name: "gpt-5".into(),
+        ..configured(id, "OpenAI", "openai", vec![ModelCapability::TextChat])
+    };
+    ai.models = vec![
+        twin("a"),
+        AIModelConfig {
+            enabled: false,
+            ..twin("b")
+        },
+        twin("c"),
+    ];
+    let catalog = catalog_of(&ai);
+    let shown: Vec<(&str, &str)> = catalog
+        .iter()
+        .map(|m| (m.label.as_str(), m.detail.as_str()))
+        .collect();
+    // Numbered in the configuration's order, as the device's own list reads
+    // them (the disabled twin keeps its number there).
+    assert_eq!(shown, [("gpt-5", "OpenAI #1"), ("gpt-5", "OpenAI #3")]);
+    // Another device's model is named so the rule reads it back with its
+    // provider and device.
+    let entry = runtime_entry("desk-2", "Laptop", &catalog[1]);
+    assert_eq!(entry.name, "OpenAI #3 (Laptop)");
+    assert_eq!(entry.model_name, "gpt-5");
 }

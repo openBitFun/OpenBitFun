@@ -16,7 +16,11 @@
 //! has none of: OBP connections answer them in the connection layer.
 //!
 //! Without a running fleet (signed out, Link off, another host serving the
-//! device) every fleet verb answers `fleet_unavailable: ...`.
+//! device) the fleet verbs answer `fleet_unavailable: ...`, except
+//! `fleet_call`: a runtime's own commands never depend on its device
+//! network, so a call aimed at this host (a connection that outlived the
+//! fleet) still runs here under the same allowlist, and one aimed at another
+//! device answers `fleet_device_offline: <id> (device_network_off)`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -28,8 +32,9 @@ use openbitfun_core::service::fleet::{
 use openbitfun_link::session::Link;
 use openbitfun_obp::client::cloud::{self, CloudStreamOpener};
 use openbitfun_obp::fleet::host::{
-    dispatch_as_account_device, fleet_unavailable, FleetDirectory, FleetDirectoryDevice, FleetHost,
-    FleetHostParts, LinkPeerConnector, LinkPresence, LocalEventHook,
+    dispatch_as_account_device, fleet_call_without_fleet, fleet_unavailable, FleetDirectory,
+    FleetDirectoryDevice, FleetHost, FleetHostParts, LinkPeerConnector, LinkPresence,
+    LocalEventHook,
 };
 use openbitfun_obp::fleet::index::index_cache_path;
 use openbitfun_obp::fleet::mux::FleetMux;
@@ -48,6 +53,9 @@ use serde_json::Value;
 use crate::runtime::CliRuntimeContext;
 
 static CURRENT: RwLock<Option<Arc<FleetHost>>> = RwLock::new(None);
+/// This host's dispatcher and the device id it last served, for
+/// `fleet_call` while no fleet runs.
+static LAST_SERVED: RwLock<Option<(Arc<dyn ObpBackend>, String)>> = RwLock::new(None);
 /// The digest producer of the running fleet (Detached Dispatch pokes it).
 static DIGEST: RwLock<Option<Arc<FleetDigestProducer>>> = RwLock::new(None);
 /// Single active watcher task forwarding local model config changes to the
@@ -105,6 +113,17 @@ pub(crate) async fn dispatch(
     instance_id: &str,
 ) -> Result<Value, String> {
     let Some(host) = current() else {
+        if command == "fleet_call" {
+            let served = LAST_SERVED
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            if let Some((obp, device_id)) = served {
+                return fleet_call_without_fleet(obp.as_ref(), &device_id, &args)
+                    .await
+                    .map_err(FleetCallError::into_message);
+            }
+        }
         return Err(fleet_unavailable(command));
     };
     host.dispatch(command, args, instance_id)
@@ -368,6 +387,10 @@ pub(crate) fn start(start: CliFleetStart) {
     *DIGEST
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&digest));
+    *LAST_SERVED
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((Arc::clone(&start.obp), start.device_id.clone()));
     let backend: Arc<dyn FleetBackend> = Arc::new(CliFleetBackend {
         device_id: start.device_id.clone(),
         name: machine_name(&start.device_id),

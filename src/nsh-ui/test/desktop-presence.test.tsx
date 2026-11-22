@@ -26,11 +26,21 @@ const BITBLOB = {
   spriteVersionNumber: 2,
 };
 
+const CAPY = {
+  ...BITBLOB,
+  id: "capy",
+  displayName: "Capy",
+  packagePath: "builtin:capy",
+  spritesheetPath: "builtin:capy/spritesheet.webp",
+  spriteVersionNumber: 1,
+};
+
 interface PresenceState {
   cards: Array<Record<string, unknown>>;
   petEnabled: boolean;
   attention: { revision: number; groups: Array<{ id: string; items: unknown[] }>; badge: number };
   configWrites: Array<{ path: string; value: unknown }>;
+  stillReads: string[];
 }
 
 function cards(): Array<Record<string, unknown>> {
@@ -80,8 +90,11 @@ function withPresence(backend: Backend, state: PresenceState): Backend {
       case "fleet_attention_mark_read":
         return { ok: true, value: null };
       case "list_agent_companion_pets":
-        return { ok: true, value: { pets: [BITBLOB], importOperationsVersion: 1, builtinImportVersion: 1 } };
+        return { ok: true, value: { pets: [BITBLOB, CAPY], importOperationsVersion: 1, builtinImportVersion: 1 } };
       case "load_agent_companion_pet_spritesheet":
+        return { ok: true, value: { mimeType: "image/png", base64: PIXEL } };
+      case "load_agent_companion_pet_still":
+        state.stillReads.push(String(request?.packagePath ?? ""));
         return { ok: true, value: { mimeType: "image/png", base64: PIXEL } };
       case "get_config": {
         const path = String(request?.path ?? "");
@@ -128,6 +141,7 @@ function freshState(petEnabled = false): PresenceState {
     petEnabled,
     attention: { revision: 1, groups: [], badge: 0 },
     configWrites: [],
+    stillReads: [],
   };
 }
 
@@ -341,6 +355,15 @@ test("the native desktop announces the pet operations, answers them, and Setting
   await app.press("nav-settings-page-pet");
   await app.waitFor("label:pet-enabled");
   await app.waitFor("label:pet-choose-bitblob");
+  // Every character shows its still at once, the chosen one and the rest alike, with no hover.
+  await app.waitFor("label:pet-still-image-bitblob");
+  await app.waitFor("label:pet-still-image-capy");
+  expect(state.stillReads.sort()).toEqual(["builtin:bitblob", "builtin:capy"]);
+  // The picker never decodes a spritesheet for a tile.
+  const sheetReads = wire.invokes.filter(call => call.command === "load_agent_companion_pet_spritesheet").length;
+  await app.hover("label:pet-choose-capy");
+  await app.wait(200);
+  expect(wire.invokes.filter(call => call.command === "load_agent_companion_pet_spritesheet").length).toBe(sheetReads);
   await app.press("label:desktop-cards-enabled");
   await app.waitUntil(() => state.configWrites.some(write => write.path === "app.ai_experience.enable_desktop_cards"));
   expect(state.configWrites.find(write => write.path === "app.ai_experience.enable_desktop_cards")?.value).toBe(false);

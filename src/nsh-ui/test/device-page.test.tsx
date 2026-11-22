@@ -193,7 +193,7 @@ test("a served device detail says what runs and waits there in words, and the ca
       },
     },
   });
-  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  const app = await open("./fixtures/obpAppSuperAgent.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
   await showAllSessions(app);
   await app.press("all-sessions-tab-by-device");
   await app.press("device-open-dev-b");
@@ -204,6 +204,34 @@ test("a served device detail says what runs and waits there in words, and the ca
   // The served capability ids win over the navigator's host capabilities.
   expect(app.shows("text:Terminal · Git")).toBe(true);
   expect(app.shows("text:waiting_for_device")).toBe(false);
+});
+
+test("with Super Agent gated off, the device page counts its sessions and names no jobs from it", async () => {
+  const backend = createBackend();
+  const host = fleetObpHost(backend, {
+    fleet: ENTRY,
+    navigator: navigator(),
+    deviceDetails: {
+      "dev-b": {
+        revision: 2,
+        device: navigator().devices[1],
+        runningSessions: 2,
+        runningJobs: 1,
+        waitingJobs: 1,
+        running: { sessions: [], jobs: [] },
+        waiting: { jobs: [{ deviceId: "dev-b", title: "Test release", state: "queued", stateReason: "waiting_for_device" }] },
+        capabilities: ["terminal", "git"],
+      },
+    },
+  });
+  const app = await open("./fixtures/obpApp.tsx", { ...DESKTOP, host: { handlers: host.handlers } });
+  await showAllSessions(app);
+  await app.press("all-sessions-tab-by-device");
+  await app.press("device-open-dev-b");
+  await app.waitFor("text:2 sessions");
+  expect(app.shows("device-waiting")).toBe(false);
+  expect(app.texts().some(text => text.includes("Super Agent"))).toBe(false);
+  expect(app.shows("text:Terminal · Git")).toBe(true);
 });
 
 test("an entry older than the device detail keeps the navigator's facts and draws no running counts", async () => {

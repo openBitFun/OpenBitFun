@@ -464,9 +464,15 @@ Publishing is an outward-facing action: only call this when the user explicitly 
             ))
         })?;
 
+        // The account's name as every surface shows it (its email or GitHub
+        // login), never the identity service's internal handle.
+        let signed_in_as = me
+            .identity()
+            .map(|identity| identity.display_name)
+            .unwrap_or_else(|| "this OpenBitFun account".to_string());
         let message = format!(
             "MiniApp '{}' submitted for review as '{}' v{} (signed in as {}). The user can track review status in 市场 → 我的投稿; published versions stay downloadable while the review runs.",
-            submission.name, submission.slug, submission.release_number, me.user.login
+            submission.name, submission.slug, submission.release_number, signed_in_as
         );
         Ok(vec![ToolResult::Result {
             data: json!({

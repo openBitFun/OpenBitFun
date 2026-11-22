@@ -95,6 +95,14 @@ export function backendConnection(): BackendConnection {
 // device is reached through it (`fleet_call`), and its stream tags events with
 // their origin device. A backend without it is an older host, and the UI keeps
 // today's single-device behavior.
+//
+// The answer says the host speaks the fleet protocol, not that its device
+// network runs: a runtime host serves its own commands through `fleet_call`
+// with or without the network (signed out, network off or still starting, the
+// native desktop runs a local-only fleet over itself), so the mode never flips
+// when the network comes or goes. Only a call aimed at another device then
+// answers `fleet_device_offline: <id> (device_network_off)`, which
+// `localizeHostError` turns into a readable sentence.
 
 /** The `fleet` member of a connection's ready info (for wires without a live hello). */
 const readyFleet = signal<FleetHelloAnswer | null>(null);

@@ -10,9 +10,10 @@
 // per section, so an older host costs only the part it lacks.
 
 import { Clipboard, computed, openUrl, signal } from "nsh";
+import { readAccountIdentity, type AccountIdentity } from "./accountIdentity";
 import { invokeCommand, invokeRawCommand, listenEvent } from "./bridge";
 import { formatCount, formatTimestamp, formatTokens } from "./format";
-import { localizeHostError, tr } from "./i18n";
+import { currentLocale, localizeHostError, tr } from "./i18n";
 import { isCommandUnavailable } from "./hostCommands";
 import {
   readUsageActivity,
@@ -35,12 +36,14 @@ const MONTH_NAMES = [
   "Dec",
 ] as const;
 
-export interface GitHubIdentityView {
-  login: string;
-  avatarUrl: string;
+/** A code the host's email sign-in sent (`account_email_start`). */
+export interface EmailSignInChallenge {
+  challengeId: string;
+  /** The address the code went to, as the service normalized it. */
   email: string;
-  githubId: number | null;
-  accountId: string;
+  codeLength: number;
+  /** When another code may be requested (epoch ms). */
+  resendAt: number;
 }
 
 export interface GitHubDeviceFlowState {
@@ -120,8 +123,11 @@ export const insightsDays = signal<number>(30);
 export const insightsModel = signal<"primary" | "fast">("primary");
 
 export const accountStatus = signal<{ loggedIn: boolean; userId: string | null } | null>(null);
-export const githubUser = signal<GitHubIdentityView | null>(null);
+/** Who is signed in on this host, as the backend projects it (`account_identity`). */
+export const accountIdentity = signal<AccountIdentity | null>(null);
 export const githubAuthFlow = signal<GitHubDeviceFlowState | null>(null);
+/** The host's email sign-in waiting for its code; `null` on the email step. */
+export const emailChallenge = signal<EmailSignInChallenge | null>(null);
 export const authLoading = signal(false);
 export const authNotice = signal("");
 export const authError = signal("");
@@ -145,7 +151,7 @@ export const selectedInsightsPath = signal("");
 export const insightsModalOpen = signal(false);
 
 export const isAccountSignedIn = computed(
-  () => githubUser() !== null || accountStatus()?.loggedIn === true,
+  () => accountIdentity() !== null || accountStatus()?.loggedIn === true,
 );
 
 export const overviewUsageMetrics = computed<OverviewUsageMetrics>(() => {
@@ -283,23 +289,6 @@ function ensureHomeEventSubscriptions(): void {
   });
 }
 
-function parseGitHubUser(raw: Record<string, unknown> | null): GitHubIdentityView | null {
-  if (!raw) return null;
-  const userObj = asRecord(raw.user);
-  const source = Object.keys(userObj).length > 0 ? userObj : raw;
-  const login = readString(source, ["login", "username", "name", "handle"]);
-  const accountId = readString(source, ["accountId", "account_id"]);
-  const githubId = readNumber(source, ["githubId", "github_id"]);
-  if (!login && !accountId && githubId === null) return null;
-  return {
-    login: login || accountId || `github-${githubId ?? 0}`,
-    avatarUrl: readString(source, ["avatarUrl", "avatar_url"]),
-    email: readString(raw, ["email"]) || readString(source, ["email"]),
-    githubId,
-    accountId,
-  };
-}
-
 export async function loadAccountState(): Promise<void> {
   ensureHomeEventSubscriptions();
   const [statusRes, infoRes] = await Promise.allSettled([
@@ -309,7 +298,7 @@ export async function loadAccountState(): Promise<void> {
       user_id?: string | null;
       userId?: string | null;
     }>("account_status", {}),
-    invokeRawCommand<Record<string, unknown> | null>("account_github_info", {}),
+    invokeRawCommand<Record<string, unknown> | null>("account_identity", {}),
   ]);
 
   if (statusRes.status === "fulfilled" && statusRes.value) {
@@ -327,14 +316,102 @@ export async function loadAccountState(): Promise<void> {
   }
 
   if (infoRes.status === "fulfilled") {
-    githubUser.set(parseGitHubUser(infoRes.value ?? null));
+    accountIdentity.set(readAccountIdentity(infoRes.value));
   } else {
-    githubUser.set(null);
+    accountIdentity.set(null);
   }
+}
+
+/**
+ * The words for a failed email sign-in step. The host answers
+ * `<code>: <sentence>` (`invalid_email`, `invalid_code`, `rate_limited`,
+ * `unsupported`, `network`, `unavailable`); the code picks the copy.
+ */
+function emailSignInError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  const code = /^([a-z_]+):/.exec(raw.trim())?.[1] ?? "";
+  switch (code) {
+    case "invalid_email":
+      return tr("signin.errEmail");
+    case "invalid_code":
+      return tr("signin.errCode");
+    case "rate_limited":
+      return tr("controller.error.rateLimited");
+    case "network":
+      return tr("signin.errNetwork");
+    case "unsupported":
+      return tr("signin.errUnsupported");
+    default:
+      return localizeHostError(raw.replace(/^[a-z_]+:\s*/, ""));
+  }
+}
+
+/** Sends a sign-in code to `email` (also "send a new code"); the code step follows. */
+export async function requestEmailCode(email: string): Promise<void> {
+  if (authLoading() || !email.trim()) return;
+  authLoading.set(true);
+  authError.set("");
+  authNotice.set("");
+  try {
+    const answer = asRecord(
+      await invokeCommand<Record<string, unknown>>("account_email_start", {
+        email: email.trim(),
+        locale: currentLocale(),
+      }),
+    );
+    const challengeId = readString(answer, ["challengeId"]);
+    if (!challengeId) throw new Error("unavailable: The sign-in service answered unexpectedly.");
+    const retry = readNumber(answer, ["retryAfterSeconds"]) ?? 60;
+    emailChallenge.set({
+      challengeId,
+      email: readString(answer, ["email"]) || email.trim(),
+      codeLength: readNumber(answer, ["codeLength"]) ?? 8,
+      resendAt: Date.now() + Math.max(0, retry) * 1000,
+    });
+  } catch (error) {
+    authError.set(emailSignInError(error));
+  } finally {
+    authLoading.set(false);
+  }
+}
+
+/** Completes the email sign-in with the code; the host finishes the account session. */
+export async function verifyEmailCode(code: string): Promise<boolean> {
+  const challenge = emailChallenge();
+  const typed = code.replace(/\s+/g, "");
+  if (!challenge || authLoading() || !typed) return false;
+  authLoading.set(true);
+  authError.set("");
+  try {
+    const answer = asRecord(
+      await invokeCommand<Record<string, unknown>>("account_email_verify", {
+        challengeId: challenge.challengeId,
+        code: typed,
+      }),
+    );
+    emailChallenge.set(null);
+    accountIdentity.set(readAccountIdentity(answer.identity));
+    await loadAccountState();
+    notifyAccountAuthChanged(true);
+    return true;
+  } catch (error) {
+    authError.set(emailSignInError(error));
+    return false;
+  } finally {
+    authLoading.set(false);
+  }
+}
+
+/** Back to the email step (another address, or the dialog closed). */
+export function cancelEmailSignIn(): void {
+  emailChallenge.set(null);
+  authError.set("");
+  authNotice.set("");
 }
 
 export async function startGitHubSignIn(): Promise<void> {
   if (authLoading()) return;
+  emailChallenge.set(null);
   authLoading.set(true);
   authError.set("");
   authNotice.set("");
@@ -470,7 +547,8 @@ export async function signOutAccount(): Promise<void> {
   authNotice.set("");
   try {
     await invokeRawCommand<unknown>("account_logout", {});
-    githubUser.set(null);
+    accountIdentity.set(null);
+    emailChallenge.set(null);
     accountStatus.set({ loggedIn: false, userId: null });
     githubAuthFlow.set(null);
     authNotice.set(tr("auth.signedOutNotice"));

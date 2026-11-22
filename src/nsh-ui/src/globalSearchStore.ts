@@ -33,6 +33,7 @@ import {
 } from "./state";
 import { openFileAt } from "./fileStore";
 import { signal } from "nsh";
+import { superAgentUi } from "./productGates"; // wave23-E
 
 export type SearchItemKind =
   | "command"
@@ -59,7 +60,8 @@ export interface SearchItem {
 
 /** The scenes a `>` command can reach, in the sidebar's own order. */
 const COMMAND_SCENES: ReadonlyArray<SceneId> = [
-  "openbitfun",
+  // wave23-E: the Super Agent command shows only while that gate is on (`productGates.ts`).
+  ...(superAgentUi() ? (["openbitfun"] as const) : []),
   "all-sessions",
   "assistants",
   "agents",

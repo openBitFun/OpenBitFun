@@ -3060,6 +3060,8 @@ fn sample_remote_model_catalog(version: u64) -> RemoteModelCatalog {
             enabled: true,
             capabilities: vec!["text_chat".to_string()],
             reasoning: None,
+            label: "gpt-test".to_string(),
+            detail: "Model One".to_string(),
         }],
         provider_catalog: Default::default(),
         models_dev_reasoning_catalog: None,
@@ -3150,6 +3152,11 @@ fn remote_connect_model_catalog_builder_preserves_config_shape() {
     let model = catalog.models.first().expect("model config");
     assert_eq!(model.id, "model-1");
     assert_eq!(model.context_window, Some(128_000));
+    // Every list leads with the model and follows with its provider.
+    assert_eq!(
+        (model.label.as_str(), model.detail.as_str()),
+        ("gpt-test", "Model One")
+    );
     assert_eq!(
         model.capabilities,
         vec![
@@ -4034,4 +4041,17 @@ fn device_model_defaults_capability_is_advertised_by_the_host() {
         panic!("workspace info response");
     };
     assert!(capabilities.contains(&REMOTE_CAPABILITY_DEVICE_MODEL_DEFAULTS_V1.to_string()));
+}
+
+#[test]
+fn remote_model_catalog_reads_a_catalog_of_a_host_before_model_labels() {
+    // An older host's catalog has no labels: it still reads, labels empty.
+    let mut wire = serde_json::to_value(sample_remote_model_catalog(3)).unwrap();
+    let model = wire["models"][0].as_object_mut().unwrap();
+    model.remove("label");
+    model.remove("detail");
+    let decoded: RemoteModelCatalog = serde_json::from_value(wire.clone()).unwrap();
+    assert!(decoded.models[0].label.is_empty() && decoded.models[0].detail.is_empty());
+    // And writes back without inventing them.
+    assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
 }

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "111f8eba88e117defacc127be88915b4344b785e72d1ddb74208d7f2a9b21f74",
+  "catalogDigest": "bef36016249f851a642a43ffeea5fa2459aab581fde8902e1bbca0c86ba81ef0",
   "count": 221,
   "reasonCounts": {
     "externalAuth": 4,
@@ -1412,7 +1412,7 @@
         "command:miniapp_market_set_rating",
         "command:miniapp_market_installed_origins",
         "command:account_logout",
-        "command:account_github_info"
+        "command:account_identity"
       ]
     },
     {
@@ -2141,19 +2141,21 @@
     {
       "capabilityId": "feature.remote-connect",
       "itemId": "account",
-      "titleZh": "通过 GitHub 或邮箱验证码登录账号并查看身份状态",
-      "titleEn": "Sign in with GitHub or an email verification code and check account status",
+      "titleZh": "在应用内用邮箱验证码登录（或用 GitHub 在浏览器中登录）并查看身份状态",
+      "titleEn": "Sign in with an email code inside the app (or with GitHub in the browser) and check account status",
       "reasonCode": "externalAuth",
-      "reasonZh": "登录必须由用户在外部认证页面完成。GitHub 与邮箱是独立账号，各设备需使用同一种方式和同一账号；旧客户端或服务可能仅支持 GitHub。智能体可打开入口并读取非秘密状态，不能代替用户认证。",
-      "reasonEn": "The user must complete sign-in on the external authentication page. GitHub and email are independent accounts; devices need the same method and account. Older clients or services may support GitHub only. The Agent may open the entry and read non-secret status, but cannot authenticate for the user.",
+      "reasonZh": "登录需要账号持有人本人输入邮箱收到的验证码，或在浏览器中完成 GitHub 授权。GitHub 与邮箱是独立账号，各设备需使用同一种方式和同一账号。智能体可打开入口并读取非秘密状态，不能代替用户认证。",
+      "reasonEn": "The account holder must type the code sent to their email, or complete GitHub authorization in the browser. GitHub and email are independent accounts; devices need the same method and account. The Agent may open the entry and read non-secret status, but cannot authenticate for the user.",
       "presentationTarget": {
         "kind": "event",
         "eventName": "openbitfun:open-remote-connect"
       },
       "evidence": [
+        "command:account_email_start",
+        "command:account_email_verify",
+        "command:account_identity",
         "command:account_github_start",
         "command:account_github_poll",
-        "command:account_github_info",
         "command:account_logout",
         "command:account_status",
         "source:src/crates/services/services-integrations/src/account_identity/mod.rs#/auth/desktop/start?methods=all"
@@ -2677,8 +2679,8 @@
     {
       "capabilityId": "setting.ai.models",
       "itemId": "subscription-auth",
-      "titleZh": "登录 Codex、ZCode、OpenCode、Grok、Hermes 等订阅账号与多号订阅池",
-      "titleEn": "Sign in to Codex, ZCode, OpenCode, Grok, Hermes, and multi-account subscription pools",
+      "titleZh": "登录 Codex、ZCode、OpenCode、Grok、Antigravity、Hermes 等订阅账号与多号订阅池",
+      "titleEn": "Sign in to Codex, ZCode, OpenCode, Grok, Antigravity, Hermes, and multi-account subscription pools",
       "reasonCode": "externalAuth",
       "reasonZh": "订阅账户登录需要在供应商网页或设备授权流程中确认；智能体可以打开入口，但不能代替用户完成外部认证。",
       "reasonEn": "Subscription sign-in requires confirmation in a provider web or device-authorization flow; the Agent can open the entry but cannot complete external authentication for the user.",

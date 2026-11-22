@@ -133,6 +133,7 @@ import {
 } from "../queueStore";
 import {
   activeModelId,
+  activeModelDetail,
   activeModelLabel,
   activeReasoningChoices,
   activeReasoningId,
@@ -143,6 +144,7 @@ import {
   ensureModelsLoaded,
   fleetChoiceOf,
   fleetModelGroups,
+  fleetModelText,
   refreshFleetModels,
   type FleetModelChoice,
   type FleetModelsDevice,
@@ -291,6 +293,7 @@ import {
   sendReviewNotes,
   sendingReviewNotes,
 } from "../reviewStore";
+import { superAgentUi } from "../productGates"; // wave23-E
 // wave22-p5 session parity: goal, side questions, background commands, MCP prompts and apps.
 import {
   BackgroundCommandsStrip,
@@ -843,6 +846,8 @@ interface SessionOrigin {
 
 /** "Started by OpenBitFun": only when the backend says the session's origin is the superagent. */
 const sessionOrigin = computed<SessionOrigin | null>(() => {
+  // wave23-E: no "Started by Super Agent" link while the Super Agent UI is gated off.
+  if (!superAgentUi()) return null;
   const id = activeSessionId();
   const row = id ? fleetSessionRow(activeSessionDevice(), id) : null;
   if (row?.origin !== "superagent") return null;
@@ -3495,13 +3500,14 @@ async function runModelSlashCommand(arg: string): Promise<void> {
     for (const device of groups) {
       for (const model of device.models) {
         if (!model.selectable) continue;
+        const text = fleetModelText(model);
         const label = device.isThisDevice
-          ? model.displayName || model.modelId
-          : tr("models.onDevice", { model: model.displayName || model.modelId, device: device.name });
+          ? text.label
+          : tr("models.onDevice", { model: text.label, device: device.name });
         candidates.push({
           ref: model.modelRef,
           label,
-          keys: [model.modelRef, model.modelId, model.displayName, model.modelName ?? ""].map(v => v.toLowerCase()),
+          keys: [model.modelRef, model.modelId, model.displayName, model.modelName ?? "", text.label].map(v => v.toLowerCase()),
         });
       }
     }
@@ -5019,7 +5025,13 @@ function ModelReasoningCapsule(props: { compact: () => boolean }) {
         ref={el => modelPickerAnchor.set(el)}
         role="button"
         accessibilityLabel="bot-capsule-trigger"
-        tooltip={<TooltipBubble text={tr("sessions.modelLabel", { name: activeModelLabel() })} />}
+        tooltip={
+          <TooltipBubble
+            text={tr("sessions.modelLabel", {
+              name: activeModelDetail() ? `${activeModelLabel()} · ${activeModelDetail()}` : activeModelLabel(),
+            })}
+          />
+        }
         onPress={() => {
           const next = !modelPickerOpen();
           closePickers(next ? "model" : undefined);
@@ -5664,20 +5676,7 @@ function ModelPickerSurface(props: { placement: Placement }) {
                 activeStyle={{ backgroundColor: palette().panelHover, opacity: 0.9 }}
                 focusVisibleStyle={focusRingStyle(-1)}
               >
-                <Text
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    color: option().id === activeModelId() ? palette().accent : palette().text,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                    fontWeight: option().id === activeModelId() ? "600" : "500",
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {`${option().label}${option().provider ? ` · ${option().provider}` : ""}`}
-                </Text>
+                <ModelRowText active={option().id === activeModelId()} label={option().label} detail={option().detail} />
                 <If when={option().id === activeModelId()}>
                   <Icon name="check" size={12} color={palette().accent} />
                 </If>
@@ -5756,6 +5755,47 @@ function FleetModelList(props: { groups: FleetModelsDevice[] }) {
   );
 }
 
+/**
+ * A model row's text: the model, then its provider in the muted secondary style,
+ * both as the host labelled them. The label keeps its width; the provider gives
+ * way first when the row is narrow.
+ */
+function ModelRowText(props: { active: boolean; label: string; detail: string }) {
+  return (
+    <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.xs }}>
+      <Text
+        style={{
+          flexShrink: 1,
+          minWidth: 0,
+          color: props.active ? palette().accent : palette().text,
+          fontSize: textSize(12),
+          lineHeight: textLineHeight(12, 1.35),
+          fontWeight: props.active ? "600" : "500",
+          numberOfLines: 1,
+          textOverflow: "ellipsis",
+        }}
+      >
+        {props.label}
+      </Text>
+      <If when={props.detail}>
+        <Text
+          style={{
+            flexShrink: 2,
+            minWidth: 0,
+            color: palette().textMuted,
+            fontSize: textSize(12),
+            lineHeight: textLineHeight(12, 1.3),
+            numberOfLines: 1,
+            textOverflow: "ellipsis",
+          }}
+        >
+          {props.detail}
+        </Text>
+      </If>
+    </View>
+  );
+}
+
 function FleetModelRow(props: { choice: FleetModelChoice }) {
   const active = () => props.choice.modelRef === activeModelId();
   return (
@@ -5785,20 +5825,7 @@ function FleetModelRow(props: { choice: FleetModelChoice }) {
       hoverStyle={props.choice.selectable ? { backgroundColor: active() ? palette().accentSoft : palette().panelHover } : {}}
       focusVisibleStyle={focusRingStyle(-1)}
     >
-      <Text
-        style={{
-          flex: 1,
-          minWidth: 0,
-          color: active() ? palette().accent : palette().text,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.35),
-          fontWeight: active() ? "600" : "500",
-          numberOfLines: 1,
-          textOverflow: "ellipsis",
-        }}
-      >
-        {`${props.choice.displayName || props.choice.modelId}${props.choice.provider ? ` · ${props.choice.provider}` : ""}`}
-      </Text>
+      <ModelRowText active={active()} label={fleetModelText(props.choice).label} detail={fleetModelText(props.choice).detail} />
       <If when={props.choice.primary}>
         <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
           {tr("models.primary")}

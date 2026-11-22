@@ -300,9 +300,9 @@ test("layered 3-band chat input dock supports attachments, agent selector, unifi
 
   // Band 3 selectors open anchored Overlays cleanly.
   await app.press("bot-capsule-trigger");
-  await app.waitFor("Fast model · openai");
+  await app.waitFor("text:Fast model");
   await app.press("reasoning-picker");
-  expect(app.texts()).not.toContain("Fast model · openai");
+  expect(app.texts()).not.toContain("Fast model");
   await app.waitFor("reasoning-option-high");
 
   await app.press("agent-picker");

@@ -1,12 +1,15 @@
 // The phone layout (visual spec §2.2, §3 PhoneTabBar, §4.2): under 720 px there
-// is no sidebar; a 48 top bar and a tab bar of four (OpenBitFun, Inbox, All
-// sessions, Library) take its place, the Inbox tab carries the backend's
-// count, ☰ opens the conversation history as a drawer, the avatar opens
-// Settings, and a session (a pushed page) draws without the tab bar.
+// is no sidebar; a 48 top bar and a tab bar take its place. With the Super Agent
+// UI gated off (the default, `src/productGates.ts`) the tabs are Sessions (the
+// account's device → workspace → session tree, the phone's first screen),
+// Inbox and Library, and the avatar opens Settings; with it on they are
+// OpenBitFun, Inbox, All sessions and Library, and ☰ opens the conversation
+// history. A session (a pushed page) draws without the tab bar.
 
 import { expect, open, test } from "nsh/test";
 import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow } from "./support";
 
+const APP_SUPER_AGENT = "./fixtures/obpAppSuperAgent.tsx";
 const PHONE = { width: 375, height: 812, platform: "ios" as const };
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const MEDIUM = { width: 860, height: 800, platform: "macos" as const };
@@ -36,9 +39,32 @@ function host() {
   });
 }
 
-test("a phone gets the tab bar and the top bar instead of the sidebar", async () => {
+test("a phone opens on Sessions, the device tree, with Inbox and Library as the other tabs", async () => {
   const entry = host();
   const app = await open("./fixtures/obpApp.tsx", { ...PHONE, host: { handlers: entry.handlers } });
+  await app.waitFor("phone-tab-bar");
+  for (const tab of ["all-sessions", "inbox", "library"]) {
+    expect([tab, app.shows(`phone-tab-${tab}`)]).toEqual([tab, true]);
+  }
+  expect(app.shows("phone-tab-openbitfun")).toBe(false);
+  expect(app.shows("phone-history")).toBe(false);
+  // The first screen is the tree: this device, its workspace, then its sessions.
+  await app.waitFor("all-sessions-by-device");
+  await app.press("workspace-row-workspace-1");
+  await app.waitFor("NSH skeleton");
+  expect(app.texts().some(text => text.includes("Super Agent"))).toBe(false);
+  await app.waitFor("inbox-count-2");
+  // The avatar on the first screen opens Settings, a pushed page without the tab bar.
+  await app.press("phone-account");
+  await app.waitFor("text:Preferences");
+  expect(app.shows("phone-tab-bar")).toBe(false);
+  await app.press("phone-back");
+  await app.waitFor("phone-tab-bar");
+});
+
+test("with Super Agent on, a phone gets its four tabs and the top bar instead of the sidebar", async () => {
+  const entry = host();
+  const app = await open(APP_SUPER_AGENT, { ...PHONE, host: { handlers: entry.handlers } });
   await app.waitFor("phone-tab-bar");
   for (const tab of ["openbitfun", "inbox", "all-sessions", "library"]) {
     expect([tab, app.shows(`phone-tab-${tab}`)]).toEqual([tab, true]);
@@ -57,9 +83,9 @@ test("a phone gets the tab bar and the top bar instead of the sidebar", async ()
   await app.waitUntil(() => app.texts().includes("Inbox"));
 });
 
-test("☰ opens the conversation history as a drawer, and the avatar opens Settings", async () => {
+test("with Super Agent on, ☰ opens the conversation history as a drawer, and the avatar opens Settings", async () => {
   const entry = host();
-  const app = await open("./fixtures/obpApp.tsx", { ...PHONE, host: { handlers: entry.handlers } });
+  const app = await open(APP_SUPER_AGENT, { ...PHONE, host: { handlers: entry.handlers } });
   await app.waitFor("phone-history");
   await app.press("phone-history");
   await app.waitFor("phone-history-drawer");
@@ -74,8 +100,8 @@ test("a session opened on a phone is a pushed page without the tab bar", async (
   const entry = host();
   const app = await open("./fixtures/obpApp.tsx", { ...PHONE, host: { handlers: entry.handlers } });
   await app.press("phone-tab-all-sessions");
-  await app.waitFor("NSH skeleton");
-  await app.press("NSH skeleton");
+  await app.press("workspace-row-workspace-1");
+  await app.press("label:NSH skeleton");
   await app.waitUntil(() => !app.shows("phone-tab-bar"));
   expect(app.shows("phone-top-bar")).toBe(false);
 });

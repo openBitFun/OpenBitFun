@@ -1422,12 +1422,53 @@ impl StartupPage {
             self.login_form.show();
             return;
         };
-        self.login_form.show_account(info, snapshot.devices);
+        self.login_form
+            .show_account(info, snapshot.identity, snapshot.devices);
     }
 
     fn handle_login_form_action(&mut self, action: LoginFormAction) -> Option<StartupResult> {
         match action {
-            LoginFormAction::Submit(transaction_id) => {
+            LoginFormAction::SendCode(email) => {
+                let result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let account = self.account_runtime.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("Account management is unavailable for this TUI Host")
+                        })?;
+                        account.start_email_sign_in(email, None).await
+                    })
+                });
+                match result {
+                    Ok(challenge) => self.login_form.set_challenge(challenge),
+                    Err(error) => self
+                        .login_form
+                        .set_error(crate::account::email_sign_in_failure(&error.to_string())),
+                }
+            }
+            LoginFormAction::VerifyCode { challenge_id, code } => {
+                let result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let account = self.account_runtime.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("Account management is unavailable for this TUI Host")
+                        })?;
+                        account.verify_email_sign_in(challenge_id, code).await
+                    })
+                });
+                match result {
+                    Ok(login) => {
+                        self.status = Some(account_login_status_message(&login));
+                        self.show_login_form();
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "Email sign-in failed: {}",
+                            crate::account::bounded_account_error(&error.to_string())
+                        );
+                        self.login_form
+                            .set_error(crate::account::email_sign_in_failure(&error.to_string()))
+                    }
+                }
+            }
+            LoginFormAction::GitHub(transaction_id) => {
                 let result = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
                         let account = self.account_runtime.as_ref().ok_or_else(|| {
@@ -1582,17 +1623,8 @@ impl StartupPage {
                     profile_model_id,
                     catalog.mode_default_model_id.clone(),
                 );
-                let model_items: Vec<ModelItem> = catalog
-                    .models
-                    .into_iter()
-                    .filter(|model| model.enabled)
-                    .map(|model| ModelItem {
-                        id: model.id,
-                        name: model.name,
-                        provider: model.provider,
-                        model_name: model.model_name,
-                    })
-                    .collect();
+                let model_items: Vec<ModelItem> =
+                    crate::model_selection::tui_model_items(&catalog.models);
 
                 Some((model_items, current_model_id))
             })
@@ -1610,7 +1642,7 @@ impl StartupPage {
 
     fn apply_model_selection(&mut self, selected: &ModelItem) {
         let selected_id = selected.id.clone();
-        let selected_display_name = format!("{} / {}", selected.model_name, selected.name);
+        let selected_display_name = selected.display_name();
         let selected_agent_mode = self.selected_agent_mode();
         let persist_shared_default =
             should_persist_shared_model_default(selected_agent_mode.as_ref());
@@ -2451,11 +2483,7 @@ impl StartupPage {
                     profile_model_id,
                     catalog.mode_default_model_id.clone(),
                 )?;
-                catalog
-                    .models
-                    .iter()
-                    .find(|model| model.id == model_id)
-                    .map(crate::model_selection::tui_model_display_name)
+                crate::model_selection::tui_model_display_name(&catalog.models, &model_id)
             })
         });
 

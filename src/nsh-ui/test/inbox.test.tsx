@@ -7,6 +7,8 @@ import { createBackend, fleetDeviceRow, fleetObpHost, fleetSessionRow, type Back
 const DESKTOP = { width: 1440, height: 900, platform: "macos" as const };
 const PHONE = { width: 375, height: 812, platform: "macos" as const };
 const APP = "./fixtures/inboxApp.tsx";
+/** The same harness with the Super Agent UI gate on (`src/productGates.ts`). */
+const APP_SUPER_AGENT = "./fixtures/inboxAppSuperAgent.tsx";
 
 function navigator() {
   const device = (id: string, name: string, hostKind: string, session: string, title: string) =>
@@ -278,7 +280,8 @@ test("the backend's groups, order and badge are drawn as they are; an unanswerab
     ],
   };
   const host = inboxHost(() => view);
-  const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
+  // The Done group holds a Super Agent conversation item, so the gate is on here.
+  const app = await open(APP_SUPER_AGENT, { ...DESKTOP, host: { handlers: host.handlers } });
   await app.waitFor("id:inbox-group-failed");
   expect(app.shows("text:badge:2")).toBe(true);
   const texts = app.texts();
@@ -388,7 +391,7 @@ test("transient fleet_attention errors do not permanently disable Inbox, and ope
     navigator: nav,
     prompts: { revision: 1, prompts: [] },
   });
-  const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
+  const app = await open(APP_SUPER_AGENT, { ...DESKTOP, host: { handlers: host.handlers } });
   await app.waitUntil(() => attentionCalls >= 1);
 
   // A subsequent attention-changed event recovers cleanly because `fleet_attention` was NOT disabled.
@@ -403,4 +406,78 @@ test("transient fleet_attention errors do not permanently disable Inbox, and ope
   await app.press("id:inbox-item-cloud/conv-99");
   await app.waitUntil(() => superagentGets.length > 0);
   expect(superagentGets[0]).toEqual({ conversationId: "conv-99" });
+});
+
+test("with Super Agent gated off, the Inbox leaves out items of a Super Agent conversation", async () => {
+  let attentionCalls = 0;
+  const backend = createBackend();
+  const original = backend.handlers["openbitfun.invoke"];
+  const superagentGets: unknown[] = [];
+  backend.handlers["openbitfun.invoke"] = (data: unknown) => {
+    const args = (data ?? {}) as { action?: string; request?: Record<string, unknown> };
+    if (args.action === "fleet_attention") {
+      attentionCalls += 1;
+      if (attentionCalls === 1) {
+        // Transient substring error that does NOT name `fleet_attention` must not disable the Inbox.
+        return { ok: false, error: "peer route not found temporarily" };
+      }
+      return {
+        ok: true,
+        value: {
+          revision: 12,
+          badge: 1,
+          groups: [
+            {
+              id: "done",
+              items: [
+                {
+                  itemId: "cloud/conv-99",
+                  kind: "done",
+                  source: { deviceId: "cloud", conversationId: "conv-99" },
+                  title: "Release 2.0 ready",
+                  deviceName: "OpenBitFun",
+                  unread: true,
+                },
+              ],
+            },
+          ],
+        },
+      };
+    }
+    if (args.action === "superagent_get_conversation") {
+      superagentGets.push(args.request);
+      return {
+        ok: true,
+        value: {
+          conversation: { id: "conv-99", title: "Release 2.0 ready" },
+          messages: [{ id: "m-1", role: "assistant", text: "All checks green." }],
+          cards: [],
+        },
+      };
+    }
+    return original(data);
+  };
+  const nav = navigator();
+  nav.devices.push(fleetDeviceRow("cloud-1", "OpenBitFun", [], { hostKind: "cloud" }));
+  const host = fleetObpHost(backend, {
+    fleet: { protocol: 1, cursorState: {}, deviceId: "dev-a" },
+    navigator: nav,
+    prompts: { revision: 1, prompts: [] },
+  });
+  const app = await open(APP, { ...DESKTOP, host: { handlers: host.handlers } });
+  await app.waitUntil(() => attentionCalls >= 1);
+
+  // A subsequent attention-changed event recovers cleanly because `fleet_attention` was NOT disabled.
+  await app.host.send("openbitfun.obpFrames", [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "event",
+      params: { seq: 1, event: "fleet://attention-changed", payload: { revision: 12 } },
+    }),
+  ]);
+  await app.waitUntil(() => attentionCalls >= 2);
+  await app.wait(300);
+  expect(app.shows("id:inbox-item-cloud/conv-99")).toBe(false);
+  expect(app.shows("text:Release 2.0 ready")).toBe(false);
+  expect(superagentGets).toEqual([]);
 });

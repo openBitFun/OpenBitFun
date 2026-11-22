@@ -3294,7 +3294,7 @@ export function withMeshDevices(backend: Backend, rows: ReadonlyArray<object>): 
 // miniapp market (wave 5) ────────────────────────────────────────────────────
 
 export interface MiniAppMarketFixtureOptions {
-  /** `account_github_info` answers a signed-in user (default true). */
+  /** `account_identity` answers a signed-in user (default true). */
   signedIn?: boolean;
   /** The host has no `miniapp_market_*` commands (an older backend). */
   marketMissing?: boolean;
@@ -3423,9 +3423,13 @@ export function createMiniAppMarketBackend(
       base.calls.push({ action, request: payload, raw: isRaw });
       return ok({ logged_in: market.signedIn !== false, user_id: market.signedIn !== false ? "u-7" : null });
     }
-    if (action === "account_github_info") {
+    if (action === "account_identity") {
       base.calls.push({ action, request: payload, raw: isRaw });
-      return ok(market.signedIn !== false ? { user: MARKET_OWNER, isAdmin: false } : null);
+      return ok(
+        market.signedIn !== false
+          ? { provider: "github", accountId: String(MARKET_OWNER.githubId), displayName: MARKET_OWNER.login, initial: "O" }
+          : null,
+      );
     }
     if (action === "list_miniapps" && installed.length > 0) {
       const reply = invoke(data) as { ok: boolean; value?: unknown };
@@ -3923,9 +3927,10 @@ export function fleetDeviceRow(
 
 // ── shell navigation (wave 15 UI-A) ──────────────────────────────────────────
 //
-// The sidebar holds OpenBitFun conversations, not sessions: a session opens
-// from All sessions (Recent lists the host's rows by title). These helpers walk
-// that path so a test reads the way a user gets there.
+// A session opens from All sessions (Recent lists the host's rows by title).
+// The sidebar's device tree shows the same titles (wave 23), so the helpers
+// press the row inside the All sessions page. They walk that path so a test
+// reads the way a user gets there.
 
 /** The part of `nsh/test`'s app handle the helpers press. */
 export interface ShellNavigator {
@@ -3945,7 +3950,7 @@ export async function showAllSessions(app: ShellNavigator, title?: string): Prom
 /** Opens a session by its row title through All sessions (`"Title >> nth=0"` works too). */
 export async function openSessionRow(app: ShellNavigator, title: string): Promise<void> {
   await showAllSessions(app);
-  await app.press(title);
+  await app.press(`label:all-sessions-scene >> ${title}`);
 }
 /**
  * Opens a session the way a user does: All sessions › Recent › its row (the
@@ -3956,7 +3961,7 @@ export async function openSessionRow(app: ShellNavigator, title: string): Promis
 export async function openSession(app: ShellNavigator, title: string, _options: { deviceId?: string } = {}): Promise<void> {
   const base = title.split(" >> ")[0]!;
   await showAllSessions(app, base);
-  await app.press(title.includes(" >> ") ? title : `${title} >> nth=0`);
+  await app.press(`label:all-sessions-scene >> ${title.includes(" >> ") ? title : `${title} >> nth=0`}`);
 }
 
 /** Opens All sessions › By device: the account's devices (and, on an older backend, the way into one). */

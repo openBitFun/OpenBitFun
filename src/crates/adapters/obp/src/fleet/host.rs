@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 use openbitfun_link::session::Link;
 use openbitfun_link::{MeshPeer, MeshRoute};
 use openbitfun_product_domains::fleet::*;
+use openbitfun_product_domains::remote_surface::FleetEntity;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -90,7 +91,11 @@ pub const FLEET_OWNER_VERBS: &[&str] = &[
 ];
 
 /// The error prefix while a host has no fleet (signed out, device network
-/// off, or still starting).
+/// off, or still starting). A host keeps answering its own commands then:
+/// the desktop runs a local-only fleet ([`FleetHost::start_local`]) and a
+/// host without any answers `fleet_call` through
+/// [`fleet_call_without_fleet`]; only verbs that need other devices (the
+/// owner verbs, the account replica) answer with this prefix.
 pub const FLEET_UNAVAILABLE: &str = "fleet_unavailable";
 
 /// Whether `command` is a fleet verb [`FleetHost::dispatch`] answers.
@@ -183,6 +188,110 @@ pub async fn dispatch_as_account_device(
                 data: Some(json!({ "kind": kind, "command": command })),
             }
         })
+}
+
+/// What a host without a running fleet knows about owners: only itself, so
+/// every id resolves here and every other device is unknown.
+struct SelfOnlyIndex<'a>(&'a str);
+
+impl FleetOwnerIndex for SelfOnlyIndex<'_> {
+    fn device_state(&self, device_id: &str) -> Option<FleetDeviceState> {
+        (device_id == self.0).then_some(FleetDeviceState::Online)
+    }
+
+    fn owners(&self, _entity: FleetEntity, _id: &str) -> Vec<String> {
+        vec![self.0.to_string()]
+    }
+
+    fn may_hold_unlisted(&self, device_id: &str, _entity: FleetEntity) -> bool {
+        device_id == self.0
+    }
+}
+
+/// `fleet_call` on a host whose fleet is not running (signed out, device
+/// network off, still starting, or failed). A runtime's own commands never
+/// depend on its device network: a call aimed at this host (`target` is
+/// `self_device_id`, or absent where the entry resolves to itself) runs
+/// through [`dispatch_as_account_device`] exactly as with the fleet on. A
+/// call aimed at another device is refused as
+/// `fleet_device_offline: <id> (device_network_off)`; the routing refusals
+/// (`fleet_nested_call`, `fleet_target_required`) are the fleet's own.
+pub async fn fleet_call_without_fleet(
+    backend: &dyn crate::server::ObpBackend,
+    self_device_id: &str,
+    args: &Value,
+) -> Result<Value, FleetCallError> {
+    let request: FleetCallRequest = request_of(args).map_err(FleetCallError::command)?;
+    let verdict = fleet_call_verdict(self_device_id, &request, &SelfOnlyIndex(self_device_id));
+    let elsewhere = request
+        .target
+        .as_deref()
+        .filter(|target| !target.is_empty() && *target != self_device_id)
+        .map(str::to_string);
+    match verdict {
+        FleetCallVerdict::Local => {
+            dispatch_as_account_device(backend, self_device_id, request.command, request.args).await
+        }
+        FleetCallVerdict::Forward { target } => Err(super::router::device_network_off(
+            elsewhere.unwrap_or(target),
+        )),
+        FleetCallVerdict::Refuse(refusal) => match (elsewhere, &refusal) {
+            (Some(target), FleetCallRefusal::DeviceOffline { .. })
+            | (Some(target), FleetCallRefusal::DeviceOutdated { .. })
+            | (Some(target), FleetCallRefusal::OwnerMismatch { .. }) => {
+                Err(super::router::device_network_off(target))
+            }
+            _ => Err(FleetCallError::refusal(refusal.prefix(), refusal.message())),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A local-only fleet (device network off)
+// ---------------------------------------------------------------------------
+
+/// Presence while the device network is off: no other device.
+struct NoPeerPresence;
+
+impl FleetPresenceSource for NoPeerPresence {
+    fn presence(&self) -> FleetFuture<'_, Vec<FleetPeerPresence>> {
+        Box::pin(async { Vec::new() })
+    }
+}
+
+/// Links while the device network is off: every dial is refused.
+struct NoPeerConnector;
+
+impl PeerConnector for NoPeerConnector {
+    fn connect(&self, device_id: String, _options: MeshConnectOptions) -> ConnectFuture {
+        Box::pin(async move {
+            Err(format!(
+                "{FLEET_UNAVAILABLE}: {device_id} cannot be reached while this device's network is off"
+            ))
+        })
+    }
+
+    fn route(&self, _device_id: &str) -> Option<(String, Option<f64>)> {
+        None
+    }
+}
+
+/// The mux's authority while the device network is off: names this device
+/// (the origin of its events) and pairs with nobody.
+struct LocalOnlyAuthority(String);
+
+impl MeshAuthority for LocalOnlyAuthority {
+    fn local_device_id(&self) -> Option<String> {
+        Some(self.0.clone())
+    }
+
+    fn pair_key<'a>(&'a self, device_id: &'a str) -> crate::authority::PairKeyFuture<'a> {
+        Box::pin(async move {
+            Err(format!(
+                "{FLEET_UNAVAILABLE}: {device_id} cannot be paired while this device's network is off"
+            ))
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -872,13 +981,51 @@ pub struct FleetHost {
     transport: Arc<dyn FleetPeerTransport>,
     /// The account replica's exchange, once the host attached one.
     replica: Mutex<Option<Arc<super::replica::ReplicaSync>>>,
+    /// A local-only fleet: the device network is off.
+    local_only: bool,
 }
 
 impl FleetHost {
+    /// Starts the fleet of a host whose device network is off (signed out,
+    /// the network switched off, still starting, or failed): the same verbs
+    /// over this device alone, so its own UI keeps working fully local. The
+    /// navigator, Inbox, models and recent sessions list only this device; a
+    /// `fleet_call` aimed here runs exactly as with the network on, and one
+    /// aimed at another device is refused with
+    /// [`super::router::DEVICE_NETWORK_OFF`]. Nothing is dialed and no index
+    /// cache is read or written (another account's devices never show).
+    pub fn start_local(
+        device_id: String,
+        backend: Arc<dyn FleetBackend>,
+        hub: Arc<EventHub>,
+        on_local_event: Option<LocalEventHook>,
+    ) -> Arc<Self> {
+        let parts = FleetHostParts {
+            backend,
+            links: PeerLinks::new(Arc::new(NoPeerConnector)),
+            presence: Arc::new(NoPeerPresence),
+            authority: Arc::new(LocalOnlyAuthority(device_id.clone())),
+            hub,
+            cache_path: None,
+            config: FleetSyncConfig::default(),
+            on_local_event,
+        };
+        Self::start_with(device_id, parts, true)
+    }
+
+    /// Whether this is a local-only fleet ([`Self::start_local`]).
+    pub fn is_local_only(&self) -> bool {
+        self.local_only
+    }
+
     /// Starts the fleet of `device_id` (needs a Tokio runtime): loads the
     /// cached index, starts replication, and follows the host's own
     /// `fleet://digest-changed`.
     pub fn start(device_id: String, parts: FleetHostParts) -> Arc<Self> {
+        Self::start_with(device_id, parts, false)
+    }
+
+    fn start_with(device_id: String, parts: FleetHostParts, local_only: bool) -> Arc<Self> {
         let FleetHostParts {
             backend,
             links,
@@ -897,11 +1044,19 @@ impl FleetHost {
         });
         let transport: Arc<dyn FleetPeerTransport> =
             LinksPeerTransport::new(Arc::clone(&links), presence);
-        let router = FleetRouter::new(
-            Arc::clone(&backend),
-            Arc::clone(&index),
-            Arc::clone(&transport),
-        );
+        let router = if local_only {
+            FleetRouter::new_local_only(
+                Arc::clone(&backend),
+                Arc::clone(&index),
+                Arc::clone(&transport),
+            )
+        } else {
+            FleetRouter::new(
+                Arc::clone(&backend),
+                Arc::clone(&index),
+                Arc::clone(&transport),
+            )
+        };
         let attention = FleetAttention::new(
             Arc::clone(&index),
             Arc::clone(&transport),
@@ -932,6 +1087,7 @@ impl FleetHost {
             watcher: Mutex::new(None),
             transport,
             replica: Mutex::new(None),
+            local_only,
         });
         let weak = Arc::downgrade(&sync);
         let attention = Arc::downgrade(&attention);
@@ -967,7 +1123,11 @@ impl FleetHost {
             }
         });
         *host.watcher.lock().unwrap_or_else(|p| p.into_inner()) = Some(watcher);
-        log::info!("Fleet started for this device");
+        if host.local_only {
+            log::info!("Local-only fleet started for this device (device network off)");
+        } else {
+            log::info!("Fleet started for this device");
+        }
         host
     }
 

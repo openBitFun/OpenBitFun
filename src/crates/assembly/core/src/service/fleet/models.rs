@@ -37,8 +37,9 @@ use openbitfun_ai_adapters::tool_call_accumulator::ToolCallCompletion;
 use openbitfun_ai_adapters::{StreamResponse, UnifiedResponse, UnifiedTokenUsage, UnifiedToolCall};
 use openbitfun_core_types::errors::{AiProviderError, ErrorCategory};
 use openbitfun_product_domains::fleet::{
-    device_model_ref, device_offline_message, parse_model_ref, FleetModel, FleetModelRef,
-    FleetModels, FLEET_MODEL_UNAVAILABLE, FLEET_RELAY_PROVIDER, MAX_MODELS_PER_DEVICE,
+    device_model_ref, device_offline_message, label_configured_models, parse_model_ref, FleetModel,
+    FleetModelRef, FleetModels, FLEET_MODEL_UNAVAILABLE, FLEET_RELAY_PROVIDER,
+    MAX_MODELS_PER_DEVICE,
 };
 use serde_json::{json, Value};
 
@@ -76,16 +77,30 @@ fn capability_name(capability: &ModelCapability) -> Option<String> {
 /// primary model marked.
 pub fn catalog_of(ai: &crate::service::config::types::AIConfig) -> Vec<FleetModel> {
     let primary = ai.resolve_model_selection("primary");
-    let mut models: Vec<FleetModel> = ai
+    // Labelled over every configured model, in order, as the device's own
+    // model list labels them, so a model reads the same in both.
+    let own: Vec<&AIModelConfig> = ai
         .models
         .iter()
-        .filter(|model| {
+        .filter(|model| model.provider != FLEET_RELAY_PROVIDER)
+        .collect();
+    let labels = label_configured_models(own.iter().map(|model| {
+        (
+            model.name.as_str(),
+            model.model_name.as_str(),
+            model.provider.as_str(),
+            model.id.as_str(),
+        )
+    }));
+    let mut models: Vec<FleetModel> = own
+        .into_iter()
+        .zip(labels)
+        .filter(|(model, _)| {
             model.enabled
                 && model.supports_text_generation()
-                && model.provider != FLEET_RELAY_PROVIDER
                 && parse_model_ref(&model.id) == FleetModelRef::Local(model.id.trim())
         })
-        .map(|model| FleetModel {
+        .map(|(model, label)| FleetModel {
             model_id: model.id.clone(),
             display_name: if model.name.trim().is_empty() {
                 model.model_name.clone()
@@ -101,6 +116,8 @@ pub fn catalog_of(ai: &crate::service::config::types::AIConfig) -> Vec<FleetMode
                 .collect(),
             context_window: model.context_window,
             primary: primary.as_deref() == Some(model.id.as_str()),
+            label: label.label,
+            detail: label.detail,
         })
         .collect();
     openbitfun_product_domains::fleet::bound_catalog(&mut models);
@@ -251,10 +268,13 @@ pub fn unresolved_model_error(raw: &str) -> Option<String> {
 /// The runtime model entry that stands for `model` of `device_id`.
 pub fn runtime_entry(device_id: &str, device_name: &str, model: &FleetModel) -> AIModelConfig {
     let model_ref = device_model_ref(device_id, &model.model_id);
-    let display = if model.display_name.trim().is_empty() {
-        model.model_id.clone()
+    // Named so the label rule reads it back as the model, then its provider
+    // and device (`gpt-5` / `OpenAI (MacBook)`).
+    let shown = model.model_label();
+    let display = if shown.detail.is_empty() {
+        shown.label
     } else {
-        model.display_name.clone()
+        shown.detail
     };
     let mut capabilities: Vec<ModelCapability> = model
         .capabilities

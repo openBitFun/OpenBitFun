@@ -34,6 +34,7 @@ import {
 import {
   companionEnabled,
   loadCompanionSettings,
+  releasePetSheets,
   selectedPet,
   setCompanionEnabled,
 } from "./companionStore";
@@ -267,6 +268,7 @@ function reconcilePet(actions: DesktopPresenceActions): void {
   const show = companionEnabled() === true && pet !== null && !petHiddenForRun();
   if (!show || !pet) {
     closePetWindow();
+    releasePetSheets();
     return;
   }
   const key = pet.spritesheetPath;

@@ -114,7 +114,7 @@ pub struct Controller;
 
 #[module]
 impl Controller {
-    /// The account this phone is signed in to (JSON `{ accountId, email, login, deviceId }`), or `null`.
+    /// The account this phone is signed in to (JSON `{ accountId, identity, deviceId }`, `identity` the shared projection `{ provider, accountId, displayName, initial }`), or `null`.
     pub async fn restore() -> Result<String, String> {
         let inner = controller().map_err(port_error)?;
         run(async move { Ok(inner.restore().await.to_string()) }).await

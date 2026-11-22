@@ -3601,4 +3601,22 @@ export const zhTWMessages: Record<MessageKey, string> = {
   "devices.chatAppsTitle": "聊天應用程式",
   "devices.chatAppActive": "已連線：{{name}}",
   "devices.chatAppDisconnect": "中斷連線",
+  // wave23-a: in-app email sign-in and the account identity projection.
+  "signin.github": "使用 GitHub 登入",
+  "signin.githubBody": "請在瀏覽器中授權 OpenBitFun 存取 GitHub，然後回到這裡。",
+  "signin.errUnsupported": "暫時無法使用電子郵件登入，請改用 GitHub 登入。",
+  // wave23-b: a device whose network is off, and the settings number rows.
+  "error.fleetNetworkOff": "本裝置的裝置網路未開啟，無法連線其他裝置。登入帳號並開啟裝置網路後即可使用。",
+  "error.fleetUnavailable": "此操作需要裝置網路。請登入帳號並開啟裝置網路。",
+  "error.fleetDeviceOffline": "該裝置目前離線或無法連線。",
+  "settings.field.resetToDefault": "恢復預設值（{{value}}）",
+  // wave23-E: the sidebar device tree, and copy used while Super Agent is gated off.
+  "tree.workspaces": "工作區",
+  "tree.deviceDetails": "裝置詳情",
+  "tree.deviceActions": "裝置操作",
+  "gate.sessionsOne": "{{count}} 個會話",
+  "gate.sessionsOther": "{{count}} 個會話",
+  "gate.allSessionsEmptyBody": "在側邊欄的工作區裡新增一個會話。",
+  "gate.signinBody": "登入後即可在這裡使用你的所有裝置及其會話。",
+  "gate.signinModelBody": "本機上的智能體會使用它。",
 };

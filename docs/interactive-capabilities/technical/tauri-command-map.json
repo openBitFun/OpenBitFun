@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "111f8eba88e117defacc127be88915b4344b785e72d1ddb74208d7f2a9b21f74",
-  "commandCount": 722,
+  "catalogDigest": "bef36016249f851a642a43ffeea5fa2459aab581fde8902e1bbca0c86ba81ef0",
+  "commandCount": 725,
   "coverage": {
-    "commandCount": 722,
-    "documentedCommandCount": 621,
-    "implementationCommandCount": 101,
-    "implementationDigest": "4da91069f60067fe644f54d0e5b1f5169cf651cd7308d6c85b4f5b52c4c4f774"
+    "commandCount": 725,
+    "documentedCommandCount": 623,
+    "implementationCommandCount": 102,
+    "implementationDigest": "4954073be0636de6ca1ef4d75ade342a2450cbc396030322c116e2973299eb4e"
   },
   "commands": [
     {
@@ -75,6 +75,38 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
+      "id": "account_email_start",
+      "moduleId": "account_identity",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [
+        "feature.remote-connect:account"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::account_identity_api::account_email_start",
+      "sourceFile": "src/apps/desktop/src/api/account_identity_api.rs",
+      "signature": "fn account_email_start( request: AccountEmailStartRequest, ) -> Result<AccountEmailChallenge, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "account_email_verify",
+      "moduleId": "account_identity",
+      "capabilityId": "feature.remote-connect",
+      "capabilityIds": [
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [
+        "feature.remote-connect:account"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::account_identity_api::account_email_verify",
+      "sourceFile": "src/apps/desktop/src/api/account_identity_api.rs",
+      "signature": "fn account_email_verify( app: HostHandle, request: AccountEmailVerifyRequest, ) -> Result<AccountEmailVerifyResponse, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "account_get_credential_hint",
       "moduleId": "remote_connect",
       "capabilityId": "feature.remote-connect",
@@ -86,24 +118,6 @@
       "rustPath": "api::remote_connect_api::account_get_credential_hint",
       "sourceFile": "src/apps/desktop/src/api/remote_connect_api.rs",
       "signature": "fn account_get_credential_hint() -> Option<AccountHint>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
-      "id": "account_github_info",
-      "moduleId": "account_identity",
-      "capabilityId": null,
-      "capabilityIds": [
-        "feature.miniapps",
-        "feature.remote-connect"
-      ],
-      "documentedItemIds": [
-        "feature.miniapps:market-account",
-        "feature.remote-connect:account"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::account_identity_api::account_github_info",
-      "sourceFile": "src/apps/desktop/src/api/account_identity_api.rs",
-      "signature": "fn account_github_info() -> Result<Option<MarketMe>, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -140,6 +154,24 @@
       "rustPath": "api::account_identity_api::account_github_start",
       "sourceFile": "src/apps/desktop/src/api/account_identity_api.rs",
       "signature": "fn account_github_start() -> Result<GitHubAuthStart, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "account_identity",
+      "moduleId": "account_identity",
+      "capabilityId": null,
+      "capabilityIds": [
+        "feature.miniapps",
+        "feature.remote-connect"
+      ],
+      "documentedItemIds": [
+        "feature.miniapps:market-account",
+        "feature.remote-connect:account"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::account_identity_api::account_identity",
+      "sourceFile": "src/apps/desktop/src/api/account_identity_api.rs",
+      "signature": "fn account_identity() -> Result<Option<AccountIdentityView>, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -5891,6 +5923,20 @@
       "rustPath": "api::companion_pet_api::load_agent_companion_pet_spritesheet",
       "sourceFile": "src/apps/desktop/src/api/companion_pet_api.rs",
       "signature": "fn load_agent_companion_pet_spritesheet( state: State<'_, AppState>, request: LoadAgentCompanionPetSpritesheetRequest, ) -> Result<AgentCompanionPetSpritesheet, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "load_agent_companion_pet_still",
+      "moduleId": "companion_pet",
+      "capabilityId": "setting.application.pet",
+      "capabilityIds": [
+        "setting.application.pet"
+      ],
+      "documentedItemIds": [],
+      "visibility": "implementation",
+      "rustPath": "api::companion_pet_api::load_agent_companion_pet_still",
+      "sourceFile": "src/apps/desktop/src/api/companion_pet_api.rs",
+      "signature": "fn load_agent_companion_pet_still( state: State<'_, AppState>, request: LoadAgentCompanionPetStillRequest, ) -> Result<AgentCompanionPetStill, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {

@@ -215,7 +215,7 @@ export function createSuperagentFixture(options: SuperagentFixtureOptions = {}):
     switch (action) {
       case "account_status":
         return { logged_in: options.signedIn !== false, loggedIn: options.signedIn !== false, user_id: options.signedIn !== false ? "u-1" : null };
-      case "account_github_info":
+      case "account_identity":
         return null;
       case "superagent_status":
         if (options.statusError) throw new Error(options.statusError);

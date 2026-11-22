@@ -60,7 +60,7 @@ import {
 } from "../agentsCatalogStore";
 import { formatCount, formatPlural } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { loadModels, modelSettingsLoaded, storedModels } from "../modelSettingsStore";
+import { loadModels, modelOptionText, modelSettingsLoaded, storedModels } from "../modelSettingsStore";
 import { ensurePools, pools } from "../poolStore";
 import { activeWorkspace, activeWorkspaceId, deviceContext } from "../state";
 import {
@@ -1260,8 +1260,7 @@ function subagentModelOptions(includePools: boolean): SelectDropdownOption<strin
     if (!model.id || model.enabled === false) continue;
     options.push({
       value: model.id,
-      label: model.name || model.model_name || model.id,
-      description: model.model_name && model.model_name !== model.name ? model.model_name : undefined,
+      label: modelOptionText(model),
       accessibilityLabel: `subagent-model-${model.id}`,
     });
   }

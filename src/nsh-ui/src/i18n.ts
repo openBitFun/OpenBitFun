@@ -532,9 +532,25 @@ function localizeStoreMessage(locale: AppLocale, text: string): string | null {
   return null;
 }
 
+/**
+ * The fleet layer's refusals (`"<prefix>: <detail>"`), which name device ids
+ * and wire reasons, never anything a person reads: a device whose network is
+ * off, a verb that needs the network, a device that cannot be reached.
+ */
+function localizeFleetRefusal(locale: AppLocale, text: string): string | null {
+  const prefix = /^\s*(fleet_unavailable|fleet_device_offline)\s*:/.exec(text)?.[1];
+  if (!prefix) return null;
+  if (prefix === "fleet_unavailable") return trForLocale(locale, "error.fleetUnavailable");
+  if (/\(device_network_off\)/.test(text)) return trForLocale(locale, "error.fleetNetworkOff");
+  return trForLocale(locale, "error.fleetDeviceOffline");
+}
+
 function localizeHostErrorForLocale(locale: AppLocale, raw: unknown): string {
   const text = extractRawErrorMessage(raw);
   if (!text) return "";
+
+  const fleetRefusal = localizeFleetRefusal(locale, text);
+  if (fleetRefusal !== null) return fleetRefusal;
 
   const storeTranslated = localizeStoreMessage(locale, text);
   if (storeTranslated !== null) {

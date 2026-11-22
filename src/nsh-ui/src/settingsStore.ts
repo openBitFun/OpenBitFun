@@ -26,6 +26,7 @@ import {
 import { errorText, invokeSettingsMutation } from "./settingsMutations";
 import { currentDeviceScopeKey } from "./shared/deviceScope";
 import { runStep } from "./state";
+import { superAgentUi } from "./productGates"; // wave23-E
 
 export type FieldKind = "boolean" | "select" | "number" | "text" | "model";
 
@@ -151,7 +152,9 @@ export const APP_LANGUAGE_FIELD: FieldSpec = {
   defaultValue: "en-US",
 };
 
-export const SETTINGS_SECTIONS: SettingsSection[] = [
+// wave23-E: this device's Super Agent switches only make sense next to the
+// Super Agent entry, so they are hidden while it is gated off (`productGates.ts`).
+const SUPER_AGENT_DEVICE_SECTIONS: SettingsSection[] = [
   {
     // This device's switches for the OpenBitFun cloud agent (config path
     // `superagent`); both are on unless they are exactly `false`.
@@ -186,6 +189,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       },
     ],
   },
+];
+
+export const SETTINGS_SECTIONS: SettingsSection[] = [
+  ...(superAgentUi() ? SUPER_AGENT_DEVICE_SECTIONS : []),
   {
     id: "general",
     title: "Startup",

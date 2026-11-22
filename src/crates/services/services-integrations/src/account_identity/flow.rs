@@ -1,4 +1,6 @@
-//! Host-owned GitHub authorization transactions shared by native surfaces.
+//! Host-owned GitHub authorization transactions shared by native surfaces: the
+//! secondary sign-in, which needs the browser for GitHub's OAuth page. Email
+//! sign-in is in-app (`super::email`).
 use super::{AccountIdentityClient, DesktopAuthPollRequest, MarketClientError};
 use openbitfun_product_domains::account::{
     GitHubAuthPollRequest, GitHubAuthPollResponse, GitHubAuthStart,
@@ -29,7 +31,7 @@ fn now() -> i64 {
 
 pub async fn start_auth_flow() -> Result<GitHubAuthStart, MarketClientError> {
     let client = AccountIdentityClient::from_environment().await?;
-    let started = client.start_desktop_auth().await?;
+    let started = client.start_desktop_github_auth().await?;
     let mut transactions = pending().lock().await;
     transactions.retain(|_, transaction| transaction.expires_at > now());
     transactions.insert(

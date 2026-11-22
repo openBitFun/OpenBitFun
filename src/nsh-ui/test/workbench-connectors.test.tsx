@@ -570,7 +570,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
     bot_token: "tg-bot-token-123",
   });
   expect(backend.startedConnections).toContainEqual({ method: "bot_telegram" });
-  await app.press("Done");
+  await app.press("text:Done");
 
   // Stop bot
   await app.press("connector-bot-stop");
@@ -589,7 +589,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
     app_secret: "sec_feishu_1",
   });
   expect(backend.startedConnections).toContainEqual({ method: "bot_feishu" });
-  await app.press("Done");
+  await app.press("text:Done");
 
   // Open WeChat channel modal & start QR, then close modal.
   await app.press("channel-toggle-weixin");
@@ -606,7 +606,7 @@ test("devices scene configures Telegram/Feishu bots and starts WeChat QR via mod
   await app.press("connector-weixin-verify-submit");
   await app.waitFor("Confirm on your phone");
   expect(backend.weixinPolls.at(-1)).toMatchObject({ session_key: "wx-qr-1", verify_code: "4821" });
-  await app.press("Done");
+  await app.press("text:Done");
 
   // Whether other devices may control this one.
   await app.press("remote-control-allowed");
@@ -646,7 +646,7 @@ test("chat app modal errors stay scoped to the modal that caused them", async ()
   await app.waitFor("remote-disclaimer-agree");
   await app.press("remote-disclaimer-agree");
   await app.waitFor("text:feishu credentials rejected");
-  await app.press("Done");
+  await app.press("text:Done");
 
   // Opening WeChat starts with a clean modal — no stale Feishu error bleeds across.
   await app.press("channel-toggle-weixin");

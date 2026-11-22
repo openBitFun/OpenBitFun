@@ -555,27 +555,49 @@ pub fn permission_page_view(
     show_permission_mode_control: &Value,
 ) -> Result<Value, String> {
     let mut view = permission_settings_view(permissions)?;
-    let configured: Vec<(String, String)> = models
+    // Each model as every list shows it: the model, then its provider
+    // (`modelName` / `modelDetail`, the shared label rule).
+    let text = |entry: &Value, key: &str| {
+        entry
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let entries: Vec<(String, String, String, String)> = models
         .as_array()
         .map(|entries| {
             entries
                 .iter()
                 .filter_map(|entry| {
                     let id = entry.get("id")?.as_str()?.trim();
-                    if id.is_empty() {
-                        return None;
-                    }
-                    let name = ["model_name", "name"]
-                        .iter()
-                        .filter_map(|key| entry.get(*key).and_then(Value::as_str))
-                        .map(str::trim)
-                        .find(|name| !name.is_empty())
-                        .unwrap_or(id);
-                    Some((id.to_string(), name.to_string()))
+                    (!id.is_empty()).then(|| {
+                        (
+                            id.to_string(),
+                            text(entry, "name"),
+                            text(entry, "model_name"),
+                            text(entry, "provider"),
+                        )
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default();
+    let labels = openbitfun_product_domains::fleet::label_configured_models(entries.iter().map(
+        |(id, name, model_name, provider)| {
+            (
+                name.as_str(),
+                model_name.as_str(),
+                provider.as_str(),
+                id.as_str(),
+            )
+        },
+    ));
+    let configured: Vec<(String, String, String)> = entries
+        .into_iter()
+        .zip(labels)
+        .map(|((id, ..), label)| (id, label.label, label.detail))
+        .collect();
     let mut options = Vec::new();
     for role in ["fast", "primary"] {
         let Some(stored) = default_models
@@ -586,20 +608,22 @@ pub fn permission_page_view(
         else {
             continue;
         };
-        let model = configured.iter().find(|(id, _)| id == stored);
+        let model = configured.iter().find(|(id, ..)| id == stored);
         options.push(json!({
             "value": role,
             "role": role,
             "modelId": stored,
-            "modelName": model.map(|(_, name)| name.clone()),
+            "modelName": model.map(|(_, name, _)| name.clone()),
+            "modelDetail": model.map(|(.., detail)| detail.clone()),
             "available": model.is_some(),
         }));
     }
-    for (id, name) in &configured {
+    for (id, name, detail) in &configured {
         options.push(json!({
             "value": id,
             "modelId": id,
             "modelName": name,
+            "modelDetail": detail,
             "available": true,
         }));
     }
@@ -1105,6 +1129,9 @@ mod permission_page_view_tests {
         assert_eq!(options[1]["available"], false);
         assert_eq!(options[1]["modelName"], Value::Null);
         assert_eq!(options[2]["modelName"], "gpt-x");
+        // The model leads; its provider (the entry's name) follows.
+        assert_eq!(options[2]["modelDetail"], "One");
+        assert_eq!(options[0]["modelDetail"], "");
 
         let full = permission_page_view(
             &json!({ "policy": { "preset": "full_access", "rules": [] } }),

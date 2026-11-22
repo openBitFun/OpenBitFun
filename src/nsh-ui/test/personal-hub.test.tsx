@@ -87,15 +87,12 @@ test("account sign-in runs the host's browser flow in the dialog, polls its stat
         transport: "dev",
       };
     }
-    if (action === "account_github_info") {
+    if (action === "account_identity") {
+      // The backend's projection: a GitHub account shows its login.
       return {
         ok: true,
         value: signedIn
-          ? {
-              user: { githubId: 42, login: "octocat", avatarUrl: "" },
-              email: "octocat@example.com",
-              isAdmin: false,
-            }
+          ? { provider: "github", accountId: "42", displayName: "octocat", initial: "O" }
           : null,
         transport: "dev",
       };
@@ -145,11 +142,12 @@ test("account sign-in runs the host's browser flow in the dialog, polls its stat
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
 
   await app.press("label:account-row");
   await app.press("label:sidebar-account-sign-in");
-  await app.press("label:account-auth-continue");
+  // Email is the in-app sign-in; GitHub is the secondary one, in the browser.
+  await app.press("label:account-auth-github");
 
   // The host's browser sign-in shows its code in the dialog and opens the page.
   await app.waitFor("WXYZ-5678");
@@ -176,7 +174,7 @@ test("Account › Activity lists insights reports, opens the reader, and generat
     if (action === "account_status") {
       return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
     }
-    if (action === "account_github_info") {
+    if (action === "account_identity") {
       return { ok: true, value: null, transport: "dev" };
     }
     if (action === "get_latest_insights") {
@@ -255,7 +253,7 @@ test("Account › Activity lists insights reports, opens the reader, and generat
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
 
   await openActivity(app);
   await app.waitFor("30-Day Insights");
@@ -369,7 +367,7 @@ test("assistants scene supports modal creation, dropdown CRUD, persona studio ed
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
 
   // The list sits beside the selected assistant's persona studio.
   await openAssistants(app);
@@ -496,7 +494,7 @@ test("assistants repaint when switching between dark and light color schemes", a
     if (action === "account_status") {
       return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
     }
-    if (action === "account_github_info") {
+    if (action === "account_identity") {
       return { ok: true, value: null, transport: "dev" };
     }
     if (
@@ -536,7 +534,7 @@ test("assistants repaint when switching between dark and light color schemes", a
     colorScheme: "dark",
     host: { handlers: base.handlers },
   });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
 
   await openAssistants(app);
   await app.waitFor("assistant-card-asst-1");
@@ -614,7 +612,7 @@ test("creating a named assistant rewrites only the IDENTITY.md frontmatter name 
   };
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
   await openAssistants(app);
   await app.waitFor("assistants-new");
   await app.press("assistants-new");
@@ -659,7 +657,7 @@ test("Account › Activity insights take the day range and model the desktop off
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
   await openActivity(app);
   await app.waitFor("activity-generate-insights");
   await app.press("activity-insights-days");
@@ -701,7 +699,7 @@ test("an assistant workspace opens and closes on the host from its studio header
     return undefined;
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
   await openAssistants(app);
   await app.waitFor("assistant-card-asst-7");
   // The saved emoji is the avatar, as on the desktop.
@@ -723,7 +721,7 @@ test("assistants switch to the compact single-column layout at phone width", asy
     if (action === "account_status") {
       return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
     }
-    if (action === "account_github_info") return { ok: true, value: null, transport: "dev" };
+    if (action === "account_identity") return { ok: true, value: null, transport: "dev" };
     if (action === "get_latest_insights") return { ok: true, value: [], transport: "dev" };
     if (action === "get_assistant_workspaces") {
       return {
@@ -743,7 +741,7 @@ test("assistants switch to the compact single-column layout at phone width", asy
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
 
   // Phone width: the shell's sidebar is put away.
   await app.setViewport(390, 844);
@@ -769,13 +767,13 @@ test("Account › Activity asks for an update when the device is older than the 
     if (action === "account_status") {
       return { ok: true, value: { logged_in: false, user_id: null }, transport: "dev" };
     }
-    if (action === "account_github_info" || action === "get_latest_insights") {
+    if (action === "account_identity" || action === "get_latest_insights") {
       return { ok: true, value: action === "get_latest_insights" ? [] : null, transport: "dev" };
     }
     return undefined;
   });
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
   await openActivity(app);
   await app.waitFor("Update OpenBitFun on this device to see its activity.");
   expect(app.shows("settings-activity-heatmap")).toBe(false);
@@ -854,7 +852,7 @@ test("Account › Activity insights preserves partial_report metadata and person
   });
 
   const app = await open("../App.tsx", { ...DESKTOP, host: { handlers: base.handlers } });
-  await app.waitFor("Super Agent");
+  await app.waitFor("nav-all-sessions");
   await openActivity(app);
   await app.waitFor("activity-generate-insights");
   await app.press("activity-generate-insights");

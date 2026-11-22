@@ -1,9 +1,68 @@
-//! Controller-local adapter for the shared OpenBitFun GitHub identity.
+//! Controller-local adapter for the shared OpenBitFun account identity:
+//! the in-app email sign-in (`account_email_*`), the GitHub browser sign-in
+//! (`account_github_*`) and the one identity projection every surface shows
+//! (`account_identity`).
 use crate::host::HostHandle;
 use openbitfun_product_domains::account::{
-    GitHubAuthPollRequest, GitHubAuthPollResponse, GitHubAuthStart,
+    AccountEmailChallenge, AccountEmailStartRequest, AccountEmailVerifyRequest,
+    AccountEmailVerifyResponse, AccountIdentityView, GitHubAuthPollRequest, GitHubAuthPollResponse,
+    GitHubAuthStart,
 };
-use openbitfun_services_integrations::account_identity::{self, AccountIdentityClient, MarketMe};
+use openbitfun_services_integrations::account_identity;
+
+/// Sends an email sign-in code. Errors answer `<code>: <sentence>`
+/// (`invalid_email`, `rate_limited`, `unsupported`, `network`, `unavailable`).
+// @backend-command
+pub async fn account_email_start(
+    request: AccountEmailStartRequest,
+) -> Result<AccountEmailChallenge, String> {
+    account_identity::start_email_sign_in(request)
+        .await
+        .map_err(|error| error.coded_message())
+}
+
+/// Completes the email sign-in with the code and the account session with it.
+// @backend-command
+pub async fn account_email_verify(
+    app: HostHandle,
+    request: AccountEmailVerifyRequest,
+) -> Result<AccountEmailVerifyResponse, String> {
+    account_identity::verify_email_sign_in(request)
+        .await
+        .map_err(|error| error.coded_message())?;
+    complete_sign_in(&app).await;
+    Ok(AccountEmailVerifyResponse {
+        identity: current_identity().await,
+    })
+}
+
+/// Who is signed in, as every surface shows it; `null` when signed out.
+// @backend-command
+pub async fn account_identity() -> Result<Option<AccountIdentityView>, String> {
+    account_identity::current_identity()
+        .await
+        .map_err(|error| error.coded_message())
+}
+
+async fn current_identity() -> Option<AccountIdentityView> {
+    account_identity::current_identity().await.ok().flatten()
+}
+
+/// Every sign-in (email or GitHub) completes the same account session.
+/// Directory failure must not turn a valid identity into a failed sign-in;
+/// the device panel can retry the connection later.
+async fn complete_sign_in(app: &HostHandle) {
+    // The account directory signs in from the identity and wakes the device
+    // network.
+    super::account_directory::signed_in();
+    if let Err(error) =
+        super::remote_connect_api::account_login(super::remote_connect_api::AccountAuthRequest {})
+            .await
+    {
+        log::warn!("Sign-in completed but directory registration failed: {error}");
+    }
+    emit_identity_changed(app, "signed-in");
+}
 
 // @backend-command
 pub async fn account_github_start() -> Result<GitHubAuthStart, String> {
@@ -21,30 +80,9 @@ pub async fn account_github_poll(
         .await
         .map_err(|error| error.to_string())?;
     if response.status == "authorized" {
-        // Every entry point completes the same account session, including the
-        // markets. Relay failure must not turn a valid GitHub identity into a
-        // failed sign-in; the device panel can retry the connection later.
-        // The new-version account directory does not wait for the legacy
-        // relay: it signs in from the identity and wakes the device network.
-        super::account_directory::signed_in();
-        if let Err(error) = super::remote_connect_api::account_login(
-            super::remote_connect_api::AccountAuthRequest {},
-        )
-        .await
-        {
-            log::warn!("GitHub sign-in completed but Relay registration failed: {error}");
-        }
-        emit_identity_changed(&app, "signed-in");
+        complete_sign_in(&app).await;
     }
     Ok(response)
-}
-
-// @backend-command
-pub async fn account_github_info() -> Result<Option<MarketMe>, String> {
-    let mut client = AccountIdentityClient::from_environment()
-        .await
-        .map_err(|error| error.to_string())?;
-    client.me().await.map_err(|error| error.to_string())
 }
 
 pub(crate) fn emit_identity_changed(app: &HostHandle, status: &'static str) {

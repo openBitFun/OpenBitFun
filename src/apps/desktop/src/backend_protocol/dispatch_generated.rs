@@ -31,10 +31,12 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("accept_operation", NativeCommandSupport::Native),
     ("accept_session", NativeCommandSupport::Native),
     ("account_delete_device", NativeCommandSupport::Native),
+    ("account_email_start", NativeCommandSupport::Native),
+    ("account_email_verify", NativeCommandSupport::Native),
     ("account_get_credential_hint", NativeCommandSupport::Native),
-    ("account_github_info", NativeCommandSupport::Native),
     ("account_github_poll", NativeCommandSupport::Native),
     ("account_github_start", NativeCommandSupport::Native),
+    ("account_identity", NativeCommandSupport::Native),
     ("account_list_devices", NativeCommandSupport::Native),
     ("account_login", NativeCommandSupport::Native),
     ("account_logout", NativeCommandSupport::Native),
@@ -398,6 +400,7 @@ pub const NATIVE_COMMANDS: &[(&str, NativeCommandSupport)] = &[
     ("list_visible_subagents", NativeCommandSupport::Native),
     ("load_acp_json_config", NativeCommandSupport::Native),
     ("load_agent_companion_pet_spritesheet", NativeCommandSupport::Native),
+    ("load_agent_companion_pet_still", NativeCommandSupport::Native),
     ("load_git_repo_history", NativeCommandSupport::Native),
     ("load_insights_report", NativeCommandSupport::Native),
     ("load_mcp_json_config", NativeCommandSupport::Native),
@@ -765,10 +768,12 @@ pub(super) fn dispatch<'a>(
         "accept_operation" => command_accept_operation(host, args),
         "accept_session" => command_accept_session(host, args),
         "account_delete_device" => command_account_delete_device(host, args),
+        "account_email_start" => command_account_email_start(host, args),
+        "account_email_verify" => command_account_email_verify(host, args),
         "account_get_credential_hint" => command_account_get_credential_hint(host, args),
-        "account_github_info" => command_account_github_info(host, args),
         "account_github_poll" => command_account_github_poll(host, args),
         "account_github_start" => command_account_github_start(host, args),
+        "account_identity" => command_account_identity(host, args),
         "account_list_devices" => command_account_list_devices(host, args),
         "account_login" => command_account_login(host, args),
         "account_logout" => command_account_logout(host, args),
@@ -1132,6 +1137,7 @@ pub(super) fn dispatch<'a>(
         "list_visible_subagents" => command_list_visible_subagents(host, args),
         "load_acp_json_config" => command_load_acp_json_config(host, args),
         "load_agent_companion_pet_spritesheet" => command_load_agent_companion_pet_spritesheet(host, args),
+        "load_agent_companion_pet_still" => command_load_agent_companion_pet_still(host, args),
         "load_git_repo_history" => command_load_git_repo_history(host, args),
         "load_insights_report" => command_load_insights_report(host, args),
         "load_mcp_json_config" => command_load_mcp_json_config(host, args),
@@ -1534,17 +1540,30 @@ fn command_account_delete_device(host: &Arc<NativeHost>, args: Value) -> Dispatc
 }
 
 #[inline(never)]
-fn command_account_get_credential_hint(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+fn command_account_email_start(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
-        let result = crate::api::remote_connect_api::account_get_credential_hint().await;
+        let result = crate::api::account_identity_api::account_email_start(
+            arg(&args, "request", "account_email_start")?,
+        ).await;
         (&result).dispatch_kind().finish(result)
     })
 }
 
 #[inline(never)]
-fn command_account_github_info(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+fn command_account_email_verify(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
-        let result = crate::api::account_identity_api::account_github_info().await;
+        let result = crate::api::account_identity_api::account_email_verify(
+            HostHandle::new(Arc::clone(host)),
+            arg(&args, "request", "account_email_verify")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_account_get_credential_hint(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::remote_connect_api::account_get_credential_hint().await;
         (&result).dispatch_kind().finish(result)
     })
 }
@@ -1564,6 +1583,14 @@ fn command_account_github_poll(host: &Arc<NativeHost>, args: Value) -> DispatchF
 fn command_account_github_start(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
     Box::pin(async move {
         let result = crate::api::account_identity_api::account_github_start().await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_account_identity(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::account_identity_api::account_identity().await;
         (&result).dispatch_kind().finish(result)
     })
 }
@@ -5275,6 +5302,17 @@ fn command_load_agent_companion_pet_spritesheet(host: &Arc<NativeHost>, args: Va
         let result = crate::api::companion_pet_api::load_agent_companion_pet_spritesheet(
             host.command_state("load_agent_companion_pet_spritesheet")?,
             arg(&args, "request", "load_agent_companion_pet_spritesheet")?,
+        ).await;
+        (&result).dispatch_kind().finish(result)
+    })
+}
+
+#[inline(never)]
+fn command_load_agent_companion_pet_still(host: &Arc<NativeHost>, args: Value) -> DispatchFuture<'_> {
+    Box::pin(async move {
+        let result = crate::api::companion_pet_api::load_agent_companion_pet_still(
+            host.command_state("load_agent_companion_pet_still")?,
+            arg(&args, "request", "load_agent_companion_pet_still")?,
         ).await;
         (&result).dispatch_kind().finish(result)
     })

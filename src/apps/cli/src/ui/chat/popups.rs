@@ -798,6 +798,12 @@ impl ChatView {
     ) {
         self.login_form.set_authorization(authorization);
     }
+    pub(crate) fn login_form_set_challenge(
+        &mut self,
+        challenge: openbitfun_product_domains::account::AccountEmailChallenge,
+    ) {
+        self.login_form.set_challenge(challenge);
+    }
     pub(crate) fn login_form_set_status(&mut self, status: &str) {
         self.login_form.set_status(status);
     }
@@ -812,9 +818,10 @@ impl ChatView {
     pub(crate) fn show_account_panel(
         &mut self,
         info: openbitfun_product_domains::account::AccountInfo,
+        identity: Option<openbitfun_product_domains::account::AccountIdentityView>,
         devices: Vec<openbitfun_product_domains::account::AccountDevice>,
     ) {
-        self.login_form.show_account(info, devices);
+        self.login_form.show_account(info, identity, devices);
         self.popup_stack.push(PopupType::LoginForm);
     }
 }

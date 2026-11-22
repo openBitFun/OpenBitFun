@@ -1,33 +1,39 @@
 // The account dialog and the first-run sign-in screen of the native desktop
 // (visual spec §4.1). Both draw the shared sign-in column (`SignInView`).
 //
-// The desktop host signs in with its own account commands: it has no email-code
-// command (`account_github_start` / `account_github_poll` / `account_logout`
-// only), so Continue starts the host's browser sign-in and the code is confirmed
-// on the sign-in page. A host that adds the email code gets the browser's steps
-// through the same view. `openAccountAuthModal(...)` opens the dialog from any
-// surface; `onAccountAuthChanged` listeners refresh device lists on sign-in or
-// sign-out.
+// The desktop host signs in inside the app: Continue sends the email code
+// (`account_email_start`), the code step completes it (`account_email_verify`),
+// the same steps the browser and the phone draw. "Sign in with GitHub" is the
+// secondary option and the only one that opens the browser
+// (`account_github_start` / `account_github_poll`). Who is signed in comes from
+// the backend's identity projection (`accountDisplay`).
+// `openAccountAuthModal(...)` opens the dialog from any surface;
+// `onAccountAuthChanged` listeners refresh device lists on sign-in or sign-out.
 
 import { Scroll, cleanup, effect, signal, Text, untracked, View, type Signal } from "nsh";
+import { accountDisplay } from "../accountDisplay";
 import { entryDeviceId } from "../bridge";
+import { controllerPort } from "../controller/controllerPort";
+import { signOutController } from "../controller/controllerStore";
 import { fleetDeviceById, fleetDevices } from "../fleetStore";
 import {
   accountStatus,
   authError,
   authLoading,
   authNotice,
+  cancelEmailSignIn,
   cancelGitHubSignIn,
   copyGitHubUserCode,
+  emailChallenge,
   githubAuthFlow,
-  githubUser,
-  isAccountSignedIn,
   loadAccountState,
   onAccountAuthChanged,
   openGitHubVerificationUrl,
   pollGitHubSignIn,
+  requestEmailCode,
   signOutAccount,
   startGitHubSignIn,
+  verifyEmailCode,
   type AccountAuthChangeListener,
 } from "../homeStore";
 import { tr } from "../i18n";
@@ -42,7 +48,10 @@ export { onAccountAuthChanged, type AccountAuthChangeListener };
 export interface OpenAccountAuthModalOptions {
   /** Called after sign-in completes and the account state is read again. */
   onSuccess?: () => void | Promise<void>;
-  /** Signed out with no sign-in running: start the sign-in at once. */
+  /**
+   * Opened from a "Sign in" control. Kept for callers: the dialog opens on the
+   * email field either way (nothing leaves the app until the user continues).
+   */
   autoStart?: boolean;
 }
 
@@ -50,6 +59,9 @@ export interface OpenAccountAuthModalOptions {
 export const accountAuthModalOpen: Signal<boolean> = signal(false);
 
 const codeCopied = signal(false);
+/** What the user typed into the email and code fields. */
+const typedEmail = signal("");
+const typedCode = signal("");
 let pendingOnSuccess: (() => void | Promise<void>) | null = null;
 let autoPollTimer: ReturnType<typeof setInterval> | null = null;
 let copiedResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -70,10 +82,9 @@ function clearCopiedTimer(): void {
   }
 }
 
-/** The signed-in account, as the host reports it: its email, else its handle, else its id. */
+/** The signed-in account's name, from the backend's identity projection. */
 function accountHandle(): string {
-  const user = githubUser();
-  return user?.email || (user?.login ? `@${user.login}` : "") || accountStatus()?.userId || "";
+  return accountDisplay().identity?.displayName ?? "";
 }
 
 function handleAuthSuccess(): void {
@@ -82,6 +93,7 @@ function handleAuthSuccess(): void {
   stopAutoPoll();
   clearCopiedTimer();
   codeCopied.set(false);
+  typedCode.set("");
   accountAuthModalOpen.set(false);
 
   const account = accountHandle();
@@ -136,18 +148,15 @@ function startAutoPoll(visible: () => boolean): void {
 /** Opens the account dialog from any scene or control; safe signed in or out. */
 export function openAccountAuthModal(options?: OpenAccountAuthModalOptions): void {
   pendingOnSuccess = options?.onSuccess ?? null;
-  if (!githubAuthFlow()) {
+  if (!githubAuthFlow() && !emailChallenge()) {
     authError.set("");
     authNotice.set("");
   }
   codeCopied.set(false);
   accountAuthModalOpen.set(true);
 
-  if (accountStatus() === null) {
+  if (accountStatus() === null && !controllerPort()) {
     void loadAccountState();
-  }
-  if (options?.autoStart && !isAccountSignedIn() && !githubAuthFlow()) {
-    void startGitHubSignIn();
   }
 }
 
@@ -157,17 +166,18 @@ export function closeAccountAuthModal(): void {
   stopAutoPoll();
   clearCopiedTimer();
   codeCopied.set(false);
+  typedCode.set("");
   if (githubAuthFlow()) {
     cancelGitHubSignIn();
   } else {
-    authError.set("");
-    authNotice.set("");
+    cancelEmailSignIn();
   }
   accountAuthModalOpen.set(false);
 }
 
 /** The sign-in step the host's state is at (signed in is not a sign-in step). */
 function hostStep(): SignInStep {
+  if (emailChallenge()) return "code";
   return githubAuthFlow() ? "browser" : "email";
 }
 
@@ -180,9 +190,30 @@ function HostSignIn(props: { header: boolean; step: () => SignInStep; extra?: Pa
       step={props.step()}
       busy={authLoading()}
       error={authError()}
-      emailCode={false}
-      onContinue={() => void startGitHubSignIn()}
+      emailCode
+      email={typedEmail()}
+      onEmailChange={value => typedEmail.set(value)}
+      onContinue={() => void requestEmailCode(typedEmail())}
+      onGitHub={() => void startGitHubSignIn()}
       onLocalOnly={props.extra?.onLocalOnly}
+      codeEmail={emailChallenge()?.email ?? typedEmail()}
+      codeLength={emailChallenge()?.codeLength}
+      code={typedCode()}
+      onCodeChange={value => typedCode.set(value)}
+      onSignIn={() => {
+        void verifyEmailCode(typedCode()).then(done => {
+          if (done) typedCode.set("");
+        });
+      }}
+      resendAt={emailChallenge()?.resendAt ?? null}
+      onResend={() => {
+        typedCode.set("");
+        void requestEmailCode(emailChallenge()?.email ?? typedEmail());
+      }}
+      onOtherEmail={() => {
+        typedCode.set("");
+        cancelEmailSignIn();
+      }}
       browserCode={githubAuthFlow()?.userCode ?? ""}
       browserExpired={githubAuthFlow()?.status === "expired"}
       browserNote={authNotice()}
@@ -234,14 +265,14 @@ export function AccountAuthModal() {
     unsubAuth();
   });
 
-  const signedInView = () => !githubAuthFlow() && isAccountSignedIn();
+  const signedInView = () => !githubAuthFlow() && !emailChallenge() && accountDisplay().signedIn;
 
   return (
     <ModalDialog
       open={modalVisible()}
       size="sm"
       title={signedInView() ? tr("signin.accountTitle") : signInStepTitle({ step: hostStep() })}
-      subtitle={signedInView() ? undefined : signInStepBody({ step: hostStep() })}
+      subtitle={signedInView() ? undefined : signInStepBody({ step: hostStep(), codeEmail: emailChallenge()?.email })}
       accessibilityLabel="account-auth-modal"
       onClose={closeAccountAuthModal}
       footer={
@@ -253,7 +284,7 @@ export function AccountAuthModal() {
             loading={authLoading()}
             disabled={authLoading()}
             accessibilityLabel="account-auth-sign-out"
-            onPress={() => void signOutAccount()}
+            onPress={() => void (controllerPort() ? signOutController() : signOutAccount())}
           />
           <Button
             label={tr("common.done")}

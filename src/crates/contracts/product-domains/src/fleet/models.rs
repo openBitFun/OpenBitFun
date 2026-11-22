@@ -71,6 +71,146 @@ pub struct FleetModel {
     /// The device's primary model.
     #[serde(deserialize_with = "null_default")]
     pub primary: bool,
+    /// What every list shows first: the model ([`configured_model_label`]).
+    /// Absent from a digest of a build before the rule; the projection fills
+    /// it ([`fill_model_labels`]).
+    #[serde(
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub label: String,
+    /// The secondary text beside the label: the provider, with an ordinal
+    /// when two models of one device would read the same.
+    #[serde(
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub detail: String,
+}
+
+// ---------------------------------------------------------------------------
+// How a configured model reads (one rule for every list)
+// ---------------------------------------------------------------------------
+
+/// A configured model as every picker, list and badge shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelLabel {
+    /// The model: its upstream name (`gpt-5`), else the configuration's name,
+    /// else its id.
+    pub label: String,
+    /// The provider: the configuration's name (the provider the user set it
+    /// up under, `OpenAI`) without a trailing ` - <model>` or `/<model>`,
+    /// else the request format (`openai`). Empty when it would only repeat
+    /// the label.
+    pub detail: String,
+}
+
+/// The label of one configured model (`AIModelConfig`: `name`,
+/// `model_name`, `provider`, `id`). A configuration's name is the provider
+/// the user set the model up under (the model editor and the provider
+/// presets name it so), so the model leads and the name follows, as the
+/// 1.x model selector and the TUI read it.
+pub fn configured_model_label(
+    config_name: &str,
+    model_name: &str,
+    provider: &str,
+    model_id: &str,
+) -> ModelLabel {
+    let model = model_name.trim();
+    let name = config_name.trim();
+    let provider_name = if model.is_empty() {
+        name
+    } else {
+        name.strip_suffix(model)
+            .and_then(|rest| rest.strip_suffix(" - ").or_else(|| rest.strip_suffix('/')))
+            .map(str::trim)
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(name)
+    };
+    let label = [model, name, model_id.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let detail = [provider_name, provider.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty() && !value.eq_ignore_ascii_case(&label))
+        .unwrap_or_default()
+        .to_string();
+    ModelLabel { label, detail }
+}
+
+/// Makes the labels of one device's models distinguishable: models that
+/// would read the same (label and detail) carry an ordinal in their detail,
+/// `#1`, `#2`, ... in the order given (the configuration's order).
+pub fn disambiguate_model_labels(labels: &mut [ModelLabel]) {
+    let key = |label: &ModelLabel| (label.label.to_lowercase(), label.detail.to_lowercase());
+    let mut counts = std::collections::BTreeMap::new();
+    for label in labels.iter() {
+        *counts.entry(key(label)).or_insert(0usize) += 1;
+    }
+    let mut seen = std::collections::BTreeMap::new();
+    for label in labels.iter_mut() {
+        let key = key(label);
+        if counts.get(&key).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        let ordinal = seen.entry(key).or_insert(0usize);
+        *ordinal += 1;
+        label.detail = if label.detail.is_empty() {
+            format!("#{ordinal}")
+        } else {
+            format!("{} #{ordinal}", label.detail)
+        };
+    }
+}
+
+/// The labels of a device's configured models, in order: the rule, then
+/// duplicates made distinguishable. `models` yields `(name, model_name,
+/// provider, id)`.
+pub fn label_configured_models<'a>(
+    models: impl IntoIterator<Item = (&'a str, &'a str, &'a str, &'a str)>,
+) -> Vec<ModelLabel> {
+    let mut labels: Vec<ModelLabel> = models
+        .into_iter()
+        .map(|(name, model_name, provider, id)| {
+            configured_model_label(name, model_name, provider, id)
+        })
+        .collect();
+    disambiguate_model_labels(&mut labels);
+    labels
+}
+
+impl FleetModel {
+    /// The label as published, or the rule applied to what a digest of an
+    /// older build carries (its `displayName` is the configuration's name).
+    pub fn model_label(&self) -> ModelLabel {
+        if self.label.trim().is_empty() {
+            configured_model_label(
+                &self.display_name,
+                &self.model_name,
+                &self.provider,
+                &self.model_id,
+            )
+        } else {
+            ModelLabel {
+                label: self.label.clone(),
+                detail: self.detail.clone(),
+            }
+        }
+    }
+}
+
+/// Fills the label of every model a digest of an older build published
+/// without one, then makes the device's labels distinguishable (a no-op for
+/// a catalog its device already labelled).
+pub fn fill_model_labels(models: &mut [FleetModel]) {
+    let mut labels: Vec<ModelLabel> = models.iter().map(FleetModel::model_label).collect();
+    disambiguate_model_labels(&mut labels);
+    for (model, label) in models.iter_mut().zip(labels) {
+        model.label = label.label;
+        model.detail = label.detail;
+    }
 }
 
 /// A stored session model reference, read.
@@ -132,7 +272,8 @@ pub fn device_offline_message(model: &str, device: &str) -> String {
 
 /// Bounds and cleans one device's published catalog: models without an id
 /// are dropped, ids are de-duplicated, at most one model is primary (the
-/// first), and the list is bounded with the primary kept.
+/// first), the list is bounded with the primary kept, and every model has
+/// a label ([`fill_model_labels`]).
 pub fn bound_catalog(models: &mut Vec<FleetModel>) {
     let mut seen = std::collections::BTreeSet::new();
     models.retain(|model| !model.model_id.trim().is_empty() && seen.insert(model.model_id.clone()));
@@ -154,6 +295,7 @@ pub fn bound_catalog(models: &mut Vec<FleetModel>) {
         }
         models.truncate(MAX_MODELS_PER_DEVICE);
     }
+    fill_model_labels(models);
 }
 
 // ---------------------------------------------------------------------------

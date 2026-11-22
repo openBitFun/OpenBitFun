@@ -87,9 +87,12 @@ test("the picker groups every device's models in the entry's order and stores an
   expect(app.shows("text:MacBook · This device")).toBe(true);
   expect(app.shows("id:model-device-dev-b >> text:linux-box")).toBe(true);
   expect(app.shows("id:model-device-dev-c >> text:Offline")).toBe(true);
-  expect(app.shows("id:model-device-dev-c >> text:Gone model · openai")).toBe(true);
+  // A host from before the label rule: its name, then its provider, in the secondary style.
+  expect(app.shows("id:model-device-dev-c >> text:Gone model")).toBe(true);
+  expect(app.shows("id:model-device-dev-c >> text:openai")).toBe(true);
   const texts = app.texts();
-  expect(texts.indexOf("MacBook · This device")).toBeLessThan(texts.indexOf("linux-box"));
+  // The picker draws after the sidebar, which may list the same device names.
+  expect(texts.indexOf("MacBook · This device")).toBeLessThan(texts.lastIndexOf("linux-box"));
   // The session runs on the entry: the catalog is the entry's own view.
   expect(fleetModelsRequests(host).pop()?.deviceId).toBeUndefined();
 
@@ -125,7 +128,50 @@ test("an entry without fleet_models keeps the local model list", async () => {
   await openSession(app, "Fix flaky test");
   await app.waitFor("Message");
   await app.press("bot-capsule-trigger");
-  await app.waitFor("Fast model · openai");
-  expect(app.shows("text:Primary model · openai")).toBe(true);
+  await app.waitFor("Fast model");
+  expect(app.shows("text:Primary model")).toBe(true);
+  expect(app.shows("text:openai")).toBe(true);
   expect(app.shows("text:MacBook · This device")).toBe(false);
+});
+
+test("rows show the host's label and provider, and two models that read the same stay distinguishable", async () => {
+  // Two models of one provider share a name (the 2.0 report: "OpenAI, OpenAI, ...");
+  // the host labels them by model and numbers the twins.
+  const labelled = (id: string, label: string, detail: string, ref: string, primary = false) => ({
+    ...model(id, "OpenAI", ref, true, primary),
+    modelName: label,
+    label,
+    detail,
+  });
+  const catalog = {
+    "": {
+      revision: 4,
+      devices: [
+        { deviceId: "dev-a", name: "MacBook", hostKind: "desktop", state: "online", online: true, isThisDevice: true,
+          models: [
+            labelled("m1", "gpt-5", "OpenAI #1", "m1", true),
+            labelled("m2", "gpt-5", "OpenAI #2", "m2"),
+            labelled("m3", "gemini-2.5-pro", "Google Gemini", "m3"),
+          ] },
+        { deviceId: "dev-b", name: "linux-box", hostKind: "cli", state: "online", online: true, isThisDevice: false,
+          models: [labelled("big", "glm-4.6", "OpenBitFun", "fleet:dev-b/big", true)] },
+      ],
+    },
+  };
+  const { app, host } = await openFleet(catalog);
+  await openSession(app, "Fix flaky test");
+  await app.waitFor("Message");
+  await app.press("bot-capsule-trigger");
+  await app.waitFor("id:model-device-dev-b");
+  expect(app.shows("label:model-option-m1 >> text:gpt-5")).toBe(true);
+  expect(app.shows("label:model-option-m1 >> text:OpenAI #1")).toBe(true);
+  expect(app.shows("label:model-option-m2 >> text:OpenAI #2")).toBe(true);
+  expect(app.shows("label:model-option-m3 >> text:gemini-2.5-pro")).toBe(true);
+  expect(app.shows("label:model-option-m3 >> text:Google Gemini")).toBe(true);
+  // The config name the host replaced is not what the row leads with.
+  expect(app.shows("label:model-option-m1 >> text:OpenAI")).toBe(false);
+  await app.press("label:model-option-fleet:dev-b/big");
+  await app.waitUntil(() => host.fleetCalls.some(call => call.command === "update_session_model"));
+  // The chip names the model and its device.
+  await app.waitFor("label:bot-capsule-trigger >> text:glm-4.6 · linux-box");
 });

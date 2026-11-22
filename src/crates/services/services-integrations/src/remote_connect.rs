@@ -2132,6 +2132,15 @@ pub struct RemoteModelConfig {
     pub capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningCatalogProjection>,
+    /// What every list shows first: the model
+    /// (`openbitfun_product_domains::fleet::configured_model_label`). Absent
+    /// from a catalog of an older host.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// The secondary text beside the label: the provider, numbered when two
+    /// models would read the same.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
 }
 
 /// Model catalog facts for one host.
@@ -2248,12 +2257,23 @@ pub fn build_remote_model_catalog(facts: RemoteModelCatalogFacts) -> RemoteModel
         facts.session_model_id.as_deref(),
         facts.session_reasoning_preset.as_deref(),
     );
+    let labels = openbitfun_product_domains::fleet::label_configured_models(
+        facts.models.iter().map(|model| {
+            (
+                model.name.as_str(),
+                model.model_name.as_str(),
+                model.provider.as_str(),
+                model.id.as_str(),
+            )
+        }),
+    );
     RemoteModelCatalog {
         version,
         models: facts
             .models
             .into_iter()
-            .map(|model| RemoteModelConfig {
+            .zip(labels)
+            .map(|(model, label)| RemoteModelConfig {
                 id: model.id,
                 name: model.name,
                 provider: model.provider,
@@ -2267,6 +2287,8 @@ pub fn build_remote_model_catalog(facts: RemoteModelCatalogFacts) -> RemoteModel
                     .map(|capability| capability.wire_value().to_string())
                     .collect(),
                 reasoning: model.reasoning,
+                label: label.label,
+                detail: label.detail,
             })
             .collect(),
         provider_catalog: facts.provider_catalog,

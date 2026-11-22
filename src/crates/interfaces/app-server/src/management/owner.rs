@@ -840,6 +840,7 @@ impl AppManagementService {
             user_id: result.user_id,
             relay_url: result.relay_url,
             status_message,
+            display_name: result.display_name,
         })
     }
 
@@ -1770,34 +1771,31 @@ fn project_account_snapshot(
                 online: device.online,
             })
             .collect(),
+        identity: snapshot.identity,
     }
 }
 
 fn account_login_status_message(
     result: &openbitfun_core::service::remote_connect::account_runtime::AccountLoginResult,
 ) -> String {
+    // The identity projection's name, never the account id.
+    let signed_in = match result.display_name.as_deref() {
+        Some(name) => format!("Signed in as {name}."),
+        None => "Signed in.".to_string(),
+    };
     if result.routing_standby {
         format!(
-            "Logged in as user {} on {}. Another OpenBitFun host on this machine serves device routing; this one takes over when it exits.",
-            result.user_id, result.relay_url
+            "{signed_in} Another OpenBitFun host on this machine serves device routing; this one takes over when it exits."
         )
     } else if result.routing_connected {
-        format!(
-            "Logged in as user {} on {}. Device routing connected.",
-            result.user_id, result.relay_url
-        )
+        format!("{signed_in} Device routing connected.")
     } else if let Some(error) = &result.routing_error {
         format!(
-            "Logged in as user {} on {}. Device routing failed: {}",
-            result.user_id,
-            result.relay_url,
+            "{signed_in} Device routing failed: {}",
             bounded_error(error.clone())
         )
     } else {
-        format!(
-            "Logged in as user {} on {}.",
-            result.user_id, result.relay_url
-        )
+        signed_in
     }
 }
 
