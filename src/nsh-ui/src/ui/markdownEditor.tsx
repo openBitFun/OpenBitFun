@@ -16,7 +16,7 @@
 //
 // Inline AI asks the document's device through `editorAiStore.ts`.
 
-import { cleanup, effect, signal, Text, untracked, View, WebView, type JSX } from "nsh";
+import { cleanup, effect, Scroll, signal, Text, untracked, View, WebView, type JSX } from "nsh";
 import {
   createRichEditor,
   RichEditor,
@@ -41,7 +41,7 @@ import {
   openInlineAiComposer,
 } from "../editorAiStore";
 import { windowShellId } from "../bridge";
-import { localizeHostError, tr } from "../i18n";
+import { currentLocale, localizeHostError, tr } from "../i18n";
 import {
   fontMono,
   fontSans,
@@ -53,9 +53,13 @@ import {
   textSize,
   textStyle,
   typeScale,
+  uiFontBasePx,
+  type Palette,
 } from "../theme";
 import { Icon } from "./icons";
 import { createMarkdownCodeActions, createMarkdownStyles, STATIC_MARKDOWN_OPTIONS } from "./markdown";
+import { popoverEnterMotion, Spinner } from "./motion";
+import { registerEscapeDismiss } from "./overlays";
 import { Button, InputBox } from "./primitives";
 import { rendererAssets } from "../documentRenderers";
 
@@ -135,16 +139,18 @@ export function visualEditBlockMessage(block: VisualEditBlock): string {
 
 export function VisualEditNotice(props: { block: VisualEditBlock; inset?: number }) {
   return (
-    <Text
-      accessibilityLabel="doc-source-fallback"
+    <View
       style={{
-        ...textStyle("caption"),
         paddingHorizontal: props.inset ?? space.md,
         paddingVertical: space.xs,
+        borderBottomWidth: 1,
+        borderColor: palette().borderSubtle,
       }}
     >
-      {visualEditBlockMessage(props.block)}
-    </Text>
+      <Text accessibilityLabel="doc-source-fallback" style={textStyle("caption")}>
+        {visualEditBlockMessage(props.block)}
+      </Text>
+    </View>
   );
 }
 
@@ -295,18 +301,25 @@ function DiagramIsland(props: { kind: IslandKind; source: string }) {
   const failed = signal(false);
   const renderer = signal<IslandRenderer | null>(null);
   let disposed = false;
-  const timer = setTimeout(() => {
-    if (height() === 0) failed.set(true);
-  }, ISLAND_TIMEOUT_MS);
   cleanup(() => {
     disposed = true;
-    clearTimeout(timer);
   });
   effect(() => {
+    void props.kind;
+    void props.source;
+    height.set(0);
+    failed.set(false);
+    const timer = setTimeout(() => {
+      if (!disposed && height() === 0) failed.set(true);
+    }, ISLAND_TIMEOUT_MS);
+    cleanup(() => clearTimeout(timer));
+  });
+  effect(() => {
+    const kind = props.kind;
     if (islandsAvailable() !== true) return;
     untracked(() => {
       if (renderer()) return;
-      loadRenderer(props.kind)
+      loadRenderer(kind)
         .then(loaded => {
           if (!disposed) renderer.set(loaded);
         })
@@ -387,7 +400,16 @@ export function MarkdownPreview(props: MarkdownPreviewProps) {
         math.display ? (
           <DiagramIsland kind="math" source={math.tex} />
         ) : (
-          <Text style={{ fontFamily: fontMono, fontSize: textSize(typeScale.label), color: palette().text }}>
+          <Text
+            style={{
+              fontFamily: fontMono,
+              fontSize: textSize(typeScale.label),
+              color: palette().text,
+              backgroundColor: palette().surfaceTertiary,
+              borderRadius: radii.xs,
+              paddingHorizontal: space.xs,
+            }}
+          >
             {math.tex}
           </Text>
         )
@@ -435,10 +457,29 @@ function selectionRange(session: RichEditorSession): { from: number; to: number 
   return { from: Math.min(anchor, head), to: Math.max(anchor, head) };
 }
 
+let editorStylesCache: {
+  palette: Palette;
+  fontPx: number;
+  loc: string;
+  compact: boolean;
+  styles: RichEditorStyles;
+} | null = null;
+
 function editorStyles(compact: boolean): RichEditorStyles {
   const p = palette();
+  const fontPx = uiFontBasePx();
+  const loc = currentLocale();
+  if (
+    editorStylesCache &&
+    editorStylesCache.palette === p &&
+    editorStylesCache.fontPx === fontPx &&
+    editorStylesCache.loc === loc &&
+    editorStylesCache.compact === compact
+  ) {
+    return editorStylesCache.styles;
+  }
   const prose = typeScale.prose;
-  return {
+  const styles: RichEditorStyles = {
     root: { color: p.text, fontFamily: fontSans, fontSize: textSize(prose), lineHeight: textLineHeight(prose, 1.6) },
     content: {
       paddingHorizontal: compact ? space.lg : space.x3l,
@@ -472,7 +513,7 @@ function editorStyles(compact: boolean): RichEditorStyles {
         marginBottom: space.md,
         color: p.textSecondary,
       },
-      horizontalRule: { backgroundColor: p.border },
+      horizontalRule: { backgroundColor: p.border, height: 1, marginVertical: space.md },
       tableHeader: { fontWeight: "600" as const, borderWidth: 1, borderColor: p.border, padding: space.sm },
       tableCell: { borderWidth: 1, borderColor: p.borderSubtle, padding: space.sm },
     },
@@ -481,6 +522,8 @@ function editorStyles(compact: boolean): RichEditorStyles {
       link: { color: p.accent },
     },
   };
+  editorStylesCache = { palette: p, fontPx, loc, compact, styles };
+  return styles;
 }
 
 /** One editor over one document; remade when the document changes. */
@@ -559,6 +602,7 @@ function VisualEditorBody(props: { owner: MarkdownDocumentEditorProps }) {
         bubbleMenu={
           owner.ai && hasSelection() ? (
             <View
+              {...popoverEnterMotion("top")}
               style={{
                 flexDirection: "row",
                 padding: space.xs,
@@ -598,6 +642,16 @@ function InlineAiPanel(props: {
     return current && current.documentKey === props.documentKey ? current : null;
   };
   const replacing = () => Boolean(inlineAiComposer()?.selection.trim());
+  const dismiss = () => {
+    void cancelInlineAi();
+    closeInlineAiComposer();
+  };
+  cleanup(registerEscapeDismiss(dismiss));
+  const submitAsk = (raw?: string) => {
+    const query = (raw ?? instruction()).trim();
+    if (!query || answer()?.status === "streaming") return;
+    props.onAsk(query);
+  };
   return (
     <View
       accessibilityLabel="doc-ai-panel"
@@ -610,67 +664,104 @@ function InlineAiPanel(props: {
         backgroundColor: palette().canvas,
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-        <Icon name="sparkles" size={14} color={palette().textSecondary} />
-        <InputBox
-          value={instruction()}
-          onChange={value => instruction.set(value)}
-          onSubmit={text => props.onAsk(text)}
-          placeholder={replacing() ? tr("doc.askAiRewritePlaceholder") : tr("doc.askAiPlaceholder")}
-          size="sm"
-          autoFocus={true}
-          accessibilityLabel="doc-ai-input"
-          style={{ flex: 1, minWidth: 0 }}
-        />
-        <Button
-          label={tr("doc.askAiSend")}
-          variant="secondary"
-          size="sm"
-          disabled={!instruction().trim() || answer()?.status === "streaming"}
-          accessibilityLabel="doc-ai-send"
-          onPress={() => props.onAsk(instruction())}
-        />
-        <Button
-          label={tr("common.cancel")}
-          variant="ghost"
-          size="sm"
-          accessibilityLabel="doc-ai-cancel"
-          onPress={() => {
-            void cancelInlineAi();
-            closeInlineAiComposer();
-          }}
-        />
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+        <View style={{ flex: 1, minWidth: 160, flexDirection: "row", alignItems: "center", gap: space.sm }}>
+          <Icon name="sparkles" size={14} color={palette().textSecondary} />
+          <InputBox
+            value={instruction()}
+            onChange={value => instruction.set(value)}
+            onSubmit={text => submitAsk(text)}
+            onKeyPress={event => {
+              if (event.key === "Escape") dismiss();
+            }}
+            placeholder={replacing() ? tr("doc.askAiRewritePlaceholder") : tr("doc.askAiPlaceholder")}
+            size="sm"
+            autoFocus={true}
+            accessibilityLabel="doc-ai-input"
+            style={{ flex: 1, minWidth: 0 }}
+          />
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+          <If
+            when={answer()?.status === "streaming"}
+            else={
+              <Button
+                label={tr("doc.askAiSend")}
+                variant="secondary"
+                size="sm"
+                disabled={!instruction().trim()}
+                accessibilityLabel="doc-ai-send"
+                onPress={() => submitAsk()}
+              />
+            }
+          >
+            <Button
+              label={tr("common.stop")}
+              variant="secondary"
+              size="sm"
+              loading={true}
+              accessibilityLabel="doc-ai-stop"
+              onPress={() => void cancelInlineAi()}
+            />
+          </If>
+          <Button
+            label={tr("common.cancel")}
+            variant="ghost"
+            size="sm"
+            accessibilityLabel="doc-ai-cancel"
+            onPress={dismiss}
+          />
+        </View>
       </View>
       <If when={answer()}>
         {state => (
-          <View style={{ gap: space.sm }}>
+          <View style={{ gap: space.sm, minHeight: 0 }}>
             <If
               when={state().status !== "failed"}
               else={
-                <Text accessibilityLabel="doc-ai-error" style={textStyle("caption", { color: palette().danger })}>
-                  {tr("doc.aiFailed", { error: localizeHostError(state().error ?? "") })}
-                </Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+                  <Text
+                    accessibilityLabel="doc-ai-error"
+                    style={{ ...textStyle("caption", { color: palette().danger }), flex: 1, minWidth: 0 }}
+                  >
+                    {tr("doc.aiFailed", { error: localizeHostError(state().error ?? "") })}
+                  </Text>
+                  <Button
+                    label={tr("common.tryAgain")}
+                    variant="ghost"
+                    size="xs"
+                    accessibilityLabel="doc-ai-retry"
+                    onPress={() => submitAsk(instruction() || state().instruction)}
+                  />
+                </View>
               }
             >
-              <View
+              <Scroll
                 style={{
+                  flexShrink: 1,
+                  minHeight: 0,
                   maxHeight: 240,
-                  padding: space.md,
                   borderRadius: radii.md,
                   backgroundColor: palette().surfaceTertiary,
                 }}
+                contentStyle={{ padding: space.md }}
               >
                 <If
                   when={state().text.trim()}
                   else={
-                    <Text style={textStyle("caption")}>
-                      {state().status === "streaming" ? tr("doc.aiWorking") : tr("doc.aiEmpty")}
-                    </Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                      <If when={state().status === "streaming"}>
+                        <Spinner size={12} color={palette().textMuted} />
+                      </If>
+                      <Text style={textStyle("caption")}>
+                        {state().status === "streaming" ? tr("doc.aiWorking") : tr("doc.aiEmpty")}
+                      </Text>
+                    </View>
                   }
                 >
                   {text => <MarkdownPreview markdown={text()} compact={true} accessibilityLabel="doc-ai-answer" />}
                 </If>
-              </View>
+              </Scroll>
             </If>
             <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space.sm }}>
               <Button

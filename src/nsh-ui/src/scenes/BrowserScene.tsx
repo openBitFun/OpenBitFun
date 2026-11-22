@@ -18,6 +18,7 @@
 import { ToolPaneHeader } from "../ui/toolPane";
 import {
   cleanup,
+  Clipboard,
   computed,
   effect,
   Image,
@@ -30,7 +31,10 @@ import {
   type WebViewNavigation,
   type WebViewRef,
 } from "nsh";
+import { inboxSheetOpen } from "../attentionStore";
+import { backgroundOutputOpen } from "../backgroundCommandsStore";
 import { entryDeviceId } from "../bridge";
+import { sideQuestionOpen } from "../btwStore";
 // Installs the browser's session hooks (inspector, composer, HTML preview).
 import "../browserSession";
 import {
@@ -71,31 +75,67 @@ import {
   type LiveViewSource,
 } from "../browserStore";
 import { fleetDeviceById } from "../fleetStore";
-import { tr } from "../i18n";
-import { activeSessionDevice, activeSessionId, activeWorkspaceKey } from "../state";
+import { searchOpen } from "../globalSearchStore";
+import { localizeHostError, tr } from "../i18n";
+import { mcpAppOpen } from "../mcpAppStore";
+import { reviewLauncherOpen } from "../reviewStore";
+import {
+  authPromptOpen,
+  newWorkspaceModalOpen,
+  portForwardModalOpen,
+  remoteFileBrowserOpen,
+  sshConnectionModalOpen,
+} from "../sshRemoteStore";
+import { activeSessionDevice, activeSessionId, activeWorkspaceKey, drawerOpen } from "../state";
 import { compactLayout, layout, palette, radii, space, textStyle } from "../theme";
+import { aboutOpen } from "../ui/AboutDialog";
+import { accountAuthModalOpen } from "../ui/AccountAuthModal";
+import { deviceException } from "../ui/fleet";
 import { Spinner } from "../ui/motion";
-import { DropdownMenu, type DropdownMenuItem } from "../ui/overlays";
+import { DropdownMenu, pushToast, type DropdownMenuItem } from "../ui/overlays";
 import { Button, EmptyStateCard, IconButton, InlineBanner, TextField } from "../ui/primitives";
 
-/** A page without a background of its own reads on white, as in a browser. */
-const PAGE_BACKGROUND = "#ffffff";
-
 let layerRef: ViewRef | undefined;
-const pagesMenuOpen = signal(false);
-const moreMenuOpen = signal(false);
+const layerPageX = signal<number | null>(null);
 
-function setPagesMenuOpen(open: boolean): void {
-  pagesMenuOpen.set(open);
-  browserOccluded.set(open || moreMenuOpen());
-}
+/** Count of open local browser toolbar menus across mounted instances. */
+const openBrowserMenuCount = signal(0);
 
-function setMoreMenuOpen(open: boolean): void {
-  moreMenuOpen.set(open);
-  browserOccluded.set(open || pagesMenuOpen());
+/**
+ * Whether any global overlay (`⌘K`, `⌘I`, modals, overlay sidebar drawer) or
+ * local browser dropdown is currently covering the native OS WebView surface.
+ */
+const globalOverlayOccludingBrowser = computed(() => {
+  if (
+    searchOpen() ||
+    inboxSheetOpen() ||
+    aboutOpen() ||
+    accountAuthModalOpen() ||
+    newWorkspaceModalOpen() ||
+    sshConnectionModalOpen() ||
+    remoteFileBrowserOpen() ||
+    portForwardModalOpen() ||
+    authPromptOpen() ||
+    reviewLauncherOpen() ||
+    sideQuestionOpen() ||
+    Boolean(backgroundOutputOpen()) ||
+    Boolean(mcpAppOpen())
+  ) {
+    return true;
+  }
+  if (drawerOpen()) {
+    if (compactLayout()) return true;
+    const originX = layerPageX();
+    // When the sidebar is docked (>=960px), BrowserPageLayer sits beside it (originX >= navMinWidth).
+    // When the sidebar is an overlay drawer (720-959px), BrowserPageLayer starts near x = 0.
+    if (originX !== null && originX < layout.navMinWidth - 32) return true;
+  }
+  return false;
+});
+
+function syncBrowserOcclusion(): void {
+  browserOccluded.set(openBrowserMenuCount() > 0 || globalOverlayOccludingBrowser());
 }
-const pagesMenuAnchor = signal<ViewRef | null>(null);
-const moreMenuAnchor = signal<ViewRef | null>(null);
 
 // ── Viewport ownership ──
 //
@@ -133,6 +173,9 @@ function releaseViewport(id: number): void {
 
 async function layerOrigin(): Promise<{ x: number; y: number }> {
   const measured = await layerRef?.measure();
+  if (measured) {
+    layerPageX.set(measured.pagePosition.x);
+  }
   return measured?.pagePosition ?? { x: 0, y: 0 };
 }
 
@@ -184,7 +227,7 @@ function BrowserPageView(props: { page: () => BrowserPage }) {
   }
 
   return (
-    <View style={{ ...placement(), backgroundColor: PAGE_BACKGROUND }}>
+    <View style={{ ...placement(), backgroundColor: palette().canvas }}>
       <WebView
         ref={(node: WebViewRef) => registerBrowserHandle(label, node ?? null)}
         src={initialUrl}
@@ -203,6 +246,9 @@ function BrowserPageView(props: { page: () => BrowserPage }) {
 /** Every page's web view; mounted once around the scenes. */
 export function BrowserPageLayer() {
   startBrowserEvents();
+  effect(() => {
+    syncBrowserOcclusion();
+  });
   return (
     <View
       ref={(node: ViewRef) => {
@@ -275,6 +321,28 @@ function moreMenuItems(): DropdownMenuItem[] {
 }
 
 function Toolbar(props: { compact: boolean }) {
+  const pagesMenuOpen = signal(false);
+  const moreMenuOpen = signal(false);
+  const pagesMenuAnchor = signal<ViewRef | null>(null);
+  const moreMenuAnchor = signal<ViewRef | null>(null);
+  let trackedOpen = false;
+  const setLocalOcclusion = (open: boolean) => {
+    if (open === trackedOpen) return;
+    trackedOpen = open;
+    openBrowserMenuCount.update(n => Math.max(0, n + (open ? 1 : -1)));
+    syncBrowserOcclusion();
+  };
+  const setPagesMenuOpen = (open: boolean) => {
+    pagesMenuOpen.set(open);
+    setLocalOcclusion(open || moreMenuOpen());
+  };
+  const setMoreMenuOpen = (open: boolean) => {
+    moreMenuOpen.set(open);
+    setLocalOcclusion(open || pagesMenuOpen());
+  };
+  cleanup(() => {
+    setLocalOcclusion(false);
+  });
   const loading = () => presentedPage()?.loading === true;
   const hasPage = () => presentedPage() !== null;
   return (
@@ -282,6 +350,7 @@ function Toolbar(props: { compact: boolean }) {
       accessibilityLabel="browser-toolbar"
       style={{
         flexDirection: "row",
+        flexWrap: compactLayout() ? "wrap" : "nowrap",
         alignItems: "center",
         gap: space.xs,
         paddingHorizontal: props.compact ? space.sm : space.md,
@@ -323,9 +392,9 @@ function Toolbar(props: { compact: boolean }) {
         clearable
         clearLabel={tr("browser.clearAddress")}
         trailing={loading() ? <Spinner size={12} color={palette().textMuted} /> : undefined}
-        size="sm"
+        size="md"
         accessibilityLabel="browser-address"
-        style={{ flex: 1, minWidth: 0, marginHorizontal: space.xs }}
+        style={{ flex: 1, minWidth: compactLayout() ? 180 : 120, marginHorizontal: space.xs }}
       />
       <If when={browserPages().length > 1}>
         <View ref={(node: ViewRef) => pagesMenuAnchor.set(node ?? null)} style={{ flexShrink: 0 }}>
@@ -391,8 +460,6 @@ function NativeBody(props: { compact: boolean }) {
   // Leaving hides the page; its document keeps running.
   cleanup(() => {
     releaseViewport(claim);
-    setPagesMenuOpen(false);
-    setMoreMenuOpen(false);
     cancelElementPicker();
   });
   effect(() => {
@@ -430,7 +497,7 @@ function NativeBody(props: { compact: boolean }) {
           {notice => (
             <InlineBanner
               tone="danger"
-              message={notice()}
+              message={localizeHostError(notice())}
               accessibilityLabel="browser-notice"
               onDismiss={() => browserNotice.set(null)}
               style={{ marginHorizontal: space.md, marginTop: space.sm }}
@@ -441,7 +508,9 @@ function NativeBody(props: { compact: boolean }) {
           {error => (
             <InlineBanner
               tone="warning"
-              message={tr("browser.pageFailed", { error: error() })}
+              message={tr("browser.pageFailed", { error: localizeHostError(error()) })}
+              actionLabel={tr("browser.reload")}
+              onAction={() => void reloadBrowserPage()}
               accessibilityLabel="browser-page-error"
               style={{ marginHorizontal: space.md, marginTop: space.sm }}
             />
@@ -488,7 +557,7 @@ function PreviewBody(props: { compact: boolean }) {
       >
         <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
           <Text style={{ ...textStyle("caption"), numberOfLines: 1 }}>{tr("browser.preview.title")}</Text>
-          <Text style={{ ...textStyle("mono", { color: palette().text }), numberOfLines: 1, textOverflow: "ellipsis" }}>
+          <Text style={{ ...textStyle("mono", { color: palette().text }), numberOfLines: 1, textOverflow: "ellipsis-middle" }}>
             {htmlPreview()?.path ?? ""}
           </Text>
         </View>
@@ -514,7 +583,7 @@ function PreviewBody(props: { compact: boolean }) {
         {notice => (
           <InlineBanner
             tone="danger"
-            message={notice()}
+            message={localizeHostError(notice())}
             accessibilityLabel="browser-preview-notice"
             onDismiss={() => htmlPreviewNotice.set(null)}
             style={{ marginHorizontal: space.md, marginTop: space.sm }}
@@ -523,7 +592,7 @@ function PreviewBody(props: { compact: boolean }) {
       </If>
       <If when={htmlPreview()}>
         {preview => (
-          <View style={{ flex: 1, minHeight: 0, backgroundColor: PAGE_BACKGROUND }}>
+          <View style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas }}>
             <WebView
               accessibilityLabel={`browser-preview-${preview().name}`}
               html={preview().html}
@@ -548,15 +617,15 @@ function isWebAddress(url: string): boolean {
 const liveStatus = computed(() => browserLiveView().status);
 
 /** A live view state without a frame (spec §3 Empty states). */
-function LiveEmpty(props: { title: string; subtitle?: string; onOpen?: () => void }) {
+function LiveEmpty(props: { title: string; subtitle?: string; actionLabel?: string; onAction?: () => void; onOpen?: () => void }) {
   return (
     <View accessibilityLabel="browser-live-empty" style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
       <EmptyStateCard
         icon="globe"
         title={props.title}
         subtitle={props.subtitle}
-        actionLabel={props.onOpen ? tr("pane.browser.openExternal") : undefined}
-        onAction={props.onOpen}
+        actionLabel={props.actionLabel ?? (props.onOpen ? tr("pane.browser.openExternal") : undefined)}
+        onAction={props.onAction ?? props.onOpen}
       />
     </View>
   );
@@ -568,7 +637,18 @@ function LiveEmpty(props: { title: string; subtitle?: string; onOpen?: () => voi
  * "Open in your browser". Presses never reach the page.
  */
 function LiveView(props: { source: () => LiveViewSource; compact: boolean }) {
-  cleanup(startBrowserLiveView(props.source));
+  const retryTick = signal(0);
+  const deviceOffline = () => {
+    const id = props.source().deviceId;
+    if (!id) return false;
+    return deviceException(fleetDeviceById(id)?.state) === "offline";
+  };
+  effect(() => {
+    retryTick();
+    if (deviceOffline()) return;
+    const stop = startBrowserLiveView(props.source);
+    cleanup(stop);
+  });
   const device = () => deviceName(props.source().deviceId);
   const url = () => {
     const view = browserLiveView();
@@ -578,13 +658,21 @@ function LiveView(props: { source: () => LiveViewSource; compact: boolean }) {
     const address = url();
     if (isWebAddress(address)) void openUrl(address).catch(() => undefined);
   };
+  const copyAddress = () => {
+    const address = url();
+    if (!address) return;
+    void Clipboard.writeText(address).then(
+      () => pushToast(tr("common.copied"), "success"),
+      () => undefined,
+    );
+  };
   return (
     <View accessibilityLabel="browser-live-view" style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }}>
       <View
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: space.md,
+          gap: space.sm,
           paddingHorizontal: compactLayout() ? layout.phoneGutter : props.compact ? space.md : space.xxl,
           paddingVertical: space.sm,
           borderBottomWidth: 1,
@@ -599,13 +687,22 @@ function LiveView(props: { source: () => LiveViewSource; compact: boolean }) {
             {address => (
               <Text
                 accessibilityLabel="browser-live-url"
-                style={{ ...textStyle("mono", { color: palette().text }), numberOfLines: 1, textOverflow: "ellipsis" }}
+                style={{ ...textStyle("mono", { color: palette().text }), numberOfLines: 1, textOverflow: "ellipsis-middle", userSelect: "text" }}
               >
                 {address()}
               </Text>
             )}
           </If>
         </View>
+        <If when={url()}>
+          <IconButton
+            icon="copy"
+            size="sm"
+            tooltip={tr("common.copy")}
+            accessibilityLabel="browser-live-copy"
+            onPress={copyAddress}
+          />
+        </If>
         <If when={isWebAddress(url())}>
           <If
             when={!compactLayout()}
@@ -631,10 +728,13 @@ function LiveView(props: { source: () => LiveViewSource; compact: boolean }) {
         </If>
       </View>
       <View style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-        <If when={liveStatus() === "snapshot"}>
+        <If when={deviceOffline()}>
+          <LiveEmpty title={tr("state.offline")} subtitle={tr("browser.live.from", { device: device() })} />
+        </If>
+        <If when={!deviceOffline() && liveStatus() === "snapshot"}>
             <View
               accessibilityLabel="browser-live-frame"
-              style={{ flex: 1, minHeight: 0, backgroundColor: PAGE_BACKGROUND, overflow: "hidden", pointerEvents: "none" }}
+              style={{ flex: 1, minHeight: 0, backgroundColor: palette().canvas, overflow: "hidden", pointerEvents: "none" }}
             >
               <WebView
                 html={(() => {
@@ -649,7 +749,7 @@ function LiveView(props: { source: () => LiveViewSource; compact: boolean }) {
               />
             </View>
         </If>
-        <If when={liveStatus() === "ready"}>
+        <If when={!deviceOffline() && liveStatus() === "ready"}>
             <View accessibilityLabel="browser-live-frame" style={{ flex: 1, minHeight: 0, pointerEvents: "none" }}>
               <Image
                 src={(() => {
@@ -660,25 +760,30 @@ function LiveView(props: { source: () => LiveViewSource; compact: boolean }) {
               />
             </View>
         </If>
-        <If when={liveStatus() === "loading"}>
+        <If when={!deviceOffline() && liveStatus() === "loading"}>
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
               <Spinner size={16} color={palette().textMuted} />
             </View>
         </If>
-        <If when={liveStatus() === "noPage"}>
+        <If when={!deviceOffline() && liveStatus() === "noPage"}>
           <LiveEmpty title={tr("browser.live.noPage", { device: device() })} subtitle={tr("browser.live.noPageBody")} />
         </If>
-        <If when={liveStatus() === "tooLarge"}>
-          <LiveEmpty title={tr("browser.live.tooLarge")} onOpen={openInBrowser} />
+        <If when={!deviceOffline() && liveStatus() === "tooLarge"}>
+          <LiveEmpty title={tr("browser.live.tooLarge")} onOpen={isWebAddress(url()) ? openInBrowser : undefined} />
         </If>
-        <If when={liveStatus() === "unsupported"}>
+        <If when={!deviceOffline() && liveStatus() === "unsupported"}>
           <LiveEmpty title={tr("browser.live.unavailable", { device: device() })} />
         </If>
-        <If when={liveStatus() === "outdated"}>
+        <If when={!deviceOffline() && liveStatus() === "outdated"}>
           <LiveEmpty title={tr("browser.live.outdated", { device: device() })} />
         </If>
-        <If when={liveStatus() === "failed"}>
-          <LiveEmpty title={tr("browser.live.failed", { device: device() })} subtitle={tr("browser.live.retrying")} />
+        <If when={!deviceOffline() && liveStatus() === "failed"}>
+          <LiveEmpty
+            title={tr("browser.live.failed", { device: device() })}
+            subtitle={tr("browser.live.retrying")}
+            actionLabel={tr("common.tryAgain")}
+            onAction={() => retryTick.update(n => n + 1)}
+          />
         </If>
       </View>
     </View>
@@ -697,12 +802,12 @@ type BrowserMode = "checking" | "native" | "preview" | "live" | "unavailable";
 
 export function BrowserScene(props: { compact?: boolean }) {
   startBrowserEvents();
-  const compact = props.compact === true;
+  const compact = () => props.compact === true;
 
   // Beside a session on another device, its pages are that device's: the
   // inspector shows them live instead of this desktop's own browser.
   const sessionElsewhere = () => {
-    if (!compact || !activeSessionId()) return false;
+    if (!compact() || !activeSessionId()) return false;
     const device = activeSessionDevice();
     return Boolean(device) && device !== entryDeviceId();
   };
@@ -718,17 +823,26 @@ export function BrowserScene(props: { compact?: boolean }) {
 
   return (
     <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: "column" }} accessibilityLabel="browser-scene">
-      <If when={!compact}>
+      <If when={!compact()}>
         <ToolPaneHeader />
       </If>
+      <If when={mode() === "checking"}>
+        <View
+          accessibilityLabel="browser-checking"
+          style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center", gap: space.sm }}
+        >
+          <Spinner size={16} color={palette().textMuted} />
+          <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
+        </View>
+      </If>
       <If when={mode() === "native"}>
-        <NativeBody compact={compact} />
+        <NativeBody compact={compact()} />
       </If>
       <If when={mode() === "preview"}>
-        <PreviewBody compact={compact} />
+        <PreviewBody compact={compact()} />
       </If>
       <If when={mode() === "live"}>
-        <LiveView source={liveSource} compact={compact} />
+        <LiveView source={liveSource} compact={compact()} />
       </If>
       <If when={mode() === "unavailable"}>
         <UnavailableState

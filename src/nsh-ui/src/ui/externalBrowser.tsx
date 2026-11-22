@@ -21,9 +21,11 @@ import {
 } from "../browserControlStore";
 import { fleetDeviceById } from "../fleetStore";
 import { formatCount } from "../format";
-import { tr } from "../i18n";
+import { localizeHostError, tr } from "../i18n";
 import { deviceContext } from "../state";
 import { layout, palette, radii, space, textStyle } from "../theme";
+import { deviceException } from "./fleet";
+import { Spinner } from "./motion";
 import { pushToast } from "./overlays";
 import { Button, IconButton } from "./primitives";
 
@@ -46,7 +48,12 @@ function detailText(): string {
   const status = externalBrowserStatus();
   if (!status) return "";
   const name = browserName(status.browserKind);
-  if (status.cdpAvailable) return tr("browser.external.tabs", { browser: name, count: formatCount(status.pageCount) });
+  if (status.cdpAvailable) {
+    return tr(status.pageCount === 1 ? "browser.external.tabsOne" : "browser.external.tabs", {
+      browser: name,
+      count: formatCount(status.pageCount),
+    });
+  }
   if (status.browserReady) return tr("browser.external.readyDetail", { browser: name });
   return tr("browser.external.notConnectedDetail", { browser: name });
 }
@@ -62,17 +69,27 @@ function outcomeText(outcome: ExternalBrowserOutcome): string {
     case "restart":
       return tr("browser.external.restart", { browser: browserName(outcome.browser) });
     case "message":
-    case "failed":
       return outcome.text;
+    case "failed":
+      return localizeHostError(outcome.text);
   }
 }
 
-/** One 48 row of the group: label and detail on the left, the control on the right. */
-function Row(props: { label: string; detail?: string; first?: boolean; children?: JSX.Element; accessibilityLabel?: string }) {
+/** One 48 row of the group: label and detail on the left, a single control on the right. */
+function Row(props: {
+  label: string;
+  labelTone?: "default" | "danger";
+  detail?: string;
+  detailNode?: JSX.Element;
+  first?: boolean;
+  children?: JSX.Element;
+  accessibilityLabel?: string;
+}) {
   return (
     <View
       accessibilityLabel={props.accessibilityLabel}
       style={{
+        position: "relative",
         minHeight: layout.touchTarget + space.xs,
         paddingHorizontal: space.lg,
         paddingVertical: space.sm,
@@ -81,13 +98,28 @@ function Row(props: { label: string; detail?: string; first?: boolean; children?
         alignItems: "center",
         columnGap: space.lg,
         rowGap: space.sm,
-        borderTopWidth: props.first ? 0 : 1,
-        borderColor: palette().borderSubtle,
       }}
     >
-      <View style={{ flex: 1, minWidth: 0, gap: space.hair }}>
-        <Text style={textStyle("body", { color: palette().text })}>{props.label}</Text>
-        <If when={props.detail ?? ""}>{detail => <Text style={textStyle("caption")}>{detail()}</Text>}</If>
+      <If when={!props.first}>
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: space.lg,
+            right: 0,
+            height: 1,
+            backgroundColor: palette().borderSubtle,
+          }}
+        />
+      </If>
+      <View style={{ flex: 1, minWidth: 180, gap: space.hair }}>
+        <Text style={textStyle("body", { color: props.labelTone === "danger" ? palette().danger : palette().text })}>
+          {props.label}
+        </Text>
+        <If when={Boolean(props.detailNode)}>{props.detailNode}</If>
+        <If when={!props.detailNode && Boolean(props.detail)}>
+          <Text style={textStyle("caption")}>{props.detail ?? ""}</Text>
+        </If>
       </View>
       <If when={Boolean(props.children)}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>{props.children}</View>
@@ -98,13 +130,16 @@ function Row(props: { label: string; detail?: string; first?: boolean; children?
 
 /** The section: status, connect or disconnect, and what the browser asks for next. */
 export function ExternalBrowserSection() {
-  // The browser is on the scope's device: read it again when the scope moves.
+  const scopeDevice = () => fleetDeviceById(deviceContext());
+  const deviceOffline = () => deviceException(scopeDevice()?.state) === "offline";
+  // The browser is on the scope's device: read it again when the scope moves, skipping offline devices.
   effect(() => {
     deviceContext();
+    if (deviceOffline()) return;
     void refreshExternalBrowser();
   });
   const busy = () => externalBrowserAction() !== null;
-  const device = () => fleetDeviceById(deviceContext())?.name ?? "";
+  const device = () => scopeDevice()?.name ?? "";
   const copySetupUrl = (url: string) =>
     void Clipboard.writeText(url).then(
       () => pushToast(tr("browser.external.copied"), "success"),
@@ -119,7 +154,7 @@ export function ExternalBrowserSection() {
         <IconButton
           icon="refresh"
           size="xs"
-          disabled={externalBrowserLoading() || busy()}
+          disabled={externalBrowserLoading() || busy() || deviceOffline()}
           tooltip={tr("browser.external.refresh")}
           accessibilityLabel="external-browser-refresh"
           onPress={() => void refreshExternalBrowser()}
@@ -136,88 +171,172 @@ export function ExternalBrowserSection() {
         }}
       >
         <If
-          when={!externalBrowserUnsupported()}
+          when={!deviceOffline()}
           else={
-            <View style={{ opacity: 0.4 }} accessibilityLabel="external-browser-unsupported">
+            <View style={{ opacity: 0.45 }} accessibilityLabel="external-browser-offline">
               <Row
                 first
                 label={tr("browser.external.status")}
-                detail={device() ? tr("settings.unsupported", { device: device() }) : tr("settings.unsupportedHere")}
+                detail={tr("settings.offline")}
               />
             </View>
           }
         >
-          <Row
-            first
-            label={tr("browser.external.status")}
-            detail={externalBrowserError() ?? detailText()}
-            accessibilityLabel="external-browser-status"
-          >
-            <If when={externalBrowserStatus()}>
-              {status => (
-                <Text accessibilityLabel="external-browser-state" style={textStyle("caption", { color: palette().textSecondary })}>
-                  {externalBrowserStateText(status())}
-                </Text>
-              )}
-            </If>
-            <If
-              when={externalBrowserStatus()?.cdpAvailable === true}
-              else={
-                <Button
-                  label={tr("browser.external.connect")}
-                  size="sm"
-                  variant="secondary"
-                  loading={externalBrowserAction() === "connect"}
-                  disabled={busy() || !externalBrowserStatus()}
-                  accessibilityLabel="external-browser-connect"
-                  onPress={() => void connectExternalBrowser()}
+          <If
+            when={!externalBrowserUnsupported()}
+            else={
+              <View style={{ opacity: 0.4 }} accessibilityLabel="external-browser-unsupported">
+                <Row
+                  first
+                  label={tr("browser.external.status")}
+                  detail={device() ? tr("settings.unsupported", { device: device() }) : tr("settings.unsupportedHere")}
                 />
+              </View>
+            }
+          >
+            <Row
+              first
+              label={tr("browser.external.status")}
+              accessibilityLabel="external-browser-status"
+              detailNode={
+                <View style={{ gap: space.xs }}>
+                  <If when={externalBrowserLoading() && !externalBrowserStatus()}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
+                      <Spinner size={12} color={palette().textMuted} />
+                      <Text style={textStyle("caption")}>{tr("common.loading")}</Text>
+                    </View>
+                  </If>
+                  <If when={externalBrowserError()}>
+                    {err => (
+                      <Text style={textStyle("caption", { color: palette().danger })}>
+                        {localizeHostError(err())}
+                      </Text>
+                    )}
+                  </If>
+                  <If when={!externalBrowserError() ? externalBrowserStatus() : null}>
+                    {status => (
+                      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: space.xs, rowGap: space.hair }}>
+                        <Text
+                          accessibilityLabel="external-browser-state"
+                          style={{ ...textStyle("caption", { color: palette().textSecondary }), fontWeight: "500" }}
+                        >
+                          {externalBrowserStateText(status())}
+                        </Text>
+                        <If when={detailText()}>
+                          {detail => (
+                            <>
+                              <Text style={textStyle("caption")}>·</Text>
+                              <Text style={textStyle("caption")}>{detail()}</Text>
+                            </>
+                          )}
+                        </If>
+                      </View>
+                    )}
+                  </If>
+                </View>
               }
             >
-              <Button
-                label={tr("browser.external.disconnect")}
-                size="sm"
-                variant="ghost"
-                loading={externalBrowserAction() === "disconnect"}
-                disabled={busy()}
-                accessibilityLabel="external-browser-disconnect"
-                onPress={() => void disconnectExternalBrowser()}
-              />
-            </If>
-          </Row>
-          <If when={externalBrowserOutcome()}>
-            {outcome => (
-              <Row label={outcomeText(outcome())} accessibilityLabel={`external-browser-outcome-${outcome().kind}`}>
-                <If when={outcome().kind === "setup" && (outcome() as { setupUrl?: string }).setupUrl ? "url" : ""}>
-                  <Button
-                    label={tr("browser.external.copyAddress")}
-                    size="sm"
-                    variant="ghost"
-                    leadingIcon="copy"
-                    accessibilityLabel="external-browser-copy-setup"
-                    onPress={() => copySetupUrl((outcome() as { setupUrl: string }).setupUrl)}
-                  />
-                </If>
-                <If when={outcome().kind === "restart"}>
-                  <Button
-                    label={tr("browser.external.restartAction")}
-                    size="sm"
-                    variant="secondary"
-                    loading={externalBrowserAction() === "restart"}
-                    disabled={busy()}
-                    accessibilityLabel="external-browser-restart"
-                    onPress={() => void restartExternalBrowser()}
-                  />
-                </If>
-                <IconButton
-                  icon="close"
-                  size="xs"
-                  tooltip={tr("browser.external.dismiss")}
-                  accessibilityLabel="external-browser-dismiss"
-                  onPress={dismissExternalBrowserOutcome}
+              <If
+                when={Boolean(externalBrowserError()) && !externalBrowserStatus()}
+                else={
+                  <If
+                    when={externalBrowserStatus()?.cdpAvailable === true}
+                    else={
+                      <Button
+                        label={tr("browser.external.connect")}
+                        size="sm"
+                        variant="secondary"
+                        loading={externalBrowserAction() === "connect"}
+                        disabled={busy() || externalBrowserLoading() || !externalBrowserStatus()}
+                        accessibilityLabel="external-browser-connect"
+                        onPress={() => void connectExternalBrowser()}
+                      />
+                    }
+                  >
+                    <Button
+                      label={tr("browser.external.disconnect")}
+                      size="sm"
+                      variant="ghost"
+                      loading={externalBrowserAction() === "disconnect"}
+                      disabled={busy()}
+                      accessibilityLabel="external-browser-disconnect"
+                      onPress={() => void disconnectExternalBrowser()}
+                    />
+                  </If>
+                }
+              >
+                <Button
+                  label={tr("common.tryAgain")}
+                  size="sm"
+                  variant="ghost"
+                  accessibilityLabel="external-browser-retry"
+                  onPress={() => void refreshExternalBrowser()}
                 />
-              </Row>
-            )}
+              </If>
+            </Row>
+            <If when={externalBrowserOutcome()}>
+              {outcome => (
+                <Row
+                  label={outcomeText(outcome())}
+                  labelTone={outcome().kind === "failed" ? "danger" : "default"}
+                  accessibilityLabel={`external-browser-outcome-${outcome().kind}`}
+                  detailNode={
+                    outcome().kind === "setup" && (outcome() as { setupUrl?: string }).setupUrl ? (
+                      <View
+                        style={{
+                          alignSelf: "flex-start",
+                          maxWidth: "100%",
+                          paddingHorizontal: space.chip,
+                          paddingVertical: space.hair,
+                          borderRadius: radii.xs,
+                          backgroundColor: palette().surfaceTertiary,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            ...textStyle("mono", { color: palette().textSecondary }),
+                            userSelect: "text",
+                            numberOfLines: 1,
+                            textOverflow: "ellipsis-middle",
+                          }}
+                        >
+                          {(outcome() as { setupUrl: string }).setupUrl}
+                        </Text>
+                      </View>
+                    ) : undefined
+                  }
+                >
+                  <If when={outcome().kind === "setup" && (outcome() as { setupUrl?: string }).setupUrl ? "url" : ""}>
+                    <Button
+                      label={tr("browser.external.copyAddress")}
+                      size="sm"
+                      variant="ghost"
+                      leadingIcon="copy"
+                      accessibilityLabel="external-browser-copy-setup"
+                      onPress={() => copySetupUrl((outcome() as { setupUrl: string }).setupUrl)}
+                    />
+                  </If>
+                  <If when={outcome().kind === "restart"}>
+                    <Button
+                      label={tr("browser.external.restartAction")}
+                      size="sm"
+                      variant="secondary"
+                      loading={externalBrowserAction() === "restart"}
+                      disabled={busy()}
+                      accessibilityLabel="external-browser-restart"
+                      onPress={() => void restartExternalBrowser()}
+                    />
+                  </If>
+                  <IconButton
+                    icon="close"
+                    size="xs"
+                    tooltip={tr("browser.external.dismiss")}
+                    accessibilityLabel="external-browser-dismiss"
+                    onPress={dismissExternalBrowserOutcome}
+                  />
+                </Row>
+              )}
+            </If>
           </If>
         </If>
       </View>

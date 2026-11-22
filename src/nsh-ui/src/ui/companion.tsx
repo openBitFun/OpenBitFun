@@ -6,7 +6,7 @@
 // Everything it shows comes from `companionStore.ts`; colors come only from
 // the palette (the selection ring), the pet itself is its artwork.
 
-import { cleanup, effect, Image, signal, Text, untracked, View } from "nsh";
+import { cleanup, effect, Image, lifecycle, reduceMotion, signal, Text, untracked, View } from "nsh";
 import { Menu } from "nsh/desktop";
 import {
   companionBusy,
@@ -26,13 +26,17 @@ import {
   type CompanionPet,
 } from "../companionStore";
 import { tr } from "../i18n";
-import { palette, radii, space, textStyle } from "../theme";
+import { compactLayout, palette, radii, space, textStyle, touchSlop } from "../theme";
 import { stateWord, type MarkState } from "./fleet";
 import { Icon } from "./icons";
+import { pressTransition, tactileActiveStyle } from "./motion";
+import { focusRingStyle, InlineConfirmBar, SkeletonBlock, TooltipBubble } from "./primitives";
 import { MoreMenu } from "./studio";
 
 /** Petdex cells are 192 × 208; a sheet whose size is unknown yet uses that shape. */
 const DEFAULT_CELL_ASPECT = 192 / 208;
+const PET_TILE_WIDTH = space.x6l + space.x4l + space.sm;
+const PET_PREVIEW_HEIGHT = space.x5l + space.sm;
 
 export interface PetSpriteProps {
   pet: CompanionPet;
@@ -65,9 +69,9 @@ export function PetSprite(props: PetSpriteProps) {
       })
       .catch(() => undefined);
   });
-  // Animated rows only; a still preview keeps the first frame.
+  // Animated rows only; freeze at frame 0 for still previews, reduced motion, or hidden windows.
   effect(() => {
-    if (props.state === null) {
+    if (props.state === null || reduceMotion() || lifecycle() === "background") {
       frame.set(0);
       return;
     }
@@ -97,6 +101,9 @@ export function PetSprite(props: PetSpriteProps) {
             }}
           />
         )}
+      </If>
+      <If when={!sheet() && !failed()}>
+        <SkeletonBlock width={width()} height={props.height} borderRadius={radii.sm} />
       </If>
       <If when={!sheet() && failed()}>
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
@@ -137,14 +144,22 @@ export function PetWindowContent(props: PetWindowContentProps) {
           event.pagePosition,
         )
       }
-      style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space.sm, backgroundColor: "transparent" }}
+      style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space.md, backgroundColor: "transparent" }}
     >
       <View
         role="button"
         accessibilityLabel="pet-open-inbox"
-        tooltip={stateWord(petState())}
+        hitSlop={touchSlop(props.height)}
+        tooltip={compactLayout() ? undefined : <TooltipBubble text={stateWord(petState())} />}
         onPress={() => props.onOpen()}
-        style={{ cursor: "pointer" }}
+        activeStyle={tactileActiveStyle(0.96)}
+        focusVisibleStyle={focusRingStyle()}
+        style={{
+          borderRadius: radii.md,
+          cursor: "pointer",
+          userSelect: "none",
+          ...pressTransition(120),
+        }}
       >
         <PetSprite pet={props.pet} state={petState()} height={props.height} />
       </View>
@@ -154,57 +169,125 @@ export function PetWindowContent(props: PetWindowContentProps) {
 
 /** Settings › Pet: the characters to pick from, the chosen one ringed. */
 export function PetCharacterGrid() {
+  const pendingDelete = signal<CompanionPet | null>(null);
+  const busy = () => companionBusy() !== null;
   const isSelected = (pet: CompanionPet) => {
     const current = selectedPet();
     return Boolean(current && (current.spritesheetPath === pet.spritesheetPath || (current.id === pet.id && current.source === pet.source)));
   };
   return (
-    <View accessibilityLabel="pet-characters" style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
-      <Each of={companionPets() ?? []} key={pet => `${pet.source}:${pet.packagePath}`}>
-        {pet => (
-          <View
-            role="radio"
-            accessibilityLabel={`pet-choose-${pet().id}`}
-            accessibilityState={{ selected: isSelected(pet()), disabled: companionBusy() !== null }}
-            onPress={() => void selectCompanionPet(pet())}
-            style={{
-              width: space.x6l + space.x3l,
-              alignItems: "center",
-              gap: space.xs,
-              padding: space.sm,
-              borderRadius: radii.md,
-              borderWidth: 1,
-              borderColor: isSelected(pet()) ? palette().borderFocus : palette().borderSubtle,
-              backgroundColor: palette().panelRaised,
-              cursor: "pointer",
+    <View style={{ gap: space.sm }}>
+      <If when={companionPets() === null}>
+        <View accessibilityLabel="pet-characters-loading" style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+          <SkeletonBlock width={PET_TILE_WIDTH} height={space.x6l + space.xxl} borderRadius={radii.md} />
+          <SkeletonBlock width={PET_TILE_WIDTH} height={space.x6l + space.xxl} borderRadius={radii.md} />
+          <SkeletonBlock width={PET_TILE_WIDTH} height={space.x6l + space.xxl} borderRadius={radii.md} />
+        </View>
+      </If>
+      <If when={companionPets() !== null && (companionPets() ?? []).length === 0}>
+        <Text accessibilityLabel="pet-characters-empty" style={textStyle("caption")}>
+          {tr("common.none")}
+        </Text>
+      </If>
+      <If when={(companionPets() ?? []).length > 0}>
+        <View accessibilityLabel="pet-characters" style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+          <Each of={companionPets() ?? []} key={pet => `${pet.source}:${pet.packagePath}`}>
+            {pet => (
+              <View
+                style={{
+                  position: "relative",
+                  width: PET_TILE_WIDTH,
+                  borderRadius: radii.md,
+                  borderCurve: "continuous",
+                  borderWidth: 1,
+                  borderColor: isSelected(pet()) ? palette().borderFocus : palette().borderSubtle,
+                  backgroundColor: isSelected(pet()) ? palette().accentSoft : palette().panelRaised,
+                  opacity: busy() ? 0.45 : 1,
+                }}
+              >
+                <View
+                  role="radio"
+                  accessibilityLabel={`pet-choose-${pet().id}`}
+                  accessibilityState={{ selected: isSelected(pet()), disabled: busy() }}
+                  disabled={busy()}
+                  tooltip={compactLayout() ? undefined : <TooltipBubble text={pet().displayName} />}
+                  onPress={() => {
+                    if (busy()) return;
+                    void selectCompanionPet(pet());
+                  }}
+                  hoverStyle={busy() || compactLayout() ? undefined : { backgroundColor: palette().panelHover }}
+                  activeStyle={busy() ? undefined : tactileActiveStyle(0.97)}
+                  focusVisibleStyle={focusRingStyle()}
+                  style={{
+                    alignItems: "center",
+                    gap: space.xs,
+                    padding: space.sm,
+                    borderRadius: radii.md,
+                    cursor: busy() ? "default" : "pointer",
+                    userSelect: "none",
+                    ...pressTransition(120),
+                  }}
+                >
+                  <PetSprite pet={pet()} state={null} height={PET_PREVIEW_HEIGHT} />
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.xs, alignSelf: "stretch", minWidth: 0 }}>
+                    <If when={isSelected(pet())}>
+                      <Icon name="check" size={12} color={palette().textSecondary} />
+                    </If>
+                    <Text
+                      style={{
+                        ...textStyle("caption", { color: isSelected(pet()) ? palette().text : palette().textSecondary }),
+                        fontWeight: isSelected(pet()) ? "600" : "400",
+                        flexShrink: 1,
+                        minWidth: 0,
+                        textAlign: "center",
+                        numberOfLines: 1,
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {pet().displayName}
+                    </Text>
+                  </View>
+                </View>
+                <If when={pet().source !== "builtin"}>
+                  <View style={{ position: "absolute", top: space.xs, right: space.xs }}>
+                    <MoreMenu
+                      size="xs"
+                      accessibilityLabel={`pet-menu-${pet().id}`}
+                      items={[
+                        {
+                          id: "delete",
+                          label: tr("pet.delete"),
+                          icon: "trash",
+                          danger: true,
+                          disabled: busy(),
+                          accessibilityLabel: `pet-delete-${pet().id}`,
+                          onSelect: () => pendingDelete.set(pet()),
+                        },
+                      ]}
+                    />
+                  </View>
+                </If>
+              </View>
+            )}
+          </Each>
+        </View>
+      </If>
+      <If when={pendingDelete()}>
+        {target => (
+          <InlineConfirmBar
+            danger
+            message={target().displayName}
+            confirmLabel={tr("pet.delete")}
+            cancelLabel={tr("common.cancel")}
+            onConfirm={() => {
+              const current = target();
+              pendingDelete.set(null);
+              void deleteCompanionPet(current);
             }}
-            hoverStyle={{ backgroundColor: palette().panelHover }}
-          >
-            <PetSprite pet={pet()} state={null} height={space.x5l + space.sm} />
-            <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, alignSelf: "stretch" }}>
-              <Text style={{ ...textStyle("caption"), flex: 1, minWidth: 0, textAlign: "center", numberOfLines: 1, textOverflow: "ellipsis" }}>
-                {pet().displayName}
-              </Text>
-              <If when={pet().source !== "builtin"}>
-                <MoreMenu
-                  size="xs"
-                  accessibilityLabel={`pet-menu-${pet().id}`}
-                  items={[
-                    {
-                      id: "delete",
-                      label: tr("pet.delete"),
-                      icon: "trash",
-                      danger: true,
-                      accessibilityLabel: `pet-delete-${pet().id}`,
-                      onSelect: () => void deleteCompanionPet(pet()),
-                    },
-                  ]}
-                />
-              </If>
-            </View>
-          </View>
+            onCancel={() => pendingDelete.set(null)}
+          />
         )}
-      </Each>
+      </If>
     </View>
   );
 }

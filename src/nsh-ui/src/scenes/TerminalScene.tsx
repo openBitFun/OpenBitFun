@@ -1,10 +1,12 @@
 import { ToolPaneHeader } from "../ui/toolPane";
 import { cleanup, effect, Scroll, signal, Text, View, type ViewRef } from "nsh";
 import { Terminal, type TerminalRef } from "nsh/base";
+import { fleetDeviceById } from "../fleetStore";
 import { formatCount } from "../format";
 import { localizeHostError, tr } from "../i18n";
-import { activeScene, activeWorkspaceId, activeWorkspaceRoot } from "../state";
+import { activeWorkspaceId, activeWorkspaceRoot, deviceContext } from "../state";
 import {
+  activeTerminalTab,
   applyTerminalTitle,
   attachTerminalWriter,
   chooseShell,
@@ -44,15 +46,20 @@ import {
   updateProfileDraft,
 } from "../terminalProfiles";
 import {
+  compactLayout,
   concentricRadius,
   controlHeight,
   fontMono,
+  layout,
   palette,
   radii,
+  space,
   textLineHeight,
   textSize,
-  textTracking,
+  textStyle,
+  touchSlop,
 } from "../theme";
+import { deviceException, stateColor, StateMark, type MarkState } from "../ui/fleet";
 import { Icon } from "../ui/icons";
 import {
   MOTION_DURATION,
@@ -70,14 +77,14 @@ import {
 } from "../ui/overlays";
 import {
   Button,
+  EmptyStateCard,
+  focusRingStyle,
   IconButton,
   InlineBanner,
   InlineConfirmBar,
   InputBox,
-  StatusDot,
   TooltipBubble,
   type InlineBannerTone,
-  type StatusDotKind,
 } from "../ui/primitives";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
 import { createSceneWidth, ToolbarDivider, WORKBENCH_TOUCH_MIN } from "../ui/workbenchLayout";
@@ -102,24 +109,14 @@ function resetMountedTerminals(): void {
 }
 
 const profileModalOpen = signal(false);
-const compactMenuOpen = signal(false);
-const compactMenuAnchor = signal<ViewRef | null>(null);
-const runProfileOpen = signal(false);
-const runProfileAnchor = signal<ViewRef | null>(null);
 
-function tabDotKind(status: string): StatusDotKind {
+function terminalMarkState(status: string): MarkState {
   const lower = status.toLowerCase();
-  if (lower.startsWith("exited") || lower === "starting") return "warning";
-  if (lower === "failed" || lower === "closed") return "danger";
-  if (lower === "running") return "success";
-  return "muted";
-}
-
-function tabStatusColor(status: string): string {
-  const lower = status.toLowerCase();
-  if (lower.startsWith("exited") || lower === "starting") return palette().warning;
-  if (lower === "failed" || lower === "closed") return palette().danger;
-  return palette().textMuted;
+  if (lower === "running") return "working";
+  if (lower === "starting") return "queued";
+  if (lower === "failed") return "failed";
+  if (lower.startsWith("exited") || lower === "closed") return "stopped";
+  return "idle";
 }
 
 function localizedTabStatus(status: string): string {
@@ -133,13 +130,6 @@ function localizedTabStatus(status: string): string {
   if (lower === "failed") return tr("terminal.statusFailed");
   if (lower === "closed") return tr("terminal.statusClosed");
   return status;
-}
-
-function terminalBannerTone(message: string): InlineBannerTone {
-  const lower = message.trim().toLowerCase();
-  if (lower === "shell exited" || /\bcode\s+0\b/.test(lower)) return "neutral";
-  if (lower.startsWith("shell exited")) return "warning";
-  return "danger";
 }
 
 function profileNoticeTone(): InlineBannerTone {
@@ -162,6 +152,7 @@ function profileSpecLabel(profile: {
  */
 function TabChip(props: {
   tabId: string;
+  index: number;
   title: string;
   status: string;
   active: boolean;
@@ -171,46 +162,54 @@ function TabChip(props: {
   touch?: boolean;
 }) {
   const hovered = signal(false);
-  const innerRadius = concentricRadius(radii.sm, 2);
-  // One status mark per tab: the compact strip shows a running shell as a dot,
-  // everything else reads as quiet inline status text.
-  const showDot = () => Boolean(props.compact) && props.status.toLowerCase() === "running";
+  const innerRadius = concentricRadius(radii.sm, space.hair);
+  const tabHeight = () => (compactLayout() ? layout.touchTarget : controlHeight.md);
+  // One status mark per tab: compact strip shows `<StateMark>` (teal pulse via ui/fleet.tsx),
+  // full strip shows localized inline status text.
+  const showMark = () => Boolean(props.compact) && props.status.toLowerCase() === "running";
+  const fallbackTitle = () => tr("pane.terminal.tab", { n: props.index + 1 });
+  const displayTitle = () => props.title || fallbackTitle();
 
   return (
     <View
       onMouseEnter={() => hovered.set(true)}
       onMouseLeave={() => hovered.set(false)}
-      hitSlop={props.touch ? 4 : undefined}
+      hitSlop={props.touch || compactLayout() ? touchSlop(controlHeight.md) : undefined}
       style={{
         boxSizing: "border-box",
         flexDirection: "row",
         alignItems: "center",
         flexShrink: 0,
-        gap: 2,
-        height: props.touch ? 36 : props.compact ? controlHeight.xs : controlHeight.sm,
-        paddingLeft: 8,
-        paddingRight: 3,
+        gap: space.hair,
+        minHeight: tabHeight(),
+        paddingLeft: space.sm,
+        paddingRight: space.xs,
         borderRadius: radii.sm,
         borderCurve: "continuous",
         backgroundColor: props.active ? palette().panelHover : "transparent",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
-      hoverStyle={{
-        backgroundColor: palette().panelHover,
-      }}
+      hoverStyle={
+        compactLayout()
+          ? undefined
+          : {
+              backgroundColor: palette().panelHover,
+            }
+      }
     >
       <View
         role="tab"
         tooltip={
-          props.compact ? (
-            <TooltipBubble text={`${props.title} · ${localizedTabStatus(props.status)}`} />
+          props.compact && !compactLayout() ? (
+            <TooltipBubble text={`${displayTitle()} · ${localizedTabStatus(props.status)}`} />
           ) : undefined
         }
         accessibilityState={{ selected: props.active }}
-        accessibilityLabel={`terminal-tab-${props.title}`}
+        accessibilityLabel={`terminal-tab-${displayTitle()}`}
         onPress={event => {
           if (event?.clickCount === 2) {
-            renameDraft.set(props.title);
+            renameDraft.set(displayTitle());
             renamingTerminal.set(props.tabId);
             return;
           }
@@ -219,23 +218,20 @@ function TabChip(props: {
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: 6,
-          paddingVertical: 2,
-          paddingHorizontal: 2,
+          gap: space.chip,
+          paddingVertical: space.hair,
+          paddingHorizontal: space.hair,
           borderRadius: innerRadius,
           borderCurve: "continuous",
           cursor: "pointer",
+          userSelect: "none",
           ...pressTransition(MOTION_DURATION.fast),
         }}
         activeStyle={tactileActiveStyle(0.97)}
-        focusVisibleStyle={{
-          outlineWidth: 2,
-          outlineColor: palette().borderFocus,
-          outlineOffset: 1,
-        }}
+        focusVisibleStyle={focusRingStyle()}
       >
-        <If when={showDot()}>
-          <StatusDot kind={tabDotKind(props.status)} size={5.5} />
+        <If when={showMark()}>
+          <StateMark state={terminalMarkState(props.status)} size={12} />
         </If>
         <If
           when={renamingTerminal() === props.tabId}
@@ -244,14 +240,14 @@ function TabChip(props: {
               style={{
                 color: props.active ? palette().text : palette().textSecondary,
                 fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.3),
+                lineHeight: textLineHeight(12, 16 / 12),
                 fontWeight: props.active ? "600" : "500",
                 maxWidth: props.compact ? 112 : 168,
                 numberOfLines: 1,
                 textOverflow: "ellipsis-middle",
               }}
             >
-              {props.title}
+              {displayTitle()}
             </Text>
           }
         >
@@ -259,11 +255,11 @@ function TabChip(props: {
             <InputBox
               size="sm"
               value={renameDraft()}
-              placeholder={props.title}
+              placeholder={fallbackTitle()}
               accessibilityLabel="terminal-rename-input"
               autoFocus={true}
               onChange={value => renameDraft.set(value)}
-              onSubmit={() => renameTerminalTab(props.tabId, renameDraft() || props.title)}
+              onSubmit={() => renameTerminalTab(props.tabId, renameDraft() || displayTitle())}
               onKeyPress={event => {
                 if (event.key === "Escape") renamingTerminal.set(null);
               }}
@@ -272,26 +268,26 @@ function TabChip(props: {
         </If>
         <If when={props.agent}>
           <View
-            tooltip={<TooltipBubble text={tr("terminal.agentCreatedHint")} />}
+            tooltip={compactLayout() ? undefined : <TooltipBubble text={tr("terminal.agentCreatedHint")} />}
             style={{ flexShrink: 0 }}
           >
             <Text
               style={{
                 color: palette().textMuted,
                 fontSize: textSize(11),
-                lineHeight: textLineHeight(11, 1.3),
+                lineHeight: textLineHeight(11, 14 / 11),
               }}
             >
               {tr("terminal.agentBadge")}
             </Text>
           </View>
         </If>
-        <If when={!showDot()}>
+        <If when={!showMark()}>
           <Text
             style={{
-              color: tabStatusColor(props.status),
+              color: stateColor(terminalMarkState(props.status)),
               fontSize: textSize(11),
-              lineHeight: textLineHeight(11, 1.3),
+              lineHeight: textLineHeight(11, 14 / 11),
               fontVariant: ["tabular-nums"],
               flexShrink: 0,
             }}
@@ -303,14 +299,12 @@ function TabChip(props: {
       <IconButton
         icon="close"
         size="xs"
-        iconSize={10.5}
+        iconSize={12}
         tooltip={tr("terminal.closeShell")}
         accessibilityLabel={"\u00d7"}
         style={{
-          width: 18,
-          height: 18,
           borderRadius: innerRadius,
-          opacity: props.active || hovered() ? 0.86 : 0.34,
+          opacity: compactLayout() || props.active || hovered() ? 0.86 : 0.34,
         }}
         onPress={() => requestCloseTerminalTab(props.tabId)}
       />
@@ -352,6 +346,11 @@ function quickProfileOptions(): SelectDropdownOption<string>[] {
 export function TerminalScene(props: { compact?: boolean } = {}) {
   attachTerminalWriter(writeToMountedTerminals, resetMountedTerminals);
   const sceneWidth = createSceneWidth();
+  const measuredWidth = signal(0);
+  const compactMenuOpen = signal(false);
+  const compactMenuAnchor = signal<ViewRef | null>(null);
+  const runProfileOpen = signal(false);
+  const runProfileAnchor = signal<ViewRef | null>(null);
 
   let localTerminalRef: TerminalRef | undefined;
   const bindTerminalRef = (el: TerminalRef | null | undefined) => {
@@ -384,6 +383,10 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
     }
   });
 
+  const scopeDevice = () => fleetDeviceById(deviceContext());
+  const deviceOffline = () => deviceException(scopeDevice()?.state) === "offline";
+  const deviceLabel = () => scopeDevice()?.name || tr("device.thisDevice");
+
   // The host resolves a terminal through its workspace, and the workspace list
   // arrives after this scene mounts: create the shell when the workspace is known
   // rather than once with nothing to attach it to.
@@ -391,7 +394,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
   void loadTerminalProfiles();
   effect(() => {
     const workspaceId = activeWorkspaceId();
-    if (!workspaceId) return;
+    if (!workspaceId || deviceOffline()) return;
     void ensureTerminal(workspaceId, activeWorkspaceRoot());
   });
   effect(() => {
@@ -399,7 +402,16 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
     if (profileModalOpen() !== next) profileModalOpen.set(next);
   });
 
-  const startNewShell = () => void openTerminal(activeWorkspaceId(), activeWorkspaceRoot());
+  const startNewShell = () => {
+    if (deviceOffline()) return;
+    void openTerminal(activeWorkspaceId(), activeWorkspaceRoot());
+  };
+  const startRenameActive = () => {
+    const active = activeTerminalTab();
+    if (!active) return;
+    renameDraft.set(active.title);
+    renamingTerminal.set(active.id);
+  };
   const toggleProfileModal = () =>
     profileDraft()
       ? closeProfileDraft()
@@ -408,14 +420,20 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
     const match = profilesFor(activeWorkspaceRoot()).find(p => p.id === id);
     if (match) void openProfile(activeWorkspaceId(), activeWorkspaceRoot(), match);
   };
-  const showBannerRestart = (message: string): boolean => {
-    const status = terminalStatus().toLowerCase();
-    return (
-      status === "exited" ||
-      status === "failed" ||
-      status === "closed" ||
-      message.toLowerCase().includes("exited")
-    );
+  const activeExited = () => {
+    const active = activeTerminalTab();
+    if (!active) return false;
+    return active.status.toLowerCase().startsWith("exited");
+  };
+  const activeExitedText = () => {
+    const active = activeTerminalTab();
+    if (!active) return "";
+    if (typeof active.exitCode === "number") {
+      return tr("pane.terminal.exited", { code: active.exitCode });
+    }
+    const parsed = /^exited\s*\((-?\d+)\)$/i.exec(active.status.trim());
+    if (parsed) return tr("pane.terminal.exited", { code: parsed[1] });
+    return tr("terminal.statusExited");
   };
 
   const compactMenuItems = (): DropdownMenuItem[] => {
@@ -453,6 +471,14 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
 
     items.push({ id: "sep-manage", label: "", separator: true });
     items.push({
+      id: "rename-tab",
+      label: tr("common.renameEllipsis"),
+      icon: "edit",
+      disabled: !terminalId(),
+      accessibilityLabel: "terminal-rename-tab",
+      onSelect: startRenameActive,
+    });
+    items.push({
       id: "manage-profiles",
       label: tr("terminal.profilesCount", { count: formatCount(profiles.length) }),
       icon: "sliders",
@@ -467,22 +493,6 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
       accessibilityLabel: "terminal-clear",
       onSelect: clearTerminalView,
     });
-    // The workbench switcher does not fit a narrow strip; its two siblings move here.
-    if (!props.compact) {
-      items.push({ id: "sep-workbench", label: "", separator: true });
-      items.push({
-        id: "go-files",
-        label: tr("nav.files"),
-        icon: "folder",
-        onSelect: () => activeScene.set("files"),
-      });
-      items.push({
-        id: "go-git",
-        label: tr("nav.git"),
-        icon: "git-branch",
-        onSelect: () => activeScene.set("git"),
-      });
-    }
     return items;
   };
 
@@ -496,12 +506,20 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
       onSelect: () => openQuickProfile(option.value),
     }));
 
-  // Narrow: the aux pane, or a scene under 600 pt wide. One quiet strip then.
-  const narrow = () => Boolean(props.compact) || sceneWidth.stacked();
+  // Narrow: the aux pane, phone compact layout, or a scene under 680 pt wide (prevents 600-680 toolbar overflow).
+  const narrow = () =>
+    Boolean(props.compact) ||
+    compactLayout() ||
+    sceneWidth.stacked() ||
+    (measuredWidth() > 0 && measuredWidth() < 680);
 
   return (
     <View
-      onLayout={sceneWidth.onLayout}
+      onLayout={event => {
+        sceneWidth.onLayout(event);
+        const next = Math.round(event.bounds.size.width);
+        if (next > 0 && next !== measuredWidth()) measuredWidth.set(next);
+      }}
       style={{
         flex: 1,
         minHeight: 0,
@@ -518,24 +536,25 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
       <If when={!narrow()}>
         <View
           style={{
-            minHeight: 44,
-            paddingHorizontal: 14,
-            paddingVertical: 6,
+            minHeight: layout.touchTarget,
+            paddingHorizontal: space.lg,
+            paddingVertical: space.xs,
             flexDirection: "row",
+            flexWrap: "wrap",
             alignItems: "center",
-            gap: 8,
+            gap: space.sm,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvas,
           }}
         >
-
-          <Scroll horizontal scrollbar={false} style={{ flex: 1, minWidth: 120 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+          <Scroll horizontal scrollbar={false} style={{ flex: 1, minWidth: 140 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
               <Each of={visibleTerminalTabs()} key={tab => tab.id}>
-                {tab => (
+                {(tab, index) => (
                   <TabChip
                     tabId={tab().id}
+                    index={index()}
                     title={tab().title}
                     status={tab().status}
                     active={tab().id === terminalId()}
@@ -546,10 +565,8 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               <If when={visibleTerminalTabs().length === 0}>
                 <Text
                   style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                    paddingHorizontal: 4,
+                    ...textStyle("caption"),
+                    paddingHorizontal: space.xs,
                   }}
                 >
                   {terminalStatus() === "starting"
@@ -560,7 +577,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             </View>
           </Scroll>
 
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
             <SelectDropdown
               options={shellOptions()}
               value={selectedShellId() ?? "__default__"}
@@ -601,6 +618,14 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               onPress={toggleProfileModal}
             />
             <IconButton
+              icon="edit"
+              size="sm"
+              tooltip={tr("common.renameEllipsis")}
+              accessibilityLabel="terminal-rename-tab"
+              disabled={!terminalId()}
+              onPress={startRenameActive}
+            />
+            <IconButton
               icon="trash"
               size="sm"
               tooltip={tr("terminal.clear")}
@@ -610,25 +635,28 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
             />
             <ToolbarDivider />
             <Button
-              label={tr("terminal.newShell")}
+              label={tr("pane.terminal.new")}
               variant="primary"
               size="sm"
               leadingIcon="plus"
+              disabled={deviceOffline()}
+              accessibilityLabel={tr("terminal.newShell")}
               onPress={startNewShell}
             />
           </View>
         </View>
       </If>
 
-      {/* Narrow strip (aux pane or a scene under 600 pt): tabs, a quiet '+', and one "…" menu. 44 pt tall for touch. */}
+      {/* Narrow strip (aux pane or a scene under 680 pt): tabs, a quiet '+', and one "…" menu. 44 pt tall for touch. */}
       <If when={narrow()}>
         <View
           style={{
-            height: WORKBENCH_TOUCH_MIN,
-            paddingHorizontal: 8,
+            minHeight: WORKBENCH_TOUCH_MIN,
+            paddingHorizontal: space.sm,
+            paddingVertical: space.xs,
             flexDirection: "row",
             alignItems: "center",
-            gap: 6,
+            gap: space.xs,
             flexShrink: 0,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
@@ -636,11 +664,12 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           }}
         >
           <Scroll horizontal scrollbar={false} style={{ flex: 1, minWidth: 0 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair }}>
               <Each of={visibleTerminalTabs()} key={tab => tab.id}>
-                {tab => (
+                {(tab, index) => (
                   <TabChip
                     tabId={tab().id}
+                    index={index()}
                     title={tab().title}
                     status={tab().status}
                     active={tab().id === terminalId()}
@@ -653,10 +682,8 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               <If when={visibleTerminalTabs().length === 0}>
                 <Text
                   style={{
-                    color: palette().textMuted,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
-                    paddingHorizontal: 4,
+                    ...textStyle("caption"),
+                    paddingHorizontal: space.xs,
                   }}
                 >
                   {terminalStatus() === "starting"
@@ -666,11 +693,12 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               </If>
             </View>
           </Scroll>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.hair, flexShrink: 0 }}>
             <IconButton
               icon="plus"
               size="md"
-              tooltip={tr("terminal.newShell")}
+              disabled={deviceOffline()}
+              tooltip={tr("pane.terminal.new")}
               accessibilityLabel={tr("terminal.newShell")}
               onPress={startNewShell}
             />
@@ -706,18 +734,18 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         accessibilityLabel="terminal-profiles-modal"
         onClose={() => closeProfileDraft()}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("common.cancel")}
               variant="ghost"
-              size="sm"
+              size="md"
               accessibilityLabel="profile-cancel"
               onPress={() => closeProfileDraft()}
             />
             <Button
               label={tr("terminal.saveProfile")}
               variant="primary"
-              size="sm"
+              size="md"
               accessibilityLabel="profile-save"
               onPress={() => void saveProfileDraft()}
             />
@@ -725,22 +753,16 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         }
       >
         <If when={Boolean(profileDraft())}>
-          <View style={{ gap: 16 }}>
+          <View style={{ gap: space.lg }}>
             <If when={profilesFor(activeWorkspaceRoot()).length === 0}>
-              <Text
-                style={{
-                  color: palette().textSecondary,
-                  fontSize: textSize(13),
-                  lineHeight: textLineHeight(13, 1.48),
-                }}
-              >
+              <Text style={textStyle("label", { color: palette().textSecondary })}>
                 {tr("terminal.noProfilesYet")}
               </Text>
             </If>
             <If when={profilesFor(activeWorkspaceRoot()).length > 0}>
               <View
                 style={{
-                  borderRadius: 12,
+                  borderRadius: radii.lg,
                   borderCurve: "continuous",
                   borderWidth: 1,
                   borderColor: palette().borderSubtle,
@@ -752,23 +774,32 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                   {(profile, index) => (
                     <View
                       style={{
+                        position: "relative",
                         flexDirection: "column",
-                        gap: 4,
-                        minHeight: 44,
+                        gap: space.xs,
+                        minHeight: layout.touchTarget,
                         justifyContent: "center",
-                        paddingHorizontal: 16,
-                        paddingVertical: 8,
-                        marginLeft: index() > 0 ? 16 : 0,
-                        paddingLeft: index() > 0 ? 0 : 16,
-                        borderTopWidth: index() > 0 ? 1 : 0,
-                        borderColor: palette().borderSubtle,
+                        paddingHorizontal: space.lg,
+                        paddingVertical: space.sm,
                       }}
                     >
+                      <If when={index() > 0}>
+                        <View
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: space.lg,
+                            right: 0,
+                            height: 1,
+                            backgroundColor: palette().borderSubtle,
+                          }}
+                        />
+                      </If>
                       <View
                         style={{
                           flexDirection: "row",
                           alignItems: "center",
-                          gap: 8,
+                          gap: space.sm,
                           minWidth: 0,
                         }}
                       >
@@ -778,7 +809,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                           size="xs"
                           leadingIcon="play"
                           accessibilityLabel={`profile-open-${profile().name}`}
-                          style={{ flexShrink: 1, maxWidth: 340 }}
+                          style={{ flexShrink: 1, minWidth: 0 }}
                           onPress={() => {
                             closeProfileDraft();
                             void openProfile(activeWorkspaceId(), activeWorkspaceRoot(), profile());
@@ -794,16 +825,13 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                         />
                       </View>
                       <View
-                        tooltip={<TooltipBubble text={profileSpecLabel(profile())} />}
+                        tooltip={compactLayout() ? undefined : <TooltipBubble text={profileSpecLabel(profile())} />}
                         style={{ minWidth: 0 }}
                       >
                         <Text
                           style={{
-                            color: palette().textSecondary,
-                            fontSize: textSize(12),
-                            lineHeight: textLineHeight(12, 1.4),
-                            fontFamily: fontMono,
-                            paddingLeft: 2,
+                            ...textStyle("mono", { color: palette().textSecondary }),
+                            paddingLeft: space.hair,
                             numberOfLines: 1,
                             textOverflow: "ellipsis",
                           }}
@@ -819,17 +847,15 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
 
             <View
               style={{
-                gap: 12,
-                paddingTop: 14,
+                gap: space.md,
+                paddingTop: space.lg,
                 borderTopWidth: 1,
                 borderColor: palette().borderSubtle,
               }}
             >
               <Text
                 style={{
-                  color: palette().textSecondary,
-                  fontSize: textSize(13),
-                  lineHeight: textLineHeight(13, 1.32),
+                  ...textStyle("label", { color: palette().textSecondary }),
                   fontWeight: "600",
                 }}
               >
@@ -840,7 +866,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                   flexDirection: "row",
                   flexWrap: "wrap",
                   alignItems: "flex-start",
-                  gap: 10,
+                  gap: space.md,
                 }}
               >
                 <InputBox
@@ -867,16 +893,14 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 8,
+                  gap: space.sm,
                   flexWrap: "wrap",
                 }}
               >
-                <Icon name="terminal" size={13} color={palette().textMuted} />
+                <Icon name="terminal" size={14} color={palette().textMuted} />
                 <Text
                   style={{
-                    color: palette().textSecondary,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.35),
+                    ...textStyle("caption", { color: palette().textSecondary }),
                     fontWeight: "500",
                   }}
                 >
@@ -885,7 +909,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                 <View style={{ flex: 1 }} />
                 <SelectDropdown
                   options={shellOptions()}
-                  value={selectedShellId() ?? "__default__"}
+                  value={profileDraft()?.shellId || "__default__"}
                   placeholder={tr("terminal.defaultShellLabel")}
                   accessibilityLabel="profile-shell-picker"
                   size="md"
@@ -893,7 +917,6 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
                   maxWidth={260}
                   onChange={val => {
                     const nextId = val === "__default__" ? null : val;
-                    chooseShell(nextId);
                     updateProfileDraft({
                       shellId: nextId ?? "",
                       shellType: shellTypeOf(nextId),
@@ -916,7 +939,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
 
       <If when={confirmingCloseTerminal()}>
         {id => (
-          <View style={{ paddingHorizontal: props.compact ? 10 : 14, paddingTop: 8, flexShrink: 0 }}>
+          <View style={{ paddingHorizontal: props.compact ? space.md : space.lg, paddingTop: space.sm, flexShrink: 0 }}>
             <InlineConfirmBar
               danger={true}
               message={tr("terminal.closeRunningConfirm", {
@@ -935,16 +958,24 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
         {message => (
           <View
             style={{
-              paddingHorizontal: props.compact ? 14 : 18,
-              paddingTop: 8,
+              paddingHorizontal: props.compact ? space.md : space.lg,
+              paddingTop: space.sm,
               flexShrink: 0,
             }}
           >
             <InlineBanner
-              tone={terminalBannerTone(message())}
+              tone="danger"
               message={localizeHostError(message())}
-              actionLabel={showBannerRestart(message()) ? tr("terminal.startNewShell") : undefined}
-              onAction={showBannerRestart(message()) ? startNewShell : undefined}
+              actionLabel={
+                terminalStatus().toLowerCase() === "failed" || terminalStatus().toLowerCase() === "closed"
+                  ? tr("pane.terminal.restart")
+                  : undefined
+              }
+              onAction={
+                terminalStatus().toLowerCase() === "failed" || terminalStatus().toLowerCase() === "closed"
+                  ? startNewShell
+                  : undefined
+              }
               onDismiss={() => terminalMessage.set("")}
             />
           </View>
@@ -961,7 +992,7 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           minWidth: 0,
           position: "relative",
           backgroundColor: palette().canvas,
-          padding: 8,
+          padding: space.sm,
         }}
       >
         <Terminal
@@ -969,11 +1000,11 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
           style={{ flex: 1, minHeight: 0, minWidth: 0 }}
           fontFamily={fontMono}
           fontSize={textSize(13)}
-          lineHeight={textLineHeight(13, 1.44)}
+          lineHeight={textLineHeight(13, 18 / 13)}
           cursorStyle={{
             backgroundColor: palette().accent,
             opacity: 0.72,
-            borderRadius: 1,
+            borderRadius: radii.xs,
           }}
           accessibilityLabel="terminal-viewport"
           scrollback={10000}
@@ -997,71 +1028,88 @@ export function TerminalScene(props: { compact?: boolean } = {}) {
               backgroundColor: palette().canvas,
               alignItems: "center",
               justifyContent: "center",
-              padding: props.compact ? 16 : 28,
+              padding: props.compact ? space.lg : space.x3l,
             }}
           >
             <If when={terminalStatus() === "starting"}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
                 <Spinner size={16} color={palette().accent} />
-                <Text
-                  style={{
-                    color: palette().textSecondary,
-                    fontSize: textSize(13),
-                    lineHeight: textLineHeight(13, 1.4),
-                  }}
-                >
+                <Text style={textStyle("label", { color: palette().textSecondary })}>
                   {tr("terminal.startingShell")}
                 </Text>
               </View>
             </If>
             <If when={terminalStatus() !== "starting"}>
-              <View
-                style={{
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  maxWidth: 320,
-                }}
-              >
-                <View style={{ marginBottom: 4 }}>
-                  <Icon name="terminal" size={28} color={palette().textMuted} />
-                </View>
-                <Text
-                  style={{
-                    color: palette().text,
-                    fontSize: textSize(15),
-                    fontWeight: "600",
-                    letterSpacing: textTracking(15),
-                    lineHeight: textLineHeight(15, 1.32),
-                    textAlign: "center",
-                  }}
-                >
-                  {tr("terminal.noActiveShell")}
-                </Text>
-                <Text
-                  style={{
-                    color: palette().textSecondary,
-                    fontSize: textSize(13),
-                    lineHeight: textLineHeight(13, 1.48),
-                    textAlign: "center",
-                  }}
-                >
-                  {tr("terminal.noActiveShellSubtitle")}
-                </Text>
-                <View style={{ marginTop: 6 }}>
-                  <Button
-                    label={tr("terminal.startNewShell")}
-                    variant="primary"
-                    size="sm"
-                    leadingIcon="plus"
-                    onPress={startNewShell}
-                  />
-                </View>
-              </View>
+              <EmptyStateCard
+                icon="terminal"
+                title={tr("terminal.noActiveShell")}
+                subtitle={tr("terminal.noActiveShellSubtitle")}
+                actionLabel={!deviceOffline() && activeWorkspaceId() ? tr("pane.terminal.new") : undefined}
+                onAction={!deviceOffline() && activeWorkspaceId() ? startNewShell : undefined}
+              />
             </If>
           </View>
         </If>
       </View>
+
+      {/* Visual spec §4.10: 32px bottom offline or run-ended bar. */}
+      <If when={deviceOffline()}>
+        <View
+          accessibilityLabel="terminal-offline-bar"
+          style={{
+            minHeight: controlHeight.md,
+            paddingHorizontal: props.compact ? space.md : space.lg,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            flexShrink: 0,
+            borderTopWidth: 1,
+            borderColor: palette().borderSubtle,
+            backgroundColor: palette().canvasSubtle,
+          }}
+        >
+          <Icon name="info" size={14} color={palette().textMuted} />
+          <Text style={{ ...textStyle("caption"), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: "ellipsis" }}>
+            {tr("pane.terminal.offline", { device: deviceLabel() })}
+          </Text>
+        </View>
+      </If>
+      <If when={!deviceOffline() && activeExited()}>
+        <View
+          accessibilityLabel="terminal-exited-bar"
+          style={{
+            minHeight: controlHeight.md,
+            paddingHorizontal: props.compact ? space.md : space.lg,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            flexShrink: 0,
+            borderTopWidth: 1,
+            borderColor: palette().borderSubtle,
+            backgroundColor: palette().canvasSubtle,
+          }}
+        >
+          <StateMark state="stopped" size={12} />
+          <Text
+            style={{
+              ...textStyle("caption", { color: palette().textSecondary, tabular: true }),
+              flex: 1,
+              minWidth: 0,
+              numberOfLines: 1,
+              textOverflow: "ellipsis",
+            }}
+          >
+            {activeExitedText()}
+          </Text>
+          <Button
+            label={tr("pane.terminal.restart")}
+            variant="ghost"
+            size="xs"
+            accessibilityLabel="terminal-restart"
+            onPress={startNewShell}
+          />
+        </View>
+      </If>
     </View>
   );
 }

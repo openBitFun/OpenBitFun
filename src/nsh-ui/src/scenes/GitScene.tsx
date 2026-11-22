@@ -1,9 +1,9 @@
 import { ToolPaneHeader } from "../ui/toolPane";
 import { Canvas, cleanup, Clipboard, computed, effect, Scroll, signal, Text, untracked, View, type ViewRef } from "nsh";
-import { ensureWorkspaceWatch, openFileAt } from "../fileStore";
+import { ensureWorkspaceWatch, joinPath, openFileAt } from "../fileStore";
 import { DiffView, Input } from "nsh/base";
 import { basename, formatCount, formatPlural, formatRelativeTime } from "../format";
-import { localizeHostError, tr } from "../i18n";
+import { currentLocale, localizeHostError, tr } from "../i18n";
 import {
   addGitWorktree,
   addWorktreeModalOpen,
@@ -33,12 +33,14 @@ import {
   gitGraphByHash,
   gitGraphMaxLane,
   gitGraphNote,
+  gitGraphRemoteUnsupported,
   gitNotice,
   gitRepoState,
   gitStatus,
   gitTab,
   gitTrustReport,
   gitWorktreeNote,
+  gitWorktreeRemoteUnsupported,
   gitWorktrees,
   initializeRepositoryWithAgent,
   newBranchName,
@@ -104,17 +106,24 @@ import {
   setCommitAmend,
   switchCommitMessage,
 } from "../gitWorkbenchStore";
-import { activeWorkspace, navigateScene, openInAuxPane } from "../state";
+import { fleetDeviceById } from "../fleetStore";
+import { activeWorkspace, deviceContext, navigateScene, openInAuxPane } from "../state";
 import {
+  compactLayout,
   fontMono,
+  layout,
   palette,
   radii,
+  space,
   textLineHeight,
   textSize,
+  textStyle,
   textTracking,
+  touchSlop,
 } from "../theme";
+import { deviceException, stateColor } from "../ui/fleet";
 import { Icon, type IconName } from "../ui/icons";
-import { createDiffViewStyles, inferCodeLanguage } from "../ui/markdown";
+import { createDiffViewStyles } from "../ui/markdown";
 import {
   MOTION_DURATION,
   paintTransition,
@@ -132,17 +141,16 @@ import {
 import {
   Button,
   EmptyStateCard,
+  focusRingStyle,
   IconButton,
   InlineBanner,
   InlineConfirmBar,
   InputBox,
   SectionCard,
   SplitHandle,
-  StatusDot,
   ToggleSwitch,
   TooltipBubble,
   type SegmentedTabOption,
-  type StatusDotKind,
 } from "../ui/primitives";
 import { RemoteWorkspaceStatusBanner } from "../ui/SshWorkspaceModals";
 import {
@@ -161,7 +169,8 @@ const GIT_SIDEBAR_MAX = 520;
 const LANE_STEP = 14;
 const LANE_PAD = 11;
 /** Lanes past this share the last column, so a very wide graph cannot crowd out the messages. */
-const MAX_DRAWN_LANES = 24;
+const MAX_DRAWN_LANES = 12;
+const MAX_DRAWN_LANES_COMPACT = 6;
 const HISTORY_ROW_HEIGHT = 38;
 
 const gitSidebarWidth = signal(260);
@@ -280,38 +289,13 @@ function laneColor(lane: number): string {
 }
 
 function fileLetterColor(tone: "danger" | "success" | "warning" | "muted"): string {
-  if (tone === "danger") return palette().danger;
-  if (tone === "success") return palette().success;
-  if (tone === "warning") return palette().warning;
-  return palette().accent;
-}
-
-function groupDotKind(tone?: "accent" | "warning" | "danger" | "success" | "neutral"): StatusDotKind {
-  if (tone === "danger") return "danger";
-  if (tone === "success") return "success";
-  if (tone === "warning") return "warning";
-  if (tone === "accent") return "accent";
-  return "muted";
-}
-
-function rowFocusRing(): { outlineWidth: number; outlineColor: string; outlineOffset: number } {
-  return {
-    outlineWidth: 2,
-    outlineColor: palette().borderFocus,
-    outlineOffset: -1,
-  };
+  if (tone === "danger") return stateColor("failed");
+  if (tone === "muted") return palette().textMuted;
+  return palette().textSecondary;
 }
 
 const isRemoteWorkspace = computed(
   () => activeWorkspace()?.workspaceKind === "remote" || Boolean(activeWorkspace()?.connectionId),
-);
-
-const isRemoteGraphNote = computed(() =>
-  gitGraphNote().toLowerCase().includes("local workspaces only"),
-);
-
-const isRemoteWorktreeNote = computed(() =>
-  gitWorktreeNote().toLowerCase().includes("local workspaces only"),
 );
 
 function diffBadgeFor(
@@ -324,18 +308,22 @@ function diffBadgeFor(
 }
 
 /** One quiet inline status per row (replaces a pile of badges): parts joined by " · ". */
-function QuietStatusText(props: { parts: ReadonlyArray<string | false | null | undefined> }) {
+function QuietStatusText(props: {
+  parts: ReadonlyArray<string | false | null | undefined>;
+  shrink?: boolean;
+  maxWidth?: number;
+}) {
   return (
     <If when={props.parts.filter(Boolean).join(" · ")}>
       {text => (
         <Text
           style={{
-            flexShrink: 0,
-            color: palette().textSecondary,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.35),
-            fontVariant: ["tabular-nums"],
+            flexShrink: props.shrink ? 1 : 0,
+            minWidth: 0,
+            maxWidth: props.maxWidth,
+            ...textStyle("caption", { color: palette().textSecondary, tabular: true }),
             numberOfLines: 1,
+            textOverflow: "ellipsis",
           }}
         >
           {text()}
@@ -352,34 +340,15 @@ function QuietGitEmpty(props: { icon: IconName; title: string; subtitle?: string
       style={{
         alignItems: "center",
         justifyContent: "center",
-        gap: 7,
+        gap: space.sm,
         maxWidth: 320,
-        paddingVertical: 16,
+        paddingVertical: space.lg,
       }}
     >
-      <View
-        style={{
-          width: 36,
-          height: 36,
-          borderRadius: radii.md,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: palette().borderSubtle,
-          backgroundColor: palette().surfaceSubtle,
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: 2,
-        }}
-      >
-        <Icon name={props.icon} size={16} color={palette().textMuted} />
-      </View>
+      <Icon name={props.icon} size={28} color={palette().textMuted} />
       <Text
         style={{
-          color: palette().text,
-          fontSize: textSize(13.5),
-          fontWeight: "600",
-          letterSpacing: textTracking(13.5),
-          lineHeight: textLineHeight(13.5, 1.32),
+          ...textStyle("sectionTitle", { color: palette().text }),
           textAlign: "center",
         }}
       >
@@ -389,9 +358,7 @@ function QuietGitEmpty(props: { icon: IconName; title: string; subtitle?: string
         {sub => (
           <Text
             style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.46),
+              ...textStyle("caption", { color: palette().textMuted }),
               textAlign: "center",
             }}
           >
@@ -404,8 +371,7 @@ function QuietGitEmpty(props: { icon: IconName; title: string; subtitle?: string
 }
 
 /**
- * Sleek 32px hairline-underline tab strip for compact AuxPane Git drawer
- * (replaces bulky boxed SegmentedTabs in narrow side drawers).
+ * Sleek hairline-underline tab strip for Git workbench views.
  */
 function GitUnderlineTabs(props: {
   options: ReadonlyArray<SegmentedTabOption<GitTab>>;
@@ -417,11 +383,11 @@ function GitUnderlineTabs(props: {
       <View
         role="tablist"
         style={{
-          height: 32,
+          height: compactLayout() ? WORKBENCH_TOUCH_MIN : 32,
           flexDirection: "row",
           alignItems: "stretch",
-          gap: 14,
-          paddingHorizontal: 10,
+          gap: space.lg,
+          paddingHorizontal: space.md,
         }}
       >
         <Each of={props.options} key={option => option.value}>
@@ -430,26 +396,28 @@ function GitUnderlineTabs(props: {
               role="tab"
               accessibilityLabel={option().accessibilityLabel}
               accessibilityState={{ selected: option().value === props.value }}
+              hitSlop={touchSlop(32)}
               onPress={() => props.onChange(option().value)}
               style={{
                 position: "relative",
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 5,
-                paddingVertical: 4,
+                gap: space.xs,
+                paddingVertical: space.xs,
                 cursor: "pointer",
+                userSelect: "none",
                 ...pressTransition(MOTION_DURATION.fast),
               }}
               activeStyle={tactileActiveStyle(0.97)}
-              focusVisibleStyle={rowFocusRing()}
+              focusVisibleStyle={focusRingStyle()}
             >
               <Text
                 style={{
-                  color:
-                    option().value === props.value ? palette().text : palette().textMuted,
-                  fontSize: textSize(12),
+                  ...textStyle("caption", {
+                    color:
+                      option().value === props.value ? palette().text : palette().textMuted,
+                  }),
                   fontWeight: option().value === props.value ? "600" : "500",
-                  lineHeight: textLineHeight(12, 1.3),
                   numberOfLines: 1,
                 }}
               >
@@ -465,14 +433,14 @@ function GitUnderlineTabs(props: {
                 {badgeText => (
                   <Text
                     style={{
-                      color:
-                        option().value === props.value
-                          ? palette().accent
-                          : palette().textMuted,
-                      fontSize: textSize(10.5),
+                      ...textStyle("caption", {
+                        color:
+                          option().value === props.value
+                            ? palette().accent
+                            : palette().textMuted,
+                        tabular: true,
+                      }),
                       fontWeight: "600",
-                      fontVariant: ["tabular-nums"],
-                      lineHeight: textLineHeight(10.5, 1.25),
                     }}
                   >
                     {badgeText()}
@@ -487,7 +455,7 @@ function GitUnderlineTabs(props: {
                     right: 0,
                     bottom: 0,
                     height: 2,
-                    borderRadius: 2,
+                    borderRadius: radii.xs,
                     backgroundColor: palette().accent,
                   }}
                 />
@@ -517,32 +485,30 @@ function GroupHeader(props: {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        minHeight: props.touch ? WORKBENCH_TOUCH_MIN : undefined,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        gap: space.xs,
+        minHeight: props.touch ? WORKBENCH_TOUCH_MIN : 28,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.xs,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         cursor: "pointer",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: palette().panelHover }}
       activeStyle={{ opacity: 0.88 }}
-      focusVisibleStyle={rowFocusRing()}
+      focusVisibleStyle={focusRingStyle()}
     >
       <Icon
         name={props.expanded ? "chevron-down" : "chevron-right"}
         size={12}
         color={palette().textMuted}
       />
-      <StatusDot kind={groupDotKind(props.tone)} size={5.5} />
       <Text
         style={{
           flex: 1,
           minWidth: 0,
-          color: palette().textSecondary,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.32),
+          ...textStyle("caption", { color: palette().textSecondary }),
           fontWeight: "600",
           numberOfLines: 1,
           textOverflow: "ellipsis",
@@ -553,10 +519,7 @@ function GroupHeader(props: {
       <Text
         style={{
           flexShrink: 0,
-          color: palette().textMuted,
-          fontSize: textSize(12),
-          lineHeight: textLineHeight(12, 1.28),
-          fontVariant: ["tabular-nums"],
+          ...textStyle("caption", { color: palette().textMuted, tabular: true }),
         }}
       >
         {formatCount(props.count)}
@@ -587,32 +550,39 @@ interface GitFileRowProps {
   onDiscard: () => void;
 }
 
-/** A 14 px checkbox for the batch selection of working-copy rows. */
-function RowCheckbox(props: { path: string; label: string }) {
+/** A 16 px high-contrast checkbox for batch selection of working-copy rows. */
+function RowCheckbox(props: { path: string; label: string; quiet?: boolean }) {
   const checked = () => checkedGitPaths().includes(props.path);
   return (
     <View
       role="checkbox"
       accessibilityLabel={`git-check-${props.label}`}
       accessibilityState={{ checked: checked() }}
+      hitSlop={touchSlop(space.lg)}
       onPress={() => toggleCheckedGitPath(props.path)}
       style={{
-        width: 14,
-        height: 14,
-        borderRadius: 4,
+        width: space.lg,
+        height: space.lg,
+        borderRadius: radii.xs,
+        borderCurve: "continuous",
         borderWidth: 1,
-        borderColor: checked() ? palette().accent : palette().borderStrong,
-        backgroundColor: checked() ? palette().accent : "transparent",
+        borderColor: checked()
+          ? palette().actionPrimaryBg
+          : props.quiet
+            ? palette().border
+            : palette().borderStrong,
+        backgroundColor: checked() ? palette().actionPrimaryBg : "transparent",
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
         cursor: "pointer",
-        ...paintTransition(MOTION_DURATION.fast),
+        ...pressTransition(MOTION_DURATION.fast),
       }}
-      focusVisibleStyle={rowFocusRing()}
+      activeStyle={tactileActiveStyle(0.95)}
+      focusVisibleStyle={focusRingStyle()}
     >
       <If when={checked()}>
-        <Icon name="check" size={10} color={palette().actionPrimaryFg} />
+        <Icon name="check" size={12} color={palette().actionPrimaryFg} />
       </If>
     </View>
   );
@@ -632,11 +602,11 @@ function GitFileRow(props: GitFileRowProps) {
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
-        paddingLeft: 8,
-        paddingRight: 4,
-        paddingVertical: 2,
-        minHeight: props.touch ? WORKBENCH_TOUCH_MIN : 28,
+        gap: space.sm,
+        paddingLeft: space.sm,
+        paddingRight: space.xs,
+        paddingVertical: space.xs,
+        minHeight: props.touch ? WORKBENCH_TOUCH_MIN : 32,
         borderRadius: radii.xs,
         borderCurve: "continuous",
         backgroundColor: props.selected ? palette().accentSoft : "transparent",
@@ -646,8 +616,14 @@ function GitFileRow(props: GitFileRowProps) {
         backgroundColor: props.selected ? palette().accentSoft : palette().panelHover,
       }}
     >
-      <If when={props.checkPath && (hovered() || props.touch || checkedGitPaths().length > 0)}>
-        <RowCheckbox path={props.checkPath!} label={props.displayPath} />
+      <If when={props.checkPath}>
+        {checkPath => (
+          <RowCheckbox
+            path={checkPath()}
+            label={props.displayPath}
+            quiet={!hovered() && !props.touch && !props.selected && checkedGitPaths().length === 0}
+          />
+        )}
       </If>
       <View
         role="button"
@@ -660,19 +636,19 @@ function GitFileRow(props: GitFileRowProps) {
           minWidth: 0,
           flexDirection: "row",
           alignItems: "center",
-          gap: 7,
-          paddingVertical: 3,
-          paddingHorizontal: 1,
+          gap: space.sm,
+          paddingVertical: space.xs,
           borderRadius: radii.xs,
           cursor: "pointer",
+          userSelect: "none",
           ...paintTransition(MOTION_DURATION.fast),
         }}
         activeStyle={{ opacity: 0.88 }}
-        focusVisibleStyle={rowFocusRing()}
+        focusVisibleStyle={focusRingStyle()}
       >
         <View
           style={{
-            minWidth: 16,
+            minWidth: space.lg,
             alignItems: "center",
             justifyContent: "center",
             flexShrink: 0,
@@ -680,23 +656,22 @@ function GitFileRow(props: GitFileRowProps) {
         >
           <Text
             style={{
-              color: fileLetterColor(props.tone),
-              fontFamily: fontMono,
-              fontSize: textSize(10),
-              lineHeight: textLineHeight(10, 1.15),
-              fontWeight: "700",
+              ...textStyle("mono", {
+                color: fileLetterColor(props.tone),
+              }),
+              fontWeight: "600",
               textAlign: "center",
             }}
           >
             {props.letter}
           </Text>
         </View>
-        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "baseline", gap: 5 }}>
+        <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "baseline", gap: space.xs }}>
           <Text
             style={{
-              color: palette().text,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.3),
+              ...textStyle("label", {
+                color: palette().text,
+              }),
               fontWeight: props.selected ? "600" : "500",
               flexShrink: 1,
               minWidth: 0,
@@ -712,9 +687,7 @@ function GitFileRow(props: GitFileRowProps) {
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.3),
+                  ...textStyle("caption", { color: palette().textMuted }),
                   numberOfLines: 1,
                   textOverflow: "ellipsis-start",
                 }}
@@ -729,16 +702,16 @@ function GitFileRow(props: GitFileRowProps) {
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: 2,
+          gap: space.xs,
           flexShrink: 0,
-          opacity: props.touch || props.selected || hovered() ? 1 : 0.34,
+          opacity: props.touch || props.selected || hovered() ? 1 : 0.72,
           ...paintTransition(MOTION_DURATION.fast),
         }}
       >
         <IconButton
           icon={props.primaryIcon}
           size={props.touch ? "md" : "xs"}
-          iconSize={props.touch ? undefined : 12.5}
+          iconSize={props.touch ? undefined : 12}
           accessibilityLabel={props.primaryLabel}
           tooltip={props.primaryTooltip}
           disabled={props.disabled}
@@ -765,7 +738,7 @@ function openWorkingCopyInFiles(path: string, compact: boolean): void {
   const fullPath =
     path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || !root
       ? path
-      : `${root.replace(/[\\/]+$/, "")}/${path.replace(/^[\\/]+/, "")}`;
+      : joinPath(root, path.replace(/^[\\/]+/, ""));
   if (compact) {
     openInAuxPane("files", fullPath);
     return;
@@ -777,6 +750,16 @@ function openWorkingCopyInFiles(path: string, compact: boolean): void {
 function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: boolean }) {
   // Stacked (narrow) layout: the change list first; a pressed row pushes its diff.
   const detailOpen = signal(false);
+  effect(() => {
+    const _wsId = activeWorkspace()?.id ?? "";
+    void _wsId;
+    detailOpen.set(false);
+  });
+  effect(() => {
+    if (!selectedGitFile()) {
+      detailOpen.set(false);
+    }
+  });
   const showList = () => !props.stacked || !detailOpen();
   const showDetail = () => !props.stacked || detailOpen();
   const select = (target: Parameters<typeof selectGitFile>[0]) => {
@@ -824,23 +807,20 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
           else={
             <View
               style={{
-                paddingHorizontal: 10,
-                paddingVertical: 8,
-                gap: 7,
+                paddingHorizontal: space.md,
+                paddingVertical: space.sm,
+                gap: space.sm,
                 borderBottomWidth: 1,
                 borderColor: palette().borderSubtle,
               }}
             >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexWrap: "wrap" }}>
                 <Text
                   style={{
                     flex: 1,
                     minWidth: 72,
-                    color: palette().textMuted,
-                    fontSize: textSize(11.5),
-                    lineHeight: textLineHeight(11.5, 1.32),
+                    ...textStyle("caption", { color: palette().textMuted, tabular: true }),
                     fontWeight: "600",
-                    fontVariant: ["tabular-nums"],
                     numberOfLines: 1,
                     textOverflow: "ellipsis",
                   }}
@@ -885,9 +865,9 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
               flexDirection: "row",
               flexWrap: "wrap",
               alignItems: "center",
-              gap: 6,
-              paddingHorizontal: 8,
-              paddingVertical: 5,
+              gap: space.xs,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.xs,
               borderBottomWidth: 1,
               borderColor: palette().borderSubtle,
             }}
@@ -900,10 +880,10 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
               value={workingFileFilter()}
               placeholder={tr("git.filterFiles")}
               accessibilityLabel="git-filter-files"
-              style={{ flex: 1, minWidth: 112 }}
+              style={{ flex: 1, minWidth: 120 }}
               onChange={value => workingFileFilter.set(value)}
             />
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
               <Button
                 label={tr("git.stageAll")}
                 size="xs"
@@ -933,9 +913,9 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
               flexDirection: "row",
               alignItems: "center",
               flexWrap: "wrap",
-              gap: 4,
-              paddingHorizontal: 8,
-              paddingVertical: 5,
+              gap: space.xs,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.xs,
               borderBottomWidth: 1,
               borderColor: palette().borderSubtle,
               backgroundColor: palette().accentSoft,
@@ -944,12 +924,9 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             <Text
               style={{
                 flex: 1,
-                minWidth: 70,
-                color: palette().text,
-                fontSize: textSize(12),
+                minWidth: 72,
+                ...textStyle("caption", { color: palette().text, tabular: true }),
                 fontWeight: "600",
-                lineHeight: textLineHeight(12, 1.3),
-                fontVariant: ["tabular-nums"],
               }}
             >
               {tr("git.selectedCount", { count: formatCount(checkedGitPaths().length) })}
@@ -987,7 +964,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             <IconButton
               icon="close"
               size="xs"
-              iconSize={11}
+              iconSize={12}
               tooltip={tr("git.clearSelection")}
               accessibilityLabel="git-clear-selection"
               onPress={() => setCheckedGitPaths([])}
@@ -1226,8 +1203,8 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
         {/* Cohesive unified rounded Commit Composer box */}
         <View
           style={{
-            padding: props.compact ? 8 : 10,
-            gap: 6,
+            padding: props.compact ? space.sm : space.md,
+            gap: space.xs,
             borderTopWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvasSubtle,
@@ -1247,29 +1224,28 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             hoverStyle={{ borderColor: palette().borderStrong }}
             focusWithinStyle={{
               borderColor: palette().fieldFocusBorder,
-              boxShadow: `0 0 0 3px ${palette().accentSoft}`,
             }}
           >
             <View
               style={{
-                paddingHorizontal: 10,
-                paddingTop: props.compact ? 7 : 9,
-                paddingBottom: props.compact ? 5 : 7,
+                paddingHorizontal: space.md,
+                paddingTop: space.sm,
+                paddingBottom: space.sm,
               }}
             >
               <Input
                 value={gitCommitMessage()}
-                multiline={!props.compact}
+                multiline={true}
                 placeholder={tr("git.commitPlaceholder")}
                 accessibilityLabel="git-commit-message"
                 style={{
-                  minHeight: props.compact ? 22 : 52,
-                  maxHeight: 110,
+                  minHeight: compactLayout() ? 64 : 56,
+                  maxHeight: 120,
                   color: palette().text,
                   placeholderColor: palette().textMuted,
                   caretColor: palette().accent,
-                  fontSize: textSize(12.5),
-                  lineHeight: textLineHeight(12.5, 1.46),
+                  fontSize: compactLayout() ? Math.max(16, textSize(14)) : textSize(13),
+                  lineHeight: textLineHeight(compactLayout() ? 16 : 13, 1.45),
                 }}
                 onChange={event => gitCommitMessage.set(event.value)}
               />
@@ -1279,9 +1255,9 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 flexDirection: "row",
                 flexWrap: "wrap",
                 alignItems: "center",
-                gap: 6,
-                paddingHorizontal: 8,
-                paddingVertical: 6,
+                gap: space.xs,
+                paddingHorizontal: space.sm,
+                paddingVertical: space.xs,
                 borderTopWidth: 1,
                 borderColor: palette().borderSubtle,
                 backgroundColor: palette().surfaceSubtle,
@@ -1295,18 +1271,18 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                   accessibilityLabel="git-commit-amend"
                 />
               </View>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
                 <If
                   when={gitAiGenerating()}
                   else={
                     <IconButton
                       icon="sparkles"
                       size={props.compact ? "xs" : "sm"}
-                      disabled={gitAiGenerating() || totalWorkingChanges() === 0}
+                      disabled={gitAiGenerating() || isRemoteWorkspace() || totalWorkingChanges() === 0}
                       accessibilityLabel="git-generate-message"
                       tooltip={
                         isRemoteWorkspace()
-                          ? tr("git.aiCommitLocalOnly")
+                          ? tr("git.remoteAiCommitUnsupported")
                           : tr("git.aiCommitMessage")
                       }
                       onPress={() => void generateAiCommitMessage()}
@@ -1332,7 +1308,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                       justifyContent: "center",
                     }}
                   >
-                    <Spinner size={13} color={palette().accent} />
+                    <Spinner size={12} color={palette().accent} />
                   </View>
                 </If>
                 <Button
@@ -1367,10 +1343,8 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
           >
             <Text
               style={{
-                color: palette().textMuted,
-                fontSize: textSize(10.5),
-                lineHeight: textLineHeight(10.5, 1.35),
-                paddingHorizontal: 2,
+                ...textStyle("caption", { color: palette().textMuted }),
+                paddingHorizontal: space.xs,
               }}
             >
               {tr("git.stageToCommitHint")}
@@ -1423,12 +1397,13 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
         </If>
         <View
           style={{
-            minHeight: props.compact ? 34 : 38,
-            paddingHorizontal: props.compact ? 10 : 14,
-            paddingVertical: props.compact ? 4 : 6,
+            minHeight: props.compact ? 36 : 40,
+            paddingHorizontal: props.compact ? space.md : space.lg,
+            paddingVertical: props.compact ? space.xs : space.sm,
             flexDirection: "row",
+            flexWrap: "wrap",
             alignItems: "center",
-            gap: 8,
+            gap: space.sm,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
             backgroundColor: palette().canvas,
@@ -1441,9 +1416,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  color: palette().textMuted,
-                  fontSize: textSize(12),
-                  lineHeight: textLineHeight(12, 1.35),
+                  ...textStyle("caption", { color: palette().textMuted }),
                   numberOfLines: 1,
                   textOverflow: "ellipsis",
                 }}
@@ -1455,72 +1428,69 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             {sel => (
               <View
                 tooltip={<TooltipBubble text={displayRepoFilePath(sel().path)} />}
-                style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  flexDirection: "row",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: space.sm,
+                }}
               >
-                <Icon name="file-code" size={13.5} color={palette().textMuted} />
-                <Text
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    color: palette().text,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.36),
-                    fontWeight: "600",
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis-middle",
-                  }}
-                >
-                  {displayRepoFilePath(sel().path)}
-                </Text>
-                <If when={!diffLoading() && Boolean(selectedGitDiff().trim())}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 0 }}>
-                    <Text
-                      style={{
-                        color: palette().diffAddRail,
-                        fontFamily: fontMono,
-                        fontSize: textSize(11),
-                        lineHeight: textLineHeight(11, 1.32),
-                        fontWeight: "600",
-                        fontVariant: ["tabular-nums"],
-                      }}
-                    >
-                      {`+${formatCount(selectedDiffStats().added)}`}
-                    </Text>
-                    <Text
-                      style={{
-                        color: palette().diffDelRail,
-                        fontFamily: fontMono,
-                        fontSize: textSize(11),
-                        lineHeight: textLineHeight(11, 1.32),
-                        fontWeight: "600",
-                        fontVariant: ["tabular-nums"],
-                      }}
-                    >
-                      {`-${formatCount(selectedDiffStats().deleted)}`}
-                    </Text>
-                  </View>
-                </If>
-                <Text
-                  style={{
-                    flexShrink: 0,
-                    color: palette().textSecondary,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.32),
-                  }}
-                >
-                  {diffBadgeFor(sel().kind).label}
-                </Text>
-                <Button
-                  label={tr("git.editWorkingCopy")}
-                  size="xs"
-                  variant="ghost"
-                  leadingIcon="edit"
-                  accessibilityLabel="git-edit-working-copy"
-                  onPress={() => openWorkingCopyInFiles(sel().path, Boolean(props.aux))}
-                />
-                <If when={diffLoading()}>
-                  <Spinner size={13} />
-                </If>
+                <View style={{ flex: 1, minWidth: 120, flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                  <Icon name="file-code" size={14} color={palette().textMuted} />
+                  <Text
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      ...textStyle("caption", { color: palette().text }),
+                fontWeight: "600",
+                      numberOfLines: 1,
+                      textOverflow: "ellipsis-middle",
+                    }}
+                  >
+                    {displayRepoFilePath(sel().path)}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
+                  <If when={!diffLoading() && Boolean(selectedGitDiff().trim())}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
+                      <Text
+                        style={{
+                          ...textStyle("mono", { color: palette().textMuted, tabular: true }),
+                        }}
+                      >
+                        {`+${formatCount(selectedDiffStats().added)}`}
+                      </Text>
+                      <Text
+                        style={{
+                          ...textStyle("mono", { color: palette().textMuted, tabular: true }),
+                        }}
+                      >
+                        {`-${formatCount(selectedDiffStats().deleted)}`}
+                      </Text>
+                    </View>
+                  </If>
+                  <Text
+                    style={{
+                      flexShrink: 0,
+                      ...textStyle("caption", { color: palette().textSecondary }),
+                    }}
+                  >
+                    {diffBadgeFor(sel().kind).label}
+                  </Text>
+                  <Button
+                    label={tr("git.editWorkingCopy")}
+                    size="xs"
+                    variant="ghost"
+                    leadingIcon="edit"
+                    accessibilityLabel="git-edit-working-copy"
+                    onPress={() => openWorkingCopyInFiles(sel().path, Boolean(props.aux))}
+                  />
+                  <If when={diffLoading()}>
+                    <Spinner size={12} />
+                  </If>
+                </View>
               </View>
             )}
           </If>
@@ -1541,21 +1511,15 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             style={{
               flex: 1,
               minHeight: 0,
-              padding: 20,
+              padding: space.xl,
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "center",
-              gap: 8,
+              gap: space.sm,
             }}
           >
             <Spinner size={14} />
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.35),
-              }}
-            >
+            <Text style={{ ...textStyle("caption", { color: palette().textMuted }) }}>
               {tr("git.loadingPatch")}
             </Text>
           </View>
@@ -1565,7 +1529,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
           <View style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
             <DiffView
               patch={selectedGitDiff()}
-              language={inferCodeLanguage(selectedGitFile()?.path)}
+              language="text"
               layout={props.compact ? "unified" : gitDiffLayout()}
               indicators="bars"
               inline="wordAlt"
@@ -1584,7 +1548,7 @@ function WorkingCopyView(props: { compact?: boolean; stacked?: boolean; aux?: bo
             style={{
               flex: 1,
               minHeight: 0,
-              padding: props.compact ? 14 : 28,
+              padding: props.compact ? space.lg : space.xxl,
               alignItems: "center",
               justifyContent: "center",
             }}
@@ -1620,25 +1584,20 @@ function BranchesView(props: { compact?: boolean }) {
       <View
         style={{
           width: "100%",
-          maxWidth: 880,
+          maxWidth: layout.pageWidth,
           flex: 1,
           minHeight: 0,
           minWidth: 0,
-          padding: props.compact ? 12 : 20,
-          gap: props.compact ? 10 : 14,
+          padding: props.compact ? space.md : space.xl,
+          gap: props.compact ? space.md : space.lg,
         }}
       >
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
           <Text
             style={{
               flex: 1,
               minWidth: 110,
-              color: palette().text,
-              fontSize: textSize(15),
-              lineHeight: textLineHeight(15, 1.28),
-              letterSpacing: textTracking(15),
-              fontWeight: "600",
-              fontVariant: ["tabular-nums"],
+              ...textStyle("sectionTitle", { color: palette().text, tabular: true }),
             }}
           >
             {tr("git.branchesCount", { count: formatCount(gitBranches().length) })}
@@ -1689,23 +1648,20 @@ function BranchesView(props: { compact?: boolean }) {
           )}
         </If>
 
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: 16, paddingBottom: 18 }}>
-          <View style={{ gap: 8 }}>
+        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: space.lg, paddingBottom: space.xl }}>
+          <View style={{ gap: space.sm }}>
             <Text
               style={{
-                color: palette().textMuted,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.35),
-                fontWeight: "600",
-                fontVariant: ["tabular-nums"],
-                paddingHorizontal: 2,
+                ...textStyle("caption", { color: palette().textMuted, tabular: true }),
+                    fontWeight: "600",
+                paddingHorizontal: space.xs,
               }}
             >
               {tr("git.localCount", { count: formatCount(localBranches().length) })}
             </Text>
             <View
               style={{
-                borderRadius: 12,
+                borderRadius: radii.lg,
                 borderCurve: "continuous",
                 borderWidth: 1,
                 borderColor: palette().borderSubtle,
@@ -1714,14 +1670,8 @@ function BranchesView(props: { compact?: boolean }) {
               }}
             >
               <If when={localBranches().length === 0}>
-                <View style={{ padding: 14 }}>
-                  <Text
-                    style={{
-                      color: palette().textMuted,
-                      fontSize: textSize(12),
-                      lineHeight: textLineHeight(12, 1.4),
-                    }}
-                  >
+                <View style={{ padding: space.lg }}>
+                  <Text style={{ ...textStyle("caption", { color: palette().textMuted }) }}>
                     {tr("git.noLocalBranches")}
                   </Text>
                 </View>
@@ -1732,9 +1682,9 @@ function BranchesView(props: { compact?: boolean }) {
                     style={{
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: props.compact ? 8 : 10,
-                      paddingHorizontal: props.compact ? 12 : 16,
-                      paddingVertical: props.compact ? 9 : 11,
+                      gap: props.compact ? space.sm : space.md,
+                      paddingHorizontal: props.compact ? space.md : space.lg,
+                      paddingVertical: props.compact ? space.sm : space.md,
                       borderBottomWidth: index() < localBranches().length - 1 ? 1 : 0,
                       borderColor: palette().borderSubtle,
                       backgroundColor: branch().current
@@ -1747,15 +1697,15 @@ function BranchesView(props: { compact?: boolean }) {
                     <Icon
                       name="git-branch"
                       size={14}
-                      color={branch().current ? palette().accent : palette().textMuted}
+                      color={branch().current ? palette().textSecondary : palette().textMuted}
                     />
-                    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                    <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
                       <View
                         tooltip={<TooltipBubble text={branch().name} />}
                         style={{
                           flexDirection: "row",
                           alignItems: "center",
-                          gap: 6,
+                          gap: space.sm,
                           minWidth: 0,
                           flexWrap: "wrap",
                         }}
@@ -1764,9 +1714,7 @@ function BranchesView(props: { compact?: boolean }) {
                           style={{
                             flexShrink: 1,
                             minWidth: 0,
-                            color: palette().text,
-                            fontSize: textSize(13.5),
-                            lineHeight: textLineHeight(13.5, 1.35),
+                            ...textStyle("body", { color: palette().text }),
                             fontWeight: "600",
                             numberOfLines: 1,
                             textOverflow: "ellipsis-middle",
@@ -1784,11 +1732,7 @@ function BranchesView(props: { compact?: boolean }) {
                       </View>
                       <Text
                         style={{
-                          color: palette().textMuted,
-                          fontSize: textSize(11),
-                          lineHeight: textLineHeight(11, 1.36),
-                          fontFamily: fontMono,
-                          fontVariant: ["tabular-nums"],
+                          ...textStyle("mono", { color: palette().textMuted, tabular: true }),
                           numberOfLines: 1,
                           textOverflow: "ellipsis-middle",
                         }}
@@ -1802,7 +1746,7 @@ function BranchesView(props: { compact?: boolean }) {
                       </Text>
                     </View>
                     <If when={!branch().current}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs, flexShrink: 0 }}>
                         <Button
                           label={tr("git.checkout")}
                           size="xs"
@@ -1829,22 +1773,19 @@ function BranchesView(props: { compact?: boolean }) {
           </View>
 
           <If when={remoteBranches().length > 0}>
-            <View style={{ gap: 8 }}>
+            <View style={{ gap: space.sm }}>
               <Text
                 style={{
-                  color: palette().textMuted,
-                  fontSize: textSize(11.5),
-                  lineHeight: textLineHeight(11.5, 1.35),
-                  fontWeight: "600",
-                  fontVariant: ["tabular-nums"],
-                  paddingHorizontal: 2,
+                  ...textStyle("caption", { color: palette().textMuted, tabular: true }),
+                    fontWeight: "600",
+                  paddingHorizontal: space.xs,
                 }}
               >
                 {tr("git.remoteCount", { count: formatCount(remoteBranches().length) })}
               </Text>
               <View
                 style={{
-                  borderRadius: 12,
+                  borderRadius: radii.lg,
                   borderCurve: "continuous",
                   borderWidth: 1,
                   borderColor: palette().borderSubtle,
@@ -1858,38 +1799,41 @@ function BranchesView(props: { compact?: boolean }) {
                       tooltip={<TooltipBubble text={branch().name} />}
                       style={{
                         flexDirection: "row",
+                        flexWrap: "wrap",
                         alignItems: "center",
-                        gap: props.compact ? 8 : 10,
-                        paddingHorizontal: props.compact ? 12 : 16,
-                        paddingVertical: props.compact ? 8 : 10,
+                        gap: props.compact ? space.sm : space.md,
+                        paddingHorizontal: props.compact ? space.md : space.lg,
+                        paddingVertical: props.compact ? space.sm : space.md,
                         borderBottomWidth: index() < remoteBranches().length - 1 ? 1 : 0,
                         borderColor: palette().borderSubtle,
                       }}
                     >
-                      <Icon name="network" size={13} color={palette().textMuted} />
-                      <Text
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          color: palette().textSecondary,
-                          fontSize: textSize(12.5),
-                          lineHeight: textLineHeight(12.5, 1.36),
-                          numberOfLines: 1,
-                          textOverflow: "ellipsis-middle",
-                        }}
-                      >
-                        {branch().name}
-                      </Text>
-                      <QuietStatusText parts={[tr("common.remote")]} />
-                      <Button
-                        label={tr("git.checkoutAsLocal")}
-                        size="xs"
-                        variant="ghost"
-                        disabled={gitActionBusy()}
-                        tooltip={tr("git.checkoutAsLocalHint", { name: localNameForRemoteBranch(branch().name) })}
-                        accessibilityLabel={`git-checkout-remote-${branch().name}`}
-                        onPress={() => void checkoutGitBranch(branch().name)}
-                      />
+                      <View style={{ flex: 1, minWidth: 140, flexDirection: "row", alignItems: "center", gap: space.sm }}>
+                        <Icon name="network" size={14} color={palette().textMuted} />
+                        <Text
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            ...textStyle("label", { color: palette().textSecondary }),
+                            numberOfLines: 1,
+                            textOverflow: "ellipsis-middle",
+                          }}
+                        >
+                          {branch().name}
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
+                        <QuietStatusText parts={[tr("common.remote")]} />
+                        <Button
+                          label={tr("git.checkoutAsLocal")}
+                          size="xs"
+                          variant="ghost"
+                          disabled={gitActionBusy()}
+                          tooltip={tr("git.checkoutAsLocalHint", { name: localNameForRemoteBranch(branch().name) })}
+                          accessibilityLabel={`git-checkout-remote-${branch().name}`}
+                          onPress={() => void checkoutGitBranch(branch().name)}
+                        />
+                      </View>
                     </View>
                   )}
                 </Each>
@@ -1907,13 +1851,15 @@ function CommitGraphRail(props: {
   index: number;
   total: number;
   railWidth: number;
+  maxLanes: number;
+  selected?: boolean;
 }) {
   return (
     <Canvas
       style={{
         width: props.railWidth,
         alignSelf: "stretch",
-        minHeight: HISTORY_ROW_HEIGHT,
+        minHeight: compactLayout() ? WORKBENCH_TOUCH_MIN : HISTORY_ROW_HEIGHT,
         flexShrink: 0,
         pointerEvents: "none",
       }}
@@ -1930,7 +1876,7 @@ function CommitGraphRail(props: {
         const isLast = props.index >= props.total - 1;
         const hasParents = props.commit.parents.length > 0;
 
-        const xOf = (l: number) => LANE_PAD + Math.min(Math.max(0, l), MAX_DRAWN_LANES - 1) * LANE_STEP;
+        const xOf = (l: number) => LANE_PAD + Math.min(Math.max(0, l), Math.max(1, props.maxLanes) - 1) * LANE_STEP;
         const nodeX = xOf(lane);
         const cy = size.height / 2;
 
@@ -1998,9 +1944,9 @@ function CommitGraphRail(props: {
           cx.stroke();
         }
 
-        // 5. Commit node dot with crisp knockout halo matching lifted panelRaised card.
+        // 5. Commit node dot with crisp knockout halo matching the row surface.
         const dotColor = laneColor(lane);
-        cx.fillStyle = p.panelRaised;
+        cx.fillStyle = props.selected ? p.accentSoft : p.canvas;
         cx.beginPath();
         cx.arc(nodeX, cy, isHead ? 6.5 : 5.5, 0, Math.PI * 2);
         cx.fill();
@@ -2056,10 +2002,14 @@ function changedFileLetter(status: string): { letter: string; tone: "danger" | "
   return { letter: "M", tone: "warning" };
 }
 
-const resetMenuOpen = signal(false);
-const resetMenuAnchor = signal<ViewRef | null>(null);
-
-function HistoryRow(props: { commit: GitCommitRow; index: number; total: number; railWidth: number; compact?: boolean }) {
+function HistoryRow(props: {
+  commit: GitCommitRow;
+  index: number;
+  total: number;
+  railWidth: number;
+  maxLanes: number;
+  compact?: boolean;
+}) {
   const selected = () => selectedCommit()?.hash === props.commit.hash;
   const subject = () => props.commit.message.split("\n")[0] || tr("git.noCommitMessage");
   return (
@@ -2072,25 +2022,42 @@ function HistoryRow(props: { commit: GitCommitRow; index: number; total: number;
       style={{
         flexDirection: "row",
         alignItems: "stretch",
-        height: HISTORY_ROW_HEIGHT,
-        paddingRight: props.compact ? 10 : 14,
+        minHeight: compactLayout() ? WORKBENCH_TOUCH_MIN : HISTORY_ROW_HEIGHT,
+        paddingRight: props.compact ? space.md : space.lg,
         backgroundColor: selected() ? palette().accentSoft : "transparent",
         cursor: "pointer",
+        userSelect: "none",
         ...paintTransition(MOTION_DURATION.fast),
       }}
       hoverStyle={{ backgroundColor: selected() ? palette().accentSoft : palette().panelHover }}
-      focusVisibleStyle={rowFocusRing()}
+      focusVisibleStyle={focusRingStyle()}
     >
-      <CommitGraphRail commit={props.commit} index={props.index} total={props.total} railWidth={props.railWidth} />
-      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 4 }}>
+      <CommitGraphRail
+        commit={props.commit}
+        index={props.index}
+        total={props.total}
+        railWidth={props.railWidth}
+        maxLanes={props.maxLanes}
+        selected={selected()}
+      />
+      <View
+        style={{
+          flex: 1,
+          minWidth: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: space.sm,
+          paddingLeft: space.xs,
+        }}
+      >
         <Text
           style={{
             flexShrink: 1,
-            minWidth: 0,
-            color: palette().text,
-            fontSize: textSize(13),
+            minWidth: props.compact ? 84 : 120,
+            ...textStyle("label", {
+              color: palette().text,
+            }),
             fontWeight: selected() ? "600" : "500",
-            lineHeight: textLineHeight(13, 1.3),
             numberOfLines: 1,
             textOverflow: "ellipsis",
           }}
@@ -2098,6 +2065,8 @@ function HistoryRow(props: { commit: GitCommitRow; index: number; total: number;
           {subject()}
         </Text>
         <QuietStatusText
+          shrink
+          maxWidth={props.compact ? 84 : 168}
           parts={(gitGraphByHash()[props.commit.hash]?.refs ?? []).map(refItem => refItem.name)}
         />
         <View style={{ flex: 1, minWidth: 0 }} />
@@ -2105,9 +2074,7 @@ function HistoryRow(props: { commit: GitCommitRow; index: number; total: number;
           <Text
             style={{
               maxWidth: 140,
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.3),
+              ...textStyle("caption", { color: palette().textMuted }),
               numberOfLines: 1,
               textOverflow: "ellipsis",
               flexShrink: 0,
@@ -2118,11 +2085,8 @@ function HistoryRow(props: { commit: GitCommitRow; index: number; total: number;
         </If>
         <Text
           style={{
-            minWidth: props.compact ? 0 : 76,
-            color: palette().textMuted,
-            fontSize: textSize(12),
-            lineHeight: textLineHeight(12, 1.3),
-            fontVariant: ["tabular-nums"],
+            minWidth: props.compact ? 0 : 72,
+            ...textStyle("caption", { color: palette().textMuted, tabular: true }),
             textAlign: "right",
             numberOfLines: 1,
             flexShrink: 0,
@@ -2133,11 +2097,7 @@ function HistoryRow(props: { commit: GitCommitRow; index: number; total: number;
         <Text
           style={{
             width: 58,
-            color: palette().textSecondary,
-            fontFamily: fontMono,
-            fontSize: textSize(11),
-            lineHeight: textLineHeight(11, 1.3),
-            fontVariant: ["tabular-nums"],
+            ...textStyle("mono", { color: palette().textSecondary, tabular: true }),
             textAlign: "right",
             flexShrink: 0,
           }}
@@ -2151,6 +2111,8 @@ function HistoryRow(props: { commit: GitCommitRow; index: number; total: number;
 
 /** The selected commit: message, identity, actions, its files and the diff of one. */
 function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
+  const resetMenuOpen = signal(false);
+  const resetMenuAnchor = signal<ViewRef | null>(null);
   return (
     <If when={selectedCommit()}>
       {commit => (
@@ -2170,7 +2132,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
           <If when={props.stacked}>
             <View
               style={{
-                paddingHorizontal: 4,
+                paddingHorizontal: space.xs,
                 borderBottomWidth: 1,
                 borderColor: palette().borderSubtle,
                 flexDirection: "row",
@@ -2184,16 +2146,21 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
               />
             </View>
           </If>
-          <View style={{ padding: props.compact ? 10 : 14, gap: 6, borderBottomWidth: 1, borderColor: palette().borderSubtle }}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+          <View
+            style={{
+              padding: props.compact ? space.md : space.lg,
+              gap: space.sm,
+              borderBottomWidth: 1,
+              borderColor: palette().borderSubtle,
+            }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space.sm }}>
               <Text
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  color: palette().text,
-                  fontSize: textSize(14),
-                  fontWeight: "600",
-                  lineHeight: textLineHeight(14, 1.35),
+                  ...textStyle("body", { color: palette().text }),
+                            fontWeight: "600",
                   userSelect: "text",
                 }}
               >
@@ -2203,7 +2170,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
                 <IconButton
                   icon="close"
                   size="xs"
-                  iconSize={11}
+                  iconSize={12}
                   tooltip={tr("common.close")}
                   accessibilityLabel="git-commit-details-close"
                   onPress={clearSelectedCommit}
@@ -2214,9 +2181,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
               {body => (
                 <Text
                   style={{
-                    color: palette().textSecondary,
-                    fontSize: textSize(12),
-                    lineHeight: textLineHeight(12, 1.5),
+                    ...textStyle("caption", { color: palette().textSecondary }),
                     userSelect: "text",
                   }}
                 >
@@ -2226,21 +2191,16 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
             </If>
             <Text
               style={{
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
+                ...textStyle("caption", { color: palette().textMuted }),
                 numberOfLines: 2,
               }}
             >
               {`${commit().author}${commit().authorEmail ? ` <${commit().authorEmail}>` : ""} · ${commit().date}`}
             </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm }}>
               <Text
                 style={{
-                  color: palette().textSecondary,
-                  fontFamily: fontMono,
-                  fontSize: textSize(11),
-                  lineHeight: textLineHeight(11, 1.3),
+                  ...textStyle("mono", { color: palette().textSecondary, tabular: true }),
                   userSelect: "text",
                 }}
               >
@@ -2255,7 +2215,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
                 onPress={() =>
                   void Clipboard.writeText(commit().hash).then(
                     () => pushToast(tr("git.hashCopied"), "success"),
-                    error => pushToast(error instanceof Error ? error.message : String(error), "error"),
+                    error => pushToast(localizeHostError(error), "error"),
                   )
                 }
               />
@@ -2310,13 +2270,13 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
               )}
             </If>
           </View>
-          <View style={{ flex: 1, minHeight: 0, flexDirection: props.compact ? "column" : "column" }}>
+          <View style={{ flex: 1, minHeight: 0, flexDirection: "column" }}>
             <Scroll style={{ maxHeight: props.compact ? 140 : 200, minHeight: 0, flexShrink: 0 }}>
-              <View style={{ padding: 6, gap: 1 }}>
+              <View style={{ padding: space.xs, gap: 2 }}>
                 <If when={commitFilesLoading()}>
-                  <View style={{ flexDirection: "row", gap: 6, alignItems: "center", padding: 6 }}>
+                  <View style={{ flexDirection: "row", gap: space.xs, alignItems: "center", padding: space.xs }}>
                     <Spinner size={12} />
-                    <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.3) }}>
+                    <Text style={{ ...textStyle("caption", { color: palette().textMuted }) }}>
                       {tr("common.loading")}
                     </Text>
                   </View>
@@ -2334,25 +2294,28 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
                       style={{
                         flexDirection: "row",
                         alignItems: "center",
-                        gap: 7,
-                        height: 26,
-                        paddingHorizontal: 8,
+                        gap: space.sm,
+                        minHeight: compactLayout() ? WORKBENCH_TOUCH_MIN : 28,
+                        paddingHorizontal: space.sm,
                         borderRadius: radii.xs,
+                        borderCurve: "continuous",
                         backgroundColor: selectedCommitFile() === file().path ? palette().accentSoft : "transparent",
                         cursor: "pointer",
+                        userSelect: "none",
+                        ...paintTransition(MOTION_DURATION.fast),
                       }}
                       hoverStyle={{
                         backgroundColor: selectedCommitFile() === file().path ? palette().accentSoft : palette().panelHover,
                       }}
+                      focusVisibleStyle={focusRingStyle()}
                     >
                       <Text
                         style={{
-                          width: 14,
-                          color: fileLetterColor(changedFileLetter(file().status).tone),
-                          fontFamily: fontMono,
-                          fontSize: textSize(11),
-                          fontWeight: "700",
-                          lineHeight: textLineHeight(11, 1.2),
+                          width: space.lg,
+                          ...textStyle("mono", {
+                            color: fileLetterColor(changedFileLetter(file().status).tone),
+                          }),
+                          fontWeight: "600",
                           textAlign: "center",
                         }}
                       >
@@ -2362,9 +2325,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
                         style={{
                           flex: 1,
                           minWidth: 0,
-                          color: palette().text,
-                          fontSize: textSize(12),
-                          lineHeight: textLineHeight(12, 1.3),
+                          ...textStyle("caption", { color: palette().text }),
                           numberOfLines: 1,
                           textOverflow: "ellipsis-start",
                         }}
@@ -2380,9 +2341,9 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
               <If
                 when={!commitFileDiffLoading() && commitFileDiff().trim()}
                 else={
-                  <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 16 }}>
+                  <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: space.lg }}>
                     <If when={commitFileDiffLoading()} else={
-                      <Text style={{ color: palette().textMuted, fontSize: textSize(12), lineHeight: textLineHeight(12, 1.4) }}>
+                      <Text style={{ ...textStyle("caption", { color: palette().textMuted }) }}>
                         {selectedCommitFile() ? tr("files.noDiffOutput") : tr("git.selectCommitFile")}
                       </Text>
                     }>
@@ -2393,7 +2354,7 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
               >
                 <DiffView
                   patch={commitFileDiff()}
-                  language={inferCodeLanguage(selectedCommitFile() ?? undefined)}
+                  language="text"
                   layout="unified"
                   indicators="bars"
                   inline="wordAlt"
@@ -2414,8 +2375,9 @@ function CommitDetailsPane(props: { compact?: boolean; stacked?: boolean }) {
 }
 
 function HistoryView(props: { compact?: boolean; stacked?: boolean }) {
+  const maxLanes = () => (props.compact || compactLayout() ? MAX_DRAWN_LANES_COMPACT : MAX_DRAWN_LANES);
   const graphRailWidth = computed(() => {
-    const laneCount = Math.max(1, Math.min(MAX_DRAWN_LANES, (gitGraphMaxLane() || 0) + 1));
+    const laneCount = Math.max(1, Math.min(maxLanes(), (gitGraphMaxLane() || 0) + 1));
     return LANE_PAD * 2 + Math.max(0, laneCount - 1) * LANE_STEP;
   });
 
@@ -2442,10 +2404,11 @@ function HistoryView(props: { compact?: boolean; stacked?: boolean }) {
         <View
           style={{
             flexDirection: "row",
+            flexWrap: "wrap",
             alignItems: "center",
-            gap: 8,
-            paddingHorizontal: props.compact ? 10 : 14,
-            paddingVertical: 8,
+            gap: space.sm,
+            paddingHorizontal: props.compact ? space.md : space.lg,
+            paddingVertical: space.sm,
             borderBottomWidth: 1,
             borderColor: palette().borderSubtle,
           }}
@@ -2453,9 +2416,7 @@ function HistoryView(props: { compact?: boolean; stacked?: boolean }) {
           <Icon name="history" size={14} color={palette().textSecondary} />
           <Text
             style={{
-              color: palette().text,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.3),
+              ...textStyle("label", { color: palette().text }),
               fontWeight: "600",
               flexShrink: 0,
             }}
@@ -2464,16 +2425,13 @@ function HistoryView(props: { compact?: boolean; stacked?: boolean }) {
           </Text>
           <Text
             style={{
-              color: palette().textMuted,
-              fontSize: textSize(12),
-              lineHeight: textLineHeight(12, 1.3),
-              fontVariant: ["tabular-nums"],
+              ...textStyle("caption", { color: palette().textMuted, tabular: true }),
               flexShrink: 0,
             }}
           >
             {formatPlural(gitCommits().length, "format.commitOne", "format.commitOther")}
           </Text>
-          <View style={{ flex: 1, minWidth: 0, maxWidth: 280, marginLeft: "auto" }}>
+          <View style={{ flex: 1, minWidth: 140, maxWidth: 280, marginLeft: "auto" }}>
             <InputBox
               size="sm"
               leadingIcon="search"
@@ -2487,27 +2445,35 @@ function HistoryView(props: { compact?: boolean; stacked?: boolean }) {
           </View>
         </View>
 
-        <If when={gitGraphNote()}>
-          {note => (
-            <View style={{ paddingHorizontal: props.compact ? 10 : 14, paddingTop: 8 }}>
-              <InlineBanner tone={isRemoteGraphNote() ? "info" : "warning"} message={localizeHostError(note())} />
-            </View>
-          )}
+        <If when={gitGraphRemoteUnsupported() || gitGraphNote()}>
+          <View style={{ paddingHorizontal: props.compact ? space.md : space.lg, paddingTop: space.sm }}>
+            <InlineBanner
+              tone={gitGraphRemoteUnsupported() ? "info" : "warning"}
+              message={
+                gitGraphRemoteUnsupported()
+                  ? tr("git.remoteGraphUnsupported")
+                  : localizeHostError(gitGraphNote())
+              }
+              accessibilityLabel={
+                gitGraphRemoteUnsupported() && currentLocale() === "en-US"
+                  ? "Commit lane graphs are available on local workspaces only. Showing linear commit history for this remote workspace."
+                  : undefined
+              }
+            />
+          </View>
         </If>
 
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingVertical: 4, paddingBottom: 16 }}>
+        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingVertical: space.xs, paddingBottom: space.lg }}>
           <If when={gitCommits().length === 0}>
-            <View style={{ padding: 20 }}>
+            <View style={{ padding: space.xl }}>
               <EmptyStateCard icon="history" title={tr("git.noCommitsTitle")} subtitle={tr("git.noCommitsSubtitle")} />
             </View>
           </If>
           <If when={gitCommits().length > 0 && filteredCommits().length === 0}>
             <Text
               style={{
-                padding: 16,
-                color: palette().textMuted,
-                fontSize: textSize(12),
-                lineHeight: textLineHeight(12, 1.4),
+                padding: space.lg,
+                ...textStyle("caption", { color: palette().textMuted }),
                 textAlign: "center",
               }}
             >
@@ -2521,12 +2487,13 @@ function HistoryView(props: { compact?: boolean; stacked?: boolean }) {
                 index={historyFilter().trim() ? 0 : index()}
                 total={historyFilter().trim() ? 1 : filteredCommits().length}
                 railWidth={graphRailWidth()}
+                maxLanes={maxLanes()}
                 compact={props.compact}
               />
             )}
           </Each>
           <If when={gitHistoryHasMore() && !historyFilter().trim()}>
-            <View style={{ alignItems: "center", paddingTop: 8 }}>
+            <View style={{ alignItems: "center", paddingTop: space.sm }}>
               <Button
                 label={gitHistoryLoadingMore() ? tr("common.loading") : tr("git.loadMoreCommits")}
                 size="xs"
@@ -2559,35 +2526,20 @@ function WorktreesView(props: { compact?: boolean }) {
       <View
         style={{
           width: "100%",
-          maxWidth: 880,
+          maxWidth: layout.pageWidth,
           flex: 1,
           minHeight: 0,
           minWidth: 0,
-          padding: props.compact ? 12 : 20,
-          gap: props.compact ? 10 : 12,
+          padding: props.compact ? space.md : space.xl,
+          gap: props.compact ? space.md : space.lg,
         }}
       >
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-          <View style={{ flex: 1, minWidth: 140, gap: 2 }}>
-            <Text
-              style={{
-                color: palette().text,
-                fontSize: textSize(15),
-                lineHeight: textLineHeight(15, 1.28),
-                letterSpacing: textTracking(15),
-                fontWeight: "600",
-                fontVariant: ["tabular-nums"],
-              }}
-            >
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
+          <View style={{ flex: 1, minWidth: 140, gap: space.xs }}>
+            <Text style={{ ...textStyle("sectionTitle", { color: palette().text, tabular: true }) }}>
               {tr("git.worktreesCount", { count: formatCount(gitWorktrees().length) })}
             </Text>
-            <Text
-              style={{
-                color: palette().textMuted,
-                fontSize: textSize(11.5),
-                lineHeight: textLineHeight(11.5, 1.4),
-              }}
-            >
+            <Text style={{ ...textStyle("caption", { color: palette().textMuted }) }}>
               {tr("git.worktreesSubtitle")}
             </Text>
           </View>
@@ -2596,19 +2548,26 @@ function WorktreesView(props: { compact?: boolean }) {
             variant="primary"
             size={props.compact ? "xs" : "sm"}
             leadingIcon="folder-plus"
-            disabled={activeWorkspace()?.workspaceKind === "remote" || gitActionBusy()}
+            disabled={isRemoteWorkspace() || gitActionBusy()}
             accessibilityLabel="git-add-worktree-open"
             onPress={() => openAddWorktreeModal()}
           />
         </View>
 
-        <If when={gitWorktreeNote()}>
-          {note => (
-            <InlineBanner
-              tone={isRemoteWorktreeNote() ? "info" : "warning"}
-              message={localizeHostError(note())}
-            />
-          )}
+        <If when={gitWorktreeRemoteUnsupported() || gitWorktreeNote()}>
+          <InlineBanner
+            tone={gitWorktreeRemoteUnsupported() ? "info" : "warning"}
+            message={
+              gitWorktreeRemoteUnsupported()
+                ? tr("git.remoteWorktreeUnsupported")
+                : localizeHostError(gitWorktreeNote())
+            }
+            accessibilityLabel={
+              gitWorktreeRemoteUnsupported() && currentLocale() === "en-US"
+                ? "Git worktrees are supported on local workspaces only. Remote SSH worktrees are not available yet."
+                : undefined
+            }
+          />
         </If>
 
         <If when={confirmingRemoveWorktree()}>
@@ -2624,8 +2583,8 @@ function WorktreesView(props: { compact?: boolean }) {
           )}
         </If>
 
-        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingBottom: 16 }}>
-          <If when={gitWorktrees().length === 0 && !gitWorktreeNote()}>
+        <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingBottom: space.lg }}>
+          <If when={gitWorktrees().length === 0 && !gitWorktreeRemoteUnsupported() && !gitWorktreeNote()}>
             <EmptyStateCard
               icon="folder-plus"
               title={tr("git.noWorktreesTitle")}
@@ -2636,7 +2595,7 @@ function WorktreesView(props: { compact?: boolean }) {
           <If when={gitWorktrees().length > 0}>
             <View
               style={{
-                borderRadius: 12,
+                borderRadius: radii.lg,
                 borderCurve: "continuous",
                 borderWidth: 1,
                 borderColor: palette().borderSubtle,
@@ -2650,9 +2609,9 @@ function WorktreesView(props: { compact?: boolean }) {
                     style={{
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: props.compact ? 8 : 10,
-                      paddingHorizontal: props.compact ? 12 : 16,
-                      paddingVertical: props.compact ? 10 : 12,
+                      gap: props.compact ? space.sm : space.md,
+                      paddingHorizontal: props.compact ? space.md : space.lg,
+                      paddingVertical: props.compact ? space.sm : space.md,
                       borderBottomWidth: index() < gitWorktrees().length - 1 ? 1 : 0,
                       borderColor: palette().borderSubtle,
                       backgroundColor: wt().isMain
@@ -2662,15 +2621,15 @@ function WorktreesView(props: { compact?: boolean }) {
                   >
                     <Icon
                       name="git-branch"
-                      size={15}
-                      color={wt().isMain ? palette().accent : palette().textMuted}
+                      size={16}
+                      color={wt().isMain ? palette().textSecondary : palette().textMuted}
                     />
-                    <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+                    <View style={{ flex: 1, minWidth: 0, gap: space.xs }}>
                       <View
                         style={{
                           flexDirection: "row",
                           alignItems: "center",
-                          gap: 6,
+                          gap: space.sm,
                           minWidth: 0,
                           flexWrap: "wrap",
                         }}
@@ -2679,9 +2638,7 @@ function WorktreesView(props: { compact?: boolean }) {
                           style={{
                             flexShrink: 1,
                             minWidth: 0,
-                            color: palette().text,
-                            fontSize: textSize(13.5),
-                            lineHeight: textLineHeight(13.5, 1.35),
+                            ...textStyle("body", { color: palette().text }),
                             fontWeight: "600",
                             numberOfLines: 1,
                             textOverflow: "ellipsis-middle",
@@ -2701,10 +2658,7 @@ function WorktreesView(props: { compact?: boolean }) {
                       <View tooltip={<TooltipBubble text={wt().path} />} style={{ minWidth: 0 }}>
                         <Text
                           style={{
-                            color: palette().textMuted,
-                            fontSize: textSize(11),
-                            lineHeight: textLineHeight(11, 1.36),
-                            fontFamily: fontMono,
+                            ...textStyle("mono", { color: palette().textMuted }),
                             numberOfLines: 1,
                             textOverflow: "ellipsis-middle",
                           }}
@@ -2719,7 +2673,7 @@ function WorktreesView(props: { compact?: boolean }) {
                         icon="trash"
                         size="xs"
                         tone="danger"
-                        disabled={gitActionBusy() || activeWorkspace()?.workspaceKind === "remote"}
+                        disabled={gitActionBusy() || isRemoteWorkspace()}
                         accessibilityLabel={`git-remove-worktree-${wt().path}`}
                         tooltip={tr("git.removeWorktree")}
                         onPress={() => requestRemoveWorktree(wt().path)}
@@ -2846,24 +2800,24 @@ function BranchSwitchBlockerBar(props: { compact?: boolean }) {
           role="alert"
           accessibilityLabel="git-switch-blocker"
           style={{
-            gap: 8,
-            paddingHorizontal: props.compact ? 10 : 14,
-            paddingVertical: 10,
+            gap: space.sm,
+            paddingHorizontal: props.compact ? space.md : space.lg,
+            paddingVertical: space.md,
             borderBottomWidth: 1,
-            borderColor: palette().warningBorder,
-            backgroundColor: palette().warningSoft,
+            borderLeftWidth: 2,
+            borderColor: palette().borderSubtle,
+            borderLeftColor: palette().warning,
+            backgroundColor: palette().canvasSubtle,
           }}
         >
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Icon name="warning" size={14} color={palette().warning} />
             <Text
               style={{
                 flex: 1,
                 minWidth: 0,
-                color: palette().text,
-                fontSize: textSize(12),
+                ...textStyle("caption", { color: palette().text }),
                 fontWeight: "600",
-                lineHeight: textLineHeight(12, 1.38),
               }}
             >
               {blocker().kind === "untracked"
@@ -2873,7 +2827,7 @@ function BranchSwitchBlockerBar(props: { compact?: boolean }) {
             <IconButton
               icon="close"
               size="xs"
-              iconSize={11}
+              iconSize={12}
               tooltip={tr("common.dismissNotice")}
               accessibilityLabel="git-switch-blocker-dismiss"
               onPress={dismissBranchSwitchBlocker}
@@ -2881,16 +2835,13 @@ function BranchSwitchBlockerBar(props: { compact?: boolean }) {
           </View>
           <Text
             style={{
-              color: palette().textSecondary,
-              fontFamily: fontMono,
-              fontSize: textSize(11),
-              lineHeight: textLineHeight(11, 1.45),
+              ...textStyle("mono", { color: palette().textSecondary }),
               numberOfLines: 4,
             }}
           >
             {blocker().files.map(file => displayRepoFilePath(file)).join("\n")}
           </Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
             <InputBox
               size="sm"
               value={switchCommitMessage()}
@@ -2921,6 +2872,10 @@ export function GitScene(props: GitSceneProps = {}) {
   const sceneWidth = createSceneWidth();
   // Narrow: the aux pane, or a scene under 600 pt wide (stacked list -> detail).
   const narrow = () => Boolean(props.compact) || sceneWidth.stacked();
+  const scopeDevice = () => fleetDeviceById(deviceContext());
+  const deviceOffline = () => deviceException(scopeDevice()?.state) === "offline";
+  const deviceLabel = () => scopeDevice()?.name || tr("device.thisDevice");
+
   effect(() => {
     const ws = activeWorkspace();
     // Only the workspace re-runs this; the probe's own state does not.
@@ -2951,6 +2906,14 @@ export function GitScene(props: GitSceneProps = {}) {
         <ToolPaneHeader />
       </If>
       <RemoteWorkspaceStatusBanner compact={props.compact} />
+      <If when={deviceOffline()}>
+        <View style={{ paddingHorizontal: props.compact ? space.sm : space.lg, paddingTop: space.sm }}>
+          <InlineBanner
+            tone="warning"
+            message={tr("pane.terminal.offline", { device: deviceLabel() })}
+          />
+        </View>
+      </If>
       <BranchSwitchBlockerBar compact={narrow()} />
       <If
         when={narrow()}
@@ -2960,8 +2923,8 @@ export function GitScene(props: GitSceneProps = {}) {
               minHeight: 44,
               flexDirection: "row",
               alignItems: "center",
-              gap: 10,
-              paddingHorizontal: 14,
+              gap: space.md,
+              paddingHorizontal: space.lg,
               borderBottomWidth: 1,
               borderColor: palette().borderSubtle,
               backgroundColor: palette().canvas,
@@ -2993,13 +2956,12 @@ export function GitScene(props: GitSceneProps = {}) {
           <View
             style={{
               minHeight: sceneWidth.stacked() ? WORKBENCH_TOUCH_MIN : 36,
-              paddingHorizontal: 8,
-              paddingTop: 5,
-              paddingBottom: 3,
+              paddingHorizontal: space.sm,
+              paddingVertical: space.xs,
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "space-between",
-              gap: 6,
+              gap: space.xs,
               minWidth: 0,
             }}
           >
@@ -3027,12 +2989,12 @@ export function GitScene(props: GitSceneProps = {}) {
             paddingHorizontal:
               gitRepoState() === "trusted" && gitTab() === "working"
                 ? props.compact
-                  ? 8
-                  : 14
+                  ? space.sm
+                  : space.lg
                 : props.compact
-                  ? 12
-                  : 20,
-            paddingTop: 8,
+                  ? space.md
+                  : space.xl,
+            paddingTop: space.sm,
           }}
         >
           <View
@@ -3043,7 +3005,7 @@ export function GitScene(props: GitSceneProps = {}) {
                   ? 560
                   : gitTab() === "working"
                     ? undefined
-                    : 880,
+                    : layout.pageWidth,
               alignSelf: "center",
             }}
           >
@@ -3057,7 +3019,7 @@ export function GitScene(props: GitSceneProps = {}) {
       </If>
 
       <If when={Boolean(gitLiveNotice()) && gitRepoState() === "trusted"}>
-        <View style={{ paddingHorizontal: props.compact ? 8 : 14, paddingTop: 8 }}>
+        <View style={{ paddingHorizontal: props.compact ? space.sm : space.lg, paddingTop: space.sm }}>
           <InlineBanner
             tone="info"
             message={gitLiveNotice()}
@@ -3073,12 +3035,12 @@ export function GitScene(props: GitSceneProps = {}) {
             paddingHorizontal:
               gitRepoState() === "trusted" && gitTab() === "working"
                 ? props.compact
-                  ? 8
-                  : 14
+                  ? space.sm
+                  : space.lg
                 : props.compact
-                  ? 12
-                  : 20,
-            paddingTop: 8,
+                  ? space.md
+                  : space.xl,
+            paddingTop: space.sm,
           }}
         >
           <View
@@ -3089,7 +3051,7 @@ export function GitScene(props: GitSceneProps = {}) {
                   ? 560
                   : gitTab() === "working"
                     ? undefined
-                    : 880,
+                    : layout.pageWidth,
               alignSelf: "center",
             }}
           >
@@ -3109,7 +3071,7 @@ export function GitScene(props: GitSceneProps = {}) {
             minHeight: 0,
             alignItems: "center",
             justifyContent: "center",
-            padding: props.compact ? 16 : 28,
+            padding: props.compact ? space.lg : space.xxl,
           }}
         >
           <EmptyStateCard
@@ -3121,15 +3083,9 @@ export function GitScene(props: GitSceneProps = {}) {
       </If>
 
       <If when={Boolean(activeWorkspace()) && gitRepoState() === "probing"}>
-        <View style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center", gap: 10 }}>
+        <View style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center", gap: space.md }}>
           <Spinner size={20} />
-          <Text
-            style={{
-              color: palette().textMuted,
-              fontSize: textSize(13),
-              lineHeight: textLineHeight(13, 1.35),
-            }}
-          >
+          <Text style={{ ...textStyle("label", { color: palette().textMuted }) }}>
             {tr("git.inspecting")}
           </Text>
         </View>
@@ -3142,7 +3098,7 @@ export function GitScene(props: GitSceneProps = {}) {
             flexGrow: 1,
             alignItems: "center",
             justifyContent: "center",
-            padding: props.compact ? 14 : 24,
+            padding: props.compact ? space.lg : space.xxl,
           }}
         >
           <View style={{ width: "100%", maxWidth: 520 }}>
@@ -3164,7 +3120,7 @@ export function GitScene(props: GitSceneProps = {}) {
             flexGrow: 1,
             alignItems: "center",
             justifyContent: "center",
-            padding: props.compact ? 12 : 24,
+            padding: props.compact ? space.md : space.xxl,
           }}
         >
           <View style={{ width: "100%", maxWidth: 560 }}>
@@ -3172,13 +3128,7 @@ export function GitScene(props: GitSceneProps = {}) {
               title={tr("git.trustRequiredTitle")}
               subtitle={tr("git.trustRequiredSubtitle")}
             >
-              <Text
-                style={{
-                  color: palette().textSecondary,
-                  fontSize: textSize(12.5),
-                  lineHeight: textLineHeight(12.5, 1.48),
-                }}
-              >
+              <Text style={{ ...textStyle("label", { color: palette().textSecondary }) }}>
                 {gitTrustReport()?.detail
                   ? localizeHostError(gitTrustReport()!.detail)
                   : tr("git.trustDetailFallback", {
@@ -3191,8 +3141,8 @@ export function GitScene(props: GitSceneProps = {}) {
                     style={{
                       flexDirection: "row",
                       alignItems: "flex-start",
-                      gap: 8,
-                      padding: 10,
+                      gap: space.sm,
+                      padding: space.md,
                       borderRadius: radii.sm,
                       borderCurve: "continuous",
                       borderWidth: 1,
@@ -3204,10 +3154,7 @@ export function GitScene(props: GitSceneProps = {}) {
                       style={{
                         flex: 1,
                         minWidth: 0,
-                        color: palette().text,
-                        fontFamily: fontMono,
-                        fontSize: textSize(11.5),
-                        lineHeight: textLineHeight(11.5, 1.45),
+                        ...textStyle("mono", { color: palette().text }),
                         userSelect: "text",
                       }}
                     >
@@ -3227,7 +3174,7 @@ export function GitScene(props: GitSceneProps = {}) {
                   </View>
                 )}
               </If>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm }}>
                 <Button
                   label={gitActionBusy() ? tr("git.trusting") : tr("git.trustRepo")}
                   variant="primary"
@@ -3258,10 +3205,10 @@ export function GitScene(props: GitSceneProps = {}) {
             flexGrow: 1,
             alignItems: "center",
             justifyContent: "center",
-            padding: props.compact ? 14 : 24,
+            padding: props.compact ? space.lg : space.xxl,
           }}
         >
-          <View style={{ width: "100%", maxWidth: 540, gap: 12 }}>
+          <View style={{ width: "100%", maxWidth: 540, gap: space.md }}>
             <EmptyStateCard
               icon="git-branch"
               title={tr("git.notRepoTitle")}
@@ -3309,17 +3256,17 @@ export function GitScene(props: GitSceneProps = {}) {
         size="sm"
         onClose={() => closeCreateBranchModal()}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("common.cancel")}
               variant="ghost"
-              size="sm"
+              size="md"
               onPress={() => closeCreateBranchModal()}
             />
             <Button
               label={tr("git.createAndCheckout")}
               variant="primary"
-              size="sm"
+              size="md"
               leadingIcon="git-branch"
               loading={gitActionBusy()}
               disabled={!newBranchName().trim() || gitActionBusy()}
@@ -3329,7 +3276,7 @@ export function GitScene(props: GitSceneProps = {}) {
           </View>
         }
       >
-        <View style={{ gap: 12 }}>
+        <View style={{ gap: space.md }}>
           <If when={gitError()}>
             {err => (
               <InlineBanner
@@ -3372,17 +3319,17 @@ export function GitScene(props: GitSceneProps = {}) {
         size="sm"
         onClose={() => closeAddWorktreeModal()}
         footer={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
             <Button
               label={tr("common.cancel")}
               variant="ghost"
-              size="sm"
+              size="md"
               onPress={() => closeAddWorktreeModal()}
             />
             <Button
               label={tr("git.createWorktree")}
               variant="primary"
-              size="sm"
+              size="md"
               leadingIcon="folder-plus"
               loading={gitActionBusy()}
               disabled={!newWorktreeBranch().trim() || gitActionBusy()}
@@ -3392,7 +3339,7 @@ export function GitScene(props: GitSceneProps = {}) {
           </View>
         }
       >
-        <View style={{ gap: 12 }}>
+        <View style={{ gap: space.md }}>
           <If when={gitError()}>
             {err => (
               <InlineBanner

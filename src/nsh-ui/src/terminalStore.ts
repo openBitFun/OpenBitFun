@@ -36,6 +36,8 @@ export interface TerminalTab {
   id: string;
   title: string;
   status: string;
+  /** Structured exit code emitted by `Exit` events (null when absent). */
+  exitCode?: number | null;
   /** What this shell has printed, so a tab switch can draw it again. */
   buffer: string;
   /**
@@ -119,6 +121,12 @@ export const renamingTerminal = signal<string | null>(null);
 export const terminalId = signal<string | null>(null);
 export const terminalStatus = signal<string>("idle");
 export const terminalMessage = signal<string>("");
+/** The active tab record (or null when no tab is selected). */
+export const activeTerminalTab = computed<TerminalTab | null>(() => {
+  const id = terminalId();
+  if (!id) return null;
+  return terminalTabs().find(tab => tab.id === id) ?? null;
+});
 /** The shells this host reports; a host without shell detection answers with none. */
 export const terminalShells = signal<TerminalShell[]>([]);
 /** The shell the next `New shell` starts, by the discovered shell's own id. */
@@ -222,13 +230,13 @@ function subscribeOutput(): void {
     // Flush any buffered PTY chunks before state transitions (`Exit` / `TitleChanged`).
     flushPendingPtyData();
     if (event?.type === "Exit") {
-      const status = typeof payload.exit_code === "number" ? `exited (${payload.exit_code})` : "exited";
-      updateTab(id, { status });
+      const code = typeof payload.exit_code === "number" ? payload.exit_code : null;
+      const status = code !== null ? `exited (${code})` : "exited";
+      updateTab(id, { status, exitCode: code });
       if (terminalId() === id) {
         terminalStatus.set("exited");
-        terminalMessage.set(
-          typeof payload.exit_code === "number" ? `Shell exited with code ${payload.exit_code}` : "Shell exited",
-        );
+        // Exit status is surfaced through the localized §4.10 bottom bar, not raw English text.
+        terminalMessage.set("");
       }
       return;
     }
@@ -440,8 +448,8 @@ export function selectTerminal(id: string): void {
   const tab = terminalTabs().find(item => item.id === id);
   if (!tab) return;
   terminalId.set(id);
-  terminalStatus.set(tab.status);
-  terminalMessage.set(tab.status === "exited" ? "Shell exited" : "");
+  terminalStatus.set(tab.status.toLowerCase().startsWith("exited") ? "exited" : tab.status);
+  terminalMessage.set("");
   resetter?.();
   if (tab.buffer) outputWriter?.(tab.buffer);
   // A shell that was off screen still has the size it had then: give it the

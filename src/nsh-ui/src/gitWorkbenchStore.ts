@@ -113,6 +113,7 @@ export const gitCommits = signal<GitCommitRow[]>([]);
 export const gitGraphByHash = signal<Record<string, GitGraphNodeInfo>>({});
 export const gitGraphMaxLane = signal(0);
 export const gitGraphNote = signal("");
+export const gitGraphRemoteUnsupported = signal(false);
 
 export const HISTORY_PAGE_SIZE = 50;
 export const gitHistoryHasMore = signal(false);
@@ -152,10 +153,15 @@ export const confirmingCommitReset = signal<{ hash: string; mode: "soft" | "mixe
 
 export const gitWorktrees = signal<GitWorktreeRow[]>([]);
 export const gitWorktreeNote = signal("");
+export const gitWorktreeRemoteUnsupported = signal(false);
 export const addWorktreeModalOpen = signal(false);
 export const newWorktreeBranch = signal("");
 export const newWorktreeCreateBranch = signal(true);
 export const confirmingRemoveWorktree = signal<string | null>(null);
+
+function isRemoteWs(ws: WorkspaceRecord | null): boolean {
+  return Boolean(ws && (ws.workspaceKind === "remote" || ws.connectionId));
+}
 
 let currentScopeKey = "";
 let probeTicket = 0;
@@ -306,8 +312,10 @@ function clearGitState(): void {
   gitGraphByHash.set({});
   gitGraphMaxLane.set(0);
   gitGraphNote.set("");
+  gitGraphRemoteUnsupported.set(false);
   gitWorktrees.set([]);
   gitWorktreeNote.set("");
+  gitWorktreeRemoteUnsupported.set(false);
   addWorktreeModalOpen.set(false);
   confirmingRemoveWorktree.set(null);
   gitHistoryHasMore.set(false);
@@ -774,10 +782,8 @@ export async function discardGitFile(target: DiscardTarget): Promise<void> {
 export async function generateAiCommitMessage(): Promise<void> {
   const ws = activeWorkspace();
   if (!ws) return;
-  if (ws.workspaceKind === "remote" || Boolean(ws.connectionId)) {
-    gitError.set(
-      "AI commit message generation requires a local repository path and is not yet supported on remote workspaces.",
-    );
+  if (isRemoteWs(ws)) {
+    gitError.set(tr("git.remoteAiCommitUnsupported"));
     return;
   }
   gitAiGenerating.set(true);
@@ -1105,15 +1111,15 @@ async function loadGitHistory(ws: WorkspaceRecord, ticket: number, append = fals
   }
 
   // Never call git_get_graph on remote workspaces (unsupported by backend SSH runner).
-  if (ws.workspaceKind === "remote") {
+  if (isRemoteWs(ws)) {
     gitGraphByHash.set({});
     gitGraphMaxLane.set(0);
-    gitGraphNote.set(
-      "Commit lane graphs are available on local workspaces only. Showing linear commit history for this remote workspace.",
-    );
+    gitGraphRemoteUnsupported.set(true);
+    gitGraphNote.set("");
     return;
   }
 
+  gitGraphRemoteUnsupported.set(false);
   gitGraphNote.set("");
   try {
     const graphRaw = await invokeRawCommand<{
@@ -1144,14 +1150,14 @@ async function loadGitHistory(ws: WorkspaceRecord, ticket: number, append = fals
 }
 
 export async function loadGitWorktrees(ws: WorkspaceRecord, ticket: number): Promise<void> {
-  if (ws.workspaceKind === "remote") {
+  if (isRemoteWs(ws)) {
     gitWorktrees.set([]);
-    gitWorktreeNote.set(
-      "Git worktrees are supported on local workspaces only. Remote SSH worktrees are not available yet.",
-    );
+    gitWorktreeRemoteUnsupported.set(true);
+    gitWorktreeNote.set("");
     return;
   }
 
+  gitWorktreeRemoteUnsupported.set(false);
   gitWorktreeNote.set("");
   try {
     const raw = await invokeCommand<Array<Record<string, unknown>>>("git_list_worktrees", {
@@ -1187,8 +1193,9 @@ export async function addGitWorktree(): Promise<void> {
   const ws = activeWorkspace();
   const branch = newWorktreeBranch().trim();
   if (!ws || !branch) return;
-  if (ws.workspaceKind === "remote") {
-    gitError.set("Git worktrees are not supported for remote SSH workspaces.");
+  if (isRemoteWs(ws)) {
+    gitWorktreeRemoteUnsupported.set(true);
+    gitError.set(tr("git.remoteWorktreeUnsupported"));
     return;
   }
   const createBranch = newWorktreeCreateBranch();
@@ -1231,8 +1238,9 @@ export function cancelRemoveWorktree(): void {
 export async function removeGitWorktree(worktreePath: string, force = false): Promise<void> {
   const ws = activeWorkspace();
   if (!ws || !worktreePath) return;
-  if (ws.workspaceKind === "remote") {
-    gitError.set("Git worktrees are not supported for remote SSH workspaces.");
+  if (isRemoteWs(ws)) {
+    gitWorktreeRemoteUnsupported.set(true);
+    gitError.set(tr("git.remoteWorktreeUnsupported"));
     return;
   }
   gitActionBusy.set(true);
